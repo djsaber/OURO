@@ -21,6 +21,7 @@ from ouro.cli.run import (
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="ouro")
     parser.add_argument("--home", help="Override OURO_HOME")
+    parser.add_argument("--system-prompt", help="Override the default system prompt")
     _add_provider_args(parser)
     subparsers = parser.add_subparsers(dest="command")
 
@@ -31,6 +32,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_parser.add_argument("--home", dest="run_home", help="Override OURO_HOME")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
     run_parser.add_argument("--title", help="Title for a new session")
+    run_parser.add_argument(
+        "--system-prompt",
+        dest="run_system_prompt",
+        help="Override the default system prompt",
+    )
     _add_provider_args(run_parser, prefix="run_")
     run_parser.add_argument("prompt", nargs="+")
 
@@ -107,6 +113,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         prompt = " ".join(args.prompt)
         home = args.run_home or args.home
         provider_options = _provider_options(args, prefix="run_")
+        system_prompt = (
+            args.run_system_prompt if args.run_system_prompt is not None else args.system_prompt
+        )
         if args.json_mode:
             return asyncio.run(
                 run_json(
@@ -115,6 +124,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_id=args.session_id,
                     title=args.title,
                     provider_options=provider_options,
+                    system_prompt=system_prompt,
                 )
             )
         return asyncio.run(
@@ -124,6 +134,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 session_id=args.session_id,
                 title=args.title,
                 provider_options=provider_options,
+                system_prompt=system_prompt,
             )
         )
 
@@ -182,7 +193,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             )
 
-    return asyncio.run(run_interactive(home=args.home, provider_options=_provider_options(args)))
+    return asyncio.run(
+        run_interactive(
+            home=args.home,
+            provider_options=_provider_options(args),
+            system_prompt=args.system_prompt,
+        )
+    )
 
 
 def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> None:

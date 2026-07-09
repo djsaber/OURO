@@ -26,6 +26,17 @@ class OpenAICompatibleTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class OpenAICompatibleStreamingTransport(OpenAICompatibleTransport, Protocol):
+    def stream_json(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout: float,
+    ) -> AsyncIterator[Mapping[str, Any]]: ...
+
+
 class HttpxOpenAICompatibleTransport:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self.client = client
@@ -70,6 +81,47 @@ class HttpxOpenAICompatibleTransport:
         if not isinstance(parsed, dict):
             raise RuntimeError("provider response JSON must be an object")
         return parsed
+
+    async def stream_json(
+        self,
+        *,
+        url: str,
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
+        timeout: float,
+    ) -> AsyncIterator[Mapping[str, Any]]:
+        request_headers = {
+            "content-type": "application/json",
+            "accept": "text/event-stream",
+            **headers,
+        }
+        try:
+            if self.client is not None:
+                async with self.client.stream(
+                    "POST",
+                    url,
+                    headers=dict(request_headers),
+                    json=dict(payload),
+                    timeout=timeout,
+                ) as response:
+                    async for item in _stream_sse_json(response):
+                        yield item
+                return
+
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "POST",
+                    url,
+                    headers=dict(request_headers),
+                    json=dict(payload),
+                    timeout=timeout,
+                ) as response:
+                    async for item in _stream_sse_json(response):
+                        yield item
+        except httpx.TimeoutException as exc:
+            raise RuntimeError("provider request timed out") from exc
+        except httpx.RequestError as exc:
+            raise RuntimeError(f"provider connection failed: {exc}") from exc
 
     async def _post(
         self,
@@ -127,14 +179,31 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         try:
-            response = await self._post_chat_completion(
-                model=model,
-                messages=messages,
-                tools=tools,
-                extra_payload={"stream": False},
-            )
-            async for event in self._events_from_response(response):
-                yield event
+            stream_json = getattr(self.transport, "stream_json", None)
+            if callable(stream_json):
+                payload = self._chat_completion_payload(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    extra_payload={"stream": True},
+                )
+                chunks = stream_json(
+                    url=f"{self.base_url}{self.endpoint}",
+                    headers=self._headers(),
+                    payload=payload,
+                    timeout=self.timeout,
+                )
+                async for event in self._events_from_streaming_chunks(chunks):
+                    yield event
+            else:
+                response = await self._post_chat_completion(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    extra_payload={"stream": False},
+                )
+                async for event in self._events_from_response(response):
+                    yield event
         except Exception as exc:  # noqa: BLE001 - providers should report errors as stream events.
             yield ProviderStreamEvent(type="error", error=str(exc))
 
@@ -177,6 +246,27 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
+        payload = self._chat_completion_payload(
+            model=model,
+            messages=messages,
+            tools=tools,
+            extra_payload=extra_payload,
+        )
+        return await self.transport.post_json(
+            url=f"{self.base_url}{self.endpoint}",
+            headers=self._headers(),
+            payload=payload,
+            timeout=self.timeout,
+        )
+
+    def _chat_completion_payload(
+        self,
+        *,
+        model: ModelMetadata,
+        messages: list[MessageRecord],
+        tools: list[dict[str, Any]] | None,
+        extra_payload: Mapping[str, Any],
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": model.model_id,
             "messages": [_message_to_openai(message) for message in messages],
@@ -185,12 +275,7 @@ class OpenAICompatibleProvider:
         }
         if tools and model.supports_tools:
             payload["tools"] = [_tool_to_openai(tool) for tool in tools]
-        return await self.transport.post_json(
-            url=f"{self.base_url}{self.endpoint}",
-            headers=self._headers(),
-            payload=payload,
-            timeout=self.timeout,
-        )
+        return payload
 
     def _headers(self) -> dict[str, str]:
         headers = dict(self.default_headers)
@@ -236,6 +321,60 @@ class OpenAICompatibleProvider:
             yield ProviderStreamEvent(
                 type="error",
                 error=f"provider returned an empty assistant message{reason}",
+            )
+            return
+
+        yield ProviderStreamEvent(type="done", usage=None if tool_calls else usage)
+
+    async def _events_from_streaming_chunks(
+        self,
+        chunks: AsyncIterator[Mapping[str, Any]],
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        usage: Usage | None = None
+        saw_content = False
+        tool_call_parts: dict[int, dict[str, str]] = {}
+
+        async for chunk in chunks:
+            response_error = _error_from_response(chunk)
+            if response_error:
+                yield ProviderStreamEvent(type="error", error=response_error)
+                return
+
+            chunk_usage = _usage_from_response_or_none(chunk)
+            if chunk_usage is not None:
+                usage = chunk_usage
+
+            choice = _first_choice(chunk)
+            if choice is None:
+                continue
+            delta = choice.get("delta") or {}
+            if not isinstance(delta, Mapping):
+                continue
+
+            content = _content_to_text(delta.get("content"))
+            if content:
+                saw_content = True
+                yield ProviderStreamEvent(type="text_delta", text=content)
+
+            for index, part in _tool_call_delta_parts(delta):
+                current = tool_call_parts.setdefault(
+                    index,
+                    {"id": "", "name": "", "arguments": ""},
+                )
+                if part.get("id"):
+                    current["id"] = part["id"]
+                if part.get("name"):
+                    current["name"] += part["name"]
+                if part.get("arguments"):
+                    current["arguments"] += part["arguments"]
+
+        tool_calls = _tool_calls_from_stream_parts(tool_call_parts)
+        for tool_call in tool_calls:
+            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
+
+        if not saw_content and not tool_calls:
+            yield ProviderStreamEvent(
+                type="error", error="provider returned an empty assistant message"
             )
             return
 
@@ -359,6 +498,48 @@ def _tool_calls_from_message(message: Mapping[str, Any]) -> list[dict[str, Any]]
     return tool_calls
 
 
+def _tool_call_delta_parts(delta: Mapping[str, Any]) -> list[tuple[int, dict[str, str]]]:
+    raw_tool_calls = delta.get("tool_calls")
+    if not isinstance(raw_tool_calls, list):
+        return []
+
+    parts: list[tuple[int, dict[str, str]]] = []
+    for fallback_index, raw_tool_call in enumerate(raw_tool_calls):
+        if not isinstance(raw_tool_call, Mapping):
+            continue
+        raw_index = raw_tool_call.get("index")
+        index = raw_index if isinstance(raw_index, int) else fallback_index
+        function = raw_tool_call.get("function") or {}
+        if not isinstance(function, Mapping):
+            function = {}
+        part = {
+            "id": str(raw_tool_call.get("id") or ""),
+            "name": str(function.get("name") or ""),
+            "arguments": str(function.get("arguments") or ""),
+        }
+        parts.append((index, part))
+    return parts
+
+
+def _tool_calls_from_stream_parts(
+    tool_call_parts: Mapping[int, Mapping[str, str]],
+) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for index in sorted(tool_call_parts):
+        part = tool_call_parts[index]
+        name = part.get("name") or ""
+        if not name:
+            continue
+        tool_calls.append(
+            {
+                "id": part.get("id") or "",
+                "name": name,
+                "arguments": _arguments_to_dict(part.get("arguments")),
+            }
+        )
+    return tool_calls
+
+
 def _arguments_to_dict(arguments: object) -> dict[str, Any]:
     if isinstance(arguments, Mapping):
         return dict(arguments)
@@ -367,6 +548,12 @@ def _arguments_to_dict(arguments: object) -> dict[str, Any]:
         if isinstance(parsed, dict):
             return parsed
     return {}
+
+
+def _usage_from_response_or_none(response: Mapping[str, Any]) -> Usage | None:
+    if not isinstance(response.get("usage"), Mapping):
+        return None
+    return _usage_from_response(response)
 
 
 def _usage_from_response(response: Mapping[str, Any]) -> Usage:
@@ -389,3 +576,41 @@ def _usage_from_response(response: Mapping[str, Any]) -> Usage:
 def _compact_body(body: str) -> str:
     compacted = " ".join(body.split())
     return compacted[:500]
+
+
+async def _stream_sse_json(response: httpx.Response) -> AsyncIterator[Mapping[str, Any]]:
+    if response.status_code >= 400:
+        body = (await response.aread()).decode(errors="replace")
+        raise RuntimeError(f"provider HTTP {response.status_code}: {_compact_body(body)}")
+
+    data_lines: list[str] = []
+    async for line in response.aiter_lines():
+        if not line:
+            if data_lines:
+                parsed = _parse_sse_data("\n".join(data_lines))
+                data_lines = []
+                if parsed is None:
+                    return
+                yield parsed
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            data_lines.append(line[5:].lstrip())
+
+    if data_lines:
+        parsed = _parse_sse_data("\n".join(data_lines))
+        if parsed is not None:
+            yield parsed
+
+
+def _parse_sse_data(data: str) -> Mapping[str, Any] | None:
+    if data.strip() == "[DONE]":
+        return None
+    try:
+        parsed = json.loads(data)
+    except ValueError as exc:
+        raise RuntimeError("provider stream chunk was not valid JSON") from exc
+    if not isinstance(parsed, Mapping):
+        raise RuntimeError("provider stream chunk JSON must be an object")
+    return parsed

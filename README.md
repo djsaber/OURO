@@ -7,7 +7,7 @@ Current first-phase runtime includes:
 - `ouro` interactive stdin/stdout mode.
 - `ouro run --print "prompt"` final-text mode.
 - `ouro run --json "prompt"` machine-readable final JSON mode.
-- Local readable session persistence under `OURO_HOME` or `--home`.
+- Local readable session storage under `OURO_HOME` or `--home`.
 - Session continuation with `ouro run --session <session_id> ...`.
 - FauxProvider for deterministic local development.
 - First-pass OpenAI-compatible Provider boundary and CLI configuration.
@@ -27,7 +27,7 @@ Current first-phase runtime includes:
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with context injection and failure events, plugin metadata, plugin command/context-provider registration, MCP lifecycle framework, and Skills metadata loading.
-- Runtime depends on a persistence protocol; `LocalFileStore` is the default implementation.
+- Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 
 Development commands:
 

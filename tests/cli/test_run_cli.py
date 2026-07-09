@@ -5,18 +5,18 @@ from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_print
 from ouro.core.adapter import RuntimeAdapter
-from ouro.persistence import LocalFileStore
 from ouro.providers import (
     FauxProvider,
     ModelMetadata,
     OpenAICompatibleProvider,
     ProviderStreamEvent,
 )
+from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 
 
 def _runtime(tmp_path, event_batches) -> RuntimeService:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     registry = ToolRegistry()
     for tool in builtin_tools():
@@ -61,8 +61,8 @@ async def test_run_print_reports_failed_runtime_result(
     monkeypatch,
     capsys,
 ) -> None:
-    def fake_runtime(home=None, *, provider_options=None):
-        del provider_options
+    def fake_runtime(home=None, *, provider_options=None, system_prompt=None):
+        del provider_options, system_prompt
         return _runtime(home or tmp_path, [[ProviderStreamEvent(type="done")]])
 
     monkeypatch.setattr("ouro.cli.run.build_default_runtime", fake_runtime)
@@ -114,6 +114,32 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert "faux/faux" in outputs
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
+
+
+async def test_interactive_streams_model_text_deltas(tmp_path) -> None:
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="text_delta", text="Hel"),
+                ProviderStreamEvent(type="text_delta", text="lo"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    inputs = iter(["hello", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Hel" in outputs
+    assert "lo" in outputs
+    assert "Hello" not in outputs
 
 
 async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
@@ -298,16 +324,31 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
 def test_main_without_subcommand_enters_interactive(monkeypatch, tmp_path) -> None:
     calls = []
 
-    async def fake_interactive(*, home, provider_options):
-        calls.append((home, provider_options.provider))
+    async def fake_interactive(*, home, provider_options, system_prompt):
+        calls.append((home, provider_options.provider, system_prompt))
         return 0
 
     monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
 
-    code = main(["--home", str(tmp_path), "--provider", "faux"])
+    code = main(["--home", str(tmp_path), "--provider", "faux", "--system-prompt", "Custom"])
 
     assert code == 0
-    assert calls == [(str(tmp_path), "faux")]
+    assert calls == [(str(tmp_path), "faux", "Custom")]
+
+
+def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
+    calls = []
+
+    async def fake_run_print(prompt, **kwargs):
+        calls.append((prompt, kwargs["system_prompt"]))
+        return 0
+
+    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+
+    code = main(["run", "--system-prompt", "Custom", "hello"])
+
+    assert code == 0
+    assert calls == [("hello", "Custom")]
 
 
 def test_build_runtime_with_openai_compatible_provider_options(

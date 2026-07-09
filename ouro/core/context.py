@@ -4,7 +4,7 @@ from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.messages import MessageRecord
-from ouro.tools.base import ToolDefinition
+from ouro.core.tools import ToolDefinition
 
 
 class ContextView(OuroModel):

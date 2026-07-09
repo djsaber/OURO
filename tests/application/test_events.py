@@ -3,12 +3,12 @@ import pytest
 from ouro.application.events import RuntimeEventRecorder
 from ouro.core.hooks import HookContext, HookFailure, HookRegistration, HookRegistry, HookResult
 from ouro.core.state import SessionRecord
-from ouro.persistence import LocalFileStore
+from ouro.sessions import LocalSessionStore
 
 
 @pytest.mark.asyncio
 async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Events")
     store.create_session(session)
@@ -47,7 +47,7 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
 
 @pytest.mark.asyncio
 async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Hook failures")
     store.create_session(session)
@@ -74,7 +74,7 @@ async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Event hook failure")
     store.create_session(session)

@@ -4,6 +4,7 @@ import json
 import sys
 from pathlib import Path
 
+from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
 from ouro.config import (
     ProviderConfigManager,
@@ -14,8 +15,8 @@ from ouro.config import (
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError, CredentialError, OuroError
-from ouro.persistence import LocalFileStore
 from ouro.providers import FauxProvider, ModelMetadata, OpenAICompatibleProvider
+from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 
 RuntimeProviderOptions = ProviderRuntimeOptions
@@ -25,8 +26,10 @@ def build_default_runtime(
     home: str | Path | None = None,
     *,
     provider_options: RuntimeProviderOptions | None = None,
+    system_prompt: str | None = None,
+    event_sink: RuntimeEventSink | None = None,
 ) -> RuntimeService:
-    store = LocalFileStore(home)
+    store = LocalSessionStore(home)
     store.initialize()
     registry = ToolRegistry()
     for tool in builtin_tools():
@@ -39,6 +42,8 @@ def build_default_runtime(
         store=store,
         adapter=adapter,
         tools=registry,
+        system_prompt=system_prompt,
+        event_sink=event_sink,
     )
 
 
@@ -49,9 +54,14 @@ async def run_print(
     session_id: str | None = None,
     title: str | None = None,
     provider_options: RuntimeProviderOptions | None = None,
+    system_prompt: str | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home, provider_options=provider_options)
+        runtime = build_default_runtime(
+            home,
+            provider_options=provider_options,
+            system_prompt=system_prompt,
+        )
         result = await runtime.run(prompt, session_id=session_id, title=title)
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -73,9 +83,14 @@ async def run_json(
     session_id: str | None = None,
     title: str | None = None,
     provider_options: RuntimeProviderOptions | None = None,
+    system_prompt: str | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home, provider_options=provider_options)
+        runtime = build_default_runtime(
+            home,
+            provider_options=provider_options,
+            system_prompt=system_prompt,
+        )
         result = await runtime.run(prompt, session_id=session_id, title=title)
     except OuroError as exc:
         print(

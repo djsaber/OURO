@@ -4,7 +4,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.state import SessionRecord
-from ouro.persistence import SessionSnapshot, SessionStore
+from ouro.sessions import SessionSnapshot, SessionStore
 
 FOLLOW_UP_QUEUE_KEY = "follow_up_queue"
 

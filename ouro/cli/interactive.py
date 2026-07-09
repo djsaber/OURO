@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 from ouro.application.runtime import RuntimeService
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.core.errors import OuroError
+from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 
 InputFunc = Callable[[str], str]
@@ -18,16 +20,37 @@ async def run_interactive(
     *,
     home: str | Path | None = None,
     provider_options: RuntimeProviderOptions | None = None,
+    system_prompt: str | None = None,
     runtime: RuntimeService | None = None,
     input_func: InputFunc = input,
     output_func: OutputFunc = print,
 ) -> int:
+    streamed_run_ids: set[str] = set()
+
+    def stream_event(event: EventRecord) -> None:
+        if event.event_type != "model_text_delta":
+            return
+        text = event.payload.get("text")
+        if not isinstance(text, str) or not text:
+            return
+        if event.run_id is None:
+            return
+        streamed_run_ids.add(event.run_id)
+        _stream_output(text, output_func)
+
     if runtime is None:
         try:
-            runtime = build_default_runtime(home, provider_options=provider_options)
+            runtime = build_default_runtime(
+                home,
+                provider_options=provider_options,
+                system_prompt=system_prompt,
+                event_sink=stream_event,
+            )
         except OuroError as exc:
             output_func(f"Error: {exc}")
             return 1
+    else:
+        runtime.add_event_sink(stream_event)
     session_id: str | None = None
     output_func("OURO interactive. Type /help for commands, /exit to quit.")
 
@@ -57,6 +80,7 @@ async def run_interactive(
             runtime=runtime,
             input_func=input_func,
             output_func=output_func,
+            streamed_run_ids=streamed_run_ids,
         )
 
 
@@ -179,11 +203,14 @@ async def _handle_run_result(
     runtime: RuntimeService,
     input_func: InputFunc,
     output_func: OutputFunc,
+    streamed_run_ids: set[str],
 ) -> str:
     current = result
     for _ in range(16):
         if current.run.status == "completed":
-            if current.final_text:
+            if current.run.run_id in streamed_run_ids:
+                _finish_streamed_output(output_func)
+            elif current.final_text:
                 output_func(current.final_text)
             return current.session.session_id
         if current.run.status == "waiting_approval":
@@ -219,6 +246,20 @@ async def _handle_run_result(
 
     output_func("Run stopped: interactive resolution limit reached.")
     return current.session.session_id
+
+
+def _stream_output(text: str, output_func: OutputFunc) -> None:
+    if output_func is print:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return
+    output_func(text)
+
+
+def _finish_streamed_output(output_func: OutputFunc) -> None:
+    if output_func is print:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
 
 async def _resolve_approval(

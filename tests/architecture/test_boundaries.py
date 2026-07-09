@@ -9,7 +9,8 @@ FORBIDDEN_CORE_PREFIXES = (
     "ouro.application",
     "ouro.cli",
     "ouro.config",
-    "ouro.persistence",
+    "ouro.sessions",
+    "ouro.tools",
 )
 
 

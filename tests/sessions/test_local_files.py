@@ -1,11 +1,11 @@
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.persistence import LocalFileStore
+from ouro.sessions import LocalSessionStore
 
 
 def test_local_file_store_round_trip(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Local test", current_model="faux")
     run = RunRecord(session_id=session.session_id, status="completed", model="faux")
@@ -38,13 +38,13 @@ def test_local_file_store_round_trip(tmp_path) -> None:
 
 
 def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Indexed")
     store.create_session(session)
     (tmp_path / "sessions" / "index.json").write_text("{not-json", encoding="utf-8")
 
-    repaired = LocalFileStore(tmp_path)
+    repaired = LocalSessionStore(tmp_path)
     repaired.initialize()
     index = repaired.load_index()
 
@@ -52,14 +52,14 @@ def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
 
 
 def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Interrupted", status="running")
     run = RunRecord(session_id=session.session_id, status="running", model="faux")
     store.create_session(session)
     store.save_run(run)
 
-    recovered = LocalFileStore(tmp_path).load_session(session.session_id)
+    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
 
     assert recovered.session.status == "idle"
     assert recovered.session.metadata["recovered_incomplete_runs"] is True
@@ -68,7 +68,7 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
     assert recovered.events[-1].event_type == "run_status_changed"
     assert recovered.events[-1].payload["to_status"] == "recoverable"
 
-    reloaded = LocalFileStore(tmp_path).load_session(session.session_id)
+    reloaded = LocalSessionStore(tmp_path).load_session(session.session_id)
     recovery_events = [
         event for event in reloaded.events if event.payload.get("to_status") == "recoverable"
     ]
@@ -76,7 +76,7 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
 
 
 def test_local_file_store_lock_prevents_active_run_recovery(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Locked", status="running")
     run = RunRecord(session_id=session.session_id, status="running", model="faux")

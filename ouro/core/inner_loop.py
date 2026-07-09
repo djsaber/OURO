@@ -12,8 +12,8 @@ from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tools import ToolDefinition, ToolExecutionOutcome, ToolResult
 from ouro.providers import Usage
-from ouro.tools import ToolExecutionOutcome, ToolRegistry, ToolResult
 
 
 class EventEmitter(Protocol):
@@ -55,6 +55,10 @@ class ToolCallHandler(Protocol):
 
 class UsageRecorder(Protocol):
     def __call__(self, run: RunRecord, usage: Usage) -> RunRecord: ...
+
+
+class ToolDefinitionProvider(Protocol):
+    def definitions(self) -> list[ToolDefinition]: ...
 
 
 class RunCheckpointer(Protocol):
@@ -143,17 +147,19 @@ class InnerAgentLoop:
         self,
         *,
         adapter: RuntimeAdapter,
-        tools: ToolRegistry,
+        tools: ToolDefinitionProvider,
         hooks: HookRegistry,
         context_builder: ContextBuilder,
         max_model_rounds: int,
         ports: InnerLoopPorts,
+        system_prompt: str = "",
     ) -> None:
         self.adapter = adapter
         self.tools = tools
         self.hooks = hooks
         self.context_builder = context_builder
         self.max_model_rounds = max_model_rounds
+        self.system_prompt = system_prompt
         self.ports = ports
 
     async def run(
@@ -201,6 +207,7 @@ class InnerAgentLoop:
             context = self.context_builder.build(
                 messages=messages,
                 tools=self.tools.definitions(),
+                system_prompt=self.system_prompt,
                 added_context=added_context,
             )
 

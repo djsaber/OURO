@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.core.state import SessionRecord
-from ouro.persistence import SessionSnapshot, SessionStore
+from ouro.sessions.base import SessionSnapshot, SessionStore
 
 
 class SessionService:

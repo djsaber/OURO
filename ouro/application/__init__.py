@@ -3,8 +3,8 @@
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.followups import FollowUpQueue, QueuedFollowUp
 from ouro.application.runtime import RuntimeService
-from ouro.application.session import SessionService
 from ouro.core.results import RunResult
+from ouro.sessions import SessionService
 
 __all__ = [
     "FollowUpQueue",

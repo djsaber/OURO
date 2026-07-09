@@ -1,4 +1,4 @@
-# OURO Agent Phase 1 Implementation Plan
+﻿# OURO Agent Phase 1 Implementation Plan
 
 > For agentic workers: implement this plan task-by-task. Use checkbox (`- [ ]`) items for tracking. Do not skip verification steps. Keep implementation aligned with OURO specs, and keep OURO public concepts independent from any external agent framework.
 
@@ -15,13 +15,13 @@
 - `../specs/2026-07-07-plugins-mcp-skills.md`
 - `../specs/2026-07-07-interactive-print-json.md`
 
-**Architecture:** Build bottom-up: project scaffolding, domain models, config/credentials, provider abstraction, persistence, tools/approval, runtime and hooks, plugin framework, CLI modes, then integration tests.
+**Architecture:** Build bottom-up: project scaffolding, domain models, config/credentials, provider abstraction, session storage, tools/approval, runtime and hooks, plugin framework, CLI modes, then integration tests.
 
 **Tech Stack:** Python 3.12+, Pydantic v2, pytest, pytest-asyncio, ruff, mypy. First implementation uses asyncio-only core code and defers Rich/Textual and YAML parser until their first concrete consumers.
 
 **Implementation sync, 2026-07-08:**
 
-- Core domain models, local file persistence with recovery and session run locks, persistence protocol boundary, hooks, tool execution, dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, Interactive mode with HITL, suspended-run abort, framework-level ToolExecutionContext cancellation, cooperative active-run abort, active-run guard, queued follow-up input, process-level run locking, and Print / JSON CLI have working implementations.
+- Core domain models, local session file storage with recovery and session run locks, session storage protocol boundary, hooks, tool execution, dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, Interactive mode with HITL, suspended-run abort, framework-level ToolExecutionContext cancellation, cooperative active-run abort, active-run guard, queued follow-up input, process-level run locking, and Print / JSON CLI have working implementations.
 - Verification is green: `pytest` 74 passed, `ruff check`, `ruff format --check`, `mypy`, and `compileall`.
 - Phase 1 intentionally remains product-minimal: richer CLI/session management, true Desktop/TUI polish, full MCP protocol connection, resource management, SDK/RPC, subagents, memory, and browser automation move to later phases.
 
@@ -60,7 +60,7 @@ ouro/
 │   │   ├── base.py
 │   │   ├── faux.py
 │   │   └── openai_compatible.py
-│   ├── persistence/
+│   ├── sessions/
 │   │   ├── __init__.py
 │   │   ├── base.py
 │   │   └── local_files.py
@@ -94,7 +94,7 @@ ouro/
 └── tests/
     ├── core/
     ├── providers/
-    ├── persistence/
+    ├── sessions/
     ├── tools/
     ├── config/
     ├── plugins/
@@ -196,15 +196,15 @@ The exact structure can change during implementation, but module responsibilitie
 
 ---
 
-## Task 4: Local File Persistence
+## Task 4: Local Session Storage
 
 **Specs:** local persistence and events.
 
 **Files:**
 
-- Create: `ouro/ouro/persistence/base.py`
-- Create: `ouro/ouro/persistence/local_files.py`
-- Create tests under `ouro/tests/persistence/`
+- Create: `ouro/ouro/sessions/base.py`
+- Create: `ouro/ouro/sessions/local_files.py`
+- Create tests under `ouro/tests/sessions/`
 
 - [x] Implement data root resolution with `OURO_HOME` override.
 - [x] Implement session directory creation.
@@ -213,7 +213,7 @@ The exact structure can change during implementation, but module responsibilitie
 - [x] Append `events.jsonl`.
 - [x] Write `runs/<run_id>.json`.
 - [x] Maintain rebuildable `sessions/index.json`.
-- [x] Define a persistence protocol so Runtime does not depend directly on `LocalFileStore`.
+- [x] Define a session storage protocol so Runtime does not depend directly on `LocalSessionStore`.
 - [x] Implement initial resource index file.
 - [x] Implement load session snapshot.
 - [x] Implement recover incomplete run as recoverable or failed.

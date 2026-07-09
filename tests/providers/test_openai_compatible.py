@@ -37,6 +37,42 @@ class FakeTransport:
         return self.response
 
 
+class FakeStreamingTransport:
+    def __init__(self, chunks: list[dict[str, Any]]) -> None:
+        self.chunks = chunks
+        self.requests: list[dict[str, Any]] = []
+
+    async def post_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float,
+    ) -> dict[str, Any]:
+        del url, headers, payload, timeout
+        raise AssertionError("streaming transport should not use post_json")
+
+    async def stream_json(
+        self,
+        *,
+        url: str,
+        headers: dict[str, str],
+        payload: dict[str, Any],
+        timeout: float,
+    ):
+        self.requests.append(
+            {
+                "url": url,
+                "headers": headers,
+                "payload": payload,
+                "timeout": timeout,
+            }
+        )
+        for chunk in self.chunks:
+            yield chunk
+
+
 @pytest.mark.asyncio
 async def test_httpx_transport_posts_json() -> None:
     requests: list[httpx.Request] = []
@@ -57,6 +93,36 @@ async def test_httpx_transport_posts_json() -> None:
     assert result == {"ok": True}
     assert requests[0].headers["authorization"] == "Bearer secret"
     assert json.loads(requests[0].content) == {"model": "glm-test"}
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_streams_sse_json() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"he"}}]}\n\n'
+            'data: {"choices":[{"delta":{"content":"llo"}}]}\n\n'
+            "data: [DONE]\n\n",
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = HttpxOpenAICompatibleTransport(client)
+        chunks = [
+            chunk
+            async for chunk in transport.stream_json(
+                url="https://example.test/v1/chat/completions",
+                headers={"authorization": "Bearer secret"},
+                payload={"model": "glm-test", "stream": True},
+                timeout=12,
+            )
+        ]
+
+    assert [chunk["choices"][0]["delta"]["content"] for chunk in chunks] == ["he", "llo"]
+    assert requests[0].headers["accept"] == "text/event-stream"
+    assert json.loads(requests[0].content)["stream"] is True
 
 
 @pytest.mark.asyncio
@@ -110,6 +176,36 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
     assert transport.requests[0]["payload"]["messages"] == [
         {"role": "user", "content": "say hello"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_streams_text_chunks() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {"choices": [{"delta": {"content": "hel"}}]},
+            {"choices": [{"delta": {"content": "lo"}}]},
+            {"usage": {"prompt_tokens": 3, "completion_tokens": 2}, "choices": []},
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="say hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "text_delta", "done"]
+    assert [events[0].text, events[1].text] == ["hel", "lo"]
+    assert events[-1].usage is not None
+    assert events[-1].usage.input_tokens == 3
+    assert transport.requests[0]["payload"]["stream"] is True
 
 
 @pytest.mark.asyncio
@@ -175,6 +271,60 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {"name": "Read", "arguments": '{"path"'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "function": {"arguments": ': "README.md"}'},
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        ]
+    )
+    provider = OpenAICompatibleProvider(base_url="http://localhost:8000/v1", transport=transport)
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="local", provider_id="local"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["tool_call", "done"]
+    assert events[0].tool_call == {
+        "id": "call_1",
+        "name": "Read",
+        "arguments": {"path": "README.md"},
+    }
 
 
 @pytest.mark.asyncio

@@ -6,7 +6,7 @@ import pytest
 from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
-from ouro.persistence import LocalFileStore
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import (
     FauxProvider,
     ModelMetadata,
@@ -14,6 +14,7 @@ from ouro.providers import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.sessions import LocalSessionStore
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -119,7 +120,34 @@ class ExplodingProvider:
         )
 
 
-async def _wait_for_active_session(store: LocalFileStore):
+class CapturingProvider:
+    provider_id = "capture"
+
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        messages,
+        tools=None,
+    ):
+        del model, tools
+        self.messages = list(messages)
+        yield ProviderStreamEvent(type="text_delta", text="ok")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
+async def _wait_for_active_session(store: LocalSessionStore):
     for _ in range(100):
         sessions = store.list_sessions()
         if sessions and sessions[0].last_run_id:
@@ -128,7 +156,7 @@ async def _wait_for_active_session(store: LocalFileStore):
     raise AssertionError("active session was not created")
 
 
-async def _wait_for_event(store: LocalFileStore, session_id: str, event_type: str) -> None:
+async def _wait_for_event(store: LocalSessionStore, session_id: str, event_type: str) -> None:
     for _ in range(100):
         snapshot = store.load_session(session_id, recover=False)
         if any(event.event_type == event_type for event in snapshot.events):
@@ -138,7 +166,7 @@ async def _wait_for_event(store: LocalFileStore, session_id: str, event_type: st
 
 
 async def _wait_for_checkpoint(
-    store: LocalFileStore,
+    store: LocalSessionStore,
     session_id: str,
     expected_partial: str,
 ) -> None:
@@ -156,8 +184,43 @@ async def _wait_for_checkpoint(
 
 
 @pytest.mark.asyncio
+async def test_runtime_injects_default_system_prompt(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="capture", provider_id="capture")),
+        tools=_tools(),
+    )
+
+    await runtime.run("hello")
+
+    assert provider.messages[0].role == "system_synthetic"
+    assert provider.messages[0].text_content == DEFAULT_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_runtime_allows_system_prompt_override(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="capture", provider_id="capture")),
+        tools=_tools(),
+        system_prompt="Custom system prompt.",
+    )
+
+    await runtime.run("hello")
+
+    assert provider.messages[0].role == "system_synthetic"
+    assert provider.messages[0].text_content == "Custom system prompt."
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_text_run(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,
@@ -188,7 +251,7 @@ async def test_runtime_persists_text_run(tmp_path) -> None:
 async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     tmp_path,
 ) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,
@@ -215,7 +278,7 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
 
 @pytest.mark.asyncio
 async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = FauxProvider(
         [
@@ -252,12 +315,14 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
     await runtime.run("Use context")
 
     assert seen_messages[0].role == "system_synthetic"
-    assert seen_messages[0].text_content == "extra context"
+    assert seen_messages[0].text_content == DEFAULT_SYSTEM_PROMPT
+    assert seen_messages[1].role == "system_synthetic"
+    assert seen_messages[1].text_content == "extra context"
 
 
 @pytest.mark.asyncio
 async def test_runtime_fails_empty_model_completion(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,
@@ -279,7 +344,7 @@ async def test_runtime_fails_empty_model_completion(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "out.txt"
     runtime = RuntimeService(
@@ -314,7 +379,7 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "out.txt"
     runtime = RuntimeService(
@@ -351,7 +416,7 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
 
 @pytest.mark.asyncio
 async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = GateProvider()
     runtime = RuntimeService(
@@ -390,7 +455,7 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
 
 @pytest.mark.asyncio
 async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "notes.txt"
     target.write_text("important notes", encoding="utf-8")
@@ -440,7 +505,7 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_records_provider_usage(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,
@@ -467,7 +532,7 @@ async def test_runtime_records_provider_usage(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "approved.txt"
     runtime = RuntimeService(
@@ -522,7 +587,7 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_abort_waiting_approval_run(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "aborted.txt"
     runtime = RuntimeService(
@@ -564,7 +629,7 @@ async def test_runtime_abort_waiting_approval_run(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_can_continue_session_after_abort(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "aborted.txt"
     runtime = RuntimeService(
@@ -616,7 +681,7 @@ async def test_runtime_can_continue_session_after_abort(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = WaitingProvider()
     runtime = RuntimeService(
@@ -649,7 +714,7 @@ async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_recovery_materializes_inner_loop_checkpoint(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = WaitingProvider()
     runtime = RuntimeService(
@@ -682,7 +747,7 @@ async def test_runtime_recovery_materializes_inner_loop_checkpoint(tmp_path) -> 
 
 @pytest.mark.asyncio
 async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     command = f'"{sys.executable}" -c "import time; time.sleep(5); print(\'done\')"'
     runtime = RuntimeService(
@@ -737,7 +802,7 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     registry = _tools()
     started = asyncio.Event()
@@ -808,7 +873,7 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_runtime_approval_rejection_writes_tool_error(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "rejected.txt"
     runtime = RuntimeService(
@@ -858,7 +923,7 @@ async def test_runtime_approval_rejection_writes_tool_error(tmp_path) -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
         store=store,

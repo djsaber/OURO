@@ -1,10 +1,10 @@
 from ouro.application.followups import FOLLOW_UP_QUEUE_KEY, FollowUpQueue
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.persistence import LocalFileStore
+from ouro.sessions import LocalSessionStore
 
 
 def test_follow_up_queue_persists_items_fifo_and_clears_when_empty(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Follow ups")
     store.create_session(session)
@@ -36,7 +36,7 @@ def test_follow_up_queue_persists_items_fifo_and_clears_when_empty(tmp_path) -> 
 
 
 def test_follow_up_queue_removes_invalid_item_and_reports_no_prompt(tmp_path) -> None:
-    store = LocalFileStore(tmp_path)
+    store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Invalid follow up", metadata={FOLLOW_UP_QUEUE_KEY: [{}]})
     store.create_session(session)

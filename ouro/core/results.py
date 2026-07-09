@@ -5,7 +5,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.tools import ToolResult
+from ouro.core.tools import ToolResult
 
 
 class RunResult(OuroModel):

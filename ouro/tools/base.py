@@ -4,23 +4,34 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from inspect import Parameter, signature
-from typing import Any, Literal
 
 from pydantic import Field
 
-from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
-from ouro.core.state import ApprovalRecord
+from ouro.core.tools import (
+    PermissionMode,
+    ToolDefinition,
+    ToolExecutionOutcome,
+    ToolInvocation,
+    ToolOutcomeStatus,
+    ToolResult,
+    ToolSource,
+)
 
-PermissionMode = Literal["auto", "approval"]
-ToolSource = Literal[
-    "builtin",
-    "official_plugin",
-    "third_party_plugin",
-    "ai_generated_plugin",
-    "mcp",
+__all__ = [
+    "PermissionMode",
+    "Tool",
+    "ToolDefinition",
+    "ToolExecutionAborted",
+    "ToolExecutionContext",
+    "ToolExecutionOutcome",
+    "ToolInvocation",
+    "ToolOutcomeStatus",
+    "ToolProcessResult",
+    "ToolResult",
+    "ToolSource",
 ]
-ToolOutcomeStatus = Literal["completed", "approval_required", "waiting_user", "aborted"]
 
 
 class ToolExecutionAborted(Exception):
@@ -105,52 +116,6 @@ class ToolExecutionContext:
             timed_out=timed_out,
             aborted=aborted,
         )
-
-
-class ToolDefinition(OuroModel):
-    name: str
-    display_name: str | None = None
-    description: str
-    parameters_schema: dict[str, Any] = Field(default_factory=dict)
-    source: ToolSource = "builtin"
-    permission_mode: PermissionMode = "auto"
-    result_schema: dict[str, Any] = Field(default_factory=dict)
-    can_abort: bool = True
-    metadata: Metadata = MetadataField
-
-
-class ToolInvocation(OuroModel):
-    tool_call_id: str = Field(default_factory=lambda: new_id("tool"))
-    session_id: str
-    run_id: str
-    turn_id: str | None = None
-    tool_name: str
-    source: ToolSource = "builtin"
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    requested_at: object = Field(default_factory=utc_now)
-    permission_mode: PermissionMode = "auto"
-    approval_id: str | None = None
-
-
-class ToolResult(OuroModel):
-    tool_call_id: str
-    tool_name: str
-    is_error: bool = False
-    content: str = ""
-    structured: dict[str, Any] = Field(default_factory=dict)
-    resource_refs: list[str] = Field(default_factory=list)
-    started_at: object = Field(default_factory=utc_now)
-    ended_at: object | None = None
-    exit_code: int | None = None
-    metadata: Metadata = MetadataField
-
-
-class ToolExecutionOutcome(OuroModel):
-    status: ToolOutcomeStatus
-    invocation: ToolInvocation
-    result: ToolResult | None = None
-    approval: ApprovalRecord | None = None
-    question: str | None = None
 
 
 ToolHandler = Callable[..., ToolResult | Awaitable[ToolResult]]

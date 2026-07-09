@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ouro.application.events import RuntimeEventRecorder
+from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.followups import FollowUpQueue
-from ouro.application.session import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
@@ -15,8 +14,9 @@ from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.persistence import SessionSnapshot, SessionStore
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import Usage
+from ouro.sessions import SessionService, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutionOutcome, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
 
 _ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_user", "waiting_approval"}
@@ -32,6 +32,8 @@ class RuntimeService:
         hooks: HookRegistry | None = None,
         context_builder: ContextBuilder | None = None,
         max_model_rounds: int = 8,
+        system_prompt: str | None = None,
+        event_sink: RuntimeEventSink | None = None,
     ) -> None:
         self.store = store
         self.sessions = SessionService(store)
@@ -40,10 +42,18 @@ class RuntimeService:
         self.tools = tools
         self.tool_executor = ToolExecutor(tools)
         self.hooks = hooks or HookRegistry()
-        self.event_recorder = RuntimeEventRecorder(store=store, hooks=self.hooks)
+        self.event_recorder = RuntimeEventRecorder(
+            store=store,
+            hooks=self.hooks,
+            event_sink=event_sink,
+        )
         self.context_builder = context_builder or ContextBuilder()
         self.max_model_rounds = max_model_rounds
+        self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
         self._abort_signals: dict[str, AbortSignal] = {}
+
+    def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
+        self.event_recorder.add_event_sink(event_sink)
 
     async def run(
         self,
@@ -163,6 +173,7 @@ class RuntimeService:
             hooks=self.hooks,
             context_builder=self.context_builder,
             max_model_rounds=self.max_model_rounds,
+            system_prompt=self.system_prompt,
             ports=InnerLoopPorts(
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,

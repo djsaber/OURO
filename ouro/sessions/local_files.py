@@ -11,12 +11,12 @@ from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.persistence.base import SessionSnapshot
+from ouro.sessions.base import SessionSnapshot
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 
 
-class LocalFileStore:
+class LocalSessionStore:
     def __init__(self, root: str | Path | None = None) -> None:
         root_value = root if root is not None else os.environ.get("OURO_HOME")
         self.root = Path(root_value) if root_value is not None else Path.home() / ".ouro"

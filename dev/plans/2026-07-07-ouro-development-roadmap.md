@@ -1,4 +1,4 @@
-# OURO Agent 开发路线图
+﻿# OURO Agent 开发路线图
 
 > For agentic workers: use this roadmap as the top-level orientation. Implement from the phase plans, not directly from this roadmap. Track concrete execution with checkbox tasks in the phase plan documents.
 
@@ -18,7 +18,7 @@ The roadmap intentionally avoids implementing Desktop, SDK, RPC, subagents, brow
 ## Design Constraints
 
 - Keep OURO concepts stable and independent from any external agent framework.
-- Default persistence is local readable files.
+- Default session storage is local readable files.
 - Complete event streams are saved by default.
 - Permissions stay simple: tool auto/approval and plugin read-write/network.
 - Plugins integrate through OURO Runtime Hooks, not through lower-level framework hooks.
@@ -48,7 +48,7 @@ Exit criteria:
 
 ## Phase 1: Minimum Usable Core
 
-**Status:** Complete. Phase 1 now covers project scaffolding, core models, local file persistence with recovery, a persistence protocol boundary, hooks, tools, application/core dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, framework-level ToolExecutionContext for plugin tools, Interactive mode with HITL, suspended-run abort, cooperative active provider/tool cancellation, active-run guard, queued follow-up input, process-level session run locking, session continuation, and Print / JSON CLI.
+**Status:** Complete. Phase 1 now covers project scaffolding, core models, local session file storage with recovery, a session storage protocol boundary, hooks, tools, application/core dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, framework-level ToolExecutionContext for plugin tools, Interactive mode with HITL, suspended-run abort, cooperative active provider/tool cancellation, active-run guard, queued follow-up input, process-level session run locking, session continuation, and Print / JSON CLI.
 
 **Primary objective:** OURO can run locally from terminal, call a model, use tools with approval, persist sessions and events, and expose JSON output for scripts.
 
@@ -76,7 +76,7 @@ Core deliverables:
 - Context builder with built-in session truncation.
 - Provider abstraction and at least one real provider path.
 - Test provider for deterministic tests.
-- Local file persistence backend.
+- Local session file storage backend.
 - Tool registry and execution engine.
 - Plugin loader with tool, hook, command, and context-provider registration.
 - MCP configuration and lifecycle framework.
@@ -90,7 +90,7 @@ Exit criteria:
 - A user can run `ouro run --json "..."` and get machine-readable output.
 - A failed or aborted run is visible and recoverable enough for the user to continue.
 - Events include session_id, run_id, sequence, event_type, timestamp, payload.
-- Tests cover provider, runtime, tools, persistence, hooks, and CLI modes.
+- Tests cover provider, runtime, tools, session storage, hooks, and CLI modes.
 
 Primary plan:
 
@@ -147,7 +147,7 @@ Exit criteria:
 
 - SDK/RPC do not fork runtime behavior.
 - Subagents are implemented as official plugin capability.
-- Optional persistence backends satisfy the same persistence contract.
+- Optional storage backends satisfy the same session storage contract.
 - Advanced tools can be disabled without breaking core operation.
 
 ---
@@ -156,7 +156,7 @@ Exit criteria:
 
 1. Self-built runtime boundaries drifting
 
-   Mitigation: all upper layers depend on OURO RuntimeAdapter and OURO data models only; provider, tool, persistence, and hook boundaries stay explicit.
+   Mitigation: all upper layers depend on OURO RuntimeAdapter and OURO data models only; provider, tool, session storage, and hook boundaries stay explicit.
 
 2. Event schema instability
 
@@ -166,7 +166,7 @@ Exit criteria:
 
    Mitigation: hook inputs are controlled views and hook outputs are structured merge requests.
 
-4. Local file persistence corruption
+4. Local session file storage corruption
 
    Mitigation: JSONL append for messages/events, atomic replace for state files, rebuildable indexes.
 
