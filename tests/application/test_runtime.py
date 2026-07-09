@@ -5,6 +5,7 @@ import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.context import ContextBuilder
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import (
@@ -15,6 +16,7 @@ from ouro.providers import (
     Usage,
 )
 from ouro.sessions import LocalSessionStore
+from ouro.skills import SkillMetadata
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -318,6 +320,52 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
     assert seen_messages[0].text_content == DEFAULT_SYSTEM_PROMPT
     assert seen_messages[1].role == "system_synthetic"
     assert seen_messages[1].text_content == "extra context"
+
+
+@pytest.mark.asyncio
+async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    context_builder = ContextBuilder(
+        available_skills=[
+            SkillMetadata(
+                skill_id="pdf",
+                name="PDF",
+                description="Extract text from PDFs.",
+                path=str(tmp_path / "skills" / "pdf"),
+            )
+        ]
+    )
+    hooks = HookRegistry()
+    hooks.register(
+        HookRegistration(
+            plugin_id="ctx",
+            hook_name="after_context_build",
+            source="official",
+            handler=lambda context: HookResult(added_context=["plugin context"]),
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+        hooks=hooks,
+        context_builder=context_builder,
+    )
+
+    await runtime.run("Use context")
+
+    synthetic_messages = [
+        message.text_content for message in provider.messages if message.role == "system_synthetic"
+    ]
+    assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
+    assert "<skills_instructions>" in synthetic_messages[1]
+    assert '"pdf": Extract text from PDFs.' in synthetic_messages[1]
+    assert synthetic_messages[2] == "plugin context"
 
 
 @pytest.mark.asyncio

@@ -8,14 +8,18 @@ from ouro.cli.interactive import run_interactive
 from ouro.cli.run import (
     RuntimeProviderOptions,
     check_provider_connection,
+    clear_system_prompt_config,
     list_provider_configs,
     remove_provider_config,
     run_json,
     run_print,
     set_provider_config,
+    set_system_prompt_config,
     show_provider_config,
+    show_system_prompt_config,
     use_provider_config,
 )
+from ouro.cli.skills import list_skills, show_skill, show_skill_roots, show_skills_prompt
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -46,6 +50,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     check_parser.add_argument("--home", dest="check_home", help="Override OURO_HOME")
     check_parser.add_argument("--json", dest="check_json", action="store_true", help="Print JSON")
     _add_provider_args(check_parser, prefix="check_")
+
+    prompt_parser = config_subparsers.add_parser("prompt", help="Inspect or set prompts")
+    prompt_parser.add_argument("--home", dest="prompt_home", help="Override OURO_HOME")
+    prompt_parser.add_argument("--json", dest="prompt_json", action="store_true", help="Print JSON")
+    prompt_mode = prompt_parser.add_mutually_exclusive_group()
+    prompt_mode.add_argument(
+        "--set",
+        dest="prompt_value",
+        help="Persist a system prompt override",
+    )
+    prompt_mode.add_argument(
+        "--clear",
+        dest="prompt_clear",
+        action="store_true",
+        help="Clear the persisted system prompt override",
+    )
 
     provider_parser = subparsers.add_parser("provider", help="Manage providers")
     provider_subparsers = provider_parser.add_subparsers(
@@ -108,6 +128,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     provider_check_parser.add_argument("--json", action="store_true", help="Print JSON")
     _add_provider_args(provider_check_parser, prefix="provider_check_")
 
+    skills_parser = subparsers.add_parser("skills", help="Inspect Agent Skills")
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command", required=True)
+
+    skills_list_parser = skills_subparsers.add_parser("list", help="List available skills")
+    skills_list_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_list_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_show_parser = skills_subparsers.add_parser("show", help="Show a skill")
+    skills_show_parser.add_argument("skill_id", help="Skill id")
+    skills_show_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_show_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_roots_parser = skills_subparsers.add_parser("roots", help="Show skill search roots")
+    skills_roots_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_roots_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_prompt_parser = skills_subparsers.add_parser(
+        "prompt",
+        help="Preview injected skills prompt",
+    )
+    skills_prompt_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_prompt_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     args = parser.parse_args(argv)
     if args.command == "run":
         prompt = " ".join(args.prompt)
@@ -146,6 +189,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 json_mode=args.check_json,
             )
         )
+
+    if args.command == "config" and args.config_command == "prompt":
+        home = args.prompt_home or args.home
+        if args.prompt_value is not None:
+            return set_system_prompt_config(
+                args.prompt_value,
+                home=home,
+                json_mode=args.prompt_json,
+            )
+        if args.prompt_clear:
+            return clear_system_prompt_config(home=home, json_mode=args.prompt_json)
+        return show_system_prompt_config(home=home, json_mode=args.prompt_json)
 
     if args.command == "provider":
         home = getattr(args, "provider_home", None) or args.home
@@ -192,6 +247,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     json_mode=args.json,
                 )
             )
+
+    if args.command == "skills":
+        home = getattr(args, "skills_home", None) or args.home
+        if args.skills_command == "list":
+            return list_skills(home=home, json_mode=args.json)
+        if args.skills_command == "show":
+            return show_skill(args.skill_id, home=home, json_mode=args.json)
+        if args.skills_command == "roots":
+            return show_skill_roots(home=home, json_mode=args.json)
+        if args.skills_command == "prompt":
+            return show_skills_prompt(home=home, json_mode=args.json)
 
     return asyncio.run(
         run_interactive(

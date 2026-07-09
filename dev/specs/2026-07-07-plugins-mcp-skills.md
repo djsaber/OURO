@@ -129,7 +129,7 @@ permissions：
 
 第一阶段建议优先实现：
 
-- after_context_build：用于摘要压缩、长期记忆上下文注入、技能上下文注入。
+- after_context_build：用于摘要压缩、长期记忆上下文注入等插件上下文扩展。Agent Skills 是 OURO 原生能力，由 ContextBuilder 直接注入，不通过 Runtime Hook 注入。
 - before_tool_call：用于工具调用观察、附加审批提示。
 - after_tool_call：用于工具结果观察和诊断记录。
 - on_event：用于调试、日志、回放增强。

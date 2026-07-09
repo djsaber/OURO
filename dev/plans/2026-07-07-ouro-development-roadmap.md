@@ -48,7 +48,7 @@ Exit criteria:
 
 ## Phase 1: Minimum Usable Core
 
-**Status:** Complete. Phase 1 now covers project scaffolding, core models, local session file storage with recovery, a session storage protocol boundary, hooks, tools, application/core dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, framework-level ToolExecutionContext for plugin tools, Interactive mode with HITL, suspended-run abort, cooperative active provider/tool cancellation, active-run guard, queued follow-up input, process-level session run locking, session continuation, and Print / JSON CLI.
+**Status:** Complete. Phase 1 now covers project scaffolding, core models, local session file storage with recovery, a session storage protocol boundary, hooks, tools, application/core dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider streaming, multi-provider local configuration, persisted system prompt configuration, provider/prompt/Skills management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, native Skills context injection, framework-level ToolExecutionContext for plugin tools, Interactive mode with HITL and streaming text, suspended-run abort, cooperative active provider/tool cancellation, active-run guard, queued follow-up input, process-level session run locking, session continuation, and Print / JSON CLI.
 
 **Primary objective:** OURO can run locally from terminal, call a model, use tools with approval, persist sessions and events, and expose JSON output for scripts.
 
@@ -61,7 +61,9 @@ User-facing deliverables:
 - Basic session list with title, status, updated time, model, workspace.
 - Basic model configuration and connection check.
 - Local multi-provider configuration file with CLI overrides.
+- Persisted system prompt configuration with CLI management.
 - Provider CLI for list, show, set, use, remove, and check.
+- Skills CLI for list, show, roots, and injected prompt preview.
 - Read / Write / Edit / Bash / AskUser tools.
 - Tool approval, rejection, parameter modification, cancellation.
 - Assistant tool-call history preserved before tool results.
@@ -80,7 +82,7 @@ Core deliverables:
 - Tool registry and execution engine.
 - Plugin loader with tool, hook, command, and context-provider registration.
 - MCP configuration and lifecycle framework.
-- Skills metadata loader.
+- Skills metadata loader and automatic ContextBuilder-native available-skills context injection.
 - OURO self-built RuntimeAdapter and provider boundary.
 
 Exit criteria:
@@ -90,7 +92,7 @@ Exit criteria:
 - A user can run `ouro run --json "..."` and get machine-readable output.
 - A failed or aborted run is visible and recoverable enough for the user to continue.
 - Events include session_id, run_id, sequence, event_type, timestamp, payload.
-- Tests cover provider, runtime, tools, session storage, hooks, and CLI modes.
+- Tests cover provider, runtime, tools, session storage, hooks, ContextBuilder-native Skills context injection, prompt configuration, and CLI modes.
 
 Primary plan:
 

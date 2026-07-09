@@ -28,8 +28,9 @@ class LoadedSkill(OuroModel):
 
 
 class SkillLoader:
-    def __init__(self, root: str | Path) -> None:
+    def __init__(self, root: str | Path, *, default_source: SkillSource = "user") -> None:
         self.root = Path(root)
+        self.default_source = default_source
         self._metadata: dict[str, SkillMetadata] = {}
 
     def load_metadata(self) -> list[SkillMetadata]:
@@ -41,6 +42,7 @@ class SkillLoader:
             metadata = SkillMetadata.model_validate(
                 {
                     **raw,
+                    "source": raw.get("source") or self.default_source,
                     "path": str(manifest.parent),
                 }
             )

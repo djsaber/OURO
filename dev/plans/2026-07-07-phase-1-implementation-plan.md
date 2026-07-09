@@ -21,7 +21,7 @@
 
 **Implementation sync, 2026-07-08:**
 
-- Core domain models, local session file storage with recovery and session run locks, session storage protocol boundary, hooks, tool execution, dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider with multi-provider local configuration, provider management CLI, provider connection-check command, plugin/MCP/Skills framework boundaries, Interactive mode with HITL, suspended-run abort, framework-level ToolExecutionContext cancellation, cooperative active-run abort, active-run guard, queued follow-up input, process-level run locking, and Print / JSON CLI have working implementations.
+- Core domain models, local session file storage with recovery and session run locks, session storage protocol boundary, hooks, tool execution, dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider streaming, multi-provider local configuration, persisted system prompt configuration, provider/prompt/Skills management CLI, plugin/MCP/Skills framework boundaries, native Skills context injection, Interactive mode with HITL and streaming text, suspended-run abort, framework-level ToolExecutionContext cancellation, cooperative active-run abort, active-run guard, queued follow-up input, process-level run locking, and Print / JSON CLI have working implementations.
 - Verification is green: `pytest` 74 passed, `ruff check`, `ruff format --check`, `mypy`, and `compileall`.
 - Phase 1 intentionally remains product-minimal: richer CLI/session management, true Desktop/TUI polish, full MCP protocol connection, resource management, SDK/RPC, subagents, memory, and browser automation move to later phases.
 
@@ -180,6 +180,7 @@ The exact structure can change during implementation, but module responsibilitie
 - [x] Define Model metadata.
 - [x] Implement FauxProvider for deterministic tests.
 - [x] Implement OpenAI-compatible Provider first-pass path.
+- [x] Implement OpenAI-compatible Provider SSE streaming path.
 - [x] Wire Faux and OpenAI-compatible Provider options into CLI runtime construction.
 - [x] Load provider configuration from `OURO_HOME/config/config.json`, with CLI arguments as overrides.
 - [x] Implement multi-provider config management with default provider selection and legacy single-provider config compatibility.
@@ -361,6 +362,7 @@ The exact structure can change during implementation, but module responsibilitie
 - [x] Implement MCP lifecycle state machine framework.
 - [x] Register MCP tools into ToolRegistry in tests using MCP manager.
 - [x] Implement Skills metadata loader.
+- [x] Inject available Skills metadata through ContextBuilder's native Skills context.
 - [x] Load full skill content only on explicit request.
 
 **Acceptance:**
@@ -368,7 +370,7 @@ The exact structure can change during implementation, but module responsibilitie
 - A fake official plugin can register a tool and hook.
 - A failed plugin does not prevent startup.
 - A fake MCP server config can move through configured -> starting -> connected -> stopped.
-- Skill metadata loads without injecting full content.
+- Skill metadata loads and available Skills are injected without injecting full content.
 
 ---
 
@@ -387,7 +389,9 @@ The exact structure can change during implementation, but module responsibilitie
 - [x] Implement `ouro run --print`.
 - [x] Implement `ouro run --json`.
 - [x] Implement `ouro config check`.
+- [x] Implement `ouro config prompt` for persisted system prompt overrides.
 - [x] Implement `ouro provider list/show/set/use/remove/check`.
+- [x] Implement `ouro skills list/show/roots/prompt`.
 - [x] Implement session selection flag.
 - [x] Implement non-interactive approval failure behavior.
 - [x] Implement Interactive approval handling: approve, reject, and modify tool arguments.
@@ -480,7 +484,7 @@ The exact structure can change during implementation, but module responsibilitie
 
 1. Resolved: start with plain stdin/stdout Interactive, keep Rich/Textual as a later UX upgrade.
 2. Use PyYAML or ruamel.yaml for YAML.
-3. Resolved: wire FauxProvider first, then add OpenAI-compatible Provider after runtime is green. Current Provider uses non-streaming chat completions first; SSE streaming can extend the same boundary later.
+3. Resolved: wire FauxProvider first, then add OpenAI-compatible Provider after runtime is green. Current Provider supports OpenAI-compatible SSE streaming while preserving the same boundary for non-streaming transports in tests.
 4. Resolved: support env references and inline local credential placeholders, with redacted display.
 5. Resolved: first-phase Edit uses conservative exact replace.
 6. Resolved: first-phase JSON mode emits final JSON with events; JSONL event stream can be added later.

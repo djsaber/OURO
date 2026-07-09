@@ -11,8 +11,10 @@ Current first-phase runtime includes:
 - Session continuation with `ouro run --session <session_id> ...`.
 - FauxProvider for deterministic local development.
 - First-pass OpenAI-compatible Provider boundary and CLI configuration.
-- Local provider configuration from `config/config.json`, with multiple provider entries and CLI overrides.
+- Local provider and prompt configuration from `config/config.json`, with CLI overrides.
 - Provider management CLI for list, show, set, use, remove, and connection checks.
+- System prompt persistence through `ouro config prompt --set ...`.
+- Skills CLI for listing available skills, showing full skill content, viewing search roots, and previewing the injected skills prompt.
 - Interrupted local runs can be recovered as `recoverable`; corrupt session indexes are rebuilt.
 - Multi-round runtime loop: tool results are fed back into the model until a final assistant response or suspend state.
 - Dual-layer loop boundary: application `RuntimeService` owns the outer session/run lifecycle, locks, aborts, and follow-up queue; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
@@ -26,7 +28,9 @@ Current first-phase runtime includes:
 - Interactive approval flow for approve, reject, modify arguments, AskUser answers, and aborting suspended HITL runs.
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
-- Runtime Hooks with context injection and failure events, plugin metadata, plugin command/context-provider registration, MCP lifecycle framework, and Skills metadata loading.
+- Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
+- Native Agent Skills context injection through `ContextBuilder`.
+- Agent Skills are discovered from `OURO_HOME/skills`, `./skills`, and `./.ouro/skills`.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 
 Development commands:
@@ -47,10 +51,15 @@ python -m ouro.cli.main run --print --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "continue"
 python -m ouro.cli.main config check --home ./.ouro-dev
+python -m ouro.cli.main config prompt --home ./.ouro-dev --set "Custom system prompt"
 python -m ouro.cli.main provider list --home ./.ouro-dev
 python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --model <model> --base-url <url> --api-key-env <ENV_NAME> --default
 python -m ouro.cli.main provider show glm --home ./.ouro-dev
 python -m ouro.cli.main provider check glm --home ./.ouro-dev
+python -m ouro.cli.main skills list --home ./.ouro-dev
+python -m ouro.cli.main skills show pdf --home ./.ouro-dev
+python -m ouro.cli.main skills roots --home ./.ouro-dev
+python -m ouro.cli.main skills prompt --home ./.ouro-dev
 python -m ouro.cli.main run --json --provider openai-compatible --base-url <url> --model <model> --api-key-env <ENV_NAME> "hello"
 ```
 
@@ -58,6 +67,9 @@ Example local config:
 
 ```json
 {
+  "prompts": {
+    "system": "Custom system prompt"
+  },
   "providers": {
     "default": "glm",
     "items": {

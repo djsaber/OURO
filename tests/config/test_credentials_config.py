@@ -6,10 +6,12 @@ from ouro.config import (
     ConfigService,
     CredentialRef,
     CredentialResolver,
+    PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
 )
 from ouro.core.errors import ConfigError, CredentialError
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 
 
 def test_credential_ref_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -75,6 +77,25 @@ def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:
     assert options.credential_ref is not None
     assert options.credential_ref.display() == "env:OURO_TEST_KEY"
     assert options.timeout == 7
+
+
+def test_prompt_config_manager_persists_system_prompt(tmp_path) -> None:
+    manager = PromptConfigManager(tmp_path)
+
+    assert manager.resolve_system_prompt() == DEFAULT_SYSTEM_PROMPT
+
+    saved = manager.set_system_prompt("Custom prompt.")
+
+    assert saved.system_prompt == "Custom prompt."
+    assert manager.resolve_system_prompt() == "Custom prompt."
+    assert json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))[
+        "prompts"
+    ] == {"system": "Custom prompt."}
+
+    cleared = manager.clear_system_prompt()
+
+    assert cleared.system_prompt is None
+    assert manager.resolve_system_prompt() == DEFAULT_SYSTEM_PROMPT
 
 
 def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> None:

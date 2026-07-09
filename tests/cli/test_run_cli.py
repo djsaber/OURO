@@ -5,6 +5,7 @@ from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_print
 from ouro.core.adapter import RuntimeAdapter
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import (
     FauxProvider,
     ModelMetadata,
@@ -13,6 +14,19 @@ from ouro.providers import (
 )
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+
+
+class CapturingProvider:
+    provider_id = "capture"
+
+    def __init__(self) -> None:
+        self.messages = []
+
+    async def stream(self, *, model, messages, tools=None):
+        del model, tools
+        self.messages = list(messages)
+        yield ProviderStreamEvent(type="text_delta", text="ok")
+        yield ProviderStreamEvent(type="done")
 
 
 def _runtime(tmp_path, event_batches) -> RuntimeService:
@@ -408,6 +422,123 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
     assert provider.timeout == 9.0
 
 
+def test_config_prompt_command_persists_system_prompt(tmp_path, capsys) -> None:
+    set_code = main(
+        [
+            "config",
+            "prompt",
+            "--home",
+            str(tmp_path),
+            "--set",
+            "Custom prompt.",
+            "--json",
+        ]
+    )
+    set_payload = json.loads(capsys.readouterr().out)
+
+    assert set_code == 0
+    assert set_payload["configured"] is True
+    assert set_payload["system_prompt"] == "Custom prompt."
+    assert build_default_runtime(tmp_path).system_prompt == "Custom prompt."
+
+    show_code = main(["config", "prompt", "--home", str(tmp_path), "--json"])
+    show_payload = json.loads(capsys.readouterr().out)
+
+    assert show_code == 0
+    assert show_payload["effective_system_prompt"] == "Custom prompt."
+
+    clear_code = main(["config", "prompt", "--home", str(tmp_path), "--clear", "--json"])
+    clear_payload = json.loads(capsys.readouterr().out)
+
+    assert clear_code == 0
+    assert clear_payload["configured"] is False
+    assert build_default_runtime(tmp_path).system_prompt == DEFAULT_SYSTEM_PROMPT
+
+
+async def test_build_runtime_injects_available_skills_from_home_and_workspace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_skill(home / "skills" / "pdf", "pdf", "PDF", "Extract text from PDFs.")
+    _write_skill(workspace / "skills" / "xlsx", "xlsx", "XLSX", "Process spreadsheets.")
+    monkeypatch.chdir(workspace)
+    provider = CapturingProvider()
+
+    def fake_adapter(_options):
+        return RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        )
+
+    monkeypatch.setattr("ouro.cli.run._build_adapter", fake_adapter)
+    runtime = build_default_runtime(home)
+
+    assert runtime.hooks.registered("after_context_build") == []
+
+    await runtime.run("help me with files")
+
+    synthetic_messages = [
+        message.text_content for message in provider.messages if message.role == "system_synthetic"
+    ]
+    assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
+    assert any("<skills_instructions>" in text for text in synthetic_messages)
+    assert any('"pdf": Extract text from PDFs.' in text for text in synthetic_messages)
+    assert any('"xlsx": Process spreadsheets.' in text for text in synthetic_messages)
+
+
+def test_skills_commands_list_show_roots_and_prompt(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_skill(home / "skills" / "pdf", "pdf", "PDF", "Extract text from PDFs.")
+    _write_skill(workspace / "skills" / "xlsx", "xlsx", "XLSX", "Process spreadsheets.")
+    monkeypatch.chdir(workspace)
+
+    list_code = main(["skills", "list", "--home", str(home), "--json"])
+    list_payload = json.loads(capsys.readouterr().out)
+
+    assert list_code == 0
+    assert [skill["skill_id"] for skill in list_payload["skills"]] == ["pdf", "xlsx"]
+    assert {root["source"] for root in list_payload["roots"]} == {"user", "workspace"}
+
+    show_code = main(["skills", "show", "xlsx", "--home", str(home), "--json"])
+    show_payload = json.loads(capsys.readouterr().out)
+
+    assert show_code == 0
+    assert show_payload["skill"]["skill_id"] == "xlsx"
+    assert show_payload["skill"]["content"] == "XLSX instructions."
+
+    roots_code = main(["skills", "roots", "--home", str(home), "--json"])
+    roots_payload = json.loads(capsys.readouterr().out)
+
+    assert roots_code == 0
+    assert roots_payload["roots"][0]["path"] == str((home / "skills").resolve())
+
+    prompt_code = main(["skills", "prompt", "--home", str(home), "--json"])
+    prompt_payload = json.loads(capsys.readouterr().out)
+
+    assert prompt_code == 0
+    assert prompt_payload["skill_count"] == 2
+    assert '"pdf": Extract text from PDFs.' in prompt_payload["prompt"]
+    assert '"xlsx": Process spreadsheets.' in prompt_payload["prompt"]
+
+
+def test_skills_show_reports_missing_skill(tmp_path, capsys) -> None:
+    code = main(["skills", "show", "missing", "--home", str(tmp_path), "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 1
+    assert payload["status"] == "failed"
+    assert payload["error"] == "skill not found: missing"
+
+
 def test_run_json_reports_provider_config_error(tmp_path, capsys) -> None:
     code = main(
         [
@@ -572,3 +703,18 @@ def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:
 
     assert remove_code == 0
     assert remove_payload["default"] == "faux"
+
+
+def _write_skill(root, skill_id: str, name: str, description: str) -> None:
+    root.mkdir(parents=True)
+    (root / "skill.json").write_text(
+        json.dumps(
+            {
+                "skill_id": skill_id,
+                "name": name,
+                "description": description,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (root / "SKILL.md").write_text(f"{name} instructions.", encoding="utf-8")

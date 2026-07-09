@@ -1,6 +1,11 @@
 """Configuration and credential helpers."""
 
 from ouro.config.credentials import CredentialRef, CredentialResolver
+from ouro.config.prompts import (
+    PromptConfigManager,
+    PromptConfigSnapshot,
+    prompt_config_to_public_dict,
+)
 from ouro.config.providers import (
     ProviderConfig,
     ProviderConfigManager,
@@ -20,5 +25,8 @@ __all__ = [
     "ProviderConfigSnapshot",
     "ProviderKind",
     "ProviderRuntimeOptions",
+    "PromptConfigManager",
+    "PromptConfigSnapshot",
     "provider_config_to_public_dict",
+    "prompt_config_to_public_dict",
 ]

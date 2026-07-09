@@ -7,16 +7,20 @@ from pathlib import Path
 from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
 from ouro.config import (
+    PromptConfigManager,
     ProviderConfigManager,
     ProviderKind,
     ProviderRuntimeOptions,
+    prompt_config_to_public_dict,
     provider_config_to_public_dict,
 )
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.context import ContextBuilder
 from ouro.core.errors import ConfigError, CredentialError, OuroError
 from ouro.providers import FauxProvider, ModelMetadata, OpenAICompatibleProvider
 from ouro.sessions import LocalSessionStore
+from ouro.skills import discover_available_skills
 from ouro.tools import ToolRegistry, builtin_tools
 
 RuntimeProviderOptions = ProviderRuntimeOptions
@@ -38,11 +42,16 @@ def build_default_runtime(
         provider_options or RuntimeProviderOptions(),
     )
     adapter = _build_adapter(resolved_options)
+    context_builder = ContextBuilder(
+        available_skills=discover_available_skills(home=store.root),
+    )
+    resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
     return RuntimeService(
         store=store,
         adapter=adapter,
         tools=registry,
-        system_prompt=system_prompt,
+        context_builder=context_builder,
+        system_prompt=resolved_system_prompt,
         event_sink=event_sink,
     )
 
@@ -214,6 +223,103 @@ def list_provider_configs(
             f"{marker} {provider['provider_id']} {provider['kind']} model={model} {enabled}"
         )
     print("\n".join(lines))
+    return 0
+
+
+def show_system_prompt_config(
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = PromptConfigManager(home)
+        snapshot = manager.snapshot()
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return _error_exit_code(exc)
+
+    public = prompt_config_to_public_dict(snapshot)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(snapshot.config_path),
+                    **public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    configured = "yes" if public["configured"] else "no"
+    print(
+        "\n".join(
+            [
+                f"System prompt configured: {configured}",
+                f"Config: {snapshot.config_path}",
+                "System prompt:",
+                public["effective_system_prompt"],
+            ]
+        )
+    )
+    return 0
+
+
+def set_system_prompt_config(
+    prompt: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = PromptConfigManager(home)
+        snapshot = manager.set_system_prompt(prompt)
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return _error_exit_code(exc)
+
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(snapshot.config_path),
+                    **prompt_config_to_public_dict(snapshot),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(f"System prompt saved: {snapshot.config_path}")
+    return 0
+
+
+def clear_system_prompt_config(
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = PromptConfigManager(home)
+        snapshot = manager.clear_system_prompt()
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return _error_exit_code(exc)
+
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(snapshot.config_path),
+                    **prompt_config_to_public_dict(snapshot),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(f"System prompt cleared: {snapshot.config_path}")
     return 0
 
 
