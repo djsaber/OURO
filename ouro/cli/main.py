@@ -4,9 +4,15 @@ import argparse
 import asyncio
 from collections.abc import Sequence
 
+from ouro.cli.approval_commands import (
+    abort_run_command,
+    approve_tool_command,
+    reject_tool_command,
+)
 from ouro.cli.config_commands import (
     clear_system_prompt_config,
     set_system_prompt_config,
+    show_permissions_config,
     show_system_prompt_config,
 )
 from ouro.cli.interactive import run_interactive
@@ -29,6 +35,14 @@ from ouro.cli.run import (
     run_json,
     run_print,
 )
+from ouro.cli.session_commands import (
+    export_session,
+    list_session_events,
+    list_session_messages,
+    list_sessions,
+    remove_session,
+    show_session,
+)
 from ouro.cli.skills import (
     install_skills,
     list_skills,
@@ -46,6 +60,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "run":
         return _run_command(args)
+    if args.command == "session":
+        return _session_command(args)
+    if args.command in {"approve", "reject", "abort"}:
+        return _approval_command(args)
     if args.command == "config":
         return _config_command(args)
     if args.command == "provider":
@@ -55,7 +73,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     return asyncio.run(
         run_interactive(
             home=args.home,
-            provider_options=_provider_options(args),
             system_prompt=args.system_prompt,
         )
     )
@@ -81,30 +98,103 @@ def _run_command(args: argparse.Namespace) -> int:
     )
 
 
+def _session_command(args: argparse.Namespace) -> int:
+    home = args.home
+    command = args.session_command
+    if command == "list":
+        return list_sessions(home=home, json_mode=args.json)
+    if command == "show":
+        return show_session(args.session_id, home=home, json_mode=args.json)
+    if command == "remove":
+        return remove_session(args.session_id, home=home, force=args.force, json_mode=args.json)
+    if command == "export":
+        return export_session(
+            args.session_id,
+            home=home,
+            output_path=args.output,
+            json_mode=args.json,
+        )
+    if command == "messages":
+        return list_session_messages(args.session_id, home=home, json_mode=args.json)
+    if command == "events":
+        return list_session_events(
+            args.session_id,
+            home=home,
+            run_id=args.run_id,
+            json_mode=args.json,
+        )
+    raise AssertionError(f"unknown session command: {command}")
+
+
+def _approval_command(args: argparse.Namespace) -> int:
+    home = args.home
+    if args.command == "approve":
+        return asyncio.run(
+            approve_tool_command(
+                args.session_id,
+                home=home,
+                run_id=args.run_id,
+                arguments_override=args.modify,
+                json_mode=args.json,
+            )
+        )
+    if args.command == "reject":
+        return asyncio.run(
+            reject_tool_command(
+                args.session_id,
+                home=home,
+                run_id=args.run_id,
+                reason=args.reason,
+                json_mode=args.json,
+            )
+        )
+    if args.command == "abort":
+        return asyncio.run(
+            abort_run_command(
+                args.session_id,
+                home=home,
+                run_id=args.run_id,
+                reason=args.reason,
+                json_mode=args.json,
+            )
+        )
+    raise AssertionError(f"unknown approval command: {args.command}")
+
+
 def _config_command(args: argparse.Namespace) -> int:
+    home = args.home
     if args.config_command == "check":
         return asyncio.run(
             check_provider_connection(
-                home=args.check_home or args.home,
-                provider_options=_provider_options(args, prefix="check_"),
+                home=home,
                 json_mode=args.check_json,
             )
         )
 
-    home = args.prompt_home or args.home
-    if args.prompt_value is not None:
-        return set_system_prompt_config(
-            args.prompt_value,
+    if args.config_command == "prompt":
+        if args.prompt_value is not None:
+            return set_system_prompt_config(
+                args.prompt_value,
+                home=home,
+                json_mode=args.prompt_json,
+            )
+        if args.prompt_clear:
+            return clear_system_prompt_config(home=home, json_mode=args.prompt_json)
+        return show_system_prompt_config(home=home, json_mode=args.prompt_json)
+
+    if args.config_command == "permissions":
+        return show_permissions_config(
             home=home,
-            json_mode=args.prompt_json,
+            tool_name=args.tool,
+            mode=args.mode,
+            json_mode=args.json,
         )
-    if args.prompt_clear:
-        return clear_system_prompt_config(home=home, json_mode=args.prompt_json)
-    return show_system_prompt_config(home=home, json_mode=args.prompt_json)
+
+    raise AssertionError(f"unknown config command: {args.config_command}")
 
 
 def _provider_command(args: argparse.Namespace) -> int:
-    home = args.provider_home or args.home
+    home = args.home
     if args.provider_command == "endpoint":
         return _provider_endpoint_command(args, home=home)
     if args.provider_command == "list":
@@ -116,8 +206,6 @@ def _provider_command(args: argparse.Namespace) -> int:
             args.provider_id,
             home=home,
             provider_type=args.kind,
-            default_endpoint_id=args.default_endpoint_id,
-            model=args.model,
             base_url=args.base_url,
             api_path=args.api_path,
             api_key=args.api_key,
@@ -137,7 +225,6 @@ def _provider_command(args: argparse.Namespace) -> int:
                 home=home,
                 provider_options=_provider_options(args, prefix="provider_check_"),
                 provider_id=args.provider_id,
-                endpoint_id=args.provider_check_endpoint_id,
                 json_mode=args.json,
             )
         )
@@ -198,7 +285,7 @@ def _provider_endpoint_command(
 
 
 def _skills_command(args: argparse.Namespace) -> int:
-    home = args.skills_home or args.home
+    home = args.home
     if args.skills_command == "list":
         return list_skills(
             home=home,

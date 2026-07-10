@@ -8,7 +8,12 @@ from typing import Any
 from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
-from ouro.config import PromptConfigManager, ProviderConfigManager, ProviderRuntimeOptions
+from ouro.config import (
+    PermissionConfigManager,
+    PromptConfigManager,
+    ProviderConfigManager,
+    ProviderRuntimeOptions,
+)
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.prompts import render_agent_skills_prompt
@@ -42,6 +47,7 @@ def build_default_runtime(
     skills_prompt = render_agent_skills_prompt(discover_available_skills(home=store.root))
     context_builder = ContextBuilder(skill_instructions=skills_prompt)
     resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
+    permission_overrides = PermissionConfigManager(store.root).snapshot().tools
     return RuntimeService(
         store=store,
         adapter=adapter,
@@ -49,6 +55,7 @@ def build_default_runtime(
         context_builder=context_builder,
         system_prompt=resolved_system_prompt,
         event_sink=event_sink,
+        permission_overrides=permission_overrides,
     )
 
 

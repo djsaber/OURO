@@ -341,16 +341,16 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
 def test_main_without_subcommand_enters_interactive(monkeypatch, tmp_path) -> None:
     calls = []
 
-    async def fake_interactive(*, home, provider_options, system_prompt):
-        calls.append((home, provider_options.provider_id, system_prompt))
+    async def fake_interactive(*, home, system_prompt):
+        calls.append((home, system_prompt))
         return 0
 
     monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
 
-    code = main(["--home", str(tmp_path), "--provider", "faux", "--system-prompt", "Custom"])
+    code = main(["--home", str(tmp_path), "--system-prompt", "Custom"])
 
     assert code == 0
-    assert calls == [(str(tmp_path), "faux", "Custom")]
+    assert calls == [(str(tmp_path), "Custom")]
 
 
 def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
@@ -642,12 +642,11 @@ def test_config_check_json_outputs_provider_result(tmp_path, capsys) -> None:
 def test_config_check_json_reports_provider_config_error(tmp_path, capsys) -> None:
     code = main(
         [
-            "config",
+            "provider",
             "check",
             "--json",
             "--home",
             str(tmp_path),
-            "--provider",
             "missing",
         ]
     )
@@ -677,17 +676,12 @@ def test_provider_commands_manage_config_and_runtime_default(
             str(tmp_path),
             "--kind",
             "openai-compatible",
-            "--endpoint",
-            "default",
-            "--model",
-            "glm-test",
             "--base-url",
             "https://example.test/v1",
             "--api-key-env",
             "OURO_TEST_KEY",
             "--timeout",
             "7",
-            "--default",
             "--json",
         ]
     )
@@ -695,8 +689,32 @@ def test_provider_commands_manage_config_and_runtime_default(
 
     assert set_code == 0
     assert set_payload["provider"]["provider_id"] == "glm"
-    assert set_payload["provider"]["default"] is True
     assert set_payload["provider"]["credential"] == "env:OURO_TEST_KEY"
+
+    endpoint_code = main(
+        [
+            "provider",
+            "endpoint",
+            "set",
+            "glm",
+            "default",
+            "--home",
+            str(tmp_path),
+            "--model",
+            "glm-test",
+            "--default",
+            "--json",
+        ]
+    )
+    endpoint_payload = json.loads(capsys.readouterr().out)
+    assert endpoint_code == 0
+    assert endpoint_payload["endpoint"]["model_id"] == "glm-test"
+    assert endpoint_payload["endpoint"]["default"] is True
+
+    use_code = main(["provider", "use", "glm", "--home", str(tmp_path), "--json"])
+    use_payload = json.loads(capsys.readouterr().out)
+    assert use_code == 0
+    assert use_payload["default"] == "glm"
 
     list_code = main(["provider", "list", "--home", str(tmp_path), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
@@ -1005,16 +1023,31 @@ def test_provider_set_api_path_defaults_and_endpoint_inherits(
                 str(tmp_path),
                 "--kind",
                 "openai-compatible",
-                "--endpoint",
-                "default",
-                "--model",
-                "glm-test",
                 "--base-url",
                 "https://example.test/v1",
                 "--api-path",
                 "/responses/chat",
                 "--api-key-env",
                 "OURO_TEST_KEY",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "default",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "glm-test",
+                "--base-url",
+                "https://example.test/v1",
                 "--default",
             ]
         )
@@ -1042,6 +1075,8 @@ def test_provider_set_api_path_defaults_and_endpoint_inherits(
         == 0
     )
 
+    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
+
     runtime = build_default_runtime(tmp_path)
     provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
     assert provider.endpoint == "/responses/chat"
@@ -1063,16 +1098,31 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
                 str(tmp_path),
                 "--kind",
                 "openai-compatible",
-                "--endpoint",
-                "default",
-                "--model",
-                "glm-test",
                 "--base-url",
                 "https://example.test/v1",
                 "--api-path",
                 "/responses/chat",
                 "--api-key-env",
                 "OURO_TEST_KEY",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "default",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "glm-test",
+                "--base-url",
+                "https://example.test/v1",
                 "--default",
             ]
         )
@@ -1100,6 +1150,8 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
         )
         == 0
     )
+
+    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
 
     runtime = build_default_runtime(tmp_path)
     provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)

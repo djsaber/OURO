@@ -11,6 +11,7 @@ from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
+from ouro.skills import discover_available_skills
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], None]
@@ -150,6 +151,12 @@ async def _handle_command(
         return _export_session(runtime, session_id)
     if command == "/abort":
         return await _abort_session(runtime, session_id)
+    if command == "/history":
+        return _session_history(runtime, session_id)
+    if command == "/events":
+        return _session_events(runtime, session_id)
+    if command == "/skills":
+        return _available_skills(runtime)
     return _CommandResult(session_id=session_id, output=f"Unknown command: {command}")
 
 
@@ -164,6 +171,9 @@ def _help_text() -> str:
             "/model - Show current model.",
             "/config - Show active local config path.",
             "/export - Show active session data path.",
+            "/history - Show current session messages.",
+            "/events - Show current session events.",
+            "/skills - List available skills.",
             "/abort - Abort the active request when supported.",
             "/exit - Quit.",
         ]
@@ -202,6 +212,51 @@ def _export_session(runtime: RuntimeService, session_id: str | None) -> _Command
         session_id=session_id,
         output=str(runtime.store.sessions_dir / session_id),
     )
+
+
+def _session_history(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
+    if session_id is None:
+        return _CommandResult(session_id=session_id, output="No active session.")
+    try:
+        snapshot = runtime.sessions.open(session_id)
+    except Exception:  # noqa: BLE001
+        return _CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
+    if not snapshot.messages:
+        return _CommandResult(session_id=session_id, output="No messages in this session.")
+    lines = ["History:"]
+    for message in snapshot.messages:
+        text = message.text_content.replace("\n", " ")
+        lines.append(f"[{message.role}] {text[:120]}")
+    return _CommandResult(session_id=session_id, output="\n".join(lines))
+
+
+def _session_events(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
+    if session_id is None:
+        return _CommandResult(session_id=session_id, output="No active session.")
+    try:
+        snapshot = runtime.sessions.open(session_id)
+    except Exception:  # noqa: BLE001
+        return _CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
+    if not snapshot.events:
+        return _CommandResult(session_id=session_id, output="No events in this session.")
+    lines = ["Events:"]
+    for event in snapshot.events:
+        lines.append(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
+    return _CommandResult(session_id=session_id, output="\n".join(lines))
+
+
+def _available_skills(runtime: RuntimeService) -> _CommandResult:
+    try:
+        catalog = discover_available_skills(home=runtime.store.root)
+    except Exception as exc:  # noqa: BLE001
+        return _CommandResult(session_id=None, output=f"Could not list skills: {exc}")
+    if not catalog:
+        return _CommandResult(session_id=None, output="No skills available.")
+    lines = ["Available skills:"]
+    for skill in sorted(catalog, key=lambda item: item.name):
+        state = "enabled" if skill.enabled else "disabled"
+        lines.append(f"- {skill.name} [{skill.source}] [{state}] {skill.location}")
+    return _CommandResult(session_id=None, output="\n".join(lines))
 
 
 async def _abort_session(runtime: RuntimeService, session_id: str | None) -> _CommandResult:

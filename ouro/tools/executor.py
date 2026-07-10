@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.state import ApprovalRecord
+from ouro.core.tools import PermissionMode
 from ouro.tools.base import (
     ToolExecutionAborted,
     ToolExecutionContext,
@@ -14,8 +17,13 @@ from ouro.tools.registry import ToolRegistry
 
 
 class ToolExecutor:
-    def __init__(self, registry: ToolRegistry) -> None:
+    def __init__(
+        self,
+        registry: ToolRegistry,
+        permission_overrides: Mapping[str, PermissionMode] | None = None,
+    ) -> None:
         self.registry = registry
+        self.permission_overrides = dict(permission_overrides or {})
 
     async def execute(
         self,
@@ -27,10 +35,13 @@ class ToolExecutor:
         context: ToolExecutionContext | None = None,
     ) -> ToolExecutionOutcome:
         tool = self.registry.get(invocation.tool_name)
+        effective_mode = self.permission_overrides.get(
+            tool.definition.name, tool.definition.permission_mode
+        )
         invocation = invocation.model_copy(
             update={
                 "source": tool.definition.source,
-                "permission_mode": tool.definition.permission_mode,
+                "permission_mode": effective_mode,
                 "arguments": arguments_override
                 if arguments_override is not None
                 else invocation.arguments,
@@ -51,7 +62,7 @@ class ToolExecutor:
                 result=result,
                 question=question,
             )
-        if tool.definition.permission_mode == "approval" and not approved:
+        if invocation.permission_mode == "approval" and not approved:
             approval = ApprovalRecord(
                 session_id=invocation.session_id,
                 run_id=invocation.run_id,

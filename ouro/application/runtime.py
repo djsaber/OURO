@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
@@ -22,6 +23,7 @@ from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.sessions import SessionService, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutionOutcome, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
@@ -39,13 +41,14 @@ class RuntimeService:
         max_model_rounds: int = 8,
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
+        permission_overrides: Mapping[str, PermissionMode] | None = None,
     ) -> None:
         self.store = store
         self.sessions = SessionService(store)
         self.follow_ups = FollowUpQueue(store)
         self.adapter = adapter
         self.tools = tools
-        self.tool_executor = ToolExecutor(tools)
+        self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
         self.hooks = hooks or HookRegistry()
         self.event_recorder = RuntimeEventRecorder(
             store=store,
@@ -328,14 +331,14 @@ class RuntimeService:
         self,
         *,
         session_id: str,
-        run_id: str,
+        run_id: str | None = None,
         approved: bool,
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
     ) -> RunResult:
         snapshot = self.store.load_session(session_id)
         session = snapshot.session
-        run = find_run(snapshot.runs, run_id)
+        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
         invocation = _pending_invocation(run)

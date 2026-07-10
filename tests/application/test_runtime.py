@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from typing import Any, cast
 
 import pytest
 
@@ -285,7 +286,8 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     assert snapshot.session.message_count == 2
     assert snapshot.session.last_message_id == snapshot.messages[-1].message_id
     assert snapshot.events[-1].event_type == "run_failed"
-    assert store.load_index()["sessions"][0]["status"] == "failed"
+    index: dict[str, Any] = cast(dict[str, Any], store.load_index())
+    assert index["sessions"][0]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -309,7 +311,7 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
         async for event in original_stream(**kwargs):
             yield event
 
-    provider.stream = recording_stream
+    provider.stream = recording_stream  # type: ignore[method-assign]
     hooks = HookRegistry()
     hooks.register(
         HookRegistration(
@@ -434,7 +436,8 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
     assert result.session.status == "waiting_approval"
     assert not target.exists()
     assert "approval_requested" in [event.event_type for event in snapshot.events]
-    assert store.load_index()["sessions"][0]["status"] == "waiting_approval"
+    index: dict[str, Any] = cast(dict[str, Any], store.load_index())
+    assert index["sessions"][0]["status"] == "waiting_approval"
 
 
 @pytest.mark.asyncio

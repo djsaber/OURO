@@ -5,6 +5,11 @@ from ouro.config.endpoints import (
     ProviderEndpointConfig,
     endpoint_config_to_public_dict,
 )
+from ouro.config.permissions import (
+    PermissionConfigManager,
+    PermissionConfigSnapshot,
+    permission_config_to_public_dict,
+)
 from ouro.config.prompts import (
     PromptConfigManager,
     PromptConfigSnapshot,
@@ -24,6 +29,8 @@ __all__ = [
     "ConfigService",
     "CredentialRef",
     "CredentialResolver",
+    "PermissionConfigManager",
+    "PermissionConfigSnapshot",
     "ProviderConfig",
     "ProviderConfigManager",
     "ProviderConfigSnapshot",
@@ -33,6 +40,7 @@ __all__ = [
     "PromptConfigManager",
     "PromptConfigSnapshot",
     "endpoint_config_to_public_dict",
+    "permission_config_to_public_dict",
     "provider_config_to_public_dict",
     "prompt_config_to_public_dict",
 ]

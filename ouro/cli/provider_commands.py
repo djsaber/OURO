@@ -24,14 +24,12 @@ async def check_provider_connection(
     home: str | Path | None = None,
     provider_options: RuntimeProviderOptions | None = None,
     provider_id: str | None = None,
-    endpoint_id: str | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
         effective_options = _provider_options_with_target(
             provider_options,
             provider_id=provider_id,
-            endpoint_id=endpoint_id,
         )
         runtime = build_default_runtime(home, provider_options=effective_options)
         result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
@@ -172,8 +170,6 @@ def set_provider_config(
     *,
     home: str | Path | None = None,
     provider_type: ProviderKind | None = None,
-    default_endpoint_id: str | None = None,
-    model: str | None = None,
     base_url: str | None = None,
     api_path: str | None = None,
     api_key: str | None = None,
@@ -188,10 +184,6 @@ def set_provider_config(
         provider = manager.upsert_provider(
             provider_id,
             provider_type=provider_type,
-            default_endpoint_id=default_endpoint_id,
-            default_endpoint_model=model if default_endpoint_id is not None else None,
-            default_endpoint_base_url=base_url if default_endpoint_id is not None else None,
-            default_endpoint_api_path=api_path if default_endpoint_id is not None else None,
             base_url=base_url,
             api_path=api_path,
             api_key=api_key,
@@ -521,13 +513,11 @@ def _provider_options_with_target(
     options: RuntimeProviderOptions | None,
     *,
     provider_id: str | None,
-    endpoint_id: str | None,
 ) -> RuntimeProviderOptions:
     base = options or RuntimeProviderOptions()
     return replace(
         base,
         provider_id=base.provider_id or provider_id,
-        endpoint_id=base.endpoint_id or endpoint_id,
     )
 
 

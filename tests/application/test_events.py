@@ -1,6 +1,7 @@
 import pytest
 
 from ouro.application.events import RuntimeEventRecorder
+from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookFailure, HookRegistration, HookRegistry, HookResult
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore
@@ -28,7 +29,7 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
     )
     recorder = RuntimeEventRecorder(store=store, hooks=hooks)
 
-    emitted = []
+    emitted: list[EventRecord] = []
     sequence = await recorder.emit(
         emitted,
         0,
@@ -61,7 +62,7 @@ async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
         error_type="RuntimeError",
         message="boom",
     )
-    emitted = []
+    emitted: list[EventRecord] = []
     sequence = await recorder.record_hook_failures(emitted, 3, [failure])
     snapshot = store.load_session(session.session_id, recover=False)
 
@@ -92,7 +93,7 @@ async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tm
     )
     recorder = RuntimeEventRecorder(store=store, hooks=hooks)
 
-    emitted = []
+    emitted: list[EventRecord] = []
     sequence = await recorder.emit(
         emitted,
         0,

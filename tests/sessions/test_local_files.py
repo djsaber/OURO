@@ -1,3 +1,5 @@
+from typing import Any
+
 import pytest
 
 from ouro.core.events import EventRecord
@@ -48,7 +50,7 @@ def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
 
     repaired = LocalSessionStore(tmp_path)
     repaired.initialize()
-    index = repaired.load_index()
+    index: dict[str, Any] = repaired.load_index()
 
     assert index["sessions"][0]["session_id"] == session.session_id
 

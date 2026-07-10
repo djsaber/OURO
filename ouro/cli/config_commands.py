@@ -6,7 +6,9 @@ from pathlib import Path
 
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
+    PermissionConfigManager,
     PromptConfigManager,
+    permission_config_to_public_dict,
     prompt_config_to_public_dict,
 )
 from ouro.core.errors import OuroError
@@ -106,6 +108,47 @@ def clear_system_prompt_config(
         )
         return 0
     print(f"System prompt cleared: {snapshot.config_path}")
+    return 0
+
+
+def show_permissions_config(
+    *,
+    home: str | Path | None = None,
+    tool_name: str | None = None,
+    mode: str | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = PermissionConfigManager(home)
+        if tool_name is not None and mode is not None:
+            snapshot = manager.set_tool_mode(tool_name, mode)  # type: ignore[arg-type]
+        elif tool_name is not None and mode is None:
+            snapshot = manager.clear_tool_mode(tool_name)
+        else:
+            snapshot = manager.snapshot()
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    **permission_config_to_public_dict(snapshot),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    if not snapshot.tools:
+        print("No tool permission overrides configured.")
+        return 0
+
+    print("Tool permission overrides:")
+    for name, mode_value in sorted(snapshot.tools.items()):
+        print(f"- {name}: {mode_value}")
     return 0
 
 
