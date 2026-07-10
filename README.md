@@ -53,7 +53,8 @@ python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "co
 python -m ouro.cli.main config check --home ./.ouro-dev
 python -m ouro.cli.main config prompt --home ./.ouro-dev --set "Custom system prompt"
 python -m ouro.cli.main provider list --home ./.ouro-dev
-python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --api-key-env <ENV_NAME>
+python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --endpoint default --model <model> --base-url <url> --api-path <path> --api-key-env <ENV_NAME>
+python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --base-url <url> --api-key-env <ENV_NAME>
 python -m ouro.cli.main provider endpoint set glm reasoning --home ./.ouro-dev --model <model> --base-url <url> --temperature 0.2 --context-window 200000 --max-output-tokens 16000 --tools --vision --streaming --reasoning --thinking-levels low high --thinking-level high --default
 python -m ouro.cli.main provider use glm --home ./.ouro-dev
 python -m ouro.cli.main provider endpoint list glm --home ./.ouro-dev
@@ -98,12 +99,12 @@ Example local config:
         "provider_type": "openai-compatible",
         "provider_id": "glm",
         "credential_ref": "env:OPENAI_API_KEY",
+        "base_url": "http://localhost:8000/v1",
+        "api_path": "/chat/completions",
         "default_endpoint": "reasoning",
         "endpoints": {
           "reasoning": {
             "model_id": "model-name",
-            "base_url": "http://localhost:8000/v1",
-            "api_path": "/chat/completions",
             "temperature": 0.2,
             "context_window": 200000,
             "max_output_tokens": 16000,
@@ -142,6 +143,16 @@ in Phase 1. An endpoint is a concrete model/API target owned by that provider. T
 context and output limits, multimodal/tool/stream/reasoning capabilities, and thinking levels
 belong to the endpoint rather than the provider. The legacy `provider set --model --base-url`
 shortcut updates the default endpoint for compatibility.
+
+Provider-level `base_url` and `api_path` act as defaults for all endpoints of that provider.
+Endpoints may omit either field and inherit the provider value; an explicit endpoint value
+always wins. `api_path` defaults per provider kind (e.g. `/chat/completions` for
+`openai-compatible`).
+
+When using `provider set`, `--endpoint` identifies the default endpoint to create or update;
+`--model` is only meaningful when `--endpoint` is provided. Omitting `--endpoint` creates a
+provider with no endpoints, which is useful when endpoints will be added later with
+`provider endpoint set`.
 
 Creating a provider without an endpoint does not switch the runtime default. Configure its
 default endpoint first, then use `provider use PROVIDER_ID`; disabling the active provider or

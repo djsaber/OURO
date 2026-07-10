@@ -220,9 +220,9 @@ OURO 默认使用本地可阅读文件完成持久化。JSONL 主要用于追加
 
 - 支持 OpenAI、Anthropic、Google 等主流供应商。
 - 支持 OpenAI 兼容或 Anthropic 兼容的第三方接口。
-- Provider 表示供应商连接、认证、超时和重试边界；Endpoint 表示一个具体模型调用端点。一个 Provider 可以配置多个 Endpoint，并选择默认 Endpoint。
-- Endpoint 独立配置 model id、base URL、API path、temperature、context window、最大输出、多模态、工具调用、流式、结构化输出、推理能力和支持的思考等级。
-- 支持用户添加、查看、切换和删除自定义模型端点，并允许运行时显式选择 Provider/Endpoint。
+- Provider 表示供应商连接、认证、超时和重试边界，同时可配置默认的 `base_url` 与 `api_path`；Endpoint 表示一个具体模型调用端点。一个 Provider 可以配置多个 Endpoint，并选择默认 Endpoint。
+- Endpoint 独立配置 model id、base URL、API path、temperature、context window、最大输出、多模态、工具调用、流式、结构化输出、推理能力和支持的思考等级；Endpoint 的 `base_url` 与 `api_path` 可选，未配置时自动继承 Provider 级对应字段并按 `provider_type` 推断默认值。
+- 支持用户添加、查看、切换和删除自定义模型端点，并允许运行时显式选择 Provider/Endpoint；Provider 的 `default_endpoint` 字段指向已配置的端点之一，而非独立的默认端点概念。
 - 支持模型供应商凭据配置、连通性检查和错误提示。
 - 支持测试用模型供应商，便于离线开发和自动化测试。
 - 支持模型能力描述，例如工具调用、图像输入、流式输出、结构化输出和推理等级。

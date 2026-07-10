@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from ouro.config.provider_models import ProviderConfig, ProviderRuntimeOptions
+from ouro.config.provider_models import (
+    ProviderConfig,
+    ProviderRuntimeOptions,
+    default_api_path,
+)
 from ouro.core.errors import ConfigError
 
 
@@ -22,8 +26,8 @@ def runtime_options_from_config(
         provider_id=provider.provider_id,
         endpoint_id=endpoint.endpoint_id,
         model=endpoint.model_id,
-        base_url=endpoint.base_url,
-        api_path=endpoint.api_path,
+        base_url=endpoint.base_url or provider.base_url,
+        api_path=endpoint.api_path or provider.api_path or default_api_path(provider.provider_type),
         credential_ref=None if provider.provider_type == "faux" else provider.credential_ref,
         timeout=provider.timeout_seconds,
         temperature=endpoint.temperature,

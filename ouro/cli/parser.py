@@ -73,8 +73,23 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Provider kind",
     )
-    provider_set_parser.add_argument("--model", help="Default model id")
-    provider_set_parser.add_argument("--base-url", help="Provider base URL")
+    provider_set_parser.add_argument(
+        "--endpoint",
+        dest="default_endpoint_id",
+        help="Default endpoint id to create or update",
+    )
+    provider_set_parser.add_argument(
+        "--model",
+        help="Model id for the default endpoint (requires --endpoint)",
+    )
+    provider_set_parser.add_argument(
+        "--base-url",
+        help="Provider base URL; also used for --endpoint if given",
+    )
+    provider_set_parser.add_argument(
+        "--api-path",
+        help="Provider API path; also used for --endpoint if given",
+    )
     provider_set_parser.add_argument("--api-key", help="Inline API key stored in local config")
     provider_set_parser.add_argument("--api-key-env", help="API key env var")
     provider_set_parser.add_argument("--timeout", type=float, default=None, help="Timeout seconds")
@@ -139,7 +154,10 @@ def build_parser() -> argparse.ArgumentParser:
     endpoint_set_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
     endpoint_set_parser.add_argument("--model", help="Provider model id")
     endpoint_set_parser.add_argument("--base-url", help="Endpoint base URL")
-    endpoint_set_parser.add_argument("--api-path", help="API path, default /chat/completions")
+    endpoint_set_parser.add_argument(
+        "--api-path",
+        help="API path (defaults to provider api_path or kind default)",
+    )
     endpoint_set_parser.add_argument("--temperature", type=float, default=None)
     endpoint_set_parser.add_argument("--context-window", type=int, default=None)
     endpoint_set_parser.add_argument("--max-output-tokens", type=int, default=None)

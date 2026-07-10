@@ -16,6 +16,18 @@ SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = ("faux", "openai-compatible
 BUILTIN_FAUX_PROVIDER_ID = "faux"
 
 
+def default_api_path(provider_type: ProviderKind) -> str | None:
+    """Return the default API path for a provider kind.
+
+    Returns ``None`` for kinds that do not use HTTP URLs (e.g. ``faux``).
+    Unknown kinds should never reach this helper because ``ProviderKind`` is
+    validated by Pydantic.
+    """
+    if provider_type == "openai-compatible":
+        return "/chat/completions"
+    return None
+
+
 class ProviderConfig(OuroModel):
     """Supplier-level connection configuration and its endpoint registry."""
 
@@ -24,6 +36,8 @@ class ProviderConfig(OuroModel):
     credential_ref: CredentialRef = Field(default_factory=CredentialRef)
     default_endpoint: str | None = None
     endpoints: tuple[ProviderEndpointConfig, ...] = Field(default_factory=tuple)
+    base_url: str | None = None
+    api_path: str | None = None
     enabled: bool = True
     timeout_seconds: float = Field(default=60.0, gt=0)
     retry_policy: dict[str, int | float] = Field(default_factory=dict)
@@ -42,6 +56,24 @@ class ProviderConfig(OuroModel):
     def _normalize_provider_type(cls, value: object) -> object:
         return "openai-compatible" if value == "openai_compatible" else value
 
+    @field_validator("base_url")
+    @classmethod
+    def _normalize_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip().rstrip("/")
+        return normalized or None
+
+    @field_validator("api_path")
+    @classmethod
+    def _normalize_api_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        return normalized if normalized.startswith("/") else f"/{normalized}"
+
     @field_validator("credential_ref", mode="before")
     @classmethod
     def _parse_credential_ref(cls, value: object) -> object:
@@ -58,7 +90,11 @@ class ProviderConfig(OuroModel):
             raise ValueError(f"default endpoint not found: {self.default_endpoint}")
         if self.provider_type == "openai-compatible":
             missing_base_url = next(
-                (endpoint.endpoint_id for endpoint in self.endpoints if not endpoint.base_url),
+                (
+                    endpoint.endpoint_id
+                    for endpoint in self.endpoints
+                    if not (endpoint.base_url or self.base_url)
+                ),
                 None,
             )
             if missing_base_url is not None:

@@ -14,7 +14,6 @@ from ouro.config.provider_codec import (
     provider_config_from_legacy,
     provider_config_from_mapping,
     provider_config_to_raw,
-    update_legacy_default_endpoint,
 )
 from ouro.config.provider_models import (
     BUILTIN_FAUX_PROVIDER_ID,
@@ -137,19 +136,25 @@ class ProviderConfigManager:
         provider_id: str,
         *,
         provider_type: ProviderKind | None = None,
-        default_model: str | None = None,
         base_url: str | None = None,
+        api_path: str | None = None,
         api_key: str | None = None,
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
+        default_endpoint_id: str | None = None,
+        default_endpoint_model: str | None = None,
+        default_endpoint_base_url: str | None = None,
+        default_endpoint_api_path: str | None = None,
     ) -> ProviderConfig:
         """Create or update a provider.
 
-        ``default_model`` and ``base_url`` remain a compatibility shorthand for
-        updating the provider's default endpoint. New callers should use
-        ``upsert_endpoint`` for endpoint-level configuration.
+        Provider-level ``base_url`` and ``api_path`` act as defaults for the
+        endpoints owned by this provider. An optional default endpoint can be
+        created in the same call by supplying ``default_endpoint_id`` and its
+        configuration; when provided, ``default_endpoint_id`` is written to the
+        provider's ``default_endpoint`` field.
         """
 
         provider_id = provider_id.strip()
@@ -179,6 +184,8 @@ class ProviderConfigManager:
                 update={
                     "provider_type": provider_type or current.provider_type,
                     "credential_ref": credential_ref,
+                    "base_url": base_url if base_url is not None else current.base_url,
+                    "api_path": api_path if api_path is not None else current.api_path,
                     "timeout_seconds": timeout_seconds
                     if timeout_seconds is not None
                     else current.timeout_seconds,
@@ -186,12 +193,20 @@ class ProviderConfigManager:
                 }
             )
             updated = normalize_provider_config(updated)
-            if default_model is not None or base_url is not None:
-                updated = update_legacy_default_endpoint(
+            if default_endpoint_id is not None:
+                updated = self._apply_default_endpoint(
                     updated,
-                    model_id=default_model,
-                    base_url=base_url,
+                    endpoint_id=default_endpoint_id,
+                    model_id=default_endpoint_model,
+                    base_url=default_endpoint_base_url,
+                    api_path=default_endpoint_api_path,
                 )
+            elif (
+                default_endpoint_model is not None
+                or default_endpoint_base_url is not None
+                or default_endpoint_api_path is not None
+            ):
+                raise ConfigError("--endpoint is required when configuring a default endpoint")
             updated = ProviderConfig.model_validate(updated.model_dump())
         except ValidationError as exc:
             raise ConfigError(f"invalid provider config: {exc}") from exc
@@ -211,6 +226,47 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
         return updated
+
+    def _apply_default_endpoint(
+        self,
+        provider: ProviderConfig,
+        *,
+        endpoint_id: str,
+        model_id: str | None,
+        base_url: str | None,
+        api_path: str | None,
+    ) -> ProviderConfig:
+        endpoint_id = endpoint_id.strip()
+        if not endpoint_id:
+            raise ConfigError("default endpoint id is required")
+
+        current = provider.endpoint(endpoint_id)
+        if current is None:
+            if model_id is None:
+                raise ConfigError("--model is required for a new default endpoint")
+            current = ProviderEndpointConfig(
+                endpoint_id=endpoint_id,
+                model_id=model_id,
+                base_url=base_url,
+                api_path=api_path,
+            )
+        else:
+            current = current.model_copy(
+                update={
+                    "model_id": model_id if model_id is not None else current.model_id,
+                    "base_url": base_url if base_url is not None else current.base_url,
+                    "api_path": api_path if api_path is not None else current.api_path,
+                }
+            )
+
+        endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
+        endpoints[endpoint_id] = current
+        return provider.model_copy(
+            update={
+                "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),
+                "default_endpoint": endpoint_id,
+            }
+        )
 
     def upsert_endpoint(
         self,
@@ -405,7 +461,7 @@ class ProviderConfigManager:
         del endpoints[endpoint_id]
         default_endpoint = provider.default_endpoint
         if default_endpoint == endpoint_id:
-            default_endpoint = sorted(endpoints)[0] if endpoints else None
+            default_endpoint = None
         updated_provider = provider.model_copy(
             update={
                 "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.config.credentials import CredentialRef, CredentialResolver
-from ouro.config.provider_models import ProviderRuntimeOptions
+from ouro.config.provider_models import ProviderRuntimeOptions, default_api_path
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
@@ -53,7 +53,7 @@ def build_runtime_adapter(
         base_url=base_url,
         api_key=resolver.resolve(_credential_ref(options)),
         provider_id=provider_id,
-        endpoint=options.api_path or "/chat/completions",
+        endpoint=options.api_path or default_api_path(provider_kind) or "/chat/completions",
         timeout=timeout,
         request_options=options.extra,
     )

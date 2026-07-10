@@ -49,7 +49,11 @@ def provider_config_to_public_dict(
         ],
         # Compatibility fields for existing CLI consumers.
         "model": default_endpoint.model_id if default_endpoint else None,
-        "base_url": default_endpoint.base_url if default_endpoint else None,
+        "base_url": (
+            (default_endpoint.base_url or provider.base_url)
+            if default_endpoint
+            else provider.base_url
+        ),
     }
 
 
@@ -76,8 +80,6 @@ def provider_config_from_mapping(
         ):
             endpoints = (_legacy_endpoint_from_mapping(LEGACY_DEFAULT_ENDPOINT_ID, raw),)
             default_endpoint = LEGACY_DEFAULT_ENDPOINT_ID
-        if default_endpoint is None and endpoints:
-            default_endpoint = endpoints[0].endpoint_id
         provider = ProviderConfig(
             provider_id=configured_provider_id,
             provider_type=_provider_kind(
@@ -89,6 +91,8 @@ def provider_config_from_mapping(
             credential_ref=_credential_ref_from_mapping(raw),
             default_endpoint=default_endpoint,
             endpoints=endpoints,
+            base_url=_optional_str(raw.get("base_url")),
+            api_path=_optional_str(raw.get("api_path")),
             enabled=raw.get("enabled", True),
             timeout_seconds=_configured_value(
                 raw,
@@ -150,6 +154,10 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
     }
     if provider.credential_ref.type != "none":
         raw["credential_ref"] = _credential_ref_to_raw(provider.credential_ref)
+    if provider.base_url:
+        raw["base_url"] = provider.base_url
+    if provider.api_path:
+        raw["api_path"] = provider.api_path
     if provider.retry_policy:
         raw["retry_policy"] = provider.retry_policy
     if provider.extra:
@@ -235,7 +243,7 @@ def _legacy_endpoint_from_mapping(
         endpoint_id=endpoint_id,
         model_id=model_id,
         base_url=_optional_str(raw.get("base_url")),
-        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")) or "/chat/completions",
+        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")),
         request_options=dict(raw.get("extra") or {}),
     )
 

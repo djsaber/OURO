@@ -12,6 +12,7 @@ from ouro.config import (
     ProviderRuntimeOptions,
     endpoint_config_to_public_dict,
 )
+from ouro.config.provider_models import default_api_path
 from ouro.core.errors import ConfigError, CredentialError
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -389,8 +390,9 @@ def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_model="glm-test",
-        base_url="https://example.test/v1",
+        default_endpoint_id="default",
+        default_endpoint_model="glm-test",
+        default_endpoint_base_url="https://example.test/v1",
         make_default=True,
     )
     assert manager.snapshot().default_provider_id == "glm"
@@ -436,3 +438,234 @@ def test_unknown_explicit_default_provider_fails_visibly(tmp_path) -> None:
 
     with pytest.raises(ConfigError, match="default provider not found"):
         ProviderConfigManager(tmp_path).snapshot()
+
+
+def test_default_api_path_per_provider_kind() -> None:
+    assert default_api_path("openai-compatible") == "/chat/completions"
+    assert default_api_path("faux") is None
+
+
+def test_endpoint_api_path_is_optional_and_normalized() -> None:
+    endpoint = ProviderEndpointConfig(endpoint_id="chat", model_id="chat-model")
+    assert endpoint.api_path is None
+
+    endpoint_with_blank = ProviderEndpointConfig(
+        endpoint_id="chat", model_id="chat-model", api_path="  "
+    )
+    assert endpoint_with_blank.api_path is None
+
+    endpoint_custom = ProviderEndpointConfig(
+        endpoint_id="chat", model_id="chat-model", api_path="responses/chat"
+    )
+    assert endpoint_custom.api_path == "/responses/chat"
+
+
+def test_provider_level_base_url_and_api_path_inherited_by_endpoint(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "default": "glm",
+                    "items": {
+                        "glm": {
+                            "provider_type": "openai-compatible",
+                            "credential_ref": "env:OURO_TEST_KEY",
+                            "base_url": "https://provider.example.test/v1",
+                            "api_path": "/custom/chat",
+                            "default_endpoint": "chat",
+                            "endpoints": {
+                                "chat": {"model_id": "glm-chat"},
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = ProviderConfigManager(tmp_path).resolve_runtime_options(
+        ProviderRuntimeOptions(),
+    )
+
+    assert options.base_url == "https://provider.example.test/v1"
+    assert options.api_path == "/custom/chat"
+
+
+def test_endpoint_explicit_base_url_and_api_path_override_provider_defaults(
+    tmp_path,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "default": "glm",
+                    "items": {
+                        "glm": {
+                            "provider_type": "openai-compatible",
+                            "credential_ref": "env:OURO_TEST_KEY",
+                            "base_url": "https://provider.example.test/v1",
+                            "api_path": "/custom/chat",
+                            "default_endpoint": "chat",
+                            "endpoints": {
+                                "chat": {
+                                    "model_id": "glm-chat",
+                                    "base_url": "https://endpoint.example.test/v1",
+                                    "api_path": "/endpoint/chat",
+                                },
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = ProviderConfigManager(tmp_path).resolve_runtime_options(
+        ProviderRuntimeOptions(),
+    )
+
+    assert options.base_url == "https://endpoint.example.test/v1"
+    assert options.api_path == "/endpoint/chat"
+
+
+def test_endpoint_api_path_falls_back_to_kind_default(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "default": "glm",
+                    "items": {
+                        "glm": {
+                            "provider_type": "openai-compatible",
+                            "credential_ref": "env:OURO_TEST_KEY",
+                            "base_url": "https://example.test/v1",
+                            "default_endpoint": "chat",
+                            "endpoints": {
+                                "chat": {"model_id": "glm-chat"},
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    options = ProviderConfigManager(tmp_path).resolve_runtime_options(
+        ProviderRuntimeOptions(),
+    )
+
+    assert options.api_path == "/chat/completions"
+
+
+def test_openai_compatible_endpoint_requires_base_url_at_provider_or_endpoint(
+    tmp_path,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "default": "glm",
+                    "items": {
+                        "glm": {
+                            "provider_type": "openai-compatible",
+                            "credential_ref": "env:OURO_TEST_KEY",
+                            "default_endpoint": "chat",
+                            "endpoints": {
+                                "chat": {"model_id": "glm-chat"},
+                            },
+                        }
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="base_url is required"):
+        ProviderConfigManager(tmp_path).snapshot()
+
+
+def test_upsert_provider_with_base_url_but_no_model_keeps_empty_endpoints(
+    tmp_path,
+) -> None:
+    manager = ProviderConfigManager(tmp_path)
+
+    provider = manager.upsert_provider(
+        "glm",
+        provider_type="openai-compatible",
+        base_url="https://example.test/v1",
+        api_path="/responses/chat",
+    )
+
+    assert provider.endpoints == ()
+    assert provider.base_url == "https://example.test/v1"
+    assert provider.api_path == "/responses/chat"
+    assert manager.snapshot().default_provider_id == "faux"
+
+    # An endpoint can be added later and inherits the provider-level defaults.
+    endpoint = manager.upsert_endpoint(
+        "glm",
+        "chat",
+        model_id="glm-chat",
+        make_default=True,
+    )
+    assert endpoint.base_url is None
+    assert endpoint.api_path is None
+
+    options = manager.resolve_runtime_options(ProviderRuntimeOptions(provider_id="glm"))
+    assert options.base_url == "https://example.test/v1"
+    assert options.api_path == "/responses/chat"
+
+
+def test_removing_default_endpoint_clears_provider_default(tmp_path) -> None:
+    manager = ProviderConfigManager(tmp_path)
+    manager.upsert_provider(
+        "glm",
+        provider_type="openai-compatible",
+        default_endpoint_id="chat",
+        default_endpoint_model="glm-chat",
+        default_endpoint_base_url="https://chat.example.test/v1",
+    )
+    manager.upsert_endpoint(
+        "glm",
+        "reasoning",
+        model_id="glm-reasoning",
+        base_url="https://reasoning.example.test/v1",
+    )
+
+    manager.remove_endpoint("glm", "chat")
+    provider = manager.get_provider("glm")
+    assert provider is not None
+
+    assert provider.default_endpoint is None
+    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {"reasoning"}
+
+
+def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
+    tmp_path,
+) -> None:
+    manager = ProviderConfigManager(tmp_path)
+    manager.upsert_provider(
+        "glm",
+        provider_type="openai-compatible",
+        default_endpoint_id="chat",
+        default_endpoint_model="glm-chat",
+        default_endpoint_base_url="https://chat.example.test/v1",
+        make_default=True,
+    )
+    assert manager.snapshot().default_provider_id == "glm"
+
+    manager.remove_endpoint("glm", "chat")
+
+    assert manager.snapshot().default_provider_id == "faux"

@@ -27,7 +27,7 @@ class ProviderEndpointConfig(OuroModel):
     endpoint_id: str
     model_id: str
     base_url: str | None = None
-    api_path: str = "/chat/completions"
+    api_path: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     context_window: int = Field(default=128_000, ge=1)
     max_output_tokens: int = Field(default=8192, ge=1)
@@ -59,10 +59,12 @@ class ProviderEndpointConfig(OuroModel):
 
     @field_validator("api_path")
     @classmethod
-    def _normalize_api_path(cls, value: str) -> str:
+    def _normalize_api_path(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         normalized = value.strip()
         if not normalized:
-            return "/chat/completions"
+            return None
         return normalized if normalized.startswith("/") else f"/{normalized}"
 
     @model_validator(mode="after")
@@ -98,7 +100,7 @@ def endpoint_config_from_mapping(
         endpoint_id=configured_id,
         model_id=model_id,
         base_url=_optional_str(raw.get("base_url")),
-        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")) or "/chat/completions",
+        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")),
         temperature=raw.get("temperature"),
         context_window=raw.get("context_window", 128_000),
         max_output_tokens=raw.get("max_output_tokens", 8192),
@@ -124,7 +126,6 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
     raw: dict[str, Any] = {
         "endpoint_id": endpoint.endpoint_id,
         "model_id": endpoint.model_id,
-        "api_path": endpoint.api_path,
         "context_window": endpoint.context_window,
         "max_output_tokens": endpoint.max_output_tokens,
         "supports_tools": endpoint.supports_tools,
@@ -135,6 +136,8 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
     }
     if endpoint.base_url:
         raw["base_url"] = endpoint.base_url
+    if endpoint.api_path:
+        raw["api_path"] = endpoint.api_path
     if endpoint.temperature is not None:
         raw["temperature"] = endpoint.temperature
     if endpoint.supported_thinking_levels:

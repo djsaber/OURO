@@ -667,6 +667,8 @@ def test_provider_commands_manage_config_and_runtime_default(
             str(tmp_path),
             "--kind",
             "openai-compatible",
+            "--endpoint",
+            "default",
             "--model",
             "glm-test",
             "--base-url",
@@ -974,3 +976,221 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     assert any("\x1b[2m{" in o for o in outputs)
     assert any('"path"' in o and '"content"' in o for o in outputs)
     assert any("\x1b[0m" in o for o in outputs)
+
+
+def test_provider_set_api_path_defaults_and_endpoint_inherits(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("OURO_TEST_KEY", "secret")
+
+    assert (
+        main(
+            [
+                "provider",
+                "set",
+                "glm",
+                "--home",
+                str(tmp_path),
+                "--kind",
+                "openai-compatible",
+                "--endpoint",
+                "default",
+                "--model",
+                "glm-test",
+                "--base-url",
+                "https://example.test/v1",
+                "--api-path",
+                "/responses/chat",
+                "--api-key-env",
+                "OURO_TEST_KEY",
+                "--default",
+            ]
+        )
+        == 0
+    )
+
+    # Create an endpoint without --api-path; it should inherit the provider default.
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "reasoning",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "glm-reasoning",
+                "--base-url",
+                "https://reasoning.example.test/v1",
+                "--default",
+            ]
+        )
+        == 0
+    )
+
+    runtime = build_default_runtime(tmp_path)
+    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
+    assert provider.endpoint == "/responses/chat"
+
+
+def test_provider_endpoint_set_api_path_overrides_provider_default(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OURO_TEST_KEY", "secret")
+
+    assert (
+        main(
+            [
+                "provider",
+                "set",
+                "glm",
+                "--home",
+                str(tmp_path),
+                "--kind",
+                "openai-compatible",
+                "--endpoint",
+                "default",
+                "--model",
+                "glm-test",
+                "--base-url",
+                "https://example.test/v1",
+                "--api-path",
+                "/responses/chat",
+                "--api-key-env",
+                "OURO_TEST_KEY",
+                "--default",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "chat",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "glm-chat",
+                "--base-url",
+                "https://chat.example.test/v1",
+                "--api-path",
+                "/chat/completions",
+                "--default",
+            ]
+        )
+        == 0
+    )
+
+    runtime = build_default_runtime(tmp_path)
+    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
+    assert provider.endpoint == "/chat/completions"
+
+
+def test_provider_set_base_url_without_model_creates_empty_provider(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("OURO_TEST_KEY", "secret")
+
+    code = main(
+        [
+            "provider",
+            "set",
+            "glm",
+            "--home",
+            str(tmp_path),
+            "--kind",
+            "openai-compatible",
+            "--base-url",
+            "https://example.test/v1",
+            "--api-key-env",
+            "OURO_TEST_KEY",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["provider"]["provider_id"] == "glm"
+    assert payload["provider"]["base_url"] == "https://example.test/v1"
+    assert payload["provider"]["endpoint_count"] == 0
+
+
+def test_provider_endpoint_set_default_updates_existing_endpoint(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OURO_TEST_KEY", "secret")
+
+    assert (
+        main(
+            [
+                "provider",
+                "set",
+                "glm",
+                "--home",
+                str(tmp_path),
+                "--kind",
+                "openai-compatible",
+                "--api-key-env",
+                "OURO_TEST_KEY",
+            ]
+        )
+        == 0
+    )
+
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "first",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "first-model",
+                "--base-url",
+                "https://first.example.test/v1",
+            ]
+        )
+        == 0
+    )
+    assert (
+        main(
+            [
+                "provider",
+                "endpoint",
+                "set",
+                "glm",
+                "second",
+                "--home",
+                str(tmp_path),
+                "--model",
+                "second-model",
+                "--base-url",
+                "https://second.example.test/v1",
+                "--default",
+            ]
+        )
+        == 0
+    )
+
+    assert main(["provider", "use", "glm", "--home", str(tmp_path)]) == 0
+
+    runtime = build_default_runtime(tmp_path)
+    assert runtime.adapter.model.endpoint_id == "second"
+    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
+    assert provider.base_url == "https://second.example.test/v1"

@@ -77,8 +77,9 @@ def test_runtime_credential_override_wins_over_configured_reference(
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_model="glm-test",
-        base_url="https://example.test/v1",
+        default_endpoint_id="default",
+        default_endpoint_model="glm-test",
+        default_endpoint_base_url="https://example.test/v1",
         api_key_env="CONFIGURED_KEY",
     )
 
@@ -169,3 +170,32 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     assert payload["stream"] is False
     assert payload["seed"] == 7
     assert "tools" not in payload
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_openai_compatible_uses_kind_default_api_path() -> None:
+    adapter = build_runtime_adapter(
+        ProviderRuntimeOptions(
+            provider="openai-compatible",
+            model="test-model",
+            base_url="https://example.test/v1",
+        )
+    )
+
+    provider = cast(OpenAICompatibleProvider, adapter.provider)
+    assert provider.endpoint == "/chat/completions"
+
+
+@pytest.mark.asyncio
+async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
+    adapter = build_runtime_adapter(
+        ProviderRuntimeOptions(
+            provider="openai-compatible",
+            model="test-model",
+            base_url="https://example.test/v1",
+            api_path="/custom/path",
+        )
+    )
+
+    provider = cast(OpenAICompatibleProvider, adapter.provider)
+    assert provider.endpoint == "/custom/path"

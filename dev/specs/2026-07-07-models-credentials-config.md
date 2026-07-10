@@ -55,8 +55,8 @@ Endpoint 配置字段：
 
 - endpoint_id。
 - model_id。
-- base_url。
-- api_path。
+- base_url，可选；未配置时继承所属 Provider 的 `base_url`。
+- api_path，可选；未配置时继承所属 Provider 的 `api_path`，Provider 也未配置时按 `provider_type` 推断默认值（当前 `openai-compatible` 为 `/chat/completions`）。
 - temperature，可选；未配置时不向供应商发送该参数。
 - context_window。
 - max_output_tokens。
@@ -115,6 +115,8 @@ max output、tools 或由 thinking level 映射出的稳定字段。稳定 Endpo
 - credential_ref。
 - default_endpoint。
 - endpoints。
+- base_url，可选；作为该 Provider 下所有 Endpoint 的默认 `base_url`。
+- api_path，可选；作为该 Provider 下所有 Endpoint 的默认 `api_path`，未配置时按 `provider_type` 推断默认值。
 - enabled。
 - timeout_seconds。
 - retry_policy。
@@ -137,7 +139,8 @@ providers:
       endpoints:
         glm-4.5:
           model_id: glm-4.5
-          base_url: https://example.test/v1
+          # base_url 与 api_path 可省略，继承 Provider 级默认值；
+          # 显式声明则覆盖 Provider 默认值。
           temperature: 0.2
           context_window: 131072
           max_output_tokens: 8192
@@ -215,7 +218,7 @@ inline 可以用于本地个人场景，但 UI 必须明确它会保存在本地
 - Provider 级 CLI 提供 `ouro provider list/show/set/use/remove/check`。
 - Endpoint 级 CLI 提供 `ouro provider endpoint list/show/set/use/remove`；运行和连通性检查可用 `--endpoint` 选择端点。
 - 图像输入能力使用 `--vision/--no-vision`，并提供语义等价的 `--multimodal/--no-multimodal` 别名。
-- `ouro provider set --model/--base-url` 作为旧版兼容快捷方式保留，但等价于维护该 Provider 的默认 Endpoint。
+- `ouro provider set --endpoint <id> --model/--base-url` 在创建 Provider 的同时创建/更新默认 Endpoint，并将 Provider 的 `default_endpoint` 指向该 Endpoint；省略 `--endpoint` 可创建无 Endpoint 的 Provider。
 - `ouro config check` 保留为默认 Provider/Endpoint 连通性检查兼容入口。
 - Provider 适配层必须把 HTTP 200 但包含 error body、无 choices、空 assistant message、或未完成的 stream 视为失败，不允许静默完成为空输出。
 
