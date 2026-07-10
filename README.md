@@ -29,8 +29,8 @@ Current first-phase runtime includes:
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Native Agent Skills context injection through `ContextBuilder`.
-- Agent Skills are discovered from `OURO_HOME/skills`, `./skills`, and `./.ouro/skills`.
+- Standards-compatible Agent Skills discovery and progressive context injection through `ContextBuilder`.
+- Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 
 Development commands:
@@ -70,6 +70,16 @@ Example local config:
   "prompts": {
     "system": "Custom system prompt"
   },
+  "skills": {
+    "enabled": true,
+    "paths": [
+      "shared-skills",
+      {"path": ".team/skills", "source": "workspace"}
+    ],
+    "disabled": ["unsafe-community-skill"],
+    "scan_agents": true,
+    "scan_claude": true
+  },
   "providers": {
     "default": "glm",
     "items": {
@@ -86,6 +96,12 @@ Example local config:
   }
 }
 ```
+
+Each skill is a directory containing `SKILL.md`. Ouro reads the standard `name`,
+`description`, `license`, `compatibility`, `metadata`, and experimental `allowed-tools`
+frontmatter fields, preserves unknown community fields, and treats bundled files as on-demand
+resources. Ouro-specific enablement and search-path policy belongs in the central config above;
+per-skill `skill.json` manifests are not used.
 
 `provider_id` is the provider/supplier id; OURO does not use a separate local alias id
 in Phase 1.

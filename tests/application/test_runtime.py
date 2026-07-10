@@ -330,10 +330,9 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
     context_builder = ContextBuilder(
         available_skills=[
             SkillMetadata(
-                skill_id="pdf",
-                name="PDF",
+                name="pdf",
                 description="Extract text from PDFs.",
-                path=str(tmp_path / "skills" / "pdf"),
+                location=str(tmp_path / "skills" / "pdf" / "SKILL.md"),
             )
         ]
     )
@@ -364,7 +363,7 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
     ]
     assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
     assert "<skills_instructions>" in synthetic_messages[1]
-    assert '"pdf": Extract text from PDFs.' in synthetic_messages[1]
+    assert "<name>pdf</name>" in synthetic_messages[1]
     assert synthetic_messages[2] == "plugin context"
 
 

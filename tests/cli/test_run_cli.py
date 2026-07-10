@@ -485,8 +485,8 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
     ]
     assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
     assert any("<skills_instructions>" in text for text in synthetic_messages)
-    assert any('"pdf": Extract text from PDFs.' in text for text in synthetic_messages)
-    assert any('"xlsx": Process spreadsheets.' in text for text in synthetic_messages)
+    assert any("<name>pdf</name>" in text for text in synthetic_messages)
+    assert any("<name>xlsx</name>" in text for text in synthetic_messages)
 
 
 def test_skills_commands_list_show_roots_and_prompt(
@@ -519,15 +519,17 @@ def test_skills_commands_list_show_roots_and_prompt(
     roots_payload = json.loads(capsys.readouterr().out)
 
     assert roots_code == 0
-    assert roots_payload["roots"][0]["path"] == str((home / "skills").resolve())
+    assert str((home / "skills").resolve()) in {
+        root["path"] for root in roots_payload["roots"]
+    }
 
     prompt_code = main(["skills", "prompt", "--home", str(home), "--json"])
     prompt_payload = json.loads(capsys.readouterr().out)
 
     assert prompt_code == 0
     assert prompt_payload["skill_count"] == 2
-    assert '"pdf": Extract text from PDFs.' in prompt_payload["prompt"]
-    assert '"xlsx": Process spreadsheets.' in prompt_payload["prompt"]
+    assert "<name>pdf</name>" in prompt_payload["prompt"]
+    assert "<name>xlsx</name>" in prompt_payload["prompt"]
 
 
 def test_skills_show_reports_missing_skill(tmp_path, capsys) -> None:
@@ -707,14 +709,11 @@ def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:
 
 def _write_skill(root, skill_id: str, name: str, description: str) -> None:
     root.mkdir(parents=True)
-    (root / "skill.json").write_text(
-        json.dumps(
-            {
-                "skill_id": skill_id,
-                "name": name,
-                "description": description,
-            }
-        ),
+    (root / "SKILL.md").write_text(
+        f"""---
+name: {skill_id}
+description: {description}
+---
+{name} instructions.""",
         encoding="utf-8",
     )
-    (root / "SKILL.md").write_text(f"{name} instructions.", encoding="utf-8")

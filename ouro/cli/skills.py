@@ -2,11 +2,18 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 
 from ouro.prompts import render_agent_skills_prompt
-from ouro.skills import SkillMetadata, default_skill_roots, discover_available_skills
-from ouro.skills.loader import LoadedSkill
+from ouro.skills import (
+    LoadedSkill,
+    SkillDiagnostic,
+    SkillLoader,
+    SkillMetadata,
+    default_skill_roots,
+    discover_skill_catalog,
+)
 
 
 def list_skills(
@@ -14,7 +21,8 @@ def list_skills(
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
-    skills = discover_available_skills(home=home)
+    catalog = discover_skill_catalog(home=home)
+    skills = catalog.skills
     roots = default_skill_roots(home=home)
     if json_mode:
         print(
@@ -23,6 +31,7 @@ def list_skills(
                     "status": "ok",
                     "roots": [_skill_root_to_dict(root) for root in roots],
                     "skills": [_skill_metadata_to_dict(skill) for skill in skills],
+                    "diagnostics": [item.model_dump(mode="json") for item in catalog.diagnostics],
                 },
                 ensure_ascii=False,
             )
@@ -31,13 +40,16 @@ def list_skills(
 
     if not skills:
         print("No skills found.")
+        _print_diagnostics(catalog.diagnostics)
         return 0
     lines = ["Skills:"]
     for skill in skills:
+        skill_id = f"[id: {skill.skill_id}]"
         source = f"[{skill.source}]"
-        description = f" - {skill.description}" if skill.description else ""
-        lines.append(f"- {skill.skill_id} {source} {skill.name}{description}")
+        location = f"[file: {skill.location}]"
+        lines.append(f"- {source} {skill.name} {skill_id} {location}")
     print("\n".join(lines))
+    _print_diagnostics(catalog.diagnostics)
     return 0
 
 
@@ -47,14 +59,14 @@ def show_skill(
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
-    skill = _find_skill(discover_available_skills(home=home), skill_id)
+    skill = _find_skill(discover_skill_catalog(home=home).skills, skill_id)
     if skill is None:
         _print_skill_not_found(skill_id, json_mode=json_mode)
         return 1
 
     try:
         loaded = _load_skill(skill)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         _print_skill_error(f"failed to load skill content: {exc}", json_mode=json_mode)
         return 1
 
@@ -79,8 +91,12 @@ def show_skill(
     ]
     if loaded.metadata.description:
         lines.append(f"Description: {loaded.metadata.description}")
-    if loaded.metadata.triggers:
-        lines.append(f"Triggers: {', '.join(loaded.metadata.triggers)}")
+    if loaded.metadata.compatibility:
+        lines.append(f"Compatibility: {loaded.metadata.compatibility}")
+    if loaded.metadata.allowed_tools:
+        lines.append(f"Allowed tools: {loaded.metadata.allowed_tools}")
+    if loaded.resources:
+        lines.append(f"Resources: {', '.join(loaded.resources)}")
     lines.extend(["", loaded.content])
     print("\n".join(lines))
     return 0
@@ -117,7 +133,7 @@ def show_skills_prompt(
     home: str | Path | None = None,
     json_mode: bool = False,
 ) -> int:
-    skills = discover_available_skills(home=home)
+    skills = discover_skill_catalog(home=home).skills
     prompt = render_agent_skills_prompt(skills)
     if json_mode:
         print(
@@ -138,18 +154,21 @@ def show_skills_prompt(
 
 def _find_skill(skills: list[SkillMetadata], skill_id: str) -> SkillMetadata | None:
     for skill in skills:
-        if skill.skill_id == skill_id:
+        if skill.name == skill_id:
             return skill
     return None
 
 
 def _load_skill(skill: SkillMetadata) -> LoadedSkill:
-    content = (Path(skill.path) / "SKILL.md").read_text(encoding="utf-8")
-    return LoadedSkill(metadata=skill, content=content)
+    return SkillLoader(skill.path, default_source=skill.source).load_content(skill.name)
 
 
 def _skill_metadata_to_dict(skill: SkillMetadata) -> dict[str, object]:
-    return skill.model_dump(mode="json")
+    return {
+        **skill.model_dump(mode="json"),
+        "skill_id": skill.name,
+        "path": skill.path,
+    }
 
 
 def _loaded_skill_to_dict(loaded: LoadedSkill) -> dict[str, object]:
@@ -176,3 +195,11 @@ def _print_skill_error(message: str, *, json_mode: bool) -> None:
         print(json.dumps({"status": "failed", "error": message}, ensure_ascii=False))
     else:
         print(f"Error: {message}", file=sys.stderr)
+
+
+def _print_diagnostics(diagnostics: Sequence[SkillDiagnostic]) -> None:
+    for item in diagnostics:
+        print(
+            f"{item.level.title()}: [{item.code}] {item.message} ({item.path})",
+            file=sys.stderr,
+        )
