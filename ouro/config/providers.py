@@ -1,61 +1,33 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
-from pydantic import Field
-from pydantic.functional_validators import field_validator
+from pydantic import ValidationError
 
 from ouro.config.credentials import CredentialRef
+from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.file import JsonConfigFile
-from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.config.provider_codec import (
+    provider_config_from_legacy,
+    provider_config_from_mapping,
+    provider_config_to_raw,
+    update_legacy_default_endpoint,
+)
+from ouro.config.provider_models import (
+    BUILTIN_FAUX_PROVIDER_ID,
+    ProviderConfig,
+    ProviderConfigSnapshot,
+    ProviderKind,
+    ProviderRuntimeOptions,
+    builtin_faux_provider,
+    normalize_provider_config,
+)
+from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
 from ouro.core.errors import ConfigError
-
-ProviderKind = Literal["faux", "openai-compatible"]
-SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = ("faux", "openai-compatible")
-BUILTIN_FAUX_PROVIDER_ID = "faux"
-
-
-class ProviderConfig(OuroModel):
-    provider_id: str
-    provider_type: str = "openai-compatible"
-    base_url: str | None = None
-    credential_ref: CredentialRef = Field(default_factory=CredentialRef)
-    default_model: str | None = None
-    enabled: bool = True
-    timeout_seconds: float = 60.0
-    retry_policy: dict[str, int | float] = Field(default_factory=dict)
-    extra: Metadata = MetadataField
-
-    @field_validator("credential_ref", mode="before")
-    @classmethod
-    def _parse_credential_ref(cls, value: object) -> object:
-        if isinstance(value, str) or value is None:
-            return CredentialRef.parse(value)
-        return value
-
-
-@dataclass(frozen=True)
-class ProviderRuntimeOptions:
-    provider: ProviderKind | None = None
-    provider_id: str | None = None
-    model: str | None = None
-    base_url: str | None = None
-    api_key: str | None = None
-    api_key_env: str | None = None
-    credential_ref: CredentialRef | None = None
-    timeout: float | None = None
-    extra: dict[str, Any] | None = None
-
-
-@dataclass(frozen=True)
-class ProviderConfigSnapshot:
-    default_provider_id: str
-    providers: tuple[ProviderConfig, ...]
-    config_path: Path
+from ouro.core.provider import ThinkingLevel
 
 
 class ProviderConfigManager:
@@ -68,9 +40,14 @@ class ProviderConfigManager:
         raw = self.load_raw()
         configured = self._configured_providers(raw)
         default_provider_id = self._default_provider_id(raw, configured)
+        if (
+            default_provider_id != BUILTIN_FAUX_PROVIDER_ID
+            and default_provider_id not in configured
+        ):
+            raise ConfigError(f"default provider not found: {default_provider_id}")
         providers = dict(configured)
         if include_builtin:
-            providers.setdefault(BUILTIN_FAUX_PROVIDER_ID, _builtin_faux_provider())
+            providers.setdefault(BUILTIN_FAUX_PROVIDER_ID, builtin_faux_provider())
             if default_provider_id not in providers:
                 default_provider_id = BUILTIN_FAUX_PROVIDER_ID
         return ProviderConfigSnapshot(
@@ -91,10 +68,18 @@ class ProviderConfigManager:
         }
         return providers.get(provider_id)
 
+    def get_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str | None = None,
+    ) -> ProviderEndpointConfig | None:
+        provider = self.get_provider(provider_id)
+        return provider.endpoint(endpoint_id) if provider is not None else None
+
     def default_provider(self) -> ProviderConfig:
         snapshot = self.snapshot()
         providers = {provider.provider_id: provider for provider in snapshot.providers}
-        return providers.get(snapshot.default_provider_id) or _builtin_faux_provider()
+        return providers.get(snapshot.default_provider_id) or builtin_faux_provider()
 
     def resolve_runtime_options(
         self,
@@ -103,29 +88,49 @@ class ProviderConfigManager:
         snapshot = self.snapshot()
         providers = {provider.provider_id: provider for provider in snapshot.providers}
 
-        explicit_configured_provider = False
-        selected_id = snapshot.default_provider_id
-        if runtime_options.provider_id is not None and runtime_options.provider_id in providers:
-            explicit_configured_provider = True
-            selected_id = runtime_options.provider_id
-        selected = providers.get(selected_id) or _builtin_faux_provider()
-        if not selected.enabled:
-            raise ConfigError(f"provider is disabled: {selected.provider_id}")
-
-        base_options = _runtime_options_from_config(selected)
+        requested_id = runtime_options.provider_id
+        requested_is_configured = requested_id is not None and requested_id in providers
         if (
-            runtime_options.provider is not None
-            and runtime_options.provider != base_options.provider
-            and not explicit_configured_provider
+            requested_id is not None
+            and not requested_is_configured
+            and runtime_options.provider is None
         ):
-            base_options = ProviderRuntimeOptions(provider=runtime_options.provider)
-        resolved = _merge_runtime_options(base_options, runtime_options)
-        if resolved.provider_id is None:
-            resolved = _merge_runtime_options(
-                resolved,
-                ProviderRuntimeOptions(provider_id=selected.provider_id),
+            raise ConfigError(f"provider not found: {requested_id}")
+
+        selected_id = (
+            requested_id
+            if requested_is_configured and requested_id is not None
+            else snapshot.default_provider_id
+        )
+        selected = providers.get(selected_id) or builtin_faux_provider()
+        selected_kind = selected.provider_type
+        if (
+            requested_is_configured
+            and runtime_options.provider is not None
+            and runtime_options.provider != selected_kind
+        ):
+            raise ConfigError(
+                f"provider kind does not match configured provider {selected.provider_id}: "
+                f"{runtime_options.provider} != {selected_kind}"
             )
-        return resolved
+
+        ad_hoc_provider = (requested_id is not None and not requested_is_configured) or (
+            requested_id is None
+            and runtime_options.provider is not None
+            and runtime_options.provider != selected_kind
+        )
+        if ad_hoc_provider:
+            if runtime_options.endpoint_id is not None:
+                raise ConfigError("--endpoint requires a configured provider")
+            base_options = ProviderRuntimeOptions(provider=runtime_options.provider)
+        else:
+            if not selected.enabled:
+                raise ConfigError(f"provider is disabled: {selected.provider_id}")
+            base_options = runtime_options_from_config(
+                selected,
+                endpoint_id=runtime_options.endpoint_id,
+            )
+        return merge_runtime_options(base_options, runtime_options)
 
     def upsert_provider(
         self,
@@ -140,50 +145,194 @@ class ProviderConfigManager:
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
+        """Create or update a provider.
+
+        ``default_model`` and ``base_url`` remain a compatibility shorthand for
+        updating the provider's default endpoint. New callers should use
+        ``upsert_endpoint`` for endpoint-level configuration.
+        """
+
         provider_id = provider_id.strip()
         if not provider_id:
             raise ConfigError("provider id is required")
+        if provider_id == BUILTIN_FAUX_PROVIDER_ID:
+            raise ConfigError("built-in provider cannot be modified: faux")
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
-        current = configured.get(provider_id)
-        if current is None:
-            current = ProviderConfig(
-                provider_id=provider_id,
-                provider_type=provider_type or "openai-compatible",
+        previous_default_provider_id = self._default_provider_id(raw, configured)
+        try:
+            current = configured.get(provider_id)
+            if current is None:
+                current = ProviderConfig(
+                    provider_id=provider_id,
+                    provider_type=provider_type or "openai-compatible",
+                )
+
+            credential_ref = current.credential_ref
+            if api_key_env is not None:
+                credential_ref = CredentialRef.parse(f"env:{api_key_env}")
+            elif api_key is not None:
+                credential_ref = CredentialRef.parse(api_key)
+
+            updated = current.model_copy(
+                update={
+                    "provider_type": provider_type or current.provider_type,
+                    "credential_ref": credential_ref,
+                    "timeout_seconds": timeout_seconds
+                    if timeout_seconds is not None
+                    else current.timeout_seconds,
+                    "enabled": enabled if enabled is not None else current.enabled,
+                }
             )
-
-        credential_ref = current.credential_ref
-        if api_key_env is not None:
-            credential_ref = CredentialRef.parse(f"env:{api_key_env}")
-        elif api_key is not None:
-            credential_ref = CredentialRef.parse(api_key)
-
-        updated = current.model_copy(
-            update={
-                "provider_type": provider_type or current.provider_type,
-                "default_model": default_model
-                if default_model is not None
-                else current.default_model,
-                "base_url": base_url if base_url is not None else current.base_url,
-                "credential_ref": credential_ref,
-                "timeout_seconds": timeout_seconds
-                if timeout_seconds is not None
-                else current.timeout_seconds,
-                "enabled": enabled if enabled is not None else current.enabled,
-            }
-        )
-        updated = _normalize_provider_config(updated)
-        _validate_provider_config(updated)
+            updated = normalize_provider_config(updated)
+            if default_model is not None or base_url is not None:
+                updated = update_legacy_default_endpoint(
+                    updated,
+                    model_id=default_model,
+                    base_url=base_url,
+                )
+            updated = ProviderConfig.model_validate(updated.model_dump())
+        except ValidationError as exc:
+            raise ConfigError(f"invalid provider config: {exc}") from exc
+        if make_default and (not updated.enabled or updated.endpoint() is None):
+            raise ConfigError("a default provider must be enabled and have a default endpoint")
 
         configured[provider_id] = updated
-        default_provider_id = (
-            provider_id if make_default else self._default_provider_id(raw, configured)
-        )
+        if make_default:
+            default_provider_id = provider_id
+        elif previous_default_provider_id == provider_id and not updated.enabled:
+            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
+        else:
+            default_provider_id = previous_default_provider_id
         self._save_configured_providers(
             raw,
             configured=configured,
             default_provider_id=default_provider_id,
+        )
+        return updated
+
+    def upsert_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str,
+        *,
+        model_id: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        temperature: float | None = None,
+        context_window: int | None = None,
+        max_output_tokens: int | None = None,
+        supports_tools: bool | None = None,
+        supports_vision: bool | None = None,
+        supports_streaming: bool | None = None,
+        supports_structured_output: bool | None = None,
+        supports_reasoning: bool | None = None,
+        supported_thinking_levels: Sequence[ThinkingLevel] | None = None,
+        default_thinking_level: ThinkingLevel | None = None,
+        request_options: Mapping[str, Any] | None = None,
+        make_default: bool = False,
+    ) -> ProviderEndpointConfig:
+        provider_id = provider_id.strip()
+        endpoint_id = endpoint_id.strip()
+        if not endpoint_id:
+            raise ConfigError("endpoint id is required")
+
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        provider = configured.get(provider_id)
+        if provider is None:
+            raise ConfigError(f"provider not found: {provider_id}")
+
+        try:
+            current = provider.endpoint(endpoint_id)
+            if current is None:
+                if model_id is None:
+                    raise ConfigError("--model is required for a new endpoint")
+                current = ProviderEndpointConfig(
+                    endpoint_id=endpoint_id,
+                    model_id=model_id,
+                    base_url=base_url,
+                )
+        except ValidationError as exc:
+            raise ConfigError(f"invalid endpoint config: {exc}") from exc
+
+        next_supports_reasoning = (
+            supports_reasoning if supports_reasoning is not None else current.supports_reasoning
+        )
+        next_levels = (
+            tuple(supported_thinking_levels)
+            if supported_thinking_levels is not None
+            else current.supported_thinking_levels
+        )
+        next_default_level = (
+            default_thinking_level
+            if default_thinking_level is not None
+            else current.default_thinking_level
+        )
+        if not next_supports_reasoning:
+            next_levels = ()
+            next_default_level = None
+
+        try:
+            updated = current.model_copy(
+                update={
+                    "model_id": model_id if model_id is not None else current.model_id,
+                    "base_url": base_url if base_url is not None else current.base_url,
+                    "api_path": api_path if api_path is not None else current.api_path,
+                    "temperature": temperature if temperature is not None else current.temperature,
+                    "context_window": context_window
+                    if context_window is not None
+                    else current.context_window,
+                    "max_output_tokens": max_output_tokens
+                    if max_output_tokens is not None
+                    else current.max_output_tokens,
+                    "supports_tools": supports_tools
+                    if supports_tools is not None
+                    else current.supports_tools,
+                    "supports_vision": supports_vision
+                    if supports_vision is not None
+                    else current.supports_vision,
+                    "supports_streaming": supports_streaming
+                    if supports_streaming is not None
+                    else current.supports_streaming,
+                    "supports_structured_output": supports_structured_output
+                    if supports_structured_output is not None
+                    else current.supports_structured_output,
+                    "supports_reasoning": next_supports_reasoning,
+                    "supported_thinking_levels": next_levels,
+                    "default_thinking_level": next_default_level,
+                    "request_options": dict(request_options)
+                    if request_options is not None
+                    else current.request_options,
+                }
+            )
+            updated = ProviderEndpointConfig.model_validate(updated.model_dump())
+        except ValidationError as exc:
+            raise ConfigError(f"invalid endpoint config: {exc}") from exc
+
+        endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
+        endpoints[endpoint_id] = updated
+        default_endpoint = (
+            endpoint_id
+            if make_default or provider.default_endpoint is None
+            else provider.default_endpoint
+        )
+        provider = provider.model_copy(
+            update={
+                "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),
+                "default_endpoint": default_endpoint,
+            }
+        )
+        try:
+            provider = ProviderConfig.model_validate(provider.model_dump())
+        except ValidationError as exc:
+            raise ConfigError(f"invalid provider config: {exc}") from exc
+        configured[provider_id] = provider
+        self._save_configured_providers(
+            raw,
+            configured=configured,
+            default_provider_id=self._default_provider_id(raw, configured),
         )
         return updated
 
@@ -193,6 +342,8 @@ class ProviderConfigManager:
             raise ConfigError(f"provider not found: {provider_id}")
         if not provider.enabled:
             raise ConfigError(f"provider is disabled: {provider_id}")
+        if provider.endpoint() is None:
+            raise ConfigError(f"provider has no default endpoint: {provider_id}")
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
@@ -202,6 +353,27 @@ class ProviderConfigManager:
             default_provider_id=provider_id,
         )
         return provider
+
+    def set_default_endpoint(
+        self,
+        provider_id: str,
+        endpoint_id: str,
+    ) -> ProviderEndpointConfig:
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        provider = configured.get(provider_id)
+        if provider is None:
+            raise ConfigError(f"provider not found: {provider_id}")
+        endpoint = provider.endpoint(endpoint_id)
+        if endpoint is None:
+            raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
+        configured[provider_id] = provider.model_copy(update={"default_endpoint": endpoint_id})
+        self._save_configured_providers(
+            raw,
+            configured=configured,
+            default_provider_id=self._default_provider_id(raw, configured),
+        )
+        return endpoint
 
     def remove_provider(self, provider_id: str) -> None:
         raw = self.load_raw()
@@ -221,21 +393,53 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
 
+    def remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        provider = configured.get(provider_id)
+        if provider is None:
+            raise ConfigError(f"provider not found: {provider_id}")
+        endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
+        if endpoint_id not in endpoints:
+            raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
+        del endpoints[endpoint_id]
+        default_endpoint = provider.default_endpoint
+        if default_endpoint == endpoint_id:
+            default_endpoint = sorted(endpoints)[0] if endpoints else None
+        updated_provider = provider.model_copy(
+            update={
+                "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),
+                "default_endpoint": default_endpoint,
+            }
+        )
+        configured[provider_id] = updated_provider
+        default_provider_id = self._default_provider_id(raw, configured)
+        if default_provider_id == provider_id and updated_provider.endpoint() is None:
+            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
+        self._save_configured_providers(
+            raw,
+            configured=configured,
+            default_provider_id=default_provider_id,
+        )
+
     def load_raw(self) -> dict[str, Any]:
         return self._file.read()
 
     def _configured_providers(self, raw: Mapping[str, Any]) -> dict[str, ProviderConfig]:
         providers: dict[str, ProviderConfig] = {}
         providers_section = raw.get("providers")
+        if providers_section is not None and not isinstance(providers_section, Mapping):
+            raise ConfigError("providers config must be an object")
         if isinstance(providers_section, Mapping):
-            items = providers_section.get("items") or {}
+            items = providers_section.get("items", {})
             if isinstance(items, Mapping):
                 for provider_id, item in items.items():
                     if not isinstance(provider_id, str):
                         continue
                     if not isinstance(item, Mapping):
                         raise ConfigError(f"provider config must be an object: {provider_id}")
-                    provider = _provider_config_from_mapping(provider_id, item)
+                    provider = provider_config_from_mapping(provider_id, item)
+                    self._reject_reserved_provider(provider)
                     providers[provider.provider_id] = provider
             elif isinstance(items, list):
                 for item in items:
@@ -244,17 +448,28 @@ class ProviderConfigManager:
                     provider_id = str(item.get("provider_id") or "").strip()
                     if not provider_id:
                         raise ConfigError("provider config entry is missing provider_id")
-                    provider = _provider_config_from_mapping(provider_id, item)
+                    provider = provider_config_from_mapping(provider_id, item)
+                    self._reject_reserved_provider(provider)
+                    if provider.provider_id in providers:
+                        raise ConfigError(f"duplicate provider id: {provider.provider_id}")
                     providers[provider.provider_id] = provider
+            else:
+                raise ConfigError("providers.items must be an object or list")
 
         legacy_provider = raw.get("provider")
         if isinstance(legacy_provider, Mapping):
-            provider = _provider_config_from_legacy(legacy_provider)
-            providers.setdefault(provider.provider_id, provider)
+            provider = provider_config_from_legacy(legacy_provider)
+            if provider.provider_id != BUILTIN_FAUX_PROVIDER_ID:
+                providers.setdefault(provider.provider_id, provider)
         elif legacy_provider is not None:
             raise ConfigError("provider config must be an object")
 
         return providers
+
+    @staticmethod
+    def _reject_reserved_provider(provider: ProviderConfig) -> None:
+        if provider.provider_id == BUILTIN_FAUX_PROVIDER_ID:
+            raise ConfigError("provider id is reserved for the built-in Faux provider: faux")
 
     def _default_provider_id(
         self,
@@ -263,8 +478,10 @@ class ProviderConfigManager:
     ) -> str:
         providers_section = raw.get("providers")
         if isinstance(providers_section, Mapping):
-            default_id = providers_section.get("default")
-            if isinstance(default_id, str) and default_id.strip():
+            if "default" in providers_section:
+                default_id = providers_section.get("default")
+                if not isinstance(default_id, str) or not default_id.strip():
+                    raise ConfigError("providers.default must be a non-empty string")
                 return default_id.strip()
 
         legacy_provider = raw.get("provider")
@@ -289,215 +506,8 @@ class ProviderConfigManager:
         next_raw["providers"] = {
             "default": default_provider_id,
             "items": {
-                provider_id: _provider_config_to_raw(config)
+                provider_id: provider_config_to_raw(config)
                 for provider_id, config in sorted(configured.items())
             },
         }
-        self._write_raw(next_raw)
-
-    def _write_raw(self, raw: Mapping[str, Any]) -> None:
-        self._file.write(raw)
-
-
-def provider_config_to_public_dict(
-    provider: ProviderConfig,
-    *,
-    is_default: bool = False,
-) -> dict[str, Any]:
-    return {
-        "provider_id": provider.provider_id,
-        "kind": provider.provider_type,
-        "model": provider.default_model,
-        "base_url": provider.base_url,
-        "credential": provider.credential_ref.display(),
-        "enabled": provider.enabled,
-        "timeout": provider.timeout_seconds,
-        "default": is_default,
-    }
-
-
-def _provider_config_from_mapping(
-    provider_id: str,
-    raw: Mapping[str, Any],
-) -> ProviderConfig:
-    provider_type = raw.get("provider_type") or raw.get("kind") or raw.get("provider")
-    credential_ref = _credential_ref_from_mapping(raw)
-    configured_provider_id = _optional_str(raw.get("provider_id")) or provider_id
-    if configured_provider_id != provider_id:
-        raise ConfigError(
-            "provider_id must match providers.items key "
-            f"({configured_provider_id} != {provider_id})"
-        )
-    provider = ProviderConfig(
-        provider_id=configured_provider_id,
-        provider_type=_normalize_provider_type(provider_type or "openai-compatible"),
-        base_url=_optional_str(raw.get("base_url")),
-        credential_ref=credential_ref,
-        default_model=_optional_str(raw.get("default_model") or raw.get("model")),
-        enabled=bool(raw.get("enabled", True)),
-        timeout_seconds=float(raw.get("timeout_seconds") or raw.get("timeout") or 60.0),
-        retry_policy=dict(raw.get("retry_policy") or {}),
-        extra=dict(raw.get("extra") or {}),
-    )
-    return _normalize_provider_config(provider)
-
-
-def _provider_config_from_legacy(raw: Mapping[str, Any]) -> ProviderConfig:
-    kind = raw.get("kind") or raw.get("provider") or "faux"
-    provider_type = _normalize_provider_type(kind)
-    provider_id = _optional_str(raw.get("provider_id"))
-    if provider_id is None:
-        provider_id = BUILTIN_FAUX_PROVIDER_ID if provider_type == "faux" else "openai_compatible"
-    provider = ProviderConfig(
-        provider_id=provider_id,
-        provider_type=provider_type,
-        base_url=_optional_str(raw.get("base_url")),
-        credential_ref=_credential_ref_from_mapping(raw),
-        default_model=_optional_str(raw.get("model") or raw.get("default_model")),
-        enabled=bool(raw.get("enabled", True)),
-        timeout_seconds=float(raw.get("timeout") or raw.get("timeout_seconds") or 60.0),
-    )
-    return _normalize_provider_config(provider)
-
-
-def _provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
-    raw: dict[str, Any] = {
-        "provider_type": provider.provider_type,
-        "provider_id": provider.provider_id,
-        "enabled": provider.enabled,
-        "timeout_seconds": provider.timeout_seconds,
-    }
-    if provider.default_model:
-        raw["default_model"] = provider.default_model
-    if provider.base_url:
-        raw["base_url"] = provider.base_url
-    if provider.credential_ref.type != "none":
-        raw["credential_ref"] = _credential_ref_to_raw(provider.credential_ref)
-    if provider.retry_policy:
-        raw["retry_policy"] = provider.retry_policy
-    if provider.extra:
-        raw["extra"] = provider.extra
-    return raw
-
-
-def _runtime_options_from_config(provider: ProviderConfig) -> ProviderRuntimeOptions:
-    provider_type = _normalize_provider_type(provider.provider_type)
-    if provider_type == "faux":
-        return ProviderRuntimeOptions(
-            provider="faux",
-            provider_id=provider.provider_id,
-            model=provider.default_model or "faux",
-            timeout=provider.timeout_seconds,
-        )
-    return ProviderRuntimeOptions(
-        provider="openai-compatible",
-        provider_id=provider.provider_id,
-        model=provider.default_model,
-        base_url=provider.base_url,
-        credential_ref=provider.credential_ref,
-        timeout=provider.timeout_seconds,
-        extra=dict(provider.extra),
-    )
-
-
-def _merge_extra(
-    base: dict[str, Any] | None,
-    override: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    if base is None and override is None:
-        return None
-    merged = dict(base or {})
-    merged.update(override or {})
-    return merged
-
-
-def _merge_runtime_options(
-    base: ProviderRuntimeOptions,
-    override: ProviderRuntimeOptions,
-) -> ProviderRuntimeOptions:
-    return ProviderRuntimeOptions(
-        provider=override.provider if override.provider is not None else base.provider,
-        provider_id=override.provider_id if override.provider_id is not None else base.provider_id,
-        model=override.model if override.model is not None else base.model,
-        base_url=override.base_url if override.base_url is not None else base.base_url,
-        api_key=override.api_key if override.api_key is not None else base.api_key,
-        api_key_env=override.api_key_env if override.api_key_env is not None else base.api_key_env,
-        credential_ref=override.credential_ref
-        if override.credential_ref is not None
-        else base.credential_ref,
-        timeout=override.timeout if override.timeout is not None else base.timeout,
-        extra=_merge_extra(base.extra, override.extra),
-    )
-
-
-def _normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
-    provider_type = _normalize_provider_type(provider.provider_type)
-    default_model = provider.default_model
-    if provider_type == "faux" and not default_model:
-        default_model = "faux"
-    return provider.model_copy(
-        update={
-            "provider_type": provider_type,
-            "default_model": default_model,
-        }
-    )
-
-
-def _validate_provider_config(provider: ProviderConfig) -> None:
-    if provider.provider_type == "openai-compatible":
-        if not provider.base_url:
-            raise ConfigError("--base-url is required for openai-compatible provider")
-        if not provider.default_model:
-            raise ConfigError("--model is required for openai-compatible provider")
-
-
-def _normalize_provider_type(value: object) -> ProviderKind:
-    if not isinstance(value, str):
-        raise ConfigError(f"unsupported provider kind: {value}")
-    if value in {"openai-compatible", "openai_compatible"}:
-        return "openai-compatible"
-    if value == "faux":
-        return "faux"
-    raise ConfigError(f"unsupported provider kind: {value}")
-
-
-def _credential_ref_from_mapping(raw: Mapping[str, Any]) -> CredentialRef:
-    credential_ref = raw.get("credential_ref")
-    if isinstance(credential_ref, str) or credential_ref is None:
-        if credential_ref is not None:
-            return CredentialRef.parse(credential_ref)
-    elif isinstance(credential_ref, Mapping):
-        return CredentialRef.model_validate(dict(credential_ref))
-    if credential_ref is not None:
-        return CredentialRef.model_validate(credential_ref)
-    api_key_env = raw.get("api_key_env")
-    if isinstance(api_key_env, str) and api_key_env:
-        return CredentialRef.parse(f"env:{api_key_env}")
-    api_key = raw.get("api_key")
-    if isinstance(api_key, str) and api_key:
-        return CredentialRef.parse(api_key)
-    return CredentialRef()
-
-
-def _credential_ref_to_raw(ref: CredentialRef) -> str | dict[str, str]:
-    if ref.type == "env":
-        return f"env:{ref.name}"
-    if ref.type == "inline":
-        return {"type": "inline", "value": ref.value or ""}
-    return "none"
-
-
-def _optional_str(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-    return None
-
-
-def _builtin_faux_provider() -> ProviderConfig:
-    return ProviderConfig(
-        provider_id=BUILTIN_FAUX_PROVIDER_ID,
-        provider_type="faux",
-        default_model="faux",
-        enabled=True,
-        timeout_seconds=60.0,
-    )
+        self._file.write(next_raw)

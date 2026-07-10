@@ -6,6 +6,8 @@ from typing import Any, Literal, Protocol
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.messages import MessageRecord
 
+ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
+
 
 class ModelCost(OuroModel):
     input: float = 0.0
@@ -17,15 +19,18 @@ class ModelCost(OuroModel):
 class ModelMetadata(OuroModel):
     model_id: str
     provider_id: str
+    endpoint_id: str | None = None
     display_name: str | None = None
     context_window: int = 128_000
     max_output_tokens: int = 8192
+    temperature: float | None = None
     supports_tools: bool = True
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
     supports_reasoning: bool = False
-    default_reasoning_level: str | None = None
+    supported_thinking_levels: tuple[ThinkingLevel, ...] = ()
+    default_thinking_level: ThinkingLevel | None = None
     cost: ModelCost | None = None
     metadata: Metadata = MetadataField
 
@@ -64,6 +69,7 @@ class Provider(Protocol):
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]: ...

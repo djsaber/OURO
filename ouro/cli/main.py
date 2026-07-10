@@ -5,18 +5,25 @@ import asyncio
 from collections.abc import Sequence
 
 from ouro.cli.config_commands import (
-    check_provider_connection,
     clear_system_prompt_config,
-    list_provider_configs,
-    remove_provider_config,
-    set_provider_config,
     set_system_prompt_config,
-    show_provider_config,
     show_system_prompt_config,
-    use_provider_config,
 )
 from ouro.cli.interactive import run_interactive
 from ouro.cli.parser import build_parser
+from ouro.cli.provider_commands import (
+    check_provider_connection,
+    list_provider_configs,
+    list_provider_endpoints,
+    remove_provider_config,
+    remove_provider_endpoint,
+    set_provider_config,
+    set_provider_endpoint,
+    show_provider_config,
+    show_provider_endpoint,
+    use_provider_config,
+    use_provider_endpoint,
+)
 from ouro.cli.run import (
     RuntimeProviderOptions,
     run_json,
@@ -98,6 +105,8 @@ def _config_command(args: argparse.Namespace) -> int:
 
 def _provider_command(args: argparse.Namespace) -> int:
     home = args.provider_home or args.home
+    if args.provider_command == "endpoint":
+        return _provider_endpoint_command(args, home=home)
     if args.provider_command == "list":
         return list_provider_configs(home=home, json_mode=args.json)
     if args.provider_command == "show":
@@ -126,10 +135,64 @@ def _provider_command(args: argparse.Namespace) -> int:
                 home=home,
                 provider_options=_provider_options(args, prefix="provider_check_"),
                 provider_id=args.provider_id,
+                endpoint_id=args.provider_check_endpoint_id,
                 json_mode=args.json,
             )
         )
     raise AssertionError(f"unknown provider command: {args.provider_command}")
+
+
+def _provider_endpoint_command(
+    args: argparse.Namespace,
+    *,
+    home: str | None,
+) -> int:
+    if args.endpoint_command == "list":
+        return list_provider_endpoints(args.provider_id, home=home, json_mode=args.json)
+    if args.endpoint_command == "show":
+        return show_provider_endpoint(
+            args.provider_id,
+            args.endpoint_id,
+            home=home,
+            json_mode=args.json,
+        )
+    if args.endpoint_command == "set":
+        return set_provider_endpoint(
+            args.provider_id,
+            args.endpoint_id,
+            home=home,
+            model=args.model,
+            base_url=args.base_url,
+            api_path=args.api_path,
+            temperature=args.temperature,
+            context_window=args.context_window,
+            max_output_tokens=args.max_output_tokens,
+            supports_tools=args.supports_tools,
+            supports_vision=args.supports_vision,
+            supports_streaming=args.supports_streaming,
+            supports_structured_output=args.supports_structured_output,
+            supports_reasoning=args.supports_reasoning,
+            supported_thinking_levels=args.thinking_levels,
+            default_thinking_level=args.thinking_level,
+            request_options=args.request_options,
+            make_default=args.default,
+            json_mode=args.json,
+        )
+    if args.endpoint_command == "use":
+        return use_provider_endpoint(
+            args.provider_id,
+            args.endpoint_id,
+            home=home,
+            json_mode=args.json,
+        )
+    if args.endpoint_command == "remove":
+        return remove_provider_endpoint(
+            args.provider_id,
+            args.endpoint_id,
+            home=home,
+            json_mode=args.json,
+        )
+    raise AssertionError(f"unknown provider endpoint command: {args.endpoint_command}")
 
 
 def _skills_command(args: argparse.Namespace) -> int:
@@ -179,18 +242,39 @@ def _skills_command(args: argparse.Namespace) -> int:
 
 
 def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeProviderOptions:
-    provider = getattr(args, f"{prefix}provider", None) or getattr(args, "provider", None)
     return RuntimeProviderOptions(
-        provider=provider,
-        provider_id=getattr(args, f"{prefix}provider_id", None)
-        or getattr(args, "provider_id", None),
-        model=getattr(args, f"{prefix}model", None) or getattr(args, "model", None),
-        base_url=getattr(args, f"{prefix}base_url", None) or getattr(args, "base_url", None),
-        api_key=getattr(args, f"{prefix}api_key", None) or getattr(args, "api_key", None),
-        api_key_env=getattr(args, f"{prefix}api_key_env", None)
-        or getattr(args, "api_key_env", None),
-        timeout=getattr(args, f"{prefix}timeout", None) or getattr(args, "timeout", None),
+        provider=_argument_value(args, prefix, "provider"),
+        provider_id=_argument_value(args, prefix, "provider_id"),
+        endpoint_id=_argument_value(args, prefix, "endpoint_id"),
+        model=_argument_value(args, prefix, "model"),
+        base_url=_argument_value(args, prefix, "base_url"),
+        api_path=_argument_value(args, prefix, "api_path"),
+        api_key=_argument_value(args, prefix, "api_key"),
+        api_key_env=_argument_value(args, prefix, "api_key_env"),
+        timeout=_argument_value(args, prefix, "timeout"),
+        temperature=_argument_value(args, prefix, "temperature"),
+        context_window=_argument_value(args, prefix, "context_window"),
+        max_output_tokens=_argument_value(args, prefix, "max_output_tokens"),
+        supports_tools=_argument_value(args, prefix, "supports_tools"),
+        supports_vision=_argument_value(args, prefix, "supports_vision"),
+        supports_streaming=_argument_value(args, prefix, "supports_streaming"),
+        supports_structured_output=_argument_value(
+            args,
+            prefix,
+            "supports_structured_output",
+        ),
+        supports_reasoning=_argument_value(args, prefix, "supports_reasoning"),
+        thinking_level=_argument_value(args, prefix, "thinking_level"),
     )
+
+
+def _argument_value(
+    args: argparse.Namespace,
+    prefix: str,
+    name: str,
+):
+    prefixed = getattr(args, f"{prefix}{name}", None)
+    return prefixed if prefixed is not None else getattr(args, name, None)
 
 
 if __name__ == "__main__":

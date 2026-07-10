@@ -181,7 +181,9 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 4. 持久化用户消息。
 5. 创建 run_id，并写入运行状态。
 6. 发布 run_started 事件。
-7. 组合根先把技能等静态能力渲染成基础上下文，ContextBuilder 再构建发送给模型的上下文视图。
+7. 组合根发现 Skills 并只渲染可用技能的元数据说明；ContextBuilder 通过显式
+   `skill_instructions` 输入把它与 system prompt 组合，不能把 Skills 降格为匿名
+   `base_context` 或普通会话消息。
 8. 触发 after_context_build hooks，允许插件追加上下文。
 9. 如果上下文超限，使用内置会话截断压缩生成发送视图。
 10. 调用模型供应商流式接口。
@@ -219,6 +221,14 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 - tool_definitions。
 - context_metadata。
 
+`system_prompt` 是 ContextView 和 Provider 请求的原生字段，不是持久化消息，也不得由
+RuntimeAdapter 临时伪装成 `system_synthetic` 消息。Provider 契约必须显式接收 system prompt，
+具体 provider 再负责映射为自身协议。
+
+Skills 注入遵循渐进披露：ContextBuilder 只接收组合根已经渲染好的可用技能元数据说明，并追加到
+system prompt；完整 `SKILL.md` 仍由模型在匹配任务时按需读取。插件 `added_context` 保持为动态
+synthetic context，不与系统提示和 Skills 静态能力混用。
+
 第一阶段只内置会话截断压缩：
 
 - 保留必要系统提示。
@@ -227,7 +237,9 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 - 不修改原始消息历史。
 - 不生成摘要。
 
-`context_metadata` 至少记录是否发生截断和省略消息数量。技能发现、配置解析等外层能力不得注入 `ContextBuilder`；组合根只向其提供已经渲染好的基础上下文文本，插件产生的动态内容仍通过 hook 输入。
+`context_metadata` 至少记录是否发生截断、是否注入 Skills 和省略消息数量。技能发现、配置解析等
+外层能力不得注入 `ContextBuilder`；组合根只向其提供已经渲染好的 `skill_instructions`，插件产生
+的动态内容仍通过 hook 输入。
 
 摘要压缩由官方插件后续实现。
 
@@ -307,6 +319,8 @@ modified_view_metadata、tool_result_override、resource_refs、terminate_run �
 - 把 provider 输出转换为 OURO 事件。
 - 把 provider 工具调用请求交回 OURO 工具执行器。
 - 把 provider 错误转换为 OURO 错误。
+- 原样传递 ContextView 的 system prompt、messages、tools 和端点级 ModelMetadata；不得在此层重新
+  发现 Skills、读取配置或推断模型能力。
 
 适配器不得要求宿主界面理解 provider 或工具执行内部细节。
 
@@ -361,4 +375,6 @@ modified_view_metadata、tool_result_override、resource_refs、terminate_run �
 - queued follow-up input 使用会话 metadata 中的持久化队列，当前运行完成后串行处理。队列消费采用 peek/ack：只有对应 user message 持久化后才确认删除，并通过 queue_id 检测崩溃窗口中的已写消息，避免队列项在消息落盘前丢失或在恢复时重复写入用户消息。
 - run recoverable 状态第一阶段恢复到“可解释失败并允许重新运行”，不自动重放到工具审批点。
 - 系统提示默认内容由配置层提供，核心只保留 system_prompt 注入边界。
+- Skills 元数据说明通过 ContextBuilder 的显式 `skill_instructions` 边界进入 system prompt；
+  `base_context` 不再作为原生 Skills 接口。
 - Runtime Hooks 第一阶段只合并 added_context 和 diagnostics，更强返回能力留给后续规格，且不得绕过工具权限。

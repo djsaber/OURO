@@ -454,4 +454,3 @@ def _input_json_object(
         output_func("Arguments JSON must be an object.")
         return None
     return parsed
-

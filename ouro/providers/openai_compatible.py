@@ -57,14 +57,16 @@ class OpenAICompatibleProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         try:
             stream_json = getattr(self.transport, "stream_json", None)
-            if callable(stream_json):
+            if model.supports_streaming and callable(stream_json):
                 payload = self._chat_completion_payload(
                     model=model,
+                    system_prompt=system_prompt,
                     messages=messages,
                     tools=tools,
                     extra_payload={"stream": True},
@@ -75,16 +77,23 @@ class OpenAICompatibleProvider:
                     payload=payload,
                     timeout=self.timeout,
                 )
-                async for event in self._events_from_streaming_chunks(chunks):
+                async for event in self._events_from_streaming_chunks(
+                    chunks,
+                    supports_tools=model.supports_tools,
+                ):
                     yield event
             else:
                 response = await self._post_chat_completion(
                     model=model,
+                    system_prompt=system_prompt,
                     messages=messages,
                     tools=tools,
                     extra_payload={"stream": False},
                 )
-                async for event in self._events_from_response(response):
+                async for event in self._events_from_response(
+                    response,
+                    supports_tools=model.supports_tools,
+                ):
                     yield event
         except Exception as exc:  # noqa: BLE001 - providers should report errors as stream events.
             yield ProviderStreamEvent(type="error", error=str(exc))
@@ -93,6 +102,7 @@ class OpenAICompatibleProvider:
         try:
             response = await self._post_chat_completion(
                 model=model,
+                system_prompt="",
                 messages=[
                     MessageRecord.text(
                         session_id="connection_check",
@@ -103,7 +113,10 @@ class OpenAICompatibleProvider:
                 tools=None,
                 extra_payload={"stream": False, "max_tokens": 1},
             )
-            async for event in self._events_from_response(response):
+            async for event in self._events_from_response(
+                response,
+                supports_tools=model.supports_tools,
+            ):
                 if event.type == "error":
                     raise RuntimeError(event.error or "provider connection check failed")
         except Exception as exc:  # noqa: BLE001 - expose check status without crashing callers.
@@ -112,24 +125,28 @@ class OpenAICompatibleProvider:
                 ok=False,
                 model_id=model.model_id,
                 message=str(exc),
+                metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
             )
         return ProviderCheckResult(
             provider_id=self.provider_id,
             ok=True,
             model_id=model.model_id,
             message="ok",
+            metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
         )
 
     async def _post_chat_completion(
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str,
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         payload = self._chat_completion_payload(
             model=model,
+            system_prompt=system_prompt,
             messages=messages,
             tools=tools,
             extra_payload=extra_payload,
@@ -145,18 +162,38 @@ class OpenAICompatibleProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str,
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {
-            "model": model.model_id,
-            "messages": [_message_to_openai(message) for message in messages],
-            **self.request_options,
-            **extra_payload,
-        }
+        converted_messages = [
+            _message_to_openai(message, supports_vision=model.supports_vision)
+            for message in messages
+        ]
+        if system_prompt:
+            converted_messages.insert(0, {"role": "system", "content": system_prompt})
+        payload: dict[str, Any] = dict(self.request_options)
+        payload["model"] = model.model_id
+        payload["messages"] = converted_messages
+        if model.temperature is not None:
+            payload["temperature"] = model.temperature
+        else:
+            payload.pop("temperature", None)
+        payload["max_tokens"] = model.max_output_tokens
+        if (
+            model.supports_reasoning
+            and model.default_thinking_level is not None
+            and model.default_thinking_level != "off"
+        ):
+            payload["reasoning_effort"] = model.default_thinking_level
+        else:
+            payload.pop("reasoning_effort", None)
         if tools and model.supports_tools:
             payload["tools"] = [_tool_to_openai(tool) for tool in tools]
+        else:
+            payload.pop("tools", None)
+        payload.update(extra_payload)
         return payload
 
     def _headers(self) -> dict[str, str]:
@@ -168,6 +205,8 @@ class OpenAICompatibleProvider:
     async def _events_from_response(
         self,
         response: Mapping[str, Any],
+        *,
+        supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         response_error = _error_from_response(response)
         if response_error:
@@ -194,6 +233,12 @@ class OpenAICompatibleProvider:
             yield ProviderStreamEvent(type="text_delta", text=content)
 
         tool_calls = _tool_calls_from_message(message)
+        if tool_calls and not supports_tools:
+            yield ProviderStreamEvent(
+                type="error",
+                error="provider returned tool calls for an endpoint without tool support",
+            )
+            return
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
 
@@ -215,6 +260,8 @@ class OpenAICompatibleProvider:
     async def _events_from_streaming_chunks(
         self,
         chunks: AsyncIterator[Mapping[str, Any]],
+        *,
+        supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage: Usage | None = None
         saw_content = False
@@ -261,6 +308,12 @@ class OpenAICompatibleProvider:
                     current["arguments"] += part["arguments"]
 
         tool_calls = _tool_calls_from_stream_parts(tool_call_parts)
+        if tool_calls and not supports_tools:
+            yield ProviderStreamEvent(
+                type="error",
+                error="provider returned tool calls for an endpoint without tool support",
+            )
+            return
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
 

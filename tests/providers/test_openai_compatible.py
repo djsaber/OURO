@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 import httpx
 import pytest
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord, TextContent
 from ouro.providers import ModelMetadata, OpenAICompatibleProvider
 from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
 
@@ -20,8 +21,8 @@ class FakeTransport:
         self,
         *,
         url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
         timeout: float,
     ) -> dict[str, Any]:
         self.requests.append(
@@ -46,8 +47,8 @@ class FakeStreamingTransport:
         self,
         *,
         url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
         timeout: float,
     ) -> dict[str, Any]:
         del url, headers, payload, timeout
@@ -57,10 +58,10 @@ class FakeStreamingTransport:
         self,
         *,
         url: str,
-        headers: dict[str, str],
-        payload: dict[str, Any],
+        headers: Mapping[str, str],
+        payload: Mapping[str, Any],
         timeout: float,
-    ):
+    ) -> AsyncIterator[Mapping[str, Any]]:
         self.requests.append(
             {
                 "url": url,
@@ -176,6 +177,177 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
     assert transport.requests[0]["payload"]["messages"] == [
         {"role": "user", "content": "say hello"}
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        endpoint="responses/chat",
+        request_options={
+            "seed": 7,
+            "model": "wrong-model",
+            "messages": [],
+            "stream": True,
+            "temperature": 1.9,
+            "max_tokens": 999,
+            "reasoning_effort": "low",
+            "tools": [{"type": "wrong"}],
+        },
+        transport=transport,
+    )
+    model = ModelMetadata(
+        model_id="reasoning-model",
+        provider_id="glm",
+        endpoint_id="reasoning",
+        temperature=0.2,
+        max_output_tokens=4096,
+        supports_streaming=False,
+        supports_reasoning=True,
+        supported_thinking_levels=("low", "high"),
+        default_thinking_level="high",
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=model,
+            system_prompt="System instructions.",
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    request = transport.requests[0]
+    assert request["url"] == "https://example.test/v1/responses/chat"
+    assert request["payload"]["messages"] == [
+        {"role": "system", "content": "System instructions."},
+        {"role": "user", "content": "hello"},
+    ]
+    assert request["payload"]["stream"] is False
+    assert request["payload"]["model"] == "reasoning-model"
+    assert request["payload"]["temperature"] == 0.2
+    assert request["payload"]["max_tokens"] == 4096
+    assert request["payload"]["reasoning_effort"] == "high"
+    assert request["payload"]["seed"] == 7
+    assert "tools" not in request["payload"]
+
+
+@pytest.mark.asyncio
+async def test_openai_endpoint_capabilities_gate_tools_and_encode_images() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+    message = MessageRecord(
+        session_id="ses_1",
+        role="user",
+        content=[
+            TextContent(text="describe"),
+            ImageContent(uri="data:image/png;base64,abc", media_type="image/png"),
+        ],
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="vision-model",
+                provider_id="glm",
+                supports_streaming=False,
+                supports_tools=False,
+                supports_vision=True,
+            ),
+            messages=[message],
+            tools=[{"name": "Read", "parameters_schema": {"type": "object"}}],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    payload = transport.requests[0]["payload"]
+    assert "tools" not in payload
+    assert payload["messages"][0]["content"] == [
+        {"type": "text", "text": "describe"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,abc"},
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_openai_endpoint_rejects_images_when_multimodal_is_disabled() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+    message = MessageRecord(
+        session_id="ses_1",
+        role="user",
+        content=[ImageContent(uri="data:image/png;base64,abc", media_type="image/png")],
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="text-model",
+                provider_id="glm",
+                supports_vision=False,
+            ),
+            messages=[message],
+        )
+    ]
+
+    assert [event.type for event in events] == ["error"]
+    assert events[0].error == "model endpoint does not support image input"
+    assert transport.requests == []
+
+
+@pytest.mark.asyncio
+async def test_openai_endpoint_rejects_unexpected_tool_calls_when_tools_are_disabled() -> None:
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "Read", "arguments": "{}"},
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="text-model",
+                provider_id="glm",
+                supports_tools=False,
+                supports_streaming=False,
+            ),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["error"]
+    assert "without tool support" in (events[0].error or "")
 
 
 @pytest.mark.asyncio
@@ -605,9 +777,7 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
         api_key="secret",
         transport=transport,
     )
-    assistant = MessageRecord.text(
-        session_id="ses_1", role="assistant", text=""
-    ).model_copy(
+    assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
             "metadata": {
                 "tool_calls": [

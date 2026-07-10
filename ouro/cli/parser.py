@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -108,6 +109,77 @@ def build_parser() -> argparse.ArgumentParser:
     provider_check_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
     provider_check_parser.add_argument("--json", action="store_true", help="Print JSON")
     _add_provider_args(provider_check_parser, prefix="provider_check_")
+
+    endpoint_parser = provider_subparsers.add_parser(
+        "endpoint",
+        help="Manage model endpoints for a provider",
+    )
+    endpoint_subparsers = endpoint_parser.add_subparsers(
+        dest="endpoint_command",
+        required=True,
+    )
+
+    endpoint_list_parser = endpoint_subparsers.add_parser("list", help="List endpoints")
+    endpoint_list_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_list_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
+    endpoint_list_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    endpoint_show_parser = endpoint_subparsers.add_parser("show", help="Show an endpoint")
+    endpoint_show_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_show_parser.add_argument("endpoint_id", nargs="?", help="Endpoint id")
+    endpoint_show_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
+    endpoint_show_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    endpoint_set_parser = endpoint_subparsers.add_parser(
+        "set",
+        help="Create or update an endpoint",
+    )
+    endpoint_set_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_set_parser.add_argument("endpoint_id", help="Stable endpoint id")
+    endpoint_set_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
+    endpoint_set_parser.add_argument("--model", help="Provider model id")
+    endpoint_set_parser.add_argument("--base-url", help="Endpoint base URL")
+    endpoint_set_parser.add_argument("--api-path", help="API path, default /chat/completions")
+    endpoint_set_parser.add_argument("--temperature", type=float, default=None)
+    endpoint_set_parser.add_argument("--context-window", type=int, default=None)
+    endpoint_set_parser.add_argument("--max-output-tokens", type=int, default=None)
+    _add_endpoint_capability_args(endpoint_set_parser)
+    endpoint_set_parser.add_argument(
+        "--thinking-levels",
+        nargs="+",
+        choices=_THINKING_LEVELS,
+        default=None,
+        help="Supported thinking levels",
+    )
+    endpoint_set_parser.add_argument(
+        "--thinking-level",
+        choices=_THINKING_LEVELS,
+        default=None,
+        help="Default thinking level",
+    )
+    endpoint_set_parser.add_argument(
+        "--request-options",
+        type=_json_object,
+        help="Provider-specific request options as a JSON object",
+    )
+    endpoint_set_parser.add_argument(
+        "--default",
+        action="store_true",
+        help="Set endpoint as provider default",
+    )
+    endpoint_set_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    endpoint_use_parser = endpoint_subparsers.add_parser("use", help="Set default endpoint")
+    endpoint_use_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_use_parser.add_argument("endpoint_id", help="Endpoint id")
+    endpoint_use_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
+    endpoint_use_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    endpoint_remove_parser = endpoint_subparsers.add_parser("remove", help="Remove an endpoint")
+    endpoint_remove_parser.add_argument("provider_id", help="Provider/supplier id")
+    endpoint_remove_parser.add_argument("endpoint_id", help="Endpoint id")
+    endpoint_remove_parser.add_argument("--home", dest="provider_home", help="Override OURO_HOME")
+    endpoint_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     skills_parser = subparsers.add_parser("skills", help="Manage Agent Skills")
     skills_subparsers = skills_parser.add_subparsers(dest="skills_command", required=True)
@@ -217,8 +289,10 @@ def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> 
         help="Provider kind",
     )
     parser.add_argument("--provider-id", dest=f"{prefix}provider_id", help="Provider/supplier id")
+    parser.add_argument("--endpoint", dest=f"{prefix}endpoint_id", help="Configured endpoint id")
     parser.add_argument("--model", dest=f"{prefix}model", help="Model id")
     parser.add_argument("--base-url", dest=f"{prefix}base_url", help="Provider base URL")
+    parser.add_argument("--api-path", dest=f"{prefix}api_path", help="Provider API path")
     parser.add_argument("--api-key", dest=f"{prefix}api_key", help="Inline API key")
     parser.add_argument("--api-key-env", dest=f"{prefix}api_key_env", help="API key env var")
     parser.add_argument(
@@ -228,3 +302,66 @@ def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> 
         default=None,
         help="Provider timeout seconds",
     )
+    parser.add_argument(
+        "--temperature",
+        dest=f"{prefix}temperature",
+        type=float,
+        default=None,
+        help="Sampling temperature",
+    )
+    parser.add_argument(
+        "--context-window",
+        dest=f"{prefix}context_window",
+        type=int,
+        default=None,
+        help="Endpoint context window",
+    )
+    parser.add_argument(
+        "--max-output-tokens",
+        dest=f"{prefix}max_output_tokens",
+        type=int,
+        default=None,
+        help="Endpoint maximum output tokens",
+    )
+    _add_endpoint_capability_args(parser, prefix=prefix)
+    parser.add_argument(
+        "--thinking-level",
+        dest=f"{prefix}thinking_level",
+        choices=_THINKING_LEVELS,
+        default=None,
+        help="Reasoning/thinking level",
+    )
+
+
+_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+
+
+def _add_endpoint_capability_args(
+    parser: argparse.ArgumentParser,
+    *,
+    prefix: str = "",
+) -> None:
+    for options, dest, help_text in (
+        (("tools",), "supports_tools", "tool calling"),
+        (("vision", "multimodal"), "supports_vision", "image/multimodal input"),
+        (("streaming",), "supports_streaming", "streaming output"),
+        (("structured-output",), "supports_structured_output", "structured output"),
+        (("reasoning",), "supports_reasoning", "reasoning/thinking controls"),
+    ):
+        parser.add_argument(
+            *(f"--{option}" for option in options),
+            dest=f"{prefix}{dest}",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=f"Enable or disable {help_text}",
+        )
+
+
+def _json_object(value: str) -> dict[str, object]:
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
+    if not isinstance(parsed, dict):
+        raise argparse.ArgumentTypeError("request options must be a JSON object")
+    return parsed

@@ -45,10 +45,11 @@ class WaitingProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages,
         tools=None,
     ):
-        del model, messages, tools
+        del model, system_prompt, messages, tools
         try:
             yield ProviderStreamEvent(type="text_delta", text="begin")
             while True:
@@ -77,10 +78,11 @@ class GateProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages,
         tools=None,
     ):
-        del model, messages, tools
+        del model, system_prompt, messages, tools
         self.calls += 1
         if self.calls == 1:
             yield ProviderStreamEvent(type="text_delta", text="first")
@@ -107,10 +109,11 @@ class ExplodingProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages,
         tools=None,
     ):
-        del model, messages, tools
+        del model, system_prompt, messages, tools
         yield ProviderStreamEvent(type="text_delta", text="partial")
         raise RuntimeError("stream broke")
 
@@ -127,18 +130,21 @@ class CapturingProvider:
     provider_id = "capture"
 
     def __init__(self) -> None:
-        self.messages = []
+        self.messages: list[MessageRecord] = []
+        self.system_prompt = ""
         self.calls = 0
 
     async def stream(
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages,
         tools=None,
     ):
         del model, tools
         self.calls += 1
+        self.system_prompt = system_prompt
         self.messages = list(messages)
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
@@ -201,8 +207,8 @@ async def test_runtime_injects_default_system_prompt(tmp_path) -> None:
 
     await runtime.run("hello")
 
-    assert provider.messages[0].role == "system_synthetic"
-    assert provider.messages[0].text_content == DEFAULT_SYSTEM_PROMPT
+    assert provider.system_prompt == DEFAULT_SYSTEM_PROMPT
+    assert provider.messages[0].role == "user"
 
 
 @pytest.mark.asyncio
@@ -219,8 +225,8 @@ async def test_runtime_allows_system_prompt_override(tmp_path) -> None:
 
     await runtime.run("hello")
 
-    assert provider.messages[0].role == "system_synthetic"
-    assert provider.messages[0].text_content == "Custom system prompt."
+    assert provider.system_prompt == "Custom system prompt."
+    assert provider.messages[0].role == "user"
 
 
 @pytest.mark.asyncio
@@ -293,11 +299,13 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
         ]
     )
     seen_messages = []
+    seen_system_prompts = []
 
     original_stream = provider.stream
 
     async def recording_stream(**kwargs):
         seen_messages.extend(kwargs["messages"])
+        seen_system_prompts.append(kwargs["system_prompt"])
         async for event in original_stream(**kwargs):
             yield event
 
@@ -320,10 +328,9 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
 
     await runtime.run("Use context")
 
+    assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
     assert seen_messages[0].role == "system_synthetic"
-    assert seen_messages[0].text_content == DEFAULT_SYSTEM_PROMPT
-    assert seen_messages[1].role == "system_synthetic"
-    assert seen_messages[1].text_content == "extra context"
+    assert seen_messages[0].text_content == "extra context"
 
 
 @pytest.mark.asyncio
@@ -340,7 +347,7 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
             )
         ]
     )
-    context_builder = ContextBuilder(base_context=[skills_prompt])
+    context_builder = ContextBuilder(skill_instructions=skills_prompt)
     hooks = HookRegistry()
     hooks.register(
         HookRegistration(
@@ -363,13 +370,13 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
 
     await runtime.run("Use context")
 
+    assert provider.system_prompt.startswith(DEFAULT_SYSTEM_PROMPT.strip())
+    assert "<skills_instructions>" in provider.system_prompt
+    assert "<name>pdf</name>" in provider.system_prompt
     synthetic_messages = [
         message.text_content for message in provider.messages if message.role == "system_synthetic"
     ]
-    assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
-    assert "<skills_instructions>" in synthetic_messages[1]
-    assert "<name>pdf</name>" in synthetic_messages[1]
-    assert synthetic_messages[2] == "plugin context"
+    assert synthetic_messages == ["plugin context"]
 
 
 @pytest.mark.asyncio
@@ -1076,12 +1083,21 @@ class ReasoningToolProvider:
     def __init__(self, read_path: str = "data.txt") -> None:
         self.calls = 0
         self.messages: list[list[MessageRecord]] = []
+        self.system_prompts: list[str] = []
         self.read_path = read_path
 
-    async def stream(self, *, model: ModelMetadata, messages, tools=None):
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages,
+        tools=None,
+    ):
         del model, tools
         self.calls += 1
         self.messages.append(list(messages))
+        self.system_prompts.append(system_prompt)
         if self.calls == 1:
             yield ProviderStreamEvent(
                 type="reasoning_delta",
@@ -1122,6 +1138,8 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
             ModelMetadata(model_id="reasoning_tool", provider_id="reasoning_tool"),
         ),
         tools=_tools(),
+        context_builder=ContextBuilder(skill_instructions="Available skills."),
+        system_prompt="System instructions.",
     )
 
     result = await runtime.run("Read and summarize")
@@ -1129,6 +1147,10 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
 
     assert result.run.status == "completed"
     assert len(provider.messages) == 2
+    assert provider.system_prompts == [
+        "System instructions.\n\nAvailable skills.",
+        "System instructions.\n\nAvailable skills.",
+    ]
     second_call_messages = provider.messages[1]
     assistant_messages = [m for m in second_call_messages if m.role == "assistant"]
     assert len(assistant_messages) == 1

@@ -48,6 +48,8 @@ class JsonConfigFile:
             temp_path.replace(self.path)
         except OSError as exc:
             raise ConfigError(f"could not write config file {self.path}: {exc}") from exc
+        except (TypeError, ValueError) as exc:
+            raise ConfigError(f"could not serialize config file {self.path}: {exc}") from exc
         finally:
             if temp_path is not None and temp_path.exists():
                 temp_path.unlink()

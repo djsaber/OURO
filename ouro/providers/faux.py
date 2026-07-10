@@ -32,10 +32,11 @@ class FauxProvider:
         self,
         *,
         model: ModelMetadata,
+        system_prompt: str = "",
         messages: list[MessageRecord],
         tools: list[dict[str, object]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, messages, tools
+        del model, system_prompt, messages, tools
         events = self._next_events()
         for event in events:
             yield event
@@ -46,6 +47,7 @@ class FauxProvider:
             ok=True,
             model_id=model.model_id,
             message="ok",
+            metadata={"endpoint_id": model.endpoint_id} if model.endpoint_id else {},
         )
 
     def _next_events(self) -> list[ProviderStreamEvent]:

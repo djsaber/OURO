@@ -7,6 +7,7 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.providers.factory import build_runtime_adapter
 from ouro.providers.faux import FauxProvider
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
 
@@ -18,4 +19,5 @@ __all__ = [
     "ProviderCheckResult",
     "ProviderStreamEvent",
     "Usage",
+    "build_runtime_adapter",
 ]

@@ -12,7 +12,7 @@ Current first-phase runtime includes:
 - FauxProvider for deterministic local development.
 - Core-owned Provider contracts with outer-layer Faux and OpenAI-compatible implementations.
 - Local provider and prompt configuration from `config/config.json`, with CLI overrides.
-- Provider management CLI for list, show, set, use, remove, and connection checks.
+- Provider management CLI plus endpoint-level configuration for model parameters and capabilities.
 - System prompt persistence through `ouro config prompt --set ...`.
 - Skills CLI for listing available skills, showing full skill content, viewing search roots, and previewing the injected skills prompt.
 - Interrupted local runs can be recovered as `recoverable`; corrupt session indexes are rebuilt.
@@ -29,7 +29,7 @@ Current first-phase runtime includes:
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Standards-compatible Agent Skills discovery and progressive context injection through `ContextBuilder`; history truncation preserves assistant tool-call/tool-result boundaries.
+- Standards-compatible Agent Skills discovery and native system-prompt injection through `ContextBuilder`; history truncation preserves assistant tool-call/tool-result boundaries.
 - Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 
@@ -53,9 +53,12 @@ python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "co
 python -m ouro.cli.main config check --home ./.ouro-dev
 python -m ouro.cli.main config prompt --home ./.ouro-dev --set "Custom system prompt"
 python -m ouro.cli.main provider list --home ./.ouro-dev
-python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --model <model> --base-url <url> --api-key-env <ENV_NAME> --default
+python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --api-key-env <ENV_NAME>
+python -m ouro.cli.main provider endpoint set glm reasoning --home ./.ouro-dev --model <model> --base-url <url> --temperature 0.2 --context-window 200000 --max-output-tokens 16000 --tools --vision --streaming --reasoning --thinking-levels low high --thinking-level high --default
+python -m ouro.cli.main provider use glm --home ./.ouro-dev
+python -m ouro.cli.main provider endpoint list glm --home ./.ouro-dev
 python -m ouro.cli.main provider show glm --home ./.ouro-dev
-python -m ouro.cli.main provider check glm --home ./.ouro-dev
+python -m ouro.cli.main provider check glm --endpoint reasoning --home ./.ouro-dev
 python -m ouro.cli.main skills list --home ./.ouro-dev
 python -m ouro.cli.main skills show pdf --home ./.ouro-dev
 python -m ouro.cli.main skills roots --home ./.ouro-dev
@@ -94,9 +97,25 @@ Example local config:
       "glm": {
         "provider_type": "openai-compatible",
         "provider_id": "glm",
-        "default_model": "model-name",
-        "base_url": "http://localhost:8000/v1",
         "credential_ref": "env:OPENAI_API_KEY",
+        "default_endpoint": "reasoning",
+        "endpoints": {
+          "reasoning": {
+            "model_id": "model-name",
+            "base_url": "http://localhost:8000/v1",
+            "api_path": "/chat/completions",
+            "temperature": 0.2,
+            "context_window": 200000,
+            "max_output_tokens": 16000,
+            "supports_tools": true,
+            "supports_vision": true,
+            "supports_streaming": true,
+            "supports_structured_output": false,
+            "supports_reasoning": true,
+            "supported_thinking_levels": ["low", "high"],
+            "default_thinking_level": "high"
+          }
+        },
         "timeout_seconds": 60,
         "enabled": true
       }
@@ -119,7 +138,15 @@ central config. `skills remove` never deletes skills from external `.agents`, `.
 `.github`, `.copilot`, or `.codex` roots.
 
 `provider_id` is the provider/supplier id; OURO does not use a separate local alias id
-in Phase 1.
+in Phase 1. An endpoint is a concrete model/API target owned by that provider. Temperature,
+context and output limits, multimodal/tool/stream/reasoning capabilities, and thinking levels
+belong to the endpoint rather than the provider. The legacy `provider set --model --base-url`
+shortcut updates the default endpoint for compatibility.
 
-The legacy single `provider` object is still read for compatibility. New writes use the
-`providers.default` plus `providers.items` shape.
+Creating a provider without an endpoint does not switch the runtime default. Configure its
+default endpoint first, then use `provider use PROVIDER_ID`; disabling the active provider or
+removing its final endpoint safely falls back to the built-in Faux provider.
+
+The legacy single `provider` object and flat `default_model` / `base_url` provider fields are
+still read for compatibility. New writes use `providers.default`, `providers.items`, and nested
+`endpoints`.

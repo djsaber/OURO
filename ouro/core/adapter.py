@@ -6,7 +6,6 @@ from contextlib import suppress
 
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
-from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, Provider, ProviderStreamEvent
 
 
@@ -21,20 +20,10 @@ class RuntimeAdapter:
         *,
         signal: AbortSignal | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        messages = list(context.model_messages)
-        if context.system_prompt:
-            messages.insert(
-                0,
-                MessageRecord.text(
-                    session_id=messages[-1].session_id if messages else "system",
-                    role="system_synthetic",
-                    text=context.system_prompt,
-                    sequence=-10_000,
-                ),
-            )
         provider_events = self.provider.stream(
             model=self.model,
-            messages=messages,
+            system_prompt=context.system_prompt,
+            messages=list(context.model_messages),
             tools=[tool.model_dump() for tool in context.tool_definitions],
         )
         async for event in _interruptible(provider_events, signal=signal):

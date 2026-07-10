@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
@@ -21,12 +19,12 @@ class ContextBuilder:
         self,
         max_messages: int = 40,
         *,
-        base_context: Sequence[str] = (),
+        skill_instructions: str = "",
     ) -> None:
         if max_messages < 1:
             raise ValueError("max_messages must be at least 1")
         self.max_messages = max_messages
-        self.base_context = tuple(text for text in base_context if text)
+        self.skill_instructions = skill_instructions.strip()
 
     def build(
         self,
@@ -37,10 +35,7 @@ class ContextBuilder:
         added_context: list[str] | None = None,
     ) -> ContextView:
         selected = _select_recent_messages(messages, self.max_messages)
-        context_fragments = [
-            *self.base_context,
-            *(added_context or []),
-        ]
+        context_fragments = [text for text in (added_context or []) if text]
         context_messages = [
             MessageRecord.text(
                 session_id=messages[-1].session_id if messages else "system",
@@ -52,13 +47,28 @@ class ContextBuilder:
         ]
         return ContextView(
             model_messages=[*context_messages, *selected],
-            system_prompt=system_prompt,
+            system_prompt=_compose_system_prompt(system_prompt, self.skill_instructions),
             tool_definitions=tools,
             context_metadata={
                 "truncated": len(messages) > len(selected),
                 "omitted_message_count": len(messages) - len(selected),
+                "skills_injected": bool(self.skill_instructions),
             },
         )
+
+
+def _compose_system_prompt(system_prompt: str, skill_instructions: str) -> str:
+    if not skill_instructions:
+        return system_prompt
+    if not system_prompt:
+        return skill_instructions
+    if system_prompt.endswith("\n\n"):
+        separator = ""
+    elif system_prompt.endswith("\n"):
+        separator = "\n"
+    else:
+        separator = "\n\n"
+    return f"{system_prompt}{separator}{skill_instructions}"
 
 
 def _select_recent_messages(

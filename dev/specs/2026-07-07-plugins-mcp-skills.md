@@ -129,7 +129,9 @@ permissions：
 
 第一阶段建议优先实现：
 
-- after_context_build：用于摘要压缩、长期记忆上下文注入等插件上下文扩展。Agent Skills 是 OURO 原生能力，由 ContextBuilder 直接注入，不通过 Runtime Hook 注入。
+- after_context_build：用于摘要压缩、长期记忆上下文注入等插件上下文扩展。Agent Skills 是 OURO
+  原生能力：组合根只发现并渲染元数据，ContextBuilder 通过显式 `skill_instructions` 契约追加到
+  system prompt；Skills 不通过 Runtime Hook 注入，也不伪装成普通 synthetic message。
 - before_tool_call：用于工具调用观察、附加审批提示。
 - after_tool_call：用于工具结果观察和诊断记录。
 - on_event：用于调试、日志、回放增强。
@@ -274,6 +276,8 @@ Skills 来源：
 - 可以配置并启动一个 MCP 服务器。
 - MCP 工具能进入 OURO 工具注册表。
 - Skills 只加载元数据，按需加载完整内容。
+- 可用 Skills 元数据通过原生 ContextBuilder 契约进入 system prompt，并可从
+  `context_metadata.skills_injected` 观察是否生效。
 
 ## 13. Resolved / Deferred Decisions
 

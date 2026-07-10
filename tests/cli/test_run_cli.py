@@ -1,4 +1,5 @@
 import json
+from typing import Any, cast
 
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
@@ -20,10 +21,12 @@ class CapturingProvider:
     provider_id = "capture"
 
     def __init__(self) -> None:
-        self.messages = []
+        self.messages: list[Any] = []
+        self.system_prompt = ""
 
-    async def stream(self, *, model, messages, tools=None):
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
         del model, tools
+        self.system_prompt = system_prompt
         self.messages = list(messages)
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
@@ -365,6 +368,51 @@ def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
     assert calls == [("hello", "Custom")]
 
 
+def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
+    calls = []
+
+    async def fake_run_print(prompt, **kwargs):
+        calls.append((prompt, kwargs["provider_options"]))
+        return 0
+
+    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+
+    code = main(
+        [
+            "run",
+            "--endpoint",
+            "reasoning",
+            "--temperature",
+            "0",
+            "--context-window",
+            "200000",
+            "--max-output-tokens",
+            "16000",
+            "--no-tools",
+            "--multimodal",
+            "--no-streaming",
+            "--structured-output",
+            "--reasoning",
+            "--thinking-level",
+            "high",
+            "hello",
+        ]
+    )
+
+    assert code == 0
+    options = calls[0][1]
+    assert options.endpoint_id == "reasoning"
+    assert options.temperature == 0
+    assert options.context_window == 200_000
+    assert options.max_output_tokens == 16_000
+    assert options.supports_tools is False
+    assert options.supports_vision is True
+    assert options.supports_streaming is False
+    assert options.supports_structured_output is True
+    assert options.supports_reasoning is True
+    assert options.thinking_level == "high"
+
+
 def test_build_runtime_with_openai_compatible_provider_options(
     tmp_path,
     monkeypatch,
@@ -473,20 +521,18 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
             ModelMetadata(model_id="capture", provider_id="capture"),
         )
 
-    monkeypatch.setattr("ouro.cli.run._build_adapter", fake_adapter)
+    monkeypatch.setattr("ouro.cli.run.build_runtime_adapter", fake_adapter)
     runtime = build_default_runtime(home)
 
     assert runtime.hooks.registered("after_context_build") == []
 
     await runtime.run("help me with files")
 
-    synthetic_messages = [
-        message.text_content for message in provider.messages if message.role == "system_synthetic"
-    ]
-    assert synthetic_messages[0] == DEFAULT_SYSTEM_PROMPT
-    assert any("<skills_instructions>" in text for text in synthetic_messages)
-    assert any("<name>pdf</name>" in text for text in synthetic_messages)
-    assert any("<name>xlsx</name>" in text for text in synthetic_messages)
+    assert provider.system_prompt.startswith(DEFAULT_SYSTEM_PROMPT.strip())
+    assert "<skills_instructions>" in provider.system_prompt
+    assert "<name>pdf</name>" in provider.system_prompt
+    assert "<name>xlsx</name>" in provider.system_prompt
+    assert all(message.role != "system_synthetic" for message in provider.messages)
 
 
 def test_skills_commands_list_show_roots_and_prompt(
@@ -669,8 +715,152 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert provider.timeout == 7
 
 
+def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, capsys) -> None:
+    monkeypatch.setenv("OURO_TEST_KEY", "secret")
+    assert (
+        main(
+            [
+                "provider",
+                "set",
+                "glm",
+                "--home",
+                str(tmp_path),
+                "--kind",
+                "openai-compatible",
+                "--api-key-env",
+                "OURO_TEST_KEY",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    list_code = main(["provider", "list", "--home", str(tmp_path), "--json"])
+    list_payload = json.loads(capsys.readouterr().out)
+    assert list_code == 0
+    assert list_payload["default"] == "faux"
+
+    set_code = main(
+        [
+            "provider",
+            "endpoint",
+            "set",
+            "glm",
+            "reasoning",
+            "--home",
+            str(tmp_path),
+            "--model",
+            "glm-reasoning",
+            "--base-url",
+            "https://example.test/v1",
+            "--api-path",
+            "/chat/completions",
+            "--temperature",
+            "0.2",
+            "--context-window",
+            "200000",
+            "--max-output-tokens",
+            "16000",
+            "--no-tools",
+            "--multimodal",
+            "--no-streaming",
+            "--structured-output",
+            "--reasoning",
+            "--thinking-levels",
+            "low",
+            "high",
+            "--thinking-level",
+            "high",
+            "--request-options",
+            '{"seed": 7}',
+            "--default",
+            "--json",
+        ]
+    )
+    set_payload = json.loads(capsys.readouterr().out)
+
+    assert set_code == 0
+    endpoint = set_payload["endpoint"]
+    assert endpoint["endpoint_id"] == "reasoning"
+    assert endpoint["supports_tools"] is False
+    assert endpoint["supports_vision"] is True
+    assert endpoint["supports_streaming"] is False
+    assert endpoint["default_thinking_level"] == "high"
+
+    list_code = main(["provider", "endpoint", "list", "glm", "--home", str(tmp_path), "--json"])
+    list_payload = json.loads(capsys.readouterr().out)
+    assert list_code == 0
+    assert list_payload["default_endpoint"] == "reasoning"
+
+    show_code = main(
+        [
+            "provider",
+            "endpoint",
+            "show",
+            "glm",
+            "reasoning",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    show_payload = json.loads(capsys.readouterr().out)
+    assert show_code == 0
+    assert show_payload["endpoint"]["api_path"] == "/chat/completions"
+    assert show_payload["endpoint"]["supports_structured_output"] is True
+
+    use_code = main(["provider", "use", "glm", "--home", str(tmp_path), "--json"])
+    use_payload = json.loads(capsys.readouterr().out)
+    assert use_code == 0
+    assert use_payload["default"] == "glm"
+
+    runtime = build_default_runtime(tmp_path)
+    assert runtime.adapter.model.endpoint_id == "reasoning"
+    assert runtime.adapter.model.temperature == 0.2
+    assert runtime.adapter.model.context_window == 200_000
+    assert runtime.adapter.model.max_output_tokens == 16_000
+    assert runtime.adapter.model.supports_tools is False
+    assert runtime.adapter.model.supports_vision is True
+    assert runtime.adapter.model.supports_streaming is False
+    assert runtime.adapter.model.supports_structured_output is True
+    assert runtime.adapter.model.supports_reasoning is True
+    assert runtime.adapter.model.supported_thinking_levels == ("low", "high")
+    assert runtime.adapter.model.default_thinking_level == "high"
+    provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
+    assert provider.endpoint == "/chat/completions"
+    assert provider.request_options == {"seed": 7}
+
+    remove_code = main(
+        [
+            "provider",
+            "endpoint",
+            "remove",
+            "glm",
+            "reasoning",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    remove_payload = json.loads(capsys.readouterr().out)
+    assert remove_code == 0
+    assert remove_payload["default_endpoint"] is None
+    assert remove_payload["default_provider"] == "faux"
+
+
 def test_provider_check_can_target_builtin_faux(tmp_path, capsys) -> None:
-    code = main(["provider", "check", "faux", "--home", str(tmp_path), "--json"])
+    code = main(
+        [
+            "provider",
+            "check",
+            "faux",
+            "--endpoint",
+            "faux",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
 
     payload = json.loads(capsys.readouterr().out)
 
@@ -678,6 +868,7 @@ def test_provider_check_can_target_builtin_faux(tmp_path, capsys) -> None:
     assert payload["status"] == "ok"
     assert payload["provider_id"] == "faux"
     assert payload["model_id"] == "faux"
+    assert payload["metadata"]["endpoint_id"] == "faux"
 
 
 def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:

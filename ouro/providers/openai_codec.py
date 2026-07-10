@@ -4,11 +4,15 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord, TextContent
 from ouro.core.provider import Usage
 
 
-def _message_to_openai(message: MessageRecord) -> dict[str, Any]:
+def _message_to_openai(
+    message: MessageRecord,
+    *,
+    supports_vision: bool = False,
+) -> dict[str, Any]:
     role = message.role
     if role == "system_synthetic":
         openai_role = "system"
@@ -19,7 +23,7 @@ def _message_to_openai(message: MessageRecord) -> dict[str, Any]:
 
     converted: dict[str, Any] = {
         "role": openai_role,
-        "content": message.text_content,
+        "content": _message_content_to_openai(message, supports_vision=supports_vision),
     }
     if openai_role == "assistant":
         tool_calls = message.metadata.get("tool_calls")
@@ -30,6 +34,26 @@ def _message_to_openai(message: MessageRecord) -> dict[str, Any]:
     if openai_role == "tool":
         converted["tool_call_id"] = str(message.metadata.get("tool_call_id") or "unknown")
     return converted
+
+
+def _message_content_to_openai(
+    message: MessageRecord,
+    *,
+    supports_vision: bool,
+) -> str | list[dict[str, Any]]:
+    has_image = any(isinstance(block, ImageContent) for block in message.content)
+    if has_image and not supports_vision:
+        raise ValueError("model endpoint does not support image input")
+    if not has_image:
+        return message.text_content
+
+    content: list[dict[str, Any]] = []
+    for block in message.content:
+        if isinstance(block, TextContent):
+            content.append({"type": "text", "text": block.text})
+        elif isinstance(block, ImageContent):
+            content.append({"type": "image_url", "image_url": {"url": block.uri}})
+    return content
 
 
 def _tool_to_openai(tool: Mapping[str, Any]) -> dict[str, Any]:

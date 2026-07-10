@@ -41,18 +41,33 @@ def test_context_builder_keeps_tool_request_with_leading_tool_results() -> None:
         "tool_result",
         "tool_result",
     ]
-    assert context.context_metadata == {"truncated": True, "omitted_message_count": 3}
+    assert context.context_metadata == {
+        "truncated": True,
+        "omitted_message_count": 3,
+        "skills_injected": False,
+    }
 
 
-def test_context_builder_places_base_context_before_dynamic_context() -> None:
-    context = ContextBuilder(base_context=["skills"]).build(
+def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_context() -> None:
+    context = ContextBuilder(skill_instructions="skills").build(
         messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
         tools=[],
+        system_prompt="system",
         added_context=["plugin"],
     )
 
-    assert [message.text_content for message in context.model_messages] == [
-        "skills",
-        "plugin",
-        "hello",
-    ]
+    assert context.system_prompt == "system\n\nskills"
+    assert [message.text_content for message in context.model_messages] == ["plugin", "hello"]
+    assert context.context_metadata["skills_injected"] is True
+
+
+def test_context_builder_preserves_native_system_prompt_when_no_skills_are_present() -> None:
+    system_prompt = "  Preserve this prompt exactly.  \n"
+
+    context = ContextBuilder().build(
+        messages=[],
+        tools=[],
+        system_prompt=system_prompt,
+    )
+
+    assert context.system_prompt == system_prompt
