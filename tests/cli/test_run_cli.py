@@ -715,3 +715,69 @@ description: {description}
 {name} instructions.""",
         encoding="utf-8",
     )
+
+
+async def test_interactive_streams_model_reasoning_deltas_in_italics(tmp_path) -> None:
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="reasoning_delta", reasoning_content="Let me think"),
+                ProviderStreamEvent(type="reasoning_delta", reasoning_content="..."),
+                ProviderStreamEvent(type="text_delta", text="Answer"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    inputs = iter(["hello", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    all_output = "".join(outputs)
+    assert "\x1b[2;3m" in all_output
+    assert "\x1b[0m" in all_output
+    assert "Let me think..." in all_output
+    assert "Answer" in all_output
+
+
+async def test_interactive_prints_tool_calls(tmp_path) -> None:
+    target = tmp_path / "written.txt"
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_1",
+                        "name": "Write",
+                        "arguments": {"path": str(target), "content": "hello"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Done."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    inputs = iter(["write", "y", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert any("\x1b[33m> Write" in o for o in outputs)
+    assert any('"path"' in o and '"content"' in o for o in outputs)
+    assert any("\x1b[0m" in o for o in outputs)

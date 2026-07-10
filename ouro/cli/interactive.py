@@ -15,6 +15,13 @@ from ouro.core.results import RunResult
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], None]
 
+# ANSI styling helpers. These are intentionally compact; terminals that do not
+# support ANSI escape sequences will show the raw codes, which is acceptable
+# for the interactive CLI target environment.
+_DIM_ITALIC = "\x1b[2;3m"
+_YELLOW = "\x1b[33m"
+_RESET = "\x1b[0m"
+
 
 async def run_interactive(
     *,
@@ -26,17 +33,29 @@ async def run_interactive(
     output_func: OutputFunc = print,
 ) -> int:
     streamed_run_ids: set[str] = set()
+    stream_state: dict[str, Any] = {
+        "in_reasoning": False,
+        "streamed_text": False,
+    }
 
     def stream_event(event: EventRecord) -> None:
-        if event.event_type != "model_text_delta":
-            return
-        text = event.payload.get("text")
-        if not isinstance(text, str) or not text:
-            return
         if event.run_id is None:
             return
-        streamed_run_ids.add(event.run_id)
-        _stream_output(text, output_func)
+        if event.event_type == "model_text_delta":
+            text = event.payload.get("text")
+            if not isinstance(text, str) or not text:
+                return
+            streamed_run_ids.add(event.run_id)
+            _stream_text_delta(text, stream_state, output_func)
+        elif event.event_type == "model_reasoning_delta":
+            reasoning = event.payload.get("reasoning_content")
+            if not isinstance(reasoning, str) or not reasoning:
+                return
+            streamed_run_ids.add(event.run_id)
+            _stream_reasoning_delta(reasoning, stream_state, output_func)
+        elif event.event_type == "tool_call_requested":
+            streamed_run_ids.add(event.run_id)
+            _stream_tool_call(event.payload, stream_state, output_func)
 
     if runtime is None:
         try:
@@ -81,6 +100,7 @@ async def run_interactive(
             input_func=input_func,
             output_func=output_func,
             streamed_run_ids=streamed_run_ids,
+            stream_state=stream_state,
         )
 
 
@@ -204,12 +224,13 @@ async def _handle_run_result(
     input_func: InputFunc,
     output_func: OutputFunc,
     streamed_run_ids: set[str],
+    stream_state: dict[str, Any],
 ) -> str:
     current = result
     for _ in range(16):
         if current.run.status == "completed":
             if current.run.run_id in streamed_run_ids:
-                _finish_streamed_output(output_func)
+                _finish_streamed_output(stream_state, output_func)
             elif current.final_text:
                 output_func(current.final_text)
             return current.session.session_id
@@ -236,9 +257,13 @@ async def _handle_run_result(
             current = resolved
             continue
         if current.run.status == "failed":
+            if current.run.run_id in streamed_run_ids:
+                _finish_streamed_output(stream_state, output_func)
             output_func(f"Run failed: {current.run.error or 'unknown error'}")
             return current.session.session_id
         if current.run.status == "aborted":
+            if current.run.run_id in streamed_run_ids:
+                _finish_streamed_output(stream_state, output_func)
             output_func(f"Run aborted: {current.run.error or 'User aborted'}")
             return current.session.session_id
         output_func(f"Run stopped with status: {current.run.status}")
@@ -248,7 +273,44 @@ async def _handle_run_result(
     return current.session.session_id
 
 
-def _stream_output(text: str, output_func: OutputFunc) -> None:
+def _stream_text_delta(text: str, stream_state: dict[str, Any], output_func: OutputFunc) -> None:
+    if stream_state["in_reasoning"]:
+        _write_output(f"{_RESET}\n", output_func)
+        stream_state["in_reasoning"] = False
+    stream_state["streamed_text"] = True
+    _write_output(text, output_func)
+
+
+def _stream_reasoning_delta(
+    reasoning: str, stream_state: dict[str, Any], output_func: OutputFunc
+) -> None:
+    if stream_state["streamed_text"]:
+        _write_output("\n", output_func)
+        stream_state["streamed_text"] = False
+    if not stream_state["in_reasoning"]:
+        _write_output(_DIM_ITALIC, output_func)
+        stream_state["in_reasoning"] = True
+    _write_output(reasoning, output_func)
+
+
+def _stream_tool_call(
+    payload: dict[str, Any], stream_state: dict[str, Any], output_func: OutputFunc
+) -> None:
+    if stream_state["in_reasoning"]:
+        _write_output(f"{_RESET}\n", output_func)
+        stream_state["in_reasoning"] = False
+    if stream_state["streamed_text"]:
+        _write_output("\n", output_func)
+        stream_state["streamed_text"] = False
+    tool_name = str(payload.get("tool_name") or "unknown")
+    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    _write_output(
+        f"{_YELLOW}> {tool_name}({json.dumps(arguments, ensure_ascii=False)}){_RESET}\n",
+        output_func,
+    )
+
+
+def _write_output(text: str, output_func: OutputFunc) -> None:
     if output_func is print:
         sys.stdout.write(text)
         sys.stdout.flush()
@@ -256,10 +318,12 @@ def _stream_output(text: str, output_func: OutputFunc) -> None:
     output_func(text)
 
 
-def _finish_streamed_output(output_func: OutputFunc) -> None:
-    if output_func is print:
-        sys.stdout.write("\n")
-        sys.stdout.flush()
+def _finish_streamed_output(stream_state: dict[str, Any], output_func: OutputFunc) -> None:
+    if stream_state["in_reasoning"]:
+        _write_output(_RESET, output_func)
+        stream_state["in_reasoning"] = False
+    _write_output("\n", output_func)
+    stream_state["streamed_text"] = False
 
 
 async def _resolve_approval(
@@ -271,9 +335,10 @@ async def _resolve_approval(
 ) -> RunResult | None:
     invocation = _pending_invocation(result)
     tool_name = str(invocation.get("tool_name") or "unknown")
-    arguments = invocation.get("arguments") if isinstance(invocation.get("arguments"), dict) else {}
+    # Tool arguments were already printed by _stream_tool_call when the
+    # tool_call_requested event fired, so we only show the compact prompt here
+    # to avoid repeating the same JSON block.
     output_func(f"Approval required: {tool_name}")
-    output_func(_json_text(arguments))
 
     while True:
         try:
@@ -388,6 +453,3 @@ def _input_json_object(
         return None
     return parsed
 
-
-def _json_text(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
