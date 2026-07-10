@@ -144,10 +144,130 @@ def render_agent_skills_prompt_kimi(skills: Sequence[Any]) -> str:
     return AGENT_SKILLS_PROMPT_TEMPLATE_KIMI.replace("{{ skills }}", "\n".join(lines))
 
 
+SUMMARIZATION_PROMPT = """
+## Primary Prompt
+
+Your task is to create a detailed summary of the conversation to date, paying close attention to the user's explicit requests and your previous actions. This summary must comprehensively capture technical details, code patterns, and architectural decisions essential for continuing development work without losing context.
+
+## Analysis Process
+
+Before delivering the final summary, wrap your analysis in `<analysis>` tags to organize your reasoning and ensure all necessary points are covered. During this process:
+
+Analyze every message and section of the conversation in chronological order. For each section, thoroughly identify:
+- The user's explicit requests and intent
+- Your approach to handling the request
+- Key decisions, technical concepts, and code patterns
+- Specific details such as:
+  - File names
+  - Complete code snippets
+  - Function signatures
+  - File edits
+  - Errors encountered and how you fixed them
+
+Pay special attention to specific user feedback, especially when the user told you to do something differently. Scrutinize technical accuracy and completeness, addressing every required element comprehensively.
+
+## Summary Structure
+
+Your summary must include the following sections:
+
+### 1. Primary Requests and Intent
+
+Capture all explicit user requests and intent in detail.
+
+### 2. Key Technical Concepts
+
+List all important technical concepts, technologies, and frameworks discussed.
+
+### 3. Files and Code Sections
+
+Enumerate specific files and code sections examined, modified, or created. Focus on recent messages; include complete code snippets where applicable, and summarize why reading or editing this file was important.
+
+### 4. Errors and Fixes
+
+List all errors encountered and how you resolved them. Pay special attention to specific user feedback, especially when the user told you to do something differently.
+
+### 5. Problem Resolution
+
+Document resolved issues and any ongoing troubleshooting.
+
+### 6. All User Messages
+
+List all user messages that are not tool results. These are critical for understanding shifts in user feedback and intent.
+
+### 7. Pending Tasks
+
+Outline any pending tasks you were explicitly asked to handle.
+
+### 8. Current Work
+
+Describe in detail the specific work in progress immediately prior to this summary request, with particular attention to the most recent messages from the user and assistant. Include file names and code snippets where applicable.
+
+### 9. Optional Next Steps
+
+List next steps relevant to your most recent work.
+
+**Important:** Ensure this step aligns directly with the user's explicit requests and the tasks you were working on prior to this summary. If your previous task has concluded, only list next steps if they clearly fit the user's request. Do not begin addressing unrelated requests without user confirmation.
+
+If next steps are included, provide verbatim direct quotes from the recent conversation that accurately show what task you were handling and where you stopped. This should be word-for-word to prevent any misinterpretation of the task.
+
+## Output Format Example (XML)
+
+```xml
+<analysis>
+  [Your thought process, ensuring comprehensive and accurate coverage of all points]
+</analysis>
+
+<summary1>
+  1. Primary Requests and Intent:
+  [Detailed description]
+
+  2. Key Technical Concepts:
+  - [Concept 1]
+  - [Concept 2]
+  - [...]
+
+  3. Files and Code Sections:
+  - [File name 1]
+  - [Summary of why this file matters]
+  - [Summary of changes made to this file, if any]
+  - [Important code snippet]
+  - [File name 2]
+  - [Important code snippet]
+  - [...]
+
+  4. Errors and Fixes:
+  - [Detailed description of Error 1]:
+  - [How you fixed it]
+  - [User feedback on the error, if any]
+  - [...]
+
+  5. Problem Resolution:
+  [Description of resolved issues and ongoing troubleshooting]
+
+  6. All User Messages:
+  - [Detailed non-tool user message]
+  - [...]
+
+  7. Pending Tasks:
+  - [Task 1]
+  - [Task 2]
+  - [...]
+
+  8. Current Work:
+  [Precise description of current work]
+
+  9. Optional Next Steps:
+  [Optional next actions]
+
+</summary1>
+""".strip()
+
+
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "AGENT_SKILLS_PROMPT_TEMPLATE",
     "AGENT_SKILLS_PROMPT_TEMPLATE_KIMI",
     "render_agent_skills_prompt",
     "render_agent_skills_prompt_kimi",
+    "SUMMARIZATION_PROMPT",
 ]
