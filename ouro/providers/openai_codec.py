@@ -25,6 +25,8 @@ def _message_to_openai(message: MessageRecord) -> dict[str, Any]:
         tool_calls = message.metadata.get("tool_calls")
         if isinstance(tool_calls, list) and tool_calls:
             converted["tool_calls"] = [_tool_call_message_to_openai(item) for item in tool_calls]
+        if "reasoning_content" in message.metadata:
+            converted["reasoning_content"] = str(message.metadata["reasoning_content"])
     if openai_role == "tool":
         converted["tool_call_id"] = str(message.metadata.get("tool_call_id") or "unknown")
     return converted
@@ -91,6 +93,29 @@ def _content_to_text(content: object) -> str:
 
     parts: list[str] = []
     for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, Mapping):
+            text = block.get("text")
+            if isinstance(text, str):
+                parts.append(text)
+    return "".join(parts)
+
+
+def _reasoning_content_to_text(reasoning_content: object) -> str:
+    """Extract reasoning text from a message/delta reasoning_content field.
+
+    Providers such as DeepSeek return reasoning_content as either a plain string
+    or an array of content blocks. This helper mirrors _content_to_text() so
+    reasoning deltas are handled consistently with regular content.
+    """
+    if isinstance(reasoning_content, str):
+        return reasoning_content
+    if not isinstance(reasoning_content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in reasoning_content:
         if isinstance(block, str):
             parts.append(block)
         elif isinstance(block, Mapping):

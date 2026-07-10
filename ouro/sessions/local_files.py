@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
-from typing import Self
+from typing import Any, Self
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.events import EventRecord
@@ -214,7 +214,12 @@ class LocalSessionStore:
         if not isinstance(checkpoint, dict):
             return None
         text = checkpoint.get("partial_assistant_text")
-        if not isinstance(text, str) or not text:
+        if not isinstance(text, str):
+            text = ""
+        reasoning = checkpoint.get("partial_assistant_reasoning")
+        if not isinstance(reasoning, str):
+            reasoning = ""
+        if not text and not reasoning:
             return None
         raw_message_id = checkpoint.get("partial_assistant_message_id")
         message_id = raw_message_id if isinstance(raw_message_id, str) else new_id("msg")
@@ -222,6 +227,13 @@ class LocalSessionStore:
             return None
         raw_sequence = checkpoint.get("partial_assistant_sequence")
         sequence = raw_sequence if isinstance(raw_sequence, int) else len(messages) + 1
+        metadata: dict[str, Any] = {
+            "incomplete": True,
+            "recovered_from_checkpoint": True,
+            "run_id": run.run_id,
+        }
+        if reasoning:
+            metadata["reasoning_content"] = reasoning
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -231,11 +243,7 @@ class LocalSessionStore:
         ).model_copy(
             update={
                 "message_id": message_id,
-                "metadata": {
-                    "incomplete": True,
-                    "recovered_from_checkpoint": True,
-                    "run_id": run.run_id,
-                },
+                "metadata": metadata,
             }
         )
         self.append_message(message)

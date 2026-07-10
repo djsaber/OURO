@@ -48,6 +48,7 @@ class ProviderRuntimeOptions:
     api_key_env: str | None = None
     credential_ref: CredentialRef | None = None
     timeout: float | None = None
+    extra: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -395,7 +396,19 @@ def _runtime_options_from_config(provider: ProviderConfig) -> ProviderRuntimeOpt
         base_url=provider.base_url,
         credential_ref=provider.credential_ref,
         timeout=provider.timeout_seconds,
+        extra=dict(provider.extra),
     )
+
+
+def _merge_extra(
+    base: dict[str, Any] | None,
+    override: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if base is None and override is None:
+        return None
+    merged = dict(base or {})
+    merged.update(override or {})
+    return merged
 
 
 def _merge_runtime_options(
@@ -413,6 +426,7 @@ def _merge_runtime_options(
         if override.credential_ref is not None
         else base.credential_ref,
         timeout=override.timeout if override.timeout is not None else base.timeout,
+        extra=_merge_extra(base.extra, override.extra),
     )
 
 

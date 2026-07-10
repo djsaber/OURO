@@ -51,26 +51,25 @@ class RunLifecycle:
         tool_call: dict[str, Any],
         text: str,
         sequence: int,
+        reasoning_content: str = "",
     ) -> MessageRecord:
+        metadata: dict[str, Any] = {
+            "tool_calls": [
+                {
+                    "id": str(tool_call.get("id") or ""),
+                    "name": str(tool_call.get("name") or ""),
+                    "arguments": dict(tool_call.get("arguments") or {}),
+                }
+            ],
+            "reasoning_content": reasoning_content,
+        }
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
             role="assistant",
             text=text,
             sequence=sequence,
-        ).model_copy(
-            update={
-                "metadata": {
-                    "tool_calls": [
-                        {
-                            "id": str(tool_call.get("id") or ""),
-                            "name": str(tool_call.get("name") or ""),
-                            "arguments": dict(tool_call.get("arguments") or {}),
-                        }
-                    ]
-                }
-            }
-        )
+        ).model_copy(update={"metadata": metadata})
         self._append_message(session=session, run=run, message=message)
         return message
 
@@ -119,6 +118,7 @@ class RunLifecycle:
         run: RunRecord,
         messages: list[MessageRecord],
         partial_assistant_text: str,
+        partial_assistant_reasoning: str = "",
         event_sequence: int,
     ) -> tuple[SessionRecord, RunRecord]:
         snapshot = self.store.load_session(session.session_id, recover=False)
@@ -159,6 +159,10 @@ class RunLifecycle:
             checkpoint.pop("partial_assistant_text", None)
             checkpoint.pop("partial_assistant_message_id", None)
             checkpoint.pop("partial_assistant_sequence", None)
+        if partial_assistant_reasoning:
+            checkpoint["partial_assistant_reasoning"] = partial_assistant_reasoning
+        else:
+            checkpoint.pop("partial_assistant_reasoning", None)
         metadata["checkpoint"] = checkpoint
 
         updated_run = run.model_copy(update={"metadata": metadata})
@@ -202,9 +206,10 @@ class RunLifecycle:
         run: RunRecord,
         messages: list[MessageRecord],
         final_text: str,
+        reasoning_content: str = "",
         tool_results: list[ToolResult],
     ) -> RunResult:
-        if final_text:
+        if final_text or reasoning_content:
             assistant_message = MessageRecord.text(
                 session_id=session.session_id,
                 run_id=run.run_id,
@@ -212,6 +217,15 @@ class RunLifecycle:
                 text=final_text,
                 sequence=len(messages) + 1,
             )
+            if reasoning_content:
+                assistant_message = assistant_message.model_copy(
+                    update={
+                        "metadata": {
+                            **assistant_message.metadata,
+                            "reasoning_content": reasoning_content,
+                        }
+                    }
+                )
             self._append_message(session=session, run=run, message=assistant_message)
             messages.append(assistant_message)
 
@@ -262,24 +276,24 @@ class RunLifecycle:
         run: RunRecord,
         error: str,
         final_text: str,
+        reasoning_content: str = "",
         tool_results: list[ToolResult],
     ) -> RunResult:
-        if final_text:
+        if final_text or reasoning_content:
             snapshot = self.store.load_session(session.session_id, recover=False)
+            metadata: dict[str, Any] = {
+                "incomplete": True,
+                "failure_reason": error,
+            }
+            if reasoning_content:
+                metadata["reasoning_content"] = reasoning_content
             assistant_message = MessageRecord.text(
                 session_id=session.session_id,
                 run_id=run.run_id,
                 role="assistant",
                 text=final_text,
                 sequence=len(snapshot.messages) + 1,
-            ).model_copy(
-                update={
-                    "metadata": {
-                        "incomplete": True,
-                        "failure_reason": error,
-                    }
-                }
-            )
+            ).model_copy(update={"metadata": metadata})
             self._append_message(session=session, run=run, message=assistant_message)
 
         snapshot = self.store.load_session(session.session_id, recover=False)

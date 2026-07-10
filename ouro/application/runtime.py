@@ -526,6 +526,7 @@ class RuntimeService:
         *,
         message_sequence: int,
         assistant_text: str,
+        assistant_reasoning: str,
         abort_signal: AbortSignal,
     ) -> tuple[ToolExecutionOutcome, int, list[MessageRecord]]:
         assistant_message = self.run_lifecycle.append_assistant_tool_call_message(
@@ -534,6 +535,7 @@ class RuntimeService:
             tool_call=tool_call,
             text=assistant_text,
             sequence=message_sequence,
+            reasoning_content=assistant_reasoning,
         )
         invocation = ToolInvocation(
             session_id=session.session_id,

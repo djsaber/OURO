@@ -1068,3 +1068,71 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     assert snapshot.messages[2].text_content == "notes.md"
     assert snapshot.messages[-1].text_content == "I will use notes.md."
     assert "ask_user_resolved" in [event.event_type for event in snapshot.events]
+
+
+class ReasoningToolProvider:
+    provider_id = "reasoning_tool"
+
+    def __init__(self, read_path: str = "data.txt") -> None:
+        self.calls = 0
+        self.messages: list[list[MessageRecord]] = []
+        self.read_path = read_path
+
+    async def stream(self, *, model: ModelMetadata, messages, tools=None):
+        del model, tools
+        self.calls += 1
+        self.messages.append(list(messages))
+        if self.calls == 1:
+            yield ProviderStreamEvent(
+                type="reasoning_delta",
+                reasoning_content="I should read the file.",
+            )
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "call_1",
+                    "name": "Read",
+                    "arguments": {"path": self.read_path},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="Done")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    (tmp_path / "data.txt").write_text("hello", encoding="utf-8")
+    provider = ReasoningToolProvider(read_path=str(tmp_path / "data.txt"))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="reasoning_tool", provider_id="reasoning_tool"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("Read and summarize")
+    snapshot = store.load_session(result.session.session_id)
+
+    assert result.run.status == "completed"
+    assert len(provider.messages) == 2
+    second_call_messages = provider.messages[1]
+    assistant_messages = [m for m in second_call_messages if m.role == "assistant"]
+    assert len(assistant_messages) == 1
+    assistant_message = assistant_messages[0]
+    assert assistant_message.metadata.get("reasoning_content") == "I should read the file."
+    assert assistant_message.metadata.get("tool_calls")
+    assert snapshot.messages[-1].text_content == "Done"

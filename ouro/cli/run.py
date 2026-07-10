@@ -148,6 +148,7 @@ def _build_adapter(options: RuntimeProviderOptions) -> RuntimeAdapter:
             api_key=api_key,
             provider_id=provider_id,
             timeout=timeout,
+            request_options=options.extra,
         )
         return RuntimeAdapter(
             provider,

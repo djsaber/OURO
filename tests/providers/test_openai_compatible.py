@@ -488,3 +488,198 @@ async def test_openai_compatible_provider_connection_check_reports_status() -> N
 
     assert empty.ok is False
     assert empty.message == "provider returned an empty assistant message finish_reason=stop"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_emits_reasoning_delta_from_response() -> None:
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "The answer is 4.",
+                        "reasoning_content": "Let me compute 2 + 2.",
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 4},
+        }
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="2+2")],
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "text_delta",
+        "done",
+    ]
+    assert events[0].reasoning_content == "Let me compute 2 + 2."
+    assert events[1].text == "The answer is 4."
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chunks() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {"choices": [{"delta": {"reasoning_content": "Thinking"}}]},
+            {"choices": [{"delta": {"reasoning_content": "..."}}]},
+            {"choices": [{"delta": {"content": "Done"}}]},
+            {"usage": {"prompt_tokens": 3, "completion_tokens": 3}, "choices": []},
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="go")],
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "done",
+    ]
+    assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
+    assert events[2].text == "Done"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_reasoning_only_response_is_not_empty() -> None:
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "Only reasoning, no content.",
+                    }
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 5},
+        }
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="think")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["reasoning_delta", "done"]
+    assert events[0].reasoning_content == "Only reasoning, no content."
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_sends_reasoning_content_in_history() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+    assistant = MessageRecord.text(
+        session_id="ses_1", role="assistant", text=""
+    ).model_copy(
+        update={
+            "metadata": {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "Read",
+                        "arguments": {"path": "README.md"},
+                    }
+                ],
+                "reasoning_content": "I need to read the file.",
+            }
+        }
+    )
+    tool_result = MessageRecord.text(
+        session_id="ses_1", role="tool_result", text="contents"
+    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[
+                MessageRecord.text(session_id="ses_1", role="user", text="read"),
+                assistant,
+                tool_result,
+            ],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    assistant_message = transport.requests[0]["payload"]["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert assistant_message["reasoning_content"] == "I need to read the file."
+    assert assistant_message["tool_calls"][0]["id"] == "call_1"
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_sends_empty_reasoning_content_for_tool_calls() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        api_key="secret",
+        transport=transport,
+    )
+    assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
+        update={
+            "metadata": {
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "Read",
+                        "arguments": {"path": "README.md"},
+                    }
+                ],
+                "reasoning_content": "",
+            }
+        }
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[
+                MessageRecord.text(session_id="ses_1", role="user", text="read"),
+                assistant,
+            ],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    assistant_message = transport.requests[0]["payload"]["messages"][1]
+    assert assistant_message["role"] == "assistant"
+    assert "reasoning_content" in assistant_message
+    assert assistant_message["reasoning_content"] == ""

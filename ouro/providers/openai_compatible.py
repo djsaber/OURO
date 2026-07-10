@@ -15,6 +15,7 @@ from ouro.providers.openai_codec import (
     _error_from_response,
     _first_choice,
     _message_to_openai,
+    _reasoning_content_to_text,
     _tool_call_delta_parts,
     _tool_calls_from_message,
     _tool_calls_from_stream_parts,
@@ -184,6 +185,10 @@ class OpenAICompatibleProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
+        reasoning = _reasoning_content_to_text(message.get("reasoning_content"))
+        if reasoning:
+            yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
+
         content = _content_to_text(message.get("content"))
         if content:
             yield ProviderStreamEvent(type="text_delta", text=content)
@@ -192,7 +197,7 @@ class OpenAICompatibleProvider:
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
 
-        if not content and not tool_calls:
+        if not reasoning and not content and not tool_calls:
             finish_reason = choice.get("finish_reason")
             reason = (
                 f" finish_reason={finish_reason}"
@@ -213,6 +218,7 @@ class OpenAICompatibleProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage: Usage | None = None
         saw_content = False
+        saw_reasoning = False
         tool_call_parts: dict[int, dict[str, str]] = {}
 
         async for chunk in chunks:
@@ -231,6 +237,11 @@ class OpenAICompatibleProvider:
             delta = choice.get("delta") or {}
             if not isinstance(delta, Mapping):
                 continue
+
+            reasoning = _reasoning_content_to_text(delta.get("reasoning_content"))
+            if reasoning:
+                saw_reasoning = True
+                yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
             content = _content_to_text(delta.get("content"))
             if content:
@@ -253,7 +264,7 @@ class OpenAICompatibleProvider:
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
 
-        if not saw_content and not tool_calls:
+        if not saw_content and not saw_reasoning and not tool_calls:
             yield ProviderStreamEvent(
                 type="error", error="provider returned an empty assistant message"
             )

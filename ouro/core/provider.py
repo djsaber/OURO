@@ -47,8 +47,9 @@ class ProviderCheckResult(OuroModel):
 
 
 class ProviderStreamEvent(OuroModel):
-    type: Literal["text_delta", "tool_call", "done", "error"]
+    type: Literal["text_delta", "reasoning_delta", "tool_call", "done", "error"]
     text: str | None = None
+    reasoning_content: str | None = None
     tool_call: dict[str, Any] | None = None
     usage: Usage | None = None
     error: str | None = None

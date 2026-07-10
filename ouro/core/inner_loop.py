@@ -49,6 +49,7 @@ class ToolCallHandler(Protocol):
         *,
         message_sequence: int,
         assistant_text: str,
+        assistant_reasoning: str,
         abort_signal: AbortSignal,
     ) -> tuple[ToolExecutionOutcome, int, list[MessageRecord]]: ...
 
@@ -69,6 +70,7 @@ class RunCheckpointer(Protocol):
         run: RunRecord,
         messages: list[MessageRecord],
         partial_assistant_text: str,
+        partial_assistant_reasoning: str,
         event_sequence: int,
     ) -> tuple[SessionRecord, RunRecord]: ...
 
@@ -95,6 +97,7 @@ class RunCompleter(Protocol):
         run: RunRecord,
         messages: list[MessageRecord],
         final_text: str,
+        reasoning_content: str,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
 
@@ -118,6 +121,7 @@ class RunFailer(Protocol):
         run: RunRecord,
         error: str,
         final_text: str,
+        reasoning_content: str,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
 
@@ -152,6 +156,7 @@ class _LoopState:
 @dataclass
 class _RoundState:
     parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
     saw_model_done: bool = False
     completed_tool: bool = False
 
@@ -230,9 +235,15 @@ class InnerAgentLoop:
                     state,
                     "provider stream ended without a completion event",
                     round_state.parts,
+                    round_state.reasoning_parts,
                 )
             if not round_state.parts:
-                return await self._fail(state, "provider returned an empty assistant message")
+                return await self._fail(
+                    state,
+                    "provider returned an empty assistant message",
+                    round_parts=None,
+                    round_reasoning_parts=round_state.reasoning_parts,
+                )
 
             state.final_parts.extend(round_state.parts)
             return await self.ports.complete_run(
@@ -242,6 +253,7 @@ class InnerAgentLoop:
                 run=state.run,
                 messages=state.messages,
                 final_text=state.final_text(),
+                reasoning_content="".join(round_state.reasoning_parts),
                 tool_results=state.tool_results,
             )
 
@@ -306,6 +318,13 @@ class InnerAgentLoop:
                         model_round,
                         provider_event.text,
                     )
+                elif provider_event.type == "reasoning_delta" and provider_event.reasoning_content:
+                    await self._record_reasoning_delta(
+                        state,
+                        round_state,
+                        model_round,
+                        provider_event.reasoning_content,
+                    )
                 elif provider_event.type == "tool_call" and provider_event.tool_call:
                     terminal_result = await self._handle_round_tool_call(
                         state=state,
@@ -320,6 +339,7 @@ class InnerAgentLoop:
                         state,
                         provider_event.error or "provider error",
                         round_state.parts,
+                        round_state.reasoning_parts,
                     )
                 elif provider_event.type == "done":
                     round_state.saw_model_done = True
@@ -336,12 +356,13 @@ class InnerAgentLoop:
                             else {},
                         },
                     )
-                    self._checkpoint(state, round_state.parts)
+                    self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
         except Exception as exc:
             return await self._fail(
                 state,
                 str(exc) or exc.__class__.__name__,
                 round_state.parts,
+                round_state.reasoning_parts,
             )
         return None
 
@@ -361,7 +382,25 @@ class InnerAgentLoop:
             event_type="model_text_delta",
             payload={"text": text, "round": model_round},
         )
-        self._checkpoint(state, round_state.parts)
+        self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
+
+    async def _record_reasoning_delta(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        reasoning: str,
+    ) -> None:
+        round_state.reasoning_parts.append(reasoning)
+        state.sequence = await self.ports.emit(
+            state.emitted,
+            state.sequence,
+            session_id=state.session.session_id,
+            run_id=state.run.run_id,
+            event_type="model_reasoning_delta",
+            payload={"reasoning_content": reasoning, "round": model_round},
+        )
+        self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
 
     async def _handle_round_tool_call(
         self,
@@ -372,7 +411,9 @@ class InnerAgentLoop:
         abort_signal: AbortSignal,
     ) -> RunResult | None:
         assistant_text = "".join(round_state.parts)
+        assistant_reasoning = "".join(round_state.reasoning_parts)
         round_state.parts.clear()
+        round_state.reasoning_parts.clear()
         outcome, state.sequence, new_messages = await self.ports.handle_tool_call(
             state.emitted,
             state.sequence,
@@ -381,6 +422,7 @@ class InnerAgentLoop:
             tool_call,
             message_sequence=len(state.messages) + 1,
             assistant_text=assistant_text,
+            assistant_reasoning=assistant_reasoning,
             abort_signal=abort_signal,
         )
         if aborted := self._aborted_result(state):
@@ -415,12 +457,14 @@ class InnerAgentLoop:
         self,
         state: _LoopState,
         round_parts: list[str] | None = None,
+        round_reasoning_parts: list[str] | None = None,
     ) -> None:
         state.session, state.run = self.ports.checkpoint(
             session=state.session,
             run=state.run,
             messages=state.messages,
             partial_assistant_text=state.final_text(round_parts),
+            partial_assistant_reasoning="".join(round_reasoning_parts or []),
             event_sequence=state.sequence,
         )
 
@@ -442,6 +486,7 @@ class InnerAgentLoop:
         state: _LoopState,
         error: str,
         round_parts: list[str] | None = None,
+        round_reasoning_parts: list[str] | None = None,
     ) -> RunResult:
         return await self.ports.fail_run(
             state.emitted,
@@ -450,6 +495,7 @@ class InnerAgentLoop:
             run=state.run,
             error=error,
             final_text=state.final_text(round_parts),
+            reasoning_content="".join(round_reasoning_parts or []),
             tool_results=state.tool_results,
         )
 
