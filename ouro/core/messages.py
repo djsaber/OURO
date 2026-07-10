@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -30,7 +31,7 @@ class MessageRecord(OuroModel):
     run_id: str | None = None
     turn_id: str | None = None
     role: MessageRole
-    created_at: object = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now)
     sequence: int = 0
     content: list[ContentBlock] = Field(default_factory=list)
     synthetic: bool = False

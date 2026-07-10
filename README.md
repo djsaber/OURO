@@ -10,26 +10,26 @@ Current first-phase runtime includes:
 - Local readable session storage under `OURO_HOME` or `--home`.
 - Session continuation with `ouro run --session <session_id> ...`.
 - FauxProvider for deterministic local development.
-- First-pass OpenAI-compatible Provider boundary and CLI configuration.
+- Core-owned Provider contracts with outer-layer Faux and OpenAI-compatible implementations.
 - Local provider and prompt configuration from `config/config.json`, with CLI overrides.
 - Provider management CLI for list, show, set, use, remove, and connection checks.
 - System prompt persistence through `ouro config prompt --set ...`.
 - Skills CLI for listing available skills, showing full skill content, viewing search roots, and previewing the injected skills prompt.
 - Interrupted local runs can be recovered as `recoverable`; corrupt session indexes are rebuilt.
 - Multi-round runtime loop: tool results are fed back into the model until a final assistant response or suspend state.
-- Dual-layer loop boundary: application `RuntimeService` owns the outer session/run lifecycle, locks, aborts, and follow-up queue; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
+- Dual-layer loop boundary: application `RuntimeService` orchestrates sessions, locks, aborts, and follow-up draining; application `RunLifecycle` owns model-loop persistence transitions; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
 - Assistant tool-call messages are persisted before tool results, preserving OpenAI-compatible tool history.
 - Provider usage is recorded on runs and included in JSON output.
 - Existing active runs are returned instead of starting a second main run in the same session.
-- Follow-up input received during an active run is persisted and processed serially after the current run completes.
-- Session run locks prevent another process view from recovering a live active run as interrupted.
+- Follow-up input received during an active run is persisted and processed serially after the current run completes. Queue entries are acknowledged only after their user message is durable, with queue-id deduplication across crash recovery.
+- OS-backed session run locks prevent another process view from recovering a live active run as interrupted, while a stale lock file no longer blocks recovery after a process exits.
 - Runtime events are persisted through an application event recorder that also isolates hook failures as events.
 - Built-in Read / Write / Edit / Bash / AskUser tools.
 - Interactive approval flow for approve, reject, modify arguments, AskUser answers, and aborting suspended HITL runs.
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Standards-compatible Agent Skills discovery and progressive context injection through `ContextBuilder`.
+- Standards-compatible Agent Skills discovery and progressive context injection through `ContextBuilder`; history truncation preserves assistant tool-call/tool-result boundaries.
 - Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 

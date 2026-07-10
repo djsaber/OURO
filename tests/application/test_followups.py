@@ -47,3 +47,26 @@ def test_follow_up_queue_removes_invalid_item_and_reports_no_prompt(tmp_path) ->
 
     assert popped is None
     assert FOLLOW_UP_QUEUE_KEY not in snapshot.session.metadata
+
+
+def test_follow_up_queue_peek_requires_explicit_acknowledgement(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Queue")
+    store.create_session(session)
+    queue = FollowUpQueue(store)
+    queued_session, _ = queue.enqueue(
+        snapshot=store.load_session(session.session_id),
+        prompt="second",
+        title=None,
+    )
+    snapshot = store.load_session(queued_session.session_id, recover=False)
+
+    first = queue.peek(snapshot)
+    repeated = queue.peek(snapshot)
+
+    assert first is not None
+    assert repeated is not None
+    assert repeated.queue_id == first.queue_id
+    queue.acknowledge(snapshot, first.queue_id)
+    assert queue.peek(store.load_session(session.session_id, recover=False)) is None

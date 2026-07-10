@@ -4,8 +4,16 @@ from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.followups import FollowUpQueue
+from ouro.application.runs import (
+    ACTIVE_RUN_STATUSES,
+    RunLifecycle,
+    clear_pending_metadata,
+    find_active_run,
+    find_run,
+    maybe_active_run,
+)
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.base import new_id, utc_now
+from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
@@ -15,11 +23,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.providers import Usage
 from ouro.sessions import SessionService, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutionOutcome, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
-
-_ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_user", "waiting_approval"}
 
 
 class RuntimeService:
@@ -47,6 +52,7 @@ class RuntimeService:
             hooks=self.hooks,
             event_sink=event_sink,
         )
+        self.run_lifecycle = RunLifecycle(store=store, events=self.event_recorder)
         self.context_builder = context_builder or ContextBuilder()
         self.max_model_rounds = max_model_rounds
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
@@ -62,6 +68,7 @@ class RuntimeService:
         session_id: str | None = None,
         title: str | None = None,
         _drain_followups: bool = True,
+        _queued_follow_up_id: str | None = None,
     ) -> RunResult:
         if session_id is None:
             session = self.sessions.create(title=title or _title_from_prompt(prompt))
@@ -75,7 +82,7 @@ class RuntimeService:
             session = snapshot.session
             existing_messages = snapshot.messages
             existing_events = snapshot.events
-            active_run = _maybe_active_run(snapshot.runs)
+            active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
                 queued_session, queued_events = await self._queue_follow_up(
                     snapshot=snapshot,
@@ -95,7 +102,7 @@ class RuntimeService:
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
             snapshot = self.store.load_session(session.session_id, recover=False)
-            active_run = _maybe_active_run(snapshot.runs)
+            active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
                 queued_session, queued_events = await self._queue_follow_up(
                     snapshot=snapshot,
@@ -110,6 +117,7 @@ class RuntimeService:
         )
         self.store.save_session(session)
         self.store.save_run(run)
+        self.store.rebuild_index()
 
         sequence = await self.event_recorder.emit(
             emitted,
@@ -120,15 +128,18 @@ class RuntimeService:
             payload={"trigger": "user"},
         )
 
-        user_message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="user",
-            text=prompt,
+        user_message = self.run_lifecycle.append_user_message(
+            session=session,
+            run=run,
+            prompt=prompt,
             sequence=len(existing_messages) + 1,
+            metadata={"queued_follow_up_id": _queued_follow_up_id}
+            if _queued_follow_up_id
+            else None,
         )
-        self.store.append_message(user_message)
-        self._checkpoint_appended_message(session=session, run=run, message=user_message)
+        if _queued_follow_up_id:
+            latest = self.store.load_session(session.session_id, recover=False)
+            self.follow_ups.acknowledge(latest, _queued_follow_up_id)
         sequence = await self.event_recorder.emit(
             emitted,
             sequence,
@@ -151,6 +162,7 @@ class RuntimeService:
         finally:
             self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
+        self._finish_run_hooks(result.run)
         if _drain_followups and result.run.status == "completed":
             await self._drain_follow_up_queue(result.session.session_id)
         return result
@@ -178,12 +190,12 @@ class RuntimeService:
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_call=self._handle_tool_call,
-                record_usage=self._record_provider_usage,
-                checkpoint=self._checkpoint_run,
+                record_usage=self.run_lifecycle.record_usage,
+                checkpoint=self.run_lifecycle.checkpoint,
                 aborted_result=self._aborted_result,
-                save_waiting_state=self._save_waiting_state,
-                complete_run=self._complete_run,
-                fail_run=self._fail_run,
+                save_waiting_state=self.run_lifecycle.save_waiting_state,
+                complete_run=self.run_lifecycle.complete,
+                fail_run=self.run_lifecycle.fail,
             ),
         )
         return await loop.run(
@@ -205,13 +217,13 @@ class RuntimeService:
         reason: str = "User aborted",
     ) -> RunResult:
         snapshot = self.store.load_session(session_id, recover=False)
-        run = _find_run(snapshot.runs, run_id) if run_id else _find_active_run(snapshot.runs)
-        if run.status not in _ACTIVE_RUN_STATUSES:
+        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
+        if run.status not in ACTIVE_RUN_STATUSES:
             return RunResult(session=snapshot.session, run=run)
 
         sequence = len(snapshot.events)
         emitted: list[EventRecord] = []
-        metadata = _clear_pending_metadata(run.metadata)
+        metadata = clear_pending_metadata(run.metadata)
         metadata["abort_reason"] = reason
         run = run.model_copy(
             update={
@@ -245,6 +257,7 @@ class RuntimeService:
         signal = self._abort_signals.get(run.run_id)
         if signal is not None:
             signal.abort(reason)
+        self._finish_run_hooks(run)
         return RunResult(session=session, run=run, events=emitted)
 
     async def _queue_follow_up(
@@ -278,16 +291,24 @@ class RuntimeService:
                 session_id,
                 recover=not self._is_session_run_locked(session_id),
             )
-            if _maybe_active_run(snapshot.runs) is not None:
+            if maybe_active_run(snapshot.runs) is not None:
                 return
-            queued = self.follow_ups.pop(snapshot)
+            queued = self.follow_ups.peek(snapshot)
             if queued is None:
                 return
+            already_persisted = any(
+                message.metadata.get("queued_follow_up_id") == queued.queue_id
+                for message in snapshot.messages
+            )
+            if already_persisted:
+                self.follow_ups.acknowledge(snapshot, queued.queue_id)
+                continue
             result = await self.run(
                 queued.prompt,
                 session_id=session_id,
                 title=queued.title,
                 _drain_followups=False,
+                _queued_follow_up_id=queued.queue_id,
             )
             if result.run.status != "completed":
                 return
@@ -303,257 +324,6 @@ class RuntimeService:
     def _is_session_run_locked(self, session_id: str) -> bool:
         return self.store.is_session_locked(session_id)
 
-    def _latest_session_metadata(
-        self,
-        session_id: str,
-        fallback: dict[str, Any],
-    ) -> dict[str, Any]:
-        try:
-            return dict(self.store.load_session(session_id, recover=False).session.metadata)
-        except Exception:  # noqa: BLE001 - metadata preservation must not break run finalization.
-            return dict(fallback)
-
-    def _latest_run_record(
-        self,
-        session_id: str,
-        run_id: str,
-        fallback: RunRecord,
-    ) -> RunRecord:
-        try:
-            snapshot = self.store.load_session(session_id, recover=False)
-            return _find_run(snapshot.runs, run_id)
-        except Exception:  # noqa: BLE001 - checkpointing must not break active runs.
-            return fallback
-
-    def _record_provider_usage(self, run: RunRecord, usage: Usage) -> RunRecord:
-        latest = self._latest_run_record(run.session_id, run.run_id, run)
-        if latest.status == "aborted" or latest.abort_requested:
-            return latest
-        run = latest.model_copy(update={"usage": _merge_usage(latest.usage, usage)})
-        self.store.save_run(run)
-        return run
-
-    def _checkpoint_run(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        partial_assistant_text: str,
-        event_sequence: int,
-    ) -> tuple[SessionRecord, RunRecord]:
-        try:
-            snapshot = self.store.load_session(session.session_id, recover=False)
-            latest_run = _find_run(snapshot.runs, run.run_id)
-        except Exception:  # noqa: BLE001 - checkpoints are best-effort during active runs.
-            snapshot = None
-            latest_run = run
-
-        if latest_run.status == "aborted" or latest_run.abort_requested:
-            return (snapshot.session if snapshot is not None else session), latest_run
-
-        persisted_messages = snapshot.messages if snapshot is not None else []
-        message_count = max(len(messages), len(persisted_messages), session.message_count)
-        last_message_id = session.last_message_id
-        if len(persisted_messages) >= len(messages) and persisted_messages:
-            last_message_id = persisted_messages[-1].message_id
-        elif messages:
-            last_message_id = messages[-1].message_id
-
-        metadata = dict(latest_run.metadata)
-        metadata.update(run.metadata)
-        raw_checkpoint = metadata.get("checkpoint")
-        checkpoint = dict(raw_checkpoint) if isinstance(raw_checkpoint, dict) else {}
-        checkpoint.update(
-            {
-                "run_id": run.run_id,
-                "message_count": message_count,
-                "last_message_id": last_message_id,
-                "event_sequence": event_sequence,
-                "updated_at": utc_now(),
-            }
-        )
-        if partial_assistant_text:
-            checkpoint["partial_assistant_text"] = partial_assistant_text
-            checkpoint["partial_assistant_message_id"] = checkpoint.get(
-                "partial_assistant_message_id",
-                new_id("msg"),
-            )
-            checkpoint["partial_assistant_sequence"] = message_count + 1
-        else:
-            checkpoint.pop("partial_assistant_text", None)
-            checkpoint.pop("partial_assistant_message_id", None)
-            checkpoint.pop("partial_assistant_sequence", None)
-        metadata["checkpoint"] = checkpoint
-
-        run = run.model_copy(update={"metadata": metadata})
-        session_base = snapshot.session if snapshot is not None else session
-        session = session_base.model_copy(
-            update={
-                "status": session.status,
-                "updated_at": utc_now(),
-                "last_run_id": run.run_id,
-                "last_message_id": last_message_id,
-                "message_count": message_count,
-                "metadata": dict(session_base.metadata),
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(session)
-        return session, run
-
-    def _save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> None:
-        try:
-            snapshot = self.store.load_session(session.session_id, recover=False)
-            last_message_id = (
-                snapshot.messages[-1].message_id if snapshot.messages else session.last_message_id
-            )
-            session = snapshot.session.model_copy(
-                update={
-                    "status": session.status,
-                    "updated_at": utc_now(),
-                    "last_run_id": run.run_id,
-                    "last_message_id": last_message_id,
-                    "message_count": len(snapshot.messages),
-                    "metadata": dict(snapshot.session.metadata),
-                }
-            )
-        except Exception:  # noqa: BLE001 - waiting state still needs a best-effort save.
-            pass
-        self.store.save_run(run)
-        self.store.save_session(session)
-
-    async def _complete_run(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        final_text: str,
-        tool_results: list[ToolResult],
-    ) -> RunResult:
-        if final_text:
-            assistant_message = MessageRecord.text(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                role="assistant",
-                text=final_text,
-                sequence=len(messages) + 1,
-            )
-            self.store.append_message(assistant_message)
-            self._checkpoint_appended_message(session=session, run=run, message=assistant_message)
-            messages.append(assistant_message)
-
-        last_message_id = messages[-1].message_id if messages else session.last_message_id
-        metadata = self._latest_session_metadata(session.session_id, session.metadata)
-        run = run.model_copy(
-            update={
-                "status": "completed",
-                "ended_at": utc_now(),
-                "pending_approval_id": None,
-                "metadata": _clear_pending_metadata(run.metadata),
-            }
-        )
-        session = session.model_copy(
-            update={
-                "status": "idle",
-                "updated_at": utc_now(),
-                "last_message_id": last_message_id,
-                "message_count": len(messages),
-                "metadata": metadata,
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(session)
-        self.store.rebuild_index()
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-            payload={"final_text_length": len(final_text)},
-        )
-        del sequence
-        return RunResult(
-            session=session,
-            run=run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
-
-    async def _fail_run(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        error: str,
-        final_text: str,
-        tool_results: list[ToolResult],
-    ) -> RunResult:
-        if final_text:
-            snapshot = self.store.load_session(session.session_id, recover=False)
-            assistant_message = MessageRecord.text(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                role="assistant",
-                text=final_text,
-                sequence=len(snapshot.messages) + 1,
-            ).model_copy(
-                update={
-                    "metadata": {
-                        "incomplete": True,
-                        "failure_reason": error,
-                    }
-                }
-            )
-            self.store.append_message(assistant_message)
-            self._checkpoint_appended_message(session=session, run=run, message=assistant_message)
-
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        last_message_id = (
-            snapshot.messages[-1].message_id if snapshot.messages else session.last_message_id
-        )
-        run = run.model_copy(
-            update={
-                "status": "failed",
-                "ended_at": utc_now(),
-                "error": error,
-            }
-        )
-        session = session.model_copy(
-            update={
-                "status": "failed",
-                "updated_at": utc_now(),
-                "last_message_id": last_message_id,
-                "message_count": len(snapshot.messages),
-                "metadata": dict(snapshot.session.metadata),
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(session)
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_failed",
-            payload={"error": error},
-        )
-        del sequence
-        return RunResult(
-            session=session,
-            run=run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
-
     async def approve_tool(
         self,
         *,
@@ -565,7 +335,7 @@ class RuntimeService:
     ) -> RunResult:
         snapshot = self.store.load_session(session_id)
         session = snapshot.session
-        run = _find_run(snapshot.runs, run_id)
+        run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
         invocation = _pending_invocation(run)
@@ -576,6 +346,7 @@ class RuntimeService:
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
             tool_results: list[ToolResult] = []
+            abort_signal: AbortSignal | None = None
 
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -625,51 +396,16 @@ class RuntimeService:
             else:
                 result = self.tool_executor.rejected_result(invocation, reason)
 
-            tool_results.append(result)
-            sequence = await self._after_tool_call(emitted, sequence, session, run, result)
-            message = self._append_tool_result_message(
+            return await self._resume_with_tool_result(
+                snapshot=snapshot,
                 session=session,
                 run=run,
+                emitted=emitted,
+                sequence=sequence,
                 result=result,
-                sequence=len(snapshot.messages) + 1,
+                emit_tool_completed=True,
+                abort_signal=abort_signal,
             )
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="tool_call_completed",
-                payload={"tool_name": result.tool_name, "is_error": result.is_error},
-            )
-            run = run.model_copy(
-                update={
-                    "status": "running",
-                    "pending_approval_id": None,
-                    "metadata": _clear_pending_metadata(run.metadata),
-                }
-            )
-            session = session.model_copy(update={"status": "running", "updated_at": utc_now()})
-            self.store.save_run(run)
-            self.store.save_session(session)
-            abort_signal = self._abort_signals.get(run.run_id) or self._activate_abort_signal(
-                session.session_id,
-                run.run_id,
-            )
-            try:
-                loop_result = await self._continue_model_loop(
-                    session=session,
-                    run=run,
-                    messages=[*snapshot.messages, message],
-                    sequence=sequence,
-                    emitted=emitted,
-                    tool_results=tool_results,
-                    abort_signal=abort_signal,
-                )
-            finally:
-                self._release_abort_signal(run.run_id, abort_signal)
-            if loop_result.run.status == "completed":
-                await self._drain_follow_up_queue(loop_result.session.session_id)
-            return loop_result
         finally:
             self._release_session_run_lock(run_lock)
 
@@ -682,7 +418,7 @@ class RuntimeService:
     ) -> RunResult:
         snapshot = self.store.load_session(session_id)
         session = snapshot.session
-        run = _find_run(snapshot.runs, run_id)
+        run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_user":
             raise ValueError(f"run is not waiting for user input: {run.status}")
         invocation = _pending_invocation(run)
@@ -707,41 +443,78 @@ class RuntimeService:
                 event_type="ask_user_resolved",
                 payload={"answer": answer},
             )
+            return await self._resume_with_tool_result(
+                snapshot=snapshot,
+                session=session,
+                run=run,
+                emitted=emitted,
+                sequence=sequence,
+                result=result,
+            )
+        finally:
+            self._release_session_run_lock(run_lock)
+
+    async def _resume_with_tool_result(
+        self,
+        *,
+        snapshot: SessionSnapshot,
+        session: SessionRecord,
+        run: RunRecord,
+        emitted: list[EventRecord],
+        sequence: int,
+        result: ToolResult,
+        emit_tool_completed: bool = False,
+        abort_signal: AbortSignal | None = None,
+    ) -> RunResult:
+        active_signal = abort_signal
+        try:
             sequence = await self._after_tool_call(emitted, sequence, session, run, result)
-            message = self._append_tool_result_message(
+            message = self.run_lifecycle.append_tool_result_message(
                 session=session,
                 run=run,
                 result=result,
                 sequence=len(snapshot.messages) + 1,
             )
+            if emit_tool_completed:
+                sequence = await self.event_recorder.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="tool_call_completed",
+                    payload={"tool_name": result.tool_name, "is_error": result.is_error},
+                )
             run = run.model_copy(
                 update={
                     "status": "running",
                     "pending_approval_id": None,
-                    "metadata": _clear_pending_metadata(run.metadata),
+                    "metadata": clear_pending_metadata(run.metadata),
                 }
             )
             session = session.model_copy(update={"status": "running", "updated_at": utc_now()})
             self.store.save_run(run)
             self.store.save_session(session)
-            abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
-            try:
-                resumed = await self._continue_model_loop(
-                    session=session,
-                    run=run,
-                    messages=[*snapshot.messages, message],
-                    sequence=sequence,
-                    emitted=emitted,
-                    tool_results=[result],
-                    abort_signal=abort_signal,
-                )
-            finally:
-                self._release_abort_signal(run.run_id, abort_signal)
-            if resumed.run.status == "completed":
-                await self._drain_follow_up_queue(resumed.session.session_id)
-            return resumed
+            self.store.rebuild_index()
+            active_signal = active_signal or self._activate_abort_signal(
+                session.session_id,
+                run.run_id,
+            )
+            resumed = await self._continue_model_loop(
+                session=session,
+                run=run,
+                messages=[*snapshot.messages, message],
+                sequence=sequence,
+                emitted=emitted,
+                tool_results=[result],
+                abort_signal=active_signal,
+            )
         finally:
-            self._release_session_run_lock(run_lock)
+            if active_signal is not None:
+                self._release_abort_signal(run.run_id, active_signal)
+        self._finish_run_hooks(resumed.run)
+        if resumed.run.status == "completed":
+            await self._drain_follow_up_queue(resumed.session.session_id)
+        return resumed
 
     async def _handle_tool_call(
         self,
@@ -755,7 +528,7 @@ class RuntimeService:
         assistant_text: str,
         abort_signal: AbortSignal,
     ) -> tuple[ToolExecutionOutcome, int, list[MessageRecord]]:
-        assistant_message = self._append_assistant_tool_call_message(
+        assistant_message = self.run_lifecycle.append_assistant_tool_call_message(
             session=session,
             run=run,
             tool_call=tool_call,
@@ -819,7 +592,7 @@ class RuntimeService:
         messages = [assistant_message]
         if outcome.result is not None:
             sequence = await self._after_tool_call(emitted, sequence, session, run, outcome.result)
-            message = self._append_tool_result_message(
+            message = self.run_lifecycle.append_tool_result_message(
                 session=session,
                 run=run,
                 result=outcome.result,
@@ -861,137 +634,10 @@ class RuntimeService:
             hook_result.failures,
         )
 
-    def _checkpoint_appended_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        message: MessageRecord,
-    ) -> None:
-        try:
-            snapshot = self.store.load_session(session.session_id, recover=False)
-            latest_run = _find_run(snapshot.runs, run.run_id)
-        except Exception:  # noqa: BLE001 - message append already succeeded; checkpoint best-effort.
-            snapshot = None
-            latest_run = run
-        if latest_run.status == "aborted" or latest_run.abort_requested:
-            return
-        session_base = snapshot.session if snapshot is not None else session
-        persisted_count = len(snapshot.messages) if snapshot is not None else message.sequence
-        session = session_base.model_copy(
-            update={
-                "updated_at": utc_now(),
-                "last_run_id": run.run_id,
-                "last_message_id": message.message_id,
-                "message_count": max(session_base.message_count, persisted_count),
-                "metadata": dict(session_base.metadata),
-            }
-        )
-        self.store.save_session(session)
-
-    def _append_assistant_tool_call_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        tool_call: dict[str, Any],
-        text: str,
-        sequence: int,
-    ) -> MessageRecord:
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="assistant",
-            text=text,
-            sequence=sequence,
-        ).model_copy(
-            update={
-                "metadata": {
-                    "tool_calls": [
-                        {
-                            "id": str(tool_call.get("id") or ""),
-                            "name": str(tool_call.get("name") or ""),
-                            "arguments": dict(tool_call.get("arguments") or {}),
-                        }
-                    ]
-                }
-            }
-        )
-        self.store.append_message(message)
-        self._checkpoint_appended_message(session=session, run=run, message=message)
-        return message
-
-    def _append_tool_result_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        result: ToolResult,
-        sequence: int,
-    ) -> MessageRecord:
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="tool_result",
-            text=result.content,
-            sequence=sequence,
-        ).model_copy(
-            update={
-                "resource_refs": result.resource_refs,
-                "metadata": {
-                    "tool_call_id": result.tool_call_id,
-                    "tool_name": result.tool_name,
-                    "is_error": result.is_error,
-                },
-            }
-        )
-        self.store.append_message(message)
-        self._checkpoint_appended_message(session=session, run=run, message=message)
-        return message
-
-    async def _complete_resumed_run(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        last_message_id: str,
-        message_count: int,
-    ) -> tuple[RunRecord, SessionRecord, int]:
-        run = run.model_copy(
-            update={
-                "status": "completed",
-                "ended_at": utc_now(),
-                "pending_approval_id": None,
-                "metadata": _clear_pending_metadata(run.metadata),
-            }
-        )
-        session = session.model_copy(
-            update={
-                "status": "idle",
-                "updated_at": utc_now(),
-                "last_message_id": last_message_id,
-                "message_count": message_count,
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(session)
-        self.store.rebuild_index()
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_completed",
-            payload={"resumed": True},
-        )
-        return run, session, sequence
-
     def _abort_snapshot(self, session_id: str, run_id: str):
         try:
             snapshot = self.store.load_session(session_id, recover=False)
-            run = _find_run(snapshot.runs, run_id)
+            run = find_run(snapshot.runs, run_id)
         except Exception:  # noqa: BLE001 - abort polling must not break active runs.
             return None
         if run.status == "aborted" or run.abort_requested:
@@ -1012,7 +658,7 @@ class RuntimeService:
             return None
         return RunResult(
             session=abort_snapshot.session,
-            run=_find_run(abort_snapshot.runs, run_id),
+            run=find_run(abort_snapshot.runs, run_id),
             final_text=final_text,
             events=emitted,
             tool_results=tool_results,
@@ -1027,31 +673,14 @@ class RuntimeService:
         if self._abort_signals.get(run_id) is signal:
             self._abort_signals.pop(run_id, None)
 
+    def _finish_run_hooks(self, run: RunRecord) -> None:
+        if run.status not in ACTIVE_RUN_STATUSES:
+            self.hooks.finish_run(run.run_id)
+
 
 def _title_from_prompt(prompt: str) -> str:
     stripped = " ".join(prompt.split())
     return stripped[:60] if stripped else "New session"
-
-
-def _find_run(runs: list[RunRecord], run_id: str) -> RunRecord:
-    for run in runs:
-        if run.run_id == run_id:
-            return run
-    raise KeyError(f"unknown run: {run_id}")
-
-
-def _find_active_run(runs: list[RunRecord]) -> RunRecord:
-    for run in reversed(runs):
-        if run.status in _ACTIVE_RUN_STATUSES:
-            return run
-    raise ValueError("no active run to abort")
-
-
-def _maybe_active_run(runs: list[RunRecord]) -> RunRecord | None:
-    try:
-        return _find_active_run(runs)
-    except ValueError:
-        return None
 
 
 def _pending_invocation(run: RunRecord) -> ToolInvocation:
@@ -1059,24 +688,3 @@ def _pending_invocation(run: RunRecord) -> ToolInvocation:
     if not isinstance(raw, dict):
         raise ValueError("run has no pending invocation")
     return ToolInvocation.model_validate(raw)
-
-
-def _clear_pending_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    cleaned = dict(metadata)
-    for key in ("pending_invocation", "pending_approval", "pending_question"):
-        cleaned.pop(key, None)
-    return cleaned
-
-
-def _merge_usage(current: dict[str, int | float], usage: Usage) -> dict[str, int | float]:
-    merged = dict(current)
-    fields = usage.model_dump()
-    for key, value in fields.items():
-        if value is None:
-            continue
-        existing = merged.get(key, 0)
-        if isinstance(existing, int | float):
-            merged[key] = existing + value
-        else:
-            merged[key] = value
-    return merged

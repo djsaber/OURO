@@ -7,7 +7,8 @@ from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
-from ouro.prompts import DEFAULT_SYSTEM_PROMPT
+from ouro.core.messages import MessageRecord
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.providers import (
     FauxProvider,
     ModelMetadata,
@@ -127,6 +128,7 @@ class CapturingProvider:
 
     def __init__(self) -> None:
         self.messages = []
+        self.calls = 0
 
     async def stream(
         self,
@@ -136,6 +138,7 @@ class CapturingProvider:
         tools=None,
     ):
         del model, tools
+        self.calls += 1
         self.messages = list(messages)
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
@@ -276,6 +279,7 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     assert snapshot.session.message_count == 2
     assert snapshot.session.last_message_id == snapshot.messages[-1].message_id
     assert snapshot.events[-1].event_type == "run_failed"
+    assert store.load_index()["sessions"][0]["status"] == "failed"
 
 
 @pytest.mark.asyncio
@@ -327,8 +331,8 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CapturingProvider()
-    context_builder = ContextBuilder(
-        available_skills=[
+    skills_prompt = render_agent_skills_prompt(
+        [
             SkillMetadata(
                 name="pdf",
                 description="Extract text from PDFs.",
@@ -336,6 +340,7 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
             )
         ]
     )
+    context_builder = ContextBuilder(base_context=[skills_prompt])
     hooks = HookRegistry()
     hooks.register(
         HookRegistration(
@@ -422,6 +427,7 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
     assert result.session.status == "waiting_approval"
     assert not target.exists()
     assert "approval_requested" in [event.event_type for event in snapshot.events]
+    assert store.load_index()["sessions"][0]["status"] == "waiting_approval"
 
 
 @pytest.mark.asyncio
@@ -498,6 +504,52 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
         "second",
     ]
     assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
+
+
+@pytest.mark.asyncio
+async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_message(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+    session = runtime.sessions.create(title="Crash window")
+    queued_session, _ = runtime.follow_ups.enqueue(
+        snapshot=store.load_session(session.session_id, recover=False),
+        prompt="Queued prompt",
+        title=None,
+    )
+    queued = runtime.follow_ups.peek(store.load_session(queued_session.session_id, recover=False))
+    assert queued is not None
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text=queued.prompt,
+            sequence=1,
+        ).model_copy(update={"metadata": {"queued_follow_up_id": queued.queue_id}})
+    )
+
+    result = await runtime.run("Continue", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id, recover=False)
+
+    assert result.run.status == "completed"
+    assert provider.calls == 1
+    assert len(snapshot.runs) == 1
+    assert [message.text_content for message in snapshot.messages] == [
+        "Queued prompt",
+        "Continue",
+        "ok",
+    ]
+    assert "follow_up_queue" not in snapshot.session.metadata
 
 
 @pytest.mark.asyncio

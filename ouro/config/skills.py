@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import json
-import os
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
+from ouro.config.file import JsonConfigFile
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
@@ -56,9 +54,9 @@ class SkillConfigManager:
     """Read Ouro-specific skill policy from the shared ``config/config.json`` file."""
 
     def __init__(self, root: str | Path | None = None) -> None:
-        root_value = root if root is not None else os.environ.get("OURO_HOME")
-        self.root = Path(root_value) if root_value is not None else Path.home() / ".ouro"
-        self.config_path = self.root / "config" / "config.json"
+        self._file = JsonConfigFile(root)
+        self.root = self._file.root
+        self.config_path = self._file.path
 
     def snapshot(self) -> SkillConfigSnapshot:
         raw = self.load_raw()
@@ -81,15 +79,7 @@ class SkillConfigManager:
         return SkillConfigSnapshot(config=config, config_path=self.config_path)
 
     def load_raw(self) -> dict[str, Any]:
-        if not self.config_path.exists():
-            return {}
-        try:
-            raw = json.loads(self.config_path.read_text(encoding="utf-8"))
-        except json.JSONDecodeError as exc:
-            raise ConfigError(f"invalid config file {self.config_path}: {exc}") from exc
-        if not isinstance(raw, dict):
-            raise ConfigError(f"invalid config file {self.config_path}: expected object")
-        return raw
+        return self._file.read()
 
     def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillConfigSnapshot:
         raw = self.load_raw()
@@ -155,15 +145,4 @@ class SkillConfigManager:
         self._write_raw(next_raw)
 
     def _write_raw(self, raw: Mapping[str, Any]) -> None:
-        self.config_path.parent.mkdir(parents=True, exist_ok=True)
-        text = json.dumps(raw, ensure_ascii=False, indent=2, sort_keys=True)
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=self.config_path.parent,
-            delete=False,
-        ) as temp:
-            temp.write(text)
-            temp.write("\n")
-            temp_name = temp.name
-        Path(temp_name).replace(self.config_path)
+        self._file.write(raw)

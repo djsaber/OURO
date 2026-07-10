@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.context import ContextBuilder
+from ouro.core.context import ContextBuilder, ContextView
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import Usage
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition, ToolExecutionOutcome, ToolResult
-from ouro.providers import Usage
 
 
 class EventEmitter(Protocol):
@@ -135,6 +135,27 @@ class InnerLoopPorts:
     fail_run: RunFailer
 
 
+@dataclass
+class _LoopState:
+    session: SessionRecord
+    run: RunRecord
+    messages: list[MessageRecord]
+    sequence: int
+    emitted: list[EventRecord]
+    final_parts: list[str]
+    tool_results: list[ToolResult]
+
+    def final_text(self, round_parts: list[str] | None = None) -> str:
+        return "".join([*self.final_parts, *(round_parts or [])])
+
+
+@dataclass
+class _RoundState:
+    parts: list[str] = field(default_factory=list)
+    saw_model_done: bool = False
+    completed_tool: bool = False
+
+
 class InnerAgentLoop:
     """Drive model rounds and tool continuations for one active run.
 
@@ -174,244 +195,262 @@ class InnerAgentLoop:
         tool_results: list[ToolResult] | None = None,
         abort_signal: AbortSignal,
     ) -> RunResult:
-        final_parts = final_parts or []
-        tool_results = tool_results or []
-
-        for model_round in range(1, self.max_model_rounds + 1):
-            round_parts: list[str] = []
-            saw_model_done = False
-            abort_result = self.ports.aborted_result(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                final_text="".join(final_parts),
-                emitted=emitted,
-                tool_results=tool_results,
-            )
-            if abort_result is not None:
-                return abort_result
-            hook_context = HookContext(
-                hook_name="after_context_build",
-                session_id=session.session_id,
-                run_id=run.run_id,
-                data={"message_count": len(messages), "model_round": model_round},
-            )
-            hook_result = await self.hooks.dispatch(hook_context)
-            sequence = await self.ports.record_hook_failures(
-                emitted,
-                sequence,
-                hook_result.failures,
-            )
-            added_context = [
-                text for result in hook_result.results for text in result.added_context
-            ]
-            context = self.context_builder.build(
-                messages=messages,
-                tools=self.tools.definitions(),
-                system_prompt=self.system_prompt,
-                added_context=added_context,
-            )
-
-            sequence = await self.ports.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="model_request_started",
-                payload={"model": self.adapter.model.model_id, "round": model_round},
-            )
-            session, run = self.ports.checkpoint(
-                session=session,
-                run=run,
-                messages=messages,
-                partial_assistant_text="".join(final_parts),
-                event_sequence=sequence,
-            )
-
-            completed_tool_in_round = False
-            try:
-                async for provider_event in self.adapter.stream(context, signal=abort_signal):
-                    if provider_event.usage is not None:
-                        run = self.ports.record_usage(run, provider_event.usage)
-                    abort_result = self.ports.aborted_result(
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        final_text="".join([*final_parts, *round_parts]),
-                        emitted=emitted,
-                        tool_results=tool_results,
-                    )
-                    if abort_result is not None:
-                        return abort_result
-                    if provider_event.type == "text_delta" and provider_event.text:
-                        round_parts.append(provider_event.text)
-                        sequence = await self.ports.emit(
-                            emitted,
-                            sequence,
-                            session_id=session.session_id,
-                            run_id=run.run_id,
-                            event_type="model_text_delta",
-                            payload={"text": provider_event.text, "round": model_round},
-                        )
-                        session, run = self.ports.checkpoint(
-                            session=session,
-                            run=run,
-                            messages=messages,
-                            partial_assistant_text="".join([*final_parts, *round_parts]),
-                            event_sequence=sequence,
-                        )
-                    elif provider_event.type == "tool_call" and provider_event.tool_call:
-                        assistant_text = "".join(round_parts)
-                        round_parts = []
-                        outcome, sequence, new_messages = await self.ports.handle_tool_call(
-                            emitted,
-                            sequence,
-                            session,
-                            run,
-                            provider_event.tool_call,
-                            message_sequence=len(messages) + 1,
-                            assistant_text=assistant_text,
-                            abort_signal=abort_signal,
-                        )
-                        abort_result = self.ports.aborted_result(
-                            session_id=session.session_id,
-                            run_id=run.run_id,
-                            final_text="".join([*final_parts, *round_parts]),
-                            emitted=emitted,
-                            tool_results=tool_results,
-                        )
-                        if abort_result is not None:
-                            return abort_result
-                        if outcome.result is not None:
-                            tool_results.append(outcome.result)
-                        if new_messages:
-                            messages.extend(new_messages)
-                            completed_tool_in_round = True
-                            session, run = self.ports.checkpoint(
-                                session=session,
-                                run=run,
-                                messages=messages,
-                                partial_assistant_text="".join([*final_parts, *round_parts]),
-                                event_sequence=sequence,
-                            )
-                        if outcome.status in {"approval_required", "waiting_user"}:
-                            run = _run_with_pending_outcome(run, outcome)
-                            session = session.model_copy(
-                                update={
-                                    "status": _session_status_for_run(run.status),
-                                    "updated_at": utc_now(),
-                                }
-                            )
-                            session, run = self.ports.checkpoint(
-                                session=session,
-                                run=run,
-                                messages=messages,
-                                partial_assistant_text="".join(final_parts),
-                                event_sequence=sequence,
-                            )
-                            self.ports.save_waiting_state(session=session, run=run)
-                            return await self._save_waiting_state(
-                                emitted=emitted,
-                                session=session,
-                                run=run,
-                                final_text="".join(final_parts),
-                                tool_results=tool_results,
-                            )
-                    elif provider_event.type == "error":
-                        return await self.ports.fail_run(
-                            emitted,
-                            sequence,
-                            session=session,
-                            run=run,
-                            error=provider_event.error or "provider error",
-                            final_text="".join([*final_parts, *round_parts]),
-                            tool_results=tool_results,
-                        )
-                    elif provider_event.type == "done":
-                        saw_model_done = True
-                        sequence = await self.ports.emit(
-                            emitted,
-                            sequence,
-                            session_id=session.session_id,
-                            run_id=run.run_id,
-                            event_type="model_message_completed",
-                            payload={
-                                "round": model_round,
-                                "usage": provider_event.usage.model_dump(mode="json")
-                                if provider_event.usage is not None
-                                else {},
-                            },
-                        )
-                        session, run = self.ports.checkpoint(
-                            session=session,
-                            run=run,
-                            messages=messages,
-                            partial_assistant_text="".join([*final_parts, *round_parts]),
-                            event_sequence=sequence,
-                        )
-            except Exception as exc:
-                return await self.ports.fail_run(
-                    emitted,
-                    sequence,
-                    session=session,
-                    run=run,
-                    error=str(exc) or exc.__class__.__name__,
-                    final_text="".join([*final_parts, *round_parts]),
-                    tool_results=tool_results,
-                )
-
-            abort_result = self.ports.aborted_result(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                final_text="".join([*final_parts, *round_parts]),
-                emitted=emitted,
-                tool_results=tool_results,
-            )
-            if abort_result is not None:
-                return abort_result
-
-            if completed_tool_in_round:
-                continue
-
-            if not saw_model_done:
-                return await self.ports.fail_run(
-                    emitted,
-                    sequence,
-                    session=session,
-                    run=run,
-                    error="provider stream ended without a completion event",
-                    final_text="".join([*final_parts, *round_parts]),
-                    tool_results=tool_results,
-                )
-
-            if not round_parts:
-                return await self.ports.fail_run(
-                    emitted,
-                    sequence,
-                    session=session,
-                    run=run,
-                    error="provider returned an empty assistant message",
-                    final_text="".join(final_parts),
-                    tool_results=tool_results,
-                )
-
-            final_parts.extend(round_parts)
-            return await self.ports.complete_run(
-                emitted,
-                sequence,
-                session=session,
-                run=run,
-                messages=messages,
-                final_text="".join(final_parts),
-                tool_results=tool_results,
-            )
-
-        return await self.ports.fail_run(
-            emitted,
-            sequence,
+        state = _LoopState(
             session=session,
             run=run,
-            error=f"model round limit exceeded: {self.max_model_rounds}",
-            final_text="".join(final_parts),
-            tool_results=tool_results,
+            messages=messages,
+            sequence=sequence,
+            emitted=emitted,
+            final_parts=list(final_parts or []),
+            tool_results=list(tool_results or []),
+        )
+
+        for model_round in range(1, self.max_model_rounds + 1):
+            if aborted := self._aborted_result(state):
+                return aborted
+
+            context = await self._build_context(state, model_round)
+            await self._start_round(state, model_round)
+            round_state = _RoundState()
+            terminal_result = await self._consume_provider_stream(
+                state=state,
+                round_state=round_state,
+                model_round=model_round,
+                context=context,
+                abort_signal=abort_signal,
+            )
+            if terminal_result is not None:
+                return terminal_result
+            if aborted := self._aborted_result(state, round_state.parts):
+                return aborted
+            if round_state.completed_tool:
+                continue
+            if not round_state.saw_model_done:
+                return await self._fail(
+                    state,
+                    "provider stream ended without a completion event",
+                    round_state.parts,
+                )
+            if not round_state.parts:
+                return await self._fail(state, "provider returned an empty assistant message")
+
+            state.final_parts.extend(round_state.parts)
+            return await self.ports.complete_run(
+                state.emitted,
+                state.sequence,
+                session=state.session,
+                run=state.run,
+                messages=state.messages,
+                final_text=state.final_text(),
+                tool_results=state.tool_results,
+            )
+
+        return await self._fail(
+            state,
+            f"model round limit exceeded: {self.max_model_rounds}",
+        )
+
+    async def _build_context(self, state: _LoopState, model_round: int) -> ContextView:
+        hook_result = await self.hooks.dispatch(
+            HookContext(
+                hook_name="after_context_build",
+                session_id=state.session.session_id,
+                run_id=state.run.run_id,
+                data={"message_count": len(state.messages), "model_round": model_round},
+            )
+        )
+        state.sequence = await self.ports.record_hook_failures(
+            state.emitted,
+            state.sequence,
+            hook_result.failures,
+        )
+        added_context = [text for result in hook_result.results for text in result.added_context]
+        return self.context_builder.build(
+            messages=state.messages,
+            tools=self.tools.definitions(),
+            system_prompt=self.system_prompt,
+            added_context=added_context,
+        )
+
+    async def _start_round(self, state: _LoopState, model_round: int) -> None:
+        state.sequence = await self.ports.emit(
+            state.emitted,
+            state.sequence,
+            session_id=state.session.session_id,
+            run_id=state.run.run_id,
+            event_type="model_request_started",
+            payload={"model": self.adapter.model.model_id, "round": model_round},
+        )
+        self._checkpoint(state)
+
+    async def _consume_provider_stream(
+        self,
+        *,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        context: ContextView,
+        abort_signal: AbortSignal,
+    ) -> RunResult | None:
+        try:
+            async for provider_event in self.adapter.stream(context, signal=abort_signal):
+                if provider_event.usage is not None:
+                    state.run = self.ports.record_usage(state.run, provider_event.usage)
+                if aborted := self._aborted_result(state, round_state.parts):
+                    return aborted
+
+                if provider_event.type == "text_delta" and provider_event.text:
+                    await self._record_text_delta(
+                        state,
+                        round_state,
+                        model_round,
+                        provider_event.text,
+                    )
+                elif provider_event.type == "tool_call" and provider_event.tool_call:
+                    terminal_result = await self._handle_round_tool_call(
+                        state=state,
+                        round_state=round_state,
+                        tool_call=provider_event.tool_call,
+                        abort_signal=abort_signal,
+                    )
+                    if terminal_result is not None:
+                        return terminal_result
+                elif provider_event.type == "error":
+                    return await self._fail(
+                        state,
+                        provider_event.error or "provider error",
+                        round_state.parts,
+                    )
+                elif provider_event.type == "done":
+                    round_state.saw_model_done = True
+                    state.sequence = await self.ports.emit(
+                        state.emitted,
+                        state.sequence,
+                        session_id=state.session.session_id,
+                        run_id=state.run.run_id,
+                        event_type="model_message_completed",
+                        payload={
+                            "round": model_round,
+                            "usage": provider_event.usage.model_dump(mode="json")
+                            if provider_event.usage is not None
+                            else {},
+                        },
+                    )
+                    self._checkpoint(state, round_state.parts)
+        except Exception as exc:
+            return await self._fail(
+                state,
+                str(exc) or exc.__class__.__name__,
+                round_state.parts,
+            )
+        return None
+
+    async def _record_text_delta(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        text: str,
+    ) -> None:
+        round_state.parts.append(text)
+        state.sequence = await self.ports.emit(
+            state.emitted,
+            state.sequence,
+            session_id=state.session.session_id,
+            run_id=state.run.run_id,
+            event_type="model_text_delta",
+            payload={"text": text, "round": model_round},
+        )
+        self._checkpoint(state, round_state.parts)
+
+    async def _handle_round_tool_call(
+        self,
+        *,
+        state: _LoopState,
+        round_state: _RoundState,
+        tool_call: dict[str, Any],
+        abort_signal: AbortSignal,
+    ) -> RunResult | None:
+        assistant_text = "".join(round_state.parts)
+        round_state.parts.clear()
+        outcome, state.sequence, new_messages = await self.ports.handle_tool_call(
+            state.emitted,
+            state.sequence,
+            state.session,
+            state.run,
+            tool_call,
+            message_sequence=len(state.messages) + 1,
+            assistant_text=assistant_text,
+            abort_signal=abort_signal,
+        )
+        if aborted := self._aborted_result(state):
+            return aborted
+        if outcome.result is not None:
+            state.tool_results.append(outcome.result)
+        if new_messages:
+            state.messages.extend(new_messages)
+            round_state.completed_tool = True
+            self._checkpoint(state)
+        if outcome.status not in {"approval_required", "waiting_user"}:
+            return None
+
+        state.run = _run_with_pending_outcome(state.run, outcome)
+        state.session = state.session.model_copy(
+            update={
+                "status": _session_status_for_run(state.run.status),
+                "updated_at": utc_now(),
+            }
+        )
+        self._checkpoint(state)
+        self.ports.save_waiting_state(session=state.session, run=state.run)
+        return await self._save_waiting_state(
+            emitted=state.emitted,
+            session=state.session,
+            run=state.run,
+            final_text=state.final_text(),
+            tool_results=state.tool_results,
+        )
+
+    def _checkpoint(
+        self,
+        state: _LoopState,
+        round_parts: list[str] | None = None,
+    ) -> None:
+        state.session, state.run = self.ports.checkpoint(
+            session=state.session,
+            run=state.run,
+            messages=state.messages,
+            partial_assistant_text=state.final_text(round_parts),
+            event_sequence=state.sequence,
+        )
+
+    def _aborted_result(
+        self,
+        state: _LoopState,
+        round_parts: list[str] | None = None,
+    ) -> RunResult | None:
+        return self.ports.aborted_result(
+            session_id=state.session.session_id,
+            run_id=state.run.run_id,
+            final_text=state.final_text(round_parts),
+            emitted=state.emitted,
+            tool_results=state.tool_results,
+        )
+
+    async def _fail(
+        self,
+        state: _LoopState,
+        error: str,
+        round_parts: list[str] | None = None,
+    ) -> RunResult:
+        return await self.ports.fail_run(
+            state.emitted,
+            state.sequence,
+            session=state.session,
+            run=state.run,
+            error=error,
+            final_text=state.final_text(round_parts),
+            tool_results=state.tool_results,
         )
 
     async def _save_waiting_state(

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import json
 import os
+import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
@@ -14,6 +16,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.base import SessionSnapshot
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
+_RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
 class LocalSessionStore:
@@ -55,7 +58,8 @@ class LocalSessionStore:
     def save_run(self, run: RunRecord) -> None:
         run_dir = self._session_dir(run.session_id) / "runs"
         run_dir.mkdir(parents=True, exist_ok=True)
-        self._write_model_atomic(run_dir / f"{run.run_id}.json", run)
+        run_id = _validated_record_id(run.run_id, kind="run")
+        self._write_model_atomic(run_dir / f"{run_id}.json", run)
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
         session_dir = self._session_dir(session_id)
@@ -121,7 +125,20 @@ class LocalSessionStore:
         return lock if lock.acquire() else None
 
     def is_session_locked(self, session_id: str) -> bool:
-        return self._lock_path(session_id).exists()
+        path = self._lock_path(session_id)
+        if not path.exists():
+            return False
+        try:
+            descriptor = os.open(path, os.O_RDWR)
+        except FileNotFoundError:
+            return False
+        try:
+            if not _try_lock_descriptor(descriptor):
+                return True
+            _unlock_descriptor(descriptor)
+            return False
+        finally:
+            os.close(descriptor)
 
     def _recover_incomplete_runs(
         self,
@@ -248,7 +265,7 @@ class LocalSessionStore:
         return event
 
     def _session_dir(self, session_id: str) -> Path:
-        return self.sessions_dir / session_id
+        return self.sessions_dir / _validated_record_id(session_id, kind="session")
 
     def _lock_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / ".active_run.lock"
@@ -289,13 +306,13 @@ class SessionRunLock:
         self.session_id = session_id
         self.run_id = run_id
         self._acquired = False
+        self._descriptor: int | None = None
 
     def acquire(self) -> bool:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        try:
-            fd = os.open(self.path, flags)
-        except FileExistsError:
+        descriptor = os.open(self.path, os.O_CREAT | os.O_RDWR)
+        if not _try_lock_descriptor(descriptor):
+            os.close(descriptor)
             return False
         try:
             payload = json.dumps(
@@ -307,27 +324,27 @@ class SessionRunLock:
                 },
                 default=str,
             )
-            os.write(fd, payload.encode("utf-8"))
-            os.write(fd, b"\n")
-        finally:
-            os.close(fd)
+            os.ftruncate(descriptor, 0)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            os.write(descriptor, payload.encode("utf-8"))
+            os.write(descriptor, b"\n")
+            os.fsync(descriptor)
+        except Exception:
+            _unlock_descriptor(descriptor)
+            os.close(descriptor)
+            raise
+        self._descriptor = descriptor
         self._acquired = True
         return True
 
     def release(self) -> None:
-        if not self._acquired:
+        if not self._acquired or self._descriptor is None:
             return
         try:
-            raw = json.loads(self.path.read_text("utf-8"))
-            if raw.get("run_id") != self.run_id:
-                return
-        except (OSError, json.JSONDecodeError, AttributeError):
-            return
-        try:
-            self.path.unlink()
-        except FileNotFoundError:
-            pass
+            _unlock_descriptor(self._descriptor)
         finally:
+            os.close(self._descriptor)
+            self._descriptor = None
             self._acquired = False
 
     def __enter__(self) -> Self:
@@ -343,3 +360,42 @@ class SessionRunLock:
     ) -> None:
         del exc_type, exc, traceback
         self.release()
+
+
+def _validated_record_id(value: str, *, kind: str) -> str:
+    if not _RECORD_ID.fullmatch(value):
+        raise ValueError(f"invalid {kind} id: {value!r}")
+    return value
+
+
+def _try_lock_descriptor(descriptor: int) -> bool:
+    _ensure_lock_byte(descriptor)
+    try:
+        if os.name == "nt":
+            msvcrt = importlib.import_module("msvcrt")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl = importlib.import_module("fcntl")
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "nt":
+        msvcrt = importlib.import_module("msvcrt")
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    fcntl = importlib.import_module("fcntl")
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
+
+
+def _ensure_lock_byte(descriptor: int) -> None:
+    if os.fstat(descriptor).st_size > 0:
+        return
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    os.write(descriptor, b"\0")
+    os.fsync(descriptor)

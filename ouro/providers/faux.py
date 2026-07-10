@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterable, Sequence
 
 from ouro.core.messages import MessageRecord
-from ouro.providers.base import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
+from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
 
 
 class FauxProvider:

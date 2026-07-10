@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import Field
@@ -39,7 +40,7 @@ class EventRecord(OuroModel):
     run_id: str | None = None
     turn_id: str | None = None
     event_type: EventType | str
-    created_at: object = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now)
     sequence: int = 0
     payload: dict[str, Any] = Field(default_factory=dict)
     metadata: Metadata = MetadataField

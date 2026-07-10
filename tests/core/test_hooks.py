@@ -70,6 +70,10 @@ async def test_third_party_hook_failure_is_isolated_for_run() -> None:
     first = await registry.dispatch(context)
     second = await registry.dispatch(context)
 
+    registry.finish_run("run_1")
+    after_finish = await registry.dispatch(context)
+
     assert len(first.failures) == 1
     assert second.failures == []
-    assert calls == 1
+    assert len(after_finish.failures) == 1
+    assert calls == 2

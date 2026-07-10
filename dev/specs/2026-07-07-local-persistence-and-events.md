@@ -241,13 +241,15 @@ role 可选值：
 
 ## 9. Recovery
 
+会话目录和 run 文件名只接受受限 record id，不能把外部输入直接拼接为路径。active run 使用进程持有的操作系统文件锁；锁文件是可读诊断载体，不是锁是否存活的判断依据。进程退出后操作系统释放锁，因此遗留的锁文件不会永久阻止恢复。
+
 打开会话时：
 
 1. 读取 session.json。
 2. 读取 messages.jsonl，构建用户可见历史。
 3. 读取最后一个 run record。
 4. 若 run 状态为 waiting_approval 或 waiting_user，恢复待处理状态。
-5. 若 run 状态为 running 但进程已退出，标记为 recoverable 或 failed。
+5. 若 run 状态为 running 且该会话没有仍被进程持有的文件锁，标记为 recoverable 或 failed；仍被持有时不得把活跃运行误判为中断。
 6. 读取 resources/index.json，恢复资源引用。
 7. 修复或重建 sessions/index.json。
 
@@ -287,6 +289,8 @@ role 可选值：
 - 每次运行产生的事件写入 events.jsonl。
 - 崩溃后重新打开会话能看到历史消息。
 - 未完成运行能被标记为 recoverable 或 failed。
+- 活跃进程持有的会话不会被另一存储实例恢复；进程退出后的遗留锁文件不会阻塞恢复。
+- 非法 session_id/run_id 不能越过数据根访问或创建路径。
 - 会话列表能展示标题、更新时间、状态、工作区。
 - 资源引用能关联到消息、运行或工具调用。
 - 索引损坏时可以重建，不导致会话丢失。

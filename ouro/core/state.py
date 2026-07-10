@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import Field
@@ -25,8 +26,8 @@ class SessionRecord(OuroModel):
     schema_version: int = SCHEMA_VERSION
     session_id: str = Field(default_factory=lambda: new_id("ses"))
     title: str = "New session"
-    created_at: object = Field(default_factory=utc_now)
-    updated_at: object = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     archived: bool = False
     workspace: str | None = None
     current_model: str | None = None
@@ -44,8 +45,8 @@ class RunRecord(OuroModel):
     session_id: str
     status: RunStatus = "queued"
     trigger: str = "user"
-    started_at: object = Field(default_factory=utc_now)
-    ended_at: object | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime | None = None
     model: str | None = None
     pending_approval_id: str | None = None
     abort_requested: bool = False
@@ -61,8 +62,8 @@ class ApprovalRecord(OuroModel):
     run_id: str
     tool_call_id: str
     status: ApprovalStatus = "requested"
-    requested_at: object = Field(default_factory=utc_now)
-    resolved_at: object | None = None
+    requested_at: datetime = Field(default_factory=utc_now)
+    resolved_at: datetime | None = None
     reason: str | None = None
     modified_arguments: dict[str, object] | None = None
     metadata: Metadata = MetadataField

@@ -1,3 +1,5 @@
+import pytest
+
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -93,3 +95,34 @@ def test_local_file_store_lock_prevents_active_run_recovery(tmp_path) -> None:
     assert snapshot.session.status == "running"
     assert snapshot.runs[0].status == "running"
     assert not any(event.event_type == "run_status_changed" for event in snapshot.events)
+    assert not store.is_session_locked(session.session_id)
+
+
+def test_released_lock_file_does_not_block_interrupted_run_recovery(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Interrupted", status="running")
+    run = RunRecord(session_id=session.session_id, status="running", model="faux")
+    store.create_session(session)
+    store.save_run(run)
+    lock = store.acquire_session_lock(session.session_id, run.run_id)
+    assert lock is not None
+    lock.release()
+
+    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
+
+    assert recovered.runs[0].status == "recoverable"
+
+
+def test_store_rejects_path_like_record_ids(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+
+    with pytest.raises(ValueError, match="invalid session id"):
+        store.load_session("../outside")
+
+    session = SessionRecord(title="Safe")
+    store.create_session(session)
+    unsafe_run = RunRecord(session_id=session.session_id, run_id="../outside")
+    with pytest.raises(ValueError, match="invalid run id"):
+        store.save_run(unsafe_run)

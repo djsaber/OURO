@@ -1,6 +1,6 @@
-"""Model provider abstractions."""
+"""Provider implementations and public provider contracts."""
 
-from ouro.providers.base import (
+from ouro.core.provider import (
     ModelMetadata,
     Provider,
     ProviderCheckResult,

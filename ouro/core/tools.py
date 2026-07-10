@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import Field
@@ -38,7 +39,7 @@ class ToolInvocation(OuroModel):
     tool_name: str
     source: ToolSource = "builtin"
     arguments: dict[str, Any] = Field(default_factory=dict)
-    requested_at: object = Field(default_factory=utc_now)
+    requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
     approval_id: str | None = None
 
@@ -50,8 +51,8 @@ class ToolResult(OuroModel):
     content: str = ""
     structured: dict[str, Any] = Field(default_factory=dict)
     resource_refs: list[str] = Field(default_factory=list)
-    started_at: object = Field(default_factory=utc_now)
-    ended_at: object | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime | None = None
     exit_code: int | None = None
     metadata: Metadata = MetadataField
 

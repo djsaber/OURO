@@ -90,6 +90,11 @@ class HookRegistry:
             key=lambda item: (_SOURCE_ORDER[item.source], item.priority, item.plugin_id),
         )
 
+    def finish_run(self, run_id: str) -> None:
+        """Forget per-run hook isolation state after a run reaches a terminal state."""
+
+        self._disabled_for_run = {key for key in self._disabled_for_run if key[0] != run_id}
+
     async def dispatch(self, context: HookContext) -> HookDispatchResult:
         dispatch_result = HookDispatchResult()
         for registration in self.registered(context.hook_name):

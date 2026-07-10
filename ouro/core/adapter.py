@@ -7,7 +7,7 @@ from contextlib import suppress
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.messages import MessageRecord
-from ouro.providers.base import ModelMetadata, Provider, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, Provider, ProviderStreamEvent
 
 
 class RuntimeAdapter:

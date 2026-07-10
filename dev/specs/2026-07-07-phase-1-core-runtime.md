@@ -39,23 +39,25 @@ OURO 第一阶段采用自研基础运行设施，不基于外部 Agent 框架�
 ```
 ouro/
   application/
-    runtime.py        # Outer Loop 应用服务，管理 run lifecycle 与持久化边界
+    runtime.py        # Outer Loop 应用服务，编排 session、lock、abort 与恢复入口
+    runs.py           # run/session 状态转换与消息、checkpoint 的持久化边界
     events.py         # 运行事件持久化、on_event hook 和 hook failure 事件化
     session.py        # 会话应用服务，封装 SessionStore 的用例入口
     followups.py      # active run 期间收到的 follow-up input 持久化队列
   core/
     inner_loop.py     # 单个 active run 内的模型回合与工具结果回灌
+    provider.py       # Provider 协议、模型元数据、流事件与 usage 契约
     results.py        # 运行结果契约
     context.py        # 上下文视图构建与截断压缩
     events.py         # OURO 事件类型和事件总线
     messages.py       # OURO 消息类型
     state.py          # 会话状态、运行状态、审批状态
     hooks.py          # 运行扩展点和 Hook 调度
-    adapter.py        # OURO 自研 RuntimeAdapter / Provider 适配边界
+    adapter.py        # OURO 自研 RuntimeAdapter，连接上下文视图与 Provider 协议
     errors.py         # 统一错误类型
 ```
 
-这些模块名不是最终 API 承诺，但职责边界应保持。应用编排入口必须位于 `application` 层；`core` 不提供 `RuntimeService` / `SessionService` 兼容 shim，也不依赖 application 或 persistence。
+这些模块名不是最终 API 承诺，但职责边界应保持。应用编排入口必须位于 `application` 层；`core` 不提供 `RuntimeService` / `SessionService` 兼容 shim，也不依赖 application、persistence、具体 provider 实现或提示词包。Provider 的抽象契约归 `core` 所有，HTTP 传输、供应商编解码和配置归外层实现。
 
 核心层依赖：
 
@@ -167,7 +169,7 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 
 运行层采用双层 Agent Loop：
 
-- Outer Loop 由 application 层 `RuntimeService` 承担，负责会话创建/加载、run lock、active run 检测、中止信号、审批/AskUser 恢复入口、最终状态持久化和队列串行 drain。active run 期间收到的 follow-up input 由 application 层 `FollowUpQueue` 维护，避免 runtime 私有方法直接拼装 session metadata。运行事件由 application 层 `RuntimeEventRecorder` 维护，统一处理事件持久化、`on_event` hook 分发以及 hook failure 的可观测事件。
+- Outer Loop 由 application 层 `RuntimeService` 承担，负责会话创建/加载、run lock、active run 检测、中止信号、审批/AskUser 恢复入口和队列串行 drain。消息、checkpoint、usage、等待、完成和失败等持久化状态转换集中由 `RunLifecycle` 执行，避免编排服务同时承担状态机细节。active run 期间收到的 follow-up input 由 application 层 `FollowUpQueue` 维护。运行事件由 application 层 `RuntimeEventRecorder` 维护，统一处理事件持久化、`on_event` hook 分发以及 hook failure 的可观测事件。
 - Inner Loop 由 `InnerAgentLoop` 承担，负责一个 active run 内的模型请求、流式增量事件、provider usage 记录、工具调用请求、工具结果回灌、多轮 provider/tool continuation、空响应/stream 异常/轮数上限失败判断。
 - Inner Loop 不直接管理 session 生命周期、不获取 run lock、不读取 follow-up 队列，也不直接依赖具体存储实现；需要事件、持久化、暂停状态保存、工具执行或完成/失败处理时，通过显式 ports 交回 Outer Loop。
 
@@ -179,7 +181,7 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 4. 持久化用户消息。
 5. 创建 run_id，并写入运行状态。
 6. 发布 run_started 事件。
-7. ContextBuilder 构建发送给模型的上下文视图。
+7. 组合根先把技能等静态能力渲染成基础上下文，ContextBuilder 再构建发送给模型的上下文视图。
 8. 触发 after_context_build hooks，允许插件追加上下文。
 9. 如果上下文超限，使用内置会话截断压缩生成发送视图。
 10. 调用模型供应商流式接口。
@@ -193,7 +195,7 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 18. 模型完成后记录 usage，发布 model_message_completed 事件。
 19. 若模型继续调用工具，进入下一回合。
 20. 模型完成后写入最终 assistant 消息，运行进入 completed。
-22. 发布 run_completed 事件。
+21. 发布 run_completed 事件。
 
 ## 7. Context View
 
@@ -221,9 +223,11 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
 
 - 保留必要系统提示。
 - 保留最近用户/助手消息。
-- 保留未闭合工具调用和必要工具结果。
+- 截断点不得落在 assistant tool-call 与其连续 tool_result 之间；必要时向前扩展视图以保留完整工具交换。
 - 不修改原始消息历史。
 - 不生成摘要。
+
+`context_metadata` 至少记录是否发生截断和省略消息数量。技能发现、配置解析等外层能力不得注入 `ContextBuilder`；组合根只向其提供已经渲染好的基础上下文文本，插件产生的动态内容仍通过 hook 输入。
 
 摘要压缩由官方插件后续实现。
 
@@ -354,7 +358,7 @@ modified_view_metadata、tool_result_override、resource_refs、terminate_run �
 
 ## 12. Resolved Decisions
 
-- queued follow-up input 使用会话 metadata 中的持久化队列，当前运行完成后串行处理。
+- queued follow-up input 使用会话 metadata 中的持久化队列，当前运行完成后串行处理。队列消费采用 peek/ack：只有对应 user message 持久化后才确认删除，并通过 queue_id 检测崩溃窗口中的已写消息，避免队列项在消息落盘前丢失或在恢复时重复写入用户消息。
 - run recoverable 状态第一阶段恢复到“可解释失败并允许重新运行”，不自动重放到工具审批点。
 - 系统提示默认内容由配置层提供，核心只保留 system_prompt 注入边界。
 - Runtime Hooks 第一阶段只合并 added_context 和 diagnostics，更强返回能力留给后续规格，且不得绕过工具权限。
