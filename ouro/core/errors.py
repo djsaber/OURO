@@ -19,3 +19,7 @@ class PersistenceError(OuroError):
 
 class HookError(OuroError):
     """A runtime hook failed."""
+
+
+class SkillManagementError(OuroError):
+    """An Agent Skill management operation was invalid or unsafe."""

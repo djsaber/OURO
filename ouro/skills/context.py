@@ -21,6 +21,7 @@ def discover_skill_catalog(
     home: str | Path | None = None,
     cwd: str | Path | None = None,
     user_home: str | Path | None = None,
+    include_disabled: bool = False,
 ) -> SkillCatalog:
     ouro_home = _ouro_home(home)
     config = SkillConfigManager(ouro_home).snapshot().config
@@ -35,6 +36,7 @@ def discover_skill_catalog(
     return skill_catalog_from_roots(
         roots,
         disabled=config.disabled,
+        include_disabled=include_disabled,
         max_depth=config.max_depth,
         max_directories=config.max_directories,
     )
@@ -57,6 +59,7 @@ def skill_catalog_from_roots(
     roots: list[SkillRoot],
     *,
     disabled: set[str] | frozenset[str] = frozenset(),
+    include_disabled: bool = False,
     max_depth: int = 6,
     max_directories: int = 2000,
 ) -> SkillCatalog:
@@ -73,7 +76,9 @@ def skill_catalog_from_roots(
         diagnostics.extend(catalog.diagnostics)
         for metadata in catalog.skills:
             if metadata.name in disabled:
-                continue
+                if not include_disabled:
+                    continue
+                metadata = metadata.model_copy(update={"enabled": False})
             existing = merged.get(metadata.name)
             if existing is not None:
                 diagnostics.append(

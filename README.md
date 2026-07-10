@@ -60,6 +60,14 @@ python -m ouro.cli.main skills list --home ./.ouro-dev
 python -m ouro.cli.main skills show pdf --home ./.ouro-dev
 python -m ouro.cli.main skills roots --home ./.ouro-dev
 python -m ouro.cli.main skills prompt --home ./.ouro-dev
+python -m ouro.cli.main skills validate ./path/to/skill --json
+python -m ouro.cli.main skills install ./path/to/skill --home ./.ouro-dev
+python -m ouro.cli.main skills install github:owner/repo --skill skill-name --ref v1.0.0
+python -m ouro.cli.main skills install https://github.com/owner/repo.git#skills/example
+python -m ouro.cli.main skills disable skill-name --home ./.ouro-dev
+python -m ouro.cli.main skills list --all --home ./.ouro-dev
+python -m ouro.cli.main skills update skill-name --home ./.ouro-dev
+python -m ouro.cli.main skills remove skill-name --home ./.ouro-dev
 python -m ouro.cli.main run --json --provider openai-compatible --base-url <url> --model <model> --api-key-env <ENV_NAME> "hello"
 ```
 
@@ -102,6 +110,13 @@ Each skill is a directory containing `SKILL.md`. Ouro reads the standard `name`,
 frontmatter fields, preserves unknown community fields, and treats bundled files as on-demand
 resources. Ouro-specific enablement and search-path policy belongs in the central config above;
 per-skill `skill.json` manifests are not used.
+
+`skills install` accepts a local skill/collection or a Git repository. Use `--skill NAME`
+to select from a collection, `--all` to install the collection, and `--scope workspace` to
+install under `./.ouro/skills`. Ouro validates before copying, rejects symbolic links, deploys
+through a same-filesystem staging directory, and records source/update metadata only in the
+central config. `skills remove` never deletes skills from external `.agents`, `.claude`,
+`.github`, `.copilot`, or `.codex` roots.
 
 `provider_id` is the provider/supplier id; OURO does not use a separate local alias id
 in Phase 1.

@@ -19,7 +19,17 @@ from ouro.cli.run import (
     show_system_prompt_config,
     use_provider_config,
 )
-from ouro.cli.skills import list_skills, show_skill, show_skill_roots, show_skills_prompt
+from ouro.cli.skills import (
+    install_skills,
+    list_skills,
+    remove_skill,
+    set_skill_enabled,
+    show_skill,
+    show_skill_roots,
+    show_skills_prompt,
+    update_skill,
+    validate_skills,
+)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -128,12 +138,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     provider_check_parser.add_argument("--json", action="store_true", help="Print JSON")
     _add_provider_args(provider_check_parser, prefix="provider_check_")
 
-    skills_parser = subparsers.add_parser("skills", help="Inspect Agent Skills")
+    skills_parser = subparsers.add_parser("skills", help="Manage Agent Skills")
     skills_subparsers = skills_parser.add_subparsers(dest="skills_command", required=True)
 
     skills_list_parser = skills_subparsers.add_parser("list", help="List available skills")
     skills_list_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
     skills_list_parser.add_argument("--json", action="store_true", help="Print JSON")
+    skills_list_parser.add_argument(
+        "--all",
+        dest="skills_all",
+        action="store_true",
+        help="Include disabled skills",
+    )
 
     skills_show_parser = skills_subparsers.add_parser("show", help="Show a skill")
     skills_show_parser.add_argument("skill_id", help="Skill id")
@@ -150,6 +166,73 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     skills_prompt_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
     skills_prompt_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_validate_parser = skills_subparsers.add_parser(
+        "validate",
+        help="Validate one skill, a skill collection, or all discovered skills",
+    )
+    skills_validate_parser.add_argument("path", nargs="?", help="SKILL.md or directory")
+    skills_validate_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_validate_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_install_parser = skills_subparsers.add_parser(
+        "install",
+        help="Install skills from a local directory or git URL",
+    )
+    skills_install_parser.add_argument("source", help="Local path, git URL, or github:owner/repo")
+    skills_install_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_install_parser.add_argument(
+        "--scope",
+        choices=["user", "workspace"],
+        default="user",
+        help="Install into OURO_HOME/skills or ./.ouro/skills",
+    )
+    install_selection = skills_install_parser.add_mutually_exclusive_group()
+    install_selection.add_argument("--skill", dest="skill_selector", help="Select one skill")
+    install_selection.add_argument(
+        "--all",
+        dest="install_all",
+        action="store_true",
+        help="Install every valid skill in the source",
+    )
+    skills_install_parser.add_argument("--ref", help="Git branch or tag")
+    skills_install_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an existing skill atomically",
+    )
+    skills_install_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_update_parser = skills_subparsers.add_parser(
+        "update",
+        help="Update an Ouro-managed skill from its recorded source",
+    )
+    skills_update_parser.add_argument("skill_id", help="Skill name")
+    skills_update_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_update_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_remove_parser = skills_subparsers.add_parser(
+        "remove",
+        aliases=["uninstall"],
+        help="Remove an Ouro-managed skill",
+    )
+    skills_remove_parser.add_argument("skill_id", help="Skill name")
+    skills_remove_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+    skills_remove_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Remove an unregistered skill from an Ouro-native skill directory",
+    )
+    skills_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    for command, help_text in (
+        ("enable", "Enable a discovered skill"),
+        ("disable", "Disable a discovered skill"),
+    ):
+        command_parser = skills_subparsers.add_parser(command, help=help_text)
+        command_parser.add_argument("skill_id", help="Skill name")
+        command_parser.add_argument("--home", dest="skills_home", help="Override OURO_HOME")
+        command_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     args = parser.parse_args(argv)
     if args.command == "run":
@@ -251,13 +334,46 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "skills":
         home = getattr(args, "skills_home", None) or args.home
         if args.skills_command == "list":
-            return list_skills(home=home, json_mode=args.json)
+            return list_skills(
+                home=home,
+                json_mode=args.json,
+                include_disabled=args.skills_all,
+            )
         if args.skills_command == "show":
             return show_skill(args.skill_id, home=home, json_mode=args.json)
         if args.skills_command == "roots":
             return show_skill_roots(home=home, json_mode=args.json)
         if args.skills_command == "prompt":
             return show_skills_prompt(home=home, json_mode=args.json)
+        if args.skills_command == "validate":
+            return validate_skills(args.path, home=home, json_mode=args.json)
+        if args.skills_command == "install":
+            return install_skills(
+                args.source,
+                home=home,
+                scope=args.scope,
+                selector=args.skill_selector,
+                install_all=args.install_all,
+                force=args.force,
+                ref=args.ref,
+                json_mode=args.json,
+            )
+        if args.skills_command == "update":
+            return update_skill(args.skill_id, home=home, json_mode=args.json)
+        if args.skills_command in {"remove", "uninstall"}:
+            return remove_skill(
+                args.skill_id,
+                home=home,
+                force=args.force,
+                json_mode=args.json,
+            )
+        if args.skills_command in {"enable", "disable"}:
+            return set_skill_enabled(
+                args.skill_id,
+                enabled=args.skills_command == "enable",
+                home=home,
+                json_mode=args.json,
+            )
 
     return asyncio.run(
         run_interactive(

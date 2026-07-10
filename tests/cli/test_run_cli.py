@@ -519,9 +519,7 @@ def test_skills_commands_list_show_roots_and_prompt(
     roots_payload = json.loads(capsys.readouterr().out)
 
     assert roots_code == 0
-    assert str((home / "skills").resolve()) in {
-        root["path"] for root in roots_payload["roots"]
-    }
+    assert str((home / "skills").resolve()) in {root["path"] for root in roots_payload["roots"]}
 
     prompt_code = main(["skills", "prompt", "--home", str(home), "--json"])
     prompt_payload = json.loads(capsys.readouterr().out)
