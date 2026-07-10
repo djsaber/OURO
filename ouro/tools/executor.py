@@ -76,6 +76,26 @@ class ToolExecutor:
                 ended_at=utc_now(),
             )
             return ToolExecutionOutcome(status="aborted", invocation=invocation, result=result)
+        except Exception as exc:  # noqa: BLE001
+            # Tool handlers may raise arbitrary exceptions when interacting with
+            # the filesystem, network, subprocesses, or third-party code. The
+            # executor is the framework boundary that isolates a single tool
+            # failure from the rest of the run so the model can observe the
+            # error and decide how to proceed.
+            error_type = type(exc).__name__
+            error_message = str(exc)
+            result = ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                is_error=True,
+                content=f"Tool {invocation.tool_name} failed: [{error_type}] {error_message}",
+                structured={
+                    "error_type": error_type,
+                    "error_message": error_message,
+                },
+                ended_at=utc_now(),
+            )
+            return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
     def rejected_result(
