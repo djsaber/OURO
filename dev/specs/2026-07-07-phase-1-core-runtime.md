@@ -4,6 +4,11 @@
 - Status: Accepted / Phase 1 implemented
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
 
+> Implementation boundary update (2026-07-11): 第一阶段实际 dispatch 并承诺合并语义的 hooks 是
+> `after_context_build`、`before_tool_call`、`after_tool_call` 和 `on_event`。其他已声明 HookName 是
+> 后续扩展保留名，不应解读为第一阶段已执行。第二阶段见
+> `2026-07-11-phase-2-extensions-official-capabilities.md`。
+
 ## 1. Motivation
 
 OURO 第一阶段需要先跑通一个可恢复、可观察、可扩展的本地智能体运行闭环。

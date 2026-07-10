@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import errno
 import importlib
 import json
 import os
 import re
+from contextlib import suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from types import TracebackType
 from typing import Any, Self
 
+from pydantic import ValidationError
+
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -63,21 +68,26 @@ class LocalSessionStore:
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
         session_dir = self._session_dir(session_id)
-        session = SessionRecord.model_validate_json(
-            (session_dir / "session.json").read_text("utf-8")
-        )
-        messages = [
-            MessageRecord.model_validate_json(line)
-            for line in self._read_jsonl(session_dir / "messages.jsonl")
-        ]
-        events = [
-            EventRecord.model_validate_json(line)
-            for line in self._read_jsonl(session_dir / "events.jsonl")
-        ]
-        runs = [
-            RunRecord.model_validate_json(path.read_text("utf-8"))
-            for path in sorted((session_dir / "runs").glob("*.json"))
-        ]
+        try:
+            session = SessionRecord.model_validate_json(
+                (session_dir / "session.json").read_text("utf-8")
+            )
+            messages = [
+                MessageRecord.model_validate_json(line)
+                for line in self._read_jsonl(session_dir / "messages.jsonl")
+            ]
+            events = [
+                EventRecord.model_validate_json(line)
+                for line in self._read_jsonl(session_dir / "events.jsonl")
+            ]
+            runs = [
+                RunRecord.model_validate_json(path.read_text("utf-8"))
+                for path in sorted((session_dir / "runs").glob("*.json"))
+            ]
+        except FileNotFoundError:
+            raise
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
         runs.sort(key=_run_sort_key)
         if recover:
             session, messages, events, runs = self._recover_incomplete_runs(
@@ -91,7 +101,12 @@ class LocalSessionStore:
     def list_sessions(self) -> list[SessionRecord]:
         records: list[SessionRecord] = []
         for session_json in sorted(self.sessions_dir.glob("*/session.json")):
-            records.append(SessionRecord.model_validate_json(session_json.read_text("utf-8")))
+            try:
+                records.append(SessionRecord.model_validate_json(session_json.read_text("utf-8")))
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load session record {session_json}: {exc}"
+                ) from exc
         return records
 
     def rebuild_index(self) -> None:
@@ -118,11 +133,21 @@ class LocalSessionStore:
             return raw
         except (OSError, json.JSONDecodeError, ValueError):
             self.rebuild_index()
-            return json.loads(index_path.read_text("utf-8"))
+            try:
+                return json.loads(index_path.read_text("utf-8"))
+            except (OSError, json.JSONDecodeError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not rebuild session index {index_path}: {exc}"
+                ) from exc
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionRunLock | None:
         lock = SessionRunLock(self._lock_path(session_id), session_id=session_id, run_id=run_id)
-        return lock if lock.acquire() else None
+        try:
+            return lock if lock.acquire() else None
+        except OSError as exc:
+            raise PersistenceError(
+                f"could not acquire session lock for {session_id}: {exc}"
+            ) from exc
 
     def is_session_locked(self, session_id: str) -> bool:
         path = self._lock_path(session_id)
@@ -132,11 +157,20 @@ class LocalSessionStore:
             descriptor = os.open(path, os.O_RDWR)
         except FileNotFoundError:
             return False
+        except OSError as exc:
+            raise PersistenceError(
+                f"could not inspect session lock for {session_id}: {exc}"
+            ) from exc
         try:
-            if not _try_lock_descriptor(descriptor):
-                return True
-            _unlock_descriptor(descriptor)
-            return False
+            try:
+                if not _try_lock_descriptor(descriptor):
+                    return True
+                _unlock_descriptor(descriptor)
+                return False
+            except OSError as exc:
+                raise PersistenceError(
+                    f"could not inspect session lock for {session_id}: {exc}"
+                ) from exc
         finally:
             os.close(descriptor)
 
@@ -285,23 +319,45 @@ class LocalSessionStore:
         self._write_text_atomic(path, json.dumps(value, ensure_ascii=False, indent=2, default=str))
 
     def _write_text_atomic(self, path: Path, text: str) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, delete=False) as tmp:
-            tmp.write(text)
-            tmp.write("\n")
-            temp_name = tmp.name
-        Path(temp_name).replace(path)
+        temp_path: Path | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=path.parent,
+                delete=False,
+            ) as tmp:
+                tmp.write(text)
+                tmp.write("\n")
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                temp_path = Path(tmp.name)
+            temp_path.replace(path)
+        except (OSError, TypeError, ValueError) as exc:
+            raise PersistenceError(f"could not write {path}: {exc}") from exc
+        finally:
+            if temp_path is not None and temp_path.exists():
+                with suppress(OSError):
+                    temp_path.unlink()
 
     def _append_jsonl(self, path: Path, model: OuroModel) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as file:
-            file.write(model.model_dump_json())
-            file.write("\n")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as file:
+                file.write(model.model_dump_json())
+                file.write("\n")
+                file.flush()
+        except (OSError, TypeError, ValueError) as exc:
+            raise PersistenceError(f"could not append {path}: {exc}") from exc
 
     def _read_jsonl(self, path: Path) -> list[str]:
         if not path.exists():
             return []
-        return [line for line in path.read_text("utf-8").splitlines() if line.strip()]
+        try:
+            return [line for line in path.read_text("utf-8").splitlines() if line.strip()]
+        except OSError as exc:
+            raise PersistenceError(f"could not read {path}: {exc}") from exc
 
 
 def _run_sort_key(run: RunRecord) -> tuple[str, str]:
@@ -386,8 +442,10 @@ def _try_lock_descriptor(descriptor: int) -> bool:
         else:
             fcntl = importlib.import_module("fcntl")
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return False
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return False
+        raise
     return True
 
 

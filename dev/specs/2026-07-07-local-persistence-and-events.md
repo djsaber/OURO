@@ -1,8 +1,12 @@
 # OURO Agent 本地持久化与事件流规格
 
 - Date: 2026-07-07
-- Status: Accepted / Phase 1 implemented
+- Status: Accepted / Phase 1 session/event core implemented; resources deferred
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
+
+> Implementation boundary update (2026-07-11): 第一阶段实现 session/message/event/run、本地索引、
+> run lock、恢复和基础 export。`ResourceRecord`、资源索引恢复、归档、trash、历史事件清理和迁移工具
+> 属于第二阶段，详见 `2026-07-11-phase-2-sessions-resources-desktop.md`。
 
 ## 1. Motivation
 
@@ -250,7 +254,8 @@ role 可选值：
 3. 读取最后一个 run record。
 4. 若 run 状态为 waiting_approval 或 waiting_user，恢复待处理状态。
 5. 若 run 状态为 running 且该会话没有仍被进程持有的文件锁，标记为 recoverable 或 failed；仍被持有时不得把活跃运行误判为中断。
-6. 读取 resources/index.json，恢复资源引用。
+6. 第二阶段读取 resources/index.json 并恢复结构化资源引用；第一阶段只保留目录、空索引和消息/
+   工具结果中的字符串 `resource_refs` 边界。
 7. 修复或重建 sessions/index.json。
 
 恢复不要求自动继续模型调用。第一阶段只要求恢复到可解释状态，并允许用户继续或重新运行。
@@ -292,7 +297,8 @@ role 可选值：
 - 活跃进程持有的会话不会被另一存储实例恢复；进程退出后的遗留锁文件不会阻塞恢复。
 - 非法 session_id/run_id 不能越过数据根访问或创建路径。
 - 会话列表能展示标题、更新时间、状态、工作区。
-- 资源引用能关联到消息、运行或工具调用。
+- 第一阶段字符串 `resource_refs` 能随消息和工具结果持久化；结构化 ResourceRecord 及其消息、运行、
+  工具调用关联作为第二阶段验收。
 - 索引损坏时可以重建，不导致会话丢失。
 - Runtime 依赖持久化协议，默认实现为本地可阅读文件。
 

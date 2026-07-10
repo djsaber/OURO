@@ -6,6 +6,7 @@ from ouro.config.endpoints import (
     endpoint_config_to_public_dict,
 )
 from ouro.config.permissions import (
+    PermissionConfig,
     PermissionConfigManager,
     PermissionConfigSnapshot,
     permission_config_to_public_dict,
@@ -30,6 +31,7 @@ __all__ = [
     "CredentialRef",
     "CredentialResolver",
     "PermissionConfigManager",
+    "PermissionConfig",
     "PermissionConfigSnapshot",
     "ProviderConfig",
     "ProviderConfigManager",

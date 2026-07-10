@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
+from pydantic import Field, model_validator
+
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.messages import MessageRecord
 
@@ -21,8 +23,8 @@ class ModelMetadata(OuroModel):
     provider_id: str
     endpoint_id: str | None = None
     display_name: str | None = None
-    context_window: int = 128_000
-    max_output_tokens: int = 8192
+    context_window: int = Field(default=128_000, ge=1)
+    max_output_tokens: int = Field(default=8192, ge=1)
     temperature: float | None = None
     supports_tools: bool = True
     supports_vision: bool = False
@@ -33,6 +35,12 @@ class ModelMetadata(OuroModel):
     default_thinking_level: ThinkingLevel | None = None
     cost: ModelCost | None = None
     metadata: Metadata = MetadataField
+
+    @model_validator(mode="after")
+    def _validate_token_limits(self) -> ModelMetadata:
+        if self.max_output_tokens > self.context_window:
+            raise ValueError("max_output_tokens must not exceed context_window")
+        return self
 
 
 class Usage(OuroModel):

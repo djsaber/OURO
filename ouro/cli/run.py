@@ -16,6 +16,7 @@ from ouro.config import (
 )
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
+from ouro.core.results import RunResult
 from ouro.prompts import render_agent_skills_prompt
 from ouro.providers import build_runtime_adapter
 from ouro.sessions import LocalSessionStore
@@ -83,9 +84,9 @@ async def run_print(
         return 0
     if result.run.status == "failed":
         print(f"Run failed: {result.run.error or 'unknown error'}", file=sys.stderr)
-        return 1
+        return _run_exit_code(result)
     print(f"Run stopped with status: {result.run.status}", file=sys.stderr)
-    return 4 if result.run.status in {"waiting_approval", "waiting_user"} else 1
+    return _run_exit_code(result)
 
 
 async def run_json(
@@ -130,7 +131,19 @@ async def run_json(
             ensure_ascii=False,
         )
     )
-    return 0 if result.run.status == "completed" else 1
+    return _run_exit_code(result)
+
+
+def _run_exit_code(result: RunResult) -> int:
+    if result.run.status == "completed":
+        return 0
+    if result.run.status in {"waiting_approval", "waiting_user"}:
+        return 4
+    if result.run.status == "aborted":
+        return 5
+    if result.run.status == "failed" and any(item.is_error for item in result.tool_results):
+        return 6
+    return 1
 
 
 def _print_run_events(events: list[Any]) -> None:

@@ -6,6 +6,7 @@ from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_print
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.errors import PersistenceError
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import (
     FauxProvider,
@@ -131,6 +132,35 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert "faux/faux" in outputs
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
+
+
+async def test_interactive_reports_runtime_error_and_keeps_prompt_alive(tmp_path) -> None:
+    class FailingStore(LocalSessionStore):
+        def save_run(self, run) -> None:
+            del run
+            raise PersistenceError("disk unavailable")
+
+    store = FailingStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="done")]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+    )
+    inputs = iter(["hello", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Error: disk unavailable" in outputs
 
 
 async def test_interactive_streams_model_text_deltas(tmp_path) -> None:

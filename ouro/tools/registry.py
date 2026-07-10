@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.tools.base import Tool, ToolDefinition
+from ouro.tools.schema import validate_tool_definition
 
 
 class ToolRegistry:
@@ -10,6 +11,7 @@ class ToolRegistry:
     def register(self, tool: Tool) -> None:
         if tool.definition.name in self._tools:
             raise ValueError(f"tool already registered: {tool.definition.name}")
+        validate_tool_definition(tool.definition)
         self._tools[tool.definition.name] = tool
 
     def get(self, name: str) -> Tool:

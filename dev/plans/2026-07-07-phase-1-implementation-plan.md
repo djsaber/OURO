@@ -19,10 +19,13 @@
 
 **Tech Stack:** Python 3.12+, Pydantic v2, pytest, pytest-asyncio, ruff, mypy. First implementation uses asyncio-only core code and defers Rich/Textual and YAML parser until their first concrete consumers.
 
-**Implementation sync, 2026-07-08:**
+**Implementation sync, 2026-07-11:**
 
 - Core domain models, local session file storage with recovery and session run locks, session storage protocol boundary, hooks, tool execution, dual-layer runtime loop boundary, assistant tool-call history persistence, provider usage recording, FauxProvider, OpenAI-compatible Provider streaming, multi-provider local configuration, persisted system prompt configuration, provider/prompt/Skills management CLI, plugin/MCP/Skills framework boundaries, native Skills context injection, Interactive mode with HITL and streaming text, suspended-run abort, framework-level ToolExecutionContext cancellation, cooperative active-run abort, active-run guard, queued follow-up input, process-level run locking, and Print / JSON CLI have working implementations.
-- Verification is green: `pytest` 74 passed, `ruff check`, `ruff format --check`, `mypy`, and `compileall`.
+- Completion audit fixed context-window enforcement, tool schema validation, startup lock release,
+  event-sink isolation, strict permission/persistence errors, and stable CLI exit codes.
+- Verification is green: `pytest` 219 passed, `ruff check`, `ruff format --check`, `mypy`, and
+  `compileall`. See `../audits/2026-07-11-phase-1-completion-audit.md`.
 - Phase 1 intentionally remains product-minimal: richer CLI/session management, true Desktop/TUI polish, full MCP protocol connection, resource management, SDK/RPC, subagents, memory, and browser automation move to later phases.
 
 ---

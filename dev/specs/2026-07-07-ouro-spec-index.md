@@ -1,7 +1,7 @@
 # OURO Agent 规格文档索引
 
 - Date: 2026-07-07
-- Status: Accepted / Phase 1 implemented
+- Status: Accepted / Phase 1 audited; Phase 2 proposed
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
 
 ## 1. 目的
@@ -9,6 +9,10 @@
 本文档是 OURO Agent 第一批开发规格的索引和阅读顺序说明。
 
 规格文档的目标不是重复项目概述，而是把项目概述中的产品边界转化为后续实现可以遵循的模块职责、数据边界、事件边界和验收标准。
+
+2026-07-11 完成了第一阶段实现审计。第一阶段规格中曾提前描述、但 Resolved Decisions 和代码只保留
+框架的 resource、完整 MCP 和插件 entrypoint 能力，已明确划入第二阶段。审计记录见
+`../audits/2026-07-11-phase-1-completion-audit.md`。
 
 ## 2. 第一批规格
 
@@ -108,16 +112,30 @@
 
 这些文档是开发规格，不是用户文档。可以包含模块名、数据形状和事件名，但不要求冻结最终 Python API。
 
-## 6. 后续规格候选
+## 6. 后续深化候选
 
 后续可以继续补充：
 
-- Desktop 多会话交互规格。
+- Desktop 多会话交互规格（第二阶段子规格已覆盖）。
 - SDK/RPC 协议规格。
-- 官方摘要压缩插件规格。
-- 最小本地记忆插件规格。
-- 会话分支和回放规格。
-- 资源、附件和生成文件管理规格。
+- 官方摘要压缩插件规格（第二阶段先定义最小版本，后续可独立深化）。
+- 最小本地记忆插件规格（第二阶段先定义最小版本，后续可独立深化）。
+- 会话分支和回放规格（第二阶段子规格已覆盖）。
+- 资源、附件和生成文件管理规格（第二阶段子规格已覆盖）。
 - 插件开发与 AI 生成插件确认规格。
 - Runtime Hooks 详细接口规格。
 - 子智能体官方插件规格。
+
+## 7. 第二阶段规格
+
+第二阶段已形成可执行规格和计划，当前状态为 Proposed / not started：
+
+1. `2026-07-11-phase-2-personal-workflow.md`
+   - 第二阶段总范围、application facade、RuntimeSupervisor、迁移、配置优先级与跨模块验收。
+2. `2026-07-11-phase-2-sessions-resources-desktop.md`
+   - session catalog、搜索、branch/replay/export、ResourceRecord、Textual Interactive 和
+     PyWebview/FastAPI Desktop。
+3. `2026-07-11-phase-2-extensions-official-capabilities.md`
+   - workspace trust、插件、完整 hooks、真实 MCP、Skills/model UX、工具批次和官方插件。
+4. `../plans/2026-07-11-phase-2-implementation-plan.md`
+   - 按依赖、测试门禁和提交边界拆分的实施计划。

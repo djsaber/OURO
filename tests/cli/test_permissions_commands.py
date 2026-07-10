@@ -6,6 +6,7 @@ import pytest
 
 from ouro.cli.main import main
 from ouro.config.permissions import PermissionConfigManager
+from ouro.core.errors import ConfigError
 
 
 def test_config_permissions_default_json(tmp_path, capsys) -> None:
@@ -70,3 +71,19 @@ def test_config_permissions_human_readable(tmp_path, capsys) -> None:
 
     assert "Write" in captured.out
     assert "approval" in captured.out
+
+
+@pytest.mark.parametrize(
+    "permissions",
+    ["approval", {"tools": []}, {"tools": {"Write": "sometimes"}}],
+)
+def test_permission_config_rejects_invalid_persisted_shape(tmp_path, permissions) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps({"permissions": permissions}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="permissions config|invalid permissions config"):
+        PermissionConfigManager(tmp_path).snapshot()

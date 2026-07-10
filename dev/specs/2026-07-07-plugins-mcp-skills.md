@@ -1,8 +1,13 @@
 # OURO Agent 插件、MCP 与 Skills 规格
 
 - Date: 2026-07-07
-- Status: Accepted / Phase 1 implemented
+- Status: Accepted / Phase 1 framework implemented; full lifecycle deferred
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
+
+> Implementation boundary update (2026-07-11): 第一阶段实现 manifest 发现、显式 contributions 注册、
+> hook 隔离、Skills 元数据/管理和 MCP 内存配置/状态/工具注册框架。插件 entrypoint 自动加载以及 MCP
+> 真实进程/协议连接、握手、工具发现和重连属于第二阶段，详见
+> `2026-07-11-phase-2-extensions-official-capabilities.md`。
 
 ## 1. Motivation
 
@@ -273,7 +278,8 @@ Skills 来源：
 - 插件 hook 失败会被记录并隔离，不破坏核心运行。
 - 插件启用时可以展示读写能力和网络访问能力。
 - AI 生成插件默认需要用户确认。
-- 可以配置并启动一个 MCP 服务器。
+- 可以配置 MCP server，并在内存框架中验证 start/stop/restart 状态转换；真实服务器启动和协议连接
+  是第二阶段验收。
 - MCP 工具能进入 OURO 工具注册表。
 - Skills 只加载元数据，按需加载完整内容。
 - 可用 Skills 元数据通过原生 ContextBuilder 契约进入 system prompt，并可从

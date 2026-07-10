@@ -102,6 +102,8 @@ Primary plan:
 
 ## Phase 2: Complete Personal Workflow
 
+**Status:** Planned. Specifications complete; implementation not started.
+
 **Primary objective:** Make OURO comfortable for daily personal use.
 
 Planned deliverables:
@@ -127,6 +129,13 @@ Exit criteria:
 - MCP servers can be started, stopped, inspected, and repaired from OURO.
 - Official plugins use Runtime Hooks without core changes.
 - Desktop reuses the same core and can render selected session history plus active stream.
+
+Phase 2 specifications and plan:
+
+- `../specs/2026-07-11-phase-2-personal-workflow.md`
+- `../specs/2026-07-11-phase-2-sessions-resources-desktop.md`
+- `../specs/2026-07-11-phase-2-extensions-official-capabilities.md`
+- `2026-07-11-phase-2-implementation-plan.md`
 
 ---
 

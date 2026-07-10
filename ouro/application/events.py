@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import dataclass
 from inspect import isawaitable
 from typing import Any
 
@@ -9,6 +10,12 @@ from ouro.core.hooks import HookContext, HookFailure, HookRegistry
 from ouro.sessions import SessionStore
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class _EventSinkFailure:
+    error_type: str
+    error_message: str
 
 
 class RuntimeEventRecorder:
@@ -50,7 +57,13 @@ class RuntimeEventRecorder:
         )
         self.store.append_event(event)
         emitted.append(event)
-        await self._notify_event_sinks(event)
+        sink_failures = await self._notify_event_sinks(event)
+        next_sequence = self._record_event_sink_failures(
+            emitted,
+            next_sequence,
+            event=event,
+            failures=sink_failures,
+        )
         hook_result = await self.hooks.dispatch(
             HookContext(
                 hook_name="on_event",
@@ -78,11 +91,56 @@ class RuntimeEventRecorder:
             )
             self.store.append_event(event)
             emitted.append(event)
-            await self._notify_event_sinks(event)
+            sink_failures = await self._notify_event_sinks(event)
+            sequence = self._record_event_sink_failures(
+                emitted,
+                sequence,
+                event=event,
+                failures=sink_failures,
+            )
         return sequence
 
-    async def _notify_event_sinks(self, event: EventRecord) -> None:
+    async def _notify_event_sinks(self, event: EventRecord) -> list[_EventSinkFailure]:
+        failures: list[_EventSinkFailure] = []
+        healthy_sinks: list[RuntimeEventSink] = []
         for event_sink in self._event_sinks:
-            maybe_awaitable = event_sink(event)
-            if isawaitable(maybe_awaitable):
-                await maybe_awaitable
+            try:
+                maybe_awaitable = event_sink(event)
+                if isawaitable(maybe_awaitable):
+                    await maybe_awaitable
+            except Exception as exc:  # noqa: BLE001 - host callbacks are an isolation boundary.
+                failures.append(
+                    _EventSinkFailure(
+                        error_type=type(exc).__name__,
+                        error_message=str(exc),
+                    )
+                )
+            else:
+                healthy_sinks.append(event_sink)
+        self._event_sinks = healthy_sinks
+        return failures
+
+    def _record_event_sink_failures(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        event: EventRecord,
+        failures: Sequence[_EventSinkFailure],
+    ) -> int:
+        for failure in failures:
+            sequence += 1
+            diagnostic = EventRecord(
+                session_id=event.session_id,
+                run_id=event.run_id,
+                event_type="event_sink_failed",
+                sequence=sequence,
+                payload={
+                    "source_event_type": event.event_type,
+                    "error_type": failure.error_type,
+                    "error_message": failure.error_message,
+                },
+            )
+            self.store.append_event(diagnostic)
+            emitted.append(diagnostic)
+        return sequence

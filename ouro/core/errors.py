@@ -17,6 +17,10 @@ class PersistenceError(OuroError):
     """Local persistence failed."""
 
 
+class SessionBusyError(OuroError):
+    """A session cannot accept the requested operation while another run owns it."""
+
+
 class HookError(OuroError):
     """A runtime hook failed."""
 

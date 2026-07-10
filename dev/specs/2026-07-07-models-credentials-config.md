@@ -285,6 +285,7 @@ inline 可以用于本地个人场景，但 UI 必须明确它会保存在本地
 - 第一阶段允许环境变量引用和 inline 本地凭据占位；显示时必须脱敏。
 - 模型能力元数据第一阶段由 Endpoint 本地配置和代码默认值提供；供应商 API 发现与缓存后置。
 - Provider 只承担连接、认证和生命周期配置；模型能力和请求生成参数统一归 Endpoint。
-- Endpoint 新配置为权威写入格式；Provider 级单模型字段只用于向后兼容读取和旧 CLI 快捷方式。
+- Endpoint 嵌套配置是唯一权威读写格式；旧版扁平 provider/单模型字段不兼容读取，也不作为 CLI
+  快捷方式重新引入。
 - 默认 Provider 必须处于 enabled 状态且拥有有效默认 Endpoint。创建尚未配置 Endpoint 的 Provider、
   禁用默认 Provider 或删除其最后一个 Endpoint 时，配置管理器必须保留或回退到可运行的 Faux 默认值。

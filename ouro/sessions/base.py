@@ -18,6 +18,10 @@ class SessionSnapshot(OuroModel):
     runs: list[RunRecord] = Field(default_factory=list)
 
 
+class SessionLock(Protocol):
+    def release(self) -> None: ...
+
+
 class SessionStore(Protocol):
     root: Path
     sessions_dir: Path
@@ -42,6 +46,6 @@ class SessionStore(Protocol):
 
     def load_index(self) -> dict[str, object]: ...
 
-    def acquire_session_lock(self, session_id: str, run_id: str) -> object | None: ...
+    def acquire_session_lock(self, session_id: str, run_id: str) -> SessionLock | None: ...
 
     def is_session_locked(self, session_id: str) -> bool: ...

@@ -2,6 +2,7 @@ from typing import Any
 
 import pytest
 
+from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -128,3 +129,15 @@ def test_store_rejects_path_like_record_ids(tmp_path) -> None:
     unsafe_run = RunRecord(session_id=session.session_id, run_id="../outside")
     with pytest.raises(ValueError, match="invalid run id"):
         store.save_run(unsafe_run)
+
+
+def test_store_reports_corrupt_session_as_persistence_error(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Corrupt")
+    store.create_session(session)
+    session_path = tmp_path / "sessions" / session.session_id / "session.json"
+    session_path.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(PersistenceError, match="could not load session"):
+        store.load_session(session.session_id)

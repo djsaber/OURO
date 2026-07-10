@@ -14,6 +14,7 @@ from ouro.tools.base import (
     ToolResult,
 )
 from ouro.tools.registry import ToolRegistry
+from ouro.tools.schema import tool_argument_error
 
 
 class ToolExecutor:
@@ -34,7 +35,14 @@ class ToolExecutor:
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
     ) -> ToolExecutionOutcome:
-        tool = self.registry.get(invocation.tool_name)
+        try:
+            tool = self.registry.get(invocation.tool_name)
+        except KeyError:
+            return _error_outcome(
+                invocation,
+                error_type="UnknownTool",
+                error_message=f"unknown tool: {invocation.tool_name}",
+            )
         effective_mode = self.permission_overrides.get(
             tool.definition.name, tool.definition.permission_mode
         )
@@ -47,6 +55,13 @@ class ToolExecutor:
                 else invocation.arguments,
             }
         )
+        argument_error = tool_argument_error(tool.definition, invocation.arguments)
+        if argument_error is not None:
+            return _error_outcome(
+                invocation,
+                error_type="ToolArgumentValidationError",
+                error_message=argument_error,
+            )
         if tool.definition.name == "AskUser":
             question = str(invocation.arguments.get("question", ""))
             result = ToolResult(
@@ -122,3 +137,23 @@ class ToolExecutor:
             structured={"rejected": True, "reason": reason},
             ended_at=utc_now(),
         )
+
+
+def _error_outcome(
+    invocation: ToolInvocation,
+    *,
+    error_type: str,
+    error_message: str,
+) -> ToolExecutionOutcome:
+    result = ToolResult(
+        tool_call_id=invocation.tool_call_id,
+        tool_name=invocation.tool_name,
+        is_error=True,
+        content=f"Tool {invocation.tool_name} failed: [{error_type}] {error_message}",
+        structured={
+            "error_type": error_type,
+            "error_message": error_message,
+        },
+        ended_at=utc_now(),
+    )
+    return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)

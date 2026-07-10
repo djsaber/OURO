@@ -7,8 +7,10 @@ import pytest
 from ouro.application.runtime import RuntimeService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
+from ouro.core.state import SessionRecord
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.providers import (
     FauxProvider,
@@ -1161,3 +1163,164 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
     assert assistant_message.metadata.get("reasoning_content") == "I should read the file."
     assert assistant_message.metadata.get("tool_calls")
     assert snapshot.messages[-1].text_content == "Done"
+
+
+@pytest.mark.asyncio
+async def test_runtime_releases_session_lock_when_startup_persistence_fails(tmp_path) -> None:
+    class FailingStore(LocalSessionStore):
+        def save_run(self, run) -> None:
+            del run
+            raise PersistenceError("simulated save failure")
+
+    store = FailingStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="text_delta", text="unused")]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    with pytest.raises(PersistenceError, match="simulated save failure"):
+        await runtime.run("hello")
+
+    session = store.list_sessions()[0]
+    assert store.is_session_locked(session.session_id) is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_isolates_failing_event_sink_and_records_diagnostic(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    sink_calls: list[str] = []
+
+    def failing_sink(event) -> None:
+        sink_calls.append(event.event_type)
+        raise RuntimeError("renderer unavailable")
+
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent(type="text_delta", text="ok"),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        event_sink=failing_sink,
+    )
+
+    result = await runtime.run("hello")
+    snapshot = store.load_session(result.session.session_id)
+    diagnostics = [event for event in snapshot.events if event.event_type == "event_sink_failed"]
+
+    assert result.run.status == "completed"
+    assert sink_calls == ["run_started"]
+    assert len(diagnostics) == 1
+    assert diagnostics[0].payload["source_event_type"] == "run_started"
+    assert diagnostics[0].payload["error_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_model_context_window_for_truncation(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Context budget")
+    store.create_session(session)
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="old " * 200,
+            sequence=1,
+        )
+    )
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(
+                model_id="capture",
+                provider_id="capture",
+                context_window=64,
+                max_output_tokens=32,
+            ),
+        ),
+        tools=_tools(),
+        system_prompt="",
+    )
+
+    await runtime.run("new", session_id=session.session_id)
+
+    assert [message.text_content for message in provider.messages] == ["new"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_returns_unknown_tool_error_to_model_and_continues(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={"id": "call_1", "name": "Missing", "arguments": {}},
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Recovered."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("use a missing tool")
+    snapshot = store.load_session(result.session.session_id)
+
+    assert result.run.status == "completed"
+    assert result.final_text == "Recovered."
+    assert result.tool_results[0].structured["error_type"] == "UnknownTool"
+    assert [message.role for message in snapshot.messages] == [
+        "user",
+        "assistant",
+        "tool_result",
+        "assistant",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_lock_race_as_typed_session_busy_error(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Busy")
+    store.create_session(session)
+    lock = store.acquire_session_lock(session.session_id, "run_other")
+    assert lock is not None
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="done")]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    try:
+        with pytest.raises(SessionBusyError, match="already locked"):
+            await runtime.run("hello", session_id=session.session_id)
+    finally:
+        lock.release()

@@ -17,6 +17,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextBuilder
+from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
@@ -25,7 +26,7 @@ from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.sessions import SessionService, SessionSnapshot, SessionStore
+from ouro.sessions import SessionLock, SessionService, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutionOutcome, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
 
 
@@ -114,46 +115,51 @@ class RuntimeService:
                     title=title,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
-            raise RuntimeError(f"session is already locked: {session.session_id}")
-        session = session.model_copy(
-            update={"status": "running", "last_run_id": run.run_id, "updated_at": utc_now()}
-        )
-        self.store.save_session(session)
-        self.store.save_run(run)
-        self.store.rebuild_index()
-
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="run_started",
-            payload={"trigger": "user"},
-        )
-
-        user_message = self.run_lifecycle.append_user_message(
-            session=session,
-            run=run,
-            prompt=prompt,
-            sequence=len(existing_messages) + 1,
-            metadata={"queued_follow_up_id": _queued_follow_up_id}
-            if _queued_follow_up_id
-            else None,
-        )
-        if _queued_follow_up_id:
-            latest = self.store.load_session(session.session_id, recover=False)
-            self.follow_ups.acknowledge(latest, _queued_follow_up_id)
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="user_message_added",
-            payload={"message_id": user_message.message_id},
-        )
-
-        abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
+            raise SessionBusyError(f"session is already locked: {session.session_id}")
+        abort_signal: AbortSignal | None = None
         try:
+            session = session.model_copy(
+                update={
+                    "status": "running",
+                    "last_run_id": run.run_id,
+                    "updated_at": utc_now(),
+                }
+            )
+            self.store.save_session(session)
+            self.store.save_run(run)
+            self.store.rebuild_index()
+
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="run_started",
+                payload={"trigger": "user"},
+            )
+
+            user_message = self.run_lifecycle.append_user_message(
+                session=session,
+                run=run,
+                prompt=prompt,
+                sequence=len(existing_messages) + 1,
+                metadata={"queued_follow_up_id": _queued_follow_up_id}
+                if _queued_follow_up_id
+                else None,
+            )
+            if _queued_follow_up_id:
+                latest = self.store.load_session(session.session_id, recover=False)
+                self.follow_ups.acknowledge(latest, _queued_follow_up_id)
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="user_message_added",
+                payload={"message_id": user_message.message_id},
+            )
+
+            abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
             result = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -163,7 +169,8 @@ class RuntimeService:
                 abort_signal=abort_signal,
             )
         finally:
-            self._release_abort_signal(run.run_id, abort_signal)
+            if abort_signal is not None:
+                self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
         self._finish_run_hooks(result.run)
         if _drain_followups and result.run.status == "completed":
@@ -316,13 +323,12 @@ class RuntimeService:
             if result.run.status != "completed":
                 return
 
-    def _acquire_session_run_lock(self, session_id: str, run_id: str):
+    def _acquire_session_run_lock(self, session_id: str, run_id: str) -> SessionLock | None:
         return self.store.acquire_session_lock(session_id, run_id)
 
-    def _release_session_run_lock(self, lock: object | None) -> None:
-        release = getattr(lock, "release", None)
-        if callable(release):
-            release()
+    def _release_session_run_lock(self, lock: SessionLock | None) -> None:
+        if lock is not None:
+            lock.release()
 
     def _is_session_run_locked(self, session_id: str) -> bool:
         return self.store.is_session_locked(session_id)
@@ -344,7 +350,7 @@ class RuntimeService:
         invocation = _pending_invocation(run)
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
-            raise RuntimeError(f"run is already active: {run.run_id}")
+            raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
@@ -427,7 +433,7 @@ class RuntimeService:
         invocation = _pending_invocation(run)
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
-            raise RuntimeError(f"run is already active: {run.run_id}")
+            raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []

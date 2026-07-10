@@ -7,6 +7,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = PROJECT_ROOT / "ouro" / "core"
 CONFIG_DIR = PROJECT_ROOT / "ouro" / "config"
 ALLOWED_CORE_PREFIX = "ouro.core"
+LOWER_LAYER_DIRS = (
+    "config",
+    "mcp",
+    "plugins",
+    "prompts",
+    "providers",
+    "sessions",
+    "skills",
+    "tools",
+)
 
 
 def test_core_does_not_import_outer_layers() -> None:
@@ -32,6 +42,18 @@ def test_provider_configuration_does_not_depend_on_cli_or_provider_implementatio
         for module in _imported_modules(tree):
             if module.startswith(("ouro.cli", "ouro.providers", "ouro.application")):
                 violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
+
+    assert violations == []
+
+
+def test_lower_layers_do_not_depend_on_application_or_cli() -> None:
+    violations: list[str] = []
+    for directory in LOWER_LAYER_DIRS:
+        for path in sorted((PROJECT_ROOT / "ouro" / directory).glob("*.py")):
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            for module in _imported_modules(tree):
+                if module.startswith(("ouro.application", "ouro.cli")):
+                    violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
 
     assert violations == []
 

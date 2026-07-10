@@ -18,7 +18,12 @@ def builtin_tools() -> list[Tool]:
             definition=ToolDefinition(
                 name="Read",
                 description="Read a text file or list a directory.",
-                parameters_schema={"type": "object", "properties": {"path": {"type": "string"}}},
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"path": {"type": "string", "minLength": 1}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
                 permission_mode="auto",
             ),
             handler=_read,
@@ -29,7 +34,12 @@ def builtin_tools() -> list[Tool]:
                 description="Create or overwrite a text file.",
                 parameters_schema={
                     "type": "object",
-                    "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
+                    "properties": {
+                        "path": {"type": "string", "minLength": 1},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": False,
                 },
                 permission_mode="approval",
             ),
@@ -42,10 +52,12 @@ def builtin_tools() -> list[Tool]:
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string"},
-                        "old": {"type": "string"},
+                        "path": {"type": "string", "minLength": 1},
+                        "old": {"type": "string", "minLength": 1},
                         "new": {"type": "string"},
                     },
+                    "required": ["path", "old", "new"],
+                    "additionalProperties": False,
                 },
                 permission_mode="approval",
             ),
@@ -58,10 +70,12 @@ def builtin_tools() -> list[Tool]:
                 parameters_schema={
                     "type": "object",
                     "properties": {
-                        "command": {"type": "string"},
-                        "cwd": {"type": "string"},
-                        "timeout_seconds": {"type": "number"},
+                        "command": {"type": "string", "minLength": 1},
+                        "cwd": {"type": "string", "minLength": 1},
+                        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
                     },
+                    "required": ["command"],
+                    "additionalProperties": False,
                 },
                 permission_mode="approval",
             ),
@@ -73,7 +87,9 @@ def builtin_tools() -> list[Tool]:
                 description="Ask the user for missing information.",
                 parameters_schema={
                     "type": "object",
-                    "properties": {"question": {"type": "string"}},
+                    "properties": {"question": {"type": "string", "minLength": 1}},
+                    "required": ["question"],
+                    "additionalProperties": False,
                 },
                 permission_mode="auto",
             ),

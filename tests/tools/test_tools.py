@@ -206,3 +206,52 @@ async def test_tool_execution_aborted_still_returns_aborted_outcome() -> None:
     assert outcome.result is not None
     assert outcome.result.is_error is True
     assert "cancelled by signal" in outcome.result.content
+
+
+@pytest.mark.asyncio
+async def test_unknown_tool_returns_model_readable_error() -> None:
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Missing")
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.is_error is True
+    assert outcome.result.structured["error_type"] == "UnknownTool"
+    assert "unknown tool: Missing" in outcome.result.content
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_arguments_are_rejected_before_approval() -> None:
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Write",
+            arguments={"path": "note.txt"},
+        )
+    )
+
+    assert outcome.status == "completed"
+    assert outcome.approval is None
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolArgumentValidationError"
+    assert "'content' is a required property" in outcome.result.content
+
+
+def test_registry_rejects_invalid_tool_schema() -> None:
+    registry = ToolRegistry()
+    tool = Tool(
+        definition=ToolDefinition(
+            name="Broken",
+            description="Invalid schema.",
+            parameters_schema={"type": "not-a-json-schema-type"},
+        ),
+        handler=lambda invocation: ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid parameters_schema for tool Broken"):
+        registry.register(tool)

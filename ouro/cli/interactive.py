@@ -88,7 +88,11 @@ async def run_interactive(
             continue
 
         if line.startswith("/"):
-            command_result = await _handle_command(line, runtime, session_id)
+            try:
+                command_result = await _handle_command(line, runtime, session_id)
+            except OuroError as exc:
+                output_func(f"Error: {exc}")
+                continue
             session_id = command_result.session_id
             if command_result.output:
                 output_func(command_result.output)
@@ -96,7 +100,11 @@ async def run_interactive(
                 return 0
             continue
 
-        result = await runtime.run(line, session_id=session_id)
+        try:
+            result = await runtime.run(line, session_id=session_id)
+        except OuroError as exc:
+            output_func(f"Error: {exc}")
+            continue
         session_id = await _handle_run_result(
             result,
             runtime=runtime,

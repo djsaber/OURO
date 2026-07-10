@@ -282,6 +282,10 @@ class InnerAgentLoop:
             tools=self.tools.definitions(),
             system_prompt=self.system_prompt,
             added_context=added_context,
+            input_token_budget=max(
+                1,
+                self.adapter.model.context_window - self.adapter.model.max_output_tokens,
+            ),
         )
 
     async def _start_round(self, state: _LoopState, model_round: int) -> None:
