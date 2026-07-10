@@ -778,6 +778,8 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     )
 
     assert code == 0
-    assert any("\x1b[33m> Write" in o for o in outputs)
+    assert any("\x1b[2m>\x1b[0m \x1b[33mWrite\x1b[0m(" in o for o in outputs)
+    assert any('"path"' in o and '"content"' in o for o in outputs)
+    assert any("\x1b[2m{" in o for o in outputs)
     assert any('"path"' in o and '"content"' in o for o in outputs)
     assert any("\x1b[0m" in o for o in outputs)

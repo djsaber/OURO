@@ -19,6 +19,7 @@ OutputFunc = Callable[[str], None]
 # support ANSI escape sequences will show the raw codes, which is acceptable
 # for the interactive CLI target environment.
 _DIM_ITALIC = "\x1b[2;3m"
+_DIM = "\x1b[2m"
 _YELLOW = "\x1b[33m"
 _RESET = "\x1b[0m"
 
@@ -304,8 +305,9 @@ def _stream_tool_call(
         stream_state["streamed_text"] = False
     tool_name = str(payload.get("tool_name") or "unknown")
     arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+    args_text = json.dumps(arguments, ensure_ascii=False)
     _write_output(
-        f"{_YELLOW}> {tool_name}({json.dumps(arguments, ensure_ascii=False)}){_RESET}\n",
+        f"{_DIM}>{_RESET} {_YELLOW}{tool_name}{_RESET}({_DIM}{args_text}{_RESET})\n",
         output_func,
     )
 
