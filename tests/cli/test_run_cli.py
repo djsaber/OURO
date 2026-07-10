@@ -1204,3 +1204,37 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
     assert runtime.adapter.model.endpoint_id == "second"
     provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
     assert provider.base_url == "https://second.example.test/v1"
+
+
+def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="reasoning_delta", reasoning_content="Let me think"),
+                ProviderStreamEvent(type="reasoning_delta", reasoning_content="..."),
+                ProviderStreamEvent(type="text_delta", text="Answer"),
+                ProviderStreamEvent(type="done"),
+            ]
+        ],
+    )
+
+    def fake_runtime(home=None, *, provider_options=None, system_prompt=None, event_sink=None):
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", fake_runtime)
+
+    code = main(["run", "--print", "--home", str(tmp_path), "hello"])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "\x1b[2;3m" in captured.out
+    assert "\x1b[0m" in captured.out
+    assert "Let me think..." in captured.out
+    assert "Answer" in captured.out

@@ -21,6 +21,7 @@ OutputFunc = Callable[[str], None]
 _DIM_ITALIC = "\x1b[2;3m"
 _DIM = "\x1b[2m"
 _YELLOW = "\x1b[33m"
+_CYAN = "\x1b[36m"
 _RESET = "\x1b[0m"
 
 
@@ -76,7 +77,7 @@ async def run_interactive(
 
     while True:
         try:
-            raw_line = input_func("ouro> ")
+            raw_line = input_func(f"{_CYAN}ouro>{_RESET} ")
         except EOFError:
             output_func("")
             return 0

@@ -5,7 +5,7 @@ Local-first personal agent runtime.
 Current first-phase runtime includes:
 
 - `ouro` interactive stdin/stdout mode.
-- `ouro run --print "prompt"` final-text mode.
+- `ouro run --print "prompt"` final-text mode, with reasoning deltas shown in dim italics like interactive mode.
 - `ouro run --json "prompt"` machine-readable final JSON mode.
 - Local readable session storage under `OURO_HOME` or `--home`.
 - Session continuation with `ouro run --session <session_id> ...`.

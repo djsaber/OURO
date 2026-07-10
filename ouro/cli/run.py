@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
@@ -17,6 +18,9 @@ from ouro.skills import discover_available_skills
 from ouro.tools import ToolRegistry, builtin_tools
 
 RuntimeProviderOptions = ProviderRuntimeOptions
+
+_DIM_ITALIC = "\x1b[2;3m"
+_RESET = "\x1b[0m"
 
 
 def build_default_runtime(
@@ -68,7 +72,7 @@ async def run_print(
         print(f"Error: {exc}", file=sys.stderr)
         return error_exit_code(exc)
     if result.run.status == "completed":
-        print(result.final_text)
+        _print_run_events(result.events)
         return 0
     if result.run.status == "failed":
         print(f"Run failed: {result.run.error or 'unknown error'}", file=sys.stderr)
@@ -120,3 +124,37 @@ async def run_json(
         )
     )
     return 0 if result.run.status == "completed" else 1
+
+
+def _print_run_events(events: list[Any]) -> None:
+    """Print text and reasoning deltas, matching interactive-mode formatting."""
+
+    in_reasoning = False
+    streamed_text = False
+
+    for event in events:
+        if event.event_type == "model_text_delta":
+            text = event.payload.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            if in_reasoning:
+                sys.stdout.write(f"{_RESET}\n")
+                in_reasoning = False
+            streamed_text = True
+            sys.stdout.write(text)
+        elif event.event_type == "model_reasoning_delta":
+            reasoning = event.payload.get("reasoning_content")
+            if not isinstance(reasoning, str) or not reasoning:
+                continue
+            if streamed_text:
+                sys.stdout.write("\n")
+                streamed_text = False
+            if not in_reasoning:
+                sys.stdout.write(_DIM_ITALIC)
+                in_reasoning = True
+            sys.stdout.write(reasoning)
+
+    if in_reasoning:
+        sys.stdout.write(_RESET)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
