@@ -152,8 +152,9 @@ providers:
           default_thinking_level: medium
 ```
 
-旧版 Provider 级 `default_model`、`base_url` 和 `extra` 继续读取，并迁移为一个合成的默认
-Endpoint；新写入统一使用 Endpoint 结构，避免长期维护两套配置模型。
+Provider 配置统一使用嵌套 Endpoint 结构；Provider 级 `base_url` 和 `api_path` 仅作为 Endpoint
+默认值，不会再自动合成默认 Endpoint。旧版单 `provider` 对象、Provider 级 `default_model`、
+`base_url`、`extra` 以及 `api_key_env`/`api_key` 等扁平字段不再兼容读取。
 
 credential_ref 可以是：
 
@@ -214,9 +215,9 @@ inline 可以用于本地个人场景，但 UI 必须明确它会保存在本地
 - 凭据明文不能由工作区配置覆盖。
 - 插件和 MCP 可以声明配置项，但最终合并由配置服务完成。
 - 第一阶段已接入 provider 配置文件，并允许 CLI 参数覆盖本地配置。
-- 当前实现支持 `providers.default` + `providers.items` 多 provider 配置形状，并保留旧版单 `provider` 对象读取兼容。
+- 当前实现仅支持 `providers.default` + `providers.items` 多 provider 配置形状；旧版单 `provider` 对象、Provider 级扁平字段等不再读取兼容。
 - Provider 级 CLI 提供 `ouro provider list/show/set/use/remove/check`。
-- Endpoint 级 CLI 提供 `ouro provider endpoint list/show/set/use/remove`；运行和连通性检查可用 `--endpoint` 选择端点。
+- Endpoint 级 CLI 提供 `ouro provider endpoint list/show/set/use/remove`；运行和连通性检查可用 `--provider <provider_id>` 选择已配置 Provider，并用 `--endpoint <endpoint_id>` 选择端点。
 - 图像输入能力使用 `--vision/--no-vision`，并提供语义等价的 `--multimodal/--no-multimodal` 别名。
 - `ouro provider set --endpoint <id> --model/--base-url` 在创建 Provider 的同时创建/更新默认 Endpoint，并将 Provider 的 `default_endpoint` 指向该 Endpoint；省略 `--endpoint` 可创建无 Endpoint 的 Provider。
 - `ouro config check` 保留为默认 Provider/Endpoint 连通性检查兼容入口。

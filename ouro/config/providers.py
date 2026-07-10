@@ -11,7 +11,6 @@ from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.file import JsonConfigFile
 from ouro.config.provider_codec import (
-    provider_config_from_legacy,
     provider_config_from_mapping,
     provider_config_to_raw,
 )
@@ -512,14 +511,6 @@ class ProviderConfigManager:
             else:
                 raise ConfigError("providers.items must be an object or list")
 
-        legacy_provider = raw.get("provider")
-        if isinstance(legacy_provider, Mapping):
-            provider = provider_config_from_legacy(legacy_provider)
-            if provider.provider_id != BUILTIN_FAUX_PROVIDER_ID:
-                providers.setdefault(provider.provider_id, provider)
-        elif legacy_provider is not None:
-            raise ConfigError("provider config must be an object")
-
         return providers
 
     @staticmethod
@@ -539,12 +530,6 @@ class ProviderConfigManager:
                 if not isinstance(default_id, str) or not default_id.strip():
                     raise ConfigError("providers.default must be a non-empty string")
                 return default_id.strip()
-
-        legacy_provider = raw.get("provider")
-        if isinstance(legacy_provider, Mapping):
-            provider_id = legacy_provider.get("provider_id")
-            if isinstance(provider_id, str) and provider_id.strip():
-                return provider_id.strip()
 
         if configured:
             return sorted(configured)[0]

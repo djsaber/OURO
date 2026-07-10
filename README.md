@@ -72,7 +72,7 @@ python -m ouro.cli.main skills disable skill-name --home ./.ouro-dev
 python -m ouro.cli.main skills list --all --home ./.ouro-dev
 python -m ouro.cli.main skills update skill-name --home ./.ouro-dev
 python -m ouro.cli.main skills remove skill-name --home ./.ouro-dev
-python -m ouro.cli.main run --json --provider openai-compatible --base-url <url> --model <model> --api-key-env <ENV_NAME> "hello"
+python -m ouro.cli.main run --json --provider <provider_id> --endpoint <endpoint_id> --api-key-env <ENV_NAME> "hello"
 ```
 
 Example local config:
@@ -158,6 +158,6 @@ Creating a provider without an endpoint does not switch the runtime default. Con
 default endpoint first, then use `provider use PROVIDER_ID`; disabling the active provider or
 removing its final endpoint safely falls back to the built-in Faux provider.
 
-The legacy single `provider` object and flat `default_model` / `base_url` provider fields are
-still read for compatibility. New writes use `providers.default`, `providers.items`, and nested
-`endpoints`.
+Provider configuration always uses the nested `providers.default`, `providers.items`, and
+`endpoints` shape. Provider-level `base_url` and `api_path` are defaults for endpoints, not
+a shorthand for creating a default endpoint.

@@ -23,7 +23,7 @@ def build_runtime_adapter(
     provider_id = _normalized_identifier(
         options.provider_id,
         default=default_provider_id,
-        option="--provider-id",
+        option="--provider",
     )
     assert provider_id is not None
     base_url = options.base_url.strip().rstrip("/") if options.base_url is not None else None
@@ -32,7 +32,7 @@ def build_runtime_adapter(
     model_id = _normalized_identifier(
         options.model,
         default="faux" if provider_kind == "faux" else None,
-        option="--model",
+        option="--endpoint model",
     )
     if model_id is None:
         raise ConfigError("--model is required for openai-compatible provider")

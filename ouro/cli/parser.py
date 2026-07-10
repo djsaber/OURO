@@ -301,14 +301,11 @@ def build_parser() -> argparse.ArgumentParser:
 def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> None:
     parser.add_argument(
         "--provider",
-        dest=f"{prefix}provider",
-        choices=["faux", "openai-compatible"],
+        dest=f"{prefix}provider_id",
         default=None,
-        help="Provider kind",
+        help="Configured provider id",
     )
-    parser.add_argument("--provider-id", dest=f"{prefix}provider_id", help="Provider/supplier id")
     parser.add_argument("--endpoint", dest=f"{prefix}endpoint_id", help="Configured endpoint id")
-    parser.add_argument("--model", dest=f"{prefix}model", help="Model id")
     parser.add_argument("--base-url", dest=f"{prefix}base_url", help="Provider base URL")
     parser.add_argument("--api-path", dest=f"{prefix}api_path", help="Provider API path")
     parser.add_argument("--api-key", dest=f"{prefix}api_key", help="Inline API key")

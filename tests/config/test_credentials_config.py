@@ -77,10 +77,15 @@ def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:
                         "glm": {
                             "provider_id": "glm",
                             "provider_type": "openai-compatible",
-                            "default_model": "glm-test",
-                            "base_url": "https://example.test/v1",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "timeout_seconds": 7,
+                            "default_endpoint": "default",
+                            "endpoints": {
+                                "default": {
+                                    "model_id": "glm-test",
+                                    "base_url": "https://example.test/v1",
+                                }
+                            },
                         }
                     },
                 }
@@ -133,8 +138,13 @@ def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> 
                         "glm": {
                             "provider_id": "glm",
                             "provider_type": "openai-compatible",
-                            "default_model": "glm-test",
-                            "base_url": "https://example.test/v1",
+                            "default_endpoint": "default",
+                            "endpoints": {
+                                "default": {
+                                    "model_id": "glm-test",
+                                    "base_url": "https://example.test/v1",
+                                }
+                            },
                         }
                     },
                 }

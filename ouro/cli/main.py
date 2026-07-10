@@ -245,10 +245,8 @@ def _skills_command(args: argparse.Namespace) -> int:
 
 def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeProviderOptions:
     return RuntimeProviderOptions(
-        provider=_argument_value(args, prefix, "provider"),
         provider_id=_argument_value(args, prefix, "provider_id"),
         endpoint_id=_argument_value(args, prefix, "endpoint_id"),
-        model=_argument_value(args, prefix, "model"),
         base_url=_argument_value(args, prefix, "base_url"),
         api_path=_argument_value(args, prefix, "api_path"),
         api_key=_argument_value(args, prefix, "api_key"),

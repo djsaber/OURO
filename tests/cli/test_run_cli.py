@@ -342,7 +342,7 @@ def test_main_without_subcommand_enters_interactive(monkeypatch, tmp_path) -> No
     calls = []
 
     async def fake_interactive(*, home, provider_options, system_prompt):
-        calls.append((home, provider_options.provider, system_prompt))
+        calls.append((home, provider_options.provider_id, system_prompt))
         return 0
 
     monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
@@ -447,13 +447,23 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
     (config_dir / "config.json").write_text(
         json.dumps(
             {
-                "provider": {
-                    "kind": "openai-compatible",
-                    "provider_id": "configured",
-                    "model": "configured-model",
-                    "base_url": "https://configured.test/v1",
-                    "api_key_env": "OURO_TEST_KEY",
-                    "timeout": 9.0,
+                "providers": {
+                    "default": "configured",
+                    "items": {
+                        "configured": {
+                            "provider_type": "openai-compatible",
+                            "provider_id": "configured",
+                            "credential_ref": "env:OURO_TEST_KEY",
+                            "timeout_seconds": 9.0,
+                            "default_endpoint": "default",
+                            "endpoints": {
+                                "default": {
+                                    "model_id": "configured-model",
+                                    "base_url": "https://configured.test/v1",
+                                }
+                            },
+                        }
+                    },
                 }
             }
         ),
@@ -593,7 +603,7 @@ def test_run_json_reports_provider_config_error(tmp_path, capsys) -> None:
             "--home",
             str(tmp_path),
             "--provider",
-            "openai-compatible",
+            "missing",
             "hello",
         ]
     )
@@ -604,7 +614,7 @@ def test_run_json_reports_provider_config_error(tmp_path, capsys) -> None:
     assert code == 2
     assert payload["status"] == "failed"
     assert payload["error_type"] == "ConfigError"
-    assert "--base-url" in payload["error"]
+    assert "provider not found" in payload["error"]
 
 
 def test_config_check_faux_provider_outputs_status(tmp_path, capsys) -> None:
@@ -638,7 +648,7 @@ def test_config_check_json_reports_provider_config_error(tmp_path, capsys) -> No
             "--home",
             str(tmp_path),
             "--provider",
-            "openai-compatible",
+            "missing",
         ]
     )
 
@@ -648,7 +658,7 @@ def test_config_check_json_reports_provider_config_error(tmp_path, capsys) -> No
     assert code == 2
     assert payload["status"] == "failed"
     assert payload["error_type"] == "ConfigError"
-    assert "--base-url" in payload["error"]
+    assert "provider not found" in payload["error"]
 
 
 def test_provider_commands_manage_config_and_runtime_default(

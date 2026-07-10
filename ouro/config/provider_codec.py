@@ -13,14 +13,11 @@ from ouro.config.endpoints import (
     endpoint_config_to_raw,
 )
 from ouro.config.provider_models import (
-    BUILTIN_FAUX_PROVIDER_ID,
     ProviderConfig,
     ProviderKind,
     normalize_provider_config,
 )
 from ouro.core.errors import ConfigError
-
-LEGACY_DEFAULT_ENDPOINT_ID = "default"
 
 
 def provider_config_to_public_dict(
@@ -61,7 +58,7 @@ def provider_config_from_mapping(
     provider_id: str,
     raw: Mapping[str, Any],
 ) -> ProviderConfig:
-    """Decode the current provider shape, including flat endpoint aliases."""
+    """Decode the current nested provider/endpoint shape."""
 
     configured_provider_id = _optional_str(raw.get("provider_id")) or provider_id
     if configured_provider_id != provider_id:
@@ -71,71 +68,22 @@ def provider_config_from_mapping(
         )
 
     try:
-        endpoints = _endpoints_from_mapping(raw)
-        default_endpoint = _optional_str(raw.get("default_endpoint"))
-        if not endpoints and (
-            raw.get("default_model") is not None
-            or raw.get("model") is not None
-            or raw.get("base_url") is not None
-        ):
-            endpoints = (_legacy_endpoint_from_mapping(LEGACY_DEFAULT_ENDPOINT_ID, raw),)
-            default_endpoint = LEGACY_DEFAULT_ENDPOINT_ID
         provider = ProviderConfig(
             provider_id=configured_provider_id,
-            provider_type=_provider_kind(
-                raw.get("provider_type")
-                or raw.get("kind")
-                or raw.get("provider")
-                or "openai-compatible"
-            ),
+            provider_type=_provider_kind(raw.get("provider_type") or "openai-compatible"),
             credential_ref=_credential_ref_from_mapping(raw),
-            default_endpoint=default_endpoint,
-            endpoints=endpoints,
+            default_endpoint=_optional_str(raw.get("default_endpoint")),
+            endpoints=_endpoints_from_mapping(raw),
             base_url=_optional_str(raw.get("base_url")),
             api_path=_optional_str(raw.get("api_path")),
             enabled=raw.get("enabled", True),
-            timeout_seconds=_configured_value(
-                raw,
-                "timeout_seconds",
-                "timeout",
-                default=60.0,
-            ),
+            timeout_seconds=raw.get("timeout_seconds", 60.0),
             retry_policy=dict(raw.get("retry_policy") or {}),
             extra=dict(raw.get("provider_options") or {}),
         )
         return normalize_provider_config(provider)
     except (TypeError, ValueError, ValidationError) as exc:
         raise ConfigError(f"invalid provider config {provider_id}: {exc}") from exc
-
-
-def provider_config_from_legacy(raw: Mapping[str, Any]) -> ProviderConfig:
-    """Decode the pre-registry single-provider shape."""
-
-    try:
-        provider_type = _provider_kind(raw.get("kind") or raw.get("provider") or "faux")
-        provider_id = _optional_str(raw.get("provider_id"))
-        if provider_id is None:
-            provider_id = (
-                BUILTIN_FAUX_PROVIDER_ID if provider_type == "faux" else "openai_compatible"
-            )
-        endpoint = _legacy_endpoint_from_mapping(LEGACY_DEFAULT_ENDPOINT_ID, raw)
-        provider = ProviderConfig(
-            provider_id=provider_id,
-            provider_type=provider_type,
-            credential_ref=_credential_ref_from_mapping(raw),
-            default_endpoint=endpoint.endpoint_id,
-            endpoints=(endpoint,),
-            enabled=raw.get("enabled", True),
-            timeout_seconds=_configured_value(
-                raw,
-                "timeout",
-                "timeout_seconds",
-                default=60.0,
-            ),
-        )
-        return normalize_provider_config(provider)
-    except (TypeError, ValueError, ValidationError) as exc:
-        raise ConfigError(f"invalid legacy provider config: {exc}") from exc
 
 
 def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
@@ -163,41 +111,6 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
     if provider.extra:
         raw["provider_options"] = provider.extra
     return raw
-
-
-def update_legacy_default_endpoint(
-    provider: ProviderConfig,
-    *,
-    model_id: str | None,
-    base_url: str | None,
-) -> ProviderConfig:
-    """Implement the legacy provider-level model/base-url CLI shorthand."""
-
-    endpoint_id = provider.default_endpoint or LEGACY_DEFAULT_ENDPOINT_ID
-    current = provider.endpoint(endpoint_id)
-    if current is None:
-        if model_id is None:
-            raise ConfigError("--model is required for a new endpoint")
-        current = ProviderEndpointConfig(
-            endpoint_id=endpoint_id,
-            model_id=model_id,
-            base_url=base_url,
-        )
-    else:
-        current = current.model_copy(
-            update={
-                "model_id": model_id if model_id is not None else current.model_id,
-                "base_url": base_url if base_url is not None else current.base_url,
-            }
-        )
-    endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
-    endpoints[endpoint_id] = current
-    return provider.model_copy(
-        update={
-            "default_endpoint": endpoint_id,
-            "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),
-        }
-    )
 
 
 def _endpoints_from_mapping(raw: Mapping[str, Any]) -> tuple[ProviderEndpointConfig, ...]:
@@ -234,20 +147,6 @@ def _add_unique_endpoint(
     endpoints[endpoint.endpoint_id] = endpoint
 
 
-def _legacy_endpoint_from_mapping(
-    endpoint_id: str,
-    raw: Mapping[str, Any],
-) -> ProviderEndpointConfig:
-    model_id = _optional_str(raw.get("default_model") or raw.get("model")) or "faux"
-    return ProviderEndpointConfig(
-        endpoint_id=endpoint_id,
-        model_id=model_id,
-        base_url=_optional_str(raw.get("base_url")),
-        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")),
-        request_options=dict(raw.get("extra") or {}),
-    )
-
-
 def _credential_ref_from_mapping(raw: Mapping[str, Any]) -> CredentialRef:
     credential_ref = raw.get("credential_ref")
     if isinstance(credential_ref, str) or credential_ref is None:
@@ -257,12 +156,6 @@ def _credential_ref_from_mapping(raw: Mapping[str, Any]) -> CredentialRef:
         return CredentialRef.model_validate(dict(credential_ref))
     if credential_ref is not None:
         return CredentialRef.model_validate(credential_ref)
-    api_key_env = raw.get("api_key_env")
-    if isinstance(api_key_env, str) and api_key_env:
-        return CredentialRef.parse(f"env:{api_key_env}")
-    api_key = raw.get("api_key")
-    if isinstance(api_key, str) and api_key:
-        return CredentialRef.parse(api_key)
     return CredentialRef()
 
 
@@ -286,17 +179,3 @@ def _provider_kind(value: object) -> ProviderKind:
     if value == "faux":
         return "faux"
     raise ValueError(f"unsupported provider kind: {value}")
-
-
-def _configured_value(
-    raw: Mapping[str, Any],
-    primary: str,
-    legacy: str,
-    *,
-    default: object,
-) -> Any:
-    if primary in raw:
-        return raw[primary]
-    if legacy in raw:
-        return raw[legacy]
-    return default
