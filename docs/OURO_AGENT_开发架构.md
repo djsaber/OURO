@@ -27,7 +27,7 @@ provider adapters   local implementations
   transport、codec 和 adapter factory；不拥有会话模型选择、运行时状态或 core 契约的
   便利转售。
 - `ouro.sessions` 定义存储 port，并提供本地文件实现。文件记录读写和 OS 锁各自封装，
-  但都属于同一本地持久化后端。
+  但都属于同一本地持久化后端。会话命令、查询和 Host DTO 属于 application，不放在该包。
 - `ouro.cli` 是组合根和界面适配器。它解析输入、组装 application 服务并格式化输出，
   不承载运行规则。
 - `ouro.config`、`ouro.tools`、`ouro.skills`、`ouro.plugins`、`ouro.mcp` 分别维护自身
@@ -56,14 +56,21 @@ provider adapters   local implementations
 - `application/compaction.py`：LLM 摘要策略与上下文准备/压缩事务。两者共享压缩计划、
   fallback、记录和投影不变量，当前保留在同一模块。
 - `application/events.py`、`followups.py`：事件持久化/分发和 durable follow-up queue。
+- `application/sessions.py`、`session_history.py`、`session_models.py`：会话命令/查询、历史
+  branch/replay 投影、标题状态机、Host DTO 和可恢复 diagnostic；不暴露具体存储对象。
+- `application/facade.py`：CLI、未来 Textual/Desktop 共用的进程内命令/查询入口；没有 runtime 的
+  组合可以只提供会话维护命令。
 
 ### Interface and infrastructure
 
 - `cli/interactive.py`：只维护交互主循环和 active session id。
 - `cli/interactive_commands.py`：slash command 解析与查询输出。
 - `cli/interactive_io.py`：流式事件渲染以及 approval/AskUser 输入。
-- `sessions/local_files.py`：session 聚合文件、恢复和原子写入。
+- `sessions/local_files.py`：canonical session 聚合文件、崩溃恢复和 trash 发布事务。
+- `sessions/local_index.py`：本地可重建 catalog 的扫描、增量更新、dirty 自愈与独立锁。
+- `sessions/local_io.py`：本地原子文件替换原语；不包含会话或目录业务规则。
 - `sessions/locks.py`：跨进程 session run lock。
+- `sessions/index.py`、`layout.py`：可重建 catalog 投影和独立数据布局版本，不承载 application 用例。
 - `providers/factory.py`：把已解析配置构建为具体 `RuntimeAdapter`。
 
 ## 关键边界决定
@@ -80,6 +87,17 @@ providers 只提供 adapter builder。`AvailableModel` 也不是 Provider 领域
 `RuntimeService` 的公开方法共享 session lock、abort signal、durable run 状态和 follow-up
 drain 事务。将每个方法包装成一个小 service 会引入循环回调和无意义转发。只把有独立
 变化原因、能形成完整协作边界的工具调用协调提取到 `ToolCallCoordinator`。
+
+### Catalog 不是 canonical transaction
+
+`session.json`、JSONL、run 和 compaction 是 canonical 数据；`sessions/index.json` 只用于查询。普通
+状态变化以独立 catalog lock 增量更新单个 entry，失败时留下 dirty marker 并返回 diagnostic。打开
+会话不依赖 index 成功，后续查询可 scan fallback 或全量重建。Host DTO 不包含内部全文字段。
+
+### Branch 不绕过资源身份
+
+Branch 由 application 计算合法消息边界和 lineage，由存储后端 staging 后原子发布。当前
+ResourceService 尚未完成，因此含 `resource_refs` 的 branch 明确失败；不复制裸路径或制造悬空 id。
 
 ### 不按行数拆配置和压缩模块
 

@@ -1,13 +1,16 @@
 # OURO Agent 第二阶段：会话、资源与 Desktop 规格
 
 - Date: 2026-07-11
-- Status: Proposed / implementation not started
+- Status: In progress / session core foundation implemented
 - Parent: `2026-07-11-phase-2-personal-workflow.md`
 
 ## 1. Scope
 
 本规格定义个人工作流的可见主体：session catalog、历史导航、branch/replay/export、资源记录、后台
 运行状态和 PyWebview + FastAPI Desktop。它不改变第一阶段单个 run 的模型/工具循环。
+
+已完成的 session core 边界见 `2026-07-11-session-core-foundation.md`。ResourceService、Supervisor、
+Desktop、完整 export/maintenance 和性能 gate 仍未完成，本状态不代表本规格验收完成。
 
 ## 2. Session Catalog
 

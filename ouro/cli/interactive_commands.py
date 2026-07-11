@@ -78,7 +78,7 @@ def _help_text() -> str:
 
 
 def _sessions_text(runtime: RuntimeService) -> str:
-    sessions = runtime.sessions.list()
+    sessions = runtime.sessions.catalog().entries
     if not sessions:
         return "No sessions."
     lines = ["Sessions:"]

@@ -42,6 +42,20 @@ def test_model_catalog_is_owned_by_application_not_core_or_providers() -> None:
     assert not (PROJECT_ROOT / "ouro" / "providers" / "catalog.py").exists()
 
 
+def test_session_use_cases_and_host_facade_are_application_owned() -> None:
+    assert (APPLICATION_DIR / "sessions.py").exists()
+    assert (APPLICATION_DIR / "session_models.py").exists()
+    assert (APPLICATION_DIR / "facade.py").exists()
+    assert not (PROJECT_ROOT / "ouro" / "sessions" / "service.py").exists()
+
+    session_commands = ast.parse(
+        (PROJECT_ROOT / "ouro" / "cli" / "session_commands.py").read_text(encoding="utf-8")
+    )
+    imports = _imported_modules(session_commands)
+    assert "ouro.application.facade" in imports
+    assert "ouro.application.sessions" not in imports
+
+
 def test_application_does_not_depend_on_cli_or_provider_implementations() -> None:
     violations: list[str] = []
     for path in sorted(APPLICATION_DIR.glob("*.py")):

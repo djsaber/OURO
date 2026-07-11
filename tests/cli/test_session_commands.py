@@ -85,6 +85,74 @@ def test_session_remove_with_force(tmp_path, capsys) -> None:
     assert "removed" in captured.out
     store = LocalSessionStore(tmp_path)
     assert not (store.sessions_dir / run_payload["session_id"]).exists()
+    assert any((path / "session.json").exists() for path in store.trash_sessions_dir.iterdir())
+
+
+def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:
+    run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
+    run_payload = json.loads(capsys.readouterr().out)
+    assert run_code == 0
+    session_id = run_payload["session_id"]
+
+    assert main(["session", "rename", session_id, "Focused work", "--home", str(tmp_path)]) == 0
+    capsys.readouterr()
+    assert main(["session", "pin", session_id, "--home", str(tmp_path)]) == 0
+    capsys.readouterr()
+    assert main(["session", "archive", session_id, "--home", str(tmp_path)]) == 0
+    capsys.readouterr()
+
+    code = main(
+        [
+            "session",
+            "list",
+            "--home",
+            str(tmp_path),
+            "--json",
+            "--search",
+            "focused",
+            "--archived",
+            "--pinned",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert [entry["session_id"] for entry in payload["sessions"]] == [session_id]
+    assert payload["sessions"][0]["title_source"] == "user"
+    assert payload["sessions"][0]["title_locked"] is True
+
+
+def test_session_branch_and_replay_commands_use_application_facade(tmp_path, capsys) -> None:
+    run_code = main(["run", "--json", "--home", str(tmp_path), "branch me"])
+    run_payload = json.loads(capsys.readouterr().out)
+    assert run_code == 0
+    session_id = run_payload["session_id"]
+
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    source = store.load_session(session_id, recover=False)
+    branch_point = source.messages[-1].message_id
+
+    branch_code = main(
+        [
+            "session",
+            "branch",
+            session_id,
+            branch_point,
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    branch_payload = json.loads(capsys.readouterr().out)
+    assert branch_code == 0
+    assert branch_payload["session"]["parent_session_id"] == session_id
+
+    replay_code = main(["session", "replay", session_id, "--home", str(tmp_path), "--json"])
+    replay_payload = json.loads(capsys.readouterr().out)
+    assert replay_code == 0
+    assert replay_payload["frames"]
+    assert replay_payload["frames"][0]["event"]["event_type"] == "run_started"
 
 
 def test_session_export_to_stdout(tmp_path, capsys) -> None:

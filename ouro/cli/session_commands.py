@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import json
-import shutil
 import sys
 from pathlib import Path
 from typing import Any
 
+from ouro.application.facade import ApplicationFacade
+from ouro.application.session_models import (
+    SessionCatalogQuery,
+    SessionCatalogStatus,
+    SessionSort,
+)
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
 from ouro.core.compaction import CompactionCommandResult
@@ -13,10 +18,31 @@ from ouro.core.errors import OuroError
 from ouro.sessions import LocalSessionStore
 
 
-def list_sessions(*, home: str | Path | None = None, json_mode: bool = False) -> int:
+def list_sessions(
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+    search: str | None = None,
+    statuses: list[SessionCatalogStatus] | None = None,
+    archived: bool | None = None,
+    pinned: bool | None = None,
+    workspace: str | None = None,
+    model: str | None = None,
+    tags: list[str] | None = None,
+    sort: SessionSort = "updated_desc",
+) -> int:
     try:
-        store = _store(home)
-        sessions = store.list_sessions()
+        query = SessionCatalogQuery(
+            text=search,
+            statuses=frozenset(statuses or []),
+            archived=archived,
+            pinned=pinned,
+            workspace=workspace,
+            model=model,
+            tags=frozenset(tags or []),
+            sort=sort,
+        )
+        sessions = _facade(home).session_catalog(query).entries
     except OuroError as exc:
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -47,6 +73,123 @@ def list_sessions(*, home: str | Path | None = None, json_mode: bool = False) ->
     return 0
 
 
+def rename_session(
+    session_id: str,
+    title: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).rename_session(session_id, title)
+    except (OuroError, FileNotFoundError, ValueError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"Session renamed: {result.session.session_id} -> {result.session.title}")
+    return 0
+
+
+def archive_session(
+    session_id: str,
+    *,
+    archived: bool,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).archive_session(session_id, archived=archived)
+    except (OuroError, FileNotFoundError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        verb = "archived" if archived else "unarchived"
+        print(f"Session {verb}: {session_id}")
+    return 0
+
+
+def pin_session(
+    session_id: str,
+    *,
+    pinned: bool,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).pin_session(session_id, pinned=pinned)
+    except (OuroError, FileNotFoundError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        verb = "pinned" if pinned else "unpinned"
+        print(f"Session {verb}: {session_id}")
+    return 0
+
+
+def branch_session(
+    session_id: str,
+    message_id: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).branch_session(session_id, message_id)
+    except (OuroError, FileNotFoundError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
+    else:
+        print(f"Session branched: {session_id} -> {result.session.session_id}")
+    return 0
+
+
+def replay_session(
+    session_id: str,
+    *,
+    home: str | Path | None = None,
+    run_id: str | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).replay_session(session_id, run_id=run_id)
+    except (OuroError, FileNotFoundError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(json.dumps({"status": "ok", **result.model_dump(mode="json")}, ensure_ascii=False))
+        return 0
+    if not result.frames:
+        print("No replay events.")
+        return 0
+    for frame in result.frames:
+        event = frame.event
+        print(f"[{frame.sequence}] {event.event_type} run={event.run_id}")
+    return 0
+
+
 def show_session(
     session_id: str,
     *,
@@ -54,7 +197,7 @@ def show_session(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _store(home).load_session(session_id)
+        snapshot = _facade(home).open_session(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -101,20 +244,15 @@ def remove_session(
     json_mode: bool = False,
 ) -> int:
     try:
-        store = _store(home)
-        session_dir = store.sessions_dir / session_id
-        if not session_dir.exists():
-            raise OuroError(f"session not found: {session_id}")
         if not force:
-            confirm = input(f"Remove session {session_id}? [y/N] ").strip().lower()
+            confirm = input(f"Move session {session_id} to trash? [y/N] ").strip().lower()
             if confirm not in {"y", "yes"}:
                 if json_mode:
                     print(json.dumps({"status": "cancelled"}, ensure_ascii=False))
                 else:
                     print("Cancelled.")
                 return 0
-        shutil.rmtree(session_dir)
-        store.rebuild_index()
+        result = _facade(home).delete_session(session_id)
     except OuroError as exc:
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -123,9 +261,14 @@ def remove_session(
         return 1
 
     if json_mode:
-        print(json.dumps({"status": "ok", "removed": session_id}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "ok", "removed": session_id, "trash_id": result.trash_id},
+                ensure_ascii=False,
+            )
+        )
     else:
-        print(f"Session removed: {session_id}")
+        print(f"Session removed to trash: {session_id}")
     return 0
 
 
@@ -137,7 +280,7 @@ def export_session(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _store(home).load_session(session_id)
+        snapshot = _facade(home).open_session(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -152,6 +295,7 @@ def export_session(
         "messages": [message.model_dump(mode="json") for message in snapshot.messages],
         "events": [event.model_dump(mode="json") for event in snapshot.events],
         "runs": [run.model_dump(mode="json") for run in snapshot.runs],
+        "compactions": [compaction.model_dump(mode="json") for compaction in snapshot.compactions],
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if output_path is not None:
@@ -180,7 +324,7 @@ def list_session_messages(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _store(home).load_session(session_id)
+        snapshot = _facade(home).open_session(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -221,7 +365,7 @@ def list_session_events(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _store(home).load_session(session_id)
+        snapshot = _facade(home).open_session(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -230,7 +374,7 @@ def list_session_events(
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    events = snapshot.events
+    events = list(snapshot.events)
     if run_id is not None:
         events = [event for event in events if event.run_id == run_id]
 
@@ -262,8 +406,8 @@ async def compact_session(
     json_mode: bool = False,
 ) -> int:
     try:
-        runtime = build_default_runtime(home)
-        result = await runtime.compact(session_id=session_id)
+        facade = ApplicationFacade.from_runtime(build_default_runtime(home))
+        result = await facade.compact_session(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -325,6 +469,10 @@ def _store(home: str | Path | None) -> LocalSessionStore:
     store = LocalSessionStore(home)
     store.initialize()
     return store
+
+
+def _facade(home: str | Path | None) -> ApplicationFacade:
+    return ApplicationFacade.for_sessions(_store(home))
 
 
 def _print_error(exc: Exception, *, json_mode: bool) -> None:

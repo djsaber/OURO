@@ -36,6 +36,12 @@ Current first-phase runtime includes:
 - Standards-compatible Agent Skills discovery and native system-prompt injection through `ContextBuilder`; durable built-in LLM summary compaction preserves canonical history and complete tool exchanges.
 - Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
+- Phase 2 session foundation: typed/rebuildable catalog, full user/assistant text search, lineage,
+  title state, archive/pin, atomic branch, read-only replay, and delete-to-trash through the shared
+  `ApplicationFacade`.
+- Session catalog updates are incremental and independently locked; dirty or corrupt indexes
+  self-heal without making a canonical session write fail. `layout.json` rejects incompatible data
+  versions instead of guessing a migration.
 
 Development commands:
 
@@ -52,6 +58,7 @@ Architecture and development references:
 - [`docs/OURO_AGENT_开发架构.md`](docs/OURO_AGENT_开发架构.md) — current module boundaries and dependency rules.
 - [`docs/OURO_AGENT_编码准则_EN.md`](docs/OURO_AGENT_编码准则_EN.md) — engineering rules used for implementation and review.
 - [`dev/audits/2026-07-11-module-architecture-review.md`](dev/audits/2026-07-11-module-architecture-review.md) — repository-wide architecture review and refactor record.
+- [`dev/specs/2026-07-11-session-core-foundation.md`](dev/specs/2026-07-11-session-core-foundation.md) — implemented session core contracts, invariants, and deferred boundaries.
 
 CLI examples:
 
@@ -61,6 +68,11 @@ python -m ouro.cli.main --home ./.ouro-dev
 python -m ouro.cli.main run --print --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "continue"
+python -m ouro.cli.main session list --home ./.ouro-dev --search auth --no-archived --sort updated_desc
+python -m ouro.cli.main session rename <session_id> "Auth refactor" --home ./.ouro-dev
+python -m ouro.cli.main session archive <session_id> --home ./.ouro-dev
+python -m ouro.cli.main session branch <session_id> <message_id> --home ./.ouro-dev
+python -m ouro.cli.main session replay <session_id> --home ./.ouro-dev --json
 python -m ouro.cli.main config check --home ./.ouro-dev
 python -m ouro.cli.main config prompt --home ./.ouro-dev --set "Custom system prompt"
 python -m ouro.cli.main provider list --home ./.ouro-dev

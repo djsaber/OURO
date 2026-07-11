@@ -1,6 +1,5 @@
 import asyncio
 import sys
-from typing import Any, cast
 
 import pytest
 
@@ -283,8 +282,8 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     assert snapshot.session.message_count == 2
     assert snapshot.session.last_message_id == snapshot.messages[-1].message_id
     assert snapshot.events[-1].event_type == "run_failed"
-    index: dict[str, Any] = cast(dict[str, Any], store.load_index())
-    assert index["sessions"][0]["status"] == "failed"
+    index = store.load_index()
+    assert index.sessions[0].status == "failed"
 
 
 @pytest.mark.asyncio
@@ -433,8 +432,8 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
     assert result.session.status == "waiting_approval"
     assert not target.exists()
     assert "approval_requested" in [event.event_type for event in snapshot.events]
-    index: dict[str, Any] = cast(dict[str, Any], store.load_index())
-    assert index["sessions"][0]["status"] == "waiting_approval"
+    index = store.load_index()
+    assert index.sessions[0].status == "waiting_approval"
 
 
 @pytest.mark.asyncio
@@ -528,7 +527,7 @@ async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_messa
         ),
         tools=_tools(),
     )
-    session = runtime.sessions.create(title="Crash window")
+    session = runtime.sessions.create(title="Crash window").session
     queued_session, _ = runtime.follow_ups.enqueue(
         snapshot=store.load_session(session.session_id, recover=False),
         prompt="Queued prompt",

@@ -170,7 +170,9 @@ class RunLifecycle:
             update={
                 "status": session.status,
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
+                "active_run_id": run.run_id,
                 "last_message_id": last_message_id,
                 "message_count": message_count,
             }
@@ -188,14 +190,16 @@ class RunLifecycle:
             update={
                 "status": session.status,
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
+                "active_run_id": run.run_id,
                 "last_message_id": last_message_id,
                 "message_count": len(snapshot.messages),
             }
         )
         self.store.save_run(run)
         self.store.save_session(updated_session)
-        self.store.rebuild_index()
+        self.store.try_update_index(updated_session.session_id)
 
     async def complete(
         self,
@@ -243,6 +247,8 @@ class RunLifecycle:
             update={
                 "status": "idle",
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+                "active_run_id": None,
                 "last_message_id": last_message_id,
                 "message_count": len(messages),
                 "last_run_id": completed_run.run_id,
@@ -250,7 +256,7 @@ class RunLifecycle:
         )
         self.store.save_run(completed_run)
         self.store.save_session(completed_session)
-        self.store.rebuild_index()
+        self.store.try_update_index(completed_session.session_id)
         await self.events.emit(
             emitted,
             sequence,
@@ -311,6 +317,8 @@ class RunLifecycle:
             update={
                 "status": "failed",
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+                "active_run_id": None,
                 "last_message_id": last_message_id,
                 "message_count": len(snapshot.messages),
                 "last_run_id": failed_run.run_id,
@@ -318,7 +326,7 @@ class RunLifecycle:
         )
         self.store.save_run(failed_run)
         self.store.save_session(failed_session)
-        self.store.rebuild_index()
+        self.store.try_update_index(failed_session.session_id)
         await self.events.emit(
             emitted,
             sequence,
@@ -359,7 +367,9 @@ class RunLifecycle:
         updated_session = snapshot.session.model_copy(
             update={
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
+                "active_run_id": run.run_id,
                 "last_message_id": message.message_id,
                 "message_count": max(snapshot.session.message_count, len(snapshot.messages)),
             }

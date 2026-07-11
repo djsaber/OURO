@@ -131,7 +131,7 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
 @pytest.mark.asyncio
 async def test_legacy_unique_model_id_is_canonicalized_in_current_model(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
-    session = runtime.sessions.create(current_model="beta-model")
+    session = runtime.sessions.create(current_model="beta-model").session
 
     result = await runtime.run("hello", session_id=session.session_id)
 
@@ -141,7 +141,7 @@ async def test_legacy_unique_model_id_is_canonicalized_in_current_model(tmp_path
 
 def test_session_model_switch_rejects_busy_and_unknown_models(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
-    session = runtime.sessions.create(current_model="alpha/default")
+    session = runtime.sessions.create(current_model="alpha/default").session
 
     with pytest.raises(ConfigError, match="model not found"):
         runtime.switch_session_model(session.session_id, "missing/model")

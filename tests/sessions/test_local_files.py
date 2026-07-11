@@ -1,8 +1,6 @@
-from typing import Any
-
 import pytest
 
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -51,9 +49,32 @@ def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
 
     repaired = LocalSessionStore(tmp_path)
     repaired.initialize()
-    index: dict[str, Any] = repaired.load_index()
+    index = repaired.load_index()
 
-    assert index["sessions"][0]["session_id"] == session.session_id
+    assert index.sessions[0].session_id == session.session_id
+
+
+def test_index_initialization_failure_does_not_block_canonical_session_open(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Canonical remains available")
+    store.create_session(session)
+    (store.sessions_dir / "index.json").unlink()
+
+    def fail_index_write(_path, _model) -> None:
+        raise PersistenceError("index is read-only")
+
+    monkeypatch.setattr("ouro.sessions.local_index.write_model_atomic", fail_index_write)
+    reopened = LocalSessionStore(tmp_path)
+
+    reopened.initialize()
+    snapshot = reopened.load_session(session.session_id, recover=False)
+
+    assert snapshot.session.title == "Canonical remains available"
+    assert reopened._index_dirty_path.exists()
 
 
 def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
@@ -141,3 +162,110 @@ def test_store_reports_corrupt_session_as_persistence_error(tmp_path) -> None:
 
     with pytest.raises(PersistenceError, match="could not load session"):
         store.load_session(session.session_id)
+
+
+def test_canonical_mutators_do_not_create_partial_unknown_sessions(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    missing = SessionRecord(title="Missing")
+
+    with pytest.raises(FileNotFoundError):
+        store.save_session(missing)
+    with pytest.raises(FileNotFoundError):
+        store.append_message(
+            MessageRecord.text(
+                session_id=missing.session_id,
+                role="user",
+                text="must not create a directory",
+            )
+        )
+    with pytest.raises(FileNotFoundError):
+        store.save_run(RunRecord(session_id=missing.session_id))
+
+    assert not (store.sessions_dir / missing.session_id).exists()
+
+
+def test_create_session_cleans_staging_when_publish_preparation_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Atomic create")
+    original = store._write_json_atomic
+
+    def fail_resource_index(path, value) -> None:
+        if path.name == "index.json" and path.parent.name == "resources":
+            raise PersistenceError("injected resource index failure")
+        original(path, value)
+
+    monkeypatch.setattr(store, "_write_json_atomic", fail_resource_index)
+
+    with pytest.raises(PersistenceError, match="injected"):
+        store.create_session(session)
+
+    assert not (store.sessions_dir / session.session_id).exists()
+    assert list(store.sessions_dir.glob("*.staging")) == []
+
+
+def test_trash_session_rolls_back_when_staging_preparation_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Keep canonical")
+    store.create_session(session)
+    original = store._write_json_atomic
+
+    def fail_trash_manifest(path, value) -> None:
+        if path.name == "trash.json":
+            raise PersistenceError("injected trash failure")
+        original(path, value)
+
+    monkeypatch.setattr(store, "_write_json_atomic", fail_trash_manifest)
+
+    with pytest.raises(PersistenceError, match="injected"):
+        store.trash_session(session.session_id)
+
+    assert (store.sessions_dir / session.session_id / "session.json").exists()
+    assert list(store.trash_sessions_dir.glob(".*.staging")) == []
+
+
+def test_initialize_finishes_interrupted_trash_publish(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Interrupted trash")
+    store.create_session(session)
+    staging_dir = store.trash_sessions_dir / ".trash_recovery.staging"
+    staging_dir.mkdir()
+    (store.sessions_dir / session.session_id).replace(staging_dir / "session")
+    (staging_dir / "trash.json").write_text(
+        '{"trash_id":"trash_recovery","session_id":"'
+        f'{session.session_id}","trashed_at":"2026-07-11T00:00:00Z"}}\n',
+        encoding="utf-8",
+    )
+
+    LocalSessionStore(tmp_path).initialize()
+
+    target = store.trash_sessions_dir / "trash_recovery"
+    assert (target / "session.json").exists()
+    assert (target / "trash.json").exists()
+    assert not staging_dir.exists()
+
+
+def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    layout_path = tmp_path / "layout.json"
+    layout_path.write_text(
+        '{"data_layout_version":999,"created_at":"2026-01-01T00:00:00Z",'
+        '"updated_at":"2026-01-01T00:00:00Z"}\n',
+        encoding="utf-8",
+    )
+    before = layout_path.read_bytes()
+
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 2"):
+        LocalSessionStore(tmp_path).initialize()
+
+    assert layout_path.read_bytes() == before

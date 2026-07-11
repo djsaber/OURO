@@ -37,12 +37,17 @@ from ouro.cli.run import (
     run_print,
 )
 from ouro.cli.session_commands import (
+    archive_session,
+    branch_session,
     compact_session,
     export_session,
     list_session_events,
     list_session_messages,
     list_sessions,
+    pin_session,
     remove_session,
+    rename_session,
+    replay_session,
     show_session,
 )
 from ouro.cli.skills import (
@@ -104,9 +109,50 @@ def _session_command(args: argparse.Namespace) -> int:
     home = args.home
     command = args.session_command
     if command == "list":
-        return list_sessions(home=home, json_mode=args.json)
+        return list_sessions(
+            home=home,
+            json_mode=args.json,
+            search=args.search,
+            statuses=args.statuses,
+            archived=args.archived,
+            pinned=args.pinned,
+            workspace=args.workspace,
+            model=args.model,
+            tags=args.tags,
+            sort=args.sort,
+        )
     if command == "show":
         return show_session(args.session_id, home=home, json_mode=args.json)
+    if command == "rename":
+        return rename_session(args.session_id, args.title, home=home, json_mode=args.json)
+    if command in {"archive", "unarchive"}:
+        return archive_session(
+            args.session_id,
+            archived=command == "archive",
+            home=home,
+            json_mode=args.json,
+        )
+    if command in {"pin", "unpin"}:
+        return pin_session(
+            args.session_id,
+            pinned=command == "pin",
+            home=home,
+            json_mode=args.json,
+        )
+    if command == "branch":
+        return branch_session(
+            args.session_id,
+            args.message_id,
+            home=home,
+            json_mode=args.json,
+        )
+    if command == "replay":
+        return replay_session(
+            args.session_id,
+            home=home,
+            run_id=args.run_id,
+            json_mode=args.json,
+        )
     if command == "remove":
         return remove_session(args.session_id, home=home, force=args.force, json_mode=args.json)
     if command == "export":

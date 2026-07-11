@@ -1,0 +1,116 @@
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from ouro.application.session_models import (
+    SessionBranchResult,
+    SessionCatalogQuery,
+    SessionCatalogResult,
+    SessionDetail,
+    SessionMutationResult,
+    SessionReplay,
+    SessionTrashResult,
+)
+from ouro.application.sessions import SessionService, SessionTitleGenerator
+from ouro.core.compaction import CompactionCommandResult
+from ouro.core.errors import OuroError
+from ouro.core.results import RunResult
+from ouro.sessions import SessionStore
+
+if TYPE_CHECKING:
+    from ouro.application.runtime import RuntimeService
+
+
+class ApplicationFacade:
+    """In-process command/query surface shared by every OURO host."""
+
+    def __init__(
+        self,
+        *,
+        sessions: SessionService,
+        runtime: RuntimeService | None = None,
+    ) -> None:
+        self._runtime = runtime
+        self._sessions = sessions
+
+    @classmethod
+    def from_runtime(cls, runtime: RuntimeService) -> ApplicationFacade:
+        return cls(sessions=SessionService(runtime.store), runtime=runtime)
+
+    @classmethod
+    def for_sessions(cls, store: SessionStore) -> ApplicationFacade:
+        return cls(sessions=SessionService(store))
+
+    def create_session(
+        self,
+        *,
+        title: str = "New session",
+        workspace: str | None = None,
+        current_model: str | None = None,
+    ) -> SessionMutationResult:
+        return self._sessions.create(
+            title=title,
+            workspace=workspace,
+            current_model=current_model,
+        )
+
+    def open_session(self, session_id: str, *, recover: bool = True) -> SessionDetail:
+        return self._sessions.open(session_id, recover=recover)
+
+    def session_catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:
+        return self._sessions.catalog(query)
+
+    def rename_session(self, session_id: str, title: str) -> SessionMutationResult:
+        return self._sessions.rename(session_id, title)
+
+    def archive_session(self, session_id: str, *, archived: bool = True) -> SessionMutationResult:
+        return self._sessions.set_archived(session_id, archived)
+
+    def pin_session(self, session_id: str, *, pinned: bool = True) -> SessionMutationResult:
+        return self._sessions.set_pinned(session_id, pinned)
+
+    async def generate_session_title(
+        self,
+        session_id: str,
+        generator: SessionTitleGenerator,
+    ) -> SessionMutationResult:
+        return await self._sessions.generate_title(session_id, generator)
+
+    def branch_session(self, session_id: str, message_id: str) -> SessionBranchResult:
+        return self._sessions.branch(session_id, message_id)
+
+    def replay_session(self, session_id: str, *, run_id: str | None = None) -> SessionReplay:
+        return self._sessions.replay(session_id, run_id=run_id)
+
+    def delete_session(self, session_id: str) -> SessionTrashResult:
+        return self._sessions.trash(session_id)
+
+    async def start_run(
+        self,
+        prompt: str,
+        *,
+        session_id: str | None = None,
+        title: str | None = None,
+    ) -> RunResult:
+        return await self._require_runtime().run(prompt, session_id=session_id, title=title)
+
+    async def abort_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str | None = None,
+        reason: str = "User aborted",
+    ) -> RunResult:
+        return await self._require_runtime().abort_run(
+            session_id=session_id,
+            run_id=run_id,
+            reason=reason,
+        )
+
+    async def compact_session(self, session_id: str) -> CompactionCommandResult:
+        return await self._require_runtime().compact(session_id=session_id)
+
+    def _require_runtime(self) -> RuntimeService:
+        if self._runtime is None:
+            raise OuroError("this application facade has no runtime commands configured")
+        return self._runtime

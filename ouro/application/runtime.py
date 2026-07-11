@@ -22,6 +22,7 @@ from ouro.application.runs import (
     find_run,
     maybe_active_run,
 )
+from ouro.application.sessions import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -38,7 +39,7 @@ from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.sessions import SessionLock, SessionService, SessionSnapshot, SessionStore
+from ouro.sessions import SessionLock, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
 
 
@@ -147,10 +148,14 @@ class RuntimeService:
             model = self.models.resolve(selector)
             self.models.adapter_for(model.key)
             session = snapshot.session.model_copy(
-                update={"current_model": model.key, "updated_at": utc_now()}
+                update={
+                    "current_model": model.key,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
             )
             self.store.save_session(session)
-            self.store.rebuild_index()
+            self.store.try_update_index(session.session_id)
             return session
         finally:
             self._release_session_run_lock(lock)
@@ -164,10 +169,14 @@ class RuntimeService:
         if session.current_model == selection.key:
             return session, adapter
         session = session.model_copy(
-            update={"current_model": selection.key, "updated_at": utc_now()}
+            update={
+                "current_model": selection.key,
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+            }
         )
         self.store.save_session(session)
-        self.store.rebuild_index()
+        self.store.try_update_index(session.session_id)
         return session, adapter
 
     def _adapter_for_session_id(self, session_id: str) -> RuntimeAdapter:
@@ -185,10 +194,14 @@ class RuntimeService:
         _queued_follow_up_id: str | None = None,
     ) -> RunResult:
         if session_id is None:
-            session = self.sessions.create(
+            created = self.sessions.create(
                 title=title or _title_from_prompt(prompt),
                 current_model=self.models.default_model().key,
             )
+            session = self.store.load_session(
+                created.session.session_id,
+                recover=False,
+            ).session
             existing_messages: list[MessageRecord] = []
             existing_events: list[EventRecord] = []
         else:
@@ -214,6 +227,7 @@ class RuntimeService:
         run = RunRecord(
             session_id=session.session_id,
             status="running",
+            origin="follow_up" if _queued_follow_up_id else "user",
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
@@ -240,12 +254,14 @@ class RuntimeService:
                 update={
                     "status": "running",
                     "last_run_id": run.run_id,
+                    "active_run_id": run.run_id,
                     "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
                 }
             )
             self.store.save_session(session)
             self.store.save_run(run)
-            self.store.rebuild_index()
+            self.store.try_update_index(session.session_id)
 
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -362,11 +378,17 @@ class RuntimeService:
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             terminal_run = run
             active_session = active_session.model_copy(
-                update={"status": "running", "last_run_id": run.run_id, "updated_at": utc_now()}
+                update={
+                    "status": "running",
+                    "last_run_id": run.run_id,
+                    "active_run_id": run.run_id,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
             )
             self.store.save_session(active_session)
             self.store.save_run(run)
-            self.store.rebuild_index()
+            self.store.try_update_index(active_session.session_id)
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -401,10 +423,15 @@ class RuntimeService:
                 )
                 terminal_run = failed.run
                 idle_session = failed.session.model_copy(
-                    update={"status": "idle", "updated_at": utc_now()}
+                    update={
+                        "status": "idle",
+                        "active_run_id": None,
+                        "updated_at": utc_now(),
+                        "last_activity_at": utc_now(),
+                    }
                 )
                 self.store.save_session(idle_session)
-                self.store.rebuild_index()
+                self.store.try_update_index(idle_session.session_id)
                 if isinstance(exc, CompactionError):
                     raise
                 raise CompactionError(f"manual compaction failed: {exc}") from exc
@@ -459,13 +486,15 @@ class RuntimeService:
         session = snapshot.session.model_copy(
             update={
                 "status": "idle",
+                "active_run_id": None,
                 "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
             }
         )
         self.store.save_run(run)
         self.store.save_session(session)
-        self.store.rebuild_index()
+        self.store.try_update_index(session.session_id)
         sequence = await self.event_recorder.emit(
             emitted,
             sequence,
@@ -711,10 +740,17 @@ class RuntimeService:
                     "metadata": clear_pending_metadata(run.metadata),
                 }
             )
-            session = session.model_copy(update={"status": "running", "updated_at": utc_now()})
+            session = session.model_copy(
+                update={
+                    "status": "running",
+                    "active_run_id": run.run_id,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
+            )
             self.store.save_run(run)
             self.store.save_session(session)
-            self.store.rebuild_index()
+            self.store.try_update_index(session.session_id)
             active_signal = active_signal or self._activate_abort_signal(
                 session.session_id,
                 run.run_id,

@@ -1,9 +1,9 @@
 # OURO Agent Phase 2 Implementation Plan
 
-> 本文档只定义后续执行顺序。创建本文档的变更不得包含任何第二阶段实现代码。
+> 本文档定义第二阶段执行顺序与当前完成度；每个 checkbox 只在对应边界和测试真实落地后更新。
 
 - Date: 2026-07-11
-- Status: Planned / not started
+- Status: In progress — Session Core foundation implemented
 - Goal: Complete the local personal workflow without forking the Phase 1 runtime
 - Master spec: `../specs/2026-07-11-phase-2-personal-workflow.md`
 - Session/resource/Desktop spec: `../specs/2026-07-11-phase-2-sessions-resources-desktop.md`
@@ -62,9 +62,9 @@ approval/resource/settings 前必须等相应 service 完成。
 ### Contracts first
 
 - [ ] 定义 `data_layout_version`、migration journal 和 backup manifest。
-- [ ] 定义显式 Session lineage/title fields、Run origin/parent fields 和兼容默认值。
-- [ ] 定义 application command/query DTO、Diagnostic DTO 和 typed errors。
-- [ ] 定义 facade ports，不暴露 store、registry、Task、handler、client 或 secret。
+- [x] 定义显式 Session lineage/title fields、Run origin/parent fields 和兼容默认值。
+- [x] 定义 session application command/query DTO、Diagnostic DTO 和 typed errors。
+- [x] 建立 session facade ports，不暴露 store、registry、Task、handler、client 或 secret。
 - [ ] 为 Phase 1 fixture 写只读 compatibility tests。
 - [ ] 为中断、重复执行、版本过高、备份失败和索引重建失败写 migration tests。
 
@@ -72,9 +72,10 @@ approval/resource/settings 前必须等相应 service 完成。
 
 - [ ] 实现 migration preflight，只报告计划不写文件。
 - [ ] 实现 staging/backup/journal 和幂等逐 session migration。
-- [ ] 增加 layout version guard；旧进程打开新 layout 时失败可读。
-- [ ] 实现 facade 最小 vertical slice：list/open/create session，start/abort run，pending interaction query。
-- [ ] 把现有 session CLI 的只读路径迁到 facade；输出保持兼容。
+- [x] 增加 layout version guard；旧进程打开新 layout 时失败可读。
+- [ ] 实现 facade 最小 vertical slice：list/open/create session，start/abort run 已完成；pending interaction
+  独立 query 等待 Supervisor slice。
+- [x] 把现有 session CLI 的只读路径迁到 facade；JSON 输出升级为 typed catalog contract。
 
 **Exit gate:** 所有 Phase 1 fixture 可打开；迁移任意步骤注入失败后原数据可恢复；CLI smoke tests 通过。
 
@@ -107,22 +108,23 @@ approval/resource/settings 前必须等相应 service 完成。
 
 ### Catalog/title/search
 
-- [ ] 定义 SessionIndexEntry schema、health 和 index generation。
+- [x] 定义 SessionIndexEntry schema、health 和 index generation。
 - [ ] 写 5,000-session catalog、损坏/缺失 index 和并发更新测试。
-- [ ] 实现 index transaction/rebuild 和 scan fallback。
-- [ ] 实现 title fallback/generated/user/locked 状态机。
-- [ ] 标题生成器做可替换 application port；失败/超时不影响 run。
-- [ ] 定义并实现全文派生索引、filter/sort 和 rebuild command。
-- [ ] 明确 reasoning/event 默认不索引，并写隐私范围测试。
+- [x] 实现增量 index transaction、dirty rebuild 和 scan fallback。
+- [x] 实现 title fallback/generated/user/locked 状态机。
+- [x] 标题生成器做可替换 application port；失败不影响 run；自动调度等待 Supervisor。
+- [ ] 定义并实现全文派生索引、filter/sort 已完成；独立 rebuild command 和 5,000-session gate 未完成。
+- [x] 明确 reasoning/event 默认不索引，并写隐私范围测试。
 
 ### Branch/replay
 
-- [ ] 定义合法 branch point 和 tool exchange 原子组 fixture。
-- [ ] 测试 active source、waiting run、损坏 resource、staging failure 和重复请求。
-- [ ] 实现 snapshot branch、message id remap、lineage 和 staging publish。
-- [ ] 实现 replay projector、unknown event renderer DTO、speed/cursor。
+- [x] 定义合法 branch point 和 tool exchange 原子组 fixture。
+- [x] 测试 active/waiting source、`resource_refs` 拒绝、staging failure 和重复请求；损坏
+  ResourceRecord fixture 等待 WP4 的资源 schema。
+- [x] 实现无资源引用的 snapshot branch、message id remap、lineage 和 staging publish；资源复制事务等待 WP4。
+- [x] 实现基础只读 replay projector；unknown renderer DTO、speed/cursor 等待 Host slice。
 - [ ] 实现 replay-to-branch；验证不调用 provider/tool/hook。
-- [ ] CLI 增加 search/filter/rename/archive/branch/replay，并通过 facade。
+- [x] CLI 增加 search/filter/rename/archive/branch/replay，并通过 facade。
 
 **Exit gate:** 原 session 在 branch/replay 后不变；索引全删后可重建；title/search failure 不破坏 session。
 

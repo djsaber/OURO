@@ -17,8 +17,20 @@ class PersistenceError(OuroError):
     """Local persistence failed."""
 
 
+class MigrationRequiredError(PersistenceError):
+    """Persisted data cannot be opened without an explicit layout migration."""
+
+
 class SessionBusyError(OuroError):
     """A session cannot accept the requested operation while another run owns it."""
+
+
+class SessionNotFoundError(OuroError):
+    """A requested canonical session does not exist."""
+
+
+class SessionBranchError(OuroError):
+    """A session cannot be branched at the requested canonical message boundary."""
 
 
 class HookError(OuroError):

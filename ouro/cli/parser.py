@@ -58,11 +58,76 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     list_parser = session_subparsers.add_parser("list", help="List sessions")
     list_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     list_parser.add_argument("--json", action="store_true", help="Print JSON")
+    list_parser.add_argument("--search", help="Search title, preview, workspace, model, and tags")
+    list_parser.add_argument(
+        "--status",
+        dest="statuses",
+        action="append",
+        choices=(
+            "idle",
+            "active",
+            "waiting_approval",
+            "waiting_user",
+            "failed",
+            "recoverable",
+            "completed",
+        ),
+        help="Filter by catalog status; repeat to select multiple statuses",
+    )
+    list_parser.add_argument(
+        "--archived",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Filter by archive state",
+    )
+    list_parser.add_argument(
+        "--pinned",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Filter by pinned state",
+    )
+    list_parser.add_argument("--workspace", help="Filter by exact workspace")
+    list_parser.add_argument("--model", help="Filter by exact model route")
+    list_parser.add_argument("--tag", dest="tags", action="append", help="Require a tag")
+    list_parser.add_argument(
+        "--sort",
+        choices=("updated_desc", "created_desc", "title"),
+        default="updated_desc",
+    )
 
     show_parser = session_subparsers.add_parser("show", help="Show session details")
     show_parser.add_argument("session_id", help="Session id")
     show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     show_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    rename_parser = session_subparsers.add_parser("rename", help="Rename a session")
+    rename_parser.add_argument("session_id", help="Session id")
+    rename_parser.add_argument("title", help="New title")
+    rename_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    rename_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    for command, help_text in (
+        ("archive", "Archive a session"),
+        ("unarchive", "Restore an archived session to the catalog"),
+        ("pin", "Pin a session"),
+        ("unpin", "Unpin a session"),
+    ):
+        state_parser = session_subparsers.add_parser(command, help=help_text)
+        state_parser.add_argument("session_id", help="Session id")
+        state_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+        state_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    branch_parser = session_subparsers.add_parser("branch", help="Branch at a message boundary")
+    branch_parser.add_argument("session_id", help="Source session id")
+    branch_parser.add_argument("message_id", help="Canonical source message id")
+    branch_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    branch_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    replay_parser = session_subparsers.add_parser("replay", help="Project persisted events")
+    replay_parser.add_argument("session_id", help="Session id")
+    replay_parser.add_argument("--run", dest="run_id", help="Filter by run id")
+    replay_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    replay_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = session_subparsers.add_parser("remove", help="Remove a session")
     remove_parser.add_argument("session_id", help="Session id")
