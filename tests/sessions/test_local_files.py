@@ -101,6 +101,148 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
     assert len(recovery_events) == 1
 
 
+def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Tool recovery", status="running")
+    run = RunRecord(session_id=session.session_id, status="running", model="faux")
+    store.create_session(session)
+    store.save_run(run)
+    user = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="user",
+        text="use tool",
+        sequence=1,
+    )
+    store.append_message(user)
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_request_started",
+            sequence=1,
+        )
+    )
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            sequence=2,
+            payload={"text": "already durable"},
+        )
+    )
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="assistant",
+        text="already durable",
+        sequence=2,
+    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_1"}]}})
+    result = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="tool_result",
+        text="result",
+        sequence=3,
+    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+    store.append_message(assistant)
+    store.append_message(result)
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="tool_call_completed",
+            sequence=3,
+        )
+    )
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_request_started",
+            sequence=4,
+        )
+    )
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            sequence=5,
+            payload={"text": "new partial"},
+        )
+    )
+
+    recovered = store.load_session(session.session_id)
+
+    assert [message.text_content for message in recovered.messages] == [
+        "use tool",
+        "already durable",
+        "result",
+        "new partial",
+    ]
+    assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
+
+
+def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Committed tool round", status="running")
+    run = RunRecord(session_id=session.session_id, status="running", model="faux")
+    store.create_session(session)
+    store.save_run(run)
+    user = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="user",
+        text="use tool",
+        sequence=1,
+    )
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        role="assistant",
+        text="calling",
+        sequence=2,
+    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_1"}]}})
+    store.append_message(user)
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_request_started",
+            sequence=1,
+        )
+    )
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="model_text_delta",
+            sequence=2,
+            payload={"text": "calling"},
+        )
+    )
+    store.append_message(assistant)
+    store.append_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="tool_call_requested",
+            sequence=3,
+        )
+    )
+
+    recovered = store.load_session(session.session_id)
+
+    assert [message.message_id for message in recovered.messages] == [
+        user.message_id,
+        assistant.message_id,
+    ]
+
+
 def test_local_file_store_lock_prevents_active_run_recovery(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

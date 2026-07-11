@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
-from ouro.core.base import new_id, utc_now
+from ouro.core.base import utc_now
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import Usage
@@ -101,105 +101,30 @@ class RunLifecycle:
         return message
 
     def record_usage(self, run: RunRecord, usage: Usage) -> RunRecord:
-        latest = find_run(
-            self.store.load_session(run.session_id, recover=False).runs,
-            run.run_id,
-        )
+        latest = self.store.load_run(run.session_id, run.run_id)
         if latest.status == "aborted" or latest.abort_requested:
             return latest
         updated = latest.model_copy(update={"usage": merge_usage(latest.usage, usage)})
         self.store.save_run(updated)
         return updated
 
-    def checkpoint(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        partial_assistant_text: str,
-        partial_assistant_reasoning: str = "",
-        event_sequence: int,
-    ) -> tuple[SessionRecord, RunRecord]:
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        latest_run = find_run(snapshot.runs, run.run_id)
-        if latest_run.status == "aborted" or latest_run.abort_requested:
-            return snapshot.session, latest_run
-
-        message_count = max(len(messages), len(snapshot.messages), session.message_count)
-        last_message_id: str | None
-        if len(snapshot.messages) >= len(messages) and snapshot.messages:
-            last_message_id = snapshot.messages[-1].message_id
-        elif messages:
-            last_message_id = messages[-1].message_id
-        else:
-            last_message_id = session.last_message_id
-
-        metadata = dict(latest_run.metadata)
-        metadata.update(run.metadata)
-        raw_checkpoint = metadata.get("checkpoint")
-        checkpoint = dict(raw_checkpoint) if isinstance(raw_checkpoint, dict) else {}
-        checkpoint.update(
-            {
-                "run_id": run.run_id,
-                "message_count": message_count,
-                "last_message_id": last_message_id,
-                "event_sequence": event_sequence,
-                "updated_at": utc_now(),
-            }
-        )
-        if partial_assistant_text:
-            checkpoint["partial_assistant_text"] = partial_assistant_text
-            checkpoint["partial_assistant_message_id"] = checkpoint.get(
-                "partial_assistant_message_id",
-                new_id("msg"),
-            )
-            checkpoint["partial_assistant_sequence"] = message_count + 1
-        else:
-            checkpoint.pop("partial_assistant_text", None)
-            checkpoint.pop("partial_assistant_message_id", None)
-            checkpoint.pop("partial_assistant_sequence", None)
-        if partial_assistant_reasoning:
-            checkpoint["partial_assistant_reasoning"] = partial_assistant_reasoning
-        else:
-            checkpoint.pop("partial_assistant_reasoning", None)
-        metadata["checkpoint"] = checkpoint
-
-        updated_run = run.model_copy(update={"metadata": metadata})
-        updated_session = snapshot.session.model_copy(
+    def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> SessionRecord:
+        latest_session = self.store.load_session_record(session.session_id)
+        updated_session = latest_session.model_copy(
             update={
                 "status": session.status,
                 "updated_at": utc_now(),
                 "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
                 "active_run_id": run.run_id,
-                "last_message_id": last_message_id,
-                "message_count": message_count,
-            }
-        )
-        self.store.save_run(updated_run)
-        self.store.save_session(updated_session)
-        return updated_session, updated_run
-
-    def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> None:
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        last_message_id = (
-            snapshot.messages[-1].message_id if snapshot.messages else session.last_message_id
-        )
-        updated_session = snapshot.session.model_copy(
-            update={
-                "status": session.status,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "last_run_id": run.run_id,
-                "active_run_id": run.run_id,
-                "last_message_id": last_message_id,
-                "message_count": len(snapshot.messages),
+                "last_message_id": latest_session.last_message_id,
+                "message_count": latest_session.message_count,
             }
         )
         self.store.save_run(run)
         self.store.save_session(updated_session)
         self.store.try_update_index(updated_session.session_id)
+        return updated_session
 
     async def complete(
         self,
@@ -233,7 +158,7 @@ class RunLifecycle:
             self._append_message(session=session, run=run, message=assistant_message)
             messages.append(assistant_message)
 
-        latest_session = self.store.load_session(session.session_id, recover=False).session
+        latest_session = self.store.load_session_record(session.session_id)
         last_message_id = messages[-1].message_id if messages else session.last_message_id
         completed_run = run.model_copy(
             update={
@@ -285,8 +210,8 @@ class RunLifecycle:
         reasoning_content: str = "",
         tool_results: list[ToolResult],
     ) -> RunResult:
+        latest_session = self.store.load_session_record(session.session_id)
         if final_text or reasoning_content:
-            snapshot = self.store.load_session(session.session_id, recover=False)
             metadata: dict[str, Any] = {
                 "incomplete": True,
                 "failure_reason": error,
@@ -298,29 +223,27 @@ class RunLifecycle:
                 run_id=run.run_id,
                 role="assistant",
                 text=final_text,
-                sequence=len(snapshot.messages) + 1,
+                sequence=latest_session.message_count + 1,
             ).model_copy(update={"metadata": metadata})
             self._append_message(session=session, run=run, message=assistant_message)
 
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        last_message_id = (
-            snapshot.messages[-1].message_id if snapshot.messages else session.last_message_id
-        )
+            latest_session = self.store.load_session_record(session.session_id)
         failed_run = run.model_copy(
             update={
                 "status": "failed",
                 "ended_at": utc_now(),
                 "error": error,
+                "metadata": clear_pending_metadata(run.metadata),
             }
         )
-        failed_session = snapshot.session.model_copy(
+        failed_session = latest_session.model_copy(
             update={
                 "status": "failed",
                 "updated_at": utc_now(),
                 "last_activity_at": utc_now(),
                 "active_run_id": None,
-                "last_message_id": last_message_id,
-                "message_count": len(snapshot.messages),
+                "last_message_id": latest_session.last_message_id,
+                "message_count": latest_session.message_count,
                 "last_run_id": failed_run.run_id,
             }
         )
@@ -351,27 +274,31 @@ class RunLifecycle:
         message: MessageRecord,
     ) -> None:
         self.store.append_message(message)
-        self._checkpoint_appended_message(session=session, run=run, message=message)
+        self._persist_appended_message(session=session, run=run, message=message)
 
-    def _checkpoint_appended_message(
+    def _persist_appended_message(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
         message: MessageRecord,
     ) -> None:
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        latest_run = find_run(snapshot.runs, run.run_id)
+        latest_session = self.store.load_session_record(session.session_id)
+        latest_run = self.store.load_run(session.session_id, run.run_id)
         if latest_run.status == "aborted" or latest_run.abort_requested:
             return
-        updated_session = snapshot.session.model_copy(
+        updated_session = latest_session.model_copy(
             update={
                 "updated_at": utc_now(),
                 "last_activity_at": utc_now(),
                 "last_run_id": run.run_id,
                 "active_run_id": run.run_id,
                 "last_message_id": message.message_id,
-                "message_count": max(snapshot.session.message_count, len(snapshot.messages)),
+                "message_count": max(
+                    latest_session.message_count,
+                    session.message_count,
+                    message.sequence,
+                ),
             }
         )
         self.store.save_session(updated_session)
@@ -400,7 +327,7 @@ def maybe_active_run(runs: list[RunRecord]) -> RunRecord | None:
 
 def clear_pending_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     cleaned = dict(metadata)
-    for key in ("pending_invocation", "pending_approval", "pending_question"):
+    for key in ("pending_invocation", "pending_approval", "pending_question", "checkpoint"):
         cleaned.pop(key, None)
     return cleaned
 

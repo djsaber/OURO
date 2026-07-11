@@ -114,15 +114,13 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         del usage
         return run
 
-    def checkpoint(**kwargs):
-        return kwargs["session"], kwargs["run"]
-
     def aborted_result(**kwargs):
         del kwargs
         return None
 
     def save_waiting_state(*, session, run):
         saved_waiting_state.append((session, run))
+        return session
 
     async def complete_run(*args, **kwargs):
         del args, kwargs
@@ -153,7 +151,6 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             record_hook_failures=record_hook_failures,
             handle_tool_call=handle_tool_call,
             record_usage=record_usage,
-            checkpoint=checkpoint,
             aborted_result=aborted_result,
             save_waiting_state=save_waiting_state,
             complete_run=complete_run,
@@ -254,15 +251,13 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         del usage
         return run
 
-    def checkpoint(**kwargs):
-        return kwargs["session"], kwargs["run"]
-
     def aborted_result(**kwargs):
         del kwargs
         return None
 
     def save_waiting_state(*, session, run):
-        del session, run
+        del run
+        return session
 
     async def complete_run(*args, **kwargs):
         del args, kwargs
@@ -305,7 +300,6 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             record_hook_failures=record_hook_failures,
             handle_tool_call=handle_tool_call,
             record_usage=record_usage,
-            checkpoint=checkpoint,
             aborted_result=aborted_result,
             save_waiting_state=save_waiting_state,
             complete_run=complete_run,

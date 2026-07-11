@@ -173,24 +173,6 @@ async def _wait_for_event(store: LocalSessionStore, session_id: str, event_type:
     raise AssertionError(f"event was not emitted: {event_type}")
 
 
-async def _wait_for_checkpoint(
-    store: LocalSessionStore,
-    session_id: str,
-    expected_partial: str,
-) -> None:
-    for _ in range(100):
-        snapshot = store.load_session(session_id, recover=False)
-        if snapshot.runs:
-            checkpoint = snapshot.runs[0].metadata.get("checkpoint")
-            if (
-                isinstance(checkpoint, dict)
-                and checkpoint.get("partial_assistant_text") == expected_partial
-            ):
-                return
-        await asyncio.sleep(0.01)
-    raise AssertionError("run checkpoint was not persisted")
-
-
 @pytest.mark.asyncio
 async def test_runtime_injects_default_system_prompt(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
@@ -818,7 +800,7 @@ async def test_runtime_aborts_active_provider_stream(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_recovery_materializes_inner_loop_checkpoint(tmp_path) -> None:
+async def test_runtime_recovery_materializes_partial_output_from_event_journal(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = WaitingProvider()
@@ -833,7 +815,7 @@ async def test_runtime_recovery_materializes_inner_loop_checkpoint(tmp_path) -> 
 
     run_task = asyncio.create_task(runtime.run("Wait for crash"))
     session = await _wait_for_active_session(store)
-    await _wait_for_checkpoint(store, session.session_id, "begin")
+    await _wait_for_event(store, session.session_id, "model_text_delta")
 
     run_task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -845,9 +827,67 @@ async def test_runtime_recovery_materializes_inner_loop_checkpoint(tmp_path) -> 
     assert recovered.session.status == "idle"
     assert [message.role for message in recovered.messages] == ["user", "assistant"]
     assert recovered.messages[-1].text_content == "begin"
-    assert recovered.messages[-1].metadata["recovered_from_checkpoint"] is True
+    assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
     assert recovered.session.message_count == 2
     assert recovered.session.last_message_id == recovered.messages[-1].message_id
+
+
+@pytest.mark.asyncio
+async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    stream_events = [
+        ProviderStreamEvent(type="reasoning_delta", reasoning_content=f"r{index}")
+        for index in range(30)
+    ]
+    stream_events.extend(
+        ProviderStreamEvent(type="text_delta", text=f"t{index}") for index in range(30)
+    )
+    stream_events.append(ProviderStreamEvent(type="done"))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(stream_events),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+    original_save_session = store.save_session
+    original_save_run = store.save_run
+    original_load_session = store.load_session
+    session_writes = 0
+    run_writes = 0
+    aggregate_loads = 0
+
+    def count_session_write(session) -> None:
+        nonlocal session_writes
+        session_writes += 1
+        original_save_session(session)
+
+    def count_run_write(run) -> None:
+        nonlocal run_writes
+        run_writes += 1
+        original_save_run(run)
+
+    def count_aggregate_load(session_id, *, recover=True):
+        nonlocal aggregate_loads
+        aggregate_loads += 1
+        return original_load_session(session_id, recover=recover)
+
+    monkeypatch.setattr(store, "save_session", count_session_write)
+    monkeypatch.setattr(store, "save_run", count_run_write)
+    monkeypatch.setattr(store, "load_session", count_aggregate_load)
+
+    result = await runtime.run("burst")
+
+    assert result.run.status == "completed"
+    assert result.final_text == "".join(f"t{index}" for index in range(30))
+    assert session_writes == 4
+    assert run_writes == 2
+    assert aggregate_loads <= 10
 
 
 @pytest.mark.asyncio

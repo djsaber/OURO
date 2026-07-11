@@ -44,6 +44,10 @@ Trash 也使用隐藏 staging：先准备 manifest，再把完整 session 移入
 Session run lock 位于 `locks/sessions/`，不再放入 session 目录。这使 session 目录可以在持锁期间安全
 原子发布或移动到 trash，同时仍由 OS descriptor 判断锁是否存活。
 
+流式输出不再逐 delta 重写 session/run snapshot。`events.jsonl` 是 partial output 的唯一 durable
+journal，崩溃恢复从最后一个未提交模型轮次的事件重建 incomplete assistant message。详细写入模型见
+`2026-07-12-session-persistence-write-model.md`。
+
 ## 4. Derived catalog
 
 `sessions/index.json` 使用类型化 `SessionIndex` 和 `SessionIndexEntry`，覆盖 lineage、title、活动状态、

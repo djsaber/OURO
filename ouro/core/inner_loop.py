@@ -61,19 +61,6 @@ class ToolDefinitionProvider(Protocol):
     def definitions(self) -> list[ToolDefinition]: ...
 
 
-class RunCheckpointer(Protocol):
-    def __call__(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        partial_assistant_text: str,
-        partial_assistant_reasoning: str,
-        event_sequence: int,
-    ) -> tuple[SessionRecord, RunRecord]: ...
-
-
 class AbortResultFactory(Protocol):
     def __call__(
         self,
@@ -107,7 +94,7 @@ class WaitingStatePersister(Protocol):
         *,
         session: SessionRecord,
         run: RunRecord,
-    ) -> None: ...
+    ) -> SessionRecord: ...
 
 
 class RunFailer(Protocol):
@@ -147,7 +134,6 @@ class InnerLoopPorts:
     record_hook_failures: HookFailureRecorder
     handle_tool_call: ToolCallHandler
     record_usage: UsageRecorder
-    checkpoint: RunCheckpointer
     aborted_result: AbortResultFactory
     save_waiting_state: WaitingStatePersister
     complete_run: RunCompleter
@@ -301,7 +287,6 @@ class InnerAgentLoop:
             event_type="model_request_started",
             payload={"model": self.adapter.model.model_id, "round": model_round},
         )
-        self._checkpoint(state)
 
     async def _consume_provider_stream(
         self,
@@ -364,7 +349,6 @@ class InnerAgentLoop:
                             else {},
                         },
                     )
-                    self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
         except Exception as exc:
             return await self._fail(
                 state,
@@ -390,7 +374,6 @@ class InnerAgentLoop:
             event_type="model_text_delta",
             payload={"text": text, "round": model_round},
         )
-        self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
 
     async def _record_reasoning_delta(
         self,
@@ -408,7 +391,6 @@ class InnerAgentLoop:
             event_type="model_reasoning_delta",
             payload={"reasoning_content": reasoning, "round": model_round},
         )
-        self._checkpoint(state, round_state.parts, round_state.reasoning_parts)
 
     async def _handle_round_tool_call(
         self,
@@ -440,7 +422,6 @@ class InnerAgentLoop:
         if new_messages:
             state.messages.extend(new_messages)
             round_state.completed_tool = True
-            self._checkpoint(state)
         if outcome.status not in {"approval_required", "waiting_user"}:
             return None
 
@@ -451,29 +432,13 @@ class InnerAgentLoop:
                 "updated_at": utc_now(),
             }
         )
-        self._checkpoint(state)
-        self.ports.save_waiting_state(session=state.session, run=state.run)
+        state.session = self.ports.save_waiting_state(session=state.session, run=state.run)
         return await self._save_waiting_state(
             emitted=state.emitted,
             session=state.session,
             run=state.run,
             final_text=state.final_text(),
             tool_results=state.tool_results,
-        )
-
-    def _checkpoint(
-        self,
-        state: _LoopState,
-        round_parts: list[str] | None = None,
-        round_reasoning_parts: list[str] | None = None,
-    ) -> None:
-        state.session, state.run = self.ports.checkpoint(
-            session=state.session,
-            run=state.run,
-            messages=state.messages,
-            partial_assistant_text=state.final_text(round_parts),
-            partial_assistant_reasoning="".join(round_reasoning_parts or []),
-            event_sequence=state.sequence,
         )
 
     def _aborted_result(

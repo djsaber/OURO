@@ -48,7 +48,7 @@ provider adapters   local implementations
 
 - `application/runtime.py`：公开运行门面和事务边界；负责新运行、恢复人工交互、手动
   压缩、abort、session lock 与 follow-up drain。
-- `application/runs.py`：消息、checkpoint、usage 以及 run/session 状态持久化转换。
+- `application/runs.py`：durable message、usage 以及 run/session 生命周期快照转换；流式 delta 不写快照。
 - `application/tool_calls.py`：模型请求的工具调用在 hooks、executor、事件和消息之间的
   协调；不拥有会话锁或恢复循环。
 - `application/models.py`：可选模型 DTO、session 路由 key、目录解析和 request-local
@@ -98,6 +98,13 @@ drain 事务。将每个方法包装成一个小 service 会引入循环回调�
 
 Branch 由 application 计算合法消息边界和 lineage，由存储后端 staging 后原子发布。当前
 ResourceService 尚未完成，因此含 `resource_refs` 的 branch 明确失败；不复制裸路径或制造悬空 id。
+
+### Event journal 是流式恢复的唯一真相
+
+Provider text/reasoning delta 只顺序追加到 `events.jsonl`。`session.json` 与 run JSON 只在消息提交和
+生命周期状态转换时更新，不为每个流片保存第二份 checkpoint。崩溃恢复从最后一个模型轮次的 durable
+events 重建未完成 assistant 输出，并避开已经提交的 tool-call/tool-result 消息。Windows snapshot
+replace 的瞬时 sharing conflict 由本地文件原语有限重试，不在 application 增加 timer 或后台写队列。
 
 ### 不按行数拆配置和压缩模块
 

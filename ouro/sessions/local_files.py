@@ -176,9 +176,7 @@ class LocalSessionStore:
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
         session_dir = self._session_dir(session_id)
         try:
-            session = SessionRecord.model_validate_json(
-                (session_dir / "session.json").read_text("utf-8")
-            )
+            session = self.load_session_record(session_id)
             messages = [
                 MessageRecord.model_validate_json(line)
                 for line in self._read_jsonl(session_dir / "messages.jsonl")
@@ -219,6 +217,27 @@ class LocalSessionStore:
                 f"session {session_id} references missing compaction {session.active_compaction_id}"
             )
         return snapshot
+
+    def load_session_record(self, session_id: str) -> SessionRecord:
+        path = self._session_dir(session_id) / "session.json"
+        try:
+            return SessionRecord.model_validate_json(path.read_text("utf-8"))
+        except FileNotFoundError:
+            raise
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not load session record {session_id}: {exc}") from exc
+
+    def load_run(self, session_id: str, run_id: str) -> RunRecord:
+        validated_run_id = _validated_record_id(run_id, kind="run")
+        path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
+        try:
+            return RunRecord.model_validate_json(path.read_text("utf-8"))
+        except FileNotFoundError:
+            raise
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not load run {run_id} for session {session_id}: {exc}"
+            ) from exc
 
     def list_sessions(self) -> list[SessionRecord]:
         records: list[SessionRecord] = []
@@ -278,10 +297,12 @@ class LocalSessionStore:
         for run in runs:
             if run.status in _INCOMPLETE_RUN_STATUSES:
                 metadata = dict(run.metadata)
+                metadata.pop("checkpoint", None)
                 partial_message = self._append_recovered_partial_message(
                     session=session,
                     run=run,
                     messages=messages,
+                    events=events,
                 )
                 if partial_message is not None:
                     metadata["recovered_partial_assistant_message_id"] = partial_message.message_id
@@ -334,27 +355,57 @@ class LocalSessionStore:
         session: SessionRecord,
         run: RunRecord,
         messages: list[MessageRecord],
+        events: list[EventRecord],
     ) -> MessageRecord | None:
-        checkpoint = run.metadata.get("checkpoint")
-        if not isinstance(checkpoint, dict):
+        run_events = sorted(
+            (event for event in events if event.run_id == run.run_id),
+            key=lambda event: (event.sequence, event.created_at, event.event_id),
+        )
+        start_indexes = [
+            index
+            for index, event in enumerate(run_events)
+            if event.event_type == "model_request_started"
+        ]
+        if not start_indexes:
             return None
-        text = checkpoint.get("partial_assistant_text")
-        if not isinstance(text, str):
-            text = ""
-        reasoning = checkpoint.get("partial_assistant_reasoning")
-        if not isinstance(reasoning, str):
-            reasoning = ""
+        start_index = start_indexes[-1]
+        start_event = run_events[start_index]
+        streamed_events = run_events[start_index + 1 :]
+        if any(
+            event.event_type
+            in {
+                "tool_call_requested",
+                "approval_requested",
+                "ask_user_requested",
+                "tool_call_completed",
+            }
+            for event in streamed_events
+        ):
+            return None
+        durable_run_messages = [message for message in messages if message.run_id == run.run_id]
+        if durable_run_messages and (
+            durable_run_messages[-1].role in {"assistant", "tool_result"}
+            and durable_run_messages[-1].created_at >= start_event.created_at
+        ):
+            return None
+
+        text = "".join(
+            value
+            for event in streamed_events
+            if event.event_type == "model_text_delta"
+            and isinstance((value := event.payload.get("text")), str)
+        )
+        reasoning = "".join(
+            value
+            for event in streamed_events
+            if event.event_type == "model_reasoning_delta"
+            and isinstance((value := event.payload.get("reasoning_content")), str)
+        )
         if not text and not reasoning:
             return None
-        raw_message_id = checkpoint.get("partial_assistant_message_id")
-        message_id = raw_message_id if isinstance(raw_message_id, str) else new_id("msg")
-        if any(message.message_id == message_id for message in messages):
-            return None
-        raw_sequence = checkpoint.get("partial_assistant_sequence")
-        sequence = raw_sequence if isinstance(raw_sequence, int) else len(messages) + 1
         metadata: dict[str, Any] = {
             "incomplete": True,
-            "recovered_from_checkpoint": True,
+            "recovered_from_event_journal": True,
             "run_id": run.run_id,
         }
         if reasoning:
@@ -364,10 +415,9 @@ class LocalSessionStore:
             run_id=run.run_id,
             role="assistant",
             text=text,
-            sequence=max(sequence, len(messages) + 1),
+            sequence=len(messages) + 1,
         ).model_copy(
             update={
-                "message_id": message_id,
                 "metadata": metadata,
             }
         )

@@ -335,7 +335,6 @@ class RuntimeService:
                 record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_call=self.tool_calls.handle,
                 record_usage=self.run_lifecycle.record_usage,
-                checkpoint=self.run_lifecycle.checkpoint,
                 aborted_result=self._aborted_result,
                 save_waiting_state=self.run_lifecycle.save_waiting_state,
                 complete_run=self.run_lifecycle.complete,
@@ -775,16 +774,22 @@ class RuntimeService:
         return resumed
 
     def _is_run_aborted(self, session_id: str, run_id: str) -> bool:
-        return self._abort_snapshot(session_id, run_id) is not None
+        return self._abort_state(session_id, run_id) is not None
 
-    def _abort_snapshot(self, session_id: str, run_id: str):
+    def _abort_state(
+        self,
+        session_id: str,
+        run_id: str,
+    ) -> tuple[SessionRecord, RunRecord] | None:
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
-            run = find_run(snapshot.runs, run_id)
+            run = self.store.load_run(session_id, run_id)
         except Exception:  # noqa: BLE001 - abort polling must not break active runs.
             return None
         if run.status == "aborted" or run.abort_requested:
-            return snapshot
+            try:
+                return self.store.load_session_record(session_id), run
+            except Exception:  # noqa: BLE001 - abort polling must not break active runs.
+                return None
         return None
 
     def _aborted_result(
@@ -796,19 +801,20 @@ class RuntimeService:
         emitted: list[EventRecord],
         tool_results: list[ToolResult],
     ) -> RunResult | None:
-        abort_snapshot = self._abort_snapshot(session_id, run_id)
-        if abort_snapshot is None:
+        abort_state = self._abort_state(session_id, run_id)
+        if abort_state is None:
             return None
+        session, run = abort_state
         return RunResult(
-            session=abort_snapshot.session,
-            run=find_run(abort_snapshot.runs, run_id),
+            session=session,
+            run=run,
             final_text=final_text,
             events=emitted,
             tool_results=tool_results,
         )
 
     def _activate_abort_signal(self, session_id: str, run_id: str) -> AbortSignal:
-        signal = AbortSignal(lambda: self._abort_snapshot(session_id, run_id) is not None)
+        signal = AbortSignal(lambda: self._abort_state(session_id, run_id) is not None)
         self._abort_signals[run_id] = signal
         return signal
 

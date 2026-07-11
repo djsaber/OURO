@@ -59,6 +59,7 @@ Architecture and development references:
 - [`docs/OURO_AGENT_编码准则_EN.md`](docs/OURO_AGENT_编码准则_EN.md) — engineering rules used for implementation and review.
 - [`dev/audits/2026-07-11-module-architecture-review.md`](dev/audits/2026-07-11-module-architecture-review.md) — repository-wide architecture review and refactor record.
 - [`dev/specs/2026-07-11-session-core-foundation.md`](dev/specs/2026-07-11-session-core-foundation.md) — implemented session core contracts, invariants, and deferred boundaries.
+- [`dev/specs/2026-07-12-session-persistence-write-model.md`](dev/specs/2026-07-12-session-persistence-write-model.md) — semantic snapshot writes, event-journal recovery, and Windows replace behavior.
 
 CLI examples:
 

@@ -75,7 +75,7 @@ OURO 可以分为四层：
 
 核心运行层不依赖具体 UI。不同宿主只负责输入、渲染、配置入口和用户交互，不应复制智能体运行逻辑。
 
-运行层采用 application/core 双层 Agent Loop。外层由 application `RuntimeService` 负责会话生命周期、active run 防重入、run lock、用户中止、审批/AskUser 恢复和 queued follow-up input，`RunLifecycle` 集中维护消息、checkpoint、usage 与 run/session 状态的持久化转换，`ToolCallCoordinator` 维护工具调用在 hooks、executor、事件和消息之间的协调；内层由 core `InnerAgentLoop` 负责单个 active run 内的模型请求、流式事件、工具调用、工具结果回灌和多轮 continuation。这样后续加入用户中途插话、子智能体回调或上下文压缩后重启时，可以扩展外层编排而不污染模型交互循环。
+运行层采用 application/core 双层 Agent Loop。外层由 application `RuntimeService` 负责会话生命周期、active run 防重入、run lock、用户中止、审批/AskUser 恢复和 queued follow-up input，`RunLifecycle` 集中维护 durable message、usage 与 run/session 生命周期快照，流式 partial output 只进入 append-only event journal 并由其承担崩溃恢复；`ToolCallCoordinator` 维护工具调用在 hooks、executor、事件和消息之间的协调。内层由 core `InnerAgentLoop` 负责单个 active run 内的模型请求、流式事件、工具调用、工具结果回灌和多轮 continuation，不拥有额外 checkpoint 持久化端口。这样后续加入用户中途插话、子智能体回调或上下文压缩后重启时，可以扩展外层编排而不污染模型交互循环。
 
 queued follow-up input 由 application 层的持久化队列组件维护，而不是散落在运行服务的私有 metadata 拼装里。队列项只有在对应 user message 持久化后才确认消费，并使用 queue_id 去重崩溃窗口中的已写消息。这样用户中途插话、后续 steering/follow-up 模式和未来子智能体回调可以共享同一类队列边界，同时不会因先出队后崩溃而丢失输入。
 
