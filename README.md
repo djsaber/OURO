@@ -9,6 +9,8 @@ Current first-phase runtime includes:
 - `ouro run --json "prompt"` machine-readable final JSON mode.
 - Local readable session storage under `OURO_HOME` or `--home`.
 - Session continuation with `ouro run --session <session_id> ...`.
+- Interactive `/models` discovery and `/model <provider/endpoint>` switching, persisted per
+  session through `current_model` and restored on later runs.
 - FauxProvider for deterministic local development.
 - Core-owned Provider contracts with outer-layer Faux and OpenAI-compatible implementations.
 - Local provider and prompt configuration from `config/config.json`, with CLI overrides.
@@ -47,6 +49,7 @@ CLI examples:
 
 ```bash
 python -m ouro.cli.main --home ./.ouro-dev
+# In interactive mode: /models, /model, /model <provider/endpoint>
 python -m ouro.cli.main run --print --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev "hello"
 python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "continue"

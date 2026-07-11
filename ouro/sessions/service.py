@@ -8,8 +8,18 @@ class SessionService:
     def __init__(self, store: SessionStore) -> None:
         self.store = store
 
-    def create(self, *, title: str = "New session", workspace: str | None = None) -> SessionRecord:
-        session = SessionRecord(title=title, workspace=workspace)
+    def create(
+        self,
+        *,
+        title: str = "New session",
+        workspace: str | None = None,
+        current_model: str | None = None,
+    ) -> SessionRecord:
+        session = SessionRecord(
+            title=title,
+            workspace=workspace,
+            current_model=current_model,
+        )
         self.store.create_session(session)
         return session
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from functools import partial
 from typing import Any
 
 from ouro.application.compaction import (
@@ -18,8 +19,12 @@ from ouro.application.runs import (
     maybe_active_run,
 )
 from ouro.config.compaction import CompactionConfig
-from ouro.core.adapter import RuntimeAdapter
-from ouro.core.base import utc_now
+from ouro.core.adapter import (
+    RuntimeAdapter,
+    RuntimeAdapterCatalog,
+    SingleRuntimeAdapterCatalog,
+)
+from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
@@ -28,6 +33,7 @@ from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import AvailableModel
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import PermissionMode
@@ -42,6 +48,7 @@ class RuntimeService:
         *,
         store: SessionStore,
         adapter: RuntimeAdapter,
+        model_catalog: RuntimeAdapterCatalog | None = None,
         tools: ToolRegistry,
         hooks: HookRegistry | None = None,
         context_builder: ContextBuilder | None = None,
@@ -58,6 +65,7 @@ class RuntimeService:
         self.sessions = SessionService(store)
         self.follow_ups = FollowUpQueue(store)
         self.adapter = adapter
+        self.models = model_catalog or SingleRuntimeAdapterCatalog(adapter)
         self.tools = tools
         self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
         self.hooks = hooks or HookRegistry()
@@ -90,6 +98,7 @@ class RuntimeService:
                     configured_adapter=compaction_adapter,
                     configured_adapter_error=configured_adapter_error,
                     model_config=self.compaction_config.model,
+                    runtime_adapter_resolver=self._adapter_for_session_id,
                 )
             )
         self.context_preparation = ContextPreparationService(
@@ -107,6 +116,58 @@ class RuntimeService:
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
 
+    def available_models(self) -> list[AvailableModel]:
+        """Return enabled model endpoints from the current system configuration."""
+
+        return self.models.list_models()
+
+    def current_model(self, session_id: str | None = None) -> AvailableModel:
+        if session_id is None:
+            return self.models.default_model()
+        session = self.store.load_session(session_id, recover=False).session
+        return self.models.resolve(session.current_model or self.models.default_model().key)
+
+    def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
+        """Persist an idle session's model route without changing other sessions."""
+
+        lock = self._acquire_session_run_lock(session_id, new_id("model"))
+        if lock is None:
+            raise SessionBusyError(f"session already has an active run: {session_id}")
+        try:
+            snapshot = self.store.load_session(session_id, recover=False)
+            if maybe_active_run(snapshot.runs) is not None:
+                raise SessionBusyError(f"session already has an active run: {session_id}")
+            model = self.models.resolve(selector)
+            self.models.adapter_for(model.key)
+            session = snapshot.session.model_copy(
+                update={"current_model": model.key, "updated_at": utc_now()}
+            )
+            self.store.save_session(session)
+            self.store.rebuild_index()
+            return session
+        finally:
+            self._release_session_run_lock(lock)
+
+    def _resolve_session_adapter(
+        self,
+        session: SessionRecord,
+    ) -> tuple[SessionRecord, RuntimeAdapter]:
+        selection = self.models.resolve(session.current_model or self.models.default_model().key)
+        adapter = self.models.adapter_for(selection.key)
+        if session.current_model == selection.key:
+            return session, adapter
+        session = session.model_copy(
+            update={"current_model": selection.key, "updated_at": utc_now()}
+        )
+        self.store.save_session(session)
+        self.store.rebuild_index()
+        return session, adapter
+
+    def _adapter_for_session_id(self, session_id: str) -> RuntimeAdapter:
+        session = self.store.load_session(session_id, recover=False).session
+        _, adapter = self._resolve_session_adapter(session)
+        return adapter
+
     async def run(
         self,
         prompt: str,
@@ -117,7 +178,10 @@ class RuntimeService:
         _queued_follow_up_id: str | None = None,
     ) -> RunResult:
         if session_id is None:
-            session = self.sessions.create(title=title or _title_from_prompt(prompt))
+            session = self.sessions.create(
+                title=title or _title_from_prompt(prompt),
+                current_model=self.models.default_model().key,
+            )
             existing_messages: list[MessageRecord] = []
             existing_events: list[EventRecord] = []
         else:
@@ -143,7 +207,6 @@ class RuntimeService:
         run = RunRecord(
             session_id=session.session_id,
             status="running",
-            model=self.adapter.model.model_id,
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
@@ -160,6 +223,12 @@ class RuntimeService:
             raise SessionBusyError(f"session is already locked: {session.session_id}")
         abort_signal: AbortSignal | None = None
         try:
+            locked_snapshot = self.store.load_session(session.session_id, recover=False)
+            session, active_adapter = self._resolve_session_adapter(locked_snapshot.session)
+            existing_messages = locked_snapshot.messages
+            existing_events = locked_snapshot.events
+            sequence = len(existing_events)
+            run = run.model_copy(update={"model": active_adapter.model.model_id})
             session = session.model_copy(
                 update={
                     "status": "running",
@@ -209,6 +278,7 @@ class RuntimeService:
                 sequence=sequence,
                 emitted=emitted,
                 abort_signal=abort_signal,
+                adapter=active_adapter,
             )
         finally:
             if abort_signal is not None:
@@ -230,13 +300,14 @@ class RuntimeService:
         final_parts: list[str] | None = None,
         tool_results: list[ToolResult] | None = None,
         abort_signal: AbortSignal,
+        adapter: RuntimeAdapter,
     ) -> RunResult:
         loop = InnerAgentLoop(
-            adapter=self.adapter,
+            adapter=adapter,
             tools=self.tools,
             max_model_rounds=self.max_model_rounds,
             ports=InnerLoopPorts(
-                prepare_context=self.context_preparation.prepare,
+                prepare_context=partial(self.context_preparation.prepare, adapter=adapter),
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_call=self._handle_tool_call,
@@ -270,7 +341,6 @@ class RuntimeService:
             kind="compaction",
             trigger="manual_compaction",
             status="running",
-            model=self.adapter.model.model_id,
         )
         run_lock = self._acquire_session_run_lock(session_id, run.run_id)
         if run_lock is None:
@@ -280,7 +350,11 @@ class RuntimeService:
         abort_signal = self._activate_abort_signal(session_id, run.run_id)
         terminal_run = run
         try:
-            active_session = snapshot.session.model_copy(
+            snapshot = self.store.load_session(session_id, recover=False)
+            active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
+            run = run.model_copy(update={"model": active_adapter.model.model_id})
+            terminal_run = run
+            active_session = active_session.model_copy(
                 update={"status": "running", "last_run_id": run.run_id, "updated_at": utc_now()}
             )
             self.store.save_session(active_session)
@@ -306,6 +380,7 @@ class RuntimeService:
                     trigger="manual",
                     force=True,
                     abort_signal=abort_signal,
+                    adapter=active_adapter,
                 )
             except Exception as exc:
                 failed = await self.run_lifecycle.fail(
@@ -637,6 +712,7 @@ class RuntimeService:
                 session.session_id,
                 run.run_id,
             )
+            session, active_adapter = self._resolve_session_adapter(session)
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -645,6 +721,7 @@ class RuntimeService:
                 emitted=emitted,
                 tool_results=[result],
                 abort_signal=active_signal,
+                adapter=active_adapter,
             )
         finally:
             if active_signal is not None:

@@ -156,12 +156,10 @@ async def _handle_command(
         return _CommandResult(session_id=session_id, output=_sessions_text(runtime))
     if command == "/open":
         return _open_session(runtime, argument)
+    if command == "/models":
+        return _available_models(runtime, session_id)
     if command == "/model":
-        model = runtime.adapter.model
-        return _CommandResult(
-            session_id=session_id,
-            output=f"{model.provider_id}/{model.model_id}",
-        )
+        return _model_command(runtime, session_id, argument)
     if command == "/config":
         return _CommandResult(session_id=session_id, output=f"OURO_HOME={runtime.store.root}")
     if command == "/export":
@@ -187,7 +185,9 @@ def _help_text() -> str:
             "/new - Start a new session.",
             "/sessions - List local sessions.",
             "/open <session_id> - Continue a session.",
-            "/model - Show current model.",
+            "/models - List configured model endpoints.",
+            "/model - Show the current session model.",
+            "/model <provider/endpoint> - Switch the current session model.",
             "/config - Show active local config path.",
             "/export - Show active session data path.",
             "/history - Show current session messages.",
@@ -210,6 +210,46 @@ def _sessions_text(runtime: RuntimeService) -> str:
         title = session.title or "New session"
         lines.append(f"{marker} {session.session_id} {session.status} {title}")
     return "\n".join(lines)
+
+
+def _available_models(
+    runtime: RuntimeService,
+    session_id: str | None,
+) -> _CommandResult:
+    models = runtime.available_models()
+    if not models:
+        return _CommandResult(session_id=session_id, output="No configured models available.")
+    current = runtime.current_model(session_id)
+    lines = ["Available models:"]
+    for model in models:
+        marker = "*" if model.key == current.key else "-"
+        display = f" ({model.display_name})" if model.display_name else ""
+        lines.append(f"{marker} {model.key} -> {model.model_id}{display}")
+    return _CommandResult(session_id=session_id, output="\n".join(lines))
+
+
+def _model_command(
+    runtime: RuntimeService,
+    session_id: str | None,
+    selector: str,
+) -> _CommandResult:
+    if not selector:
+        model = runtime.current_model(session_id)
+        return _CommandResult(
+            session_id=session_id,
+            output=model.key,
+        )
+    if session_id is None:
+        return _CommandResult(
+            session_id=None,
+            output="No active session. Start a conversation before switching models.",
+        )
+    runtime.switch_session_model(session_id, selector)
+    model = runtime.current_model(session_id)
+    return _CommandResult(
+        session_id=session_id,
+        output=f"Switched model: {model.key} ({model.model_id})",
+    )
 
 
 def _open_session(runtime: RuntimeService, session_id: str) -> _CommandResult:

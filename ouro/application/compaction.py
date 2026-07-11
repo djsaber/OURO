@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from ouro.application.events import RuntimeEventRecorder
@@ -64,8 +64,10 @@ class LLMSummaryCompactionStrategy:
         configured_adapter: RuntimeAdapter | None = None,
         configured_adapter_error: str | None = None,
         model_config: CompactionModelConfig | None = None,
+        runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
     ) -> None:
         self.runtime_adapter = adapter
+        self.runtime_adapter_resolver = runtime_adapter_resolver
         self.configured_adapter = configured_adapter
         self.configured_adapter_error = configured_adapter_error
         self.model_config = model_config or CompactionModelConfig()
@@ -82,7 +84,7 @@ class LLMSummaryCompactionStrategy:
         if self.configured_adapter_error:
             failures.append(self.configured_adapter_error)
 
-        routes = self._adapter_routes()
+        routes = self._adapter_routes(request.session_id)
         for route in routes:
             try:
                 adapter = _apply_compaction_model_config(route.adapter, self.model_config)
@@ -102,11 +104,9 @@ class LLMSummaryCompactionStrategy:
                 metadata["model_fallback_reason"] = "; ".join(failures)
             return artifact.model_copy(update={"metadata": metadata})
 
-        raise CompactionError(
-            "all compaction model routes failed: " + "; ".join(failures)
-        )
+        raise CompactionError("all compaction model routes failed: " + "; ".join(failures))
 
-    def _adapter_routes(self) -> list[_CompactionAdapterRoute]:
+    def _adapter_routes(self, session_id: str) -> list[_CompactionAdapterRoute]:
         routes: list[_CompactionAdapterRoute] = []
         if self.configured_adapter is not None:
             routes.append(
@@ -116,13 +116,16 @@ class LLMSummaryCompactionStrategy:
                 )
             )
         runtime_route = (
-            "runtime_fallback"
-            if self.model_config.has_dedicated_endpoint
-            else "runtime"
+            "runtime_fallback" if self.model_config.has_dedicated_endpoint else "runtime"
+        )
+        runtime_adapter = (
+            self.runtime_adapter_resolver(session_id)
+            if self.runtime_adapter_resolver is not None
+            else self.runtime_adapter
         )
         routes.append(
             _CompactionAdapterRoute(
-                adapter=self.runtime_adapter,
+                adapter=runtime_adapter,
                 route=runtime_route,
             )
         )
@@ -299,7 +302,9 @@ class ContextPreparationService:
         tools: list[ToolDefinition],
         model_round: int,
         abort_signal: AbortSignal,
+        adapter: RuntimeAdapter | None = None,
     ) -> tuple[ContextView, int]:
+        active_adapter = adapter or self.adapter
         hook_result = await self.hooks.dispatch(
             HookContext(
                 hook_name="after_context_build",
@@ -314,7 +319,7 @@ class ContextPreparationService:
             hook_result.failures,
         )
         added_context = [text for result in hook_result.results for text in result.added_context]
-        budget = self._input_budget()
+        budget = self._input_budget(active_adapter)
         active = self.store.load_session(session.session_id, recover=False).active_compaction
         effective_messages = project_compacted_messages(messages, active)
         view = self._build_view(
@@ -339,6 +344,7 @@ class ContextPreparationService:
                 force=False,
                 abort_signal=abort_signal,
                 estimated_tokens_before=estimated,
+                adapter=active_adapter,
             )
             sequence = execution.sequence
             if execution.record is None and view.context_metadata["over_budget"]:
@@ -382,8 +388,10 @@ class ContextPreparationService:
         force: bool,
         abort_signal: AbortSignal,
         estimated_tokens_before: int | None = None,
+        adapter: RuntimeAdapter | None = None,
     ) -> CompactionExecution:
-        budget = self._input_budget()
+        active_adapter = adapter or self.adapter
+        budget = self._input_budget(active_adapter)
         snapshot = self.store.load_session(session.session_id, recover=False)
         active = snapshot.active_compaction
         projected = project_compacted_messages(messages, active)
@@ -479,9 +487,7 @@ class ContextPreparationService:
                 covered_message_ids=plan.covered_message_ids,
                 source_digest=compaction_source_digest(source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
-                model_endpoint_id=(
-                    str(artifact.metadata.get("model_endpoint_id") or "") or None
-                ),
+                model_endpoint_id=(str(artifact.metadata.get("model_endpoint_id") or "") or None),
                 model_id=str(artifact.metadata.get("model_id") or "") or None,
                 prompt_version=str(artifact.metadata.get("prompt_version") or "") or None,
                 prompt_hash=str(artifact.metadata.get("prompt_hash") or "") or None,
@@ -587,8 +593,8 @@ class ContextPreparationService:
             input_token_budget=budget,
         )
 
-    def _input_budget(self) -> int:
-        return max(1, self.adapter.model.context_window - self.adapter.model.max_output_tokens)
+    def _input_budget(self, adapter: RuntimeAdapter) -> int:
+        return max(1, adapter.model.context_window - adapter.model.max_output_tokens)
 
 
 def _apply_compaction_model_config(
