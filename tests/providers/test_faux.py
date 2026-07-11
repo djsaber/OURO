@@ -1,7 +1,8 @@
 import pytest
 
 from ouro.core.messages import MessageRecord
-from ouro.providers import FauxProvider, ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.providers import FauxProvider
 
 
 @pytest.mark.asyncio

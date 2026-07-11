@@ -8,13 +8,9 @@ from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_print
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.providers import (
-    FauxProvider,
-    ModelMetadata,
-    OpenAICompatibleProvider,
-    ProviderStreamEvent,
-)
+from ouro.providers import FauxProvider, OpenAICompatibleProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 

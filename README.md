@@ -20,6 +20,8 @@ Current first-phase runtime includes:
 - Interrupted local runs can be recovered as `recoverable`; corrupt session indexes are rebuilt.
 - Multi-round runtime loop: tool results are fed back into the model until a final assistant response or suspend state.
 - Dual-layer loop boundary: application `RuntimeService` orchestrates sessions, locks, aborts, and follow-up draining; application `RunLifecycle` owns model-loop persistence transitions; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
+- Application-owned model routing resolves persisted `provider/endpoint` selections; the `providers` package contains only concrete adapters, transports/codecs, and their construction factory.
+- Interactive CLI concerns are separated into the host loop, slash-command handling, and streaming/HITL I/O; session file locking is isolated from session record persistence.
 - Assistant tool-call messages are persisted before tool results, preserving OpenAI-compatible tool history.
 - Provider usage is recorded on runs and included in JSON output.
 - Existing active runs are returned instead of starting a second main run in the same session.
@@ -44,6 +46,12 @@ python -m ruff format --check ouro tests
 python -m mypy ouro
 python -m compileall -q ouro
 ```
+
+Architecture and development references:
+
+- [`docs/OURO_AGENT_开发架构.md`](docs/OURO_AGENT_开发架构.md) — current module boundaries and dependency rules.
+- [`docs/OURO_AGENT_编码准则_EN.md`](docs/OURO_AGENT_编码准则_EN.md) — engineering rules used for implementation and review.
+- [`dev/audits/2026-07-11-module-architecture-review.md`](dev/audits/2026-07-11-module-architecture-review.md) — repository-wide architecture review and refactor record.
 
 CLI examples:
 

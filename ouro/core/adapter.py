@@ -3,18 +3,10 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from contextlib import suppress
-from typing import Protocol
 
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
-from ouro.core.errors import ConfigError
-from ouro.core.provider import (
-    AvailableModel,
-    ModelMetadata,
-    Provider,
-    ProviderStreamEvent,
-    model_route_key,
-)
+from ouro.core.provider import ModelMetadata, Provider, ProviderStreamEvent
 
 
 class RuntimeAdapter:
@@ -42,57 +34,6 @@ class RuntimeAdapter:
         )
         async for event in _interruptible(provider_events, signal=signal):
             yield event
-
-
-class RuntimeAdapterCatalog(Protocol):
-    """Resolve durable model route keys into request-local runtime adapters."""
-
-    def list_models(self) -> list[AvailableModel]: ...
-
-    def default_model(self) -> AvailableModel: ...
-
-    def resolve(self, selector: str) -> AvailableModel: ...
-
-    def adapter_for(self, selector: str) -> RuntimeAdapter: ...
-
-
-class SingleRuntimeAdapterCatalog:
-    """Compatibility catalog for hosts that inject one fixed adapter."""
-
-    def __init__(self, adapter: RuntimeAdapter) -> None:
-        self._adapter = adapter
-        self._model = _available_model(adapter.model)
-
-    def list_models(self) -> list[AvailableModel]:
-        return [self._model]
-
-    def default_model(self) -> AvailableModel:
-        return self._model
-
-    def resolve(self, selector: str) -> AvailableModel:
-        normalized = selector.strip()
-        aliases = {
-            self._model.key,
-            self._model.model_id,
-            self._model.endpoint_id,
-        }
-        if normalized not in aliases:
-            raise ConfigError(f"model not found: {selector}")
-        return self._model
-
-    def adapter_for(self, selector: str) -> RuntimeAdapter:
-        self.resolve(selector)
-        return self._adapter
-
-
-def _available_model(model: ModelMetadata) -> AvailableModel:
-    return AvailableModel(
-        key=model_route_key(model),
-        provider_id=model.provider_id,
-        endpoint_id=model.endpoint_id or model.model_id,
-        model_id=model.model_id,
-        display_name=model.display_name,
-    )
 
 
 async def _interruptible(

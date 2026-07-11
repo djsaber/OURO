@@ -8,7 +8,8 @@ import httpx
 import pytest
 
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
-from ouro.providers import ModelMetadata, OpenAICompatibleProvider
+from ouro.core.provider import ModelMetadata
+from ouro.providers import OpenAICompatibleProvider
 from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
 
 

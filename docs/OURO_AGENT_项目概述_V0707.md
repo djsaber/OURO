@@ -75,13 +75,17 @@ OURO 可以分为四层：
 
 核心运行层不依赖具体 UI。不同宿主只负责输入、渲染、配置入口和用户交互，不应复制智能体运行逻辑。
 
-运行层采用 application/core 双层 Agent Loop。外层由 application `RuntimeService` 负责会话生命周期、active run 防重入、run lock、用户中止、审批/AskUser 恢复和 queued follow-up input，`RunLifecycle` 集中维护消息、checkpoint、usage 与 run/session 状态的持久化转换；内层由 core `InnerAgentLoop` 负责单个 active run 内的模型请求、流式事件、工具调用、工具结果回灌和多轮 continuation。这样后续加入用户中途插话、子智能体回调或上下文压缩后重启时，可以扩展外层编排而不污染模型交互循环。
+运行层采用 application/core 双层 Agent Loop。外层由 application `RuntimeService` 负责会话生命周期、active run 防重入、run lock、用户中止、审批/AskUser 恢复和 queued follow-up input，`RunLifecycle` 集中维护消息、checkpoint、usage 与 run/session 状态的持久化转换，`ToolCallCoordinator` 维护工具调用在 hooks、executor、事件和消息之间的协调；内层由 core `InnerAgentLoop` 负责单个 active run 内的模型请求、流式事件、工具调用、工具结果回灌和多轮 continuation。这样后续加入用户中途插话、子智能体回调或上下文压缩后重启时，可以扩展外层编排而不污染模型交互循环。
 
 queued follow-up input 由 application 层的持久化队列组件维护，而不是散落在运行服务的私有 metadata 拼装里。队列项只有在对应 user message 持久化后才确认消费，并使用 queue_id 去重崩溃窗口中的已写消息。这样用户中途插话、后续 steering/follow-up 模式和未来子智能体回调可以共享同一类队列边界，同时不会因先出队后崩溃而丢失输入。
 
 运行事件由 application 层的事件记录组件维护，统一负责事件持久化、`on_event` hook 分发以及 hook failure 事件化。这样可观测性不会被埋在运行服务私有方法里，后续替换事件后端或增加 tracing/metrics 时也有稳定入口。
 
 Provider 的协议、模型元数据、流事件和 usage 契约属于 core；具体供应商、HTTP/SSE 传输和请求响应编解码属于外层实现。core 只依赖自身契约，不反向依赖 provider 包、配置层或提示词包。
+
+会话可选模型目录、`provider/endpoint` 持久路由和 request-local adapter 选择属于 application 用例，不属于具体供应商适配。`ouro.providers` 只包含厂商实现、transport/codec 和 adapter factory；application 通过组合根注入的 factory 构建 adapter，不反向依赖 provider 实现。
+
+当前代码级模块地图和依赖约束以 `docs/OURO_AGENT_开发架构.md` 为准。
 
 ## 核心概念
 

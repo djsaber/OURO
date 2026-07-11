@@ -36,9 +36,7 @@ class CompactionModelConfig(OuroModel):
                 "compaction model provider_id and endpoint_id must be configured together"
             )
         if self.thinking_enabled is False and self.thinking_level not in {None, "off"}:
-            raise ValueError(
-                "compaction thinking_level must be off when thinking_enabled is false"
-            )
+            raise ValueError("compaction thinking_level must be off when thinking_enabled is false")
         if self.thinking_enabled is True and self.thinking_level == "off":
             raise ValueError(
                 "compaction thinking_level cannot be off when thinking_enabled is true"

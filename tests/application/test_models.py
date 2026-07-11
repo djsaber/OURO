@@ -1,7 +1,8 @@
+from ouro.application.models import ConfiguredModelCatalog
 from ouro.config import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata
-from ouro.providers import ConfiguredModelCatalog, FauxProvider, OpenAICompatibleProvider
+from ouro.providers import FauxProvider, OpenAICompatibleProvider, build_runtime_adapter
 
 
 def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
@@ -13,21 +14,17 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
         base_url="https://models.example/v1",
         api_key="test-key",
     )
-    configs.upsert_endpoint(
-        "openai",
-        "fast",
-        model_id="gpt-fast",
-    )
-    configs.upsert_endpoint(
-        "openai",
-        "smart",
-        model_id="gpt-smart",
-    )
+    configs.upsert_endpoint("openai", "fast", model_id="gpt-fast")
+    configs.upsert_endpoint("openai", "smart", model_id="gpt-smart")
     default_adapter = RuntimeAdapter(
         FauxProvider(),
         ModelMetadata(model_id="faux", provider_id="faux", endpoint_id="faux"),
     )
-    catalog = ConfiguredModelCatalog(configs, default_adapter)
+    catalog = ConfiguredModelCatalog(
+        configs,
+        default_adapter,
+        adapter_builder=build_runtime_adapter,
+    )
 
     assert [model.key for model in catalog.list_models()] == [
         "faux/faux",
@@ -50,7 +47,11 @@ def test_configured_model_catalog_reflects_config_changes_without_restart(tmp_pa
         FauxProvider(),
         ModelMetadata(model_id="faux", provider_id="faux", endpoint_id="faux"),
     )
-    catalog = ConfiguredModelCatalog(configs, default_adapter)
+    catalog = ConfiguredModelCatalog(
+        configs,
+        default_adapter,
+        adapter_builder=build_runtime_adapter,
+    )
 
     assert [model.key for model in catalog.list_models()] == ["faux/faux"]
 
@@ -78,6 +79,10 @@ def test_configured_model_catalog_preserves_runtime_overrides_for_default_route(
             temperature=0.25,
         ),
     )
-    catalog = ConfiguredModelCatalog(configs, runtime_adapter)
+    catalog = ConfiguredModelCatalog(
+        configs,
+        runtime_adapter,
+        adapter_builder=build_runtime_adapter,
+    )
 
     assert catalog.adapter_for("openai/default") is runtime_adapter

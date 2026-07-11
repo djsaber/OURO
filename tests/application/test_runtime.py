@@ -10,15 +10,10 @@ from ouro.core.context import ContextBuilder
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
 from ouro.core.state import SessionRecord
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
-from ouro.providers import (
-    FauxProvider,
-    ModelMetadata,
-    ProviderCheckResult,
-    ProviderStreamEvent,
-    Usage,
-)
+from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (

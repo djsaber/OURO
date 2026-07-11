@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import pytest
 
+from ouro.application.models import AvailableModel
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError, SessionBusyError
-from ouro.core.provider import AvailableModel, ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 

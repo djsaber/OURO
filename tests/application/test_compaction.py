@@ -297,13 +297,9 @@ async def test_compaction_context_overflow_and_resolution_error_fall_back_to_run
 
     assert too_small_provider.models == []
     assert overflow_artifact.metadata["model_route"] == "runtime_fallback"
-    assert "ContextOverflowError" in str(
-        overflow_artifact.metadata["model_fallback_reason"]
-    )
+    assert "ContextOverflowError" in str(overflow_artifact.metadata["model_fallback_reason"])
     assert unresolved_artifact.metadata["model_route"] == "runtime_fallback"
-    assert "endpoint not found" in str(
-        unresolved_artifact.metadata["model_fallback_reason"]
-    )
+    assert "endpoint not found" in str(unresolved_artifact.metadata["model_fallback_reason"])
 
 
 @pytest.mark.asyncio
@@ -413,8 +409,7 @@ async def test_later_auto_compaction_is_incremental(tmp_path) -> None:
     )
     assert snapshot.active_compaction is not None
     assert (
-        snapshot.active_compaction.previous_compaction_id
-        == snapshot.compactions[0].compaction_id
+        snapshot.active_compaction.previous_compaction_id == snapshot.compactions[0].compaction_id
     )
     assert snapshot.active_compaction.summary == "summary-2"
 

@@ -294,12 +294,8 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
                     "model_provider": compaction.model_provider if compaction else None,
                     "model_endpoint_id": compaction.model_endpoint_id if compaction else None,
                     "model_id": compaction.model_id if compaction else None,
-                    "model_route": compaction.metadata.get("model_route")
-                    if compaction
-                    else None,
-                    "model_fallback_reason": compaction.metadata.get(
-                        "model_fallback_reason"
-                    )
+                    "model_route": compaction.metadata.get("model_route") if compaction else None,
+                    "model_fallback_reason": compaction.metadata.get("model_fallback_reason")
                     if compaction
                     else None,
                 },
@@ -313,9 +309,7 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
         return 0
 
     endpoint = "/".join(
-        part
-        for part in (compaction.model_provider, compaction.model_endpoint_id)
-        if part
+        part for part in (compaction.model_provider, compaction.model_endpoint_id) if part
     )
     route = compaction.metadata.get("model_route")
     model_suffix = f" via {endpoint}" if endpoint else ""

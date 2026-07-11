@@ -8,9 +8,10 @@ from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.results import RunResult
 from ouro.core.state import ApprovalRecord, RunRecord, SessionRecord
-from ouro.providers import FauxProvider, ModelMetadata, ProviderStreamEvent
+from ouro.providers import FauxProvider
 from ouro.tools import ToolExecutionOutcome, ToolInvocation, ToolRegistry, ToolResult
 
 

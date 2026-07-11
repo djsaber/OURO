@@ -146,8 +146,7 @@ class PluginLoader:
             try:
                 if strategy.strategy_id.startswith("builtin."):
                     raise ValueError(
-                        f"plugin compaction strategy cannot use reserved id: "
-                        f"{strategy.strategy_id}"
+                        f"plugin compaction strategy cannot use reserved id: {strategy.strategy_id}"
                     )
                 compaction_registry.register(strategy)
                 result.registered_compaction_strategies.append(strategy.strategy_id)

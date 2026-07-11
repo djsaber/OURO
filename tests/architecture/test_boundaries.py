@@ -6,6 +6,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = PROJECT_ROOT / "ouro" / "core"
 CONFIG_DIR = PROJECT_ROOT / "ouro" / "config"
+APPLICATION_DIR = PROJECT_ROOT / "ouro" / "application"
 ALLOWED_CORE_PREFIX = "ouro.core"
 LOWER_LAYER_DIRS = (
     "config",
@@ -33,6 +34,23 @@ def test_core_does_not_import_outer_layers() -> None:
 def test_core_does_not_expose_application_service_shims() -> None:
     assert not (CORE_DIR / "runtime.py").exists()
     assert not (CORE_DIR / "session.py").exists()
+
+
+def test_model_catalog_is_owned_by_application_not_core_or_providers() -> None:
+    assert (APPLICATION_DIR / "models.py").exists()
+    assert not (CORE_DIR / "models.py").exists()
+    assert not (PROJECT_ROOT / "ouro" / "providers" / "catalog.py").exists()
+
+
+def test_application_does_not_depend_on_cli_or_provider_implementations() -> None:
+    violations: list[str] = []
+    for path in sorted(APPLICATION_DIR.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for module in _imported_modules(tree):
+            if module.startswith(("ouro.cli", "ouro.providers")):
+                violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
+
+    assert violations == []
 
 
 def test_provider_configuration_does_not_depend_on_cli_or_provider_implementations() -> None:

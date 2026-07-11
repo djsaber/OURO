@@ -43,23 +43,6 @@ class ModelMetadata(OuroModel):
         return self
 
 
-class AvailableModel(OuroModel):
-    """Stable session-selectable route to one configured model endpoint."""
-
-    key: str
-    provider_id: str
-    endpoint_id: str
-    model_id: str
-    display_name: str | None = None
-
-
-def model_route_key(model: ModelMetadata) -> str:
-    """Return the durable provider/endpoint key used by ``SessionRecord.current_model``."""
-
-    endpoint_id = model.endpoint_id or model.model_id
-    return f"{model.provider_id}/{endpoint_id}"
-
-
 class Usage(OuroModel):
     input_tokens: int = 0
     output_tokens: int = 0

@@ -1,27 +1,18 @@
 from __future__ import annotations
 
-import json
-import sys
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 from ouro.application.runtime import RuntimeService
+from ouro.cli.interactive_commands import handle_command
+from ouro.cli.interactive_io import (
+    InputFunc,
+    InteractiveOutput,
+    OutputFunc,
+    handle_run_result,
+)
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.core.errors import OuroError
-from ouro.core.events import EventRecord
-from ouro.core.results import RunResult
-from ouro.skills import discover_available_skills
 
-InputFunc = Callable[[str], str]
-OutputFunc = Callable[[str], None]
-
-# ANSI styling helpers. These are intentionally compact; terminals that do not
-# support ANSI escape sequences will show the raw codes, which is acceptable
-# for the interactive CLI target environment.
-_DIM_ITALIC = "\x1b[2;3m"
-_DIM = "\x1b[2m"
-_YELLOW = "\x1b[33m"
 _CYAN = "\x1b[36m"
 _RESET = "\x1b[0m"
 
@@ -35,53 +26,21 @@ async def run_interactive(
     input_func: InputFunc = input,
     output_func: OutputFunc = print,
 ) -> int:
-    streamed_run_ids: set[str] = set()
-    stream_state: dict[str, Any] = {
-        "in_reasoning": False,
-        "streamed_text": False,
-    }
-
-    def stream_event(event: EventRecord) -> None:
-        if event.run_id is None:
-            return
-        if event.event_type == "model_text_delta":
-            text = event.payload.get("text")
-            if not isinstance(text, str) or not text:
-                return
-            streamed_run_ids.add(event.run_id)
-            _stream_text_delta(text, stream_state, output_func)
-        elif event.event_type == "model_reasoning_delta":
-            reasoning = event.payload.get("reasoning_content")
-            if not isinstance(reasoning, str) or not reasoning:
-                return
-            streamed_run_ids.add(event.run_id)
-            _stream_reasoning_delta(reasoning, stream_state, output_func)
-        elif event.event_type == "tool_call_requested":
-            streamed_run_ids.add(event.run_id)
-            _stream_tool_call(event.payload, stream_state, output_func)
-        elif event.event_type == "compaction_started":
-            trigger = str(event.payload.get("trigger") or "auto")
-            output_func(f"Context {trigger} compaction in progress...")
-        elif event.event_type == "compaction_completed":
-            covered = int(event.payload.get("covered_message_count") or 0)
-            output_func(f"Context compaction completed ({covered} messages covered).")
-        elif event.event_type == "compaction_failed":
-            error = event.payload.get("error") or "unknown error"
-            output_func(f"Context compaction failed: {error}")
-
+    output = InteractiveOutput(output_func)
     if runtime is None:
         try:
             runtime = build_default_runtime(
                 home,
                 provider_options=provider_options,
                 system_prompt=system_prompt,
-                event_sink=stream_event,
+                event_sink=output.handle_event,
             )
         except OuroError as exc:
             output_func(f"Error: {exc}")
             return 1
     else:
-        runtime.add_event_sink(stream_event)
+        runtime.add_event_sink(output.handle_event)
+
     session_id: str | None = None
     output_func("OURO interactive. Type /help for commands, /exit to quit.")
 
@@ -98,7 +57,7 @@ async def run_interactive(
 
         if line.startswith("/"):
             try:
-                command_result = await _handle_command(line, runtime, session_id)
+                command_result = await handle_command(line, runtime, session_id)
             except OuroError as exc:
                 output_func(f"Error: {exc}")
                 continue
@@ -114,477 +73,10 @@ async def run_interactive(
         except OuroError as exc:
             output_func(f"Error: {exc}")
             continue
-        session_id = await _handle_run_result(
+        session_id = await handle_run_result(
             result,
             runtime=runtime,
             input_func=input_func,
             output_func=output_func,
-            streamed_run_ids=streamed_run_ids,
-            stream_state=stream_state,
+            output=output,
         )
-
-
-class _CommandResult:
-    def __init__(
-        self,
-        *,
-        session_id: str | None,
-        output: str = "",
-        should_exit: bool = False,
-    ) -> None:
-        self.session_id = session_id
-        self.output = output
-        self.should_exit = should_exit
-
-
-async def _handle_command(
-    line: str,
-    runtime: RuntimeService,
-    session_id: str | None,
-) -> _CommandResult:
-    command, _, argument = line.partition(" ")
-    command = command.lower()
-    argument = argument.strip()
-
-    if command == "/help":
-        return _CommandResult(session_id=session_id, output=_help_text())
-    if command == "/exit":
-        return _CommandResult(session_id=session_id, should_exit=True)
-    if command == "/new":
-        return _CommandResult(session_id=None, output="Started a new session.")
-    if command == "/sessions":
-        return _CommandResult(session_id=session_id, output=_sessions_text(runtime))
-    if command == "/open":
-        return _open_session(runtime, argument)
-    if command == "/models":
-        return _available_models(runtime, session_id)
-    if command == "/model":
-        return _model_command(runtime, session_id, argument)
-    if command == "/config":
-        return _CommandResult(session_id=session_id, output=f"OURO_HOME={runtime.store.root}")
-    if command == "/export":
-        return _export_session(runtime, session_id)
-    if command == "/abort":
-        return await _abort_session(runtime, session_id)
-    if command == "/compact":
-        return await _compact_session(runtime, session_id)
-    if command == "/history":
-        return _session_history(runtime, session_id)
-    if command == "/events":
-        return _session_events(runtime, session_id)
-    if command == "/skills":
-        return _available_skills(runtime)
-    return _CommandResult(session_id=session_id, output=f"Unknown command: {command}")
-
-
-def _help_text() -> str:
-    return "\n".join(
-        [
-            "Commands:",
-            "/help - Show commands.",
-            "/new - Start a new session.",
-            "/sessions - List local sessions.",
-            "/open <session_id> - Continue a session.",
-            "/models - List configured model endpoints.",
-            "/model - Show the current session model.",
-            "/model <provider/endpoint> - Switch the current session model.",
-            "/config - Show active local config path.",
-            "/export - Show active session data path.",
-            "/history - Show current session messages.",
-            "/events - Show current session events.",
-            "/skills - List available skills.",
-            "/abort - Abort the active request when supported.",
-            "/compact - Summarize older context for the active session.",
-            "/exit - Quit.",
-        ]
-    )
-
-
-def _sessions_text(runtime: RuntimeService) -> str:
-    sessions = runtime.sessions.list()
-    if not sessions:
-        return "No sessions."
-    lines = ["Sessions:"]
-    for session in sessions:
-        marker = "*" if session.status != "idle" else "-"
-        title = session.title or "New session"
-        lines.append(f"{marker} {session.session_id} {session.status} {title}")
-    return "\n".join(lines)
-
-
-def _available_models(
-    runtime: RuntimeService,
-    session_id: str | None,
-) -> _CommandResult:
-    models = runtime.available_models()
-    if not models:
-        return _CommandResult(session_id=session_id, output="No configured models available.")
-    current = runtime.current_model(session_id)
-    lines = ["Available models:"]
-    for model in models:
-        marker = "*" if model.key == current.key else "-"
-        display = f" ({model.display_name})" if model.display_name else ""
-        lines.append(f"{marker} {model.key} -> {model.model_id}{display}")
-    return _CommandResult(session_id=session_id, output="\n".join(lines))
-
-
-def _model_command(
-    runtime: RuntimeService,
-    session_id: str | None,
-    selector: str,
-) -> _CommandResult:
-    if not selector:
-        model = runtime.current_model(session_id)
-        return _CommandResult(
-            session_id=session_id,
-            output=model.key,
-        )
-    if session_id is None:
-        return _CommandResult(
-            session_id=None,
-            output="No active session. Start a conversation before switching models.",
-        )
-    runtime.switch_session_model(session_id, selector)
-    model = runtime.current_model(session_id)
-    return _CommandResult(
-        session_id=session_id,
-        output=f"Switched model: {model.key} ({model.model_id})",
-    )
-
-
-def _open_session(runtime: RuntimeService, session_id: str) -> _CommandResult:
-    if not session_id:
-        return _CommandResult(session_id=None, output="Usage: /open <session_id>")
-    try:
-        snapshot = runtime.sessions.open(session_id)
-    except Exception:  # noqa: BLE001 - interactive command should report and continue.
-        return _CommandResult(session_id=None, output=f"Session not found: {session_id}")
-    return _CommandResult(
-        session_id=snapshot.session.session_id,
-        output=f"Opened session: {snapshot.session.session_id}",
-    )
-
-
-def _export_session(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
-    if session_id is None:
-        return _CommandResult(session_id=session_id, output="No active session.")
-    return _CommandResult(
-        session_id=session_id,
-        output=str(runtime.store.sessions_dir / session_id),
-    )
-
-
-def _session_history(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
-    if session_id is None:
-        return _CommandResult(session_id=session_id, output="No active session.")
-    try:
-        snapshot = runtime.sessions.open(session_id)
-    except Exception:  # noqa: BLE001
-        return _CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
-    if not snapshot.messages:
-        return _CommandResult(session_id=session_id, output="No messages in this session.")
-    lines = ["History:"]
-    for message in snapshot.messages:
-        text = message.text_content.replace("\n", " ")
-        lines.append(f"[{message.role}] {text[:120]}")
-    return _CommandResult(session_id=session_id, output="\n".join(lines))
-
-
-def _session_events(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
-    if session_id is None:
-        return _CommandResult(session_id=session_id, output="No active session.")
-    try:
-        snapshot = runtime.sessions.open(session_id)
-    except Exception:  # noqa: BLE001
-        return _CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
-    if not snapshot.events:
-        return _CommandResult(session_id=session_id, output="No events in this session.")
-    lines = ["Events:"]
-    for event in snapshot.events:
-        lines.append(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
-    return _CommandResult(session_id=session_id, output="\n".join(lines))
-
-
-def _available_skills(runtime: RuntimeService) -> _CommandResult:
-    try:
-        catalog = discover_available_skills(home=runtime.store.root)
-    except Exception as exc:  # noqa: BLE001
-        return _CommandResult(session_id=None, output=f"Could not list skills: {exc}")
-    if not catalog:
-        return _CommandResult(session_id=None, output="No skills available.")
-    lines = ["Available skills:"]
-    for skill in sorted(catalog, key=lambda item: item.name):
-        state = "enabled" if skill.enabled else "disabled"
-        lines.append(f"- {skill.name} [{skill.source}] [{state}] {skill.location}")
-    return _CommandResult(session_id=None, output="\n".join(lines))
-
-
-async def _abort_session(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
-    if session_id is None:
-        return _CommandResult(session_id=None, output="No active session.")
-    try:
-        result = await runtime.abort_run(session_id=session_id)
-    except ValueError:
-        return _CommandResult(session_id=session_id, output="No active running request.")
-    if result.run.status == "aborted":
-        return _CommandResult(
-            session_id=result.session.session_id,
-            output=f"Aborted run: {result.run.run_id}",
-        )
-    return _CommandResult(session_id=result.session.session_id, output="No active running request.")
-
-
-async def _compact_session(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
-    if session_id is None:
-        return _CommandResult(session_id=None, output="No active session.")
-    result = await runtime.compact(session_id=session_id)
-    if result.skipped or result.compaction is None:
-        return _CommandResult(
-            session_id=result.session.session_id,
-            output="No complete older turn is eligible for compaction.",
-        )
-    return _CommandResult(
-        session_id=result.session.session_id,
-        output=(
-            f"Active compaction: {result.compaction.compaction_id} "
-            f"({len(result.compaction.covered_message_ids)} messages covered)."
-        ),
-    )
-
-
-async def _handle_run_result(
-    result: RunResult,
-    *,
-    runtime: RuntimeService,
-    input_func: InputFunc,
-    output_func: OutputFunc,
-    streamed_run_ids: set[str],
-    stream_state: dict[str, Any],
-) -> str:
-    current = result
-    for _ in range(16):
-        if current.run.status == "completed":
-            if current.run.run_id in streamed_run_ids:
-                _finish_streamed_output(stream_state, output_func)
-            elif current.final_text:
-                output_func(current.final_text)
-            return current.session.session_id
-        if current.run.status == "waiting_approval":
-            resolved = await _resolve_approval(
-                current,
-                runtime=runtime,
-                input_func=input_func,
-                output_func=output_func,
-            )
-            if resolved is None:
-                return current.session.session_id
-            current = resolved
-            continue
-        if current.run.status == "waiting_user":
-            resolved = await _resolve_user_question(
-                current,
-                runtime=runtime,
-                input_func=input_func,
-                output_func=output_func,
-            )
-            if resolved is None:
-                return current.session.session_id
-            current = resolved
-            continue
-        if current.run.status == "failed":
-            if current.run.run_id in streamed_run_ids:
-                _finish_streamed_output(stream_state, output_func)
-            output_func(f"Run failed: {current.run.error or 'unknown error'}")
-            return current.session.session_id
-        if current.run.status == "aborted":
-            if current.run.run_id in streamed_run_ids:
-                _finish_streamed_output(stream_state, output_func)
-            output_func(f"Run aborted: {current.run.error or 'User aborted'}")
-            return current.session.session_id
-        output_func(f"Run stopped with status: {current.run.status}")
-        return current.session.session_id
-
-    output_func("Run stopped: interactive resolution limit reached.")
-    return current.session.session_id
-
-
-def _stream_text_delta(text: str, stream_state: dict[str, Any], output_func: OutputFunc) -> None:
-    if stream_state["in_reasoning"]:
-        _write_output(f"{_RESET}\n", output_func)
-        stream_state["in_reasoning"] = False
-    stream_state["streamed_text"] = True
-    _write_output(text, output_func)
-
-
-def _stream_reasoning_delta(
-    reasoning: str, stream_state: dict[str, Any], output_func: OutputFunc
-) -> None:
-    if stream_state["streamed_text"]:
-        _write_output("\n", output_func)
-        stream_state["streamed_text"] = False
-    if not stream_state["in_reasoning"]:
-        _write_output(_DIM_ITALIC, output_func)
-        stream_state["in_reasoning"] = True
-    _write_output(reasoning, output_func)
-
-
-def _stream_tool_call(
-    payload: dict[str, Any], stream_state: dict[str, Any], output_func: OutputFunc
-) -> None:
-    if stream_state["in_reasoning"]:
-        _write_output(f"{_RESET}\n", output_func)
-        stream_state["in_reasoning"] = False
-    if stream_state["streamed_text"]:
-        _write_output("\n", output_func)
-        stream_state["streamed_text"] = False
-    tool_name = str(payload.get("tool_name") or "unknown")
-    arguments = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
-    args_text = json.dumps(arguments, ensure_ascii=False)
-    _write_output(
-        f"{_DIM}>{_RESET} {_YELLOW}{tool_name}{_RESET}({_DIM}{args_text}{_RESET})\n",
-        output_func,
-    )
-
-
-def _write_output(text: str, output_func: OutputFunc) -> None:
-    if output_func is print:
-        sys.stdout.write(text)
-        sys.stdout.flush()
-        return
-    output_func(text)
-
-
-def _finish_streamed_output(stream_state: dict[str, Any], output_func: OutputFunc) -> None:
-    if stream_state["in_reasoning"]:
-        _write_output(_RESET, output_func)
-        stream_state["in_reasoning"] = False
-    _write_output("\n", output_func)
-    stream_state["streamed_text"] = False
-
-
-async def _resolve_approval(
-    result: RunResult,
-    *,
-    runtime: RuntimeService,
-    input_func: InputFunc,
-    output_func: OutputFunc,
-) -> RunResult | None:
-    invocation = _pending_invocation(result)
-    tool_name = str(invocation.get("tool_name") or "unknown")
-    # Tool arguments were already printed by _stream_tool_call when the
-    # tool_call_requested event fired, so we only show the compact prompt here
-    # to avoid repeating the same JSON block.
-    output_func(f"Approval required: {tool_name}")
-
-    while True:
-        try:
-            choice = input_func("Approve? [y]es/[n]o/[m]odify: ").strip().lower()
-        except EOFError:
-            output_func("")
-            return None
-
-        if choice in {"y", "yes"}:
-            return await runtime.approve_tool(
-                session_id=result.session.session_id,
-                run_id=result.run.run_id,
-                approved=True,
-            )
-        if choice in {"", "n", "no"}:
-            reason = _input_optional(input_func, output_func, "Reason: ") or "User rejected"
-            return await runtime.approve_tool(
-                session_id=result.session.session_id,
-                run_id=result.run.run_id,
-                approved=False,
-                reason=reason,
-            )
-        if choice in {"/abort", "abort"}:
-            return await runtime.abort_run(
-                session_id=result.session.session_id,
-                run_id=result.run.run_id,
-            )
-        if choice in {"m", "modify"}:
-            override = _input_json_object(input_func, output_func, "Arguments JSON: ")
-            if override is None:
-                continue
-            return await runtime.approve_tool(
-                session_id=result.session.session_id,
-                run_id=result.run.run_id,
-                approved=True,
-                arguments_override=override,
-            )
-        output_func("Choose y, n, or m.")
-
-
-async def _resolve_user_question(
-    result: RunResult,
-    *,
-    runtime: RuntimeService,
-    input_func: InputFunc,
-    output_func: OutputFunc,
-) -> RunResult | None:
-    question = _pending_question(result)
-    output_func(f"Question: {question}")
-    try:
-        answer = input_func("Answer: ")
-    except EOFError:
-        output_func("")
-        return None
-    if answer.strip().lower() in {"/abort", "abort"}:
-        return await runtime.abort_run(
-            session_id=result.session.session_id,
-            run_id=result.run.run_id,
-        )
-    return await runtime.answer_user(
-        session_id=result.session.session_id,
-        run_id=result.run.run_id,
-        answer=answer,
-    )
-
-
-def _pending_invocation(result: RunResult) -> dict[str, Any]:
-    raw = result.run.metadata.get("pending_invocation")
-    return raw if isinstance(raw, dict) else {}
-
-
-def _pending_question(result: RunResult) -> str:
-    raw_question = result.run.metadata.get("pending_question")
-    if isinstance(raw_question, str) and raw_question:
-        return raw_question
-    invocation = _pending_invocation(result)
-    arguments = invocation.get("arguments")
-    if isinstance(arguments, dict) and isinstance(arguments.get("question"), str):
-        return arguments["question"]
-    return "Please provide the requested information."
-
-
-def _input_optional(
-    input_func: InputFunc,
-    output_func: OutputFunc,
-    prompt: str,
-) -> str:
-    try:
-        return input_func(prompt).strip()
-    except EOFError:
-        output_func("")
-        return ""
-
-
-def _input_json_object(
-    input_func: InputFunc,
-    output_func: OutputFunc,
-    prompt: str,
-) -> dict[str, object] | None:
-    try:
-        raw = input_func(prompt)
-    except EOFError:
-        output_func("")
-        return None
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        output_func(f"Invalid JSON: {exc.msg}")
-        return None
-    if not isinstance(parsed, dict):
-        output_func("Arguments JSON must be an object.")
-        return None
-    return parsed

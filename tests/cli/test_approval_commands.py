@@ -11,7 +11,8 @@ from ouro.cli.approval_commands import (
     reject_tool_command,
 )
 from ouro.core.adapter import RuntimeAdapter
-from ouro.providers import FauxProvider, ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
 

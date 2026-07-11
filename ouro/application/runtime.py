@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import partial
-from typing import Any
 
 from ouro.application.compaction import (
     ContextPreparationService,
@@ -10,6 +9,11 @@ from ouro.application.compaction import (
 )
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.followups import FollowUpQueue
+from ouro.application.models import (
+    AvailableModel,
+    RuntimeAdapterCatalog,
+    SingleRuntimeAdapterCatalog,
+)
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
@@ -18,28 +22,24 @@ from ouro.application.runs import (
     find_run,
     maybe_active_run,
 )
+from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.config.compaction import CompactionConfig
-from ouro.core.adapter import (
-    RuntimeAdapter,
-    RuntimeAdapterCatalog,
-    SingleRuntimeAdapterCatalog,
-)
+from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import CompactionError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookRegistry
+from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import AvailableModel
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.sessions import SessionLock, SessionService, SessionSnapshot, SessionStore
-from ouro.tools import ToolExecutionOutcome, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
+from ouro.tools import ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
 
 
 class RuntimeService:
@@ -75,6 +75,13 @@ class RuntimeService:
             event_sink=event_sink,
         )
         self.run_lifecycle = RunLifecycle(store=store, events=self.event_recorder)
+        self.tool_calls = ToolCallCoordinator(
+            executor=self.tool_executor,
+            hooks=self.hooks,
+            events=self.event_recorder,
+            runs=self.run_lifecycle,
+            is_aborted=self._is_run_aborted,
+        )
         self.context_builder = context_builder or ContextBuilder()
         self.max_model_rounds = max_model_rounds
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
@@ -310,7 +317,7 @@ class RuntimeService:
                 prepare_context=partial(self.context_preparation.prepare, adapter=adapter),
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
-                handle_tool_call=self._handle_tool_call,
+                handle_tool_call=self.tool_calls.handle,
                 record_usage=self.run_lifecycle.record_usage,
                 checkpoint=self.run_lifecycle.checkpoint,
                 aborted_result=self._aborted_result,
@@ -681,7 +688,7 @@ class RuntimeService:
     ) -> RunResult:
         active_signal = abort_signal
         try:
-            sequence = await self._after_tool_call(emitted, sequence, session, run, result)
+            sequence = await self.tool_calls.after(emitted, sequence, session, run, result)
             message = self.run_lifecycle.append_tool_result_message(
                 session=session,
                 run=run,
@@ -731,125 +738,8 @@ class RuntimeService:
             await self._drain_follow_up_queue(resumed.session.session_id)
         return resumed
 
-    async def _handle_tool_call(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        session: SessionRecord,
-        run: RunRecord,
-        tool_call: dict[str, Any],
-        *,
-        message_sequence: int,
-        assistant_text: str,
-        assistant_reasoning: str,
-        abort_signal: AbortSignal,
-    ) -> tuple[ToolExecutionOutcome, int, list[MessageRecord]]:
-        assistant_message = self.run_lifecycle.append_assistant_tool_call_message(
-            session=session,
-            run=run,
-            tool_call=tool_call,
-            text=assistant_text,
-            sequence=message_sequence,
-            reasoning_content=assistant_reasoning,
-        )
-        invocation = ToolInvocation(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            tool_call_id=str(tool_call.get("id") or ""),
-            tool_name=str(tool_call["name"]),
-            arguments=dict(tool_call.get("arguments") or {}),
-        )
-        sequence = await self.event_recorder.emit(
-            emitted,
-            sequence,
-            session_id=session.session_id,
-            run_id=run.run_id,
-            event_type="tool_call_requested",
-            payload={"tool_name": invocation.tool_name, "arguments": invocation.arguments},
-        )
-        before_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="before_tool_call",
-                session_id=session.session_id,
-                run_id=run.run_id,
-                data={"tool_name": invocation.tool_name, "arguments": invocation.arguments},
-            )
-        )
-        sequence = await self.event_recorder.record_hook_failures(
-            emitted,
-            sequence,
-            before_result.failures,
-        )
-        outcome = await self.tool_executor.execute(invocation, signal=abort_signal)
-        if self._abort_snapshot(session.session_id, run.run_id) is not None:
-            return outcome, sequence, [assistant_message]
-        if outcome.status == "approval_required":
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="approval_requested",
-                payload={
-                    "approval_id": outcome.approval.approval_id if outcome.approval else None,
-                    "tool_name": invocation.tool_name,
-                },
-            )
-            return outcome, sequence, [assistant_message]
-        if outcome.status == "waiting_user":
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="ask_user_requested",
-                payload={"question": outcome.question},
-            )
-            return outcome, sequence, [assistant_message]
-        messages = [assistant_message]
-        if outcome.result is not None:
-            sequence = await self._after_tool_call(emitted, sequence, session, run, outcome.result)
-            message = self.run_lifecycle.append_tool_result_message(
-                session=session,
-                run=run,
-                result=outcome.result,
-                sequence=message_sequence + 1,
-            )
-            messages.append(message)
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="tool_call_completed",
-                payload={
-                    "tool_name": outcome.result.tool_name,
-                    "is_error": outcome.result.is_error,
-                },
-            )
-        return outcome, sequence, messages
-
-    async def _after_tool_call(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        session: SessionRecord,
-        run: RunRecord,
-        result: ToolResult,
-    ) -> int:
-        hook_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="after_tool_call",
-                session_id=session.session_id,
-                run_id=run.run_id,
-                data={"result": result.model_dump(mode="json")},
-            )
-        )
-        return await self.event_recorder.record_hook_failures(
-            emitted,
-            sequence,
-            hook_result.failures,
-        )
+    def _is_run_aborted(self, session_id: str, run_id: str) -> bool:
+        return self._abort_snapshot(session_id, run_id) is not None
 
     def _abort_snapshot(self, session_id: str, run_id: str):
         try:

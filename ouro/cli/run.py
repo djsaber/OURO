@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ouro.application.events import RuntimeEventSink
+from ouro.application.models import ConfiguredModelCatalog
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
@@ -21,7 +22,7 @@ from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.prompts import render_agent_skills_prompt
-from ouro.providers import ConfiguredModelCatalog, build_runtime_adapter
+from ouro.providers import build_runtime_adapter
 from ouro.sessions import LocalSessionStore
 from ouro.skills import discover_available_skills
 from ouro.tools import ToolRegistry, builtin_tools
@@ -49,7 +50,11 @@ def build_default_runtime(
         provider_options or RuntimeProviderOptions(),
     )
     adapter = build_runtime_adapter(resolved_options)
-    model_catalog = ConfiguredModelCatalog(provider_config, adapter)
+    model_catalog = ConfiguredModelCatalog(
+        provider_config,
+        adapter,
+        adapter_builder=build_runtime_adapter,
+    )
     skills_prompt = render_agent_skills_prompt(discover_available_skills(home=store.root))
     context_builder = ContextBuilder(skill_instructions=skills_prompt)
     resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
