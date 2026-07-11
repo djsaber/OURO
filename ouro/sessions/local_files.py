@@ -14,6 +14,7 @@ from typing import Any, Self
 from pydantic import ValidationError
 
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.compaction import CompactionRecord
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -44,7 +45,7 @@ class LocalSessionStore:
         (session_dir / "runs").mkdir(parents=True, exist_ok=True)
         (session_dir / "resources").mkdir(parents=True, exist_ok=True)
         self.save_session(session)
-        for name in ("messages.jsonl", "events.jsonl"):
+        for name in ("messages.jsonl", "events.jsonl", "compactions.jsonl"):
             (session_dir / name).touch(exist_ok=True)
         self._write_json_atomic(session_dir / "resources" / "index.json", {"resources": []})
         self.rebuild_index()
@@ -66,6 +67,26 @@ class LocalSessionStore:
         run_id = _validated_record_id(run.run_id, kind="run")
         self._write_model_atomic(run_dir / f"{run_id}.json", run)
 
+    def append_compaction(self, compaction: CompactionRecord) -> None:
+        self._append_jsonl(
+            self._session_dir(compaction.session_id) / "compactions.jsonl",
+            compaction,
+        )
+
+    def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord:
+        snapshot = self.load_session(session_id, recover=False)
+        if not any(item.compaction_id == compaction_id for item in snapshot.compactions):
+            raise PersistenceError(f"unknown compaction {compaction_id} for session {session_id}")
+        updated = snapshot.session.model_copy(
+            update={
+                "active_compaction_id": compaction_id,
+                "updated_at": utc_now(),
+            }
+        )
+        self.save_session(updated)
+        self.rebuild_index()
+        return updated
+
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
         session_dir = self._session_dir(session_id)
         try:
@@ -84,6 +105,10 @@ class LocalSessionStore:
                 RunRecord.model_validate_json(path.read_text("utf-8"))
                 for path in sorted((session_dir / "runs").glob("*.json"))
             ]
+            compactions = [
+                CompactionRecord.model_validate_json(line)
+                for line in self._read_jsonl(session_dir / "compactions.jsonl")
+            ]
         except FileNotFoundError:
             raise
         except (OSError, ValidationError, ValueError) as exc:
@@ -96,7 +121,19 @@ class LocalSessionStore:
                 events,
                 runs,
             )
-        return SessionSnapshot(session=session, messages=messages, events=events, runs=runs)
+        snapshot = SessionSnapshot(
+            session=session,
+            messages=messages,
+            events=events,
+            runs=runs,
+            compactions=compactions,
+        )
+        if session.active_compaction_id is not None and snapshot.active_compaction is None:
+            raise PersistenceError(
+                f"session {session_id} references missing compaction "
+                f"{session.active_compaction_id}"
+            )
+        return snapshot
 
     def list_sessions(self) -> list[SessionRecord]:
         records: list[SessionRecord] = []

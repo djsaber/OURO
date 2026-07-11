@@ -59,6 +59,15 @@ async def run_interactive(
         elif event.event_type == "tool_call_requested":
             streamed_run_ids.add(event.run_id)
             _stream_tool_call(event.payload, stream_state, output_func)
+        elif event.event_type == "compaction_started":
+            trigger = str(event.payload.get("trigger") or "auto")
+            output_func(f"Context {trigger} compaction in progress...")
+        elif event.event_type == "compaction_completed":
+            covered = int(event.payload.get("covered_message_count") or 0)
+            output_func(f"Context compaction completed ({covered} messages covered).")
+        elif event.event_type == "compaction_failed":
+            error = event.payload.get("error") or "unknown error"
+            output_func(f"Context compaction failed: {error}")
 
     if runtime is None:
         try:
@@ -159,6 +168,8 @@ async def _handle_command(
         return _export_session(runtime, session_id)
     if command == "/abort":
         return await _abort_session(runtime, session_id)
+    if command == "/compact":
+        return await _compact_session(runtime, session_id)
     if command == "/history":
         return _session_history(runtime, session_id)
     if command == "/events":
@@ -183,6 +194,7 @@ def _help_text() -> str:
             "/events - Show current session events.",
             "/skills - List available skills.",
             "/abort - Abort the active request when supported.",
+            "/compact - Summarize older context for the active session.",
             "/exit - Quit.",
         ]
     )
@@ -280,6 +292,24 @@ async def _abort_session(runtime: RuntimeService, session_id: str | None) -> _Co
             output=f"Aborted run: {result.run.run_id}",
         )
     return _CommandResult(session_id=result.session.session_id, output="No active running request.")
+
+
+async def _compact_session(runtime: RuntimeService, session_id: str | None) -> _CommandResult:
+    if session_id is None:
+        return _CommandResult(session_id=None, output="No active session.")
+    result = await runtime.compact(session_id=session_id)
+    if result.skipped or result.compaction is None:
+        return _CommandResult(
+            session_id=result.session.session_id,
+            output="No complete older turn is eligible for compaction.",
+        )
+    return _CommandResult(
+        session_id=result.session.session_id,
+        output=(
+            f"Active compaction: {result.compaction.compaction_id} "
+            f"({len(result.compaction.covered_message_ids)} messages covered)."
+        ),
+    )
 
 
 async def _handle_run_result(

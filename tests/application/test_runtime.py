@@ -11,7 +11,7 @@ from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord
-from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
 from ouro.providers import (
     FauxProvider,
     ModelMetadata,
@@ -1227,20 +1227,53 @@ async def test_runtime_isolates_failing_event_sink_and_records_diagnostic(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_runtime_uses_model_context_window_for_truncation(tmp_path) -> None:
+async def test_runtime_automatically_compacts_and_persists_context_projection(tmp_path) -> None:
+    class CompactingProvider(CapturingProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.summary_calls = 0
+            self.business_messages: list[MessageRecord] = []
+
+        async def stream(self, *, model, system_prompt="", messages, tools=None):
+            del model, tools
+            self.calls += 1
+            if system_prompt == SUMMARIZATION_PROMPT:
+                self.summary_calls += 1
+                yield ProviderStreamEvent(
+                    type="text_delta",
+                    text=f"<summary1>durable summary {self.summary_calls}</summary1>",
+                )
+                yield ProviderStreamEvent(
+                    type="done",
+                    usage=Usage(input_tokens=20, output_tokens=5),
+                )
+                return
+            self.business_messages = list(messages)
+            yield ProviderStreamEvent(type="text_delta", text="ok")
+            yield ProviderStreamEvent(type="done")
+
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Context budget")
     store.create_session(session)
-    store.append_message(
-        MessageRecord.text(
-            session_id=session.session_id,
-            role="user",
-            text="old " * 200,
-            sequence=1,
+    for index in range(12):
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text=f"old user {index} " + ("x" * 5000),
+                sequence=index * 2 + 1,
+            )
         )
-    )
-    provider = CapturingProvider()
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="assistant",
+                text=f"old answer {index} " + ("y" * 5000),
+                sequence=index * 2 + 2,
+            )
+        )
+    provider = CompactingProvider()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1248,17 +1281,26 @@ async def test_runtime_uses_model_context_window_for_truncation(tmp_path) -> Non
             ModelMetadata(
                 model_id="capture",
                 provider_id="capture",
-                context_window=64,
-                max_output_tokens=32,
+                context_window=32_000,
+                max_output_tokens=4_000,
             ),
         ),
-        tools=_tools(),
+        tools=ToolRegistry(),
         system_prompt="",
     )
 
-    await runtime.run("new", session_id=session.session_id)
+    result = await runtime.run("new", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id)
 
-    assert [message.text_content for message in provider.messages] == ["new"]
+    assert result.run.status == "completed"
+    assert provider.summary_calls >= 1
+    assert snapshot.session.active_compaction_id is not None
+    assert snapshot.active_compaction is not None
+    assert len(snapshot.messages) == 26
+    assert provider.business_messages[0].role == "system_synthetic"
+    assert provider.business_messages[0].text_content.startswith("durable summary")
+    assert provider.business_messages[-1].text_content == "new"
+    assert any(event.event_type == "compaction_completed" for event in snapshot.events)
 
 
 @pytest.mark.asyncio

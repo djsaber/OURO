@@ -6,6 +6,7 @@ from typing import Protocol
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -16,6 +17,17 @@ class SessionSnapshot(OuroModel):
     messages: list[MessageRecord] = Field(default_factory=list)
     events: list[EventRecord] = Field(default_factory=list)
     runs: list[RunRecord] = Field(default_factory=list)
+    compactions: list[CompactionRecord] = Field(default_factory=list)
+
+    @property
+    def active_compaction(self) -> CompactionRecord | None:
+        active_id = self.session.active_compaction_id
+        if active_id is None:
+            return None
+        for compaction in self.compactions:
+            if compaction.compaction_id == active_id:
+                return compaction
+        return None
 
 
 class SessionLock(Protocol):
@@ -37,6 +49,10 @@ class SessionStore(Protocol):
     def append_event(self, event: EventRecord) -> None: ...
 
     def save_run(self, run: RunRecord) -> None: ...
+
+    def append_compaction(self, compaction: CompactionRecord) -> None: ...
+
+    def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord: ...
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot: ...
 

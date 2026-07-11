@@ -6,13 +6,27 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.state import ApprovalRecord, RunRecord, SessionRecord
 from ouro.providers import FauxProvider, ModelMetadata, ProviderStreamEvent
 from ouro.tools import ToolExecutionOutcome, ToolInvocation, ToolRegistry, ToolResult
+
+
+async def _prepare_context(
+    emitted,
+    sequence,
+    *,
+    session,
+    run,
+    messages,
+    tools,
+    model_round,
+    abort_signal,
+):
+    del emitted, session, run, model_round, abort_signal
+    return ContextBuilder().build(messages=messages, tools=tools), sequence
 
 
 @pytest.mark.asyncio
@@ -131,10 +145,9 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=ToolRegistry(),
-        hooks=HookRegistry(),
-        context_builder=ContextBuilder(),
         max_model_rounds=1,
         ports=InnerLoopPorts(
+            prepare_context=_prepare_context,
             emit=emit,
             record_hook_failures=record_hook_failures,
             handle_tool_call=handle_tool_call,
@@ -284,10 +297,9 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=ToolRegistry(),
-        hooks=HookRegistry(),
-        context_builder=ContextBuilder(),
         max_model_rounds=2,
         ports=InnerLoopPorts(
+            prepare_context=_prepare_context,
             emit=emit,
             record_hook_failures=record_hook_failures,
             handle_tool_call=handle_tool_call,

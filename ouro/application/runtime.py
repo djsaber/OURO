@@ -3,6 +3,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from ouro.application.compaction import (
+    ContextPreparationService,
+    LLMSummaryCompactionStrategy,
+)
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.followups import FollowUpQueue
 from ouro.application.runs import (
@@ -13,11 +17,13 @@ from ouro.application.runs import (
     find_run,
     maybe_active_run,
 )
+from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
+from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
-from ouro.core.errors import SessionBusyError
+from ouro.core.errors import CompactionError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
@@ -43,6 +49,8 @@ class RuntimeService:
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        compaction_config: CompactionConfig | None = None,
+        compaction_strategies: CompactionStrategyRegistry | None = None,
     ) -> None:
         self.store = store
         self.sessions = SessionService(store)
@@ -60,6 +68,22 @@ class RuntimeService:
         self.context_builder = context_builder or ContextBuilder()
         self.max_model_rounds = max_model_rounds
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
+        self.compaction_config = compaction_config or CompactionConfig()
+        self.compaction_strategies = compaction_strategies or CompactionStrategyRegistry()
+        try:
+            self.compaction_strategies.get(LLMSummaryCompactionStrategy.strategy_id)
+        except KeyError:
+            self.compaction_strategies.register(LLMSummaryCompactionStrategy(adapter))
+        self.context_preparation = ContextPreparationService(
+            store=store,
+            adapter=adapter,
+            hooks=self.hooks,
+            events=self.event_recorder,
+            context_builder=self.context_builder,
+            strategies=self.compaction_strategies,
+            config=self.compaction_config,
+            system_prompt=self.system_prompt,
+        )
         self._abort_signals: dict[str, AbortSignal] = {}
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
@@ -192,11 +216,9 @@ class RuntimeService:
         loop = InnerAgentLoop(
             adapter=self.adapter,
             tools=self.tools,
-            hooks=self.hooks,
-            context_builder=self.context_builder,
             max_model_rounds=self.max_model_rounds,
-            system_prompt=self.system_prompt,
             ports=InnerLoopPorts(
+                prepare_context=self.context_preparation.prepare,
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_call=self._handle_tool_call,
@@ -218,6 +240,95 @@ class RuntimeService:
             tool_results=tool_results,
             abort_signal=abort_signal,
         )
+
+    async def compact(self, *, session_id: str) -> CompactionCommandResult:
+        """Manually compact a session through the same durable summary pipeline as auto mode."""
+
+        snapshot = self.store.load_session(session_id)
+        if maybe_active_run(snapshot.runs) is not None:
+            raise SessionBusyError(f"session already has an active run: {session_id}")
+        run = RunRecord(
+            session_id=session_id,
+            kind="compaction",
+            trigger="manual_compaction",
+            status="running",
+            model=self.adapter.model.model_id,
+        )
+        run_lock = self._acquire_session_run_lock(session_id, run.run_id)
+        if run_lock is None:
+            raise SessionBusyError(f"session is already locked: {session_id}")
+        emitted: list[EventRecord] = []
+        sequence = len(snapshot.events)
+        abort_signal = self._activate_abort_signal(session_id, run.run_id)
+        terminal_run = run
+        try:
+            active_session = snapshot.session.model_copy(
+                update={"status": "running", "last_run_id": run.run_id, "updated_at": utc_now()}
+            )
+            self.store.save_session(active_session)
+            self.store.save_run(run)
+            self.store.rebuild_index()
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session_id,
+                run_id=run.run_id,
+                event_type="run_started",
+                payload={"trigger": "manual_compaction", "kind": "compaction"},
+            )
+            try:
+                execution = await self.context_preparation.compact(
+                    emitted,
+                    sequence,
+                    session=active_session,
+                    run=run,
+                    messages=snapshot.messages,
+                    tools=self.tools.definitions(),
+                    added_context=[],
+                    trigger="manual",
+                    force=True,
+                    abort_signal=abort_signal,
+                )
+            except Exception as exc:
+                failed = await self.run_lifecycle.fail(
+                    emitted,
+                    len(self.store.load_session(session_id, recover=False).events),
+                    session=active_session,
+                    run=run,
+                    error=str(exc),
+                    final_text="",
+                    tool_results=[],
+                )
+                terminal_run = failed.run
+                idle_session = failed.session.model_copy(
+                    update={"status": "idle", "updated_at": utc_now()}
+                )
+                self.store.save_session(idle_session)
+                self.store.rebuild_index()
+                if isinstance(exc, CompactionError):
+                    raise
+                raise CompactionError(f"manual compaction failed: {exc}") from exc
+            completed = await self.run_lifecycle.complete(
+                emitted,
+                execution.sequence,
+                session=active_session,
+                run=run,
+                messages=snapshot.messages,
+                final_text="",
+                tool_results=[],
+            )
+            terminal_run = completed.run
+            return CompactionCommandResult(
+                session=completed.session,
+                run=completed.run,
+                compaction=execution.record,
+                events=emitted,
+                skipped=execution.skipped,
+            )
+        finally:
+            self._release_abort_signal(run.run_id, abort_signal)
+            self._release_session_run_lock(run_lock)
+            self._finish_run_hooks(terminal_run)
 
     async def abort_run(
         self,

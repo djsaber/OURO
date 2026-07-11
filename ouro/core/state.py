@@ -17,6 +17,7 @@ RunStatus = Literal[
     "failed",
     "recoverable",
 ]
+RunKind = Literal["agent", "compaction"]
 
 SessionStatus = Literal["idle", "running", "waiting_user", "waiting_approval", "failed"]
 ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
@@ -31,6 +32,7 @@ class SessionRecord(OuroModel):
     archived: bool = False
     workspace: str | None = None
     current_model: str | None = None
+    active_compaction_id: str | None = None
     status: SessionStatus = "idle"
     last_message_id: str | None = None
     last_run_id: str | None = None
@@ -43,6 +45,7 @@ class RunRecord(OuroModel):
     schema_version: int = SCHEMA_VERSION
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
+    kind: RunKind = "agent"
     status: RunStatus = "queued"
     trigger: str = "user"
     started_at: datetime = Field(default_factory=utc_now)

@@ -29,7 +29,7 @@ Current first-phase runtime includes:
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Standards-compatible Agent Skills discovery and native system-prompt injection through `ContextBuilder`; history truncation preserves assistant tool-call/tool-result boundaries.
+- Standards-compatible Agent Skills discovery and native system-prompt injection through `ContextBuilder`; durable built-in LLM summary compaction preserves canonical history and complete tool exchanges.
 - Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 

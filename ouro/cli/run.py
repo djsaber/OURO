@@ -9,6 +9,7 @@ from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
+    CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
     ProviderConfigManager,
@@ -49,6 +50,7 @@ def build_default_runtime(
     context_builder = ContextBuilder(skill_instructions=skills_prompt)
     resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
     permission_overrides = PermissionConfigManager(store.root).snapshot().tools
+    compaction_config = CompactionConfigManager(store.root).snapshot()
     return RuntimeService(
         store=store,
         adapter=adapter,
@@ -57,6 +59,7 @@ def build_default_runtime(
         system_prompt=resolved_system_prompt,
         event_sink=event_sink,
         permission_overrides=permission_overrides,
+        compaction_config=compaction_config,
     )
 
 

@@ -25,5 +25,17 @@ class HookError(OuroError):
     """A runtime hook failed."""
 
 
+class CompactionError(OuroError):
+    """Context compaction could not produce and activate a valid summary."""
+
+
+class CompactionStateError(CompactionError):
+    """Persisted compaction coverage does not match canonical session history."""
+
+
+class ContextOverflowError(CompactionError):
+    """A context remains over its hard input budget after compaction."""
+
+
 class SkillManagementError(OuroError):
     """An Agent Skill management operation was invalid or unsafe."""

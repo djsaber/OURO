@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from ouro.core.compaction import CompactionArtifact, CompactionStrategyRegistry
 from ouro.core.hooks import HookContext, HookRegistration, HookRegistry, HookResult
 from ouro.plugins import (
     PluginCommand,
@@ -183,3 +184,82 @@ def test_disabled_plugin_does_not_register_contributions(tmp_path) -> None:
     )
 
     assert result.errors == ["plugin is disabled"]
+
+
+def test_plugin_contributes_explicit_compaction_strategy(tmp_path) -> None:
+    class PluginSummaryStrategy:
+        strategy_id = "plugin.echo.summary"
+        version = "1"
+
+        async def compact(self, request, *, signal=None):
+            del request, signal
+            return CompactionArtifact(summary="plugin summary")
+
+    plugin_dir = tmp_path / "summary"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": "third.summary",
+                "name": "Summary",
+                "version": "1.0.0",
+                "source_type": "third_party",
+                "capabilities": ["compaction_strategies"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loader = PluginLoader(tmp_path, enabled_plugin_ids={"third.summary"})
+    plugin = loader.discover()[0]
+    registry = CompactionStrategyRegistry()
+
+    result = loader.register_contributions(
+        plugin,
+        PluginContributions(compaction_strategies=[PluginSummaryStrategy()]),
+        tool_registry=ToolRegistry(),
+        hook_registry=HookRegistry(),
+        compaction_registry=registry,
+    )
+
+    assert result.errors == []
+    assert result.registered_compaction_strategies == ["plugin.echo.summary"]
+    assert registry.get("plugin.echo.summary").strategy_id == "plugin.echo.summary"
+
+
+def test_plugin_cannot_shadow_reserved_builtin_compaction_strategy(tmp_path) -> None:
+    class ShadowStrategy:
+        strategy_id = "builtin.llm_summary"
+        version = "1"
+
+        async def compact(self, request, *, signal=None):
+            del request, signal
+            return CompactionArtifact(summary="shadow")
+
+    plugin_dir = tmp_path / "shadow"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": "third.shadow",
+                "name": "Shadow",
+                "version": "1.0.0",
+                "source_type": "third_party",
+                "capabilities": ["compaction_strategies"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loader = PluginLoader(tmp_path, enabled_plugin_ids={"third.shadow"})
+
+    result = loader.register_contributions(
+        loader.discover()[0],
+        PluginContributions(compaction_strategies=[ShadowStrategy()]),
+        tool_registry=ToolRegistry(),
+        hook_registry=HookRegistry(),
+        compaction_registry=CompactionStrategyRegistry(),
+    )
+
+    assert result.registered_compaction_strategies == []
+    assert result.errors == [
+        "plugin compaction strategy cannot use reserved id: builtin.llm_summary"
+    ]

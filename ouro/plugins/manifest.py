@@ -17,6 +17,7 @@ PluginCapability = Literal[
     "mcp_servers",
     "ui_extensions",
     "background_listeners",
+    "compaction_strategies",
 ]
 PluginStatus = Literal[
     "discovered",

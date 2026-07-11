@@ -6,9 +6,8 @@ from typing import Any, Protocol
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.context import ContextBuilder, ContextView
+from ouro.core.context import ContextView
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
@@ -126,8 +125,24 @@ class RunFailer(Protocol):
     ) -> RunResult: ...
 
 
+class ContextPreparer(Protocol):
+    async def __call__(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        tools: list[ToolDefinition],
+        model_round: int,
+        abort_signal: AbortSignal,
+    ) -> tuple[ContextView, int]: ...
+
+
 @dataclass(frozen=True)
 class InnerLoopPorts:
+    prepare_context: ContextPreparer
     emit: EventEmitter
     record_hook_failures: HookFailureRecorder
     handle_tool_call: ToolCallHandler
@@ -174,18 +189,12 @@ class InnerAgentLoop:
         *,
         adapter: RuntimeAdapter,
         tools: ToolDefinitionProvider,
-        hooks: HookRegistry,
-        context_builder: ContextBuilder,
         max_model_rounds: int,
         ports: InnerLoopPorts,
-        system_prompt: str = "",
     ) -> None:
         self.adapter = adapter
         self.tools = tools
-        self.hooks = hooks
-        self.context_builder = context_builder
         self.max_model_rounds = max_model_rounds
-        self.system_prompt = system_prompt
         self.ports = ports
 
     async def run(
@@ -214,7 +223,10 @@ class InnerAgentLoop:
             if aborted := self._aborted_result(state):
                 return aborted
 
-            context = await self._build_context(state, model_round)
+            try:
+                context = await self._build_context(state, model_round, abort_signal)
+            except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
+                return await self._fail(state, f"context preparation failed: {exc}")
             await self._start_round(state, model_round)
             round_state = _RoundState()
             terminal_result = await self._consume_provider_stream(
@@ -262,31 +274,23 @@ class InnerAgentLoop:
             f"model round limit exceeded: {self.max_model_rounds}",
         )
 
-    async def _build_context(self, state: _LoopState, model_round: int) -> ContextView:
-        hook_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="after_context_build",
-                session_id=state.session.session_id,
-                run_id=state.run.run_id,
-                data={"message_count": len(state.messages), "model_round": model_round},
-            )
-        )
-        state.sequence = await self.ports.record_hook_failures(
+    async def _build_context(
+        self,
+        state: _LoopState,
+        model_round: int,
+        abort_signal: AbortSignal,
+    ) -> ContextView:
+        context, state.sequence = await self.ports.prepare_context(
             state.emitted,
             state.sequence,
-            hook_result.failures,
-        )
-        added_context = [text for result in hook_result.results for text in result.added_context]
-        return self.context_builder.build(
+            session=state.session,
+            run=state.run,
             messages=state.messages,
             tools=self.tools.definitions(),
-            system_prompt=self.system_prompt,
-            added_context=added_context,
-            input_token_budget=max(
-                1,
-                self.adapter.model.context_window - self.adapter.model.max_output_tokens,
-            ),
+            model_round=model_round,
+            abort_signal=abort_signal,
         )
+        return context
 
     async def _start_round(self, state: _LoopState, model_round: int) -> None:
         state.sequence = await self.ports.emit(

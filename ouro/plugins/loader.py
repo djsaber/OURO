@@ -9,6 +9,7 @@ from typing import Any
 from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
+from ouro.core.compaction import CompactionStrategy, CompactionStrategyRegistry
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
 from ouro.plugins.manifest import PluginManifest, PluginStatus
 from ouro.plugins.registry import (
@@ -35,6 +36,7 @@ class PluginRegistrationResult(OuroModel):
     registered_hooks: list[str] = Field(default_factory=list)
     registered_commands: list[str] = Field(default_factory=list)
     registered_context_providers: list[str] = Field(default_factory=list)
+    registered_compaction_strategies: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
 
 
@@ -44,6 +46,7 @@ class PluginContributions:
     hooks: list[HookRegistration] = field(default_factory=list)
     commands: list[PluginCommand] = field(default_factory=list)
     context_providers: list[PluginContextProvider] = field(default_factory=list)
+    compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
 
 
 class PluginLoader:
@@ -71,6 +74,7 @@ class PluginLoader:
         tool_registry: ToolRegistry,
         hook_registry: HookRegistry,
         command_registry: PluginCommandRegistry | None = None,
+        compaction_registry: CompactionStrategyRegistry | None = None,
     ) -> PluginRegistrationResult:
         if plugin.manifest is None:
             return PluginRegistrationResult(
@@ -131,6 +135,23 @@ class PluginLoader:
                 hook_registry.register(registration)
                 result.registered_context_providers.append(provider.provider_id)
             except Exception as exc:  # noqa: BLE001 - plugin registration is an isolation boundary.
+                result.errors.append(str(exc))
+
+        for strategy in contributions.compaction_strategies:
+            if compaction_registry is None:
+                result.errors.append(
+                    f"compaction strategy registry is unavailable for {strategy.strategy_id}"
+                )
+                continue
+            try:
+                if strategy.strategy_id.startswith("builtin."):
+                    raise ValueError(
+                        f"plugin compaction strategy cannot use reserved id: "
+                        f"{strategy.strategy_id}"
+                    )
+                compaction_registry.register(strategy)
+                result.registered_compaction_strategies.append(strategy.strategy_id)
+            except Exception as exc:  # noqa: BLE001 - plugin registration isolation boundary.
                 result.errors.append(str(exc))
 
         return result

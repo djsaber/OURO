@@ -19,9 +19,15 @@ class RuntimeAdapter:
         context: ContextView,
         *,
         signal: AbortSignal | None = None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
+        model = self.model
+        if max_output_tokens is not None:
+            if max_output_tokens < 1 or max_output_tokens > self.model.context_window:
+                raise ValueError("max_output_tokens must be between 1 and the context window")
+            model = self.model.model_copy(update={"max_output_tokens": max_output_tokens})
         provider_events = self.provider.stream(
-            model=self.model,
+            model=model,
             system_prompt=context.system_prompt,
             messages=list(context.model_messages),
             tools=[tool.model_dump() for tool in context.tool_definitions],
