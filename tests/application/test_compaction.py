@@ -76,7 +76,7 @@ class SummaryRouteProvider:
         if self.error is not None:
             yield ProviderStreamEvent(type="error", error=self.error)
             return
-        yield ProviderStreamEvent(type="text_delta", text="<summary1>routed summary</summary1>")
+        yield ProviderStreamEvent(type="text_delta", text="<summary>routed summary</summary>")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:

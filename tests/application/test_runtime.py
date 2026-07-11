@@ -1275,7 +1275,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
                 self.summary_calls += 1
                 yield ProviderStreamEvent(
                     type="text_delta",
-                    text=f"<summary1>durable summary {self.summary_calls}</summary1>",
+                    text=f"<summary>durable summary {self.summary_calls}</summary>",
                 )
                 yield ProviderStreamEvent(
                     type="done",

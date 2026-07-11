@@ -33,7 +33,7 @@ from ouro.core.tools import ToolDefinition
 from ouro.prompts import SUMMARIZATION_PROMPT
 from ouro.sessions import SessionStore
 
-_SUMMARY_PATTERN = re.compile(r"<summary1>\s*(.*?)\s*</summary1>", re.DOTALL)
+_SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -263,7 +263,7 @@ class LLMSummaryCompactionStrategy:
         raw_summary = "".join(text_parts)
         match = _SUMMARY_PATTERN.search(raw_summary)
         if match is None or not match.group(1).strip():
-            raise CompactionError("summary response did not contain a non-empty <summary1> block")
+            raise CompactionError("summary response did not contain a non-empty <summary> block")
         return match.group(1).strip(), usage
 
 

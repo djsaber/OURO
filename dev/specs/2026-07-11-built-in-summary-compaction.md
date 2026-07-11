@@ -90,7 +90,7 @@ or its model request/output fails. The same request-scoped parameter overrides a
 fallback model view. A fallback retries the complete compaction input rather than continuing from
 a partial summary produced by a failed route.
 
-Only the `<summary1>...</summary1>` payload is activated. Analysis/reasoning output is not placed
+Only the `<summary>...</summary>` payload is activated. Analysis/reasoning output is not placed
 in later model context. The record stores model identity, prompt version/hash, token estimates,
 provider usage, selected endpoint, route, and fallback reason when applicable.
 
