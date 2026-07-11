@@ -1,6 +1,11 @@
 """Configuration and credential helpers."""
 
-from ouro.config.compaction import CompactionConfig, CompactionConfigManager
+from ouro.config.compaction import (
+    CompactionConfig,
+    CompactionConfigManager,
+    CompactionModelConfig,
+    compaction_config_to_public_dict,
+)
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.endpoints import (
     ProviderEndpointConfig,
@@ -31,6 +36,8 @@ __all__ = [
     "ConfigService",
     "CompactionConfig",
     "CompactionConfigManager",
+    "CompactionModelConfig",
+    "compaction_config_to_public_dict",
     "CredentialRef",
     "CredentialResolver",
     "PermissionConfigManager",

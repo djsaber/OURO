@@ -60,6 +60,7 @@ class CompactionRecord(OuroModel):
     source_digest: str
     created_at: datetime = Field(default_factory=utc_now)
     model_provider: str | None = None
+    model_endpoint_id: str | None = None
     model_id: str | None = None
     prompt_version: str | None = None
     prompt_hash: str | None = None

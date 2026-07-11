@@ -12,6 +12,7 @@ from ouro.cli.approval_commands import (
 from ouro.cli.config_commands import (
     clear_system_prompt_config,
     set_system_prompt_config,
+    show_compaction_config,
     show_permissions_config,
     show_system_prompt_config,
 )
@@ -196,6 +197,20 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             tool_name=args.tool,
             mode=args.mode,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "compaction":
+        return show_compaction_config(
+            home=home,
+            provider_id=args.provider_id,
+            endpoint_id=args.endpoint_id,
+            runtime_endpoint=args.runtime_endpoint,
+            temperature=args.temperature,
+            max_output_tokens=args.max_output_tokens,
+            thinking_enabled=args.thinking,
+            thinking_level=args.thinking_level,
+            clear=args.clear,
             json_mode=args.json,
         )
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
+from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
-from ouro.config.compaction import CompactionConfig
+from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
     CompactionArtifact,
@@ -60,6 +61,26 @@ class FailingStrategy:
     async def compact(self, request, *, signal=None):
         del request, signal
         raise RuntimeError("summary unavailable")
+
+
+class SummaryRouteProvider:
+    provider_id = "summary-route"
+
+    def __init__(self, *, error: str | None = None) -> None:
+        self.error = error
+        self.models: list[ModelMetadata] = []
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del system_prompt, messages, tools
+        self.models.append(model)
+        if self.error is not None:
+            yield ProviderStreamEvent(type="error", error=self.error)
+            return
+        yield ProviderStreamEvent(type="text_delta", text="<summary1>routed summary</summary1>")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
 def _runtime(
@@ -124,6 +145,208 @@ def _append_turns(
                 sequence=sequence,
             )
         )
+
+
+def _summary_request() -> CompactionRequest:
+    return CompactionRequest(
+        session_id="ses_route",
+        strategy_id="builtin.llm_summary",
+        trigger="manual",
+        messages=[
+            MessageRecord.text(session_id="ses_route", role="user", text="old question"),
+            MessageRecord.text(session_id="ses_route", role="assistant", text="old answer"),
+        ],
+        input_token_budget=20_000,
+        summary_output_tokens=1024,
+    )
+
+
+def _summary_adapter(
+    provider: SummaryRouteProvider,
+    *,
+    provider_id: str,
+    endpoint_id: str,
+    context_window: int = 20_000,
+) -> RuntimeAdapter:
+    return RuntimeAdapter(
+        provider,
+        ModelMetadata(
+            model_id=f"{provider_id}-model",
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            context_window=context_window,
+            max_output_tokens=min(2048, context_window),
+            temperature=0.8,
+            supports_reasoning=True,
+            supported_thinking_levels=("low", "high"),
+            default_thinking_level="low",
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() -> None:
+    runtime_provider = SummaryRouteProvider()
+    configured_provider = SummaryRouteProvider()
+    runtime_adapter = _summary_adapter(
+        runtime_provider,
+        provider_id="runtime",
+        endpoint_id="chat",
+    )
+    configured_adapter = _summary_adapter(
+        configured_provider,
+        provider_id="summary",
+        endpoint_id="compact",
+    )
+    strategy = LLMSummaryCompactionStrategy(
+        runtime_adapter,
+        configured_adapter=configured_adapter,
+        model_config=CompactionModelConfig(
+            provider_id="summary",
+            endpoint_id="compact",
+            temperature=0.1,
+            max_output_tokens=512,
+            thinking_enabled=True,
+            thinking_level="high",
+        ),
+    )
+
+    artifact = await strategy.compact(_summary_request())
+
+    assert runtime_provider.models == []
+    assert len(configured_provider.models) == 1
+    request_model = configured_provider.models[0]
+    assert request_model.temperature == 0.1
+    assert request_model.max_output_tokens == 512
+    assert request_model.default_thinking_level == "high"
+    assert configured_adapter.model.temperature == 0.8
+    assert configured_adapter.model.max_output_tokens == 2048
+    assert configured_adapter.model.default_thinking_level == "low"
+    assert artifact.metadata["model_route"] == "configured"
+    assert artifact.metadata["model_endpoint_id"] == "compact"
+
+
+@pytest.mark.asyncio
+async def test_compaction_provider_error_retries_runtime_route_with_same_parameters() -> None:
+    configured_provider = SummaryRouteProvider(error="dedicated unavailable")
+    runtime_provider = SummaryRouteProvider()
+    runtime_adapter = _summary_adapter(
+        runtime_provider,
+        provider_id="runtime",
+        endpoint_id="chat",
+    )
+    strategy = LLMSummaryCompactionStrategy(
+        runtime_adapter,
+        configured_adapter=_summary_adapter(
+            configured_provider,
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+        model_config=CompactionModelConfig(
+            provider_id="summary",
+            endpoint_id="compact",
+            temperature=0.2,
+            max_output_tokens=700,
+            thinking_enabled=False,
+            thinking_level="off",
+        ),
+    )
+
+    artifact = await strategy.compact(_summary_request())
+
+    assert len(configured_provider.models) == 1
+    assert len(runtime_provider.models) == 1
+    fallback_model = runtime_provider.models[0]
+    assert fallback_model.temperature == 0.2
+    assert fallback_model.max_output_tokens == 700
+    assert fallback_model.default_thinking_level == "off"
+    assert runtime_adapter.model.temperature == 0.8
+    assert runtime_adapter.model.default_thinking_level == "low"
+    assert artifact.metadata["model_route"] == "runtime_fallback"
+    assert "dedicated unavailable" in str(artifact.metadata["model_fallback_reason"])
+
+
+@pytest.mark.asyncio
+async def test_compaction_context_overflow_and_resolution_error_fall_back_to_runtime() -> None:
+    too_small_provider = SummaryRouteProvider()
+    runtime_provider = SummaryRouteProvider()
+    runtime_adapter = _summary_adapter(
+        runtime_provider,
+        provider_id="runtime",
+        endpoint_id="chat",
+    )
+    target = CompactionModelConfig(provider_id="summary", endpoint_id="tiny")
+    too_small = LLMSummaryCompactionStrategy(
+        runtime_adapter,
+        configured_adapter=_summary_adapter(
+            too_small_provider,
+            provider_id="summary",
+            endpoint_id="tiny",
+            context_window=256,
+        ),
+        model_config=target,
+    )
+
+    overflow_artifact = await too_small.compact(_summary_request())
+    unresolved = LLMSummaryCompactionStrategy(
+        runtime_adapter,
+        configured_adapter_error="configured endpoint unavailable: endpoint not found",
+        model_config=target,
+    )
+    unresolved_artifact = await unresolved.compact(_summary_request())
+
+    assert too_small_provider.models == []
+    assert overflow_artifact.metadata["model_route"] == "runtime_fallback"
+    assert "ContextOverflowError" in str(
+        overflow_artifact.metadata["model_fallback_reason"]
+    )
+    assert unresolved_artifact.metadata["model_route"] == "runtime_fallback"
+    assert "endpoint not found" in str(
+        unresolved_artifact.metadata["model_fallback_reason"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Dedicated summary")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+    runtime_adapter = _summary_adapter(
+        SummaryRouteProvider(),
+        provider_id="runtime",
+        endpoint_id="chat",
+    )
+    configured_adapter = _summary_adapter(
+        SummaryRouteProvider(),
+        provider_id="summary",
+        endpoint_id="compact",
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=runtime_adapter,
+        tools=ToolRegistry(),
+        system_prompt="",
+        compaction_adapter=configured_adapter,
+        compaction_config=CompactionConfig(
+            model=CompactionModelConfig(
+                provider_id="summary",
+                endpoint_id="compact",
+                max_output_tokens=512,
+            )
+        ),
+    )
+
+    result = await runtime.compact(session_id=session.session_id)
+    restored = store.load_session(session.session_id).active_compaction
+
+    assert result.compaction is not None
+    assert restored is not None
+    assert restored.model_provider == "summary"
+    assert restored.model_endpoint_id == "compact"
+    assert restored.model_id == "summary-model"
+    assert restored.metadata["model_route"] == "configured"
 
 
 @pytest.mark.asyncio

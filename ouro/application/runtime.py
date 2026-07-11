@@ -51,6 +51,8 @@ class RuntimeService:
         permission_overrides: Mapping[str, PermissionMode] | None = None,
         compaction_config: CompactionConfig | None = None,
         compaction_strategies: CompactionStrategyRegistry | None = None,
+        compaction_adapter: RuntimeAdapter | None = None,
+        compaction_adapter_error: str | None = None,
     ) -> None:
         self.store = store
         self.sessions = SessionService(store)
@@ -70,10 +72,26 @@ class RuntimeService:
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
         self.compaction_config = compaction_config or CompactionConfig()
         self.compaction_strategies = compaction_strategies or CompactionStrategyRegistry()
+        configured_adapter_error = compaction_adapter_error
+        if (
+            self.compaction_config.model.has_dedicated_endpoint
+            and compaction_adapter is None
+            and configured_adapter_error is None
+        ):
+            configured_adapter_error = (
+                "configured endpoint unavailable: no compaction adapter was supplied"
+            )
         try:
             self.compaction_strategies.get(LLMSummaryCompactionStrategy.strategy_id)
         except KeyError:
-            self.compaction_strategies.register(LLMSummaryCompactionStrategy(adapter))
+            self.compaction_strategies.register(
+                LLMSummaryCompactionStrategy(
+                    adapter,
+                    configured_adapter=compaction_adapter,
+                    configured_adapter_error=configured_adapter_error,
+                    model_config=self.compaction_config.model,
+                )
+            )
         self.context_preparation = ContextPreparationService(
             store=store,
             adapter=adapter,

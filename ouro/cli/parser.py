@@ -176,6 +176,38 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     permissions_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    compaction_parser = config_subparsers.add_parser(
+        "compaction",
+        help="Inspect or set compaction model routing and request parameters",
+    )
+    compaction_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    compaction_parser.add_argument("--provider", dest="provider_id", help="Provider id")
+    compaction_parser.add_argument("--endpoint", dest="endpoint_id", help="Endpoint id")
+    compaction_parser.add_argument(
+        "--runtime-endpoint",
+        action="store_true",
+        help="Clear the dedicated endpoint and use the session runtime endpoint",
+    )
+    compaction_parser.add_argument("--temperature", type=float, default=None)
+    compaction_parser.add_argument("--max-output-tokens", type=int, default=None)
+    compaction_parser.add_argument(
+        "--thinking",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable thinking for compaction requests",
+    )
+    compaction_parser.add_argument(
+        "--thinking-level",
+        choices=("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+        default=None,
+    )
+    compaction_parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Clear the dedicated endpoint and all compaction model overrides",
+    )
+    compaction_parser.add_argument("--json", action="store_true", help="Print JSON")
+
 
 def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_parser = subparsers.add_parser("provider", help="Manage providers")

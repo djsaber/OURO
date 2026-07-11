@@ -1,7 +1,7 @@
 # OURO Agent Built-in Summary Compaction
 
 - Date: 2026-07-11
-- Status: Accepted / implementation in progress
+- Status: Accepted / implemented
 - Supersedes: the truncation-only and official-summary-plugin decisions in the 2026-07-07
   Phase 1 specifications and the 2026-07-11 Phase 2 extension specification
 
@@ -78,9 +78,42 @@ The built-in strategy uses `ouro.prompts.SUMMARIZATION_PROMPT`, sends no tools, 
 normal agent loop so summary generation cannot recursively trigger compaction or create canonical
 conversation messages. Long inputs are summarized incrementally in bounded chunks.
 
+The `compaction.model` configuration may select a dedicated `provider_id` and `endpoint_id` and
+may override request-scoped temperature, output-token limit, thinking enablement, and thinking
+level. These overrides are applied to a copied model view used only by summary requests; the
+session runtime adapter and all other model calls remain unchanged.
+
+The session runtime endpoint is the mandatory fallback route. It is used when no dedicated route
+is configured, the configured provider/endpoint cannot be resolved or constructed, its context
+cannot fit a complete summary chunk, its parameters are incompatible with endpoint capabilities,
+or its model request/output fails. The same request-scoped parameter overrides are applied to the
+fallback model view. A fallback retries the complete compaction input rather than continuing from
+a partial summary produced by a failed route.
+
 Only the `<summary1>...</summary1>` payload is activated. Analysis/reasoning output is not placed
 in later model context. The record stores model identity, prompt version/hash, token estimates,
-and provider usage.
+provider usage, selected endpoint, route, and fallback reason when applicable.
+
+Configuration is persisted atomically in the shared `config/config.json` file. Example:
+
+```json
+{
+  "compaction": {
+    "model": {
+      "provider_id": "glm",
+      "endpoint_id": "summary",
+      "temperature": 0.1,
+      "max_output_tokens": 4096,
+      "thinking_enabled": false,
+      "thinking_level": "off"
+    }
+  }
+}
+```
+
+`ouro config compaction` inspects this configuration. The same command with `--provider`,
+`--endpoint`, and model parameter flags persists updates; `--runtime-endpoint` clears only the
+dedicated route and `--clear` clears all compaction model overrides.
 
 ## 6. Manual Command
 
@@ -119,5 +152,7 @@ may select the removed truncation implementation.
 - Canonical messages and history/export views remain unchanged.
 - Tool exchanges and the latest open turn are never split or covered.
 - Built-in and plugin strategies pass the same host validation.
+- Dedicated endpoint success, resolution failure, context overflow, and provider failure all use
+  deterministic routing; fallback parameters remain isolated from normal session requests.
+- Compaction model routing and parameter overrides survive process restart through `config.json`.
 - Compaction failures are persisted, observable, and never silently fall back to truncation.
-

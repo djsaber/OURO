@@ -1,6 +1,7 @@
 import json
 from typing import Any, cast
 
+from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
@@ -1320,3 +1321,72 @@ def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
     assert "\x1b[0m" in captured.out
     assert "Let me think..." in captured.out
     assert "Answer" in captured.out
+
+
+def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "compaction": {
+                    "model": {
+                        "provider_id": "glm",
+                        "endpoint_id": "summary",
+                        "temperature": 0.1,
+                    }
+                },
+                "providers": {
+                    "default": "faux",
+                    "items": {
+                        "glm": {
+                            "provider_id": "glm",
+                            "provider_type": "openai-compatible",
+                            "default_endpoint": "summary",
+                            "endpoints": {
+                                "summary": {
+                                    "model_id": "summary-model",
+                                    "base_url": "https://summary.example.test/v1",
+                                }
+                            },
+                        }
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = build_default_runtime(tmp_path)
+    strategy = runtime.compaction_strategies.get("builtin.llm_summary")
+
+    assert isinstance(strategy, LLMSummaryCompactionStrategy)
+    assert runtime.adapter.model.provider_id == "faux"
+    assert strategy.configured_adapter is not None
+    assert strategy.configured_adapter.model.provider_id == "glm"
+    assert strategy.configured_adapter.model.endpoint_id == "summary"
+
+
+def test_missing_compaction_endpoint_does_not_break_runtime_composition(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "compaction": {
+                    "model": {
+                        "provider_id": "missing",
+                        "endpoint_id": "missing",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    runtime = build_default_runtime(tmp_path)
+    strategy = runtime.compaction_strategies.get("builtin.llm_summary")
+
+    assert isinstance(strategy, LLMSummaryCompactionStrategy)
+    assert strategy.configured_adapter is None
+    assert "provider not found" in (strategy.configured_adapter_error or "")

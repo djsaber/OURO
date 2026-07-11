@@ -291,6 +291,17 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
                     "skipped": result.skipped,
                     "compaction_id": compaction_id,
                     "covered_message_count": covered_count,
+                    "model_provider": compaction.model_provider if compaction else None,
+                    "model_endpoint_id": compaction.model_endpoint_id if compaction else None,
+                    "model_id": compaction.model_id if compaction else None,
+                    "model_route": compaction.metadata.get("model_route")
+                    if compaction
+                    else None,
+                    "model_fallback_reason": compaction.metadata.get(
+                        "model_fallback_reason"
+                    )
+                    if compaction
+                    else None,
                 },
                 ensure_ascii=False,
             )
@@ -301,7 +312,18 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
         print("Compaction skipped: no complete older turn is eligible.")
         return 0
 
-    print(f"Compaction completed: {compaction_id} ({covered_count} messages covered).")
+    endpoint = "/".join(
+        part
+        for part in (compaction.model_provider, compaction.model_endpoint_id)
+        if part
+    )
+    route = compaction.metadata.get("model_route")
+    model_suffix = f" via {endpoint}" if endpoint else ""
+    route_suffix = f" [{route}]" if route else ""
+    print(
+        f"Compaction completed: {compaction_id} ({covered_count} messages covered)"
+        f"{model_suffix}{route_suffix}."
+    )
     return 0
 
 

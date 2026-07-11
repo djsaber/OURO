@@ -60,6 +60,8 @@ python -m ouro.cli.main provider use glm --home ./.ouro-dev
 python -m ouro.cli.main provider endpoint list glm --home ./.ouro-dev
 python -m ouro.cli.main provider show glm --home ./.ouro-dev
 python -m ouro.cli.main provider check glm --endpoint reasoning --home ./.ouro-dev
+
+python -m ouro.cli.main config compaction --home ./.ouro-dev --provider glm --endpoint reasoning --temperature 0.1 --no-thinking
 python -m ouro.cli.main skills list --home ./.ouro-dev
 python -m ouro.cli.main skills show pdf --home ./.ouro-dev
 python -m ouro.cli.main skills roots --home ./.ouro-dev

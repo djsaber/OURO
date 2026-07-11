@@ -101,6 +101,8 @@ max output、tools 或由 thinking level 映射出的稳定字段。稳定 Endpo
 这些字段用于：
 
 - 上下文预算估算与内置摘要压缩触发。
+- 压缩任务可在 `compaction.model` 中引用独立 Provider/Endpoint，并配置仅对摘要请求生效的
+  temperature、max output 和 thinking 参数；独立端点不可用时回退到会话运行时端点。
 - 工具是否可用。
 - UI 展示。
 - 用量统计。

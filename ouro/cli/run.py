@@ -9,12 +9,14 @@ from ouro.application.events import RuntimeEventSink
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
+    CompactionConfig,
     CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
 )
+from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
@@ -42,7 +44,8 @@ def build_default_runtime(
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
-    resolved_options = ProviderConfigManager(store.root).resolve_runtime_options(
+    provider_config = ProviderConfigManager(store.root)
+    resolved_options = provider_config.resolve_runtime_options(
         provider_options or RuntimeProviderOptions(),
     )
     adapter = build_runtime_adapter(resolved_options)
@@ -51,6 +54,10 @@ def build_default_runtime(
     resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
     permission_overrides = PermissionConfigManager(store.root).snapshot().tools
     compaction_config = CompactionConfigManager(store.root).snapshot()
+    compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
+        provider_config,
+        compaction_config,
+    )
     return RuntimeService(
         store=store,
         adapter=adapter,
@@ -60,7 +67,33 @@ def build_default_runtime(
         event_sink=event_sink,
         permission_overrides=permission_overrides,
         compaction_config=compaction_config,
+        compaction_adapter=compaction_adapter,
+        compaction_adapter_error=compaction_adapter_error,
     )
+
+
+def _configured_compaction_adapter(
+    providers: ProviderConfigManager,
+    config: CompactionConfig,
+) -> tuple[RuntimeAdapter | None, str | None]:
+    model = config.model
+    if not model.has_dedicated_endpoint:
+        return None, None
+    assert model.provider_id is not None
+    assert model.endpoint_id is not None
+    try:
+        options = providers.resolve_runtime_options(
+            ProviderRuntimeOptions(
+                provider_id=model.provider_id,
+                endpoint_id=model.endpoint_id,
+            )
+        )
+        return build_runtime_adapter(options), None
+    except Exception as exc:  # noqa: BLE001 - optional route must degrade to the runtime route.
+        return (
+            None,
+            f"configured endpoint unavailable: {type(exc).__name__}: {exc}",
+        )
 
 
 async def run_print(

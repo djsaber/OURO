@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ouro.application.events import RuntimeEventRecorder
-from ouro.config.compaction import CompactionConfig
+from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id
 from ouro.core.cancellation import AbortSignal
@@ -43,6 +43,12 @@ class CompactionExecution:
     skipped: bool = False
 
 
+@dataclass(frozen=True)
+class _CompactionAdapterRoute:
+    adapter: RuntimeAdapter
+    route: str
+
+
 class LLMSummaryCompactionStrategy:
     """Generate an incremental summary without entering the normal agent loop."""
 
@@ -50,8 +56,19 @@ class LLMSummaryCompactionStrategy:
     version = "1"
     prompt_version = "2026-07-11"
 
-    def __init__(self, adapter: RuntimeAdapter, prompt: str = SUMMARIZATION_PROMPT) -> None:
-        self.adapter = adapter
+    def __init__(
+        self,
+        adapter: RuntimeAdapter,
+        prompt: str = SUMMARIZATION_PROMPT,
+        *,
+        configured_adapter: RuntimeAdapter | None = None,
+        configured_adapter_error: str | None = None,
+        model_config: CompactionModelConfig | None = None,
+    ) -> None:
+        self.runtime_adapter = adapter
+        self.configured_adapter = configured_adapter
+        self.configured_adapter_error = configured_adapter_error
+        self.model_config = model_config or CompactionModelConfig()
         self.prompt = prompt
         self.prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
@@ -61,6 +78,63 @@ class LLMSummaryCompactionStrategy:
         *,
         signal: AbortSignal | None = None,
     ) -> CompactionArtifact:
+        failures: list[str] = []
+        if self.configured_adapter_error:
+            failures.append(self.configured_adapter_error)
+
+        routes = self._adapter_routes()
+        for route in routes:
+            try:
+                adapter = _apply_compaction_model_config(route.adapter, self.model_config)
+                artifact = await self._compact_with_adapter(
+                    request,
+                    adapter=adapter,
+                    signal=signal,
+                )
+            except Exception as exc:  # noqa: BLE001 - model-route fallback boundary.
+                if signal is not None and signal.is_aborted():
+                    raise CompactionError("summary compaction was aborted") from exc
+                failures.append(f"{route.route}: {type(exc).__name__}: {exc}")
+                continue
+            metadata = dict(artifact.metadata)
+            metadata["model_route"] = route.route
+            if failures:
+                metadata["model_fallback_reason"] = "; ".join(failures)
+            return artifact.model_copy(update={"metadata": metadata})
+
+        raise CompactionError(
+            "all compaction model routes failed: " + "; ".join(failures)
+        )
+
+    def _adapter_routes(self) -> list[_CompactionAdapterRoute]:
+        routes: list[_CompactionAdapterRoute] = []
+        if self.configured_adapter is not None:
+            routes.append(
+                _CompactionAdapterRoute(
+                    adapter=self.configured_adapter,
+                    route="configured",
+                )
+            )
+        runtime_route = (
+            "runtime_fallback"
+            if self.model_config.has_dedicated_endpoint
+            else "runtime"
+        )
+        routes.append(
+            _CompactionAdapterRoute(
+                adapter=self.runtime_adapter,
+                route=runtime_route,
+            )
+        )
+        return routes
+
+    async def _compact_with_adapter(
+        self,
+        request: CompactionRequest,
+        *,
+        adapter: RuntimeAdapter,
+        signal: AbortSignal | None,
+    ) -> CompactionArtifact:
         rolling_summary = request.previous_summary
         total_usage: dict[str, int | float] = {}
         remaining_turns = conversation_turns(request.messages)
@@ -69,16 +143,22 @@ class LLMSummaryCompactionStrategy:
 
         chunk_count = 0
         while remaining_turns:
+            summary_output_tokens = min(
+                request.summary_output_tokens,
+                adapter.model.max_output_tokens,
+            )
             chunk, consumed_turns = self._next_chunk(
-                request,
                 remaining_turns,
+                adapter=adapter,
                 previous_summary=rolling_summary,
+                summary_output_tokens=summary_output_tokens,
             )
             rolling_summary, usage = await self._summarize_chunk(
+                adapter=adapter,
                 session_id=request.session_id,
                 previous_summary=rolling_summary,
                 messages=chunk,
-                summary_output_tokens=request.summary_output_tokens,
+                summary_output_tokens=summary_output_tokens,
                 signal=signal,
             )
             total_usage = _merge_usage(total_usage, usage)
@@ -92,24 +172,26 @@ class LLMSummaryCompactionStrategy:
                 "prompt_version": self.prompt_version,
                 "prompt_hash": self.prompt_hash,
                 "chunk_count": chunk_count,
-                "model_provider": self.adapter.model.provider_id,
-                "model_id": self.adapter.model.model_id,
+                "model_provider": adapter.model.provider_id,
+                "model_endpoint_id": adapter.model.endpoint_id,
+                "model_id": adapter.model.model_id,
+                "model_temperature": adapter.model.temperature,
+                "model_max_output_tokens": adapter.model.max_output_tokens,
+                "model_thinking_level": adapter.model.default_thinking_level,
             },
         )
 
     def _next_chunk(
         self,
-        request: CompactionRequest,
         turns: Sequence[Sequence[MessageRecord]],
         *,
+        adapter: RuntimeAdapter,
         previous_summary: str | None,
+        summary_output_tokens: int,
     ) -> tuple[list[MessageRecord], int]:
         """Choose one provider-safe chunk using the latest rolling summary size."""
 
-        capacity = min(
-            request.input_token_budget,
-            self.adapter.model.context_window - request.summary_output_tokens,
-        )
+        capacity = adapter.model.context_window - summary_output_tokens
         if self._summary_input_tokens(previous_summary, []) >= capacity:
             raise ContextOverflowError(
                 "summary prompt and previous summary exceed model input budget"
@@ -140,6 +222,7 @@ class LLMSummaryCompactionStrategy:
     async def _summarize_chunk(
         self,
         *,
+        adapter: RuntimeAdapter,
         session_id: str,
         previous_summary: str | None,
         messages: Sequence[MessageRecord],
@@ -159,7 +242,7 @@ class LLMSummaryCompactionStrategy:
         text_parts: list[str] = []
         usage: dict[str, int | float] = {}
         saw_done = False
-        async for event in self.adapter.stream(
+        async for event in adapter.stream(
             context,
             signal=signal,
             max_output_tokens=summary_output_tokens,
@@ -317,10 +400,7 @@ class ContextPreparationService:
         )
         target_tokens = int(budget * self.config.policy.target_ratio)
         fixed_tokens = int(initial_view.context_metadata["estimated_fixed_tokens"])
-        summary_output_tokens = min(
-            self.config.policy.summary_output_tokens,
-            self.adapter.model.max_output_tokens,
-        )
+        summary_output_tokens = self.config.policy.summary_output_tokens
         tail_budget = max(
             1,
             target_tokens - fixed_tokens - summary_output_tokens,
@@ -360,6 +440,8 @@ class ContextPreparationService:
                 "strategy_id": self.config.strategy_id,
                 "tokens_before": before_tokens,
                 "target_tokens": target_tokens,
+                "configured_model_provider": self.config.model.provider_id,
+                "configured_model_endpoint": self.config.model.endpoint_id,
             },
         )
         sequence = await self.events.emit(
@@ -397,6 +479,9 @@ class ContextPreparationService:
                 covered_message_ids=plan.covered_message_ids,
                 source_digest=compaction_source_digest(source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
+                model_endpoint_id=(
+                    str(artifact.metadata.get("model_endpoint_id") or "") or None
+                ),
                 model_id=str(artifact.metadata.get("model_id") or "") or None,
                 prompt_version=str(artifact.metadata.get("prompt_version") or "") or None,
                 prompt_hash=str(artifact.metadata.get("prompt_hash") or "") or None,
@@ -452,6 +537,11 @@ class ContextPreparationService:
                 "covered_message_count": len(record.covered_message_ids),
                 "tokens_before": before_tokens,
                 "tokens_after": record.estimated_tokens_after,
+                "model_provider": record.model_provider,
+                "model_endpoint_id": record.model_endpoint_id,
+                "model_id": record.model_id,
+                "model_route": record.metadata.get("model_route"),
+                "model_fallback_reason": record.metadata.get("model_fallback_reason"),
             },
         )
         return CompactionExecution(record=record, sequence=sequence)
@@ -499,6 +589,51 @@ class ContextPreparationService:
 
     def _input_budget(self) -> int:
         return max(1, self.adapter.model.context_window - self.adapter.model.max_output_tokens)
+
+
+def _apply_compaction_model_config(
+    adapter: RuntimeAdapter,
+    config: CompactionModelConfig,
+) -> RuntimeAdapter:
+    """Create a request-local model view without mutating the session runtime adapter."""
+
+    updates: dict[str, object] = {}
+    if config.temperature is not None:
+        updates["temperature"] = config.temperature
+    if config.max_output_tokens is not None:
+        if config.max_output_tokens > adapter.model.context_window:
+            raise ContextOverflowError(
+                "compaction max_output_tokens exceed the selected endpoint context window"
+            )
+        updates["max_output_tokens"] = config.max_output_tokens
+
+    thinking_level = config.thinking_level
+    thinking_requested = config.thinking_enabled is True or thinking_level not in {None, "off"}
+    if thinking_requested:
+        if not adapter.model.supports_reasoning:
+            raise CompactionError(
+                "compaction thinking is enabled but the selected endpoint does not support it"
+            )
+        if (
+            thinking_level is not None
+            and adapter.model.supported_thinking_levels
+            and thinking_level not in adapter.model.supported_thinking_levels
+        ):
+            raise CompactionError(
+                f"compaction thinking level {thinking_level!r} is not supported by "
+                "the selected endpoint"
+            )
+        if thinking_level is not None:
+            updates["default_thinking_level"] = thinking_level
+        elif adapter.model.default_thinking_level == "off":
+            updates["default_thinking_level"] = None
+    elif config.thinking_enabled is False or thinking_level == "off":
+        updates["default_thinking_level"] = "off"
+
+    return RuntimeAdapter(
+        provider=adapter.provider,
+        model=adapter.model.model_copy(update=updates),
+    )
 
 
 def _consume_summary_event(

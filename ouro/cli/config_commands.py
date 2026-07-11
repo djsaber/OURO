@@ -6,12 +6,15 @@ from pathlib import Path
 
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
+    CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
+    compaction_config_to_public_dict,
     permission_config_to_public_dict,
     prompt_config_to_public_dict,
 )
 from ouro.core.errors import OuroError
+from ouro.core.provider import ThinkingLevel
 
 
 def show_system_prompt_config(
@@ -149,6 +152,86 @@ def show_permissions_config(
     print("Tool permission overrides:")
     for name, mode_value in sorted(snapshot.tools.items()):
         print(f"- {name}: {mode_value}")
+    return 0
+
+
+def show_compaction_config(
+    *,
+    home: str | Path | None = None,
+    provider_id: str | None = None,
+    endpoint_id: str | None = None,
+    runtime_endpoint: bool = False,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+    thinking_enabled: bool | None = None,
+    thinking_level: ThinkingLevel | None = None,
+    clear: bool = False,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = CompactionConfigManager(home)
+        config = manager.snapshot()
+        has_update = any(
+            (
+                provider_id is not None,
+                endpoint_id is not None,
+                runtime_endpoint,
+                temperature is not None,
+                max_output_tokens is not None,
+                thinking_enabled is not None,
+                thinking_level is not None,
+                clear,
+            )
+        )
+        if has_update:
+            config = manager.update_model(
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+                use_runtime_endpoint=runtime_endpoint,
+                temperature=temperature,
+                max_output_tokens=max_output_tokens,
+                thinking_enabled=thinking_enabled,
+                thinking_level=thinking_level,
+                clear=clear,
+            )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = compaction_config_to_public_dict(config)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(manager.file.path),
+                    "compaction": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    model = config.model
+    route = (
+        f"{model.provider_id}/{model.endpoint_id}"
+        if model.has_dedicated_endpoint
+        else "session runtime endpoint"
+    )
+    print(
+        "\n".join(
+            [
+                f"Compaction model route: {route}",
+                f"Temperature: {model.temperature if model.temperature is not None else '-'}",
+                "Max output tokens: "
+                f"{model.max_output_tokens if model.max_output_tokens is not None else '-'}",
+                "Thinking enabled: "
+                f"{model.thinking_enabled if model.thinking_enabled is not None else '-'}",
+                f"Thinking level: {model.thinking_level or '-'}",
+                f"Config: {manager.file.path}",
+            ]
+        )
+    )
     return 0
 
 
