@@ -322,7 +322,7 @@ The exact structure can change during implementation, but module responsibilitie
 - [x] Implement InnerAgentLoop for provider rounds, stream events, tool-call continuation, and inner-loop failure boundaries.
 - [x] Implement SessionService create/open/list.
 - [x] Implement ContextBuilder.
-- [x] Implement built-in session truncation compaction.
+- [x] Implemented Phase 1 truncation, later removed and superseded by built-in durable LLM summary compaction (`2026-07-11-built-in-summary-compaction.md`).
 - [x] Implement RuntimeAdapter protocol.
 - [x] Wire FauxProvider through adapter for tests.
 - [x] Emit run_started, model deltas, tool events, run_completed, run_failed.

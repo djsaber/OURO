@@ -195,7 +195,7 @@ approval/resource/settings 前必须等相应 service 完成。
 
 - [ ] 为每个 HookName 定义 typed input/result；没有 consumer 的名称不得暴露为 active。
 - [ ] 为 before/after run/model/context/tool、approval、event、error 写 ordering/isolation tests。
-- [ ] 实现受限 ContextTransform validator 和内置 truncation fallback。
+- [ ] 实现受限 ContextTransform validator；上下文压缩由独立 typed strategy contract 负责。
 - [ ] 验证 hook 永远不能放宽 tool permission 或修改 mutable state。
 
 ### Tool batches
@@ -204,7 +204,7 @@ approval/resource/settings 前必须等相应 service 完成。
 - [ ] 写多 tool-call provider fixtures：串行、全 parallel_safe、审批混合、失败、abort、完成乱序。
 - [ ] 同一 assistant message 持久化完整 calls；结果按 call 原顺序落消息。
 - [ ] 并行执行使用结构化 task group，取消和异常全部收集。
-- [ ] 保持 Phase 1 单调用历史兼容和 ContextBuilder 原子截断。
+- [ ] 保持 Phase 1 单调用历史兼容，并让 ContextBuilder 使用持久化摘要投影视图。
 
 **Exit gate:** plugin registry 无半状态；所有 active hooks 有 consumer；批量工具历史兼容严格 provider。
 
@@ -229,12 +229,13 @@ approval/resource/settings 前必须等相应 service 完成。
 
 每个插件独立 package/commit/feature flag，不允许互相成为隐式依赖。
 
-### WP8A Summary Compaction
+### WP8A Built-in Summary Compaction
 
-- [ ] 定义 summary record、coverage、cache invalidation 和 token budget。
+- [x] 定义并实现 summary record、coverage、active pointer、lineage 和 token budget。
 - [ ] 测试 tool exchange、branch、timeout、invalid transform、plugin disable。
-- [ ] 实现增量 summary 和 ContextTransform。
-- [ ] 证明失败时内置 truncation 结果可用且 canonical history 不变。
+- [x] 实现内置增量 summary、持久化 context projection 和 typed strategy replacement。
+- [x] 实现自动与手动 `/compact` 共用管线和前端事件。
+- [x] 证明失败时不会截断 canonical history 或静默发送不完整上下文。
 
 ### WP8B Planning and Progress
 
@@ -365,6 +366,6 @@ Review 时不得用“后续再补”跳过当前 package 的 failure tests、�
 - 多 session 并发、订阅、HITL 和 shutdown 在失败路径下可靠；
 - session/search/branch/replay/resource/export/maintenance 形成闭环；
 - workspace trust、模型、Skills、plugin 和 MCP 可管理且不泄露 secret；
-- official summary/planning/memory/browser 可独立降级；
+- built-in summary strategy 可替换且失败可见；planning/memory/browser 可独立降级；
 - Phase 1 数据安全迁移，所有 canonical 数据仍本地可读；
 - 自动化和人工验收证据齐全，没有把 SDK/RPC、子智能体、高级自动化或 SQLite 偷渡进范围。

@@ -4,6 +4,11 @@
 - Status: Accepted / Phase 1 implemented
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
 
+> Compaction boundary update (2026-07-11): the Phase 1 truncation implementation described in
+> this document has been removed. Current behavior is defined by
+> `2026-07-11-built-in-summary-compaction.md`: OURO persists and reuses built-in LLM summaries,
+> supports typed strategy replacement, and never falls back to history truncation.
+
 > Implementation boundary update (2026-07-11): 第一阶段实际 dispatch 并承诺合并语义的 hooks 是
 > `after_context_build`、`before_tool_call`、`after_tool_call` 和 `on_event`。其他已声明 HookName 是
 > 后续扩展保留名，不应解读为第一阶段已执行。第二阶段见
@@ -23,7 +28,7 @@ OURO 第一阶段采用自研基础运行设施，不基于外部 Agent 框架�
 - 支持模型流式输出、工具调用、工具结果回灌。
 - 支持中止、审批、挂起、恢复。
 - 支持完整事件流输出和持久化钩子。
-- 支持内置最简会话截断压缩。
+- 支持内置、可持久恢复的 LLM 摘要压缩。
 - 定义稳定的运行扩展点，让插件通过 OURO Runtime Hooks 接入核心链路。
 - 通过 OURO 自研 RuntimeAdapter、Provider、Tool、Event、Persistence 和 Hooks 边界组织运行闭环。
 
@@ -53,7 +58,7 @@ ouro/
     inner_loop.py     # 单个 active run 内的模型回合与工具结果回灌
     provider.py       # Provider 协议、模型元数据、流事件与 usage 契约
     results.py        # 运行结果契约
-    context.py        # 上下文视图构建与截断压缩
+    context.py        # 最终上下文视图构建、估算与硬预算校验
     events.py         # OURO 事件类型和事件总线
     messages.py       # OURO 消息类型
     state.py          # 会话状态、运行状态、审批状态
@@ -190,7 +195,7 @@ sequence 在同一个 run 内单调递增，用于流式渲染和回放排序。
    `skill_instructions` 输入把它与 system prompt 组合，不能把 Skills 降格为匿名
    `base_context` 或普通会话消息。
 8. 触发 after_context_build hooks，允许插件追加上下文。
-9. 如果上下文超限，使用内置会话截断压缩生成发送视图。
+9. application context preparation 在达到阈值时生成并激活摘要，再构建发送视图。
 10. 调用模型供应商流式接口。
 11. 将模型流式增量转换为 OURO 事件，并触发 on_event hooks。
 12. 若模型请求工具，先持久化带 tool_calls 元数据的 assistant 消息，再进入工具执行流程。
@@ -234,19 +239,18 @@ Skills 注入遵循渐进披露：ContextBuilder 只接收组合根已经渲染�
 system prompt；完整 `SKILL.md` 仍由模型在匹配任务时按需读取。插件 `added_context` 保持为动态
 synthetic context，不与系统提示和 Skills 静态能力混用。
 
-第一阶段只内置会话截断压缩：
+当前内置摘要压缩遵循：
 
-- 保留必要系统提示。
-- 保留最近用户/助手消息。
-- 截断点不得落在 assistant tool-call 与其连续 tool_result 之间；必要时向前扩展视图以保留完整工具交换。
-- 不修改原始消息历史。
-- 不生成摘要。
+- 保留必要系统提示与最近开放用户回合。
+- coverage 不得落在 assistant tool-call 与其连续 tool_result 之间。
+- 不修改原始消息历史，摘要保存为独立不可变记录。
+- active summary 持续作用于后续轮次和恢复后的会话。
 
-`context_metadata` 至少记录是否发生截断、是否注入 Skills 和省略消息数量。技能发现、配置解析等
+`context_metadata` 至少记录 active compaction、coverage、token estimates、是否注入 Skills 和硬预算状态。技能发现、配置解析等
 外层能力不得注入 `ContextBuilder`；组合根只向其提供已经渲染好的 `skill_instructions`，插件产生
 的动态内容仍通过 hook 输入。
 
-摘要压缩由官方插件后续实现。
+插件可贡献替代 `CompactionStrategy`，默认摘要实现由 OURO 内置提供。
 
 ## 8. Runtime Hooks
 
@@ -295,7 +299,7 @@ Hook 失败不能破坏核心可恢复性。
 
 - 官方插件 hook 失败：记录事件，按 hook 类型决定是否降级。
 - 第三方和 AI 生成插件 hook 失败：记录事件，禁用本次运行中的该 hook。
-- after_context_build 中的摘要压缩插件失败：降级为内置会话截断压缩。
+- 摘要策略失败：保留旧 active compaction，记录失败并中止本次模型请求。
 - on_event hook 失败：只记录诊断，不影响事件持久化。
 
 Hook 失败必须带 plugin_id、hook_name、session_id、run_id。
@@ -372,7 +376,7 @@ modified_view_metadata、tool_result_override、resource_refs、terminate_run �
 - 插件可以通过 Runtime Hooks 追加上下文或观察工具结果，不依赖外部框架类型。
 - Hook 失败会产生可观察事件，并按策略降级或隔离。
 - 可以在不修改宿主的前提下替换底层适配器。
-- 上下文超出限制时可以降级为会话截断视图。
+- 摘要后仍超出硬限制时返回明确 context overflow，不静默裁剪历史。
 - provider usage 会进入运行记录，JSON 模式会输出 usage。
 
 ## 12. Resolved Decisions

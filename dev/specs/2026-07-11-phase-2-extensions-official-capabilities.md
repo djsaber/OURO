@@ -57,8 +57,9 @@ enable/disable/reload 必须幂等。禁用贡献后，新 run 不再看到对�
 Hook 返回值使用按 hook 区分的结构化类型，不继续扩张一个通用 dict。任何修改请求由 host 校验；hook
 不能直接改 mutable session/run，也不能把 approval 工具改为 auto。
 
-摘要插件需要受限 `ContextTransform`：可用 summary synthetic message 替代已选定的旧消息，但不能修改
-system prompt、tools、最近用户消息或未闭合的 tool exchange。失败/超时回退到内置截断。
+> Superseded by `2026-07-11-built-in-summary-compaction.md`: summary compaction is now a built-in
+> runtime capability. Plugins contribute typed `CompactionStrategy` implementations instead of a
+> generic `ContextTransform`; failures never fall back to history truncation.
 
 ## 4. MCP Lifecycle
 
@@ -194,13 +195,13 @@ assistant message 中，并为每个 call 保存对应 tool_result。
 - 一个调用失败不自动取消其他独立调用；run abort 会取消全部可取消调用。
 - before/after tool hooks 仍逐调用执行；batch hook 只提供观察，不可绕过单调用 permission。
 
-## 9. Official Summary Compaction Plugin
+## 9. Built-in Summary Compaction and Plugin Strategy Replacement
 
-- 输入是 ContextBuilder 已选定 view、完整历史的受控摘要和当前 token budget，不直接访问 mutable runtime。
-- 只摘要已闭合、较旧的 message groups；最近窗口和 tool exchange 保留原文。
-- summary record 包含 covered message ids、生成模型、prompt version、created_at 和 estimated tokens。
-- summary 可缓存并增量更新；历史变化或 branch lineage 不匹配时失效重建。
-- plugin disabled/timeout/error/invalid transform 时记录 diagnostic，使用内置截断继续。
+- 默认 `builtin.llm_summary` 由 OURO application 层提供并通过 typed strategy registry 选择。
+- 插件只能贡献替代策略；coverage 规划、校验、持久化、激活、锁与事件仍由 host 负责。
+- summary record 包含 coverage、lineage、生成模型、prompt version/hash、usage 和 token estimates。
+- summary 持久化并增量更新；历史或 lineage 不匹配时拒绝激活。
+- strategy error/timeout/invalid artifact 记录失败并中止本次上下文准备；不使用截断降级。
 - summary 不写回用户可见 messages，不删除 canonical history。
 
 ## 10. Official Planning and Progress Plugin
@@ -248,7 +249,7 @@ search。实现可采用受控独立进程或 MCP，但对 OURO 暴露相同 Too
 
 - plugin load/register 失败：不发布 contributions，其他 plugin 正常。
 - hook 失败：按 source 策略隔离并记录，run 使用原始数据继续。
-- summary 失败：内置 truncation。
+- summary 失败：保留旧 active compaction，记录可见失败并中止本次请求。
 - memory/planning store 失败：对应 plugin degraded，core session 不失败。
 - browser/MCP process 失败：工具 unavailable，可回灌错误，Host 提供 restart。
 - model config check 失败：不改变当前 default/effective config。
@@ -262,7 +263,7 @@ search。实现可采用受控独立进程或 MCP，但对 OURO 暴露相同 Too
 - Skills `allowed_tools`、workspace trust 和同名 conflict 行为可观察并有测试。
 - model UI/CLI 能安全管理 endpoint/credential refs，连接检查不写 session。
 - tool batch 保留单 assistant message，多调用能按声明安全串行/并行。
-- summary、planning、memory、browser 四个 official plugin 可独立启停和失败降级。
+- planning、memory、browser official plugin 可独立启停；summary 是内置能力且策略可替换。
 - untrusted workspace 不会自动启用 workspace executable capability。
 - future subagent 字段不改变第二阶段 run 行为。
 

@@ -23,7 +23,8 @@ The roadmap intentionally avoids implementing Desktop, SDK, RPC, subagents, brow
 - Permissions stay simple: tool auto/approval and plugin read-write/network.
 - Plugins integrate through OURO Runtime Hooks, not through lower-level framework hooks.
 - Interactive and Print / JSON ship first. Desktop, SDK, and RPC come later.
-- Core has built-in session truncation compaction only. Summary compaction is an official plugin.
+- OURO has built-in LLM summary compaction with persistent projection; plugins may replace the
+  typed strategy. The former truncation implementation is removed.
 
 ---
 
@@ -75,7 +76,7 @@ Core deliverables:
 - OURO domain models: Session, Run, Turn, Message, Event, Tool, Approval.
 - Runtime service with one-main-run-per-session.
 - Runtime Hooks pipeline.
-- Context builder with built-in session truncation.
+- Context builder with hard-budget validation and application-owned summary projection.
 - Provider abstraction and at least one real provider path.
 - Test provider for deterministic tests.
 - Local session file storage backend.
@@ -116,7 +117,7 @@ Planned deliverables:
 - Agent Skills UX.
 - Project configuration and workspace trust.
 - MCP server lifecycle management UI/commands.
-- Official summary compaction plugin.
+- Built-in summary compaction, manual `/compact`, persistence, events, and plugin strategy replacement.
 - Official minimal local memory plugin.
 - Official planning/progress plugin.
 - Desktop basic application.
@@ -196,7 +197,7 @@ Exit criteria:
 Create follow-up plans when phase 1 begins to split further:
 
 - Desktop basic application plan.
-- Official summary compaction plugin plan.
+- Built-in summary compaction evolution plan.
 - Minimal local memory plugin plan.
 - MCP lifecycle command/UI plan.
 - Session branch and replay plan.

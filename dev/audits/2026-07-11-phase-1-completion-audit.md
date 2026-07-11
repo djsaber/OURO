@@ -37,6 +37,9 @@ provider 无关；`application` 负责运行编排；持久化、工具、provid
 |---|---|---|---|---|
 | P1-01 | 高 | `RuntimeService.run` 在取得会话锁后、进入原有 `finally` 前仍会执行多次持久化和事件回调 | 任一早期异常都会让当前进程继续持有锁，会话无法继续 | 把锁取得后的完整启动路径纳入单一 `try/finally`，并以 `SessionLock` 协议替代反射式 `getattr` 释放 |
 | P1-02 | 高 | `ModelMetadata.context_window` 只被配置和展示，未参与 `ContextBuilder` | 长会话仍可能把超限请求发送给 provider，和“内置最简截断”不符 | 引入保守 token 估算、固定上下文成本和输入预算；保留最近原子工具交换，记录估算、预算和超限状态；校验模型 token 上限 |
+
+> Follow-up (2026-07-11): P1-02 的截断修复随后被
+> `2026-07-11-built-in-summary-compaction.md` 取代。当前实现使用持久化 LLM 摘要和硬预算错误，原截断路径已删除。
 | P1-03 | 高 | 工具 `parameters_schema` 未统一执行；未知工具在注册表查找阶段抛异常 | 插件/MCP 工具参数行为不一致，模型虚构工具名会令整个 run 失败 | 在注册时校验 JSON Schema，在执行前统一校验参数；未知工具和参数错误均生成可回灌 `ToolResult`，不进入审批或执行 |
 | P1-04 | 中 | 宿主 `event_sink` 异常会向运行主链传播 | CLI/Desktop 渲染故障可破坏已持久化的 run | 失败 sink 立即隔离，并持久化 `event_sink_failed` 诊断事件；其他运行逻辑继续 |
 | P1-05 | 中 | 权限配置对错误 section、错误容器和非法 mode 静默降级为空 | 用户以为策略已生效，实际采用默认授权 | 增加严格 `PermissionConfig`，非法配置统一抛 `ConfigError`；写操作先验证现有配置 |
