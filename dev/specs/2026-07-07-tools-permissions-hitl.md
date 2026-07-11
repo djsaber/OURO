@@ -3,6 +3,7 @@
 - Date: 2026-07-07
 - Status: Accepted / Phase 1 implemented
 - Related: ../../docs/OURO_AGENT_项目概述_V0707.md
+- Extended by: 2026-07-12-tool-call-batches.md (batch approval barrier and serial/parallel execution)
 
 ## 1. Motivation
 

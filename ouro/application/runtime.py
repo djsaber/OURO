@@ -25,6 +25,7 @@ from ouro.application.runs import (
 from ouro.application.sessions import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.config.compaction import CompactionConfig
+from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
@@ -36,11 +37,12 @@ from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import RunRecord, RunStatus, SessionRecord
+from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.sessions import SessionLock, SessionSnapshot, SessionStore
-from ouro.tools import ToolExecutor, ToolInvocation, ToolRegistry, ToolResult
+from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
 
 class RuntimeService:
@@ -57,6 +59,7 @@ class RuntimeService:
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        tool_execution_config: ToolExecutionConfig | None = None,
         compaction_config: CompactionConfig | None = None,
         compaction_strategies: CompactionStrategyRegistry | None = None,
         compaction_adapter: RuntimeAdapter | None = None,
@@ -78,9 +81,11 @@ class RuntimeService:
         self.run_lifecycle = RunLifecycle(store=store, events=self.event_recorder)
         self.tool_calls = ToolCallCoordinator(
             executor=self.tool_executor,
+            registry=tools,
             hooks=self.hooks,
             events=self.event_recorder,
             runs=self.run_lifecycle,
+            execution_config=tool_execution_config or ToolExecutionConfig(),
             is_aborted=self._is_run_aborted,
         )
         self.context_builder = context_builder or ContextBuilder()
@@ -333,7 +338,7 @@ class RuntimeService:
                 prepare_context=partial(self.context_preparation.prepare, adapter=adapter),
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
-                handle_tool_call=self.tool_calls.handle,
+                handle_tool_batch=self.tool_calls.handle_batch,
                 record_usage=self.run_lifecycle.record_usage,
                 aborted_result=self._aborted_result,
                 save_waiting_state=self.run_lifecycle.save_waiting_state,
@@ -577,6 +582,7 @@ class RuntimeService:
         *,
         session_id: str,
         run_id: str | None = None,
+        approval_id: str | None = None,
         approved: bool,
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
@@ -586,16 +592,18 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
         if run.status != "waiting_approval":
             raise ValueError(f"run is not waiting for approval: {run.status}")
-        invocation = _pending_invocation(run)
+        batch = run.active_tool_batch
+        if batch is None:
+            raise ValueError("run has no active tool batch")
+        resolved_approval_id = approval_id or run.pending_approval_id
+        if resolved_approval_id is None:
+            raise ValueError("run has no pending approval")
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
-            tool_results: list[ToolResult] = []
-            abort_signal: AbortSignal | None = None
-
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -603,56 +611,27 @@ class RuntimeService:
                 run_id=run.run_id,
                 event_type="approval_resolved",
                 payload={
-                    "approval_id": run.pending_approval_id,
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                    "approval_id": resolved_approval_id,
                     "approved": approved,
                     "reason": None if approved else reason,
                 },
             )
-            if approved:
-                sequence = await self.event_recorder.emit(
-                    emitted,
-                    sequence,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="tool_call_started",
-                    payload={"tool_name": invocation.tool_name},
-                )
-                abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
-                try:
-                    outcome = await self.tool_executor.execute(
-                        invocation,
-                        approved=True,
-                        arguments_override=arguments_override,
-                        signal=abort_signal,
-                    )
-                    abort_result = self._aborted_result(
-                        session_id=session.session_id,
-                        run_id=run.run_id,
-                        final_text="",
-                        emitted=emitted,
-                        tool_results=tool_results,
-                    )
-                    if abort_result is not None:
-                        self._release_abort_signal(run.run_id, abort_signal)
-                        return abort_result
-                    if outcome.result is None:
-                        raise ValueError("approved tool execution did not produce a result")
-                    result = outcome.result
-                except Exception:
-                    self._release_abort_signal(run.run_id, abort_signal)
-                    raise
-            else:
-                result = self.tool_executor.rejected_result(invocation, reason)
-
-            return await self._resume_with_tool_result(
+            batch = self.tool_calls.resolve_approval(
+                batch,
+                approval_id=resolved_approval_id,
+                approved=approved,
+                reason=reason,
+                arguments_override=arguments_override,
+            )
+            return await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,
                 run=run,
+                batch=batch,
                 emitted=emitted,
                 sequence=sequence,
-                result=result,
-                emit_tool_completed=True,
-                abort_signal=abort_signal,
             )
         finally:
             self._release_session_run_lock(run_lock)
@@ -669,105 +648,133 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_user":
             raise ValueError(f"run is not waiting for user input: {run.status}")
-        invocation = _pending_invocation(run)
+        batch = run.active_tool_batch
+        if batch is None:
+            raise ValueError("run has no active tool batch")
+        waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
+        if waiting_call is None:
+            raise ValueError("run has no tool call waiting for user input")
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                content=answer,
-                structured={"answer": answer},
-                ended_at=utc_now(),
-            )
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
                 session_id=session.session_id,
                 run_id=run.run_id,
                 event_type="ask_user_resolved",
-                payload={"answer": answer},
+                payload={
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                    "tool_call_id": waiting_call.request.id,
+                    "answer": answer,
+                },
             )
-            return await self._resume_with_tool_result(
+            batch = self.tool_calls.resolve_user_answer(
+                batch,
+                tool_call_id=waiting_call.request.id,
+                answer=answer,
+            )
+            return await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,
                 run=run,
+                batch=batch,
                 emitted=emitted,
                 sequence=sequence,
-                result=result,
             )
         finally:
             self._release_session_run_lock(run_lock)
 
-    async def _resume_with_tool_result(
+    async def _continue_resolved_batch(
         self,
         *,
         snapshot: SessionSnapshot,
         session: SessionRecord,
         run: RunRecord,
+        batch: ToolCallBatchRecord,
         emitted: list[EventRecord],
         sequence: int,
-        result: ToolResult,
-        emit_tool_completed: bool = False,
-        abort_signal: AbortSignal | None = None,
     ) -> RunResult:
-        active_signal = abort_signal
-        try:
-            sequence = await self.tool_calls.after(emitted, sequence, session, run, result)
-            message = self.run_lifecycle.append_tool_result_message(
+        pending_approvals = batch.pending_approvals
+        waiting_user = next((call for call in batch.calls if call.status == "waiting_user"), None)
+        if pending_approvals or waiting_user is not None:
+            status: RunStatus = "waiting_approval" if pending_approvals else "waiting_user"
+            session, run = self.run_lifecycle.save_batch_state(
                 session=session,
                 run=run,
-                result=result,
-                sequence=len(snapshot.messages) + 1,
+                batch=batch,
+                status=status,
+                phase="human_interaction",
             )
-            if emit_tool_completed:
-                sequence = await self.event_recorder.emit(
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="run_status_changed",
+                payload={
+                    "status": status,
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                },
+            )
+            return RunResult(session=session, run=run, events=emitted)
+
+        active_signal = self._activate_abort_signal(session.session_id, run.run_id)
+        try:
+            try:
+                handling = await self.tool_calls.execute_batch(
                     emitted,
                     sequence,
-                    session_id=session.session_id,
-                    run_id=run.run_id,
-                    event_type="tool_call_completed",
-                    payload={"tool_name": result.tool_name, "is_error": result.is_error},
+                    session=session,
+                    run=run,
+                    batch=batch,
+                    message_sequence=len(snapshot.messages) + 1,
+                    abort_signal=active_signal,
                 )
-            run = run.model_copy(
-                update={
-                    "status": "running",
-                    "pending_approval_id": None,
-                    "metadata": clear_pending_metadata(run.metadata),
-                }
+            except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
+                latest = self.store.load_session(session.session_id, recover=False)
+                latest_run = find_run(latest.runs, run.run_id)
+                failed = await self.run_lifecycle.fail(
+                    emitted,
+                    len(latest.events),
+                    session=latest.session,
+                    run=latest_run,
+                    error=f"tool batch handling failed: {exc}",
+                    final_text="",
+                    tool_results=[],
+                )
+                self._finish_run_hooks(failed.run)
+                return failed
+            latest = self.store.load_session(session.session_id)
+            session = latest.session
+            run = find_run(latest.runs, run.run_id)
+            abort_result = self._aborted_result(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                final_text="",
+                emitted=emitted,
+                tool_results=handling.results,
             )
-            session = session.model_copy(
-                update={
-                    "status": "running",
-                    "active_run_id": run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
-            )
-            self.store.save_run(run)
-            self.store.save_session(session)
-            self.store.try_update_index(session.session_id)
-            active_signal = active_signal or self._activate_abort_signal(
-                session.session_id,
-                run.run_id,
-            )
+            if abort_result is not None:
+                return abort_result
             session, active_adapter = self._resolve_session_adapter(session)
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,
-                messages=[*snapshot.messages, message],
-                sequence=sequence,
+                messages=latest.messages,
+                sequence=handling.sequence,
                 emitted=emitted,
-                tool_results=[result],
+                tool_results=handling.results,
                 abort_signal=active_signal,
                 adapter=active_adapter,
             )
         finally:
-            if active_signal is not None:
-                self._release_abort_signal(run.run_id, active_signal)
+            self._release_abort_signal(run.run_id, active_signal)
         self._finish_run_hooks(resumed.run)
         if resumed.run.status == "completed":
             await self._drain_follow_up_queue(resumed.session.session_id)
@@ -830,10 +837,3 @@ class RuntimeService:
 def _title_from_prompt(prompt: str) -> str:
     stripped = " ".join(prompt.split())
     return stripped[:60] if stripped else "New session"
-
-
-def _pending_invocation(run: RunRecord) -> ToolInvocation:
-    raw = run.metadata.get("pending_invocation")
-    if not isinstance(raw, dict):
-        raise ValueError("run has no pending invocation")
-    return ToolInvocation.model_validate(raw)

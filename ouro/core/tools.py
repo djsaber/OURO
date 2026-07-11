@@ -5,10 +5,11 @@ from typing import Any, Literal
 
 from pydantic import Field
 
+from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
-from ouro.core.state import ApprovalRecord
 
 PermissionMode = Literal["auto", "approval"]
+ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolSource = Literal[
     "builtin",
     "official_plugin",
@@ -16,7 +17,7 @@ ToolSource = Literal[
     "ai_generated_plugin",
     "mcp",
 ]
-ToolOutcomeStatus = Literal["completed", "approval_required", "waiting_user", "aborted"]
+ToolOutcomeStatus = Literal["ready", "completed", "approval_required", "waiting_user", "aborted"]
 
 
 class ToolDefinition(OuroModel):
@@ -28,7 +29,23 @@ class ToolDefinition(OuroModel):
     permission_mode: PermissionMode = "auto"
     result_schema: dict[str, Any] = Field(default_factory=dict)
     can_abort: bool = True
+    execution_mode: ToolExecutionPreference = "inherit"
     metadata: Metadata = MetadataField
+
+
+class ToolCallRequest(OuroModel):
+    id: str = Field(default_factory=lambda: new_id("tool"))
+    name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    source_index: int = Field(default=0, ge=0)
+
+    @property
+    def tool_call_id(self) -> str:
+        return self.id
+
+    @property
+    def tool_name(self) -> str:
+        return self.name
 
 
 class ToolInvocation(OuroModel):

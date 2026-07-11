@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.base import utc_now
+from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.events import EventRecord
@@ -12,7 +12,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tools import ToolDefinition, ToolExecutionOutcome, ToolResult
+from ouro.core.tool_batches import ToolBatchHandlingResult
+from ouro.core.tools import ToolCallRequest, ToolDefinition, ToolResult
 
 
 class EventEmitter(Protocol):
@@ -37,20 +38,21 @@ class HookFailureRecorder(Protocol):
     ) -> int: ...
 
 
-class ToolCallHandler(Protocol):
+class ToolBatchHandler(Protocol):
     async def __call__(
         self,
         emitted: list[EventRecord],
         sequence: int,
         session: SessionRecord,
         run: RunRecord,
-        tool_call: dict[str, Any],
+        tool_calls: list[ToolCallRequest],
         *,
+        turn_id: str,
         message_sequence: int,
         assistant_text: str,
         assistant_reasoning: str,
         abort_signal: AbortSignal,
-    ) -> tuple[ToolExecutionOutcome, int, list[MessageRecord]]: ...
+    ) -> ToolBatchHandlingResult: ...
 
 
 class UsageRecorder(Protocol):
@@ -132,7 +134,7 @@ class InnerLoopPorts:
     prepare_context: ContextPreparer
     emit: EventEmitter
     record_hook_failures: HookFailureRecorder
-    handle_tool_call: ToolCallHandler
+    handle_tool_batch: ToolBatchHandler
     record_usage: UsageRecorder
     aborted_result: AbortResultFactory
     save_waiting_state: WaitingStatePersister
@@ -156,8 +158,10 @@ class _LoopState:
 
 @dataclass
 class _RoundState:
+    turn_id: str = field(default_factory=lambda: new_id("turn"))
     parts: list[str] = field(default_factory=list)
     reasoning_parts: list[str] = field(default_factory=list)
+    tool_calls: list[ToolCallRequest] = field(default_factory=list)
     saw_model_done: bool = False
     completed_tool: bool = False
 
@@ -213,8 +217,8 @@ class InnerAgentLoop:
                 context = await self._build_context(state, model_round, abort_signal)
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
-            await self._start_round(state, model_round)
             round_state = _RoundState()
+            await self._start_round(state, model_round, round_state.turn_id)
             terminal_result = await self._consume_provider_stream(
                 state=state,
                 round_state=round_state,
@@ -226,8 +230,6 @@ class InnerAgentLoop:
                 return terminal_result
             if aborted := self._aborted_result(state, round_state.parts):
                 return aborted
-            if round_state.completed_tool:
-                continue
             if not round_state.saw_model_done:
                 return await self._fail(
                     state,
@@ -235,6 +237,22 @@ class InnerAgentLoop:
                     round_state.parts,
                     round_state.reasoning_parts,
                 )
+            if round_state.tool_calls:
+                try:
+                    batch_result = await self._handle_round_tool_batch(
+                        state=state,
+                        round_state=round_state,
+                        abort_signal=abort_signal,
+                    )
+                except Exception as exc:  # noqa: BLE001 - application port is a runtime boundary.
+                    return await self._fail(
+                        state,
+                        f"tool batch handling failed: {exc}",
+                    )
+                if batch_result is not None:
+                    return batch_result
+                if round_state.completed_tool:
+                    continue
             if not round_state.parts:
                 return await self._fail(
                     state,
@@ -278,14 +296,23 @@ class InnerAgentLoop:
         )
         return context
 
-    async def _start_round(self, state: _LoopState, model_round: int) -> None:
+    async def _start_round(
+        self,
+        state: _LoopState,
+        model_round: int,
+        turn_id: str,
+    ) -> None:
         state.sequence = await self.ports.emit(
             state.emitted,
             state.sequence,
             session_id=state.session.session_id,
             run_id=state.run.run_id,
             event_type="model_request_started",
-            payload={"model": self.adapter.model.model_id, "round": model_round},
+            payload={
+                "model": self.adapter.model.model_id,
+                "round": model_round,
+                "turn_id": turn_id,
+            },
         )
 
     async def _consume_provider_stream(
@@ -319,14 +346,11 @@ class InnerAgentLoop:
                         provider_event.reasoning_content,
                     )
                 elif provider_event.type == "tool_call" and provider_event.tool_call:
-                    terminal_result = await self._handle_round_tool_call(
-                        state=state,
-                        round_state=round_state,
-                        tool_call=provider_event.tool_call,
-                        abort_signal=abort_signal,
+                    round_state.tool_calls.append(
+                        provider_event.tool_call.model_copy(
+                            update={"source_index": len(round_state.tool_calls)}
+                        )
                     )
-                    if terminal_result is not None:
-                        return terminal_result
                 elif provider_event.type == "error":
                     return await self._fail(
                         state,
@@ -335,6 +359,13 @@ class InnerAgentLoop:
                         round_state.reasoning_parts,
                     )
                 elif provider_event.type == "done":
+                    for tool_call in provider_event.tool_calls:
+                        round_state.tool_calls.append(
+                            tool_call.model_copy(
+                                update={"source_index": len(round_state.tool_calls)}
+                            )
+                        )
+                    _validate_tool_calls(round_state.tool_calls)
                     round_state.saw_model_done = True
                     state.sequence = await self.ports.emit(
                         state.emitted,
@@ -344,6 +375,8 @@ class InnerAgentLoop:
                         event_type="model_message_completed",
                         payload={
                             "round": model_round,
+                            "turn_id": round_state.turn_id,
+                            "tool_call_count": len(round_state.tool_calls),
                             "usage": provider_event.usage.model_dump(mode="json")
                             if provider_event.usage is not None
                             else {},
@@ -372,7 +405,7 @@ class InnerAgentLoop:
             session_id=state.session.session_id,
             run_id=state.run.run_id,
             event_type="model_text_delta",
-            payload={"text": text, "round": model_round},
+            payload={"text": text, "round": model_round, "turn_id": round_state.turn_id},
         )
 
     async def _record_reasoning_delta(
@@ -389,43 +422,59 @@ class InnerAgentLoop:
             session_id=state.session.session_id,
             run_id=state.run.run_id,
             event_type="model_reasoning_delta",
-            payload={"reasoning_content": reasoning, "round": model_round},
+            payload={
+                "reasoning_content": reasoning,
+                "round": model_round,
+                "turn_id": round_state.turn_id,
+            },
         )
 
-    async def _handle_round_tool_call(
+    async def _handle_round_tool_batch(
         self,
         *,
         state: _LoopState,
         round_state: _RoundState,
-        tool_call: dict[str, Any],
         abort_signal: AbortSignal,
     ) -> RunResult | None:
         assistant_text = "".join(round_state.parts)
         assistant_reasoning = "".join(round_state.reasoning_parts)
-        round_state.parts.clear()
-        round_state.reasoning_parts.clear()
-        outcome, state.sequence, new_messages = await self.ports.handle_tool_call(
+        handling = await self.ports.handle_tool_batch(
             state.emitted,
             state.sequence,
             state.session,
             state.run,
-            tool_call,
+            list(round_state.tool_calls),
+            turn_id=round_state.turn_id,
             message_sequence=len(state.messages) + 1,
             assistant_text=assistant_text,
             assistant_reasoning=assistant_reasoning,
             abort_signal=abort_signal,
         )
+        state.sequence = handling.sequence
         if aborted := self._aborted_result(state):
             return aborted
-        if outcome.result is not None:
-            state.tool_results.append(outcome.result)
-        if new_messages:
-            state.messages.extend(new_messages)
+        state.tool_results.extend(handling.results)
+        if handling.messages:
+            state.messages.extend(handling.messages)
             round_state.completed_tool = True
-        if outcome.status not in {"approval_required", "waiting_user"}:
+        if handling.status == "completed":
             return None
 
-        state.run = _run_with_pending_outcome(state.run, outcome)
+        metadata = dict(state.run.metadata)
+        if handling.question:
+            metadata["pending_question"] = handling.question
+        pending_approvals = handling.batch.pending_approvals
+        state.run = state.run.model_copy(
+            update={
+                "status": handling.status,
+                "phase": "human_interaction",
+                "active_tool_batch": handling.batch,
+                "pending_approval_id": pending_approvals[0].approval_id
+                if pending_approvals
+                else None,
+                "metadata": metadata,
+            }
+        )
         state.session = state.session.model_copy(
             update={
                 "status": _session_status_for_run(state.run.status),
@@ -500,26 +549,13 @@ def _session_status_for_run(status: str) -> str:
     return "running"
 
 
-def _run_with_pending_outcome(run: RunRecord, outcome: ToolExecutionOutcome) -> RunRecord:
-    metadata = dict(run.metadata)
-    if outcome.invocation is not None:
-        metadata["pending_invocation"] = outcome.invocation.model_dump(mode="json")
-    if outcome.approval is not None:
-        metadata["pending_approval"] = outcome.approval.model_dump(mode="json")
-    if outcome.question is not None:
-        metadata["pending_question"] = outcome.question
-    return run.model_copy(
-        update={
-            "status": _run_status_for_outcome(outcome.status),
-            "pending_approval_id": outcome.approval.approval_id if outcome.approval else None,
-            "metadata": metadata,
-        }
-    )
-
-
-def _run_status_for_outcome(status: str) -> str:
-    if status == "approval_required":
-        return "waiting_approval"
-    if status == "waiting_user":
-        return "waiting_user"
-    return "running"
+def _validate_tool_calls(tool_calls: list[ToolCallRequest]) -> None:
+    ids: set[str] = set()
+    for call in tool_calls:
+        if not call.id:
+            raise ValueError("provider tool call id must not be empty")
+        if not call.name:
+            raise ValueError(f"provider tool call name must not be empty: {call.id}")
+        if call.id in ids:
+            raise ValueError(f"duplicate provider tool call id: {call.id}")
+        ids.add(call.id)

@@ -398,7 +398,15 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
                                     "name": "Read",
                                     "arguments": '{"path": "README.md"}',
                                 },
-                            }
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {
+                                    "name": "Read",
+                                    "arguments": '{"path": "CHANGELOG.md"}',
+                                },
+                            },
                         ],
                     }
                 }
@@ -425,12 +433,21 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["tool_call", "done"]
-    assert events[0].tool_call == {
-        "id": "call_1",
-        "name": "Read",
-        "arguments": {"path": "README.md"},
-    }
+    assert [event.type for event in events] == ["done"]
+    assert [call.model_dump() for call in events[0].tool_calls] == [
+        {
+            "id": "call_1",
+            "name": "Read",
+            "arguments": {"path": "README.md"},
+            "source_index": 0,
+        },
+        {
+            "id": "call_2",
+            "name": "Read",
+            "arguments": {"path": "CHANGELOG.md"},
+            "source_index": 1,
+        },
+    ]
     assert transport.requests[0]["payload"]["tools"] == [
         {
             "type": "function",
@@ -460,7 +477,16 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
                                     "id": "call_1",
                                     "type": "function",
                                     "function": {"name": "Read", "arguments": '{"path"'},
-                                }
+                                },
+                                {
+                                    "index": 1,
+                                    "id": "call_2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "Read",
+                                        "arguments": '{"path": "CHANGELOG.md"}',
+                                    },
+                                },
                             ]
                         }
                     }
@@ -492,12 +518,21 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["tool_call", "done"]
-    assert events[0].tool_call == {
-        "id": "call_1",
-        "name": "Read",
-        "arguments": {"path": "README.md"},
-    }
+    assert [event.type for event in events] == ["done"]
+    assert [call.model_dump() for call in events[0].tool_calls] == [
+        {
+            "id": "call_1",
+            "name": "Read",
+            "arguments": {"path": "README.md"},
+            "source_index": 0,
+        },
+        {
+            "id": "call_2",
+            "name": "Read",
+            "arguments": {"path": "CHANGELOG.md"},
+            "source_index": 1,
+        },
+    ]
 
 
 @pytest.mark.asyncio

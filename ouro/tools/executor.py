@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.state import ApprovalRecord
 from ouro.core.tools import PermissionMode
 from ouro.tools.base import (
     ToolExecutionAborted,
@@ -34,6 +34,23 @@ class ToolExecutor:
         arguments_override: dict[str, object] | None = None,
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
+    ) -> ToolExecutionOutcome:
+        prepared = self.preflight(
+            invocation,
+            approved=approved,
+            arguments_override=arguments_override,
+        )
+        if prepared.status != "ready":
+            return prepared
+        invocation = prepared.invocation
+        return await self.execute_prepared(invocation, signal=signal, context=context)
+
+    def preflight(
+        self,
+        invocation: ToolInvocation,
+        *,
+        approved: bool = False,
+        arguments_override: dict[str, object] | None = None,
     ) -> ToolExecutionOutcome:
         try:
             tool = self.registry.get(invocation.tool_name)
@@ -88,6 +105,23 @@ class ToolExecutor:
                 status="approval_required",
                 invocation=invocation,
                 approval=approval,
+            )
+        return ToolExecutionOutcome(status="ready", invocation=invocation)
+
+    async def execute_prepared(
+        self,
+        invocation: ToolInvocation,
+        *,
+        signal: AbortSignal | None = None,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolExecutionOutcome:
+        try:
+            tool = self.registry.get(invocation.tool_name)
+        except KeyError:
+            return _error_outcome(
+                invocation,
+                error_type="UnknownTool",
+                error_message=f"unknown tool: {invocation.tool_name}",
             )
         context = context or ToolExecutionContext(signal=signal)
         try:

@@ -658,6 +658,8 @@ def _consume_summary_event(
     elif event.type == "error":
         raise CompactionError(event.error or "summary provider returned an error")
     elif event.type == "done":
+        if event.tool_calls:
+            raise CompactionError("summary provider attempted to call a tool")
         saw_done = True
     return text_parts, usage, saw_done
 
@@ -672,11 +674,11 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
             "system_synthetic": "Synthetic context",
         }[message.role]
         parts.append(f"[{label}] {message.text_content}")
-        tool_calls = message.metadata.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
-            parts.append(f"[Assistant tool calls] {tool_calls}")
-        if message.role == "tool_result" and message.metadata:
-            parts.append(f"[Tool result metadata] {message.metadata}")
+        if message.tool_calls:
+            serialized_calls = [call.model_dump(mode="json") for call in message.tool_calls]
+            parts.append(f"[Assistant tool calls] {serialized_calls}")
+        if message.role == "tool_result" and message.tool_result is not None:
+            parts.append(f"[Tool result metadata] {message.tool_result.model_dump(mode='json')}")
     return "\n".join(parts)
 
 

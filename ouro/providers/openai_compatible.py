@@ -239,9 +239,6 @@ class OpenAICompatibleProvider:
                 error="provider returned tool calls for an endpoint without tool support",
             )
             return
-        for tool_call in tool_calls:
-            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
-
         if not reasoning and not content and not tool_calls:
             finish_reason = choice.get("finish_reason")
             reason = (
@@ -255,7 +252,7 @@ class OpenAICompatibleProvider:
             )
             return
 
-        yield ProviderStreamEvent(type="done", usage=None if tool_calls else usage)
+        yield ProviderStreamEvent(type="done", tool_calls=tool_calls, usage=usage)
 
     async def _events_from_streaming_chunks(
         self,
@@ -314,13 +311,10 @@ class OpenAICompatibleProvider:
                 error="provider returned tool calls for an endpoint without tool support",
             )
             return
-        for tool_call in tool_calls:
-            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call, usage=usage)
-
         if not saw_content and not saw_reasoning and not tool_calls:
             yield ProviderStreamEvent(
                 type="error", error="provider returned an empty assistant message"
             )
             return
 
-        yield ProviderStreamEvent(type="done", usage=None if tool_calls else usage)
+        yield ProviderStreamEvent(type="done", tool_calls=tool_calls, usage=usage)

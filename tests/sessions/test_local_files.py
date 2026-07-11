@@ -4,6 +4,8 @@ from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
+from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.sessions import LocalSessionStore
 
 
@@ -99,6 +101,37 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
         event for event in reloaded.events if event.payload.get("to_status") == "recoverable"
     ]
     assert len(recovery_events) == 1
+
+
+def test_recovery_marks_in_flight_tool_outcome_unknown(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Interrupted tool", status="running")
+    run = RunRecord(session_id=session.session_id, status="running", phase="tool_execution")
+    request = ToolCallRequest(id="call_1", name="Write")
+    invocation = ToolInvocation(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        tool_call_id=request.id,
+        tool_name=request.name,
+    )
+    batch = ToolCallBatchRecord(
+        turn_id="turn_1",
+        assistant_message_id="msg_1",
+        phase="executing",
+        calls=[ToolBatchCall(request=request, status="running", invocation=invocation)],
+    )
+    run = run.model_copy(update={"active_tool_batch": batch})
+    store.create_session(session)
+    store.save_run(run)
+
+    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
+
+    recovered_batch = recovered.runs[0].active_tool_batch
+    assert recovered.runs[0].status == "recoverable"
+    assert recovered_batch is not None
+    assert recovered_batch.phase == "recoverable"
+    assert recovered_batch.calls[0].status == "unknown_outcome"
 
 
 def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_path) -> None:

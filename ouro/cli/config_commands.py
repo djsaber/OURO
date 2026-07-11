@@ -9,9 +9,11 @@ from ouro.config import (
     CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
+    ToolExecutionConfigManager,
     compaction_config_to_public_dict,
     permission_config_to_public_dict,
     prompt_config_to_public_dict,
+    tool_execution_config_to_public_dict,
 )
 from ouro.core.errors import OuroError
 from ouro.core.provider import ThinkingLevel
@@ -228,6 +230,49 @@ def show_compaction_config(
                 "Thinking enabled: "
                 f"{model.thinking_enabled if model.thinking_enabled is not None else '-'}",
                 f"Thinking level: {model.thinking_level or '-'}",
+                f"Config: {manager.file.path}",
+            ]
+        )
+    )
+    return 0
+
+
+def show_tool_execution_config(
+    *,
+    home: str | Path | None = None,
+    mode: str | None = None,
+    max_concurrency: int | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = ToolExecutionConfigManager(home)
+        config = (
+            manager.update(mode=mode, max_concurrency=max_concurrency)  # type: ignore[arg-type]
+            if mode is not None or max_concurrency is not None
+            else manager.snapshot()
+        )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = tool_execution_config_to_public_dict(config)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(manager.file.path),
+                    "tool_execution": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(
+        "\n".join(
+            [
+                f"Tool execution mode: {config.mode}",
+                f"Max concurrency: {config.max_concurrency}",
                 f"Config: {manager.file.path}",
             ]
         )

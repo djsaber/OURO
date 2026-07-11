@@ -51,6 +51,7 @@ class RuntimeEventRecorder:
         event = EventRecord(
             session_id=session_id,
             run_id=run_id,
+            turn_id=(payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None),
             event_type=event_type,
             sequence=next_sequence,
             payload=payload,

@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.messages import MessageRecord
+from ouro.core.tools import ToolCallRequest
 
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
@@ -63,7 +64,8 @@ class ProviderStreamEvent(OuroModel):
     type: Literal["text_delta", "reasoning_delta", "tool_call", "done", "error"]
     text: str | None = None
     reasoning_content: str | None = None
-    tool_call: dict[str, Any] | None = None
+    tool_call: ToolCallRequest | None = None
+    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     usage: Usage | None = None
     error: str | None = None
 

@@ -31,6 +31,11 @@ from ouro.config.provider_models import (
 )
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.service import ConfigService
+from ouro.config.tool_execution import (
+    ToolExecutionConfig,
+    ToolExecutionConfigManager,
+    tool_execution_config_to_public_dict,
+)
 
 __all__ = [
     "ConfigService",
@@ -51,8 +56,11 @@ __all__ = [
     "ProviderRuntimeOptions",
     "PromptConfigManager",
     "PromptConfigSnapshot",
+    "ToolExecutionConfig",
+    "ToolExecutionConfigManager",
     "endpoint_config_to_public_dict",
     "permission_config_to_public_dict",
     "provider_config_to_public_dict",
     "prompt_config_to_public_dict",
+    "tool_execution_config_to_public_dict",
 ]

@@ -241,6 +241,24 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     permissions_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    tool_execution_parser = config_subparsers.add_parser(
+        "tool-execution",
+        help="Inspect or set tool batch execution policy",
+    )
+    tool_execution_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    tool_execution_parser.add_argument(
+        "--mode",
+        choices=["sequential", "parallel"],
+        help="Batch execution mode",
+    )
+    tool_execution_parser.add_argument(
+        "--max-concurrency",
+        type=int,
+        default=None,
+        help="Maximum parallel tool calls (1-64)",
+    )
+    tool_execution_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     compaction_parser = config_subparsers.add_parser(
         "compaction",
         help="Inspect or set compaction model routing and request parameters",

@@ -6,6 +6,7 @@ from typing import Any
 
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
 from ouro.core.provider import Usage
+from ouro.core.tools import ToolCallRequest
 
 
 def _message_to_openai(
@@ -26,14 +27,32 @@ def _message_to_openai(
         "content": _message_content_to_openai(message, supports_vision=supports_vision),
     }
     if openai_role == "assistant":
-        tool_calls = message.metadata.get("tool_calls")
-        if isinstance(tool_calls, list) and tool_calls:
-            converted["tool_calls"] = [_tool_call_message_to_openai(item) for item in tool_calls]
+        tool_calls = message.tool_calls or _legacy_tool_calls(message)
+        if tool_calls:
+            converted["tool_calls"] = [
+                _tool_call_message_to_openai(item.model_dump(mode="json")) for item in tool_calls
+            ]
         if "reasoning_content" in message.metadata:
             converted["reasoning_content"] = str(message.metadata["reasoning_content"])
     if openai_role == "tool":
-        converted["tool_call_id"] = str(message.metadata.get("tool_call_id") or "unknown")
+        legacy_tool_call_id = message.metadata.get("tool_call_id")
+        converted["tool_call_id"] = (
+            message.tool_result.tool_call_id
+            if message.tool_result is not None
+            else str(legacy_tool_call_id or "unknown")
+        )
     return converted
+
+
+def _legacy_tool_calls(message: MessageRecord) -> list[ToolCallRequest]:
+    raw_calls = message.metadata.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return []
+    calls: list[ToolCallRequest] = []
+    for index, raw in enumerate(raw_calls):
+        if isinstance(raw, dict):
+            calls.append(ToolCallRequest.model_validate({**raw, "source_index": index}))
+    return calls
 
 
 def _message_content_to_openai(
@@ -149,13 +168,13 @@ def _reasoning_content_to_text(reasoning_content: object) -> str:
     return "".join(parts)
 
 
-def _tool_calls_from_message(message: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _tool_calls_from_message(message: Mapping[str, Any]) -> list[ToolCallRequest]:
     raw_tool_calls = message.get("tool_calls")
     if not isinstance(raw_tool_calls, list):
         return []
 
-    tool_calls: list[dict[str, Any]] = []
-    for raw_tool_call in raw_tool_calls:
+    tool_calls: list[ToolCallRequest] = []
+    for source_index, raw_tool_call in enumerate(raw_tool_calls):
         if not isinstance(raw_tool_call, Mapping):
             continue
         function = raw_tool_call.get("function") or {}
@@ -165,11 +184,12 @@ def _tool_calls_from_message(message: Mapping[str, Any]) -> list[dict[str, Any]]
         if not isinstance(name, str) or not name:
             continue
         tool_calls.append(
-            {
-                "id": str(raw_tool_call.get("id") or ""),
-                "name": name,
-                "arguments": _arguments_to_dict(function.get("arguments")),
-            }
+            ToolCallRequest(
+                id=str(raw_tool_call.get("id") or ""),
+                name=name,
+                arguments=_arguments_to_dict(function.get("arguments")),
+                source_index=source_index,
+            )
         )
     return tool_calls
 
@@ -199,19 +219,20 @@ def _tool_call_delta_parts(delta: Mapping[str, Any]) -> list[tuple[int, dict[str
 
 def _tool_calls_from_stream_parts(
     tool_call_parts: Mapping[int, Mapping[str, str]],
-) -> list[dict[str, Any]]:
-    tool_calls: list[dict[str, Any]] = []
-    for index in sorted(tool_call_parts):
+) -> list[ToolCallRequest]:
+    tool_calls: list[ToolCallRequest] = []
+    for source_index, index in enumerate(sorted(tool_call_parts)):
         part = tool_call_parts[index]
         name = part.get("name") or ""
         if not name:
             continue
         tool_calls.append(
-            {
-                "id": part.get("id") or "",
-                "name": name,
-                "arguments": _arguments_to_dict(part.get("arguments")),
-            }
+            ToolCallRequest(
+                id=part.get("id") or "",
+                name=name,
+                arguments=_arguments_to_dict(part.get("arguments")),
+                source_index=source_index,
+            )
         )
     return tool_calls
 

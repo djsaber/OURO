@@ -5,11 +5,12 @@ from typing import Any
 from ouro.application.events import RuntimeEventRecorder
 from ouro.core.base import utc_now
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord, SessionRecord
-from ouro.core.tools import ToolResult
+from ouro.core.state import RunPhase, RunRecord, RunStatus, SessionRecord
+from ouro.core.tool_batches import ToolCallBatchRecord
+from ouro.core.tools import ToolCallRequest, ToolResult
 from ouro.sessions import SessionStore
 
 ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_user", "waiting_approval"}
@@ -43,33 +44,39 @@ class RunLifecycle:
         self._append_message(session=session, run=run, message=message)
         return message
 
-    def append_assistant_tool_call_message(
+    def append_assistant_tool_batch_message(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
-        tool_call: dict[str, Any],
+        tool_calls: list[ToolCallRequest],
         text: str,
         sequence: int,
+        turn_id: str,
         reasoning_content: str = "",
     ) -> MessageRecord:
-        metadata: dict[str, Any] = {
-            "tool_calls": [
-                {
-                    "id": str(tool_call.get("id") or ""),
-                    "name": str(tool_call.get("name") or ""),
-                    "arguments": dict(tool_call.get("arguments") or {}),
-                }
-            ],
-            "reasoning_content": reasoning_content,
-        }
+        existing = next(
+            (
+                message
+                for message in self.store.load_session(session.session_id, recover=False).messages
+                if message.run_id == run.run_id
+                and message.turn_id == turn_id
+                and message.role == "assistant"
+                and message.tool_calls
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        metadata: dict[str, Any] = {"reasoning_content": reasoning_content}
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
             role="assistant",
             text=text,
             sequence=sequence,
-        ).model_copy(update={"metadata": metadata})
+            turn_id=turn_id,
+        ).model_copy(update={"metadata": metadata, "tool_calls": list(tool_calls)})
         self._append_message(session=session, run=run, message=message)
         return message
 
@@ -80,21 +87,36 @@ class RunLifecycle:
         run: RunRecord,
         result: ToolResult,
         sequence: int,
+        turn_id: str | None = None,
     ) -> MessageRecord:
+        existing = next(
+            (
+                message
+                for message in self.store.load_session(session.session_id, recover=False).messages
+                if message.run_id == run.run_id
+                and message.role == "tool_result"
+                and message.tool_result is not None
+                and message.tool_result.tool_call_id == result.tool_call_id
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
             role="tool_result",
             text=result.content,
             sequence=sequence,
+            turn_id=turn_id,
         ).model_copy(
             update={
                 "resource_refs": result.resource_refs,
-                "metadata": {
-                    "tool_call_id": result.tool_call_id,
-                    "tool_name": result.tool_name,
-                    "is_error": result.is_error,
-                },
+                "tool_result": ToolResultReference(
+                    tool_call_id=result.tool_call_id,
+                    tool_name=result.tool_name,
+                    is_error=result.is_error,
+                ),
             }
         )
         self._append_message(session=session, run=run, message=message)
@@ -125,6 +147,46 @@ class RunLifecycle:
         self.store.save_session(updated_session)
         self.store.try_update_index(updated_session.session_id)
         return updated_session
+
+    def save_batch_state(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord | None,
+        status: RunStatus,
+        phase: RunPhase,
+    ) -> tuple[SessionRecord, RunRecord]:
+        latest_session = self.store.load_session_record(session.session_id)
+        latest_run = self.store.load_run(session.session_id, run.run_id)
+        if latest_run.status == "aborted" or latest_run.abort_requested:
+            if batch is not None:
+                latest_run = latest_run.model_copy(update={"active_tool_batch": batch})
+                self.store.save_run(latest_run)
+            return latest_session, latest_run
+        pending = batch.pending_approvals if batch is not None else []
+        updated_run = latest_run.model_copy(
+            update={
+                "status": status,
+                "phase": phase,
+                "active_tool_batch": batch,
+                "pending_approval_id": pending[0].approval_id if pending else None,
+            }
+        )
+        session_status = status if status in {"waiting_approval", "waiting_user"} else "running"
+        updated_session = latest_session.model_copy(
+            update={
+                "status": session_status,
+                "active_run_id": run.run_id,
+                "last_run_id": run.run_id,
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+            }
+        )
+        self.store.save_run(updated_run)
+        self.store.save_session(updated_session)
+        self.store.try_update_index(updated_session.session_id)
+        return updated_session, updated_run
 
     async def complete(
         self,
@@ -165,6 +227,7 @@ class RunLifecycle:
                 "status": "completed",
                 "ended_at": utc_now(),
                 "pending_approval_id": None,
+                "active_tool_batch": None,
                 "metadata": clear_pending_metadata(run.metadata),
             }
         )
@@ -233,6 +296,7 @@ class RunLifecycle:
                 "status": "failed",
                 "ended_at": utc_now(),
                 "error": error,
+                "active_tool_batch": None,
                 "metadata": clear_pending_metadata(run.metadata),
             }
         )
@@ -286,6 +350,21 @@ class RunLifecycle:
         latest_session = self.store.load_session_record(session.session_id)
         latest_run = self.store.load_run(session.session_id, run.run_id)
         if latest_run.status == "aborted" or latest_run.abort_requested:
+            updated_session = latest_session.model_copy(
+                update={
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "last_run_id": run.run_id,
+                    "last_message_id": message.message_id,
+                    "message_count": max(
+                        latest_session.message_count,
+                        session.message_count,
+                        message.sequence,
+                    ),
+                }
+            )
+            self.store.save_session(updated_session)
+            self.store.try_update_index(updated_session.session_id)
             return
         updated_session = latest_session.model_copy(
             update={

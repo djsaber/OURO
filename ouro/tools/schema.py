@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from jsonschema import ValidationError
-from jsonschema.exceptions import SchemaError
-from jsonschema.validators import validator_for
+from jsonschema import ValidationError  # type: ignore[import-untyped]
+from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
+from jsonschema.validators import validator_for  # type: ignore[import-untyped]
 
 from ouro.core.tools import ToolDefinition
 

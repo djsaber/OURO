@@ -86,9 +86,9 @@ def _tool_exchange_ranges(messages: list[MessageRecord]) -> list[tuple[int, int,
         end = index
         cursor = index + 1
         while cursor < len(messages) and messages[cursor].role == "tool_result":
-            tool_call_id = messages[cursor].metadata.get("tool_call_id")
-            if isinstance(tool_call_id, str):
-                seen.add(tool_call_id)
+            result_ref = messages[cursor].tool_result
+            if result_ref is not None:
+                seen.add(result_ref.tool_call_id)
             end = cursor
             cursor += 1
             if expected.issubset(seen):
@@ -100,11 +100,4 @@ def _tool_exchange_ranges(messages: list[MessageRecord]) -> list[tuple[int, int,
 def _tool_call_ids(message: MessageRecord) -> set[str]:
     if message.role != "assistant":
         return set()
-    raw_calls = message.metadata.get("tool_calls")
-    if not isinstance(raw_calls, list):
-        return set()
-    return {
-        raw_id
-        for call in raw_calls
-        if isinstance(call, dict) and isinstance((raw_id := call.get("id")), str) and raw_id
-    }
+    return {call.id for call in message.tool_calls if call.id}

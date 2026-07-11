@@ -11,8 +11,9 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.results import RunResult
 from ouro.core.state import ApprovalRecord, RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolBatchCall, ToolBatchHandlingResult, ToolCallBatchRecord
 from ouro.providers import FauxProvider
-from ouro.tools import ToolExecutionOutcome, ToolInvocation, ToolRegistry, ToolResult
+from ouro.tools import ToolInvocation, ToolRegistry, ToolResult
 
 
 async def _prepare_context(
@@ -68,13 +69,14 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         assert failures == []
         return sequence
 
-    async def handle_tool_call(
+    async def handle_tool_batch(
         emitted,
         sequence,
         session,
         run,
-        tool_call,
+        tool_calls,
         *,
+        turn_id,
         message_sequence,
         assistant_text,
         assistant_reasoning,
@@ -91,23 +93,34 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         invocation = ToolInvocation(
             session_id=session.session_id,
             run_id=run.run_id,
-            tool_call_id=str(tool_call["id"]),
-            tool_name=str(tool_call["name"]),
-            arguments=dict(tool_call.get("arguments") or {}),
+            turn_id=turn_id,
+            tool_call_id=tool_calls[0].id,
+            tool_name=tool_calls[0].name,
+            arguments=tool_calls[0].arguments,
         )
         approval = ApprovalRecord(
             session_id=session.session_id,
             run_id=run.run_id,
             tool_call_id=invocation.tool_call_id,
         )
-        return (
-            ToolExecutionOutcome(
-                status="approval_required",
-                invocation=invocation,
-                approval=approval,
-            ),
-            sequence,
-            [assistant_message],
+        batch = ToolCallBatchRecord(
+            turn_id=turn_id,
+            assistant_message_id=assistant_message.message_id,
+            phase="awaiting_interaction",
+            calls=[
+                ToolBatchCall(
+                    request=tool_calls[0],
+                    status="awaiting_approval",
+                    invocation=invocation,
+                    approval=approval,
+                )
+            ],
+        )
+        return ToolBatchHandlingResult(
+            status="waiting_approval",
+            batch=batch,
+            sequence=sequence,
+            messages=[assistant_message],
         )
 
     def record_usage(run, usage):
@@ -149,7 +162,7 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             prepare_context=_prepare_context,
             emit=emit,
             record_hook_failures=record_hook_failures,
-            handle_tool_call=handle_tool_call,
+            handle_tool_batch=handle_tool_batch,
             record_usage=record_usage,
             aborted_result=aborted_result,
             save_waiting_state=save_waiting_state,
@@ -169,10 +182,15 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
 
     assert result.run.status == "waiting_approval"
     assert result.session.status == "waiting_approval"
-    assert result.run.metadata["pending_invocation"]["tool_name"] == "Write"
-    assert result.run.metadata["pending_approval"]["tool_call_id"] == "call_1"
+    assert result.run.active_tool_batch is not None
+    assert result.run.active_tool_batch.calls[0].request.name == "Write"
+    assert result.run.active_tool_batch.calls[0].approval is not None
+    assert result.run.active_tool_batch.calls[0].approval.tool_call_id == "call_1"
     assert saved_waiting_state == [(result.session, result.run)]
-    assert [event.event_type for event in result.events] == ["model_request_started"]
+    assert [event.event_type for event in result.events] == [
+        "model_request_started",
+        "model_message_completed",
+    ]
 
 
 @pytest.mark.asyncio
@@ -205,13 +223,14 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         assert failures == []
         return sequence
 
-    async def handle_tool_call(
+    async def handle_tool_batch(
         emitted,
         sequence,
         session,
         run,
-        tool_call,
+        tool_calls,
         *,
+        turn_id,
         message_sequence,
         assistant_text,
         assistant_reasoning,
@@ -234,17 +253,29 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             text="result",
             sequence=message_sequence + 1,
         )
-        return (
-            ToolExecutionOutcome(
-                status="completed",
-                result=ToolResult(
-                    tool_call_id=str(tool_call["id"]),
-                    tool_name=str(tool_call["name"]),
-                    content="result",
-                ),
-            ),
-            sequence,
-            [assistant_message, result_message],
+        result = ToolResult(
+            tool_call_id=tool_calls[0].id,
+            tool_name=tool_calls[0].name,
+            content="result",
+        )
+        batch = ToolCallBatchRecord(
+            turn_id=turn_id,
+            assistant_message_id=assistant_message.message_id,
+            phase="completed",
+            calls=[
+                ToolBatchCall(
+                    request=tool_calls[0],
+                    status="completed",
+                    result=result,
+                )
+            ],
+        )
+        return ToolBatchHandlingResult(
+            status="completed",
+            batch=batch,
+            sequence=sequence,
+            messages=[assistant_message, result_message],
+            results=[result],
         )
 
     def record_usage(run, usage):
@@ -298,7 +329,7 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             prepare_context=_prepare_context,
             emit=emit,
             record_hook_failures=record_hook_failures,
-            handle_tool_call=handle_tool_call,
+            handle_tool_batch=handle_tool_batch,
             record_usage=record_usage,
             aborted_result=aborted_result,
             save_waiting_state=save_waiting_state,

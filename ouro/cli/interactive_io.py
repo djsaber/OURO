@@ -225,11 +225,33 @@ async def _resolve_user_question(
 
 
 def _pending_invocation(result: RunResult) -> dict[str, Any]:
+    batch = result.run.active_tool_batch
+    if batch is not None:
+        pending = next(
+            (
+                call.invocation
+                for call in batch.calls
+                if call.status in {"awaiting_approval", "waiting_user"}
+                and call.invocation is not None
+            ),
+            None,
+        )
+        if pending is not None:
+            return pending.model_dump(mode="json")
     raw = result.run.metadata.get("pending_invocation")
     return raw if isinstance(raw, dict) else {}
 
 
 def _pending_question(result: RunResult) -> str:
+    batch = result.run.active_tool_batch
+    if batch is not None:
+        waiting = next((call for call in batch.calls if call.status == "waiting_user"), None)
+        if waiting is not None:
+            if waiting.result is not None and waiting.result.content:
+                return waiting.result.content
+            question = waiting.request.arguments.get("question")
+            if isinstance(question, str) and question:
+                return question
     raw_question = result.run.metadata.get("pending_question")
     if isinstance(raw_question, str) and raw_question:
         return raw_question

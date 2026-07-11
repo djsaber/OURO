@@ -584,8 +584,9 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
         "tool_result",
         "assistant",
     ]
-    assert snapshot.messages[1].metadata["tool_calls"][0]["id"] == "call_1"
-    assert snapshot.messages[2].metadata["tool_call_id"] == "call_1"
+    assert snapshot.messages[1].tool_calls[0].id == "call_1"
+    assert snapshot.messages[2].tool_result is not None
+    assert snapshot.messages[2].tool_result.tool_call_id == "call_1"
     assert snapshot.messages[2].text_content == "important notes"
     assert [event.event_type for event in snapshot.events].count("model_request_started") == 2
 
@@ -667,7 +668,7 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
         "tool_result",
         "assistant",
     ]
-    assert snapshot.messages[1].metadata["tool_calls"][0]["name"] == "Write"
+    assert snapshot.messages[1].tool_calls[0].name == "Write"
     assert "approval_resolved" in [event.event_type for event in snapshot.events]
     assert "run_completed" in [event.event_type for event in snapshot.events]
 
@@ -942,7 +943,13 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
     assert result.run.status == "aborted"
     assert result.session.status == "idle"
     assert "run_aborted" in [event.event_type for event in snapshot.events]
-    assert not any(message.role == "tool_result" for message in snapshot.messages)
+    aborted_results = [message for message in snapshot.messages if message.role == "tool_result"]
+    assert len(aborted_results) == 1
+    assert aborted_results[0].tool_result is not None
+    assert aborted_results[0].tool_result.is_error is True
+    assert snapshot.session.message_count == len(snapshot.messages)
+    assert snapshot.runs[0].active_tool_batch is not None
+    assert snapshot.runs[0].active_tool_batch.phase == "aborted"
 
 
 @pytest.mark.asyncio
@@ -1060,7 +1067,7 @@ async def test_runtime_approval_rejection_writes_tool_error(tmp_path) -> None:
     assert resumed.run.status == "completed"
     assert resumed.final_text == "I will not write it."
     assert not target.exists()
-    assert snapshot.messages[1].metadata["tool_calls"][0]["name"] == "Write"
+    assert snapshot.messages[1].tool_calls[0].name == "Write"
     assert snapshot.messages[2].text_content == "not today"
     assert snapshot.messages[-1].text_content == "I will not write it."
     assert resumed.tool_results[0].is_error is True
@@ -1109,7 +1116,7 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     assert resumed.run.status == "completed"
     assert resumed.final_text == "I will use notes.md."
     assert snapshot.messages[1].role == "assistant"
-    assert snapshot.messages[1].metadata["tool_calls"][0]["name"] == "AskUser"
+    assert snapshot.messages[1].tool_calls[0].name == "AskUser"
     assert snapshot.messages[2].role == "tool_result"
     assert snapshot.messages[2].text_content == "notes.md"
     assert snapshot.messages[-1].text_content == "I will use notes.md."
@@ -1195,7 +1202,7 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
     assert len(assistant_messages) == 1
     assistant_message = assistant_messages[0]
     assert assistant_message.metadata.get("reasoning_content") == "I should read the file."
-    assert assistant_message.metadata.get("tool_calls")
+    assert assistant_message.tool_calls
     assert snapshot.messages[-1].text_content == "Done"
 
 

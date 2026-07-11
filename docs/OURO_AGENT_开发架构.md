@@ -118,6 +118,35 @@ codec、runtime option 解析和数据模型已经分离。`application/compacti
 出来，并由 mypy 检查复杂 async 签名。当前改成匿名 `Callable` 会降低可读性，改成多个
 空壳 service 则会增加间接层，因此保留。
 
+### 工具调用以完整模型轮次为批次边界
+
+Provider 的 text/reasoning 可以流式到事件日志，但工具调用必须在 terminal completion 中以
+`list[ToolCallRequest]` 完整交付。`InnerAgentLoop` 先收齐一个模型轮次，再通过
+`handle_tool_batch` 端口一次性交给 application；它不在单个 tool-call delta 到达时执行工具。
+一次模型响应只提交一条 assistant 消息，消息的 `tool_calls` 字段保存全部调用及源顺序。
+
+`core/tool_batches.py` 定义批次、单调用状态和执行模式；`application/tool_calls.py` 负责
+preflight、审批屏障、执行协调、结果 checkpoint 与源顺序提交；`tools/batch_executor.py`
+只负责有界串行/并行执行和单调用异常隔离。`RuntimeService` 仍拥有 session lock、审批/AskUser
+恢复入口和后续模型 continuation，避免协调器反向持有运行时生命周期。
+
+批次严格区分两个阶段：
+
+1. 规划与交互：所有调用完成解析、参数校验和权限判断；需要审批的调用各自拥有
+   `ApprovalRecord`。只要仍有审批或 AskUser 未解析，自动调用也不会提前执行。
+2. 执行与提交：最后一个交互解析后，run/session 先持久化为
+   `running/tool_execution`，再按批次快照的 `sequential` 或 `parallel` 策略执行。并行完成顺序
+   不影响 transcript；tool-result 消息始终按 source index 提交。
+
+`ToolExecutionConfig` 由组合根从配置解析后注入，默认 `sequential`，`parallel` 使用
+`max_concurrency` 限流；工具定义可用 `execution_mode="sequential"` 强制整批串行。执行策略只
+影响调度，不改变审批、消息身份和恢复语义。
+
+批次状态写入 run snapshot，assistant/tool-result 写入 `messages.jsonl`，流式及生命周期事件写入
+`events.jsonl`。每个工具完成后先 checkpoint，再提交结果消息；重复提交按同一 run 内的
+`turn_id`/`tool_call_id` 幂等。崩溃时仍为 `running` 的调用转为 `unknown_outcome`，run 转为
+`recoverable`，不会自动重放可能产生副作用的工具。
+
 ## 架构验收
 
 `tests/architecture/test_boundaries.py` 自动验证：

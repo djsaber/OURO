@@ -307,12 +307,31 @@ class LocalSessionStore:
                 if partial_message is not None:
                     metadata["recovered_partial_assistant_message_id"] = partial_message.message_id
                 metadata["recovered_from_status"] = run.status
+                active_batch = run.active_tool_batch
+                if active_batch is not None and active_batch.phase in {
+                    "executing",
+                    "committing_results",
+                }:
+                    recovered_calls = [
+                        call.model_copy(update={"status": "unknown_outcome"})
+                        if call.status == "running"
+                        else call
+                        for call in active_batch.calls
+                    ]
+                    active_batch = active_batch.model_copy(
+                        update={
+                            "phase": "recoverable",
+                            "calls": recovered_calls,
+                            "updated_at": utc_now(),
+                        }
+                    )
                 recovered = run.model_copy(
                     update={
                         "status": "recoverable",
                         "ended_at": utc_now(),
                         "error": "Run was interrupted before completion.",
                         "abort_requested": False,
+                        "active_tool_batch": active_batch,
                         "metadata": metadata,
                     }
                 )

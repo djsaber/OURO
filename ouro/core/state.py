@@ -5,7 +5,9 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
+from ouro.core.approvals import ApprovalRecord, ApprovalStatus  # noqa: F401 - compatibility export
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.tool_batches import ToolCallBatchRecord
 
 RunStatus = Literal[
     "queued",
@@ -22,7 +24,9 @@ RunOrigin = Literal["user", "follow_up", "replay", "plugin"]
 
 SessionStatus = Literal["idle", "running", "waiting_user", "waiting_approval", "failed"]
 SessionTitleSource = Literal["fallback", "generated", "user"]
-ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
+RunPhase = Literal[
+    "model_streaming", "tool_preflight", "human_interaction", "tool_execution", "result_commit"
+]
 
 
 class SessionRecord(OuroModel):
@@ -68,26 +72,14 @@ class RunRecord(OuroModel):
     parent_run_id: str | None = None
     initiator_id: str | None = None
     status: RunStatus = "queued"
+    phase: RunPhase = "model_streaming"
     trigger: str = "user"
     started_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
     model: str | None = None
     pending_approval_id: str | None = None
+    active_tool_batch: ToolCallBatchRecord | None = None
     abort_requested: bool = False
     error: str | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
-    metadata: Metadata = MetadataField
-
-
-class ApprovalRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
-    approval_id: str = Field(default_factory=lambda: new_id("apv"))
-    session_id: str
-    run_id: str
-    tool_call_id: str
-    status: ApprovalStatus = "requested"
-    requested_at: datetime = Field(default_factory=utc_now)
-    resolved_at: datetime | None = None
-    reason: str | None = None
-    modified_arguments: dict[str, object] | None = None
     metadata: Metadata = MetadataField

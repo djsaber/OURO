@@ -16,6 +16,7 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
+    ToolExecutionConfigManager,
 )
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
@@ -60,6 +61,7 @@ def build_default_runtime(
     resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
     permission_overrides = PermissionConfigManager(store.root).snapshot().tools
     compaction_config = CompactionConfigManager(store.root).snapshot()
+    tool_execution_config = ToolExecutionConfigManager(store.root).snapshot()
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
         provider_config,
         compaction_config,
@@ -73,6 +75,7 @@ def build_default_runtime(
         system_prompt=resolved_system_prompt,
         event_sink=event_sink,
         permission_overrides=permission_overrides,
+        tool_execution_config=tool_execution_config,
         compaction_config=compaction_config,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,

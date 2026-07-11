@@ -15,6 +15,7 @@ from ouro.cli.config_commands import (
     show_compaction_config,
     show_permissions_config,
     show_system_prompt_config,
+    show_tool_execution_config,
 )
 from ouro.cli.interactive import run_interactive
 from ouro.cli.parser import build_parser
@@ -257,6 +258,14 @@ def _config_command(args: argparse.Namespace) -> int:
             thinking_enabled=args.thinking,
             thinking_level=args.thinking_level,
             clear=args.clear,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "tool-execution":
+        return show_tool_execution_config(
+            home=home,
+            mode=args.mode,
+            max_concurrency=args.max_concurrency,
             json_mode=args.json,
         )
 
