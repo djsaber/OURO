@@ -90,6 +90,15 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     events_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     events_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    compact_parser = session_subparsers.add_parser(
+        "compact",
+        aliases=["compress"],
+        help="Summarize and compress older session context",
+    )
+    compact_parser.add_argument("session_id", help="Session id")
+    compact_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    compact_parser.add_argument("--json", action="store_true", help="Print JSON")
+
 
 def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
     approve_parser = subparsers.add_parser(

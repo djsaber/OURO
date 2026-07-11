@@ -21,7 +21,7 @@ CompactionTrigger = Literal["auto", "manual"]
 class CompactionPolicy(OuroModel):
     auto_enabled: bool = True
     trigger_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
-    target_ratio: float = Field(default=0.6, gt=0.0, lt=1.0)
+    target_ratio: float = Field(default=0.2, gt=0.0, lt=1.0)
     summary_output_tokens: int = Field(default=8192, ge=256)
 
     @model_validator(mode="after")

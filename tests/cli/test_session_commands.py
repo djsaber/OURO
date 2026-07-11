@@ -1,9 +1,23 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from ouro.application.runtime import RuntimeService
 from ouro.cli.main import main
-from ouro.sessions import LocalSessionStore
+from ouro.config.compaction import CompactionConfig
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.compaction import (
+    CompactionArtifact,
+    CompactionPolicy,
+    CompactionRequest,
+    CompactionStrategyRegistry,
+)
+from ouro.core.messages import MessageRecord
+from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.state import SessionRecord
+from ouro.sessions import LocalSessionStore, SessionStore
+from ouro.tools import ToolRegistry
 
 
 def test_session_list_shows_new_session(tmp_path, capsys) -> None:
@@ -130,3 +144,155 @@ def test_session_messages_and_events(tmp_path, capsys) -> None:
     events_payload = json.loads(capsys.readouterr().out)
     assert events_code == 0
     assert any(event["event_type"] == "run_completed" for event in events_payload["events"])
+
+
+class _DummyProvider:
+    provider_id = "dummy"
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        yield ProviderStreamEvent(type="text_delta", text="ok")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
+
+
+class _RecordingStrategy:
+    strategy_id = "test.summary"
+    version = "1"
+
+    def __init__(self) -> None:
+        self.requests: list[CompactionRequest] = []
+
+    async def compact(self, request: CompactionRequest, *, signal=None):
+        del signal
+        self.requests.append(request)
+        return CompactionArtifact(
+            summary=f"summary-{len(self.requests)}",
+            usage={"input_tokens": 10, "output_tokens": 2},
+            metadata={},
+        )
+
+
+def _compaction_runtime(tmp_path: Path) -> RuntimeService:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    registry = CompactionStrategyRegistry()
+    registry.register(_RecordingStrategy())
+    return RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            _DummyProvider(),
+            ModelMetadata(
+                model_id="dummy",
+                provider_id="dummy",
+                context_window=3_000,
+                max_output_tokens=500,
+            ),
+        ),
+        tools=ToolRegistry(),
+        system_prompt="",
+        compaction_strategies=registry,
+        compaction_config=CompactionConfig(
+            strategy_id="test.summary",
+            policy=CompactionPolicy(
+                trigger_ratio=0.3,
+                target_ratio=0.2,
+                summary_output_tokens=256,
+            ),
+        ),
+    )
+
+
+def _create_session_with_turns(store: SessionStore, count: int) -> str:
+    session = SessionRecord(title="compact test")
+    store.create_session(session)
+    for index in range(count):
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text=f"user {index}",
+                sequence=2 * index + 1,
+            )
+        )
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="assistant",
+                text=f"assistant {index}",
+                sequence=2 * index + 2,
+            )
+        )
+    return session.session_id
+
+
+def test_session_compact_success(monkeypatch, tmp_path, capsys) -> None:
+    runtime = _compaction_runtime(tmp_path)
+    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
+    session_id = _create_session_with_turns(runtime.store, count=3)
+
+    code = main(["session", "compact", session_id, "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Compaction completed" in captured.out
+    assert "messages covered" in captured.out
+
+
+def test_session_compact_compress_alias(monkeypatch, tmp_path, capsys) -> None:
+    runtime = _compaction_runtime(tmp_path)
+    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
+    session_id = _create_session_with_turns(runtime.store, count=3)
+
+    code = main(["session", "compress", session_id, "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Compaction completed" in captured.out
+
+
+def test_session_compact_skipped(monkeypatch, tmp_path, capsys) -> None:
+    runtime = _compaction_runtime(tmp_path)
+    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
+    session_id = _create_session_with_turns(runtime.store, count=1)
+
+    code = main(["session", "compact", session_id, "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "skipped" in captured.out.lower()
+
+
+def test_session_compact_missing(monkeypatch, tmp_path, capsys) -> None:
+    runtime = _compaction_runtime(tmp_path)
+    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
+
+    code = main(["session", "compact", "ses_missing", "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "session not found" in captured.err
+
+
+def test_session_compact_json(monkeypatch, tmp_path, capsys) -> None:
+    runtime = _compaction_runtime(tmp_path)
+    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
+    session_id = _create_session_with_turns(runtime.store, count=3)
+
+    code = main(["session", "compact", session_id, "--home", str(tmp_path), "--json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+
+    assert code == 0
+    assert payload["status"] == "ok"
+    assert payload["session_id"] == session_id
+    assert payload["skipped"] is False
+    assert payload["compaction_id"] is not None
+    assert payload["covered_message_count"] > 0
+
+
+# Keep pytest from treating helper classes as test classes.
+_DummyProvider.__test__ = False  # type: ignore[attr-defined]
+_RecordingStrategy.__test__ = False  # type: ignore[attr-defined]

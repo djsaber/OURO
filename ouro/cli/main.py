@@ -36,6 +36,7 @@ from ouro.cli.run import (
     run_print,
 )
 from ouro.cli.session_commands import (
+    compact_session,
     export_session,
     list_session_events,
     list_session_messages,
@@ -122,6 +123,14 @@ def _session_command(args: argparse.Namespace) -> int:
             home=home,
             run_id=args.run_id,
             json_mode=args.json,
+        )
+    if command in {"compact", "compress"}:
+        return asyncio.run(
+            compact_session(
+                args.session_id,
+                home=home,
+                json_mode=args.json,
+            )
         )
     raise AssertionError(f"unknown session command: {command}")
 

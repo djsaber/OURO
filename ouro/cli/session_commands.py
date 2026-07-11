@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 from ouro.cli.errors import error_exit_code
+from ouro.cli.run import build_default_runtime
+from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.sessions import LocalSessionStore
 
@@ -250,6 +252,56 @@ def list_session_events(
 
     for event in events:
         print(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
+    return 0
+
+
+async def compact_session(
+    session_id: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        runtime = build_default_runtime(home)
+        result = await runtime.compact(session_id=session_id)
+    except FileNotFoundError:
+        error_message = f"session not found: {session_id}"
+        _print_error(OuroError(error_message), json_mode=json_mode)
+        return 1
+    except (OuroError, ValueError, RuntimeError) as exc:
+        ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
+        _print_error(ouro_exc, json_mode=json_mode)
+        return error_exit_code(ouro_exc)
+
+    return _print_compaction_result(result, json_mode=json_mode)
+
+
+def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool) -> int:
+    compaction = result.compaction
+    compaction_id = compaction.compaction_id if compaction is not None else None
+    covered_count = len(compaction.covered_message_ids) if compaction is not None else 0
+
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "skipped" if result.skipped else "ok",
+                    "session_id": result.session.session_id,
+                    "run_id": result.run.run_id,
+                    "skipped": result.skipped,
+                    "compaction_id": compaction_id,
+                    "covered_message_count": covered_count,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    if result.skipped or compaction is None:
+        print("Compaction skipped: no complete older turn is eligible.")
+        return 0
+
+    print(f"Compaction completed: {compaction_id} ({covered_count} messages covered).")
     return 0
 
 
