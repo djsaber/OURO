@@ -108,7 +108,7 @@ async def handle_run_result(
     output: InteractiveOutput,
 ) -> str:
     current = result
-    for _ in range(16):
+    while True:
         if current.run.status == "completed":
             if not output.finish_run(current.run.run_id) and current.final_text:
                 output_func(current.final_text)
@@ -145,9 +145,6 @@ async def handle_run_result(
             return current.session.session_id
         output_func(f"Run stopped with status: {current.run.status}")
         return current.session.session_id
-
-    output_func("Run stopped: interactive resolution limit reached.")
-    return current.session.session_id
 
 
 async def _resolve_approval(
