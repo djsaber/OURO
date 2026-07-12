@@ -30,6 +30,12 @@ from ouro.config.provider_models import (
     ProviderRuntimeOptions,
 )
 from ouro.config.providers import ProviderConfigManager
+from ouro.config.queued_inputs import (
+    QueuedInputConfig,
+    QueuedInputConfigManager,
+    QueuedInputConsumptionMode,
+    queued_input_config_to_public_dict,
+)
 from ouro.config.run_budget import (
     RunBudgetConfigManager,
     run_budget_to_public_dict,
@@ -60,6 +66,9 @@ __all__ = [
     "ProviderRuntimeOptions",
     "PromptConfigManager",
     "PromptConfigSnapshot",
+    "QueuedInputConfig",
+    "QueuedInputConfigManager",
+    "QueuedInputConsumptionMode",
     "RunBudgetConfigManager",
     "ToolExecutionConfig",
     "ToolExecutionConfigManager",
@@ -67,6 +76,7 @@ __all__ = [
     "permission_config_to_public_dict",
     "provider_config_to_public_dict",
     "prompt_config_to_public_dict",
+    "queued_input_config_to_public_dict",
     "run_budget_to_public_dict",
     "tool_execution_config_to_public_dict",
 ]

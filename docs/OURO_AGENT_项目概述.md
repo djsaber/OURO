@@ -35,7 +35,7 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - 只读事件回放和数据导出；
 - 删除到本地回收站；
 - 进程锁、损坏索引重建和中断运行恢复；
-- active run 期间的 durable follow-up 排队与去重。
+- active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付。
 
 ### 模型与上下文
 
@@ -70,7 +70,8 @@ Hook、插件 contribution registry 和 MCP 生命周期已经具备代码边界
 
 ### Session
 
-持久化对话和工作状态的长期容器。同一 Session 只允许一个 active Run，但可以接收排队 follow-up。
+持久化对话和工作状态的长期容器。同一 Session 只允许一个 active Run，但可以接收排队输入。follow-up
+在 Run 结束后消费，steer 在完整 model turn 结束后消费；消费策略可配置为逐条或一次性消费。
 
 ### Run
 

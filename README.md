@@ -7,7 +7,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 - 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
 - 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择和 OpenAI-compatible 适配。
-- 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止和 follow-up 队列。
+- 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶和回收站删除。
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
 - Read、Write、Edit、Bash、AskUser 内置工具，以及统一的权限和参数校验。
@@ -94,7 +94,11 @@ uv run ouro session remove <session_id> --home ./.ouro-dev --force
 uv run ouro approve <session_id> --home ./.ouro-dev
 uv run ouro reject <session_id> --home ./.ouro-dev --reason "unsafe"
 uv run ouro abort <session_id> --home ./.ouro-dev
+uv run ouro run --session <session_id> --queue-mode steer "Change direction"
 ```
+
+Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
+交付模式。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
 
 ## 配置与 Skills
 
@@ -102,6 +106,7 @@ uv run ouro abort <session_id> --home ./.ouro-dev
 uv run ouro config prompt --home ./.ouro-dev --set "Custom system prompt"
 uv run ouro config permissions --home ./.ouro-dev --tool Bash --mode approval
 uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4
+uv run ouro config queued-inputs --home ./.ouro-dev --consumption-mode all_at_once
 uv run ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
 uv run ouro config compaction --home ./.ouro-dev --provider glm --endpoint reasoning
 
@@ -132,6 +137,9 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
   "tool_execution": {
     "mode": "parallel",
     "max_concurrency": 4
+  },
+  "queued_inputs": {
+    "consumption_mode": "all_at_once"
   },
   "run_budget": {
     "max_model_rounds": 50,

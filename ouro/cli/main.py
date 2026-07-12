@@ -14,6 +14,7 @@ from ouro.cli.config_commands import (
     set_system_prompt_config,
     show_compaction_config,
     show_permissions_config,
+    show_queued_input_config,
     show_run_budget_config,
     show_system_prompt_config,
     show_tool_execution_config,
@@ -103,6 +104,7 @@ def _run_command(args: argparse.Namespace) -> int:
             title=args.title,
             provider_options=provider_options,
             system_prompt=system_prompt,
+            queue_mode=args.queue_mode,
         )
     )
 
@@ -259,6 +261,13 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             mode=args.mode,
             max_concurrency=args.max_concurrency,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "queued-inputs":
+        return show_queued_input_config(
+            home=home,
+            consumption_mode=args.consumption_mode,
             json_mode=args.json,
         )
 

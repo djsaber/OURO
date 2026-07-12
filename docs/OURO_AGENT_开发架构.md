@@ -57,12 +57,17 @@ CLI / Host
        -> RuntimeAdapter -> Provider
        -> ToolCallCoordinator -> ToolBatchExecutor
        -> RunLifecycle complete / fail / pause
-    -> follow-up drain
+    -> queued input drain
 ```
 
-`RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和 follow-up
+`RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和排队输入
 串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
 上下文、事件、工具和持久化副作用。`RunLifecycle` 集中承载模型循环中的 run/session 状态转换。
+
+排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
+model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此
+steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode` 配置决定；`one_by_one` 每个边界
+只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。
 
 工具调用以一次完整模型响应为批次边界。Provider 先完成流式响应收集，随后校验整批 tool calls，再按
 配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result 随后按 provider 原始顺序提交。
@@ -136,6 +141,7 @@ Provider text/reasoning delta 只追加到 `events.jsonl`。快照只在消息�
 - Endpoint：每个 provider 的 `endpoints`；
 - 工具执行：`tool_execution`；
 - 运行预算：`run_budget`；
+- 排队输入：`queued_inputs`；
 - 压缩：`compaction`；
 - Skills：`skills`。
 

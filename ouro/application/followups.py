@@ -1,28 +1,23 @@
-from __future__ import annotations
+"""Compatibility imports for the former follow-up-only queue API."""
 
-from datetime import datetime
-
-from pydantic import Field
-
-from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.application.queued_inputs import (
+    QUEUED_INPUTS_KEY as FOLLOW_UP_QUEUE_KEY,
+)
+from ouro.application.queued_inputs import (
+    QueuedInput as QueuedFollowUp,
+)
+from ouro.application.queued_inputs import (
+    QueuedInputQueue,
+)
 from ouro.core.state import SessionRecord
 from ouro.sessions import SessionSnapshot, SessionStore
 
-FOLLOW_UP_QUEUE_KEY = "follow_up_queue"
-
-
-class QueuedFollowUp(OuroModel):
-    queue_id: str = Field(default_factory=lambda: new_id("queued"))
-    prompt: str
-    title: str | None = None
-    queued_at: datetime = Field(default_factory=utc_now)
-
 
 class FollowUpQueue:
-    """Persistent queue for user input received while a run is already active."""
+    """Backward-compatible view of the queue's original follow-up-only API."""
 
     def __init__(self, store: SessionStore) -> None:
-        self.store = store
+        self._queue = QueuedInputQueue(store)
 
     def enqueue(
         self,
@@ -31,16 +26,13 @@ class FollowUpQueue:
         prompt: str,
         title: str | None,
     ) -> tuple[SessionRecord, int]:
-        item = QueuedFollowUp(prompt=prompt, title=title)
-        metadata = dict(snapshot.session.metadata)
-        queue = list(metadata.get(FOLLOW_UP_QUEUE_KEY) or [])
-        queue.append(item.model_dump(mode="python"))
-        metadata[FOLLOW_UP_QUEUE_KEY] = queue
-        session = snapshot.session.model_copy(
-            update={"metadata": metadata, "updated_at": utc_now()}
+        session, _item, size = self._queue.enqueue(
+            snapshot=snapshot,
+            prompt=prompt,
+            title=title,
+            mode="follow_up",
         )
-        self.store.save_session(session)
-        return session, len(queue)
+        return session, size
 
     def pop(self, snapshot: SessionSnapshot) -> QueuedFollowUp | None:
         item = self.peek(snapshot)
@@ -49,60 +41,10 @@ class FollowUpQueue:
         return item
 
     def peek(self, snapshot: SessionSnapshot) -> QueuedFollowUp | None:
-        """Return the next item without consuming durable queue state."""
-
-        queue = list(snapshot.session.metadata.get(FOLLOW_UP_QUEUE_KEY) or [])
-        if not queue:
-            return None
-        item = self._parse_item(queue[0])
-        if item is None:
-            self._remove_first(snapshot)
-        return item
+        return self._queue.peek(snapshot)
 
     def acknowledge(self, snapshot: SessionSnapshot, queue_id: str) -> None:
-        """Remove an item after its user message has crossed a durable boundary."""
+        self._queue.acknowledge(snapshot, queue_id)
 
-        latest = self.store.load_session(snapshot.session.session_id, recover=False)
-        metadata = dict(latest.session.metadata)
-        queue = list(metadata.get(FOLLOW_UP_QUEUE_KEY) or [])
-        for index, raw_item in enumerate(queue):
-            item = self._parse_item(raw_item)
-            if item is not None and item.queue_id == queue_id:
-                queue.pop(index)
-                self._save_queue(latest.session, metadata, queue)
-                return
 
-    def _remove_first(self, snapshot: SessionSnapshot) -> None:
-        metadata = dict(snapshot.session.metadata)
-        queue = list(metadata.get(FOLLOW_UP_QUEUE_KEY) or [])
-        if not queue:
-            return
-        queue.pop(0)
-        self._save_queue(snapshot.session, metadata, queue)
-
-    def _save_queue(
-        self,
-        session: SessionRecord,
-        metadata: dict[str, object],
-        queue: list[object],
-    ) -> None:
-        if queue:
-            metadata[FOLLOW_UP_QUEUE_KEY] = queue
-        else:
-            metadata.pop(FOLLOW_UP_QUEUE_KEY, None)
-        updated = session.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
-        self.store.save_session(updated)
-
-    def _parse_item(self, item: object) -> QueuedFollowUp | None:
-        if not isinstance(item, dict):
-            return None
-        prompt = item.get("prompt")
-        if not isinstance(prompt, str) or not prompt:
-            return None
-        title = item.get("title")
-        return QueuedFollowUp(
-            queue_id=str(item.get("queue_id") or new_id("queued")),
-            prompt=prompt,
-            title=title if isinstance(title, str) else None,
-            queued_at=item.get("queued_at") or utc_now(),
-        )
+__all__ = ["FOLLOW_UP_QUEUE_KEY", "FollowUpQueue", "QueuedFollowUp"]

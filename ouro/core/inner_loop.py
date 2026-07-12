@@ -149,6 +149,27 @@ class ContextPreparer(Protocol):
     ) -> tuple[ContextView, int]: ...
 
 
+class TurnBoundaryInputConsumer(Protocol):
+    async def __call__(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        assistant_text: str,
+        assistant_reasoning: str,
+        turn_id: str,
+    ) -> TurnBoundaryInputResult: ...
+
+
+@dataclass(frozen=True)
+class TurnBoundaryInputResult:
+    sequence: int
+    messages: list[MessageRecord] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class InnerLoopPorts:
     prepare_context: ContextPreparer
@@ -161,6 +182,7 @@ class InnerLoopPorts:
     complete_run: RunCompleter
     fail_run: RunFailer
     pause_run: RunPauser
+    consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
 
 
 @dataclass
@@ -296,6 +318,12 @@ class InnerAgentLoop:
                 if batch_result is not None:
                     return batch_result
                 if round_state.completed_tool:
+                    if await self._consume_turn_boundary_inputs(
+                        state,
+                        round_state,
+                        assistant_already_committed=True,
+                    ):
+                        continue
                     continue
             if not round_state.parts:
                 return await self._fail(
@@ -307,6 +335,13 @@ class InnerAgentLoop:
                 )
 
             state.final_parts.extend(round_state.parts)
+            if await self._consume_turn_boundary_inputs(
+                state,
+                round_state,
+                assistant_already_committed=False,
+            ):
+                state.final_parts.clear()
+                continue
             return await self.ports.complete_run(
                 state.emitted,
                 state.sequence,
@@ -351,6 +386,34 @@ class InnerAgentLoop:
             abort_signal=abort_signal,
         )
         return context
+
+    async def _consume_turn_boundary_inputs(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        *,
+        assistant_already_committed: bool,
+    ) -> bool:
+        consumer = self.ports.consume_turn_boundary_inputs
+        if consumer is None:
+            return False
+        result = await consumer(
+            state.emitted,
+            state.sequence,
+            session=state.session,
+            run=state.run,
+            messages=state.messages,
+            assistant_text="" if assistant_already_committed else "".join(round_state.parts),
+            assistant_reasoning=""
+            if assistant_already_committed
+            else "".join(round_state.reasoning_parts),
+            turn_id=round_state.turn_id,
+        )
+        state.sequence = result.sequence
+        if not result.messages:
+            return False
+        state.messages.extend(result.messages)
+        return True
 
     async def _start_round(
         self,

@@ -70,6 +70,8 @@ def _help_text() -> str:
             "/history - Show current session messages.",
             "/events - Show current session events.",
             "/skills - List available skills.",
+            "/follow <prompt> - Queue at the next run boundary (default).",
+            "/steer <prompt> - Queue at the next model-turn boundary.",
             "/abort - Abort the active request when supported.",
             "/compact - Summarize older context for the active session.",
             "/exit - Quit.",

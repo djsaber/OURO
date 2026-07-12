@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_commands import handle_command
 from ouro.cli.interactive_io import (
@@ -55,6 +56,13 @@ async def run_interactive(
         if not line:
             continue
 
+        queue_mode: QueuedInputMode = "follow_up"
+        if line.startswith("/steer "):
+            queue_mode = "steer"
+            line = line.removeprefix("/steer ").strip()
+        elif line.startswith("/follow "):
+            line = line.removeprefix("/follow ").strip()
+
         if line.startswith("/"):
             try:
                 command_result = await handle_command(line, runtime, session_id)
@@ -69,7 +77,11 @@ async def run_interactive(
             continue
 
         try:
-            result = await runtime.run(line, session_id=session_id)
+            result = await runtime.run(
+                line,
+                session_id=session_id,
+                queue_mode=queue_mode,
+            )
         except OuroError as exc:
             output_func(f"Error: {exc}")
             continue

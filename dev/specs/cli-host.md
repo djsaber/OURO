@@ -41,7 +41,7 @@ Skills 和退出等 slash command。流式文本、reasoning、工具调用、�
 - `provider set/show/list/use/remove/check` 管理供应商；
 - `provider endpoint ...` 管理具体 Endpoint；
 - `session ...` 管理持久化会话；
-- `config prompt|permissions|tool-execution|run-budget|compaction` 管理独立配置分区；
+- `config prompt|permissions|tool-execution|queued-inputs|run-budget|compaction` 管理独立配置分区；
 - `skills ...` 管理 Agent Skills；
 - `approve/reject/abort` 恢复或终止 active Run。
 
@@ -59,6 +59,9 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 - Runtime 命令通过 `RuntimeService`。
 - Provider/config/Skills 的 CLI 当前调用各自 manager；Desktop 实现前需提供 application 配置门面。
 - CLI 不直接编辑 JSONL、Run 文件或 index。
+
+`run --queue-mode follow_up|steer` 在目标 Session 已有 active Run 时选择交付边界。Interactive 中普通 prompt
+默认 follow-up，`/follow <prompt>` 与 `/steer <prompt>` 可显式选择。消费批量由配置而不是 Host 决定。
 
 ## 输出与安全
 
@@ -89,3 +92,4 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 - `tests/cli/test_permissions_commands.py`
 - `tests/cli/test_tool_execution_config_commands.py`
 - `tests/cli/test_run_budget_config_commands.py`
+- `tests/cli/test_queued_inputs_cli.py`

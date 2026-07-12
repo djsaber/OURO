@@ -14,6 +14,7 @@ from ouro.application.models import (
     FixedRuntimeAdapterCatalog,
     RuntimeAdapterCatalog,
 )
+from ouro.application.queued_inputs import QueuedInput, QueuedInputMode, QueuedInputQueue
 from ouro.application.recovery import RunRecoveryService
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
@@ -26,6 +27,7 @@ from ouro.application.runs import (
 from ouro.application.sessions import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.config.compaction import CompactionConfig
+from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
@@ -35,7 +37,7 @@ from ouro.core.context import ContextBuilder
 from ouro.core.errors import CompactionError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookRegistry
-from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
+from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
@@ -66,10 +68,13 @@ class RuntimeService:
         compaction_strategies: CompactionStrategyRegistry | None = None,
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
+        queued_input_config: QueuedInputConfig | None = None,
     ) -> None:
         self.store = store
         self.sessions = SessionService(store)
+        self.queued_inputs = QueuedInputQueue(store)
         self.follow_ups = FollowUpQueue(store)
+        self.queued_input_config = queued_input_config or QueuedInputConfig()
         self.adapter = adapter
         self.models = model_catalog or FixedRuntimeAdapterCatalog(adapter)
         self.tools = tools
@@ -202,8 +207,9 @@ class RuntimeService:
         *,
         session_id: str | None = None,
         title: str | None = None,
-        _drain_followups: bool = True,
-        _queued_follow_up_id: str | None = None,
+        queue_mode: QueuedInputMode = "follow_up",
+        _drain_queued_inputs: bool = True,
+        _queued_inputs: list[QueuedInput] | None = None,
     ) -> RunResult:
         if session_id is None:
             created = self.sessions.create(
@@ -226,11 +232,12 @@ class RuntimeService:
             existing_events = snapshot.events
             active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
-                queued_session, queued_events = await self._queue_follow_up(
+                queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
                     title=title,
+                    mode=queue_mode,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         sequence = len(existing_events)
@@ -239,18 +246,19 @@ class RuntimeService:
         run = RunRecord(
             session_id=session.session_id,
             status="running",
-            origin="follow_up" if _queued_follow_up_id else "user",
+            origin="follow_up" if _queued_inputs else "user",
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
             snapshot = self.store.load_session(session.session_id, recover=False)
             active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
-                queued_session, queued_events = await self._queue_follow_up(
+                queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
                     title=title,
+                    mode=queue_mode,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
@@ -274,32 +282,47 @@ class RuntimeService:
                 payload={"trigger": "user"},
             )
 
-            user_message = self.run_lifecycle.append_user_message(
-                session=session,
-                run=run,
-                prompt=prompt,
-                sequence=len(existing_messages) + 1,
-                metadata={"queued_follow_up_id": _queued_follow_up_id}
-                if _queued_follow_up_id
-                else None,
-            )
-            if _queued_follow_up_id:
-                latest = self.store.load_session(session.session_id, recover=False)
-                self.follow_ups.acknowledge(latest, _queued_follow_up_id)
-            sequence = await self.event_recorder.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="user_message_added",
-                payload={"message_id": user_message.message_id},
-            )
+            pending_inputs = _queued_inputs or [
+                QueuedInput(prompt=prompt, title=title, mode=queue_mode)
+            ]
+            user_messages: list[MessageRecord] = []
+            for queued_input in pending_inputs:
+                is_queued = _queued_inputs is not None
+                user_message = self.run_lifecycle.append_user_message(
+                    session=session,
+                    run=run,
+                    prompt=queued_input.prompt,
+                    sequence=len(existing_messages) + len(user_messages) + 1,
+                    metadata=(
+                        {
+                            "queued_input_id": queued_input.queue_id,
+                            "queued_input_mode": queued_input.mode,
+                        }
+                        if is_queued
+                        else None
+                    ),
+                )
+                user_messages.append(user_message)
+                if is_queued:
+                    latest = self.store.load_session(session.session_id, recover=False)
+                    self.queued_inputs.acknowledge(latest, queued_input.queue_id)
+                sequence = await self.event_recorder.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="user_message_added",
+                    payload={
+                        "message_id": user_message.message_id,
+                        "queued_input_id": queued_input.queue_id if is_queued else None,
+                    },
+                )
 
             abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
             result = await self._continue_model_loop(
                 session=session,
                 run=run,
-                messages=[*existing_messages, user_message],
+                messages=[*existing_messages, *user_messages],
                 sequence=sequence,
                 emitted=emitted,
                 abort_signal=abort_signal,
@@ -310,8 +333,8 @@ class RuntimeService:
                 self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
         self._finish_run_hooks(result.run)
-        if _drain_followups and result.run.status == "completed":
-            await self._drain_follow_up_queue(result.session.session_id)
+        if _drain_queued_inputs and result.run.status == "completed":
+            await self._drain_queued_input_queue(result.session.session_id)
         return result
 
     async def _continue_model_loop(
@@ -342,6 +365,7 @@ class RuntimeService:
                 complete_run=self.run_lifecycle.complete,
                 fail_run=self.run_lifecycle.fail,
                 pause_run=self.run_lifecycle.pause,
+                consume_turn_boundary_inputs=self._consume_turn_boundary_inputs,
             ),
         )
         return await loop.run(
@@ -501,18 +525,20 @@ class RuntimeService:
         self._finish_run_hooks(run)
         return RunResult(session=session, run=run, events=emitted)
 
-    async def _queue_follow_up(
+    async def _queue_input(
         self,
         *,
         snapshot: SessionSnapshot,
         active_run: RunRecord,
         prompt: str,
         title: str | None,
+        mode: QueuedInputMode,
     ) -> tuple[SessionRecord, list[EventRecord]]:
-        session, queue_size = self.follow_ups.enqueue(
+        session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
             prompt=prompt,
             title=title,
+            mode=mode,
         )
         emitted: list[EventRecord] = []
         sequence = await self.event_recorder.emit(
@@ -520,13 +546,21 @@ class RuntimeService:
             len(snapshot.events),
             session_id=session.session_id,
             run_id=active_run.run_id,
-            event_type="follow_up_input_queued",
-            payload={"queue_size": queue_size},
+            event_type=(
+                "follow_up_input_queued"
+                if queued_input.mode == "follow_up"
+                else "steering_input_queued"
+            ),
+            payload={
+                "queue_id": queued_input.queue_id,
+                "mode": queued_input.mode,
+                "queue_size": queue_size,
+            },
         )
         del sequence
         return session, emitted
 
-    async def _drain_follow_up_queue(self, session_id: str) -> None:
+    async def _drain_queued_input_queue(self, session_id: str) -> None:
         while True:
             snapshot = self.store.load_session(
                 session_id,
@@ -534,25 +568,113 @@ class RuntimeService:
             )
             if maybe_active_run(snapshot.runs) is not None:
                 return
-            queued = self.follow_ups.peek(snapshot)
-            if queued is None:
+            limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
+            queued = self.queued_inputs.eligible(snapshot, limit=limit)
+            if not queued:
                 return
-            already_persisted = any(
-                message.metadata.get("queued_follow_up_id") == queued.queue_id
-                for message in snapshot.messages
-            )
-            if already_persisted:
-                self.follow_ups.acknowledge(snapshot, queued.queue_id)
+            pending = [
+                item
+                for item in queued
+                if not self._queued_input_is_durable(snapshot.messages, item.queue_id)
+            ]
+            for item in queued:
+                if item not in pending:
+                    self.queued_inputs.acknowledge(snapshot, item.queue_id)
+            if not pending:
                 continue
             result = await self.run(
-                queued.prompt,
+                pending[0].prompt,
                 session_id=session_id,
-                title=queued.title,
-                _drain_followups=False,
-                _queued_follow_up_id=queued.queue_id,
+                title=pending[0].title,
+                _drain_queued_inputs=False,
+                _queued_inputs=pending,
             )
             if result.run.status != "completed":
                 return
+
+    async def _consume_turn_boundary_inputs(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        assistant_text: str,
+        assistant_reasoning: str,
+        turn_id: str,
+    ) -> TurnBoundaryInputResult:
+        snapshot = self.store.load_session(session.session_id, recover=False)
+        limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
+        eligible = self.queued_inputs.eligible(snapshot, mode="steer", limit=limit)
+        if not eligible:
+            return TurnBoundaryInputResult(sequence=sequence)
+
+        appended: list[MessageRecord] = []
+        if assistant_text or assistant_reasoning:
+            assistant_message = self.run_lifecycle.append_assistant_message(
+                session=session,
+                run=run,
+                text=assistant_text,
+                reasoning_content=assistant_reasoning,
+                sequence=len(messages) + 1,
+                turn_id=turn_id,
+            )
+            if not any(message.message_id == assistant_message.message_id for message in messages):
+                appended.append(assistant_message)
+
+        for item in eligible:
+            latest = self.store.load_session(session.session_id, recover=False)
+            if self._queued_input_is_durable(latest.messages, item.queue_id):
+                self.queued_inputs.acknowledge(latest, item.queue_id)
+                durable = next(
+                    (
+                        message
+                        for message in latest.messages
+                        if message.metadata.get("queued_input_id") == item.queue_id
+                        or message.metadata.get("queued_follow_up_id") == item.queue_id
+                    ),
+                    None,
+                )
+                if durable is not None and not any(
+                    message.message_id == durable.message_id for message in messages
+                ):
+                    appended.append(durable)
+                continue
+            user_message = self.run_lifecycle.append_user_message(
+                session=session,
+                run=run,
+                prompt=item.prompt,
+                sequence=len(messages) + len(appended) + 1,
+                metadata={
+                    "queued_input_id": item.queue_id,
+                    "queued_input_mode": item.mode,
+                },
+            )
+            appended.append(user_message)
+            latest = self.store.load_session(session.session_id, recover=False)
+            self.queued_inputs.acknowledge(latest, item.queue_id)
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="queued_input_consumed",
+                payload={
+                    "queue_id": item.queue_id,
+                    "mode": item.mode,
+                    "turn_id": turn_id,
+                },
+            )
+        return TurnBoundaryInputResult(sequence=sequence, messages=appended)
+
+    @staticmethod
+    def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
+        return any(
+            message.metadata.get("queued_input_id") == queue_id
+            or message.metadata.get("queued_follow_up_id") == queue_id
+            for message in messages
+        )
 
     def _acquire_session_run_lock(self, session_id: str, run_id: str) -> SessionLock | None:
         return self.store.acquire_session_lock(session_id, run_id)
@@ -749,12 +871,25 @@ class RuntimeService:
             )
             if abort_result is not None:
                 return abort_result
+            boundary = await self._consume_turn_boundary_inputs(
+                emitted,
+                handling.sequence,
+                session=session,
+                run=run,
+                messages=latest.messages,
+                assistant_text="",
+                assistant_reasoning="",
+                turn_id=batch.turn_id,
+            )
+            latest = self.store.load_session(session.session_id, recover=False)
+            session = latest.session
+            run = find_run(latest.runs, run.run_id)
             session, active_adapter = self._resolve_session_adapter(session)
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,
                 messages=latest.messages,
-                sequence=handling.sequence,
+                sequence=boundary.sequence,
                 emitted=emitted,
                 tool_results=handling.results,
                 abort_signal=active_signal,
@@ -764,7 +899,7 @@ class RuntimeService:
             self._release_abort_signal(run.run_id, active_signal)
         self._finish_run_hooks(resumed.run)
         if resumed.run.status == "completed":
-            await self._drain_follow_up_queue(resumed.session.session_id)
+            await self._drain_queued_input_queue(resumed.session.session_id)
         return resumed
 
     def _is_run_aborted(self, session_id: str, run_id: str) -> bool:

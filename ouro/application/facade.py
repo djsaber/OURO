@@ -18,6 +18,7 @@ from ouro.core.results import RunResult
 from ouro.sessions import SessionStore
 
 if TYPE_CHECKING:
+    from ouro.application.queued_inputs import QueuedInputMode
     from ouro.application.runtime import RuntimeService
 
 
@@ -91,8 +92,14 @@ class ApplicationFacade:
         *,
         session_id: str | None = None,
         title: str | None = None,
+        queue_mode: QueuedInputMode = "follow_up",
     ) -> RunResult:
-        return await self._require_runtime().run(prompt, session_id=session_id, title=title)
+        return await self._require_runtime().run(
+            prompt,
+            session_id=session_id,
+            title=title,
+            queue_mode=queue_mode,
+        )
 
     async def abort_run(
         self,

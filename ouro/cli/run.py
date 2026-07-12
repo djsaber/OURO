@@ -7,6 +7,7 @@ from typing import Any
 
 from ouro.application.events import RuntimeEventSink
 from ouro.application.models import ConfiguredModelCatalog
+from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
@@ -16,6 +17,7 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
+    QueuedInputConfigManager,
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
 )
@@ -64,6 +66,7 @@ def build_default_runtime(
     compaction_config = CompactionConfigManager(store.root).snapshot()
     tool_execution_config = ToolExecutionConfigManager(store.root).snapshot()
     run_budget = RunBudgetConfigManager(store.root).snapshot()
+    queued_input_config = QueuedInputConfigManager(store.root).snapshot()
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
         provider_config,
         compaction_config,
@@ -82,6 +85,7 @@ def build_default_runtime(
         compaction_config=compaction_config,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
+        queued_input_config=queued_input_config,
     )
 
 
@@ -117,6 +121,7 @@ async def run_print(
     title: str | None = None,
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
+    queue_mode: QueuedInputMode = "follow_up",
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -124,7 +129,12 @@ async def run_print(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        result = await runtime.run(prompt, session_id=session_id, title=title)
+        result = await runtime.run(
+            prompt,
+            session_id=session_id,
+            title=title,
+            queue_mode=queue_mode,
+        )
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return error_exit_code(exc)
@@ -146,6 +156,7 @@ async def run_json(
     title: str | None = None,
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
+    queue_mode: QueuedInputMode = "follow_up",
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -153,7 +164,12 @@ async def run_json(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        result = await runtime.run(prompt, session_id=session_id, title=title)
+        result = await runtime.run(
+            prompt,
+            session_id=session_id,
+            title=title,
+            queue_mode=queue_mode,
+        )
     except OuroError as exc:
         print(
             json.dumps(

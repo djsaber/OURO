@@ -9,11 +9,14 @@ from ouro.config import (
     CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
+    QueuedInputConfigManager,
+    QueuedInputConsumptionMode,
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
     compaction_config_to_public_dict,
     permission_config_to_public_dict,
     prompt_config_to_public_dict,
+    queued_input_config_to_public_dict,
     run_budget_to_public_dict,
     tool_execution_config_to_public_dict,
 )
@@ -275,6 +278,47 @@ def show_tool_execution_config(
             [
                 f"Tool execution mode: {config.mode}",
                 f"Max concurrency: {config.max_concurrency}",
+                f"Config: {manager.file.path}",
+            ]
+        )
+    )
+    return 0
+
+
+def show_queued_input_config(
+    *,
+    home: str | Path | None = None,
+    consumption_mode: QueuedInputConsumptionMode | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = QueuedInputConfigManager(home)
+        config = (
+            manager.update(consumption_mode=consumption_mode)
+            if consumption_mode is not None
+            else manager.snapshot()
+        )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = queued_input_config_to_public_dict(config)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(manager.file.path),
+                    "queued_inputs": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(
+        "\n".join(
+            [
+                f"Queued input consumption mode: {config.consumption_mode}",
                 f"Config: {manager.file.path}",
             ]
         )

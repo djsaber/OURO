@@ -40,6 +40,12 @@ def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
     run_parser.add_argument("--title", help="Title for a new session")
     run_parser.add_argument(
+        "--queue-mode",
+        choices=["follow_up", "steer"],
+        default="follow_up",
+        help="Delivery mode if the target session already has an active run",
+    )
+    run_parser.add_argument(
         "--system-prompt",
         dest="run_system_prompt",
         help="Override the default system prompt",
@@ -251,6 +257,18 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Maximum parallel tool calls (1-64)",
     )
     tool_execution_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    queued_inputs_parser = config_subparsers.add_parser(
+        "queued-inputs",
+        help="Inspect or set queued input consumption policy",
+    )
+    queued_inputs_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    queued_inputs_parser.add_argument(
+        "--consumption-mode",
+        choices=["one_by_one", "all_at_once"],
+        help="Send one eligible input per model request or all eligible inputs together",
+    )
+    queued_inputs_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     run_budget_parser = config_subparsers.add_parser(
         "run-budget",

@@ -53,7 +53,7 @@ Run 表示一次可恢复执行。状态集合为：
 7. 模型返回最终消息时完成 Run；返回工具调用时交给 `ToolCallCoordinator`。
 8. waiting 状态通过 approve/reject/AskUser 恢复同一 Run。
 9. terminal Run 释放 lock、abort signal 和每 Run Hook 隔离状态。
-10. completed Run 串行处理 durable follow-up 队列。
+10. 在 model turn 边界消费 steer 输入，在 completed Run 边界串行处理 follow-up 输入。
 
 ## Inner loop 边界
 
@@ -80,10 +80,19 @@ Run 表示一次可恢复执行。状态集合为：
 
 超过软预算进入 `paused`。上下文无法安全构建时以 `context_blocked` 暂停。预算未配置时不限制运行轮数。
 
-## Follow-up
+## 排队输入
 
-active Run 期间的新输入写入 Session metadata 中的 durable 队列。队列项具备唯一 id；只有用户消息已经
-持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，必须只确认队列而不重复追加消息。
+active Run 期间的新输入写入 Session metadata 中的 durable 队列，每项显式保存交付模式：
+
+- `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
+- `steer`：当前 model turn 完整结束后交付，作为同一 Run 下一轮模型请求的新用户消息。
+
+工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
+消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
+符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
+
+队列项具备唯一 id；只有用户消息已经持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，
+必须只确认队列而不重复追加消息。旧 follow-up 队列项没有模式字段时按 `follow_up` 解释。
 
 ## 取消语义
 
@@ -104,5 +113,6 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列。队
 - `tests/core/test_inner_loop.py`
 - `tests/application/test_runtime.py`
 - `tests/application/test_followups.py`
+- `tests/application/test_queued_input_modes.py`
 - `tests/application/test_events.py`
 - `tests/architecture/test_boundaries.py`

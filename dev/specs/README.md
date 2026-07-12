@@ -16,7 +16,7 @@
 
 | 规格 | 关注点 | 主要实现 |
 |---|---|---|
-| [核心运行时](core-runtime.md) | Session/Run/turn、inner loop、状态转换、取消与 follow-up | `ouro/core`、`ouro/application/runtime.py` |
+| [核心运行时](core-runtime.md) | Session/Run/turn、inner loop、状态转换、取消与排队输入 | `ouro/core`、`ouro/application/runtime.py` |
 | [会话与持久化](sessions-persistence.md) | SessionStore、本地布局、索引、锁、恢复、分支与回收站 | `ouro/sessions`、`ouro/application/sessions.py` |
 | [Provider 与配置](providers-config.md) | Provider/Endpoint、模型路由、凭据、配置结构与覆盖规则 | `ouro/config`、`ouro/providers` |
 | [工具与人机协同](tools-hitl.md) | 工具契约、权限、批执行、审批、AskUser 和进程取消 | `ouro/tools`、`ouro/application/tool_calls.py` |

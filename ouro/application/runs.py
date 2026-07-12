@@ -99,6 +99,45 @@ class RunLifecycle:
         self._append_message(session=session, run=run, message=message)
         return message
 
+    def append_assistant_message(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        text: str,
+        sequence: int,
+        turn_id: str,
+        reasoning_content: str = "",
+    ) -> MessageRecord:
+        """Durably commit a completed assistant turn without completing its run."""
+
+        existing = next(
+            (
+                message
+                for message in self.store.load_session(session.session_id, recover=False).messages
+                if message.run_id == run.run_id
+                and message.turn_id == turn_id
+                and message.role == "assistant"
+                and not message.tool_calls
+            ),
+            None,
+        )
+        if existing is not None:
+            return existing
+        metadata: dict[str, Any] = {}
+        if reasoning_content:
+            metadata["reasoning_content"] = reasoning_content
+        message = MessageRecord.text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            role="assistant",
+            text=text,
+            sequence=sequence,
+            turn_id=turn_id,
+        ).model_copy(update={"metadata": metadata})
+        self._append_message(session=session, run=run, message=message)
+        return message
+
     def append_tool_result_message(
         self,
         *,
