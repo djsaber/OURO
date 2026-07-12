@@ -55,7 +55,7 @@ class RuntimeService:
         tools: ToolRegistry,
         hooks: HookRegistry | None = None,
         context_builder: ContextBuilder | None = None,
-        max_model_rounds: int = 8,
+        max_model_rounds: int | None = None,
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -179,7 +180,7 @@ class InnerAgentLoop:
         *,
         adapter: RuntimeAdapter,
         tools: ToolDefinitionProvider,
-        max_model_rounds: int,
+        max_model_rounds: int | None,
         ports: InnerLoopPorts,
     ) -> None:
         self.adapter = adapter
@@ -209,7 +210,12 @@ class InnerAgentLoop:
             tool_results=list(tool_results or []),
         )
 
-        for model_round in range(1, self.max_model_rounds + 1):
+        round_iterator = (
+            range(1, self.max_model_rounds + 1)
+            if self.max_model_rounds is not None
+            else itertools.count(1)
+        )
+        for model_round in round_iterator:
             if aborted := self._aborted_result(state):
                 return aborted
 
