@@ -1,6 +1,6 @@
 # 个人工作流基础计划
 
-状态：未开始
+状态：进行中（ResourceService 与 RuntimeSupervisor 已完成；配置门面待实施）
 
 ## 目标
 
@@ -13,37 +13,37 @@
 
 ### A1. 领域契约
 
-- [ ] 在 core 定义 `ResourceRecord`、resource id、digest、media type、size 和来源字段。
-- [ ] 定义 Message resource ref 的存在性约束，不把本地路径放入 core identity。
-- [ ] 定义资源错误：not found、unsafe path、unsupported media、integrity mismatch、in use。
-- [ ] 明确 canonical record 与可重建索引的边界。
+- [x] 在 core 定义 `ResourceRecord`、resource id、digest、media type、size 和来源字段。
+- [x] 定义 Message resource ref 的存在性约束，不把本地路径放入 core identity。
+- [x] 定义资源错误：not found、unsafe path、unsupported media、integrity mismatch、in use。
+- [x] 明确 canonical record 与可重建索引的边界。
 
 验收：模型可被纯单元测试构建；core 不 import 文件系统或 MIME 探测库。
 
 ### A2. 存储端口与本地实现
 
-- [ ] 扩展或并列定义最小 ResourceStore port。
-- [ ] 实现 staging、digest 计算、去重和原子发布。
-- [ ] 校验路径逃逸、符号链接、大小限制和重复导入。
-- [ ] 实现读取、metadata、导出和引用扫描。
-- [ ] 建立资源 index dirty/rebuild 机制。
+- [x] 扩展或并列定义最小 ResourceStore port。
+- [x] 实现 staging、digest 计算、去重和原子发布。
+- [x] 校验路径逃逸、符号链接、大小限制和重复导入。
+- [x] 实现读取、metadata、导出和引用扫描。
+- [x] 建立资源 index dirty/rebuild 机制。
 
 验收：故障注入证明 partial import 不可见；索引失败不破坏 canonical resource。
 
 ### A3. Application 用例
 
-- [ ] 实现 import/list/show/export/remove DTO 与 service。
-- [ ] Session branch 复制 resource identity 和引用关系。
-- [ ] Session trash/remove 计算资源可达性并安全清理。
-- [ ] 工具结果的 `resource_refs` 在提交前验证存在。
+- [x] 实现 import/list/show/export/remove DTO 与 service。
+- [x] Session branch 复制 resource identity 和引用关系。
+- [x] Session trash/remove 计算资源可达性并安全清理。
+- [x] 工具结果的 `resource_refs` 在提交前验证存在。
 
 验收：分支不再因合法 resource refs 失败；删除不会制造悬空引用或误删共享内容。
 
 ### A4. CLI 接入
 
-- [ ] 增加 `resource import/list/show/export/remove`。
-- [ ] Session export 包含资源 manifest，但不泄漏工作区外路径。
-- [ ] JSON 输出使用 application DTO。
+- [x] 增加 `resource import/list/show/export/remove`。
+- [x] Session export 包含资源 manifest，但不泄漏工作区外路径。
+- [x] JSON 输出使用 application DTO。
 
 ## 工作流 B：Application 配置门面
 
@@ -72,27 +72,27 @@
 
 ### C1. 生命周期协议
 
-- [ ] 定义 run handle、subscription、status snapshot 和 shutdown policy。
-- [ ] 保持 RuntimeService 为单 Session Run transaction，不把 durable 逻辑搬到 Supervisor。
-- [ ] 明确 Host detach、process shutdown 和 explicit abort 的差异。
+- [x] 定义 run handle、subscription、status snapshot 和 shutdown policy。
+- [x] 保持 RuntimeService 为单 Session Run transaction，不把 durable 逻辑搬到 Supervisor。
+- [x] 明确 Host detach、process shutdown 和 explicit abort 的差异。
 
 ### C2. 进程内实现
 
-- [ ] 管理 `session_id -> active task/handle` registry。
-- [ ] 提供全局并发限制和 FIFO/fair scheduling。
-- [ ] 订阅 durable/stream events，慢订阅者不能阻塞 Run。
-- [ ] terminal task 自动清理 registry；异常形成 diagnostic。
+- [x] 管理 `session_id -> active task/handle` registry。
+- [x] 提供全局并发限制和 FIFO/fair scheduling。
+- [x] 订阅 durable/stream events，慢订阅者不能阻塞 Run。
+- [x] terminal task 自动清理 registry；异常形成 diagnostic。
 
 ### C3. 重启与恢复
 
-- [ ] Supervisor 启动时从 SessionStore 识别 recoverable 状态。
-- [ ] 内存 registry 不作为运行事实。
-- [ ] shutdown 协作式取消并等待有限时间；未完成状态可恢复。
+- [x] Supervisor 启动时从 SessionStore 识别 recoverable 状态。
+- [x] 内存 registry 不作为运行事实。
+- [x] shutdown 协作式取消并等待有限时间；未完成状态可恢复。
 
 ### C4. CLI 验证 Host
 
-- [ ] 用非交互测试 Host 验证 submit/detach/subscribe/abort。
-- [ ] 不急于新增后台 daemon 命令，先稳定 application API。
+- [x] 用非交互测试 Host 验证 submit/detach/subscribe/abort。
+- [x] 不急于新增后台 daemon 命令，先稳定 application API。
 
 ## 依赖顺序
 
@@ -106,7 +106,7 @@
 - 资源事务过重：先支持本地 immutable blob，不预建远程对象存储抽象。
 - Supervisor 与 RuntimeService 重叠：Supervisor 只拥有跨 Run 生命周期，不复制单 Run 状态机。
 - Facade 变成通用 manager：按明确用例暴露方法，不提供任意 config dict 修改。
-- 数据布局变化：升级 layout version，并提供显式迁移/导出策略。
+- 数据布局变化：当前版本已预留 Session 资源目录；只有不兼容变化才升级 layout version 并提供显式迁移。
 
 ## 退出条件
 

@@ -14,6 +14,7 @@ LOWER_LAYER_DIRS = (
     "plugins",
     "prompts",
     "providers",
+    "resources",
     "sessions",
     "skills",
     "tools",

@@ -14,6 +14,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.resources import SessionResourceReference, SessionResourceReferences
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.base import SessionSnapshot
 from ouro.sessions.index import SessionIndex
@@ -57,6 +58,7 @@ class LocalSessionStore:
         self,
         session: SessionRecord,
         messages: list[MessageRecord],
+        resource_references: list[SessionResourceReference] | None = None,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
@@ -76,7 +78,12 @@ class LocalSessionStore:
                         f"session {session.session_id}"
                     )
                 self._append_jsonl(staging_dir / "messages.jsonl", message)
-            self._write_json_atomic(staging_dir / "resources" / "index.json", {"resources": []})
+            self._write_json_atomic(
+                staging_dir / "resources" / "index.json",
+                SessionResourceReferences(resources=resource_references or []).model_dump(
+                    mode="json"
+                ),
+            )
             staging_dir.replace(session_dir)
         except (OSError, PersistenceError) as exc:
             with suppress(OSError):

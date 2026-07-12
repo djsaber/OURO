@@ -101,6 +101,12 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列，每
 - 未知外部副作用不能因恢复而自动重放。
 - terminal Run 的后续迟到写入不能把 Session 恢复为 running。
 
+## 进程内监督
+
+`RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
+它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
+aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 由 SessionStore 在下次启动恢复。
+
 ## 失败语义
 
 - 配置、持久化和 session lock 错误必须保持类型化异常。

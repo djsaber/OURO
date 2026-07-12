@@ -2,6 +2,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ouro.application.resource_models import (
+    ResourceExportResult,
+    ResourceListResult,
+    ResourceMutationResult,
+    ResourceRemoveResult,
+    ResourceView,
+)
+from ouro.application.resources import ResourceService
 from ouro.application.session_models import (
     SessionBranchResult,
     SessionCatalogQuery,
@@ -30,17 +38,34 @@ class ApplicationFacade:
         *,
         sessions: SessionService,
         runtime: RuntimeService | None = None,
+        resources: ResourceService | None = None,
     ) -> None:
         self._runtime = runtime
         self._sessions = sessions
+        self._resources = resources
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeService) -> ApplicationFacade:
-        return cls(sessions=SessionService(runtime.store), runtime=runtime)
+        return cls(
+            sessions=runtime.sessions,
+            runtime=runtime,
+            resources=runtime.resources,
+        )
 
     @classmethod
     def for_sessions(cls, store: SessionStore) -> ApplicationFacade:
         return cls(sessions=SessionService(store))
+
+    @classmethod
+    def with_resources(
+        cls,
+        store: SessionStore,
+        resources: ResourceService,
+    ) -> ApplicationFacade:
+        return cls(
+            sessions=SessionService(store, resources=resources),
+            resources=resources,
+        )
 
     def create_session(
         self,
@@ -86,6 +111,43 @@ class ApplicationFacade:
     def delete_session(self, session_id: str) -> SessionTrashResult:
         return self._sessions.trash(session_id)
 
+    def import_resource(
+        self,
+        session_id: str,
+        source_path: str,
+        *,
+        media_type: str | None = None,
+    ) -> ResourceMutationResult:
+        return self._require_resources().import_resource(
+            session_id,
+            source_path,
+            media_type=media_type,
+        )
+
+    def list_resources(self, session_id: str) -> ResourceListResult:
+        return self._require_resources().list_resources(session_id)
+
+    def show_resource(self, session_id: str, resource_id: str) -> ResourceView:
+        return self._require_resources().show_resource(session_id, resource_id)
+
+    def export_resource(
+        self,
+        session_id: str,
+        resource_id: str,
+        destination: str,
+        *,
+        overwrite: bool = False,
+    ) -> ResourceExportResult:
+        return self._require_resources().export_resource(
+            session_id,
+            resource_id,
+            destination,
+            overwrite=overwrite,
+        )
+
+    def remove_resource(self, session_id: str, resource_id: str) -> ResourceRemoveResult:
+        return self._require_resources().remove_resource(session_id, resource_id)
+
     async def start_run(
         self,
         prompt: str,
@@ -121,3 +183,8 @@ class ApplicationFacade:
         if self._runtime is None:
             raise OuroError("this application facade has no runtime commands configured")
         return self._runtime
+
+    def _require_resources(self) -> ResourceService:
+        if self._resources is None:
+            raise OuroError("this application facade has no resource commands configured")
+        return self._resources

@@ -9,6 +9,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择和 OpenAI-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶和回收站删除。
+- 内容寻址的本地资源导入、去重、校验、分支引用复制、导出和可达性清理。
+- 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界事件订阅、abort 与 shutdown 协议。
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
 - Read、Write、Edit、Bash、AskUser 内置工具，以及统一的权限和参数校验。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
@@ -95,6 +97,12 @@ uv run ouro approve <session_id> --home ./.ouro-dev
 uv run ouro reject <session_id> --home ./.ouro-dev --reason "unsafe"
 uv run ouro abort <session_id> --home ./.ouro-dev
 uv run ouro run --session <session_id> --queue-mode steer "Change direction"
+
+uv run ouro resource import <session_id> ./attachment.pdf --home ./.ouro-dev
+uv run ouro resource list <session_id> --home ./.ouro-dev
+uv run ouro resource show <session_id> <resource_id> --home ./.ouro-dev
+uv run ouro resource export <session_id> <resource_id> ./copy.pdf --home ./.ouro-dev
+uv run ouro resource remove <session_id> <resource_id> --home ./.ouro-dev --force
 ```
 
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队

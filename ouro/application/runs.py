@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
@@ -20,9 +21,16 @@ ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_user", "waiting_approval"}
 class RunLifecycle:
     """Apply and persist run/session state transitions at durable boundaries."""
 
-    def __init__(self, *, store: SessionStore, events: RuntimeEventRecorder) -> None:
+    def __init__(
+        self,
+        *,
+        store: SessionStore,
+        events: RuntimeEventRecorder,
+        validate_resource_refs: Callable[[str, Iterable[str]], None] | None = None,
+    ) -> None:
         self.store = store
         self.events = events
+        self._validate_resource_refs = validate_resource_refs
 
     def start(self, *, session: SessionRecord, run: RunRecord) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
@@ -147,6 +155,12 @@ class RunLifecycle:
         sequence: int,
         turn_id: str | None = None,
     ) -> MessageRecord:
+        if result.resource_refs and self._validate_resource_refs is None:
+            raise ValueError(
+                "tool result contains resource_refs but no ResourceService is configured"
+            )
+        if self._validate_resource_refs is not None:
+            self._validate_resource_refs(session.session_id, result.resource_refs)
         existing = next(
             (
                 message

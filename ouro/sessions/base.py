@@ -9,6 +9,7 @@ from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
 
@@ -47,6 +48,7 @@ class SessionStore(Protocol):
         self,
         session: SessionRecord,
         messages: list[MessageRecord],
+        resource_references: list[SessionResourceReference] | None = None,
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...

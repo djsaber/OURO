@@ -203,8 +203,13 @@ class LocalSessionIndex:
         resources = raw.get("resources") if isinstance(raw, dict) else None
         if not isinstance(resources, list):
             return 0, True
+        records_dir = self.sessions_dir.parent / "resources" / "records"
         missing = any(
-            isinstance(item, dict) and item.get("state") == "missing" for item in resources
+            not isinstance(item, dict)
+            or not isinstance((resource_id := item.get("resource_id")), str)
+            or re.fullmatch(r"res_[0-9a-f]{64}", resource_id) is None
+            or not (records_dir / f"{resource_id}.json").is_file()
+            for item in resources
         )
         return len(resources), missing
 

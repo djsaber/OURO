@@ -60,6 +60,16 @@ OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时�
 Hook、插件 contribution registry 和 MCP 生命周期已经具备代码边界。它们当前适合显式组合和测试，尚不代表
 完整的插件分发、信任管理或真实 MCP transport 已完成。
 
+### 资源与后台运行
+
+ResourceService 把本地附件导入为内容寻址的不可变资源。消息只保存 resource id；相同内容去重，Session
+分支原子复制引用关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
+原始绝对路径。
+
+RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。
+Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不同的显式协议。重启后的事实仍来自
+SessionStore，而不是内存 registry。
+
 ### 运行界面
 
 - Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互。
@@ -111,8 +121,6 @@ metadata 中。
 
 以下能力属于明确的未来方向，当前实现不应假装已经提供：
 
-- RuntimeSupervisor：跨会话后台并发、订阅、任务生命周期和 Host 断线处理。
-- ResourceService：附件导入、内容寻址、引用计数、分支复制、清理和资源预览。
 - Desktop Host：基于 application facade 的会话导航、运行视图、diff、审批和设置界面。
 - 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
 - 真实 MCP 客户端：stdio/HTTP transport、握手、认证、工具发现、重连和日志。

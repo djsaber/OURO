@@ -4,25 +4,9 @@
 
 ## 目标
 
-在保持本地优先、durable Run 和清晰依赖方向的前提下，为多会话后台运行、资源、桌面 Host、完整扩展、
-长期记忆和子智能体提供共同目标契约。本规格不表示这些能力已经实现。
-
-## ResourceService
-
-- `ResourceRecord` 使用稳定 id、digest、media type、size、来源和创建时间。
-- Message 只保存 resource id，不以裸绝对路径作为跨会话身份。
-- 导入执行路径安全检查、内容去重和原子发布。
-- Branch 复制引用关系，不复制不受控路径。
-- 删除 Session 时资源清理具备引用计数或可重建可达性分析。
-- 资源索引失败不破坏 canonical resource record。
-
-## RuntimeSupervisor
-
-- 管理进程内跨 Session active Run registry；单 Session 仍只有一个 active Run。
-- 提供 subscribe/unsubscribe、status、abort 和 shutdown。
-- Host 断线不隐式终止 durable Run；策略必须显式配置。
-- 支持全局并发上限、公平调度和协作式关闭。
-- 重启后的事实来自 SessionStore，不依赖内存 registry。
+在保持本地优先、durable Run 和清晰依赖方向的前提下，为桌面 Host、完整扩展、长期记忆和子智能体
+提供共同目标契约。本规格不表示这些剩余能力已经实现。ResourceService 与 RuntimeSupervisor 已转入
+[当前规格](resources-supervisor.md)，不再属于本目标规格。
 
 ## Application 配置门面
 

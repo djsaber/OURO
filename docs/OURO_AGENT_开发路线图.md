@@ -13,32 +13,7 @@
 
 ## 近期：完成个人工作流基础
 
-### ResourceService
-
-目标：让附件和工具生成文件拥有稳定资源身份，而不是在消息中传播裸路径。
-
-范围：
-
-- ResourceRecord、内容摘要、媒体类型和来源；
-- 导入、引用、预览、导出和删除；
-- session branch 的资源引用复制；
-- canonical 资源记录与可重建索引；
-- 路径逃逸、符号链接、重复导入和清理失败测试。
-
-完成条件：消息只保存 resource id；分支、删除和恢复不会制造悬空引用。
-
-### RuntimeSupervisor
-
-目标：在不改变单 session 单 active run 约束的前提下管理跨会话后台运行。
-
-范围：
-
-- 进程内 run registry、订阅和生命周期；
-- Host 断线后的运行继续或取消策略；
-- 跨 session 并发上限和公平调度；
-- 关闭时的协作式取消和资源释放。
-
-完成条件：CLI 与未来 Desktop 可观察同一 durable run，Host 生命周期不再隐式等于 Run 生命周期。
+ResourceService 与 RuntimeSupervisor 已进入当前规格；本阶段剩余依赖是 Application 配置门面。
 
 ### Application 配置门面
 

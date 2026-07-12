@@ -3,6 +3,7 @@
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.facade import ApplicationFacade
 from ouro.application.followups import FollowUpQueue, QueuedFollowUp
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import (
     ReplayFrame,
@@ -17,6 +18,14 @@ from ouro.application.session_models import (
     SessionView,
 )
 from ouro.application.sessions import SessionService, SessionTitleGenerator
+from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
+from ouro.application.supervisor_models import (
+    RunHandle,
+    RuntimeNotification,
+    RuntimeStatusSnapshot,
+    ShutdownPolicy,
+    SupervisorStartResult,
+)
 from ouro.core.results import RunResult
 
 __all__ = [
@@ -26,6 +35,14 @@ __all__ = [
     "RunResult",
     "RuntimeEventRecorder",
     "RuntimeService",
+    "RuntimeSupervisor",
+    "RuntimeSubscription",
+    "ResourceService",
+    "RunHandle",
+    "RuntimeNotification",
+    "RuntimeStatusSnapshot",
+    "ShutdownPolicy",
+    "SupervisorStartResult",
     "ReplayFrame",
     "SessionBranchResult",
     "SessionCatalogEntry",

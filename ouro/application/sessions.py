@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import datetime
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
 from ouro.application.session_history import (
@@ -32,6 +32,9 @@ from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
 
+if TYPE_CHECKING:
+    from ouro.application.resources import ResourceService
+
 _MAX_TITLE_LENGTH = 160
 
 
@@ -46,8 +49,14 @@ class SessionTitleGenerator(Protocol):
 class SessionService:
     """Application boundary for canonical session commands and catalog queries."""
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(
+        self,
+        store: SessionStore,
+        *,
+        resources: ResourceService | None = None,
+    ) -> None:
         self._store = store
+        self._resources = resources
 
     def create(
         self,
@@ -181,7 +190,8 @@ class SessionService:
             )
 
     def trash(self, session_id: str) -> SessionTrashResult:
-        self._load_snapshot(session_id, recover=False)
+        snapshot = self._load_snapshot(session_id, recover=False)
+        resource_ids: list[str] = []
         lock = self._store.acquire_session_lock(session_id, new_id("trash"))
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
@@ -189,13 +199,31 @@ class SessionService:
             session = self._load_snapshot(session_id, recover=False).session
             if session.status in {"running", "waiting_approval", "waiting_user"}:
                 raise SessionBusyError(f"session has unfinished work: {session_id}")
+            if self._resources is not None:
+                resource_ids = list(self._resources.session_resource_ids(session_id))
             trash_id = self._store.trash_session(session_id)
         finally:
             lock.release()
+        diagnostics = list(self._refresh_index_diagnostics(session_id))
+        if self._resources is not None and resource_ids:
+            try:
+                self._resources.collect_after_session_trash(resource_ids)
+            except Exception as exc:  # noqa: BLE001 - trash is canonical; GC is retryable.
+                diagnostics.append(
+                    Diagnostic(
+                        code="resource_collection_deferred",
+                        severity="warning",
+                        component="resources.gc",
+                        message=f"resource collection deferred ({type(exc).__name__})",
+                        session_id=snapshot.session.session_id,
+                        recoverable=True,
+                        suggested_action="Retry resource garbage collection.",
+                    )
+                )
         return SessionTrashResult(
             session_id=session_id,
             trash_id=trash_id,
-            diagnostics=self._refresh_index_diagnostics(session_id),
+            diagnostics=tuple(diagnostics),
         )
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
@@ -204,7 +232,14 @@ class SessionService:
             source.messages,
             message_id,
         )
-        if any(message.resource_refs for message in selected_messages):
+        resource_ids = list(
+            dict.fromkeys(
+                resource_id
+                for message in selected_messages
+                for resource_id in message.resource_refs
+            )
+        )
+        if resource_ids and self._resources is None:
             raise SessionBranchError(
                 "branch contains resource references; ResourceService must copy their records "
                 "before this branch can be published"
@@ -237,7 +272,16 @@ class SessionService:
                 "message_count": len(copied_messages),
             }
         )
-        self._store.create_session_snapshot(branch, copied_messages)
+        resource_references = (
+            self._resources.branch_references(
+                source_session_id,
+                branch.session_id,
+                resource_ids,
+            )
+            if self._resources is not None
+            else []
+        )
+        self._store.create_session_snapshot(branch, copied_messages, resource_references)
         return SessionBranchResult(
             session=SessionView.from_record(branch),
             source_session_id=source_session_id,

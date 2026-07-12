@@ -8,6 +8,7 @@ from typing import Any
 from ouro.application.events import RuntimeEventSink
 from ouro.application.models import ConfiguredModelCatalog
 from ouro.application.queued_inputs import QueuedInputMode
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.cli.errors import error_exit_code
 from ouro.config import (
@@ -27,6 +28,7 @@ from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.prompts import render_agent_skills_prompt
 from ouro.providers import build_runtime_adapter
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.skills import discover_available_skills
 from ouro.tools import ToolRegistry, builtin_tools
@@ -46,6 +48,9 @@ def build_default_runtime(
 ) -> RuntimeService:
     store = LocalSessionStore(home)
     store.initialize()
+    resource_store = LocalResourceStore(store.root)
+    resource_store.initialize()
+    resources = ResourceService(store=resource_store, sessions=store)
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
@@ -86,6 +91,7 @@ def build_default_runtime(
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
         queued_input_config=queued_input_config,
+        resources=resources,
     )
 
 

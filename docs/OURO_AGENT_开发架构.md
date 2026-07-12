@@ -39,6 +39,7 @@ provider adapters    local implementations
 | `application` | 会话与运行用例、事务编排、Host DTO | 参数解析、终端渲染、HTTP 细节 |
 | `config` | 集中配置模型、校验、持久化和运行参数合并 | 模型请求和 UI 查询用例 |
 | `sessions` | SessionStore port、本地文件后端、索引和 OS 锁 | 会话命令与 Host DTO |
+| `resources` | ResourceStore port、不可变 blob、Session 引用和资源索引 | Host DTO 与运行调度 |
 | `providers` | Provider 实现、transport、codec、adapter factory | 会话模型选择和运行状态 |
 | `tools` | 工具注册、schema 校验、权限执行和批调度 | 模型轮次状态机 |
 | `skills` | 标准 Skills 发现、解析、内容加载和安装管理 | 提示词运行编排 |
@@ -63,6 +64,10 @@ CLI / Host
 `RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和排队输入
 串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
 上下文、事件、工具和持久化副作用。`RunLifecycle` 集中承载模型循环中的 run/session 状态转换。
+
+`RuntimeSupervisor` 位于 RuntimeService 之外，只拥有跨 Session 的进程内 FIFO 调度、并发上限、Host
+订阅和 shutdown 生命周期。它不写 durable Run 状态机；submit/abort 最终调用 RuntimeService，重启恢复
+仍从 SessionStore 读取。每个订阅使用有界队列，慢 Host 不反向阻塞 Run。
 
 排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
 model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此
@@ -118,6 +123,11 @@ OURO_HOME/
       compactions.jsonl
       runs/
       resources/index.json
+  resources/
+    records/<resource_id>.json
+    blobs/sha256/<digest>
+    index.json
+    staging/
   trash/sessions/
 ```
 
@@ -131,6 +141,10 @@ Provider text/reasoning delta 只追加到 `events.jsonl`。快照只在消息�
 `MigrationRequiredError`，不能在加载过程中猜测字段或隐式改写数据。
 
 每个 session 同时只允许一个 active run。进程持有的 OS lock 是存活判断依据，锁文件仅用于诊断。
+
+全局 resource record/blob 与 Session 引用关系是 canonical 数据；`resources/index.json` 是可重建投影。
+资源导入先 staging 并计算 SHA-256，再原子发布。分支的消息与资源引用在同一 Session staging 目录发布，
+避免先出现带悬空 resource id 的分支。
 
 ## 配置契约
 
@@ -156,6 +170,7 @@ CLI 命令使用资源层级表达职责：
 - `provider endpoint set` 只管理 endpoint；
 - `provider check` 负责连接检查；
 - `session compact` 负责手动压缩；
+- `resource import/list/show/export/remove` 管理 Session 资源；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
 命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
@@ -171,10 +186,10 @@ CLI 命令使用资源层级表达职责：
 
 只有出现独立变化轴时才新增层级：
 
-- 多会话后台并发与宿主生命周期出现后，引入 RuntimeSupervisor；
+- 第二种 Supervisor 后端或跨进程调度出现后，再拆分当前进程内调度实现；
 - Desktop 需要 provider/config 查询后，增加 application 配置门面；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
-- 资源身份、复制和清理事务落地后，引入 ResourceService；
+- 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
 - 真实 MCP transport 落地后，在 `mcp` 内部拆分连接、协议和注册适配。
 
 这些边界应由真实用例驱动，不能为了缩短文件或统一命名而增加空转 service、回调层或通用 manager。

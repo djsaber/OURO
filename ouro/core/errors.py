@@ -33,6 +33,30 @@ class SessionBranchError(OuroError):
     """A session cannot be branched at the requested canonical message boundary."""
 
 
+class ResourceError(OuroError):
+    """A resource operation could not preserve its public contract."""
+
+
+class ResourceNotFoundError(ResourceError):
+    """A requested resource record or immutable blob does not exist."""
+
+
+class UnsafeResourcePathError(ResourceError):
+    """A resource path crosses a filesystem safety boundary."""
+
+
+class UnsupportedMediaTypeError(ResourceError):
+    """A supplied media type is not syntactically usable by the resource system."""
+
+
+class ResourceIntegrityError(ResourceError):
+    """Persisted resource bytes do not match their canonical digest or size."""
+
+
+class ResourceInUseError(ResourceError):
+    """A resource reference cannot be removed while canonical messages use it."""
+
+
 class CompactionError(OuroError):
     """Context compaction could not produce and activate a valid summary."""
 

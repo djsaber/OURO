@@ -24,6 +24,11 @@ OURO_HOME/
       compactions.jsonl
       runs/<run_id>.json
       resources/index.json
+  resources/
+    records/<resource_id>.json
+    blobs/sha256/<digest>
+    index.json
+    staging/
   trash/sessions/<trash_id>/
 ```
 
@@ -96,12 +101,15 @@ Host DTO 不暴露 catalog 内部的 `search_text`。
 - 工具交换必须完整；请求或结果中间不能作为孤立边界。
 - 分支消息获得新 id、清除 run/turn id，并记录 source identity。
 - 分支 lineage 写入 root/parent/fork 字段。
-- 含 `resource_refs` 的分支在 ResourceService 完成前明确失败。
+- 含 `resource_refs` 的分支通过 ResourceService 验证存在性，并与消息一起原子发布引用关系。
 
 ## 回收站
 
 删除使用 staging 后原子发布到 `trash/sessions/<trash_id>`。发布失败必须回滚到原 Session，或明确报告
 数据保留位置。初始化负责完成可判定安全的中断发布。
+
+发布 trash 后，ResourceService 对该 Session 原引用执行可达性清理；共享资源仍被其他活动 Session 引用时
+不得删除。清理失败只形成可重试 diagnostic，不破坏已经完成的 trash 事务。
 
 ## 验收证据
 

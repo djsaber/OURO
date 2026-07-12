@@ -34,6 +34,13 @@ from ouro.cli.provider_commands import (
     use_provider_config,
     use_provider_endpoint,
 )
+from ouro.cli.resource_commands import (
+    export_resource,
+    import_resource,
+    list_resources,
+    remove_resource,
+    show_resource,
+)
 from ouro.cli.run import (
     RuntimeProviderOptions,
     run_json,
@@ -72,6 +79,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_command(args)
     if args.command == "session":
         return _session_command(args)
+    if args.command == "resource":
+        return _resource_command(args)
     if args.command in {"approve", "reject", "abort"}:
         return _approval_command(args)
     if args.command == "config":
@@ -219,6 +228,44 @@ def _approval_command(args: argparse.Namespace) -> int:
             )
         )
     raise AssertionError(f"unknown approval command: {args.command}")
+
+
+def _resource_command(args: argparse.Namespace) -> int:
+    if args.resource_command == "import":
+        return import_resource(
+            args.session_id,
+            args.path,
+            home=args.home,
+            media_type=args.media_type,
+            json_mode=args.json,
+        )
+    if args.resource_command == "list":
+        return list_resources(args.session_id, home=args.home, json_mode=args.json)
+    if args.resource_command == "show":
+        return show_resource(
+            args.session_id,
+            args.resource_id,
+            home=args.home,
+            json_mode=args.json,
+        )
+    if args.resource_command == "export":
+        return export_resource(
+            args.session_id,
+            args.resource_id,
+            args.output,
+            home=args.home,
+            force=args.force,
+            json_mode=args.json,
+        )
+    if args.resource_command == "remove":
+        return remove_resource(
+            args.session_id,
+            args.resource_id,
+            home=args.home,
+            force=args.force,
+            json_mode=args.json,
+        )
+    raise AssertionError(f"unknown resource command: {args.resource_command}")
 
 
 def _config_command(args: argparse.Namespace) -> int:

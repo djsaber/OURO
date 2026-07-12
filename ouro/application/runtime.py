@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from functools import partial
+from typing import TYPE_CHECKING
 
 from ouro.application.compaction import (
     ContextPreparationService,
@@ -48,6 +49,9 @@ from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.sessions import SessionLock, SessionSnapshot, SessionStore
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
+if TYPE_CHECKING:
+    from ouro.application.resources import ResourceService
+
 
 class RuntimeService:
     def __init__(
@@ -69,9 +73,11 @@ class RuntimeService:
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
         queued_input_config: QueuedInputConfig | None = None,
+        resources: ResourceService | None = None,
     ) -> None:
         self.store = store
-        self.sessions = SessionService(store)
+        self.resources = resources
+        self.sessions = SessionService(store, resources=resources)
         self.queued_inputs = QueuedInputQueue(store)
         self.follow_ups = FollowUpQueue(store)
         self.queued_input_config = queued_input_config or QueuedInputConfig()
@@ -85,7 +91,13 @@ class RuntimeService:
             hooks=self.hooks,
             event_sink=event_sink,
         )
-        self.run_lifecycle = RunLifecycle(store=store, events=self.event_recorder)
+        self.run_lifecycle = RunLifecycle(
+            store=store,
+            events=self.event_recorder,
+            validate_resource_refs=(
+                resources.validate_references if resources is not None else None
+            ),
+        )
         self.run_recovery = RunRecoveryService(
             store=store,
             runs=self.run_lifecycle,

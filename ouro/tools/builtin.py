@@ -139,7 +139,6 @@ def _write(invocation: ToolInvocation) -> ToolResult:
         tool_name=invocation.tool_name,
         content=f"Wrote {path}",
         structured={"path": str(path), "bytes": len(content.encode("utf-8"))},
-        resource_refs=[str(path)],
         ended_at=utc_now(),
     )
 
@@ -164,7 +163,6 @@ def _edit(invocation: ToolInvocation) -> ToolResult:
         tool_name=invocation.tool_name,
         content=f"Edited {path}",
         structured={"path": str(path), "changed": True},
-        resource_refs=[str(path)],
         ended_at=utc_now(),
     )
 

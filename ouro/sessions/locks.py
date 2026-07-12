@@ -94,7 +94,14 @@ def is_lock_held(path: Path) -> bool:
 
 
 def _try_lock_descriptor(descriptor: int) -> bool:
-    _ensure_lock_byte(descriptor)
+    try:
+        _ensure_lock_byte(descriptor)
+    except OSError as exc:
+        # A peer may lock the first byte between our open and initialization on Windows.
+        # Treat that sharing race exactly like a failed non-blocking lock acquisition.
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return False
+        raise
     try:
         if os.name == "nt":
             msvcrt = importlib.import_module("msvcrt")

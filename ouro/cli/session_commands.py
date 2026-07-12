@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from ouro.application.facade import ApplicationFacade
+from ouro.application.resources import ResourceService
 from ouro.application.session_models import (
     SessionCatalogQuery,
     SessionCatalogStatus,
@@ -15,6 +16,7 @@ from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 
 
@@ -280,7 +282,9 @@ def export_session(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _facade(home).open_session(session_id)
+        facade = _facade(home)
+        snapshot = facade.open_session(session_id)
+        resources = facade.list_resources(session_id)
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
@@ -296,6 +300,7 @@ def export_session(
         "events": [event.model_dump(mode="json") for event in snapshot.events],
         "runs": [run.model_dump(mode="json") for run in snapshot.runs],
         "compactions": [compaction.model_dump(mode="json") for compaction in snapshot.compactions],
+        "resources": [resource.model_dump(mode="json") for resource in resources.resources],
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2)
     if output_path is not None:
@@ -472,7 +477,11 @@ def _store(home: str | Path | None) -> LocalSessionStore:
 
 
 def _facade(home: str | Path | None) -> ApplicationFacade:
-    return ApplicationFacade.for_sessions(_store(home))
+    sessions = _store(home)
+    resource_store = LocalResourceStore(sessions.root)
+    resource_store.initialize()
+    resources = ResourceService(store=resource_store, sessions=sessions)
+    return ApplicationFacade.with_resources(sessions, resources)
 
 
 def _print_error(exc: Exception, *, json_mode: bool) -> None:
