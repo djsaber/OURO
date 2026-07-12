@@ -19,6 +19,22 @@ from ouro.config.provider_models import (
 )
 from ouro.core.errors import ConfigError
 
+_PROVIDER_FIELDS = frozenset(
+    {
+        "provider_type",
+        "provider_id",
+        "credential_ref",
+        "default_endpoint",
+        "endpoints",
+        "base_url",
+        "api_path",
+        "enabled",
+        "timeout_seconds",
+        "retry_policy",
+        "provider_options",
+    }
+)
+
 
 def provider_config_to_public_dict(
     provider: ProviderConfig,
@@ -27,13 +43,14 @@ def provider_config_to_public_dict(
 ) -> dict[str, Any]:
     """Render a credential-safe representation for CLI and API consumers."""
 
-    default_endpoint = provider.endpoint()
     return {
         "provider_id": provider.provider_id,
         "kind": provider.provider_type,
         "credential": provider.credential_ref.display(),
         "enabled": provider.enabled,
         "timeout": provider.timeout_seconds,
+        "base_url": provider.base_url,
+        "api_path": provider.api_path,
         "default": is_default,
         "default_endpoint": provider.default_endpoint,
         "endpoint_count": len(provider.endpoints),
@@ -44,13 +61,6 @@ def provider_config_to_public_dict(
             }
             for endpoint in provider.endpoints
         ],
-        # Compatibility fields for existing CLI consumers.
-        "model": default_endpoint.model_id if default_endpoint else None,
-        "base_url": (
-            (default_endpoint.base_url or provider.base_url)
-            if default_endpoint
-            else provider.base_url
-        ),
     }
 
 
@@ -59,6 +69,10 @@ def provider_config_from_mapping(
     raw: Mapping[str, Any],
 ) -> ProviderConfig:
     """Decode the current nested provider/endpoint shape."""
+
+    unsupported = sorted(set(raw) - _PROVIDER_FIELDS)
+    if unsupported:
+        raise ConfigError(f"unsupported provider config fields: {', '.join(unsupported)}")
 
     configured_provider_id = _optional_str(raw.get("provider_id")) or provider_id
     if configured_provider_id != provider_id:
@@ -117,34 +131,14 @@ def _endpoints_from_mapping(raw: Mapping[str, Any]) -> tuple[ProviderEndpointCon
     section = raw.get("endpoints")
     if section is None:
         return ()
+    if not isinstance(section, Mapping):
+        raise ValueError("endpoints config must be an object")
     endpoints: dict[str, ProviderEndpointConfig] = {}
-    if isinstance(section, Mapping):
-        for endpoint_id, item in section.items():
-            if not isinstance(endpoint_id, str) or not isinstance(item, Mapping):
-                raise ValueError("endpoint entries must be named objects")
-            endpoint = endpoint_config_from_mapping(endpoint_id, item)
-            _add_unique_endpoint(endpoints, endpoint)
-    elif isinstance(section, list):
-        for item in section:
-            if not isinstance(item, Mapping):
-                raise ValueError("endpoint config list entries must be objects")
-            endpoint_id = _optional_str(item.get("endpoint_id"))
-            if endpoint_id is None:
-                raise ValueError("endpoint config entry is missing endpoint_id")
-            endpoint = endpoint_config_from_mapping(endpoint_id, item)
-            _add_unique_endpoint(endpoints, endpoint)
-    else:
-        raise ValueError("endpoints config must be an object or list")
+    for endpoint_id, item in section.items():
+        if not isinstance(endpoint_id, str) or not isinstance(item, Mapping):
+            raise ValueError("endpoint entries must be named objects")
+        endpoints[endpoint_id] = endpoint_config_from_mapping(endpoint_id, item)
     return tuple(endpoints[key] for key in sorted(endpoints))
-
-
-def _add_unique_endpoint(
-    endpoints: dict[str, ProviderEndpointConfig],
-    endpoint: ProviderEndpointConfig,
-) -> None:
-    if endpoint.endpoint_id in endpoints:
-        raise ValueError(f"duplicate endpoint id: {endpoint.endpoint_id}")
-    endpoints[endpoint.endpoint_id] = endpoint
 
 
 def _credential_ref_from_mapping(raw: Mapping[str, Any]) -> CredentialRef:
@@ -174,7 +168,7 @@ def _optional_str(value: object) -> str | None:
 
 
 def _provider_kind(value: object) -> ProviderKind:
-    if value in {"openai-compatible", "openai_compatible"}:
+    if value == "openai-compatible":
         return "openai-compatible"
     if value == "faux":
         return "faux"

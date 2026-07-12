@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -40,7 +39,7 @@ class SkillParseResult:
 
 
 class SkillDocumentParser:
-    """Parse Agent Skills documents strictly first, then apply safe compatibility fallbacks."""
+    """Parse the standard Agent Skills frontmatter contract without repairing input."""
 
     def parse(self, location: str | Path, *, source: SkillSource = "user") -> SkillParseResult:
         path = Path(location).expanduser().resolve()
@@ -74,14 +73,14 @@ class SkillDocumentParser:
         parent_name = path.parent.name
         name = self._optional_text(frontmatter.get("name"))
         if not name:
-            name = parent_name
             diagnostics.append(
-                self._warning(
+                self._error(
                     "missing_name",
-                    f"frontmatter name is missing; using directory name {parent_name!r}",
+                    "frontmatter name is required for skill discovery",
                     path,
                 )
             )
+            return SkillParseResult(skill=None, diagnostics=tuple(diagnostics))
 
         description = self._optional_text(frontmatter.get("description"))
         if not description:
@@ -170,42 +169,15 @@ class SkillDocumentParser:
         text: str,
         path: Path,
     ) -> tuple[dict[str, Any] | None, list[SkillDiagnostic]]:
-        diagnostics: list[SkillDiagnostic] = []
         try:
             loaded = yaml.safe_load(text)
-        except yaml.YAMLError as strict_error:
-            repaired = self._repair_top_level_scalar_colons(text)
-            if repaired == text:
-                return None, [self._error("invalid_yaml", str(strict_error), path)]
-            try:
-                loaded = yaml.safe_load(repaired)
-            except yaml.YAMLError as fallback_error:
-                return None, [self._error("invalid_yaml", str(fallback_error), path)]
-            diagnostics.append(
-                self._warning(
-                    "repaired_yaml",
-                    "loaded frontmatter after quoting a malformed top-level scalar",
-                    path,
-                )
-            )
+        except yaml.YAMLError as exc:
+            return None, [self._error("invalid_yaml", str(exc), path)]
         if loaded is None:
             loaded = {}
         if not isinstance(loaded, Mapping):
             return None, [self._error("invalid_frontmatter", "frontmatter must be a mapping", path)]
-        return {str(key): value for key, value in loaded.items()}, diagnostics
-
-    def _repair_top_level_scalar_colons(self, text: str) -> str:
-        repaired: list[str] = []
-        for line in text.splitlines():
-            match = re.match(r"^([A-Za-z][A-Za-z0-9_-]*):[ \t]+(.+)$", line)
-            if not match:
-                repaired.append(line)
-                continue
-            value = match.group(2).strip()
-            if ": " in value and not value.startswith(("'", '"', "|", ">", "[", "{")):
-                line = f"{match.group(1)}: {json.dumps(value, ensure_ascii=False)}"
-            repaired.append(line)
-        return "\n".join(repaired)
+        return {str(key): value for key, value in loaded.items()}, []
 
     def _name_diagnostics(
         self,
@@ -246,15 +218,6 @@ class SkillDocumentParser:
             return None
         if isinstance(value, str):
             return value.strip() or None
-        if isinstance(value, list) and all(isinstance(item, str) for item in value):
-            diagnostics.append(
-                self._warning(
-                    "normalized_allowed_tools",
-                    "converted community list-form allowed-tools to the standard string form",
-                    path,
-                )
-            )
-            return " ".join(value)
         diagnostics.append(
             self._warning("invalid_allowed_tools", "allowed-tools should be a string", path)
         )
@@ -266,20 +229,12 @@ class SkillDocumentParser:
             return None
         if isinstance(value, str):
             return value.strip() or None
-        if isinstance(value, int | float | bool):
-            return str(value)
         return None
 
     @staticmethod
     def _optional_bool(value: object, *, default: bool) -> bool:
         if isinstance(value, bool):
             return value
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"true", "yes", "1"}:
-                return True
-            if normalized in {"false", "no", "0"}:
-                return False
         return default
 
     @staticmethod

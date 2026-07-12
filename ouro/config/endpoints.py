@@ -19,6 +19,26 @@ _SENSITIVE_PUBLIC_KEYS = frozenset(
         "secret",
     }
 )
+_ENDPOINT_FIELDS = frozenset(
+    {
+        "endpoint_id",
+        "model_id",
+        "base_url",
+        "api_path",
+        "temperature",
+        "context_window",
+        "max_output_tokens",
+        "supports_tools",
+        "supports_vision",
+        "supports_streaming",
+        "supports_structured_output",
+        "supports_reasoning",
+        "supported_thinking_levels",
+        "default_thinking_level",
+        "request_options",
+        "metadata",
+    }
+)
 
 
 class ProviderEndpointConfig(OuroModel):
@@ -90,34 +110,31 @@ def endpoint_config_from_mapping(
     endpoint_id: str,
     raw: Mapping[str, Any],
 ) -> ProviderEndpointConfig:
+    unsupported = sorted(set(raw) - _ENDPOINT_FIELDS)
+    if unsupported:
+        raise ValueError(f"unsupported endpoint config fields: {', '.join(unsupported)}")
     configured_id = _optional_str(raw.get("endpoint_id")) or endpoint_id
     if configured_id != endpoint_id:
         raise ValueError(f"endpoint_id must match endpoints key ({configured_id} != {endpoint_id})")
-    model_id = _optional_str(raw.get("model_id") or raw.get("model"))
+    model_id = _optional_str(raw.get("model_id"))
     if model_id is None:
         raise ValueError(f"endpoint config is missing model_id: {endpoint_id}")
     return ProviderEndpointConfig(
         endpoint_id=configured_id,
         model_id=model_id,
         base_url=_optional_str(raw.get("base_url")),
-        api_path=_optional_str(raw.get("api_path") or raw.get("endpoint")),
+        api_path=_optional_str(raw.get("api_path")),
         temperature=raw.get("temperature"),
         context_window=raw.get("context_window", 128_000),
         max_output_tokens=raw.get("max_output_tokens", 8192),
         supports_tools=raw.get("supports_tools", True),
-        supports_vision=raw.get(
-            "supports_vision",
-            raw.get("supports_multimodal", False),
-        ),
+        supports_vision=raw.get("supports_vision", False),
         supports_streaming=raw.get("supports_streaming", True),
         supports_structured_output=raw.get("supports_structured_output", False),
         supports_reasoning=raw.get("supports_reasoning", False),
-        supported_thinking_levels=tuple(
-            raw.get("supported_thinking_levels") or raw.get("thinking_levels") or ()
-        ),
-        default_thinking_level=raw.get("default_thinking_level")
-        or raw.get("default_reasoning_level"),
-        request_options=dict(raw.get("request_options") or raw.get("extra") or {}),
+        supported_thinking_levels=tuple(raw.get("supported_thinking_levels") or ()),
+        default_thinking_level=raw.get("default_thinking_level"),
+        request_options=dict(raw.get("request_options") or {}),
         metadata=dict(raw.get("metadata") or {}),
     )
 

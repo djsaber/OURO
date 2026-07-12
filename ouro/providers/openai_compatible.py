@@ -30,7 +30,7 @@ from ouro.providers.openai_transport import (
 
 
 class OpenAICompatibleProvider:
-    provider_id = "openai_compatible"
+    provider_id = "openai-compatible"
 
     def __init__(
         self,

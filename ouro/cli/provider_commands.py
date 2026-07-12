@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -23,15 +22,13 @@ async def check_provider_connection(
     *,
     home: str | Path | None = None,
     provider_options: RuntimeProviderOptions | None = None,
-    provider_id: str | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
-        effective_options = _provider_options_with_target(
-            provider_options,
-            provider_id=provider_id,
+        runtime = build_default_runtime(
+            home,
+            provider_options=provider_options or RuntimeProviderOptions(),
         )
-        runtime = build_default_runtime(home, provider_options=effective_options)
         result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -507,18 +504,6 @@ def remove_provider_endpoint(
         f"(default provider: {snapshot.default_provider_id})"
     )
     return 0
-
-
-def _provider_options_with_target(
-    options: RuntimeProviderOptions | None,
-    *,
-    provider_id: str | None,
-) -> RuntimeProviderOptions:
-    base = options or RuntimeProviderOptions()
-    return replace(
-        base,
-        provider_id=base.provider_id or provider_id,
-    )
 
 
 def _checked_target_label(

@@ -173,7 +173,7 @@ def _session_command(args: argparse.Namespace) -> int:
             run_id=args.run_id,
             json_mode=args.json,
         )
-    if command in {"compact", "compress"}:
+    if command == "compact":
         return asyncio.run(
             compact_session(
                 args.session_id,
@@ -221,14 +221,6 @@ def _approval_command(args: argparse.Namespace) -> int:
 
 def _config_command(args: argparse.Namespace) -> int:
     home = args.home
-    if args.config_command == "check":
-        return asyncio.run(
-            check_provider_connection(
-                home=home,
-                json_mode=args.check_json,
-            )
-        )
-
     if args.config_command == "prompt":
         if args.prompt_value is not None:
             return set_system_prompt_config(
@@ -315,7 +307,6 @@ def _provider_command(args: argparse.Namespace) -> int:
             check_provider_connection(
                 home=home,
                 provider_options=_provider_options(args, prefix="provider_check_"),
-                provider_id=args.provider_id,
                 json_mode=args.json,
             )
         )
@@ -384,7 +375,7 @@ def _skills_command(args: argparse.Namespace) -> int:
             include_disabled=args.skills_all,
         )
     if args.skills_command == "show":
-        return show_skill(args.skill_id, home=home, json_mode=args.json)
+        return show_skill(args.skill_name, home=home, json_mode=args.json)
     if args.skills_command == "roots":
         return show_skill_roots(home=home, json_mode=args.json)
     if args.skills_command == "prompt":
@@ -403,17 +394,17 @@ def _skills_command(args: argparse.Namespace) -> int:
             json_mode=args.json,
         )
     if args.skills_command == "update":
-        return update_skill(args.skill_id, home=home, json_mode=args.json)
-    if args.skills_command in {"remove", "uninstall"}:
+        return update_skill(args.skill_name, home=home, json_mode=args.json)
+    if args.skills_command == "remove":
         return remove_skill(
-            args.skill_id,
+            args.skill_name,
             home=home,
             force=args.force,
             json_mode=args.json,
         )
     if args.skills_command in {"enable", "disable"}:
         return set_skill_enabled(
-            args.skill_id,
+            args.skill_name,
             enabled=args.skills_command == "enable",
             home=home,
             json_mode=args.json,

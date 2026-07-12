@@ -416,7 +416,7 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
             "--max-output-tokens",
             "16000",
             "--no-tools",
-            "--multimodal",
+            "--vision",
             "--no-streaming",
             "--structured-output",
             "--reasoning",
@@ -548,7 +548,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write_skill(home / "skills" / "pdf", "pdf", "PDF", "Extract text from PDFs.")
-    _write_skill(workspace / "skills" / "xlsx", "xlsx", "XLSX", "Process spreadsheets.")
+    _write_skill(workspace / ".ouro" / "skills" / "xlsx", "xlsx", "XLSX", "Process spreadsheets.")
     monkeypatch.chdir(workspace)
     provider = CapturingProvider()
 
@@ -581,21 +581,26 @@ def test_skills_commands_list_show_roots_and_prompt(
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     _write_skill(home / "skills" / "pdf", "pdf", "PDF", "Extract text from PDFs.")
-    _write_skill(workspace / "skills" / "xlsx", "xlsx", "XLSX", "Process spreadsheets.")
+    _write_skill(
+        workspace / ".ouro" / "skills" / "xlsx",
+        "xlsx",
+        "XLSX",
+        "Process spreadsheets.",
+    )
     monkeypatch.chdir(workspace)
 
     list_code = main(["skills", "list", "--home", str(home), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
 
     assert list_code == 0
-    assert [skill["skill_id"] for skill in list_payload["skills"]] == ["pdf", "xlsx"]
+    assert [skill["name"] for skill in list_payload["skills"]] == ["pdf", "xlsx"]
     assert {root["source"] for root in list_payload["roots"]} == {"user", "workspace"}
 
     show_code = main(["skills", "show", "xlsx", "--home", str(home), "--json"])
     show_payload = json.loads(capsys.readouterr().out)
 
     assert show_code == 0
-    assert show_payload["skill"]["skill_id"] == "xlsx"
+    assert show_payload["skill"]["name"] == "xlsx"
     assert show_payload["skill"]["content"] == "XLSX instructions."
 
     roots_code = main(["skills", "roots", "--home", str(home), "--json"])
@@ -644,8 +649,8 @@ def test_run_json_reports_provider_config_error(tmp_path, capsys) -> None:
     assert "provider not found" in payload["error"]
 
 
-def test_config_check_faux_provider_outputs_status(tmp_path, capsys) -> None:
-    code = main(["config", "check", "--home", str(tmp_path)])
+def test_provider_check_faux_provider_outputs_status(tmp_path, capsys) -> None:
+    code = main(["provider", "check", "--home", str(tmp_path)])
 
     captured = capsys.readouterr()
 
@@ -653,8 +658,8 @@ def test_config_check_faux_provider_outputs_status(tmp_path, capsys) -> None:
     assert captured.out.strip() == "Provider check OK: faux/faux"
 
 
-def test_config_check_json_outputs_provider_result(tmp_path, capsys) -> None:
-    code = main(["config", "check", "--json", "--home", str(tmp_path)])
+def test_provider_check_json_outputs_provider_result(tmp_path, capsys) -> None:
+    code = main(["provider", "check", "--json", "--home", str(tmp_path)])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -666,7 +671,7 @@ def test_config_check_json_outputs_provider_result(tmp_path, capsys) -> None:
     assert payload["model_id"] == "faux"
 
 
-def test_config_check_json_reports_provider_config_error(tmp_path, capsys) -> None:
+def test_provider_check_json_reports_provider_config_error(tmp_path, capsys) -> None:
     code = main(
         [
             "provider",
@@ -819,7 +824,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
             "--max-output-tokens",
             "16000",
             "--no-tools",
-            "--multimodal",
+            "--vision",
             "--no-streaming",
             "--structured-output",
             "--reasoning",
@@ -953,11 +958,11 @@ def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:
     assert remove_payload["default"] == "faux"
 
 
-def _write_skill(root, skill_id: str, name: str, description: str) -> None:
+def _write_skill(root, skill_name: str, name: str, description: str) -> None:
     root.mkdir(parents=True)
     (root / "SKILL.md").write_text(
         f"""---
-name: {skill_id}
+name: {skill_name}
 description: {description}
 ---
 {name} instructions.""",

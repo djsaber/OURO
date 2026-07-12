@@ -63,7 +63,6 @@ class PromptConfigManager:
                 next_raw["prompts"] = prompts
             else:
                 next_raw.pop("prompts", None)
-        next_raw.pop("system_prompt", None)
         self._write_raw(next_raw)
         return self.snapshot()
 
@@ -71,6 +70,8 @@ class PromptConfigManager:
         return self._file.read()
 
     def _system_prompt_from_raw(self, raw: Mapping[str, Any]) -> str | None:
+        if "system_prompt" in raw:
+            raise ConfigError("unsupported root config field system_prompt; use prompts.system")
         prompts = raw.get("prompts")
         if isinstance(prompts, Mapping):
             system_prompt = prompts.get("system")
@@ -81,11 +82,6 @@ class PromptConfigManager:
         elif prompts is not None:
             raise ConfigError("prompts config must be an object")
 
-        legacy_system_prompt = raw.get("system_prompt")
-        if isinstance(legacy_system_prompt, str):
-            return legacy_system_prompt
-        if legacy_system_prompt is not None:
-            raise ConfigError("system_prompt must be a string")
         return None
 
     def _write_raw(self, raw: Mapping[str, Any]) -> None:

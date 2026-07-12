@@ -63,19 +63,18 @@ def list_skills(
         return 0
     lines = ["Skills:"]
     for skill in skills:
-        skill_id = f"[id: {skill.skill_id}]"
         source = f"[{skill.source}]"
         state = "[enabled]" if skill.enabled else "[disabled]"
         managed = "[managed]" if skill.name in installed else "[external]"
         location = f"[file: {skill.location}]"
-        lines.append(f"- {source} {state} {managed} {skill.name} {skill_id} {location}")
+        lines.append(f"- {source} {state} {managed} {skill.name} {location}")
     print("\n".join(lines))
     _print_diagnostics(catalog.diagnostics)
     return 0
 
 
 def show_skill(
-    skill_id: str,
+    name: str,
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
@@ -83,13 +82,13 @@ def show_skill(
     try:
         skill = _find_skill(
             discover_skill_catalog(home=home, include_disabled=True).skills,
-            skill_id,
+            name,
         )
     except OuroError as exc:
         _print_skill_error(str(exc), json_mode=json_mode)
         return 1
     if skill is None:
-        _print_skill_not_found(skill_id, json_mode=json_mode)
+        _print_skill_not_found(name, json_mode=json_mode)
         return 1
 
     try:
@@ -111,11 +110,10 @@ def show_skill(
         return 0
 
     lines = [
-        f"Skill: {loaded.metadata.skill_id}",
-        f"Name: {loaded.metadata.name}",
+        f"Skill: {loaded.metadata.name}",
         f"Source: {loaded.metadata.source}",
         f"Enabled: {'yes' if loaded.metadata.enabled else 'no'}",
-        f"Path: {loaded.metadata.path}",
+        f"Location: {loaded.metadata.location}",
     ]
     if loaded.metadata.description:
         lines.append(f"Description: {loaded.metadata.description}")
@@ -285,26 +283,23 @@ def set_skill_enabled(
     )
 
 
-def _find_skill(skills: list[SkillMetadata], skill_id: str) -> SkillMetadata | None:
+def _find_skill(skills: list[SkillMetadata], name: str) -> SkillMetadata | None:
     for skill in skills:
-        if skill.name == skill_id:
+        if skill.name == name:
             return skill
     return None
 
 
 def _load_skill(skill: SkillMetadata) -> LoadedSkill:
-    loaded = SkillLoader(skill.path, default_source=skill.source).load_content(skill.name)
+    root = Path(skill.location).parent
+    loaded = SkillLoader(root, default_source=skill.source).load_content(skill.name)
     return loaded.model_copy(
         update={"metadata": loaded.metadata.model_copy(update={"enabled": skill.enabled})}
     )
 
 
 def _skill_metadata_to_dict(skill: SkillMetadata) -> dict[str, object]:
-    return {
-        **skill.model_dump(mode="json"),
-        "skill_id": skill.name,
-        "path": skill.path,
-    }
+    return skill.model_dump(mode="json")
 
 
 def _loaded_skill_to_dict(loaded: LoadedSkill) -> dict[str, object]:
@@ -322,8 +317,8 @@ def _skill_root_to_dict(root) -> dict[str, str | bool]:
     }
 
 
-def _print_skill_not_found(skill_id: str, *, json_mode: bool) -> None:
-    _print_skill_error(f"skill not found: {skill_id}", json_mode=json_mode)
+def _print_skill_not_found(name: str, *, json_mode: bool) -> None:
+    _print_skill_error(f"skill not found: {name}", json_mode=json_mode)
 
 
 def _print_skill_error(message: str, *, json_mode: bool) -> None:

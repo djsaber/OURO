@@ -7,8 +7,9 @@ from typing import Any
 import httpx
 import pytest
 
-from ouro.core.messages import ImageContent, MessageRecord, TextContent
+from ouro.core.messages import ImageContent, MessageRecord, TextContent, ToolResultReference
 from ouro.core.provider import ModelMetadata
+from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAICompatibleProvider
 from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
 
@@ -595,22 +596,22 @@ async def test_openai_compatible_provider_sends_assistant_tool_call_history() ->
     provider = OpenAICompatibleProvider(base_url="http://localhost:8000/v1", transport=transport)
     assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
-            "metadata": {
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "name": "Read",
-                        "arguments": {"path": "README.md"},
-                    }
-                ]
-            }
+            "tool_calls": [
+                ToolCallRequest(
+                    id="call_1",
+                    name="Read",
+                    arguments={"path": "README.md"},
+                )
+            ]
         }
     )
     tool_result = MessageRecord.text(
         session_id="ses_1",
         role="tool_result",
         text="contents",
-    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+    ).model_copy(
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+    )
 
     events = [
         event
@@ -815,21 +816,21 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
     )
     assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
-            "metadata": {
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "name": "Read",
-                        "arguments": {"path": "README.md"},
-                    }
-                ],
-                "reasoning_content": "I need to read the file.",
-            }
+            "tool_calls": [
+                ToolCallRequest(
+                    id="call_1",
+                    name="Read",
+                    arguments={"path": "README.md"},
+                )
+            ],
+            "metadata": {"reasoning_content": "I need to read the file."},
         }
     )
     tool_result = MessageRecord.text(
         session_id="ses_1", role="tool_result", text="contents"
-    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+    ).model_copy(
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+    )
 
     events = [
         event

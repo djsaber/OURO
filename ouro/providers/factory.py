@@ -19,7 +19,7 @@ def build_runtime_adapter(
     provider_kind = options.provider or "faux"
     if provider_kind not in {"faux", "openai-compatible"}:
         raise ConfigError(f"unsupported provider: {provider_kind}")
-    default_provider_id = "faux" if provider_kind == "faux" else "openai_compatible"
+    default_provider_id = "faux" if provider_kind == "faux" else "openai-compatible"
     provider_id = _normalized_identifier(
         options.provider_id,
         default=default_provider_id,

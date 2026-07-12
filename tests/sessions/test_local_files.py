@@ -2,7 +2,7 @@ import pytest
 
 from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
@@ -172,14 +172,16 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         role="assistant",
         text="already durable",
         sequence=2,
-    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_1"}]}})
+    ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
     result = MessageRecord.text(
         session_id=session.session_id,
         run_id=run.run_id,
         role="tool_result",
         text="result",
         sequence=3,
-    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+    ).model_copy(
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+    )
     store.append_message(assistant)
     store.append_message(result)
     store.append_event(
@@ -239,7 +241,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         role="assistant",
         text="calling",
         sequence=2,
-    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_1"}]}})
+    ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
     store.append_message(user)
     store.append_event(
         EventRecord(
@@ -440,7 +442,19 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 2"):
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 3"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
+
+
+def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
+    layout_path = tmp_path / "layout.json"
+    layout_path.write_text(
+        '{"data_layout_version":2,"created_at":"2026-01-01T00:00:00Z",'
+        '"updated_at":"2026-01-01T00:00:00Z"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(MigrationRequiredError, match="found 2, expected 3"):
+        LocalSessionStore(tmp_path).initialize()

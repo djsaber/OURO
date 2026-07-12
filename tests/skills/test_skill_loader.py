@@ -53,7 +53,7 @@ x-community-field: preserved
     assert loaded.resources == ["references/STYLE.md"]
 
 
-def test_loader_is_lenient_for_common_community_format_variants(tmp_path) -> None:
+def test_loader_rejects_malformed_community_format_variants(tmp_path) -> None:
     skill_dir = tmp_path / "community-folder"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
@@ -72,14 +72,12 @@ Community instructions.
 
     catalog = SkillLoader(tmp_path).load_catalog()
 
-    assert [skill.name for skill in catalog.skills] == ["Community Skill"]
-    assert catalog.skills[0].allowed_tools == "Read Bash"
+    assert catalog.skills == []
     codes = {item.code for item in catalog.diagnostics}
-    assert {"repaired_yaml", "name_directory_mismatch", "nonstandard_name"} <= codes
-    assert "normalized_allowed_tools" in codes
+    assert "invalid_yaml" in codes
 
 
-def test_loader_falls_back_to_directory_name_but_requires_description(tmp_path) -> None:
+def test_loader_requires_name_and_description(tmp_path) -> None:
     _write_raw_skill(
         tmp_path / "missing-name",
         """---
@@ -99,7 +97,7 @@ Instructions.
 
     catalog = SkillLoader(tmp_path).load_catalog()
 
-    assert [skill.name for skill in catalog.skills] == ["missing-name"]
+    assert catalog.skills == []
     assert {item.code for item in catalog.diagnostics} >= {
         "missing_name",
         "missing_description",
@@ -109,10 +107,10 @@ Instructions.
 def test_loader_recurses_with_bounds_and_ignores_skill_json_as_a_manifest(tmp_path) -> None:
     nested = tmp_path / "pack" / "nested-skill"
     _write_skill(nested, "nested-skill", "Use for nested tasks.")
-    legacy = tmp_path / "legacy-only"
-    legacy.mkdir()
-    (legacy / "skill.json").write_text(
-        json.dumps({"skill_id": "legacy-only", "description": "Old format"}),
+    nonstandard = tmp_path / "nonstandard-manifest"
+    nonstandard.mkdir()
+    (nonstandard / "skill.json").write_text(
+        json.dumps({"name": "nonstandard-manifest", "description": "Ignored format"}),
         encoding="utf-8",
     )
     ignored = tmp_path / "node_modules" / "ignored"

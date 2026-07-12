@@ -51,11 +51,6 @@ class ProviderConfig(OuroModel):
             raise ValueError("provider_id must not be empty")
         return normalized
 
-    @field_validator("provider_type", mode="before")
-    @classmethod
-    def _normalize_provider_type(cls, value: object) -> object:
-        return "openai-compatible" if value == "openai_compatible" else value
-
     @field_validator("base_url")
     @classmethod
     def _normalize_base_url(cls, value: str | None) -> str | None:

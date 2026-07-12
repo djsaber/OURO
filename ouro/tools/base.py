@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import subprocess
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from inspect import Parameter, signature
 
@@ -83,24 +87,34 @@ class ToolExecutionContext:
         timeout_seconds: float = 30.0,
     ) -> ToolProcessResult:
         self.raise_if_aborted()
-        process = await asyncio.create_subprocess_shell(
-            command,
-            cwd=cwd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        if os.name == "nt":
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        else:
+            process = await asyncio.create_subprocess_shell(
+                command,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
         communicate_task = asyncio.create_task(process.communicate())
         timed_out = False
         aborted = False
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         while not communicate_task.done():
             if self.is_aborted:
-                process.kill()
+                await _kill_process_tree(process)
                 aborted = True
                 break
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
-                process.kill()
+                await _kill_process_tree(process)
                 timed_out = True
                 break
             await asyncio.wait({communicate_task}, timeout=min(self.poll_interval, remaining))
@@ -116,6 +130,32 @@ class ToolExecutionContext:
             timed_out=timed_out,
             aborted=aborted,
         )
+
+
+async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
+    """Stop the shell and descendants so inherited output pipes can reach EOF."""
+
+    if process.returncode is not None:
+        return
+    if os.name == "nt":
+        killer = await asyncio.create_subprocess_exec(
+            "taskkill",
+            "/PID",
+            str(process.pid),
+            "/T",
+            "/F",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await killer.wait()
+    else:
+        kill_process_group = getattr(os, "killpg", None)
+        sigkill = getattr(signal, "SIGKILL", None)
+        if kill_process_group is not None and sigkill is not None:
+            with suppress(ProcessLookupError):
+                kill_process_group(process.pid, sigkill)
+    with suppress(ProcessLookupError):
+        process.kill()
 
 
 ToolHandler = Callable[..., ToolResult | Awaitable[ToolResult]]

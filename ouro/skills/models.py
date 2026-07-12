@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Literal
 
 from pydantic import Field
@@ -34,18 +33,6 @@ class SkillMetadata(OuroModel):
     disable_model_invocation: bool = False
     argument_hint: str | None = None
     extensions: dict[str, Any] = Field(default_factory=dict)
-
-    @property
-    def skill_id(self) -> str:
-        """Backward-compatible lookup name; the standard calls this field ``name``."""
-
-        return self.name
-
-    @property
-    def path(self) -> str:
-        """Backward-compatible skill directory derived from ``location``."""
-
-        return str(Path(self.location).parent)
 
 
 class LoadedSkill(OuroModel):

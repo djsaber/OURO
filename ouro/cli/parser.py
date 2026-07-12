@@ -158,7 +158,6 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
 
     compact_parser = session_subparsers.add_parser(
         "compact",
-        aliases=["compress"],
         help="Summarize and compress older session context",
     )
     compact_parser.add_argument("session_id", help="Session id")
@@ -205,13 +204,6 @@ def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
 def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     config_parser = subparsers.add_parser("config", help="Inspect configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
-
-    check_parser = config_subparsers.add_parser(
-        "check",
-        help="Check the default provider connection (alias for 'ouro provider check')",
-    )
-    check_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    check_parser.add_argument("--json", dest="check_json", action="store_true", help="Print JSON")
 
     prompt_parser = config_subparsers.add_parser("prompt", help="Inspect or set prompts")
     prompt_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
@@ -381,7 +373,11 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_check_parser.add_argument("provider_id", nargs="?", help="Provider/supplier id")
     provider_check_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     provider_check_parser.add_argument("--json", action="store_true", help="Print JSON")
-    _add_provider_args(provider_check_parser, prefix="provider_check_")
+    _add_provider_args(
+        provider_check_parser,
+        prefix="provider_check_",
+        include_provider=False,
+    )
 
     endpoint_parser = provider_subparsers.add_parser(
         "endpoint",
@@ -473,7 +469,7 @@ def _add_skills_parser(subparsers: argparse._SubParsersAction) -> None:
     )
 
     skills_show_parser = skills_subparsers.add_parser("show", help="Show a skill")
-    skills_show_parser.add_argument("skill_id", help="Skill id")
+    skills_show_parser.add_argument("skill_name", help="Skill name")
     skills_show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     skills_show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
@@ -508,7 +504,7 @@ def _add_skills_parser(subparsers: argparse._SubParsersAction) -> None:
         default="user",
         help="Install into OURO_HOME/skills or ./.ouro/skills",
     )
-    install_selection = skills_install_parser.add_mutually_exclusive_group(required=True)
+    install_selection = skills_install_parser.add_mutually_exclusive_group()
     install_selection.add_argument("--skill", dest="skill_selector", help="Select one skill")
     install_selection.add_argument(
         "--all",
@@ -528,16 +524,15 @@ def _add_skills_parser(subparsers: argparse._SubParsersAction) -> None:
         "update",
         help="Update an Ouro-managed skill from its recorded source",
     )
-    skills_update_parser.add_argument("skill_id", help="Skill name")
+    skills_update_parser.add_argument("skill_name", help="Skill name")
     skills_update_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     skills_update_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     skills_remove_parser = skills_subparsers.add_parser(
         "remove",
-        aliases=["uninstall"],
         help="Remove an Ouro-managed skill",
     )
-    skills_remove_parser.add_argument("skill_id", help="Skill name")
+    skills_remove_parser.add_argument("skill_name", help="Skill name")
     skills_remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     skills_remove_parser.add_argument(
         "--force",
@@ -551,19 +546,25 @@ def _add_skills_parser(subparsers: argparse._SubParsersAction) -> None:
         ("disable", "Disable a discovered skill"),
     ):
         command_parser = skills_subparsers.add_parser(command, help=help_text)
-        command_parser.add_argument("skill_id", help="Skill name")
+        command_parser.add_argument("skill_name", help="Skill name")
         command_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
         command_parser.add_argument("--json", action="store_true", help="Print JSON")
 
 
-def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> None:
-    parser.add_argument(
-        "--provider",
-        dest=f"{prefix}provider_id",
-        default=None,
-        metavar="PROVIDER_ID",
-        help="Configured provider id",
-    )
+def _add_provider_args(
+    parser: argparse.ArgumentParser,
+    *,
+    prefix: str = "",
+    include_provider: bool = True,
+) -> None:
+    if include_provider:
+        parser.add_argument(
+            "--provider",
+            dest=f"{prefix}provider_id",
+            default=None,
+            metavar="PROVIDER_ID",
+            help="Configured provider id",
+        )
     parser.add_argument(
         "--endpoint",
         dest=f"{prefix}endpoint_id",
@@ -586,7 +587,7 @@ def _add_provider_args(parser: argparse.ArgumentParser, *, prefix: str = "") -> 
         "--api-key",
         dest=f"{prefix}api_key",
         metavar="KEY",
-        help="Inline API key (stored as plain text; prefer --api-key-env)",
+        help="Inline API key for this command (prefer --api-key-env)",
     )
     parser.add_argument(
         "--api-key-env",
@@ -647,7 +648,7 @@ def _add_endpoint_capability_args(
 ) -> None:
     for options, dest, help_text in (
         (("tools",), "supports_tools", "tool calling"),
-        (("vision", "multimodal"), "supports_vision", "image/multimodal input"),
+        (("vision",), "supports_vision", "image/multimodal input"),
         (("streaming",), "supports_streaming", "streaming output"),
         (("structured-output",), "supports_structured_output", "structured output"),
         (("reasoning",), "supports_reasoning", "reasoning/thinking controls"),

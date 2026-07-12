@@ -24,6 +24,24 @@ class RunLifecycle:
         self.store = store
         self.events = events
 
+    def start(self, *, session: SessionRecord, run: RunRecord) -> tuple[SessionRecord, RunRecord]:
+        """Persist the shared session/run transition into an active run."""
+
+        active_run = run.model_copy(update={"status": "running"})
+        active_session = session.model_copy(
+            update={
+                "status": "running",
+                "last_run_id": active_run.run_id,
+                "active_run_id": active_run.run_id,
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+            }
+        )
+        self.store.save_session(active_session)
+        self.store.save_run(active_run)
+        self.store.try_update_index(active_session.session_id)
+        return active_session, active_run
+
     def append_user_message(
         self,
         *,

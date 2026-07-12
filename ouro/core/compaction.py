@@ -158,11 +158,7 @@ def plan_compaction(
 
 
 def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
-    """Group legacy and current messages by user-turn boundaries.
-
-    Tool request/result exchanges remain in the same group because only a later user message closes
-    the turn. This also works for older records whose declared ``turn_id`` is absent.
-    """
+    """Group messages by user requests when no model-turn identity is available."""
 
     turns: list[list[MessageRecord]] = []
     current: list[MessageRecord] = []
@@ -179,17 +175,16 @@ def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRe
 def compaction_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
     """Group messages at durable model-turn boundaries.
 
-    Current runtime messages share a ``turn_id`` across one assistant tool request and all of its
-    correlated results. Preceding messages without an id (normally the user input) join the next
-    identified frame. Pure legacy spans fall back to user-turn grouping. If an incomplete tool
-    exchange is encountered, the remaining suffix becomes one protected frame so compaction can
-    never separate it from later recovery context.
+    Messages in a model/tool exchange share a ``turn_id``. A preceding user message has no
+    ``turn_id`` and joins the following identified frame. Messages outside a model/tool exchange
+    are grouped by user request. If an incomplete tool exchange is encountered, the remaining
+    suffix becomes one protected frame so compaction cannot separate it from recovery context.
     """
 
     frames: list[list[MessageRecord]] = []
     current: list[MessageRecord] = []
     current_turn_id: str | None = None
-    pending_legacy: list[MessageRecord] = []
+    pending_messages: list[MessageRecord] = []
 
     def flush_current() -> None:
         nonlocal current, current_turn_id
@@ -203,20 +198,20 @@ def compaction_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRec
             if current and current_turn_id != message.turn_id:
                 flush_current()
             if not current:
-                legacy_frames = conversation_turns(pending_legacy)
-                frames.extend(legacy_frames[:-1])
-                current = list(legacy_frames[-1]) if legacy_frames else []
-                pending_legacy = []
+                pending_frames = conversation_turns(pending_messages)
+                frames.extend(pending_frames[:-1])
+                current = list(pending_frames[-1]) if pending_frames else []
+                pending_messages = []
                 current_turn_id = message.turn_id
             current.append(message)
             continue
 
         if current_turn_id is not None:
             flush_current()
-        pending_legacy.append(message)
+        pending_messages.append(message)
 
     flush_current()
-    frames.extend(conversation_turns(pending_legacy))
+    frames.extend(conversation_turns(pending_messages))
     for index, frame in enumerate(frames):
         if _is_complete_frame(frame):
             continue
@@ -285,19 +280,11 @@ def _messages_tokens(messages: Sequence[MessageRecord], estimator: TokenEstimato
 def _tool_call_ids(message: MessageRecord) -> set[str]:
     if message.role != "assistant":
         return set()
-    if message.tool_calls:
-        return {call.id for call in message.tool_calls if call.id}
-    raw_calls = message.metadata.get("tool_calls")
-    if not isinstance(raw_calls, list):
-        return set()
-    return {str(call.get("id")) for call in raw_calls if isinstance(call, dict) and call.get("id")}
+    return {call.id for call in message.tool_calls if call.id}
 
 
 def _tool_result_id(message: MessageRecord) -> str | None:
-    if message.tool_result is not None:
-        return message.tool_result.tool_call_id
-    raw = message.metadata.get("tool_call_id")
-    return raw if isinstance(raw, str) and raw else None
+    return message.tool_result.tool_call_id if message.tool_result is not None else None
 
 
 def _is_complete_frame(frame: Sequence[MessageRecord]) -> bool:

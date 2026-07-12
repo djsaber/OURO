@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -47,30 +47,13 @@ class MessageRecord(OuroModel):
     tool_result: ToolResultReference | None = None
     metadata: Metadata = MetadataField
 
-    @model_validator(mode="before")
-    @classmethod
-    def migrate_legacy_tool_metadata(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-        migrated = dict(value)
-        metadata = migrated.get("metadata")
-        if not isinstance(metadata, dict):
-            return migrated
-        if not migrated.get("tool_calls") and isinstance(metadata.get("tool_calls"), list):
-            migrated["tool_calls"] = [
-                {"name": "", **call} if isinstance(call, dict) else call
-                for call in metadata["tool_calls"]
-            ]
-        if migrated.get("tool_result") is None and isinstance(metadata.get("tool_call_id"), str):
-            migrated["tool_result"] = {
-                "tool_call_id": metadata["tool_call_id"],
-                "tool_name": str(metadata.get("tool_name") or ""),
-                "is_error": bool(metadata.get("is_error", False)),
-            }
-        return migrated
-
     @model_validator(mode="after")
     def validate_tool_fields(self) -> MessageRecord:
+        reserved_metadata = {"tool_calls", "tool_call_id", "tool_name", "is_error"}
+        misplaced = sorted(reserved_metadata.intersection(self.metadata))
+        if misplaced:
+            fields = ", ".join(misplaced)
+            raise ValueError(f"tool fields must use typed message fields, not metadata: {fields}")
         if self.turn_id is not None and self.run_id is None:
             raise ValueError("message turn_id requires run_id")
         if self.tool_calls and self.role != "assistant":

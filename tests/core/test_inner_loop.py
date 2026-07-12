@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.approvals import ApprovalRecord
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
@@ -11,7 +12,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.state import ApprovalRecord, RunRecord, SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolBatchHandlingResult, ToolCallBatchRecord
 from ouro.providers import FauxProvider
 from ouro.tools import ToolInvocation, ToolRegistry, ToolResult

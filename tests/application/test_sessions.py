@@ -6,9 +6,11 @@ from ouro.application.session_models import SessionCatalogQuery
 from ouro.application.sessions import SessionService
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tools import ToolCallRequest
 from ouro.sessions import LocalSessionStore
+from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 
 def _service(tmp_path) -> tuple[LocalSessionStore, SessionService]:
@@ -139,7 +141,7 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert [entry.session_id for entry in result.entries] == [first.session_id]
     assert result.entries[0].root_session_id == first.session_id
     assert result.entries[0].health == "ok"
-    assert store.load_index().data_layout_version == 2
+    assert store.load_index().data_layout_version == DATA_LAYOUT_VERSION
 
 
 def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) -> None:
@@ -205,14 +207,16 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
         role="assistant",
         text="",
         sequence=2,
-    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]}})
+    ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
     result = MessageRecord.text(
         session_id=source.session_id,
         run_id="run_source",
         role="tool_result",
         text="contents",
         sequence=3,
-    ).model_copy(update={"metadata": {"tool_call_id": "call_1"}})
+    ).model_copy(
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+    )
     for message in (user, assistant, result):
         store.append_message(message)
     canonical = store.load_session(source.session_id, recover=False).session
@@ -253,7 +257,7 @@ def test_branch_rejects_incomplete_tool_exchange_and_reports_previous_boundary(t
         role="assistant",
         text="",
         sequence=2,
-    ).model_copy(update={"metadata": {"tool_calls": [{"id": "call_missing", "name": "Write"}]}})
+    ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_missing", name="Write")]})
     store.append_message(user)
     store.append_message(assistant)
 

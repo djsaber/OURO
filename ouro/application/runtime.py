@@ -11,8 +11,8 @@ from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.followups import FollowUpQueue
 from ouro.application.models import (
     AvailableModel,
+    FixedRuntimeAdapterCatalog,
     RuntimeAdapterCatalog,
-    SingleRuntimeAdapterCatalog,
 )
 from ouro.application.recovery import RunRecoveryService
 from ouro.application.runs import (
@@ -71,7 +71,7 @@ class RuntimeService:
         self.sessions = SessionService(store)
         self.follow_ups = FollowUpQueue(store)
         self.adapter = adapter
-        self.models = model_catalog or SingleRuntimeAdapterCatalog(adapter)
+        self.models = model_catalog or FixedRuntimeAdapterCatalog(adapter)
         self.tools = tools
         self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
         self.hooks = hooks or HookRegistry()
@@ -263,18 +263,7 @@ class RuntimeService:
             existing_events = locked_snapshot.events
             sequence = len(existing_events)
             run = run.model_copy(update={"model": active_adapter.model.model_id})
-            session = session.model_copy(
-                update={
-                    "status": "running",
-                    "last_run_id": run.run_id,
-                    "active_run_id": run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
-            )
-            self.store.save_session(session)
-            self.store.save_run(run)
-            self.store.try_update_index(session.session_id)
+            session, run = self.run_lifecycle.start(session=session, run=run)
 
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -390,18 +379,7 @@ class RuntimeService:
             active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             terminal_run = run
-            active_session = active_session.model_copy(
-                update={
-                    "status": "running",
-                    "last_run_id": run.run_id,
-                    "active_run_id": run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
-            )
-            self.store.save_session(active_session)
-            self.store.save_run(run)
-            self.store.try_update_index(active_session.session_id)
+            active_session, run = self.run_lifecycle.start(session=active_session, run=run)
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,

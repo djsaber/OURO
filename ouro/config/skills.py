@@ -38,7 +38,6 @@ class SkillConfig(OuroModel):
     scan_copilot: bool = True
     scan_codex: bool = True
     scan_github: bool = True
-    scan_legacy: bool = True
     max_depth: int = Field(default=6, ge=0, le=12)
     max_directories: int = Field(default=2000, ge=1, le=100_000)
     installed: dict[str, ManagedSkillRecord] = Field(default_factory=dict)

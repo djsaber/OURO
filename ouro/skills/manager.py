@@ -207,7 +207,7 @@ class SkillManager:
                 ManagedSkillResult(
                     name=name,
                     source=metadata.location,
-                    target=Path(metadata.path),
+                    target=Path(metadata.location).parent,
                     scope="workspace" if metadata.source == "workspace" else "user",
                 ),
             )
@@ -251,7 +251,7 @@ class SkillManager:
         targets: set[Path] = set()
         try:
             for metadata in skills:
-                source_dir = Path(metadata.path).resolve()
+                source_dir = Path(metadata.location).parent.resolve()
                 self._assert_safe_source_tree(source_dir)
                 target = (root / source_dir.name).resolve()
                 if target.parent != root:
@@ -388,7 +388,7 @@ class SkillManager:
         metadata = catalog.by_name().get(name)
         if metadata is None:
             return None
-        target = Path(metadata.path).resolve()
+        target = Path(metadata.location).parent.resolve()
         return target if self._is_managed_target(target) else None
 
     def _assert_managed_target(self, target: Path) -> None:

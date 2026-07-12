@@ -142,18 +142,12 @@ class ProviderConfigManager:
         timeout_seconds: float | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
-        default_endpoint_id: str | None = None,
-        default_endpoint_model: str | None = None,
-        default_endpoint_base_url: str | None = None,
-        default_endpoint_api_path: str | None = None,
     ) -> ProviderConfig:
         """Create or update a provider.
 
         Provider-level ``base_url`` and ``api_path`` act as defaults for the
-        endpoints owned by this provider. An optional default endpoint can be
-        created in the same call by supplying ``default_endpoint_id`` and its
-        configuration; when provided, ``default_endpoint_id`` is written to the
-        provider's ``default_endpoint`` field.
+        endpoints owned by this provider. Endpoint creation and selection use
+        ``upsert_endpoint`` and ``set_default_endpoint`` as separate transactions.
         """
 
         provider_id = provider_id.strip()
@@ -192,20 +186,6 @@ class ProviderConfigManager:
                 }
             )
             updated = normalize_provider_config(updated)
-            if default_endpoint_id is not None:
-                updated = self._apply_default_endpoint(
-                    updated,
-                    endpoint_id=default_endpoint_id,
-                    model_id=default_endpoint_model,
-                    base_url=default_endpoint_base_url,
-                    api_path=default_endpoint_api_path,
-                )
-            elif (
-                default_endpoint_model is not None
-                or default_endpoint_base_url is not None
-                or default_endpoint_api_path is not None
-            ):
-                raise ConfigError("--endpoint is required when configuring a default endpoint")
             updated = ProviderConfig.model_validate(updated.model_dump())
         except ValidationError as exc:
             raise ConfigError(f"invalid provider config: {exc}") from exc
@@ -225,47 +205,6 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
         return updated
-
-    def _apply_default_endpoint(
-        self,
-        provider: ProviderConfig,
-        *,
-        endpoint_id: str,
-        model_id: str | None,
-        base_url: str | None,
-        api_path: str | None,
-    ) -> ProviderConfig:
-        endpoint_id = endpoint_id.strip()
-        if not endpoint_id:
-            raise ConfigError("default endpoint id is required")
-
-        current = provider.endpoint(endpoint_id)
-        if current is None:
-            if model_id is None:
-                raise ConfigError("--model is required for a new default endpoint")
-            current = ProviderEndpointConfig(
-                endpoint_id=endpoint_id,
-                model_id=model_id,
-                base_url=base_url,
-                api_path=api_path,
-            )
-        else:
-            current = current.model_copy(
-                update={
-                    "model_id": model_id if model_id is not None else current.model_id,
-                    "base_url": base_url if base_url is not None else current.base_url,
-                    "api_path": api_path if api_path is not None else current.api_path,
-                }
-            )
-
-        endpoints = {endpoint.endpoint_id: endpoint for endpoint in provider.endpoints}
-        endpoints[endpoint_id] = current
-        return provider.model_copy(
-            update={
-                "endpoints": tuple(endpoints[key] for key in sorted(endpoints)),
-                "default_endpoint": endpoint_id,
-            }
-        )
 
     def upsert_endpoint(
         self,
@@ -482,34 +421,27 @@ class ProviderConfigManager:
 
     def _configured_providers(self, raw: Mapping[str, Any]) -> dict[str, ProviderConfig]:
         providers: dict[str, ProviderConfig] = {}
+        if "provider" in raw:
+            raise ConfigError("unsupported root config field provider; use providers")
         providers_section = raw.get("providers")
         if providers_section is not None and not isinstance(providers_section, Mapping):
             raise ConfigError("providers config must be an object")
         if isinstance(providers_section, Mapping):
+            unsupported = sorted(set(providers_section) - {"default", "items"})
+            if unsupported:
+                raise ConfigError(f"unsupported providers config fields: {', '.join(unsupported)}")
             items = providers_section.get("items", {})
             if isinstance(items, Mapping):
                 for provider_id, item in items.items():
                     if not isinstance(provider_id, str):
-                        continue
+                        raise ConfigError("provider ids must be strings")
                     if not isinstance(item, Mapping):
                         raise ConfigError(f"provider config must be an object: {provider_id}")
                     provider = provider_config_from_mapping(provider_id, item)
                     self._reject_reserved_provider(provider)
                     providers[provider.provider_id] = provider
-            elif isinstance(items, list):
-                for item in items:
-                    if not isinstance(item, Mapping):
-                        raise ConfigError("provider config list entries must be objects")
-                    provider_id = str(item.get("provider_id") or "").strip()
-                    if not provider_id:
-                        raise ConfigError("provider config entry is missing provider_id")
-                    provider = provider_config_from_mapping(provider_id, item)
-                    self._reject_reserved_provider(provider)
-                    if provider.provider_id in providers:
-                        raise ConfigError(f"duplicate provider id: {provider.provider_id}")
-                    providers[provider.provider_id] = provider
             else:
-                raise ConfigError("providers.items must be an object or list")
+                raise ConfigError("providers.items must be an object")
 
         return providers
 
@@ -543,7 +475,6 @@ class ProviderConfigManager:
         default_provider_id: str,
     ) -> None:
         next_raw = deepcopy(dict(raw))
-        next_raw.pop("provider", None)
         next_raw["providers"] = {
             "default": default_provider_id,
             "items": {

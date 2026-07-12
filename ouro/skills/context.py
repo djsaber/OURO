@@ -122,8 +122,6 @@ def default_skill_roots(
         user_roots.append(SkillRoot(profile_home / ".codex" / "skills", "user", "codex"))
     user_roots.append(SkillRoot(ouro_home / "skills", "user", "ouro"))
 
-    if config.scan_legacy:
-        workspace_roots.append(SkillRoot(workspace / "skills", "workspace", "legacy"))
     if config.scan_agents:
         workspace_roots.append(SkillRoot(workspace / ".agents" / "skills", "workspace", "agents"))
     if config.scan_claude:

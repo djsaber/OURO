@@ -27,32 +27,18 @@ def _message_to_openai(
         "content": _message_content_to_openai(message, supports_vision=supports_vision),
     }
     if openai_role == "assistant":
-        tool_calls = message.tool_calls or _legacy_tool_calls(message)
-        if tool_calls:
+        if message.tool_calls:
             converted["tool_calls"] = [
-                _tool_call_message_to_openai(item.model_dump(mode="json")) for item in tool_calls
+                _tool_call_message_to_openai(item.model_dump(mode="json"))
+                for item in message.tool_calls
             ]
         if "reasoning_content" in message.metadata:
             converted["reasoning_content"] = str(message.metadata["reasoning_content"])
     if openai_role == "tool":
-        legacy_tool_call_id = message.metadata.get("tool_call_id")
-        converted["tool_call_id"] = (
-            message.tool_result.tool_call_id
-            if message.tool_result is not None
-            else str(legacy_tool_call_id or "unknown")
-        )
+        if message.tool_result is None:
+            raise ValueError("tool_result message is missing its tool result reference")
+        converted["tool_call_id"] = message.tool_result.tool_call_id
     return converted
-
-
-def _legacy_tool_calls(message: MessageRecord) -> list[ToolCallRequest]:
-    raw_calls = message.metadata.get("tool_calls")
-    if not isinstance(raw_calls, list):
-        return []
-    calls: list[ToolCallRequest] = []
-    for index, raw in enumerate(raw_calls):
-        if isinstance(raw, dict):
-            calls.append(ToolCallRequest.model_validate({**raw, "source_index": index}))
-    return calls
 
 
 def _message_content_to_openai(

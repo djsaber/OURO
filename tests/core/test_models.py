@@ -25,6 +25,17 @@ def test_message_turn_id_requires_run_id() -> None:
         )
 
 
+def test_message_rejects_tool_fields_in_metadata() -> None:
+    with pytest.raises(ValueError, match="typed message fields"):
+        MessageRecord.model_validate(
+            {
+                "session_id": "ses_1",
+                "role": "assistant",
+                "metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]},
+            }
+        )
+
+
 def test_event_round_trip() -> None:
     event = EventRecord(session_id="ses_1", run_id="run_1", event_type="run_started", sequence=1)
 

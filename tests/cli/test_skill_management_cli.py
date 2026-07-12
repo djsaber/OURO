@@ -24,7 +24,6 @@ def test_skill_management_cli_lifecycle(tmp_path, monkeypatch, capsys) -> None:
                 str(home),
                 "--scope",
                 "workspace",
-                "--all",
                 "--json",
             ]
         )
@@ -68,26 +67,26 @@ def test_skill_management_cli_lifecycle(tmp_path, monkeypatch, capsys) -> None:
     assert not (workspace / ".ouro" / "skills" / "writer").exists()
 
 
-def test_install_cli_requires_skill_selection_for_collections(tmp_path) -> None:
-    import pytest
-
+def test_install_cli_requires_skill_selection_for_collections(tmp_path, capsys) -> None:
     source = tmp_path / "collection"
     _write_skill(source / "one", "one", "First.")
     _write_skill(source / "two", "two", "Second.")
 
-    with pytest.raises(SystemExit) as exc_info:
-        main(
-            [
-                "skills",
-                "install",
-                str(source),
-                "--home",
-                str(tmp_path / "home"),
-                "--json",
-            ]
-        )
+    code = main(
+        [
+            "skills",
+            "install",
+            str(source),
+            "--home",
+            str(tmp_path / "home"),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
 
-    assert exc_info.value.code == 2
+    assert code == 1
+    assert payload["status"] == "failed"
+    assert "use --skill NAME or --all" in payload["error"]
 
 
 def _write_skill(root: Path, name: str, description: str, body: str = "Instructions.") -> None:

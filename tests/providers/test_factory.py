@@ -45,7 +45,7 @@ def test_factory_uses_ad_hoc_provider_identity_and_preserves_zero_temperature() 
         )
     )
 
-    assert adapter.model.provider_id == "openai_compatible"
+    assert adapter.model.provider_id == "openai-compatible"
     assert adapter.model.temperature == 0
     provider = cast(OpenAICompatibleProvider, adapter.provider)
     assert provider.base_url == "https://example.test/v1"
@@ -77,11 +77,10 @@ def test_runtime_credential_override_wins_over_configured_reference(
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_endpoint_id="default",
-        default_endpoint_model="glm-test",
-        default_endpoint_base_url="https://example.test/v1",
+        base_url="https://example.test/v1",
         api_key_env="CONFIGURED_KEY",
     )
+    manager.upsert_endpoint("glm", "default", model_id="glm-test", make_default=True)
 
     options = manager.resolve_runtime_options(
         ProviderRuntimeOptions(provider_id="glm", api_key_env="RUNTIME_KEY")

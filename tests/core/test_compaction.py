@@ -13,7 +13,8 @@ from ouro.core.compaction import (
     project_compacted_messages,
 )
 from ouro.core.errors import CompactionStateError
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.tools import ToolCallRequest
 
 
 def _message(role, text, sequence):
@@ -29,10 +30,10 @@ def test_compaction_plan_preserves_complete_tool_exchange_boundaries() -> None:
     messages = [
         _message("user", "old", 1),
         _message("assistant", "", 2).model_copy(
-            update={"metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]}}
+            update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]}
         ),
         _message("tool_result", "result", 3).model_copy(
-            update={"metadata": {"tool_call_id": "call_1"}}
+            update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
         ),
         _message("assistant", "done", 4),
         _message("user", "latest", 5),
@@ -53,28 +54,28 @@ def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None
         update={
             "run_id": "run_1",
             "turn_id": "turn_1",
-            "metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]},
+            "tool_calls": [ToolCallRequest(id="call_1", name="Read")],
         }
     )
     first_result = _message("tool_result", "old result " + ("x" * 200), 3).model_copy(
         update={
             "run_id": "run_1",
             "turn_id": "turn_1",
-            "metadata": {"tool_call_id": "call_1"},
+            "tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read"),
         }
     )
     second_assistant = _message("assistant", "", 4).model_copy(
         update={
             "run_id": "run_1",
             "turn_id": "turn_2",
-            "metadata": {"tool_calls": [{"id": "call_2", "name": "Edit"}]},
+            "tool_calls": [ToolCallRequest(id="call_2", name="Edit")],
         }
     )
     second_result = _message("tool_result", "recent result", 5).model_copy(
         update={
             "run_id": "run_1",
             "turn_id": "turn_2",
-            "metadata": {"tool_call_id": "call_2"},
+            "tool_result": ToolResultReference(tool_call_id="call_2", tool_name="Edit"),
         }
     )
     messages = [user, first_assistant, first_result, second_assistant, second_result]
@@ -89,12 +90,12 @@ def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None
     assert plan.retained_messages == messages[3:]
 
 
-def test_compaction_frames_keep_legacy_tool_exchange_atomic() -> None:
+def test_compaction_frames_keep_unidentified_tool_exchange_atomic() -> None:
     assistant = _message("assistant", "", 1).model_copy(
-        update={"metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]}}
+        update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]}
     )
     result = _message("tool_result", "result", 2).model_copy(
-        update={"metadata": {"tool_call_id": "call_1"}}
+        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
     )
 
     assert compaction_frames([assistant, result]) == [[assistant, result]]

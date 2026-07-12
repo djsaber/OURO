@@ -35,8 +35,8 @@ class RuntimeAdapterCatalog(Protocol):
     def adapter_for(self, selector: str) -> RuntimeAdapter: ...
 
 
-class SingleRuntimeAdapterCatalog:
-    """Compatibility catalog for hosts that inject one fixed adapter."""
+class FixedRuntimeAdapterCatalog:
+    """Expose one injected adapter through the same route contract as configured models."""
 
     def __init__(self, adapter: RuntimeAdapter) -> None:
         self._adapter = adapter
@@ -50,12 +50,7 @@ class SingleRuntimeAdapterCatalog:
 
     def resolve(self, selector: str) -> AvailableModel:
         normalized = selector.strip()
-        aliases = {
-            self._model.key,
-            self._model.model_id,
-            self._model.endpoint_id,
-        }
-        if normalized not in aliases:
+        if normalized != self._model.key:
             raise ConfigError(f"model not found: {selector}")
         return self._model
 
@@ -111,17 +106,9 @@ class ConfiguredModelCatalog:
         if exact is not None:
             return exact
 
-        aliases = [model for model in models if normalized in {model.endpoint_id, model.model_id}]
-        runtime_default = self._runtime_default_if_matching(normalized)
-        if runtime_default is not None and all(
-            model.key != runtime_default.key for model in models
-        ):
-            aliases.append(runtime_default)
-        if len(aliases) == 1:
-            return aliases[0]
-        if len(aliases) > 1:
-            choices = ", ".join(model.key for model in aliases)
-            raise ConfigError(f"ambiguous model selector {selector!r}; choose one of: {choices}")
+        runtime_default = _available_model(self._default_adapter.model)
+        if normalized == runtime_default.key:
+            return runtime_default
         raise ConfigError(f"model not found: {selector}")
 
     def adapter_for(self, selector: str) -> RuntimeAdapter:
@@ -143,12 +130,6 @@ class ConfiguredModelCatalog:
             )
         )
         return self._adapter_builder(options)
-
-    def _runtime_default_if_matching(self, selector: str) -> AvailableModel | None:
-        available = _available_model(self._default_adapter.model)
-        if selector in {available.key, available.endpoint_id, available.model_id}:
-            return available
-        return None
 
 
 def model_route_key(model: ModelMetadata) -> str:

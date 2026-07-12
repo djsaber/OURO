@@ -40,13 +40,6 @@ class _StaticCatalog:
         normalized = selector.strip()
         if normalized in self.adapters:
             return self._model(normalized, self.adapters[normalized])
-        aliases = [
-            self._model(key, adapter)
-            for key, adapter in self.adapters.items()
-            if normalized in {adapter.model.model_id, adapter.model.endpoint_id}
-        ]
-        if len(aliases) == 1:
-            return aliases[0]
         raise ConfigError(f"model not found: {selector}")
 
     def adapter_for(self, selector: str) -> RuntimeAdapter:
@@ -129,14 +122,12 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
 
 
 @pytest.mark.asyncio
-async def test_legacy_unique_model_id_is_canonicalized_in_current_model(tmp_path) -> None:
+async def test_noncanonical_persisted_model_route_is_rejected(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
     session = runtime.sessions.create(current_model="beta-model").session
 
-    result = await runtime.run("hello", session_id=session.session_id)
-
-    assert result.session.current_model == "beta/fast"
-    assert runtime.store.load_session(session.session_id).session.current_model == "beta/fast"
+    with pytest.raises(ConfigError, match="model not found"):
+        await runtime.run("hello", session_id=session.session_id)
 
 
 def test_session_model_switch_rejects_busy_and_unknown_models(tmp_path) -> None:

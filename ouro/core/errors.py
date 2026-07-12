@@ -33,10 +33,6 @@ class SessionBranchError(OuroError):
     """A session cannot be branched at the requested canonical message boundary."""
 
 
-class HookError(OuroError):
-    """A runtime hook failed."""
-
-
 class CompactionError(OuroError):
     """Context compaction could not produce and activate a valid summary."""
 

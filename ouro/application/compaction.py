@@ -59,7 +59,7 @@ class LLMSummaryCompactionStrategy:
 
     strategy_id = "builtin.llm_summary"
     version = "1"
-    prompt_version = "2026-07-11"
+    prompt_version = "1"
 
     def __init__(
         self,

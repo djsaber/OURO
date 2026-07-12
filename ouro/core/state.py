@@ -5,7 +5,6 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from ouro.core.approvals import ApprovalRecord, ApprovalStatus  # noqa: F401 - compatibility export
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.tool_batches import ToolCallBatchRecord
 

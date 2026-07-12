@@ -1,163 +1,181 @@
 # OURO Agent 开发架构
 
-本文描述当前代码的权威模块边界。产品愿景见项目概述；编码行为遵循
-`OURO_AGENT_编码准则_EN.md`。目录位置不能替代职责判断：新代码应先确定变化原因和
-依赖方向，再决定放置位置。
+本文是 OURO 当前代码结构的权威说明。新代码必须先确定职责、依赖方向和持久化边界，再选择目录；
+目录位置本身不能替代架构判断。
 
-## 依赖方向
+各领域的详细数据契约、失败语义和验收证据见 [规格索引](../dev/specs/README.md)。
+
+## 分层与依赖方向
 
 ```text
 CLI / future hosts
         |
         v
 application orchestration
-   |        |         |
-   v        v         v
+   |        |          |
+   v        v          v
  core    config    session/tool ports
-   ^                    ^
-   |                    |
-provider adapters   local implementations
+   ^                     ^
+   |                     |
+provider adapters    local implementations
 ```
 
-- `ouro.core` 是内层。它只依赖 `ouro.core`，包含稳定领域记录、Provider/Tool 契约、
-  ContextBuilder、取消信号以及单个 active run 的 `InnerAgentLoop`。
-- `ouro.application` 编排用例和持久化事务。它可以依赖 core、配置契约、session/tool
-  边界，但不能依赖 CLI 或具体 provider 实现。
-- `ouro.providers` 是具体厂商适配层。它包含 Faux/OpenAI-compatible 实现、HTTP/SSE
-  transport、codec 和 adapter factory；不拥有会话模型选择、运行时状态或 core 契约的
-  便利转售。
-- `ouro.sessions` 定义存储 port，并提供本地文件实现。文件记录读写和 OS 锁各自封装，
-  但都属于同一本地持久化后端。会话命令、查询和 Host DTO 属于 application，不放在该包。
-- `ouro.cli` 是组合根和界面适配器。它解析输入、组装 application 服务并格式化输出，
-  不承载运行规则。
-- `ouro.config`、`ouro.tools`、`ouro.skills`、`ouro.plugins`、`ouro.mcp` 分别维护自身
-  配置或扩展边界，不能反向依赖 application/CLI。
+- `ouro.core` 定义稳定领域记录、Provider/Tool 契约、上下文构建、取消信号和单次 active run 的状态机。
+  它只能依赖 `ouro.core`。
+- `ouro.application` 编排用例、状态转换和持久化事务。它可以依赖 core、配置契约和基础设施端口，
+  不能依赖 CLI 或具体 provider 实现。
+- `ouro.cli` 是组合根和界面适配器，只负责解析、装配、调用 application 和格式化输出。
+- `ouro.providers`、`ouro.sessions`、`ouro.tools` 是外部能力的具体适配与实现。
+- `ouro.config`、`ouro.skills`、`ouro.plugins`、`ouro.mcp` 维护各自契约与策略，不反向依赖
+  application 或 CLI。
 
-## 核心模块职责
+架构测试位于 `tests/architecture/test_boundaries.py`，用于阻止低层反向 import。
 
-### Core
+## 包职责
 
-- `core/provider.py`：Provider 协议、模型能力元数据、流事件和 usage。
-- `core/adapter.py`：把 Provider 协议适配为上下文流式调用，并处理协作式取消。
-- `core/inner_loop.py`：一次 active run 内的模型轮次、流消费、工具 continuation 与
-  终止状态机。`InnerLoopPorts` 显式列出所有外部副作用端口。
-- `core/context.py` 与 `core/compaction.py`：纯上下文预算、压缩规划和投影规则；不执行
-  provider 或文件 I/O。
+| 包 | 负责 | 不负责 |
+|---|---|---|
+| `core` | 领域记录、协议、纯规则、inner loop | 文件、网络、CLI、具体厂商 SDK |
+| `application` | 会话与运行用例、事务编排、Host DTO | 参数解析、终端渲染、HTTP 细节 |
+| `config` | 集中配置模型、校验、持久化和运行参数合并 | 模型请求和 UI 查询用例 |
+| `sessions` | SessionStore port、本地文件后端、索引和 OS 锁 | 会话命令与 Host DTO |
+| `providers` | Provider 实现、transport、codec、adapter factory | 会话模型选择和运行状态 |
+| `tools` | 工具注册、schema 校验、权限执行和批调度 | 模型轮次状态机 |
+| `skills` | 标准 Skills 发现、解析、内容加载和安装管理 | 提示词运行编排 |
+| `plugins` / `mcp` | 扩展注册与生命周期边界 | 核心业务状态 |
+| `cli` | 命令定义、组合、输入输出 | 领域规则和持久化事务 |
 
-### Application
+## 核心运行链
 
-- `application/runtime.py`：公开运行门面和事务边界；负责新运行、恢复人工交互、手动
-  压缩、abort、session lock 与 follow-up drain。
-- `application/runs.py`：durable message、usage 以及 run/session 生命周期快照转换；流式 delta 不写快照。
-- `application/tool_calls.py`：模型请求的工具调用在 hooks、executor、事件和消息之间的
-  协调；不拥有会话锁或恢复循环。
-- `application/models.py`：可选模型 DTO、session 路由 key、目录解析和 request-local
-  adapter 选择。具体 adapter builder 由 CLI 组合根注入。
-- `application/compaction.py`：LLM 摘要策略与上下文准备/压缩事务。两者共享压缩计划、
-  fallback、记录和投影不变量，当前保留在同一模块。
-- `application/events.py`、`followups.py`：事件持久化/分发和 durable follow-up queue。
-- `application/sessions.py`、`session_history.py`、`session_models.py`：会话命令/查询、历史
-  branch/replay 投影、标题状态机、Host DTO 和可恢复 diagnostic；不暴露具体存储对象。
-- `application/facade.py`：CLI、未来 Textual/Desktop 共用的进程内命令/查询入口；没有 runtime 的
-  组合可以只提供会话维护命令。
+```text
+CLI / Host
+  -> RuntimeService
+    -> session lock + recovery
+    -> RunLifecycle.start
+    -> InnerAgentLoop
+       -> ContextPreparationService
+       -> RuntimeAdapter -> Provider
+       -> ToolCallCoordinator -> ToolBatchExecutor
+       -> RunLifecycle complete / fail / pause
+    -> follow-up drain
+```
 
-### Interface and infrastructure
+`RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和 follow-up
+串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
+上下文、事件、工具和持久化副作用。`RunLifecycle` 集中承载模型循环中的 run/session 状态转换。
 
-- `cli/interactive.py`：只维护交互主循环和 active session id。
-- `cli/interactive_commands.py`：slash command 解析与查询输出。
-- `cli/interactive_io.py`：流式事件渲染以及 approval/AskUser 输入。
-- `sessions/local_files.py`：canonical session 聚合文件、崩溃恢复和 trash 发布事务。
-- `sessions/local_index.py`：本地可重建 catalog 的扫描、增量更新、dirty 自愈与独立锁。
-- `sessions/local_io.py`：本地原子文件替换原语；不包含会话或目录业务规则。
-- `sessions/locks.py`：跨进程 session run lock。
-- `sessions/index.py`、`layout.py`：可重建 catalog 投影和独立数据布局版本，不承载 application 用例。
-- `providers/factory.py`：把已解析配置构建为具体 `RuntimeAdapter`。
+工具调用以一次完整模型响应为批次边界。Provider 先完成流式响应收集，随后校验整批 tool calls，再按
+配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result 随后按 provider 原始顺序提交。
 
-## 关键边界决定
+## 模型路由与 Provider 边界
 
-### 模型目录属于 application
+持久化模型路由只有一种格式：`provider_id/endpoint_id`。
 
-`provider/endpoint` 是持久化在 session 上的运行路由。列出、解析、切换并为一次请求选择
-adapter 都是应用用例，不是厂商 API 适配。因此目录位于 `application/models.py`；
-providers 只提供 adapter builder。`AvailableModel` 也不是 Provider 领域协议，它是应用层
-查询 DTO。
+- `application/models.py` 负责列出、解析和持久化会话模型路由。
+- `config` 负责 provider/endpoint 配置模型与运行参数合并。
+- `providers` 负责把已解析参数构建为具体 adapter。
+- Provider 保存供应商级连接默认值；Endpoint 保存模型 id、采样参数、能力和可选连接覆盖。
 
-### RuntimeService 保持门面而非继续机械拆分
+模型路由不接受 model id 或 endpoint id 短名。这样持久化值、CLI 输入和运行时解析使用同一契约，
+不会因多个 provider 出现同名模型而产生歧义。
 
-`RuntimeService` 的公开方法共享 session lock、abort signal、durable run 状态和 follow-up
-drain 事务。将每个方法包装成一个小 service 会引入循环回调和无意义转发。只把有独立
-变化原因、能形成完整协作边界的工具调用协调提取到 `ToolCallCoordinator`。
+## 消息、工具与上下文
 
-### Catalog 不是 canonical transaction
+`MessageRecord` 使用类型化字段表达工具关系：
 
-`session.json`、JSONL、run 和 compaction 是 canonical 数据；`sessions/index.json` 只用于查询。普通
-状态变化以独立 catalog lock 增量更新单个 entry，失败时留下 dirty marker 并返回 diagnostic。打开
-会话不依赖 index 成功，后续查询可 scan fallback 或全量重建。Host DTO 不包含内部全文字段。
+- assistant 工具请求写入 `tool_calls`；
+- tool result 关联写入 `tool_result`；
+- `metadata` 只保存非结构化附加信息，不保存工具请求或关联身份。
 
-### Branch 不绕过资源身份
+一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
+没有模型回合身份的普通消息按用户请求分组；不完整工具交换及其后续恢复上下文作为受保护后缀。
 
-Branch 由 application 计算合法消息边界和 lineage，由存储后端 staging 后原子发布。当前
-ResourceService 尚未完成，因此含 `resource_refs` 的 branch 明确失败；不复制裸路径或制造悬空 id。
+`ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要和
+token 预算。canonical history 永不被压缩覆盖；`CompactionRecord` 通过 message id 前缀和 digest 验证
+摘要来源。
 
-### Event journal 是流式恢复的唯一真相
+## 本地持久化
 
-Provider text/reasoning delta 只顺序追加到 `events.jsonl`。`session.json` 与 run JSON 只在消息提交和
-生命周期状态转换时更新，不为每个流片保存第二份 checkpoint。崩溃恢复从最后一个模型轮次的 durable
-events 重建未完成 assistant 输出，并避开已经提交的 tool-call/tool-result 消息。Windows snapshot
-replace 的瞬时 sharing conflict 由本地文件原语有限重试，不在 application 增加 timer 或后台写队列。
+默认 `LocalSessionStore` 在 `OURO_HOME` 下保存可读文件：
 
-### 不按行数拆配置和压缩模块
+```text
+OURO_HOME/
+  layout.json
+  config/config.json
+  skills/
+  locks/sessions/
+  sessions/
+    index.json
+    <session_id>/
+      session.json
+      messages.jsonl
+      events.jsonl
+      compactions.jsonl
+      runs/
+      resources/index.json
+  trash/sessions/
+```
 
-`ProviderConfigManager` 虽然较长，但它的唯一变化原因仍是 provider/endpoint 配置事务；
-codec、runtime option 解析和数据模型已经分离。`application/compaction.py` 的两个类共享
-强不变量。若未来出现第二种上下文准备策略或独立压缩后端，再根据真实变化轴拆包。
+`session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
+查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
 
-### 显式端口不等于过度抽象
+Provider text/reasoning delta 只追加到 `events.jsonl`。快照只在消息提交和生命周期状态转换时写入。
+崩溃恢复从 durable messages、run 状态和最后模型轮次事件重建未完成输出，不重放结果未知的外部副作用。
 
-`InnerLoopPorts` 的单方法 Protocol 数量较多，但它们把 core 状态机的副作用面完整地暴露
-出来，并由 mypy 检查复杂 async 签名。当前改成匿名 `Callable` 会降低可读性，改成多个
-空壳 service 则会增加间接层，因此保留。
+`layout.json` 的 `data_layout_version` 标识整套本地数据契约。遇到不兼容版本时初始化必须抛出
+`MigrationRequiredError`，不能在加载过程中猜测字段或隐式改写数据。
 
-### 工具调用以完整模型轮次为批次边界
+每个 session 同时只允许一个 active run。进程持有的 OS lock 是存活判断依据，锁文件仅用于诊断。
 
-Provider 的 text/reasoning 可以流式到事件日志，但工具调用必须在 terminal completion 中以
-`list[ToolCallRequest]` 完整交付。`InnerAgentLoop` 先收齐一个模型轮次，再通过
-`handle_tool_batch` 端口一次性交给 application；它不在单个 tool-call delta 到达时执行工具。
-一次模型响应只提交一条 assistant 消息，消息的 `tool_calls` 字段保存全部调用及源顺序。
+## 配置契约
 
-`core/tool_batches.py` 定义批次、单调用状态和执行模式；`application/tool_calls.py` 负责
-preflight、审批屏障、执行协调、结果 checkpoint 与源顺序提交；`tools/batch_executor.py`
-只负责有界串行/并行执行和单调用异常隔离。`RuntimeService` 仍拥有 session lock、审批/AskUser
-恢复入口和后续模型 continuation，避免协调器反向持有运行时生命周期。
+配置集中保存在 `config/config.json`，由 `ouro.config` 的类型化 manager 读写。各分区只接受当前权威字段：
 
-批次严格区分两个阶段：
+- 系统提示词：`prompts.system`；
+- Provider：`providers.default` 与 `providers.items`；
+- Endpoint：每个 provider 的 `endpoints`；
+- 工具执行：`tool_execution`；
+- 运行预算：`run_budget`；
+- 压缩：`compaction`；
+- Skills：`skills`。
 
-1. 规划与交互：所有调用完成解析、参数校验和权限判断；需要审批的调用各自拥有
-   `ApprovalRecord`。只要仍有审批或 AskUser 未解析，自动调用也不会提前执行。
-2. 执行与提交：最后一个交互解析后，run/session 先持久化为
-   `running/tool_execution`，再按批次快照的 `sequential` 或 `parallel` 策略执行。并行完成顺序
-   不影响 transcript；tool-result 消息始终按 source index 提交。
+无效结构必须抛出 `ConfigError`，不能静默降级或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider
+factory，业务代码不直接读取环境变量。
 
-`ToolExecutionConfig` 由组合根从配置解析后注入，默认 `sequential`，`parallel` 使用
-`max_concurrency` 限流；工具定义可用 `execution_mode="sequential"` 强制整批串行。执行策略只
-影响调度，不改变审批、消息身份和恢复语义。
+## CLI 契约
 
-批次状态写入 run snapshot，assistant/tool-result 写入 `messages.jsonl`，流式及生命周期事件写入
-`events.jsonl`。每个工具完成后先 checkpoint，再提交结果消息；重复提交按同一 run 内的
-`turn_id`/`tool_call_id` 幂等。崩溃时仍为 `running` 的调用转为 `unknown_outcome`，run 转为
-`recoverable`，不会自动重放可能产生副作用的工具。
+CLI 命令使用资源层级表达职责：
 
-## 架构验收
+- `provider set` 只管理 provider；
+- `provider endpoint set` 只管理 endpoint；
+- `provider check` 负责连接检查；
+- `session compact` 负责手动压缩；
+- `skills remove` 负责移除 OURO 管理的 Skill。
 
-`tests/architecture/test_boundaries.py` 自动验证：
+命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
 
-- core 不导入外层；
-- application 不导入 CLI 或具体 providers；
-- config/provider 配置不依赖 CLI、application 或 provider 实现；
-- providers、sessions、tools 等低层不依赖 application/CLI；
-- 模型目录只由 application 拥有。
+## 扩展边界
 
-结构性修改至少运行：
+- Hook 失败由 `RuntimeEventRecorder` 隔离并转为事件，不允许破坏 durable run。
+- 插件只能通过注册表贡献工具、Hook、命令、上下文 provider 或压缩策略。
+- MCP 工具最终必须适配为 OURO Tool 契约，第三方协议对象不得进入 core。
+- 外部 Agent Skills frontmatter 在 skills parser 边界校验，核心运行只接收类型化 `SkillMetadata` 和指令文本。
+
+## 未来演进触发条件
+
+只有出现独立变化轴时才新增层级：
+
+- 多会话后台并发与宿主生命周期出现后，引入 RuntimeSupervisor；
+- Desktop 需要 provider/config 查询后，增加 application 配置门面；
+- 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
+- 资源身份、复制和清理事务落地后，引入 ResourceService；
+- 真实 MCP transport 落地后，在 `mcp` 内部拆分连接、协议和注册适配。
+
+这些边界应由真实用例驱动，不能为了缩短文件或统一命名而增加空转 service、回调层或通用 manager。
+
+## 验收要求
+
+每次架构改动至少验证：
 
 ```bash
 python -m pytest
@@ -165,4 +183,7 @@ python -m ruff check ouro tests
 python -m ruff format --check ouro tests
 python -m mypy ouro
 python -m compileall -q ouro
+git diff --check
 ```
+
+同时检查依赖方向、持久化失败路径、并发锁、取消、公开数据结构和文档是否仍与实现一致。

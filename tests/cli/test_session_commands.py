@@ -309,18 +309,6 @@ def test_session_compact_success(monkeypatch, tmp_path, capsys) -> None:
     assert "messages covered" in captured.out
 
 
-def test_session_compact_compress_alias(monkeypatch, tmp_path, capsys) -> None:
-    runtime = _compaction_runtime(tmp_path)
-    monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)
-    session_id = _create_session_with_turns(runtime.store, count=3)
-
-    code = main(["session", "compress", session_id, "--home", str(tmp_path)])
-    captured = capsys.readouterr()
-
-    assert code == 0
-    assert "Compaction completed" in captured.out
-
-
 def test_session_compact_skipped(monkeypatch, tmp_path, capsys) -> None:
     runtime = _compaction_runtime(tmp_path)
     monkeypatch.setattr("ouro.cli.session_commands.build_default_runtime", lambda home: runtime)

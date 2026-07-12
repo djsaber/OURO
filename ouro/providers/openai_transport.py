@@ -18,17 +18,6 @@ class OpenAICompatibleTransport(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class OpenAICompatibleStreamingTransport(OpenAICompatibleTransport, Protocol):
-    def stream_json(
-        self,
-        *,
-        url: str,
-        headers: Mapping[str, str],
-        payload: Mapping[str, Any],
-        timeout: float,
-    ) -> AsyncIterator[Mapping[str, Any]]: ...
-
-
 class HttpxOpenAICompatibleTransport:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self.client = client

@@ -12,6 +12,7 @@ from ouro.config import (
     ProviderRuntimeOptions,
     endpoint_config_to_public_dict,
 )
+from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_models import default_api_path
 from ouro.core.errors import ConfigError, CredentialError
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
@@ -126,6 +127,18 @@ def test_prompt_config_manager_persists_system_prompt(tmp_path) -> None:
     assert manager.resolve_system_prompt() == DEFAULT_SYSTEM_PROMPT
 
 
+def test_prompt_config_rejects_root_system_prompt_field(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps({"system_prompt": "old shape"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="prompts.system"):
+        PromptConfigManager(tmp_path).snapshot()
+
+
 def test_provider_config_manager_selects_configured_provider_by_id(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
@@ -175,7 +188,6 @@ def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
                         "local": {
                             "provider_id": "glm",
                             "provider_type": "openai-compatible",
-                            "default_model": "glm-test",
                             "base_url": "https://example.test/v1",
                         }
                     },
@@ -186,6 +198,73 @@ def test_provider_config_manager_rejects_provider_id_mismatch(tmp_path) -> None:
     )
 
     with pytest.raises(ConfigError, match="provider_id must match"):
+        ProviderConfigManager(tmp_path).snapshot()
+
+
+def test_provider_config_rejects_noncanonical_provider_kind(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "items": {
+                        "local": {
+                            "provider_id": "local",
+                            "provider_type": "openai_compatible",
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="unsupported provider kind"):
+        ProviderConfigManager(tmp_path).snapshot()
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "model",
+        "endpoint",
+        "supports_multimodal",
+        "thinking_levels",
+        "default_reasoning_level",
+        "extra",
+    ),
+)
+def test_endpoint_config_rejects_noncanonical_fields(field) -> None:
+    with pytest.raises(ValueError, match="unsupported endpoint config fields"):
+        endpoint_config_from_mapping("chat", {"model_id": "model", field: "value"})
+
+
+@pytest.mark.parametrize(
+    "raw",
+    (
+        {"provider": {}},
+        {"providers": {"items": []}},
+        {"providers": {"items": {}, "unknown": True}},
+        {
+            "providers": {
+                "items": {
+                    "local": {
+                        "provider_id": "local",
+                        "provider_type": "openai-compatible",
+                        "default_model": "model",
+                    }
+                }
+            }
+        },
+    ),
+)
+def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="unsupported|must be an object"):
         ProviderConfigManager(tmp_path).snapshot()
 
 
@@ -400,11 +479,10 @@ def test_provider_mutations_keep_default_provider_runnable(tmp_path) -> None:
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_endpoint_id="default",
-        default_endpoint_model="glm-test",
-        default_endpoint_base_url="https://example.test/v1",
-        make_default=True,
+        base_url="https://example.test/v1",
     )
+    manager.upsert_endpoint("glm", "default", model_id="glm-test", make_default=True)
+    manager.set_default_provider("glm")
     assert manager.snapshot().default_provider_id == "glm"
 
     manager.remove_endpoint("glm", "default")
@@ -643,10 +721,9 @@ def test_removing_default_endpoint_clears_provider_default(tmp_path) -> None:
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_endpoint_id="chat",
-        default_endpoint_model="glm-chat",
-        default_endpoint_base_url="https://chat.example.test/v1",
+        base_url="https://chat.example.test/v1",
     )
+    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
     manager.upsert_endpoint(
         "glm",
         "reasoning",
@@ -669,11 +746,10 @@ def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
     manager.upsert_provider(
         "glm",
         provider_type="openai-compatible",
-        default_endpoint_id="chat",
-        default_endpoint_model="glm-chat",
-        default_endpoint_base_url="https://chat.example.test/v1",
-        make_default=True,
+        base_url="https://chat.example.test/v1",
     )
+    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
+    manager.set_default_provider("glm")
     assert manager.snapshot().default_provider_id == "glm"
 
     manager.remove_endpoint("glm", "chat")

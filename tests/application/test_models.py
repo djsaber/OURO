@@ -31,7 +31,7 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
         "openai/fast",
         "openai/smart",
     ]
-    assert catalog.resolve("gpt-smart").key == "openai/smart"
+    assert catalog.resolve("openai/smart").key == "openai/smart"
 
     adapter = catalog.adapter_for("openai/fast")
 

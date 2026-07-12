@@ -1,134 +1,144 @@
 # OURO Agent
 
-Local-first personal agent runtime.
+OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为中心，提供模型调用、工具执行、
+权限审批、上下文压缩、Skills 发现和本地可读持久化，并为后续桌面宿主与扩展系统保留清晰边界。
 
-Current first-phase runtime includes:
+## 当前能力
 
-- `ouro` interactive stdin/stdout mode.
-- `ouro run --print "prompt"` final-text mode, with reasoning deltas shown in dim italics like interactive mode.
-- `ouro run --json "prompt"` machine-readable final JSON mode.
-- Local readable session storage under `OURO_HOME` or `--home`.
-- Session continuation with `ouro run --session <session_id> ...`.
-- Interactive `/models` discovery and `/model <provider/endpoint>` switching, persisted per
-  session through `current_model` and restored on later runs.
-- FauxProvider for deterministic local development.
-- Core-owned Provider contracts with outer-layer Faux and OpenAI-compatible implementations.
-- Local provider and prompt configuration from `config/config.json`, with CLI overrides.
-- Provider management CLI plus endpoint-level configuration for model parameters and capabilities.
-- System prompt persistence through `ouro config prompt --set ...`.
-- Skills CLI for listing available skills, showing full skill content, viewing search roots, and previewing the injected skills prompt.
-- Interrupted local runs become `recoverable`; before the next run, incomplete tool exchanges are
-  reconciled without replaying unknown side effects and partial assistant output is projected as
-  recovery context rather than a completed answer. Corrupt session indexes are rebuilt.
-- Multi-round runtime loop: tool results are fed back into the model until a final assistant response or suspend state.
-- Dual-layer loop boundary: application `RuntimeService` orchestrates sessions, locks, aborts, and follow-up draining; application `RunLifecycle` owns model-loop persistence transitions; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
-- Application-owned model routing resolves persisted `provider/endpoint` selections; the `providers` package contains only concrete adapters, transports/codecs, and their construction factory.
-- Interactive CLI concerns are separated into the host loop, slash-command handling, and streaming/HITL I/O; session file locking is isolated from session record persistence.
-- Assistant tool-call messages are persisted before tool results, preserving OpenAI-compatible tool history.
-- Provider usage is recorded on runs and included in JSON output.
-- Existing active runs are returned instead of starting a second main run in the same session.
-- Follow-up input received during an active run is persisted and processed serially after the current run completes. Queue entries are acknowledged only after their user message is durable, with queue-id deduplication across crash recovery.
-- OS-backed session run locks prevent another process view from recovering a live active run as interrupted, while a stale lock file no longer blocks recovery after a process exits.
-- Runtime events are persisted through an application event recorder that also isolates hook failures as events.
-- Built-in Read / Write / Edit / Bash / AskUser tools.
-- Interactive approval flow for approve, reject, modify arguments, AskUser answers, and aborting suspended HITL runs.
-- Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
-- Cooperative abort for active provider streams and long-running tool/subprocess work.
-- Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Standards-compatible Agent Skills discovery and native system-prompt injection through
-  `ContextBuilder`; durable built-in LLM summary compaction preserves canonical history and uses
-  persisted `turn_id` boundaries to keep model/tool context frames atomic.
-- Optional persisted run soft budgets can pause at model-round boundaries by rounds, cumulative
-  input/output tokens, or elapsed time. All limits are unlimited by default.
-- Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
-- Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
-- Phase 2 session foundation: typed/rebuildable catalog, full user/assistant text search, lineage,
-  title state, archive/pin, atomic branch, read-only replay, and delete-to-trash through the shared
-  `ApplicationFacade`.
-- Session catalog updates are incremental and independently locked; dirty or corrupt indexes
-  self-heal without making a canonical session write fail. `layout.json` rejects incompatible data
-  versions instead of guessing a migration.
+- 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
+- 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择和 OpenAI-compatible 适配。
+- 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止和 follow-up 队列。
+- 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶和回收站删除。
+- 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
+- Read、Write、Edit、Bash、AskUser 内置工具，以及统一的权限和参数校验。
+- 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
+- Hook、插件注册和 MCP 生命周期边界；完整的插件加载与 MCP 连接能力仍在路线图中。
 
-Development commands:
+产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
+[开发架构](docs/OURO_AGENT_开发架构.md)。
+
+## 开发环境
+
+要求 Python 3.12 或更高版本。
 
 ```bash
-python -m pytest
-python -m ruff check ouro tests
-python -m ruff format --check ouro tests
-python -m mypy ouro
-python -m compileall -q ouro
+uv sync --all-groups
+uv run pytest
+uv run ruff check ouro tests
+uv run ruff format --check ouro tests
+uv run mypy ouro
 ```
 
-Architecture and development references:
+也可以激活虚拟环境后直接运行对应的 `python -m ...` 命令。
 
-- [`docs/OURO_AGENT_开发架构.md`](docs/OURO_AGENT_开发架构.md) — current module boundaries and dependency rules.
-- [`docs/OURO_AGENT_编码准则_EN.md`](docs/OURO_AGENT_编码准则_EN.md) — engineering rules used for implementation and review.
-- [`dev/audits/2026-07-11-module-architecture-review.md`](dev/audits/2026-07-11-module-architecture-review.md) — repository-wide architecture review and refactor record.
-- [`dev/specs/2026-07-11-session-core-foundation.md`](dev/specs/2026-07-11-session-core-foundation.md) — implemented session core contracts, invariants, and deferred boundaries.
-- [`dev/specs/2026-07-12-session-persistence-write-model.md`](dev/specs/2026-07-12-session-persistence-write-model.md) — semantic snapshot writes, event-journal recovery, and Windows replace behavior.
-
-CLI examples:
+## 快速开始
 
 ```bash
-python -m ouro.cli.main --home ./.ouro-dev
-# In interactive mode: /models, /model, /model <provider/endpoint>
-python -m ouro.cli.main run --print --home ./.ouro-dev "hello"
-python -m ouro.cli.main run --json --home ./.ouro-dev "hello"
-python -m ouro.cli.main run --json --home ./.ouro-dev --session <session_id> "continue"
-python -m ouro.cli.main session list --home ./.ouro-dev --search auth --no-archived --sort updated_desc
-python -m ouro.cli.main session rename <session_id> "Auth refactor" --home ./.ouro-dev
-python -m ouro.cli.main session archive <session_id> --home ./.ouro-dev
-python -m ouro.cli.main session branch <session_id> <message_id> --home ./.ouro-dev
-python -m ouro.cli.main session replay <session_id> --home ./.ouro-dev --json
-python -m ouro.cli.main config check --home ./.ouro-dev
-python -m ouro.cli.main config prompt --home ./.ouro-dev --set "Custom system prompt"
-python -m ouro.cli.main provider list --home ./.ouro-dev
-python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --endpoint default --model <model> --base-url <url> --api-path <path> --api-key-env <ENV_NAME>
-python -m ouro.cli.main provider set glm --home ./.ouro-dev --kind openai-compatible --base-url <url> --api-key-env <ENV_NAME>
-python -m ouro.cli.main provider endpoint set glm reasoning --home ./.ouro-dev --model <model> --base-url <url> --temperature 0.2 --context-window 200000 --max-output-tokens 16000 --tools --vision --streaming --reasoning --thinking-levels low high --thinking-level high --default
-python -m ouro.cli.main provider use glm --home ./.ouro-dev
-python -m ouro.cli.main provider endpoint list glm --home ./.ouro-dev
-python -m ouro.cli.main provider show glm --home ./.ouro-dev
-python -m ouro.cli.main provider check glm --endpoint reasoning --home ./.ouro-dev
+# 交互模式
+uv run ouro --home ./.ouro-dev
 
-python -m ouro.cli.main config compaction --home ./.ouro-dev --provider glm --endpoint reasoning --temperature 0.1 --no-thinking
-python -m ouro.cli.main config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4
-python -m ouro.cli.main config run-budget --home ./.ouro-dev --max-model-rounds 50 --max-elapsed-seconds 1800
-python -m ouro.cli.main config run-budget --home ./.ouro-dev --clear
-python -m ouro.cli.main skills list --home ./.ouro-dev
-python -m ouro.cli.main skills show pdf --home ./.ouro-dev
-python -m ouro.cli.main skills roots --home ./.ouro-dev
-python -m ouro.cli.main skills prompt --home ./.ouro-dev
-python -m ouro.cli.main skills validate ./path/to/skill --json
-python -m ouro.cli.main skills install ./path/to/skill --home ./.ouro-dev
-python -m ouro.cli.main skills install github:owner/repo --skill skill-name --ref v1.0.0
-python -m ouro.cli.main skills install https://github.com/owner/repo.git#skills/example
-python -m ouro.cli.main skills disable skill-name --home ./.ouro-dev
-python -m ouro.cli.main skills list --all --home ./.ouro-dev
-python -m ouro.cli.main skills update skill-name --home ./.ouro-dev
-python -m ouro.cli.main skills remove skill-name --home ./.ouro-dev
-python -m ouro.cli.main run --json --provider <provider_id> --endpoint <endpoint_id> --api-key-env <ENV_NAME> "hello"
+# 单次运行
+uv run ouro run --print --home ./.ouro-dev "hello"
+uv run ouro run --json --home ./.ouro-dev "hello"
+
+# 继续会话
+uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
 ```
 
-Example local config:
+未指定 `--home` 时，OURO 使用 `OURO_HOME`；两者都未设置时使用 `~/.ouro`。
+
+## Provider 与 Endpoint
+
+Provider 保存供应商级连接默认值和凭据引用，Endpoint 保存具体模型及其能力。两者使用独立命令，
+不会在一个写操作中隐式创建另一层对象。
+
+```bash
+uv run ouro provider set glm \
+  --home ./.ouro-dev \
+  --kind openai-compatible \
+  --base-url https://example.test/v1 \
+  --api-key-env GLM_API_KEY
+
+uv run ouro provider endpoint set glm reasoning \
+  --home ./.ouro-dev \
+  --model model-name \
+  --temperature 0.2 \
+  --context-window 200000 \
+  --max-output-tokens 16000 \
+  --tools --streaming --reasoning \
+  --thinking-levels low high \
+  --thinking-level high \
+  --default
+
+uv run ouro provider use glm --home ./.ouro-dev
+uv run ouro provider check glm --endpoint reasoning --home ./.ouro-dev
+uv run ouro provider list --home ./.ouro-dev
+uv run ouro provider endpoint list glm --home ./.ouro-dev
+```
+
+会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
+通过 `/model provider/endpoint` 切换当前会话模型。
+
+## 会话与运行控制
+
+```bash
+uv run ouro session list --home ./.ouro-dev --search auth --no-archived
+uv run ouro session show <session_id> --home ./.ouro-dev
+uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
+uv run ouro session branch <session_id> <message_id> --home ./.ouro-dev
+uv run ouro session replay <session_id> --home ./.ouro-dev --json
+uv run ouro session compact <session_id> --home ./.ouro-dev
+uv run ouro session archive <session_id> --home ./.ouro-dev
+uv run ouro session remove <session_id> --home ./.ouro-dev --force
+
+uv run ouro approve <session_id> --home ./.ouro-dev
+uv run ouro reject <session_id> --home ./.ouro-dev --reason "unsafe"
+uv run ouro abort <session_id> --home ./.ouro-dev
+```
+
+## 配置与 Skills
+
+```bash
+uv run ouro config prompt --home ./.ouro-dev --set "Custom system prompt"
+uv run ouro config permissions --home ./.ouro-dev --tool Bash --mode approval
+uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4
+uv run ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
+uv run ouro config compaction --home ./.ouro-dev --provider glm --endpoint reasoning
+
+uv run ouro skills list --home ./.ouro-dev
+uv run ouro skills show pdf --home ./.ouro-dev
+uv run ouro skills roots --home ./.ouro-dev
+uv run ouro skills validate ./path/to/skill --json
+uv run ouro skills install ./path/to/skill --home ./.ouro-dev
+uv run ouro skills install github:owner/repo --skill skill-name --ref v1.0.0
+uv run ouro skills disable skill-name --home ./.ouro-dev
+uv run ouro skills update skill-name --home ./.ouro-dev
+uv run ouro skills remove skill-name --home ./.ouro-dev
+```
+
+Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO_HOME/skills`，工作区原生目录是
+`./.ouro/skills`；也可扫描 `.agents`、`.claude`、`.github`、`.copilot` 和 `.codex` 的 Skills 目录。
+格式错误会产生明确诊断，OURO 不会猜测或修复无效 frontmatter。
+
+## 配置示例
+
+`OURO_HOME/config/config.json` 使用分区结构：
 
 ```json
 {
   "prompts": {
     "system": "Custom system prompt"
   },
+  "tool_execution": {
+    "mode": "parallel",
+    "max_concurrency": 4
+  },
   "run_budget": {
     "max_model_rounds": 50,
-    "max_input_tokens": 1000000,
-    "max_output_tokens": 100000,
     "max_elapsed_seconds": 1800
   },
   "skills": {
     "enabled": true,
-    "paths": [
-      "shared-skills",
-      {"path": ".team/skills", "source": "workspace"}
-    ],
     "disabled": ["unsafe-community-skill"],
     "scan_agents": true,
     "scan_claude": true
@@ -139,8 +149,8 @@ Example local config:
       "glm": {
         "provider_type": "openai-compatible",
         "provider_id": "glm",
-        "credential_ref": "env:OPENAI_API_KEY",
-        "base_url": "http://localhost:8000/v1",
+        "credential_ref": "env:GLM_API_KEY",
+        "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
         "default_endpoint": "reasoning",
         "endpoints": {
@@ -150,9 +160,7 @@ Example local config:
             "context_window": 200000,
             "max_output_tokens": 16000,
             "supports_tools": true,
-            "supports_vision": true,
             "supports_streaming": true,
-            "supports_structured_output": false,
             "supports_reasoning": true,
             "supported_thinking_levels": ["low", "high"],
             "default_thinking_level": "high"
@@ -166,39 +174,14 @@ Example local config:
 }
 ```
 
-Each skill is a directory containing `SKILL.md`. Ouro reads the standard `name`,
-`description`, `license`, `compatibility`, `metadata`, and experimental `allowed-tools`
-frontmatter fields, preserves unknown community fields, and treats bundled files as on-demand
-resources. Ouro-specific enablement and search-path policy belongs in the central config above;
-per-skill `skill.json` manifests are not used.
+凭据优先使用 `env:VARIABLE_NAME` 引用。CLI 和公开 JSON 输出不会回显凭据值。
 
-`skills install` accepts a local skill/collection or a Git repository. Use `--skill NAME`
-to select from a collection, `--all` to install the collection, and `--scope workspace` to
-install under `./.ouro/skills`. Ouro validates before copying, rejects symbolic links, deploys
-through a same-filesystem staging directory, and records source/update metadata only in the
-central config. `skills remove` never deletes skills from external `.agents`, `.claude`,
-`.github`, `.copilot`, or `.codex` roots.
+## 项目文档
 
-`provider_id` is the provider/supplier id; OURO does not use a separate local alias id
-in Phase 1. An endpoint is a concrete model/API target owned by that provider. Temperature,
-context and output limits, multimodal/tool/stream/reasoning capabilities, and thinking levels
-belong to the endpoint rather than the provider. The legacy `provider set --model --base-url`
-shortcut updates the default endpoint for compatibility.
-
-Provider-level `base_url` and `api_path` act as defaults for all endpoints of that provider.
-Endpoints may omit either field and inherit the provider value; an explicit endpoint value
-always wins. `api_path` defaults per provider kind (e.g. `/chat/completions` for
-`openai-compatible`).
-
-When using `provider set`, `--endpoint` identifies the default endpoint to create or update;
-`--model` is only meaningful when `--endpoint` is provided. Omitting `--endpoint` creates a
-provider with no endpoints, which is useful when endpoints will be added later with
-`provider endpoint set`.
-
-Creating a provider without an endpoint does not switch the runtime default. Configure its
-default endpoint first, then use `provider use PROVIDER_ID`; disabling the active provider or
-removing its final endpoint safely falls back to the built-in Faux provider.
-
-Provider configuration always uses the nested `providers.default`, `providers.items`, and
-`endpoints` shape. Provider-level `base_url` and `api_path` are defaults for endpoints, not
-a shorthand for creating a default endpoint.
+- [项目概述](docs/OURO_AGENT_项目概述.md)：当前产品范围、核心概念和未来设计。
+- [开发架构](docs/OURO_AGENT_开发架构.md)：模块职责、依赖方向和关键不变量。
+- [开发路线图](docs/OURO_AGENT_开发路线图.md)：尚未实现能力的推进顺序和完成条件。
+- [规格索引](dev/specs/README.md)：当前领域契约、失败语义和验收证据。
+- [执行计划索引](dev/plans/README.md)：未来能力的依赖、里程碑和退出条件。
+- [中文编码准则](docs/OURO_AGENT_编码准则_ZH.md)：实现与评审规范。
+- [English coding guidelines](docs/OURO_AGENT_编码准则_EN.md)：英文版实现与评审规范。
