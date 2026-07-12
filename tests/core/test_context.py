@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.core.context import ContextBuilder
-from ouro.core.messages import MessageRecord
+from ouro.core.context import ContextBuilder, estimate_message_tokens
+from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.tools import ToolCallRequest
 
 
 def test_context_builder_rejects_non_positive_token_budget() -> None:
@@ -68,4 +69,36 @@ def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
     assert (
         with_context.context_metadata["estimated_fixed_tokens"]
         > without_context.context_metadata["estimated_fixed_tokens"]
+    )
+
+
+def test_message_token_estimate_includes_typed_tool_protocol_fields() -> None:
+    plain = MessageRecord.text(session_id="ses_1", role="assistant", text="")
+    with_call = plain.model_copy(
+        update={
+            "tool_calls": [
+                ToolCallRequest(
+                    id="call_1",
+                    name="Write",
+                    arguments={"content": "x" * 1_000},
+                )
+            ]
+        }
+    )
+    tool_result = MessageRecord.text(
+        session_id="ses_1",
+        role="tool_result",
+        text="ok",
+    ).model_copy(
+        update={
+            "tool_result": ToolResultReference(
+                tool_call_id="call_1",
+                tool_name="Write",
+            )
+        }
+    )
+
+    assert estimate_message_tokens(with_call) > estimate_message_tokens(plain) + 200
+    assert estimate_message_tokens(tool_result) > estimate_message_tokens(
+        MessageRecord.text(session_id="ses_1", role="tool_result", text="ok")
     )

@@ -30,6 +30,10 @@ from ouro.config.provider_models import (
     ProviderRuntimeOptions,
 )
 from ouro.config.providers import ProviderConfigManager
+from ouro.config.run_budget import (
+    RunBudgetConfigManager,
+    run_budget_to_public_dict,
+)
 from ouro.config.service import ConfigService
 from ouro.config.tool_execution import (
     ToolExecutionConfig,
@@ -56,11 +60,13 @@ __all__ = [
     "ProviderRuntimeOptions",
     "PromptConfigManager",
     "PromptConfigSnapshot",
+    "RunBudgetConfigManager",
     "ToolExecutionConfig",
     "ToolExecutionConfigManager",
     "endpoint_config_to_public_dict",
     "permission_config_to_public_dict",
     "provider_config_to_public_dict",
     "prompt_config_to_public_dict",
+    "run_budget_to_public_dict",
     "tool_execution_config_to_public_dict",
 ]

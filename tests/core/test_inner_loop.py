@@ -10,6 +10,7 @@ from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.results import RunResult
+from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import ApprovalRecord, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolBatchHandlingResult, ToolCallBatchRecord
 from ouro.providers import FauxProvider
@@ -143,6 +144,10 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         del args, kwargs
         raise AssertionError("approval pause must not fail the run")
 
+    async def pause_run(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("approval pause must not hit the run budget")
+
     inner_loop = InnerAgentLoop(
         adapter=RuntimeAdapter(
             FauxProvider(
@@ -157,7 +162,7 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=ToolRegistry(),
-        max_model_rounds=1,
+        run_budget=RunBudgetPolicy(max_model_rounds=1),
         ports=InnerLoopPorts(
             prepare_context=_prepare_context,
             emit=emit,
@@ -168,6 +173,7 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             save_waiting_state=save_waiting_state,
             complete_run=complete_run,
             fail_run=fail_run,
+            pause_run=pause_run,
         ),
     )
 
@@ -298,6 +304,10 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         del args, kwargs
         return RunResult(session=session, run=run)
 
+    async def pause_run(*args, **kwargs):
+        del args, kwargs
+        return RunResult(session=session, run=run)
+
     inner_loop = InnerAgentLoop(
         adapter=RuntimeAdapter(
             FauxProvider(
@@ -324,7 +334,7 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=ToolRegistry(),
-        max_model_rounds=2,
+        run_budget=RunBudgetPolicy(max_model_rounds=2),
         ports=InnerLoopPorts(
             prepare_context=_prepare_context,
             emit=emit,
@@ -335,6 +345,7 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             save_waiting_state=save_waiting_state,
             complete_run=complete_run,
             fail_run=fail_run,
+            pause_run=pause_run,
         ),
     )
 

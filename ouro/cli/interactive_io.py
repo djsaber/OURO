@@ -143,6 +143,18 @@ async def handle_run_result(
             output.finish_run(current.run.run_id)
             output_func(f"Run aborted: {current.run.error or 'User aborted'}")
             return current.session.session_id
+        if current.run.status == "paused":
+            output.finish_run(current.run.run_id)
+            pause = current.run.metadata.get("pause") or {}
+            reason = pause.get("reason") if isinstance(pause, dict) else None
+            kind = pause.get("kind") if isinstance(pause, dict) else None
+            boundary = (
+                "for context maintenance"
+                if kind == "context_maintenance"
+                else "at a soft budget boundary"
+            )
+            output_func(f"Run paused {boundary}: {reason or 'configured limit'}")
+            return current.session.session_id
         output_func(f"Run stopped with status: {current.run.status}")
         return current.session.session_id
 

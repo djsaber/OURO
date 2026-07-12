@@ -17,6 +17,7 @@ RunStatus = Literal[
     "completed",
     "aborted",
     "failed",
+    "paused",
     "recoverable",
 ]
 RunKind = Literal["agent", "compaction"]

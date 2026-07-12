@@ -9,10 +9,12 @@ from ouro.config import (
     CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
+    RunBudgetConfigManager,
     ToolExecutionConfigManager,
     compaction_config_to_public_dict,
     permission_config_to_public_dict,
     prompt_config_to_public_dict,
+    run_budget_to_public_dict,
     tool_execution_config_to_public_dict,
 )
 from ouro.core.errors import OuroError
@@ -273,6 +275,70 @@ def show_tool_execution_config(
             [
                 f"Tool execution mode: {config.mode}",
                 f"Max concurrency: {config.max_concurrency}",
+                f"Config: {manager.file.path}",
+            ]
+        )
+    )
+    return 0
+
+
+def show_run_budget_config(
+    *,
+    home: str | Path | None = None,
+    max_model_rounds: int | None = None,
+    max_input_tokens: int | None = None,
+    max_output_tokens: int | None = None,
+    max_elapsed_seconds: float | None = None,
+    clear: bool = False,
+    json_mode: bool = False,
+) -> int:
+    try:
+        manager = RunBudgetConfigManager(home)
+        has_update = clear or any(
+            value is not None
+            for value in (
+                max_model_rounds,
+                max_input_tokens,
+                max_output_tokens,
+                max_elapsed_seconds,
+            )
+        )
+        policy = (
+            manager.update(
+                max_model_rounds=max_model_rounds,
+                max_input_tokens=max_input_tokens,
+                max_output_tokens=max_output_tokens,
+                max_elapsed_seconds=max_elapsed_seconds,
+                clear=clear,
+            )
+            if has_update
+            else manager.snapshot()
+        )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = run_budget_to_public_dict(policy)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": str(manager.file.path),
+                    "run_budget": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(
+        "\n".join(
+            [
+                "Run soft budget:",
+                f"- max model rounds: {policy.max_model_rounds or 'unlimited'}",
+                f"- max input tokens: {policy.max_input_tokens or 'unlimited'}",
+                f"- max output tokens: {policy.max_output_tokens or 'unlimited'}",
+                f"- max elapsed seconds: {policy.max_elapsed_seconds or 'unlimited'}",
                 f"Config: {manager.file.path}",
             ]
         )

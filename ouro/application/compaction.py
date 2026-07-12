@@ -17,13 +17,18 @@ from ouro.core.compaction import (
     CompactionStrategy,
     CompactionStrategyRegistry,
     CompactionTrigger,
+    compaction_frames,
     compaction_source_digest,
-    conversation_turns,
     plan_compaction,
     project_compacted_messages,
 )
-from ouro.core.context import ContextBuilder, ContextView, estimate_text_tokens
-from ouro.core.errors import CompactionError, ContextOverflowError
+from ouro.core.context import (
+    ContextBuilder,
+    ContextView,
+    estimate_text_tokens,
+    project_recovery_messages,
+)
+from ouro.core.errors import CompactionError, ContextBlockedError, ContextOverflowError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
@@ -140,18 +145,18 @@ class LLMSummaryCompactionStrategy:
     ) -> CompactionArtifact:
         rolling_summary = request.previous_summary
         total_usage: dict[str, int | float] = {}
-        remaining_turns = conversation_turns(request.messages)
-        if not remaining_turns:
+        remaining_frames = compaction_frames(request.messages)
+        if not remaining_frames:
             raise CompactionError("summary compaction received no canonical messages")
 
         chunk_count = 0
-        while remaining_turns:
+        while remaining_frames:
             summary_output_tokens = min(
                 request.summary_output_tokens,
                 adapter.model.max_output_tokens,
             )
             chunk, consumed_turns = self._next_chunk(
-                remaining_turns,
+                remaining_frames,
                 adapter=adapter,
                 previous_summary=rolling_summary,
                 summary_output_tokens=summary_output_tokens,
@@ -166,7 +171,7 @@ class LLMSummaryCompactionStrategy:
             )
             total_usage = _merge_usage(total_usage, usage)
             chunk_count += 1
-            remaining_turns = remaining_turns[consumed_turns:]
+            remaining_frames = remaining_frames[consumed_turns:]
 
         return CompactionArtifact(
             summary=rolling_summary or "",
@@ -208,7 +213,7 @@ class LLMSummaryCompactionStrategy:
                 if current:
                     break
                 raise ContextOverflowError(
-                    "a single closed conversation turn exceeds the summary input budget"
+                    "a single context frame exceeds the summary input budget"
                 )
             current = candidate
             consumed_turns += 1
@@ -321,7 +326,7 @@ class ContextPreparationService:
         added_context = [text for result in hook_result.results for text in result.added_context]
         budget = self._input_budget(active_adapter)
         active = self.store.load_session(session.session_id, recover=False).active_compaction
-        effective_messages = project_compacted_messages(messages, active)
+        effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
         view = self._build_view(
             messages=effective_messages,
             tools=tools,
@@ -332,27 +337,48 @@ class ContextPreparationService:
         trigger_tokens = int(budget * self.config.policy.trigger_ratio)
         estimated = int(view.context_metadata["estimated_input_tokens"])
         if self.config.policy.auto_enabled and estimated >= trigger_tokens:
-            execution = await self.compact(
-                emitted,
-                sequence,
-                session=session,
-                run=run,
-                messages=messages,
-                tools=tools,
-                added_context=added_context,
-                trigger="auto",
-                force=False,
-                abort_signal=abort_signal,
-                estimated_tokens_before=estimated,
-                adapter=active_adapter,
-            )
+            try:
+                execution = await self.compact(
+                    emitted,
+                    sequence,
+                    session=session,
+                    run=run,
+                    messages=messages,
+                    tools=tools,
+                    added_context=added_context,
+                    trigger="auto",
+                    force=False,
+                    abort_signal=abort_signal,
+                    estimated_tokens_before=estimated,
+                    adapter=active_adapter,
+                )
+            except CompactionError as exc:
+                sequence = len(self.store.load_session(session.session_id, recover=False).events)
+                if view.context_metadata["over_budget"]:
+                    raise ContextBlockedError(
+                        f"context compaction is required before the run can continue: {exc}"
+                    ) from exc
+                metadata = dict(view.context_metadata)
+                metadata.update(
+                    {
+                        "compaction_deferred": True,
+                        "compaction_error": str(exc),
+                        "compaction_id": active.compaction_id if active else None,
+                        "compaction_strategy": active.strategy_id if active else None,
+                        "covered_message_count": len(active.covered_message_ids) if active else 0,
+                    }
+                )
+                return view.model_copy(update={"context_metadata": metadata}), sequence
             sequence = execution.sequence
             if execution.record is None and view.context_metadata["over_budget"]:
-                raise ContextOverflowError(
-                    "context is over budget and no complete older turn is eligible for compaction"
+                raise ContextBlockedError(
+                    "context is over budget and no complete older context frame is eligible "
+                    "for compaction"
                 )
             active = execution.record or active
-            effective_messages = project_compacted_messages(messages, active)
+            effective_messages = project_recovery_messages(
+                project_compacted_messages(messages, active)
+            )
             view = self._build_view(
                 messages=effective_messages,
                 tools=tools,
@@ -361,7 +387,7 @@ class ContextPreparationService:
             )
 
         if view.context_metadata["over_budget"]:
-            raise ContextOverflowError(
+            raise ContextBlockedError(
                 "context remains over the model input budget after summary compaction"
             )
         metadata = dict(view.context_metadata)
@@ -673,6 +699,8 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
             "tool_result": "Tool result",
             "system_synthetic": "Synthetic context",
         }[message.role]
+        if message.metadata.get("incomplete"):
+            label += " (interrupted/incomplete)"
         parts.append(f"[{label}] {message.text_content}")
         if message.tool_calls:
             serialized_calls = [call.model_dump(mode="json") for call in message.tool_calls]

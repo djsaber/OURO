@@ -279,6 +279,8 @@ def _sorted_entries(entries: list[SessionIndexEntry]) -> list[SessionIndexEntry]
 def _catalog_status(session: SessionRecord, latest_run: RunRecord | None) -> SessionCatalogStatus:
     if latest_run is not None and latest_run.status == "recoverable":
         return "recoverable"
+    if latest_run is not None and latest_run.status == "paused":
+        return "paused"
     if session.status == "running":
         return "active"
     if session.status == "waiting_approval":

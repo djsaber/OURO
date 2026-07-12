@@ -17,7 +17,9 @@ Current first-phase runtime includes:
 - Provider management CLI plus endpoint-level configuration for model parameters and capabilities.
 - System prompt persistence through `ouro config prompt --set ...`.
 - Skills CLI for listing available skills, showing full skill content, viewing search roots, and previewing the injected skills prompt.
-- Interrupted local runs can be recovered as `recoverable`; corrupt session indexes are rebuilt.
+- Interrupted local runs become `recoverable`; before the next run, incomplete tool exchanges are
+  reconciled without replaying unknown side effects and partial assistant output is projected as
+  recovery context rather than a completed answer. Corrupt session indexes are rebuilt.
 - Multi-round runtime loop: tool results are fed back into the model until a final assistant response or suspend state.
 - Dual-layer loop boundary: application `RuntimeService` orchestrates sessions, locks, aborts, and follow-up draining; application `RunLifecycle` owns model-loop persistence transitions; core `InnerAgentLoop` owns provider rounds and tool-result continuation for one active run.
 - Application-owned model routing resolves persisted `provider/endpoint` selections; the `providers` package contains only concrete adapters, transports/codecs, and their construction factory.
@@ -33,7 +35,11 @@ Current first-phase runtime includes:
 - Framework-level `ToolExecutionContext` for plugin tools, including cooperative abort helpers.
 - Cooperative abort for active provider streams and long-running tool/subprocess work.
 - Runtime Hooks with plugin context injection, failure events, plugin metadata, plugin command/context-provider registration, and MCP lifecycle framework.
-- Standards-compatible Agent Skills discovery and native system-prompt injection through `ContextBuilder`; durable built-in LLM summary compaction preserves canonical history and complete tool exchanges.
+- Standards-compatible Agent Skills discovery and native system-prompt injection through
+  `ContextBuilder`; durable built-in LLM summary compaction preserves canonical history and uses
+  persisted `turn_id` boundaries to keep model/tool context frames atomic.
+- Optional persisted run soft budgets can pause at model-round boundaries by rounds, cumulative
+  input/output tokens, or elapsed time. All limits are unlimited by default.
 - Skills use `SKILL.md` YAML frontmatter and are discovered from Ouro-native and common `.agents`, `.claude`, `.github`, `.copilot`, and `.codex` locations; `./skills` remains a legacy workspace search root.
 - Runtime depends on a session storage protocol; `LocalSessionStore` is the default implementation.
 - Phase 2 session foundation: typed/rebuildable catalog, full user/assistant text search, lineage,
@@ -87,6 +93,8 @@ python -m ouro.cli.main provider check glm --endpoint reasoning --home ./.ouro-d
 
 python -m ouro.cli.main config compaction --home ./.ouro-dev --provider glm --endpoint reasoning --temperature 0.1 --no-thinking
 python -m ouro.cli.main config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4
+python -m ouro.cli.main config run-budget --home ./.ouro-dev --max-model-rounds 50 --max-elapsed-seconds 1800
+python -m ouro.cli.main config run-budget --home ./.ouro-dev --clear
 python -m ouro.cli.main skills list --home ./.ouro-dev
 python -m ouro.cli.main skills show pdf --home ./.ouro-dev
 python -m ouro.cli.main skills roots --home ./.ouro-dev
@@ -108,6 +116,12 @@ Example local config:
 {
   "prompts": {
     "system": "Custom system prompt"
+  },
+  "run_budget": {
+    "max_model_rounds": 50,
+    "max_input_tokens": 1000000,
+    "max_output_tokens": 100000,
+    "max_elapsed_seconds": 1800
   },
   "skills": {
     "enabled": true,

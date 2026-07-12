@@ -8,10 +8,12 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
+from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
+from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchHandlingResult
 from ouro.core.tools import ToolCallRequest, ToolDefinition, ToolResult
@@ -87,6 +89,7 @@ class RunCompleter(Protocol):
         messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str,
+        turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
 
@@ -111,6 +114,22 @@ class RunFailer(Protocol):
         error: str,
         final_text: str,
         reasoning_content: str,
+        turn_id: str | None,
+        tool_results: list[ToolResult],
+    ) -> RunResult: ...
+
+
+class RunPauser(Protocol):
+    async def __call__(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        reason: RunPauseReason,
+        next_model_round: int,
+        final_text: str,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
 
@@ -141,6 +160,7 @@ class InnerLoopPorts:
     save_waiting_state: WaitingStatePersister
     complete_run: RunCompleter
     fail_run: RunFailer
+    pause_run: RunPauser
 
 
 @dataclass
@@ -180,12 +200,12 @@ class InnerAgentLoop:
         *,
         adapter: RuntimeAdapter,
         tools: ToolDefinitionProvider,
-        max_model_rounds: int | None,
+        run_budget: RunBudgetPolicy | None = None,
         ports: InnerLoopPorts,
     ) -> None:
         self.adapter = adapter
         self.tools = tools
-        self.max_model_rounds = max_model_rounds
+        self.run_budget = run_budget or RunBudgetPolicy()
         self.ports = ports
 
     async def run(
@@ -210,17 +230,34 @@ class InnerAgentLoop:
             tool_results=list(tool_results or []),
         )
 
-        round_iterator = (
-            range(1, self.max_model_rounds + 1)
-            if self.max_model_rounds is not None
-            else itertools.count(1)
-        )
-        for model_round in round_iterator:
+        for model_round in itertools.count(1):
             if aborted := self._aborted_result(state):
                 return aborted
+            if reason := self._budget_reason(state.run, model_round):
+                return await self.ports.pause_run(
+                    state.emitted,
+                    state.sequence,
+                    session=state.session,
+                    run=state.run,
+                    reason=reason,
+                    next_model_round=model_round,
+                    final_text=state.final_text(),
+                    tool_results=state.tool_results,
+                )
 
             try:
                 context = await self._build_context(state, model_round, abort_signal)
+            except ContextBlockedError:
+                return await self.ports.pause_run(
+                    state.emitted,
+                    state.sequence,
+                    session=state.session,
+                    run=state.run,
+                    reason="context_blocked",
+                    next_model_round=model_round,
+                    final_text=state.final_text(),
+                    tool_results=state.tool_results,
+                )
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
             round_state = _RoundState()
@@ -242,6 +279,7 @@ class InnerAgentLoop:
                     "provider stream ended without a completion event",
                     round_state.parts,
                     round_state.reasoning_parts,
+                    round_state.turn_id,
                 )
             if round_state.tool_calls:
                 try:
@@ -265,6 +303,7 @@ class InnerAgentLoop:
                     "provider returned an empty assistant message",
                     round_parts=None,
                     round_reasoning_parts=round_state.reasoning_parts,
+                    turn_id=round_state.turn_id,
                 )
 
             state.final_parts.extend(round_state.parts)
@@ -276,12 +315,23 @@ class InnerAgentLoop:
                 messages=state.messages,
                 final_text=state.final_text(),
                 reasoning_content="".join(round_state.reasoning_parts),
+                turn_id=round_state.turn_id,
                 tool_results=state.tool_results,
             )
 
-        return await self._fail(
-            state,
-            f"model round limit exceeded: {self.max_model_rounds}",
+        raise AssertionError("unreachable model loop termination")
+
+    def _budget_reason(
+        self,
+        run: RunRecord,
+        next_model_round: int,
+    ) -> RunBudgetReason | None:
+        elapsed_seconds = max(0.0, (utc_now() - run.started_at).total_seconds())
+        return self.run_budget.exceeded_reason(
+            next_model_round=next_model_round,
+            input_tokens=int(run.usage.get("input_tokens", 0)),
+            output_tokens=int(run.usage.get("output_tokens", 0)),
+            elapsed_seconds=elapsed_seconds,
         )
 
     async def _build_context(
@@ -363,6 +413,7 @@ class InnerAgentLoop:
                         provider_event.error or "provider error",
                         round_state.parts,
                         round_state.reasoning_parts,
+                        round_state.turn_id,
                     )
                 elif provider_event.type == "done":
                     for tool_call in provider_event.tool_calls:
@@ -394,6 +445,7 @@ class InnerAgentLoop:
                 str(exc) or exc.__class__.__name__,
                 round_state.parts,
                 round_state.reasoning_parts,
+                round_state.turn_id,
             )
         return None
 
@@ -515,6 +567,7 @@ class InnerAgentLoop:
         error: str,
         round_parts: list[str] | None = None,
         round_reasoning_parts: list[str] | None = None,
+        turn_id: str | None = None,
     ) -> RunResult:
         return await self.ports.fail_run(
             state.emitted,
@@ -524,6 +577,7 @@ class InnerAgentLoop:
             error=error,
             final_text=state.final_text(round_parts),
             reasoning_content="".join(round_reasoning_parts or []),
+            turn_id=turn_id,
             tool_results=state.tool_results,
         )
 

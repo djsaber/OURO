@@ -109,6 +109,10 @@ def estimate_message_tokens(
         "role": message.role,
         "content": [block.model_dump(mode="json") for block in message.content],
         "resource_refs": message.resource_refs,
+        "tool_calls": [call.model_dump(mode="json") for call in message.tool_calls],
+        "tool_result": message.tool_result.model_dump(mode="json")
+        if message.tool_result is not None
+        else None,
         "metadata": message.metadata,
     }
     return 4 + active_estimator(json.dumps(payload, ensure_ascii=False, sort_keys=True))
@@ -116,3 +120,40 @@ def estimate_message_tokens(
 
 def _estimate_tool_tokens(tool: ToolDefinition, estimator: TokenEstimator) -> int:
     return estimator(tool.model_dump_json(exclude_none=True))
+
+
+def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageRecord]:
+    """Represent interrupted assistant text as recovery context, not a completed answer."""
+
+    projected: list[MessageRecord] = []
+    for message in messages:
+        if (
+            message.role != "assistant"
+            or message.tool_calls
+            or not message.metadata.get("incomplete")
+        ):
+            projected.append(message)
+            continue
+        recovery = MessageRecord.text(
+            session_id=message.session_id,
+            run_id=message.run_id,
+            turn_id=message.turn_id,
+            role="system_synthetic",
+            text=(
+                "A previous assistant model attempt was interrupted before completion. "
+                "Treat the following text as partial work, not as a completed answer:\n\n"
+                f"{message.text_content}"
+            ),
+            sequence=message.sequence,
+        ).model_copy(
+            update={
+                "message_id": message.message_id,
+                "metadata": {
+                    **message.metadata,
+                    "kind": "interrupted_assistant_recovery",
+                    "source_role": "assistant",
+                },
+            }
+        )
+        projected.append(recovery)
+    return projected

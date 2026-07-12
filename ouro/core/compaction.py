@@ -124,32 +124,32 @@ def plan_compaction(
     force: bool = False,
     token_estimator: TokenEstimator | None = None,
 ) -> CompactionPlan:
-    """Select a canonical prefix while preserving the latest user turn verbatim."""
+    """Select a canonical prefix while preserving the latest context frame verbatim."""
 
     estimator = token_estimator or estimate_text_tokens
     covered_count = validate_compaction_lineage(messages, active)
     prior_ids = list(active.covered_message_ids) if active else []
     uncovered = list(messages[covered_count:])
-    turns = conversation_turns(uncovered)
-    if len(turns) <= 1:
+    frames = compaction_frames(uncovered)
+    if len(frames) <= 1:
         return CompactionPlan(retained_messages=uncovered, covered_message_ids=prior_ids)
 
-    retained_turns: list[list[MessageRecord]] = [turns[-1]]
-    retained_tokens = _messages_tokens(turns[-1], estimator)
-    candidate_turns = list(turns[:-1])
-    while candidate_turns:
-        turn = candidate_turns[-1]
-        turn_tokens = _messages_tokens(turn, estimator)
-        if retained_tokens + turn_tokens > tail_token_budget:
+    retained_frames: list[list[MessageRecord]] = [frames[-1]]
+    retained_tokens = _messages_tokens(frames[-1], estimator)
+    candidate_frames = list(frames[:-1])
+    while candidate_frames:
+        frame = candidate_frames[-1]
+        frame_tokens = _messages_tokens(frame, estimator)
+        if retained_tokens + frame_tokens > tail_token_budget:
             break
-        retained_turns.insert(0, candidate_turns.pop())
-        retained_tokens += turn_tokens
+        retained_frames.insert(0, candidate_frames.pop())
+        retained_tokens += frame_tokens
 
-    if force and not candidate_turns and len(retained_turns) > 1:
-        candidate_turns.append(retained_turns.pop(0))
+    if force and not candidate_frames and len(retained_frames) > 1:
+        candidate_frames.append(retained_frames.pop(0))
 
-    messages_to_compact = [message for turn in candidate_turns for message in turn]
-    retained_messages = [message for turn in retained_turns for message in turn]
+    messages_to_compact = [message for frame in candidate_frames for message in frame]
+    retained_messages = [message for frame in retained_frames for message in frame]
     return CompactionPlan(
         messages_to_compact=messages_to_compact,
         retained_messages=retained_messages,
@@ -174,6 +174,54 @@ def conversation_turns(messages: Sequence[MessageRecord]) -> list[list[MessageRe
     if current:
         turns.append(current)
     return turns
+
+
+def compaction_frames(messages: Sequence[MessageRecord]) -> list[list[MessageRecord]]:
+    """Group messages at durable model-turn boundaries.
+
+    Current runtime messages share a ``turn_id`` across one assistant tool request and all of its
+    correlated results. Preceding messages without an id (normally the user input) join the next
+    identified frame. Pure legacy spans fall back to user-turn grouping. If an incomplete tool
+    exchange is encountered, the remaining suffix becomes one protected frame so compaction can
+    never separate it from later recovery context.
+    """
+
+    frames: list[list[MessageRecord]] = []
+    current: list[MessageRecord] = []
+    current_turn_id: str | None = None
+    pending_legacy: list[MessageRecord] = []
+
+    def flush_current() -> None:
+        nonlocal current, current_turn_id
+        if current:
+            frames.append(current)
+        current = []
+        current_turn_id = None
+
+    for message in messages:
+        if message.turn_id is not None:
+            if current and current_turn_id != message.turn_id:
+                flush_current()
+            if not current:
+                legacy_frames = conversation_turns(pending_legacy)
+                frames.extend(legacy_frames[:-1])
+                current = list(legacy_frames[-1]) if legacy_frames else []
+                pending_legacy = []
+                current_turn_id = message.turn_id
+            current.append(message)
+            continue
+
+        if current_turn_id is not None:
+            flush_current()
+        pending_legacy.append(message)
+
+    flush_current()
+    frames.extend(conversation_turns(pending_legacy))
+    for index, frame in enumerate(frames):
+        if _is_complete_frame(frame):
+            continue
+        return [*frames[:index], [message for tail in frames[index:] for message in tail]]
+    return frames
 
 
 def project_compacted_messages(
@@ -232,3 +280,29 @@ def compaction_source_digest(messages: Sequence[MessageRecord]) -> str:
 
 def _messages_tokens(messages: Sequence[MessageRecord], estimator: TokenEstimator) -> int:
     return sum(estimate_message_tokens(message, estimator) for message in messages)
+
+
+def _tool_call_ids(message: MessageRecord) -> set[str]:
+    if message.role != "assistant":
+        return set()
+    if message.tool_calls:
+        return {call.id for call in message.tool_calls if call.id}
+    raw_calls = message.metadata.get("tool_calls")
+    if not isinstance(raw_calls, list):
+        return set()
+    return {str(call.get("id")) for call in raw_calls if isinstance(call, dict) and call.get("id")}
+
+
+def _tool_result_id(message: MessageRecord) -> str | None:
+    if message.tool_result is not None:
+        return message.tool_result.tool_call_id
+    raw = message.metadata.get("tool_call_id")
+    return raw if isinstance(raw, str) and raw else None
+
+
+def _is_complete_frame(frame: Sequence[MessageRecord]) -> bool:
+    expected = {call_id for message in frame for call_id in _tool_call_ids(message)}
+    if not expected:
+        return True
+    seen = {result_id for message in frame if (result_id := _tool_result_id(message)) is not None}
+    return expected.issubset(seen)

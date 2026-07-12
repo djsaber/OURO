@@ -69,6 +69,7 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
             "waiting_approval",
             "waiting_user",
             "failed",
+            "paused",
             "recoverable",
             "completed",
         ),
@@ -258,6 +259,22 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Maximum parallel tool calls (1-64)",
     )
     tool_execution_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    run_budget_parser = config_subparsers.add_parser(
+        "run-budget",
+        help="Inspect or set optional per-run soft limits",
+    )
+    run_budget_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    run_budget_parser.add_argument("--max-model-rounds", type=int, default=None)
+    run_budget_parser.add_argument("--max-input-tokens", type=int, default=None)
+    run_budget_parser.add_argument("--max-output-tokens", type=int, default=None)
+    run_budget_parser.add_argument("--max-elapsed-seconds", type=float, default=None)
+    run_budget_parser.add_argument(
+        "--clear",
+        action="store_true",
+        help="Remove all run soft limits",
+    )
+    run_budget_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     compaction_parser = config_subparsers.add_parser(
         "compaction",

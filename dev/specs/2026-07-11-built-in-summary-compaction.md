@@ -9,7 +9,8 @@
 
 OURO uses LLM-generated summary compaction as its built-in context compaction behavior. The
 previous recent-history truncation strategy is removed and is not a fallback. A compaction
-failure is visible and prevents an invalid or silently incomplete provider request.
+failure is always visible. It may defer maintenance while the complete context still fits, but it
+never permits an over-budget or silently truncated provider request.
 
 The built-in implementation is selected through the same typed strategy contract that future
 built-in and plugin-provided strategies use. Plugins may contribute alternative strategies, but
@@ -28,8 +29,9 @@ budget enforcement.
   session reloads until a later compaction is activated.
 - Later compactions are incremental: they summarize the previous active summary plus newly
   covered canonical messages.
-- A compaction cut never splits an assistant tool call from its tool results and never covers the
-  latest open user turn.
+- A compaction cut follows persisted `turn_id` context-frame boundaries and never splits an
+  assistant tool call from its correlated tool results. Legacy records without `turn_id` use
+  structural call/result correlation.
 - Automatic and manual compaction share one application service and differ only by trigger and
   force semantics.
 - Summary text is synthetic model context, not a canonical user-visible conversation message.
@@ -68,9 +70,11 @@ The default automatic trigger is 80% of the model input capacity, where input ca
 context window minus the reserved model output tokens. Compaction targets 60% to provide
 hysteresis and avoid compacting again on the next turn.
 
-The planner keeps a recent tail and covers only complete older turns. If the fixed prompt/tools,
-the generated summary, or the protected latest turn cannot fit the hard input budget, OURO raises
-a context-overflow error rather than truncating data.
+The planner keeps a recent tail and covers only complete older context frames. If automatic
+compaction fails while the current projection still fits the hard budget, OURO records
+`compaction_failed` and sends that complete projection. If the fixed prompt/tools, generated
+summary, or protected latest frame cannot fit the hard input budget, OURO pauses the run with
+`context_blocked` rather than truncating data or killing the session.
 
 ## 5. Built-in LLM Strategy
 
@@ -119,7 +123,7 @@ dedicated route and `--clear` clears all compaction model overrides.
 
 `/compact` invokes the same coordinator with `trigger=manual` and `force=true`. It acquires the
 same session operation lock as normal runs, appends no user or assistant message, and returns a
-no-op result when no complete older turn is eligible.
+no-op result when no complete older context frame is eligible.
 
 ## 7. Events and UI
 
@@ -150,7 +154,7 @@ may select the removed truncation implementation.
 - A later threshold crossing creates an incremental successor record.
 - Manual `/compact` and automatic compaction produce equivalent records and events.
 - Canonical messages and history/export views remain unchanged.
-- Tool exchanges and the latest open turn are never split or covered.
+- Tool exchanges and the latest protected context frame are never split or covered.
 - Built-in and plugin strategies pass the same host validation.
 - Dedicated endpoint success, resolution failure, context overflow, and provider failure all use
   deterministic routing; fallback parameters remain isolated from normal session requests.

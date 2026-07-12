@@ -456,13 +456,33 @@ async def test_compaction_failure_is_visible_and_never_truncates_history(tmp_pat
     result = await runtime.run("new", session_id=session.session_id)
     snapshot = store.load_session(session.session_id)
 
-    assert result.run.status == "failed"
+    assert result.run.status == "paused"
     assert provider.calls == []
     assert snapshot.session.active_compaction_id is None
     assert snapshot.compactions == []
     assert len(snapshot.messages) == 11
     assert any(event.event_type == "compaction_failed" for event in snapshot.events)
-    assert "context preparation failed" in (result.run.error or "")
+    assert result.run.error is None
+    assert result.run.metadata["pause"]["reason"] == "context_blocked"
+
+
+@pytest.mark.asyncio
+async def test_auto_compaction_failure_defers_while_context_still_fits(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Deferred compaction")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 2)
+    provider = RecordingProvider()
+    runtime = _runtime(store, provider, FailingStrategy(), strategy_id="test.failure")
+
+    result = await runtime.run("new", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id)
+
+    assert result.run.status == "completed"
+    assert len(provider.calls) == 1
+    assert snapshot.compactions == []
+    assert any(event.event_type == "compaction_failed" for event in snapshot.events)
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,5 @@
+import pytest
+
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.state import RunRecord, SessionRecord
@@ -11,6 +13,16 @@ def test_message_round_trip() -> None:
     assert loaded.session_id == "ses_1"
     assert loaded.text_content == "hello"
     assert isinstance(loaded.content[0], TextContent)
+
+
+def test_message_turn_id_requires_run_id() -> None:
+    with pytest.raises(ValueError, match="turn_id requires run_id"):
+        MessageRecord.text(
+            session_id="ses_1",
+            role="assistant",
+            text="hello",
+            turn_id="turn_1",
+        )
 
 
 def test_event_round_trip() -> None:

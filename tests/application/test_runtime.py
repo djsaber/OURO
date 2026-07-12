@@ -10,7 +10,10 @@ from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
-from ouro.core.state import SessionRecord
+from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
+from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -234,7 +237,60 @@ async def test_runtime_persists_text_run(tmp_path) -> None:
     assert result.run.status == "completed"
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
     assert snapshot.messages[-1].text_content == "Hello world"
+    assert snapshot.messages[0].run_id == result.run.run_id
+    assert snapshot.messages[0].turn_id is None
+    assert snapshot.messages[-1].run_id == result.run.run_id
+    assert snapshot.messages[-1].turn_id is not None
     assert "run_completed" in [event.event_type for event in snapshot.events]
+
+
+@pytest.mark.asyncio
+async def test_runtime_pauses_at_configured_soft_round_budget(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "note.txt"
+    target.write_text("content", encoding="utf-8")
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "call_1",
+                                "name": "Read",
+                                "arguments": {"path": str(target)},
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="not reached"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        run_budget=RunBudgetPolicy(max_model_rounds=1),
+    )
+
+    result = await runtime.run("Read once")
+    snapshot = store.load_session(result.session.session_id, recover=False)
+
+    assert result.run.status == "paused"
+    assert result.session.status == "idle"
+    assert result.run.metadata["pause"]["reason"] == "model_rounds"
+    assert store.load_index().sessions[0].status == "paused"
+    assert [message.role for message in snapshot.messages] == [
+        "user",
+        "assistant",
+        "tool_result",
+    ]
+    assert snapshot.events[-1].event_type == "run_paused"
 
 
 @pytest.mark.asyncio
@@ -261,11 +317,199 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
     assert snapshot.messages[-1].text_content == "partial"
     assert snapshot.messages[-1].metadata["incomplete"] is True
+    assert snapshot.messages[-1].run_id == result.run.run_id
+    assert snapshot.messages[-1].turn_id is not None
     assert snapshot.session.message_count == 2
     assert snapshot.session.last_message_id == snapshot.messages[-1].message_id
     assert snapshot.events[-1].event_type == "run_failed"
     index = store.load_index()
     assert index.sessions[0].status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_next_run_projects_interrupted_assistant_as_recovery_context(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    first_runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            ExplodingProvider(),
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+    failed = await first_runtime.run("Start work")
+    provider = CapturingProvider()
+    second_runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    resumed = await second_runtime.run(
+        "Continue",
+        session_id=failed.session.session_id,
+    )
+
+    assert resumed.run.status == "completed"
+    assert [message.role for message in provider.messages] == [
+        "user",
+        "system_synthetic",
+        "user",
+    ]
+    assert provider.messages[1].metadata["kind"] == "interrupted_assistant_recovery"
+
+
+@pytest.mark.asyncio
+async def test_runtime_reconciles_interrupted_tool_exchange_before_next_run(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Recover tool", status="running")
+    run = RunRecord(
+        session_id=session.session_id,
+        status="running",
+        phase="tool_execution",
+    )
+    request = ToolCallRequest(id="call_1", name="Write", arguments={"path": "note.txt"})
+    invocation = ToolInvocation(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        turn_id="turn_1",
+        tool_call_id=request.id,
+        tool_name=request.name,
+        arguments=request.arguments,
+    )
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        turn_id="turn_1",
+        role="assistant",
+        text="",
+        sequence=1,
+    ).model_copy(update={"tool_calls": [request]})
+    batch = ToolCallBatchRecord(
+        turn_id="turn_1",
+        assistant_message_id=assistant.message_id,
+        phase="executing",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="running",
+                invocation=invocation,
+            )
+        ],
+    )
+    run = run.model_copy(update={"active_tool_batch": batch})
+    session = session.model_copy(
+        update={
+            "active_run_id": run.run_id,
+            "last_run_id": run.run_id,
+            "message_count": 1,
+            "last_message_id": assistant.message_id,
+        }
+    )
+    store.create_session(session)
+    store.save_run(run)
+    store.append_message(assistant)
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("Continue safely", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id, recover=False)
+
+    assert result.run.status == "completed"
+    recovered_result = snapshot.messages[1]
+    assert recovered_result.role == "tool_result"
+    assert recovered_result.tool_result is not None
+    assert recovered_result.tool_result.tool_call_id == "call_1"
+    assert "outcome is unknown" in recovered_result.text_content
+    assert [message.role for message in provider.messages[:3]] == [
+        "assistant",
+        "tool_result",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Recover checkpoint", status="running")
+    request = ToolCallRequest(id="call_reused", name="Read", arguments={"path": "note.txt"})
+    checkpointed = ToolResult(
+        tool_call_id=request.id,
+        tool_name=request.name,
+        content="checkpointed content",
+    )
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id="run_checkpoint",
+        turn_id="turn_checkpoint",
+        role="assistant",
+        text="",
+        sequence=1,
+    ).model_copy(update={"tool_calls": [request]})
+    batch = ToolCallBatchRecord(
+        turn_id="turn_checkpoint",
+        assistant_message_id=assistant.message_id,
+        phase="committing_results",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="completed",
+                result=checkpointed,
+            )
+        ],
+    )
+    interrupted = RunRecord(
+        run_id="run_checkpoint",
+        session_id=session.session_id,
+        status="running",
+        phase="result_commit",
+        active_tool_batch=batch,
+    )
+    session = session.model_copy(
+        update={
+            "active_run_id": interrupted.run_id,
+            "last_run_id": interrupted.run_id,
+            "message_count": 1,
+            "last_message_id": assistant.message_id,
+        }
+    )
+    store.create_session(session)
+    store.save_run(interrupted)
+    store.append_message(assistant)
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    await runtime.run("Continue", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id, recover=False)
+    recovered_run = next(run for run in snapshot.runs if run.run_id == interrupted.run_id)
+
+    assert snapshot.messages[1].text_content == "checkpointed content"
+    assert recovered_run.active_tool_batch is not None
+    assert recovered_run.active_tool_batch.calls[0].status == "completed"
+    assert (
+        recovered_run.active_tool_batch.calls[0].result_message_id
+        == snapshot.messages[1].message_id
+    )
 
 
 @pytest.mark.asyncio

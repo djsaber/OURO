@@ -14,6 +14,7 @@ SessionCatalogStatus = Literal[
     "waiting_approval",
     "waiting_user",
     "failed",
+    "paused",
     "recoverable",
     "completed",
 ]

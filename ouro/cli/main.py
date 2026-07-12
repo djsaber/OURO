@@ -14,6 +14,7 @@ from ouro.cli.config_commands import (
     set_system_prompt_config,
     show_compaction_config,
     show_permissions_config,
+    show_run_budget_config,
     show_system_prompt_config,
     show_tool_execution_config,
 )
@@ -266,6 +267,17 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             mode=args.mode,
             max_concurrency=args.max_concurrency,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "run-budget":
+        return show_run_budget_config(
+            home=home,
+            max_model_rounds=args.max_model_rounds,
+            max_input_tokens=args.max_input_tokens,
+            max_output_tokens=args.max_output_tokens,
+            max_elapsed_seconds=args.max_elapsed_seconds,
+            clear=args.clear,
             json_mode=args.json,
         )
 

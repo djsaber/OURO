@@ -8,6 +8,7 @@ from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
+from ouro.core.run_budget import RunPauseReason
 from ouro.core.state import RunPhase, RunRecord, RunStatus, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
@@ -159,7 +160,7 @@ class RunLifecycle:
     ) -> tuple[SessionRecord, RunRecord]:
         latest_session = self.store.load_session_record(session.session_id)
         latest_run = self.store.load_run(session.session_id, run.run_id)
-        if latest_run.status == "aborted" or latest_run.abort_requested:
+        if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
             if batch is not None:
                 latest_run = latest_run.model_copy(update={"active_tool_batch": batch})
                 self.store.save_run(latest_run)
@@ -198,6 +199,7 @@ class RunLifecycle:
         messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str = "",
+        turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
         if final_text or reasoning_content:
@@ -207,6 +209,7 @@ class RunLifecycle:
                 role="assistant",
                 text=final_text,
                 sequence=len(messages) + 1,
+                turn_id=turn_id,
             )
             if reasoning_content:
                 assistant_message = assistant_message.model_copy(
@@ -271,6 +274,7 @@ class RunLifecycle:
         error: str,
         final_text: str,
         reasoning_content: str = "",
+        turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
         latest_session = self.store.load_session_record(session.session_id)
@@ -287,6 +291,7 @@ class RunLifecycle:
                 role="assistant",
                 text=final_text,
                 sequence=latest_session.message_count + 1,
+                turn_id=turn_id,
             ).model_copy(update={"metadata": metadata})
             self._append_message(session=session, run=run, message=assistant_message)
 
@@ -330,6 +335,66 @@ class RunLifecycle:
             tool_results=tool_results,
         )
 
+    async def pause(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        reason: RunPauseReason,
+        next_model_round: int,
+        final_text: str,
+        tool_results: list[ToolResult],
+    ) -> RunResult:
+        latest_session = self.store.load_session_record(session.session_id)
+        metadata = dict(run.metadata)
+        metadata["pause"] = {
+            "kind": "context_maintenance" if reason == "context_blocked" else "soft_budget",
+            "reason": reason,
+            "next_model_round": next_model_round,
+        }
+        paused_run = run.model_copy(
+            update={
+                "status": "paused",
+                "ended_at": utc_now(),
+                "pending_approval_id": None,
+                "active_tool_batch": None,
+                "metadata": metadata,
+            }
+        )
+        paused_session = latest_session.model_copy(
+            update={
+                "status": "idle",
+                "updated_at": utc_now(),
+                "last_activity_at": utc_now(),
+                "active_run_id": None,
+                "last_run_id": paused_run.run_id,
+            }
+        )
+        self.store.save_run(paused_run)
+        self.store.save_session(paused_session)
+        self.store.try_update_index(paused_session.session_id)
+        await self.events.emit(
+            emitted,
+            sequence,
+            session_id=paused_session.session_id,
+            run_id=paused_run.run_id,
+            event_type="run_paused",
+            payload={
+                "reason": reason,
+                "next_model_round": next_model_round,
+                "usage": paused_run.usage,
+            },
+        )
+        return RunResult(
+            session=paused_session,
+            run=paused_run,
+            final_text=final_text,
+            events=emitted,
+            tool_results=tool_results,
+        )
+
     def _append_message(
         self,
         *,
@@ -349,7 +414,7 @@ class RunLifecycle:
     ) -> None:
         latest_session = self.store.load_session_record(session.session_id)
         latest_run = self.store.load_run(session.session_id, run.run_id)
-        if latest_run.status == "aborted" or latest_run.abort_requested:
+        if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
             updated_session = latest_session.model_copy(
                 update={
                     "updated_at": utc_now(),

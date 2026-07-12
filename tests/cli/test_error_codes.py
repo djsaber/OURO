@@ -26,6 +26,7 @@ def _result(status: str, *, tool_error: bool = False) -> RunResult:
         ("waiting_approval", 4),
         ("waiting_user", 4),
         ("aborted", 5),
+        ("paused", 4),
         ("failed", 1),
     ],
 )

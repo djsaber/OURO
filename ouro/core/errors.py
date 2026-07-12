@@ -49,5 +49,9 @@ class ContextOverflowError(CompactionError):
     """A context remains over its hard input budget after compaction."""
 
 
+class ContextBlockedError(ContextOverflowError):
+    """A run reached a durable boundary but cannot safely build another model context."""
+
+
 class SkillManagementError(OuroError):
     """An Agent Skill management operation was invalid or unsafe."""

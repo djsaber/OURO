@@ -6,6 +6,7 @@ from ouro.core.compaction import (
     CompactionArtifact,
     CompactionRecord,
     CompactionStrategyRegistry,
+    compaction_frames,
     compaction_source_digest,
     conversation_turns,
     plan_compaction,
@@ -24,7 +25,7 @@ def _message(role, text, sequence):
     )
 
 
-def test_compaction_plan_preserves_latest_turn_and_complete_tool_exchange() -> None:
+def test_compaction_plan_preserves_complete_tool_exchange_boundaries() -> None:
     messages = [
         _message("user", "old", 1),
         _message("assistant", "", 2).model_copy(
@@ -44,6 +45,68 @@ def test_compaction_plan_preserves_latest_turn_and_complete_tool_exchange() -> N
     assert plan.retained_messages == messages[4:]
     assert plan.covered_message_ids == [message.message_id for message in messages[:4]]
     assert conversation_turns(messages) == [messages[:4], messages[4:]]
+
+
+def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None:
+    user = _message("user", "refactor the project", 1).model_copy(update={"run_id": "run_1"})
+    first_assistant = _message("assistant", "", 2).model_copy(
+        update={
+            "run_id": "run_1",
+            "turn_id": "turn_1",
+            "metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]},
+        }
+    )
+    first_result = _message("tool_result", "old result " + ("x" * 200), 3).model_copy(
+        update={
+            "run_id": "run_1",
+            "turn_id": "turn_1",
+            "metadata": {"tool_call_id": "call_1"},
+        }
+    )
+    second_assistant = _message("assistant", "", 4).model_copy(
+        update={
+            "run_id": "run_1",
+            "turn_id": "turn_2",
+            "metadata": {"tool_calls": [{"id": "call_2", "name": "Edit"}]},
+        }
+    )
+    second_result = _message("tool_result", "recent result", 5).model_copy(
+        update={
+            "run_id": "run_1",
+            "turn_id": "turn_2",
+            "metadata": {"tool_call_id": "call_2"},
+        }
+    )
+    messages = [user, first_assistant, first_result, second_assistant, second_result]
+
+    plan = plan_compaction(messages, None, tail_token_budget=1)
+
+    assert compaction_frames(messages) == [
+        [user, first_assistant, first_result],
+        [second_assistant, second_result],
+    ]
+    assert plan.messages_to_compact == messages[:3]
+    assert plan.retained_messages == messages[3:]
+
+
+def test_compaction_frames_keep_legacy_tool_exchange_atomic() -> None:
+    assistant = _message("assistant", "", 1).model_copy(
+        update={"metadata": {"tool_calls": [{"id": "call_1", "name": "Read"}]}}
+    )
+    result = _message("tool_result", "result", 2).model_copy(
+        update={"metadata": {"tool_call_id": "call_1"}}
+    )
+
+    assert compaction_frames([assistant, result]) == [[assistant, result]]
+
+
+def test_compaction_frames_attach_user_input_to_following_identified_turn() -> None:
+    user = _message("user", "request", 1)
+    assistant = _message("assistant", "answer", 2).model_copy(
+        update={"run_id": "run_1", "turn_id": "turn_1"}
+    )
+
+    assert compaction_frames([user, assistant]) == [[user, assistant]]
 
 
 def test_compaction_projection_replaces_covered_prefix_without_mutating_history() -> None:

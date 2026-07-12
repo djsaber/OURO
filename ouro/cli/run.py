@@ -16,6 +16,7 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfigManager,
     ProviderRuntimeOptions,
+    RunBudgetConfigManager,
     ToolExecutionConfigManager,
 )
 from ouro.core.adapter import RuntimeAdapter
@@ -62,6 +63,7 @@ def build_default_runtime(
     permission_overrides = PermissionConfigManager(store.root).snapshot().tools
     compaction_config = CompactionConfigManager(store.root).snapshot()
     tool_execution_config = ToolExecutionConfigManager(store.root).snapshot()
+    run_budget = RunBudgetConfigManager(store.root).snapshot()
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
         provider_config,
         compaction_config,
@@ -76,6 +78,7 @@ def build_default_runtime(
         event_sink=event_sink,
         permission_overrides=permission_overrides,
         tool_execution_config=tool_execution_config,
+        run_budget=run_budget,
         compaction_config=compaction_config,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
@@ -183,7 +186,7 @@ async def run_json(
 def _run_exit_code(result: RunResult) -> int:
     if result.run.status == "completed":
         return 0
-    if result.run.status in {"waiting_approval", "waiting_user"}:
+    if result.run.status in {"waiting_approval", "waiting_user", "paused"}:
         return 4
     if result.run.status == "aborted":
         return 5

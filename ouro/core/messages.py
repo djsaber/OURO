@@ -71,6 +71,8 @@ class MessageRecord(OuroModel):
 
     @model_validator(mode="after")
     def validate_tool_fields(self) -> MessageRecord:
+        if self.turn_id is not None and self.run_id is None:
+            raise ValueError("message turn_id requires run_id")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":

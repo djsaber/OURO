@@ -389,6 +389,7 @@ class LocalSessionStore:
             return None
         start_index = start_indexes[-1]
         start_event = run_events[start_index]
+        turn_id = start_event.payload.get("turn_id")
         streamed_events = run_events[start_index + 1 :]
         if any(
             event.event_type
@@ -435,6 +436,7 @@ class LocalSessionStore:
             role="assistant",
             text=text,
             sequence=len(messages) + 1,
+            turn_id=turn_id if isinstance(turn_id, str) else None,
         ).model_copy(
             update={
                 "metadata": metadata,

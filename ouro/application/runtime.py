@@ -14,6 +14,7 @@ from ouro.application.models import (
     RuntimeAdapterCatalog,
     SingleRuntimeAdapterCatalog,
 )
+from ouro.application.recovery import RunRecoveryService
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
@@ -37,6 +38,7 @@ from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
+from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, RunStatus, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import PermissionMode
@@ -55,7 +57,7 @@ class RuntimeService:
         tools: ToolRegistry,
         hooks: HookRegistry | None = None,
         context_builder: ContextBuilder | None = None,
-        max_model_rounds: int | None = None,
+        run_budget: RunBudgetPolicy | None = None,
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
@@ -79,6 +81,11 @@ class RuntimeService:
             event_sink=event_sink,
         )
         self.run_lifecycle = RunLifecycle(store=store, events=self.event_recorder)
+        self.run_recovery = RunRecoveryService(
+            store=store,
+            runs=self.run_lifecycle,
+            events=self.event_recorder,
+        )
         self.tool_calls = ToolCallCoordinator(
             executor=self.tool_executor,
             registry=tools,
@@ -89,7 +96,7 @@ class RuntimeService:
             is_aborted=self._is_run_aborted,
         )
         self.context_builder = context_builder or ContextBuilder()
-        self.max_model_rounds = max_model_rounds
+        self.run_budget = run_budget or RunBudgetPolicy()
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
         self.compaction_config = compaction_config or CompactionConfig()
         self.compaction_strategies = compaction_strategies or CompactionStrategyRegistry()
@@ -250,6 +257,7 @@ class RuntimeService:
         abort_signal: AbortSignal | None = None
         try:
             locked_snapshot = self.store.load_session(session.session_id, recover=False)
+            locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session, active_adapter = self._resolve_session_adapter(locked_snapshot.session)
             existing_messages = locked_snapshot.messages
             existing_events = locked_snapshot.events
@@ -333,7 +341,7 @@ class RuntimeService:
         loop = InnerAgentLoop(
             adapter=adapter,
             tools=self.tools,
-            max_model_rounds=self.max_model_rounds,
+            run_budget=self.run_budget,
             ports=InnerLoopPorts(
                 prepare_context=partial(self.context_preparation.prepare, adapter=adapter),
                 emit=self.event_recorder.emit,
@@ -344,6 +352,7 @@ class RuntimeService:
                 save_waiting_state=self.run_lifecycle.save_waiting_state,
                 complete_run=self.run_lifecycle.complete,
                 fail_run=self.run_lifecycle.fail,
+                pause_run=self.run_lifecycle.pause,
             ),
         )
         return await loop.run(

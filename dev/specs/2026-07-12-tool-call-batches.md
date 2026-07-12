@@ -109,9 +109,11 @@ reconstruct the batch from the assistant message. Each completed execution outco
 in the run before source-ordered tool-result messages are committed. Result commits are idempotent
 by `tool_call_id` and recorded message id.
 
-Recovery preserves resolved approvals and completed results. Calls recorded as running without a
-durable result become `unknown_outcome` and make the run recoverable. They are not automatically
-re-executed unless a future tool contract explicitly declares retry safety.
+Recovery preserves resolved approvals and completed results. Before a new run starts, every
+assistant tool call without a canonical result receives exactly one recovery result. A
+checkpointed result is committed as-is; a call recorded as running receives an error result with
+`unknown_outcome=true` and an instruction to verify external state before retrying. Recovery never
+automatically re-executes a tool unless a future tool contract explicitly declares retry safety.
 
 ## 7. Event order
 
