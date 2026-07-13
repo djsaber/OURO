@@ -4,7 +4,12 @@ from ouro.mcp.client import MCPClientFactory, MCPClientSession
 from ouro.mcp.configuration import (
     MCPConfigSnapshot,
     MCPConfigStore,
+    MCPServerConfigUpdate,
     mcp_config_to_public_dict,
+)
+from ouro.mcp.connection_check import (
+    MCPConnectionCheckResult,
+    check_mcp_server_connection,
 )
 from ouro.mcp.errors import (
     MCPConfigurationError,
@@ -32,6 +37,7 @@ from ouro.mcp.sdk import SDKMCPClientFactory
 __all__ = [
     "MCPClientFactory",
     "MCPClientSession",
+    "MCPConnectionCheckResult",
     "MCPConfigSnapshot",
     "MCPConfigStore",
     "MCPConfigurationError",
@@ -46,11 +52,13 @@ __all__ = [
     "MCPRuntimeResource",
     "MCPServerCapabilities",
     "MCPServerConfig",
+    "MCPServerConfigUpdate",
     "MCPServerInfo",
     "MCPServerRecord",
     "MCPStateError",
     "MCPTimeoutError",
     "MCPToolCallError",
     "SDKMCPClientFactory",
+    "check_mcp_server_connection",
     "mcp_config_to_public_dict",
 ]

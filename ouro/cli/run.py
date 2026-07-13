@@ -26,6 +26,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
+from ouro.mcp import MCPRuntimeResource
 from ouro.prompts import render_agent_skills_prompt
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
@@ -95,6 +96,12 @@ def build_default_runtime(
     )
 
 
+def build_default_mcp_runtime(runtime: RuntimeService) -> MCPRuntimeResource:
+    """Load configured MCP servers into the registry used by this runtime."""
+
+    return MCPRuntimeResource.from_config(runtime.store.root, runtime.tools)
+
+
 def _configured_compaction_adapter(
     providers: ProviderConfigManager,
     config: CompactionConfig,
@@ -135,12 +142,14 @@ async def run_print(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        result = await runtime.run(
-            prompt,
-            session_id=session_id,
-            title=title,
-            queue_mode=queue_mode,
-        )
+        async with build_default_mcp_runtime(runtime) as mcp:
+            _print_mcp_startup_failures(mcp)
+            result = await runtime.run(
+                prompt,
+                session_id=session_id,
+                title=title,
+                queue_mode=queue_mode,
+            )
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return error_exit_code(exc)
@@ -170,12 +179,14 @@ async def run_json(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        result = await runtime.run(
-            prompt,
-            session_id=session_id,
-            title=title,
-            queue_mode=queue_mode,
-        )
+        async with build_default_mcp_runtime(runtime) as mcp:
+            _print_mcp_startup_failures(mcp)
+            result = await runtime.run(
+                prompt,
+                session_id=session_id,
+                title=title,
+                queue_mode=queue_mode,
+            )
     except OuroError as exc:
         print(
             json.dumps(
@@ -215,6 +226,15 @@ def _run_exit_code(result: RunResult) -> int:
     if result.run.status == "failed" and any(item.is_error for item in result.tool_results):
         return 6
     return 1
+
+
+def _print_mcp_startup_failures(resource: MCPRuntimeResource) -> None:
+    for record in resource.startup_failures:
+        print(
+            f"Warning: MCP server {record.config.server_id} failed to start: "
+            f"{record.error or 'unknown error'}",
+            file=sys.stderr,
+        )
 
 
 def _print_run_events(events: list[Any]) -> None:

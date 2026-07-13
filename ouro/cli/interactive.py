@@ -11,8 +11,13 @@ from ouro.cli.interactive_io import (
     OutputFunc,
     handle_run_result,
 )
-from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
+from ouro.cli.run import (
+    RuntimeProviderOptions,
+    build_default_mcp_runtime,
+    build_default_runtime,
+)
 from ouro.core.errors import OuroError
+from ouro.mcp import MCPRuntimeResource
 
 _CYAN = "\x1b[36m"
 _RESET = "\x1b[0m"
@@ -28,6 +33,7 @@ async def run_interactive(
     output_func: OutputFunc = print,
 ) -> int:
     output = InteractiveOutput(output_func)
+    owned_mcp: MCPRuntimeResource | None = None
     if runtime is None:
         try:
             runtime = build_default_runtime(
@@ -36,12 +42,38 @@ async def run_interactive(
                 system_prompt=system_prompt,
                 event_sink=output.handle_event,
             )
+            owned_mcp = build_default_mcp_runtime(runtime)
+            await owned_mcp.start()
         except OuroError as exc:
             output_func(f"Error: {exc}")
             return 1
+        for record in owned_mcp.startup_failures:
+            output_func(
+                f"Warning: MCP server {record.config.server_id} failed to start: "
+                f"{record.error or 'unknown error'}"
+            )
     else:
         runtime.add_event_sink(output.handle_event)
 
+    try:
+        return await _run_interactive_session(
+            runtime,
+            output=output,
+            input_func=input_func,
+            output_func=output_func,
+        )
+    finally:
+        if owned_mcp is not None:
+            await owned_mcp.close()
+
+
+async def _run_interactive_session(
+    runtime: RuntimeService,
+    *,
+    output: InteractiveOutput,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+) -> int:
     session_id: str | None = None
     output_func("OURO interactive. Type /help for commands, /exit to quit.")
 

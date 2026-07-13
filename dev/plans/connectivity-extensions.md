@@ -43,6 +43,20 @@
 - [x] stderr/diagnostic 日志脱敏。
 - [x] Supervisor shutdown 关闭所有 transport 和子进程树。
 
+### A5. Host 装配
+
+- [x] 默认 Run 与 Interactive 从 `mcp.servers` 装配 auto-start server 到共享 ToolRegistry。
+- [x] durable 工具审批恢复前重新连接对应 MCP server。
+- [x] JSON Host 保持 stdout 机器输出纯净，启动失败只写脱敏 stderr warning。
+- [x] Host 退出移除动态工具并关闭 transport/stdio 子进程。
+
+### A6. 配置管理 CLI
+
+- [x] `mcp list/show/set/remove` 通过类型化配置更新 API 管理 server。
+- [x] transport 切换、集合替换/清空和 credential 公开输出具备明确契约。
+- [x] `mcp check` 执行一次真实连接、握手与工具发现，并在结束后关闭资源。
+- [x] 配置错误、连接失败与 JSON/文本输出具有稳定退出码和脱敏行为。
+
 ## 工作流 B：插件生命周期
 
 ### B1. Manifest 与来源

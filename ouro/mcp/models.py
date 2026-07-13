@@ -113,6 +113,8 @@ class MCPServerConfig(OuroModel):
                 raise ValueError("command is required for stdio transport")
             if self.url is not None:
                 raise ValueError("url is not valid for stdio transport")
+            if self.headers:
+                raise ValueError("headers are not valid for stdio transport")
         else:
             if not self.url:
                 raise ValueError(f"url is required for {self.transport} transport")

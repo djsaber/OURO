@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,12 @@ from ouro.cli.approval_commands import (
 )
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+
+MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 
 
 def _runtime(tmp_path: Path, event_batches: list[list[ProviderStreamEvent]]) -> RuntimeService:
@@ -68,6 +72,68 @@ async def test_approve_command_continues_run(monkeypatch, tmp_path, capsys) -> N
     assert code == 0
     assert target.read_text(encoding="utf-8") == "approved"
     assert "Done." in captured.out
+
+
+@pytest.mark.asyncio
+async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="echo",
+            name="Echo",
+            command=sys.executable,
+            args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
+            auto_start=True,
+            timeout_seconds=5,
+        )
+    )
+    initial_runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "mcp_approval",
+                        "name": "echo__echo",
+                        "arguments": {"value": "approved MCP"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ]
+        ],
+    )
+    async with MCPRuntimeResource.from_config(initial_runtime.store.root, initial_runtime.tools):
+        waiting = await initial_runtime.run("use approved MCP")
+    assert waiting.run.status == "waiting_approval"
+
+    resumed_runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="text_delta", text="MCP approval resumed."),
+                ProviderStreamEvent(type="done"),
+            ]
+        ],
+    )
+    monkeypatch.setattr(
+        "ouro.cli.approval_commands.build_default_runtime", lambda home: resumed_runtime
+    )
+
+    code = await approve_tool_command(waiting.session.session_id, home=str(tmp_path))
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert "MCP approval resumed." in captured.out
+    snapshot = resumed_runtime.store.load_session(waiting.session.session_id, recover=False)
+    tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
+    assert tool_message.tool_result is not None
+    assert tool_message.tool_result.tool_name == "echo__echo"
+    assert tool_message.tool_result.is_error is False
+    assert resumed_runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
 
 
 @pytest.mark.asyncio

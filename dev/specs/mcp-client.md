@@ -22,9 +22,20 @@ transport 契约。stdio、Streamable HTTP 和兼容性 SSE 均由 SDK 实现；
 - HTTP/SSE 的公开 headers 与凭据 header 分离，`credential_refs` 的 key 是 header 名；
 - timeout、健康检查、重连次数和指数退避均有正数或上界校验；
 - MCP 工具默认使用 `approval` 权限，不把 server annotation 当作可信授权依据。
+- `auto_start` 默认为 false；只有显式启用的 server 才进入默认 Host 的工具投影，避免读取配置即执行进程或
+  建立网络连接。
 
 配置持久化在共享配置文件的 `mcp.servers`，由 `MCPConfigStore` 完整校验后原子替换，且不覆盖其他配置
 分区。公开配置输出必须隐藏 inline credential；运行错误和 diagnostic 必须用已解析值脱敏。
+
+`MCPConfigStore.update` 接受类型化的 `MCPServerConfigUpdate`，负责 create/update 的完整候选校验和单次
+持久化。集合更新采用整体替换语义，显式空集合表示清空；stdio 与远程 transport 互换时，由配置层清除旧
+transport 的进程字段、URL/header 和 credential refs，CLI 不重复实现该规则。校验错误只公开字段位置与
+错误消息，不包含 Pydantic 输入值。
+
+CLI 管理面为 `mcp list/show/set/remove/check`。所有配置展示统一经过 `mcp_config_to_public_dict`；`check`
+用临时的 enabled、无重连副本执行单次真实握手和工具发现，不修改 durable 配置，并在返回前关闭 Manager。
+配置错误退出码为 2，连接检查失败为 3。
 
 远程工具公开名固定为 `<server_id>__<remote_tool_name>`。名称始终带 server 身份，因此不同 server 的同名
 工具不依赖连接顺序；非法名称、重复名称、过长 identity 和非法 JSON Schema 使该 server 启动或刷新失败。
@@ -55,6 +66,21 @@ configured/disabled
 - `stop`、`close` 和 RuntimeSupervisor shutdown 退出 session、HTTP client、stdio 管道与子进程；
 - `MCPRuntimeResource` 是 MCPManager 到 RuntimeSupervisor 通用受管资源协议的适配器。
 
+## Host 装配
+
+`MCPRuntimeResource.from_config(root, registry)` 是配置到运行时的权威装配入口：读取 `mcp.servers`，把所有
+server 配置交给 Manager，并把发现工具投影到 RuntimeService 正在使用的同一个 ToolRegistry。
+
+- CLI `run --print` / `run --json` 在单次 Run 外持有 MCP resource context；
+- Interactive 在整个输入循环期间持有 context，`/exit` 和 EOF 都进入 finally close；
+- `approve` 在恢复 durable MCP 工具批次前重新装配并连接 server；
+- RuntimeSupervisor Host 把 MCPRuntimeResource 作为 `RuntimeManagedResource` 注入；
+- 单个 auto-start server 连接失败保留 failed record 并输出脱敏 warning，不阻止其他 server 或普通 Run；
+- Host 退出后动态 MCP 工具从 registry 移除，不留下失效 handler。
+
+只调用同步的 `build_default_runtime()` 会构建 RuntimeService 本体；执行型 Host 还必须通过
+`build_default_mcp_runtime(runtime)` 或等价的 MCPRuntimeResource/Supervisor 装配管理异步资源。
+
 ## 调用、取消与错误
 
 ToolInvocation 只把远程原名和 arguments 交给 MCP session。SDK 提供 JSON-RPC request id correlation 和
@@ -72,3 +98,6 @@ request timeout；OURO 在 ToolExecutionContext abort 时取消本地等待任�
 - `tests/mcp/test_sdk_integration.py`
 - `tests/tools/test_tools.py`
 - `tests/application/test_supervisor.py`
+- `tests/cli/test_run_cli.py`
+- `tests/cli/test_approval_commands.py`
+- `tests/cli/test_mcp_commands.py`

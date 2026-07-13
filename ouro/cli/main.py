@@ -20,6 +20,13 @@ from ouro.cli.config_commands import (
     show_tool_execution_config,
 )
 from ouro.cli.interactive import run_interactive
+from ouro.cli.mcp_commands import (
+    check_mcp_connection,
+    list_mcp_configs,
+    remove_mcp_config,
+    set_mcp_config,
+    show_mcp_config,
+)
 from ouro.cli.parser import build_parser
 from ouro.cli.provider_commands import (
     check_provider_connection,
@@ -71,6 +78,7 @@ from ouro.cli.skills import (
     update_skill,
     validate_skills,
 )
+from ouro.mcp import MCPServerConfigUpdate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -87,6 +95,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _config_command(args)
     if args.command == "provider":
         return _provider_command(args)
+    if args.command == "mcp":
+        return _mcp_command(args)
     if args.command == "skills":
         return _skills_command(args)
     return asyncio.run(
@@ -367,6 +377,66 @@ def _provider_command(args: argparse.Namespace) -> int:
             )
         )
     raise AssertionError(f"unknown provider command: {args.provider_command}")
+
+
+def _mcp_command(args: argparse.Namespace) -> int:
+    home = args.home
+    if args.mcp_command == "list":
+        return list_mcp_configs(home=home, json_mode=args.json)
+    if args.mcp_command == "show":
+        return show_mcp_config(args.server_id, home=home, json_mode=args.json)
+    if args.mcp_command == "set":
+        return set_mcp_config(
+            args.server_id,
+            _mcp_config_update(args),
+            home=home,
+            json_mode=args.json,
+        )
+    if args.mcp_command == "remove":
+        return remove_mcp_config(args.server_id, home=home, json_mode=args.json)
+    if args.mcp_command == "check":
+        return asyncio.run(check_mcp_connection(args.server_id, home=home, json_mode=args.json))
+    raise AssertionError(f"unknown MCP command: {args.mcp_command}")
+
+
+def _mcp_config_update(args: argparse.Namespace) -> MCPServerConfigUpdate:
+    values: dict[str, object] = {}
+    for argument, field in (
+        ("name", "name"),
+        ("transport", "transport"),
+        ("mcp_executable", "command"),
+        ("url", "url"),
+        ("enabled", "enabled"),
+        ("auto_start", "auto_start"),
+        ("auto_reconnect", "auto_reconnect"),
+        ("max_reconnect_attempts", "max_reconnect_attempts"),
+        ("reconnect_backoff", "reconnect_backoff_seconds"),
+        ("timeout", "timeout_seconds"),
+        ("health_check_interval", "health_check_interval_seconds"),
+        ("permission_mode", "permission_mode"),
+    ):
+        value = getattr(args, argument)
+        if value is not None:
+            values[field] = value
+
+    if args.clear_cwd:
+        values["cwd"] = None
+    elif args.cwd is not None:
+        values["cwd"] = args.cwd
+
+    for argument, field, empty in (
+        ("args", "args", []),
+        ("inherit_env", "inherit_env", []),
+        ("env", "env", {}),
+        ("headers", "headers", {}),
+        ("credentials", "credential_refs", {}),
+    ):
+        supplied = getattr(args, argument)
+        if getattr(args, f"clear_{argument}"):
+            values[field] = empty
+        elif supplied is not None:
+            values[field] = dict(supplied) if isinstance(empty, dict) else supplied
+    return MCPServerConfigUpdate.model_validate(values)
 
 
 def _provider_endpoint_command(

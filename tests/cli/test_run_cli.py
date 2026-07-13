@@ -1,18 +1,23 @@
 import json
+import sys
+from pathlib import Path
 from typing import Any, cast
 
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
-from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_print
+from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.mcp import MCPConfigStore, MCPServerConfig
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAICompatibleProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+
+MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 
 
 class CapturingProvider:
@@ -90,6 +95,144 @@ async def test_run_print_reports_failed_runtime_result(
     assert captured.err.strip() == "Run failed: provider returned an empty assistant message"
 
 
+async def test_run_print_composes_configured_mcp_tool_and_closes_it(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="echo",
+            name="Echo",
+            command=sys.executable,
+            args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
+            auto_start=True,
+            permission_mode="auto",
+            timeout_seconds=5,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "mcp_call",
+                        "name": "echo__echo",
+                        "arguments": {"value": "assembled"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="MCP completed."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+
+    code = await run_print("use MCP", home=tmp_path)
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "MCP completed."
+    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+    session = runtime.store.list_sessions()[0]
+    snapshot = runtime.store.load_session(session.session_id, recover=False)
+    tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
+    assert tool_message.tool_result is not None
+    assert tool_message.tool_result.tool_name == "echo__echo"
+    assert tool_message.tool_result.is_error is False
+    assert "assembled" in tool_message.text_content
+
+
+async def test_run_json_composes_mcp_without_corrupting_machine_output(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="echo",
+            name="Echo",
+            command=sys.executable,
+            args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
+            auto_start=True,
+            permission_mode="auto",
+            timeout_seconds=5,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "json_mcp_call",
+                        "name": "echo__echo",
+                        "arguments": {"value": "json"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="JSON MCP done."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+
+    code = await run_json("use MCP", home=tmp_path)
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert payload["status"] == "completed"
+    assert payload["final_text"] == "JSON MCP done."
+    assert captured.err == ""
+    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+
+
+async def test_run_print_isolates_mcp_start_failure(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="broken",
+            name="Broken",
+            command=sys.executable,
+            args=["-c", "raise SystemExit(2)"],
+            auto_start=True,
+            auto_reconnect=False,
+            timeout_seconds=1,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="text_delta", text="still running"),
+                ProviderStreamEvent(type="done"),
+            ]
+        ],
+    )
+    monkeypatch.setattr("ouro.cli.run.build_default_runtime", lambda *args, **kwargs: runtime)
+
+    code = await run_print("hello", home=tmp_path)
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "still running"
+    assert "Warning: MCP server broken failed to start" in captured.err
+
+
 def test_run_mode_can_continue_existing_session(tmp_path, capsys) -> None:
     first_code = main(["run", "--json", "--home", str(tmp_path), "--title", "First", "hello"])
     first = json.loads(capsys.readouterr().out)
@@ -129,6 +272,62 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert "faux/faux" in outputs
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
+
+
+async def test_interactive_composes_mcp_for_process_lifetime(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="echo",
+            name="Echo",
+            command=sys.executable,
+            args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
+            auto_start=True,
+            permission_mode="auto",
+            timeout_seconds=5,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "interactive_mcp",
+                        "name": "echo__echo",
+                        "arguments": {"value": "interactive"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Interactive MCP done."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    inputs = iter(["use MCP", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Interactive MCP done." in outputs
+    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
 
 
 async def test_interactive_reports_runtime_error_and_keeps_prompt_alive(tmp_path) -> None:

@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from ouro.cli.errors import error_exit_code
-from ouro.cli.run import build_default_runtime
+from ouro.cli.run import build_default_mcp_runtime, build_default_runtime
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 
@@ -20,12 +20,13 @@ async def approve_tool_command(
 ) -> int:
     try:
         runtime = build_default_runtime(home)
-        result = await runtime.approve_tool(
-            session_id=session_id,
-            run_id=run_id,
-            approved=True,
-            arguments_override=arguments_override,
-        )
+        async with build_default_mcp_runtime(runtime):
+            result = await runtime.approve_tool(
+                session_id=session_id,
+                run_id=run_id,
+                approved=True,
+                arguments_override=arguments_override,
+            )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
         _print_error(ouro_exc, json_mode=json_mode)

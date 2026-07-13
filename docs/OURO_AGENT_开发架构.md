@@ -50,6 +50,8 @@ provider adapters    local implementations
 
 ```text
 CLI / Host
+  -> MCPRuntimeResource.from_config(root, runtime.tools)
+    -> start auto-start servers + atomic ToolRegistry projection
   -> RuntimeService
     -> session lock + recovery
     -> RunLifecycle.start
@@ -60,6 +62,11 @@ CLI / Host
        -> RunLifecycle complete / fail / pause
     -> queued input drain
 ```
+
+默认 CLI 在进入 Run 前启动 MCP resource：单次 `run` 持有到结果完成，Interactive 持有到输入循环退出，
+`approve` 在恢复 durable 工具批次前重新连接。三条路径都在 `finally`/async context 中关闭资源。其他 Host
+通过 RuntimeSupervisor 的 `RuntimeManagedResource` 注入同一个 `MCPRuntimeResource`，不得只构建
+RuntimeService 后绕过扩展资源装配。
 
 `RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和排队输入
 串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
@@ -170,11 +177,13 @@ CLI 命令使用资源层级表达职责：
 - `provider set` 只管理 provider；
 - `provider endpoint set` 只管理 endpoint；
 - `provider check` 负责连接检查；
+- `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；
 - `resource import/list/show/export/remove` 管理 Session 资源；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
 命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
+MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置和完整校验由 `MCPConfigStore` 负责。
 
 ## 扩展边界
 

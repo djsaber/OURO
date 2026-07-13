@@ -11,6 +11,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import SessionBusyError
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -101,6 +102,27 @@ async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
 
     await supervisor.shutdown()
     assert resource.closed is True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_accepts_configured_mcp_runtime_resource(tmp_path) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    MCPConfigStore(tmp_path).upsert(
+        MCPServerConfig(
+            server_id="manual",
+            name="Manual MCP",
+            command="not-started",
+            auto_start=False,
+        )
+    )
+    resource = MCPRuntimeResource.from_config(runtime.store.root, runtime.tools)
+    supervisor = RuntimeSupervisor(runtime, managed_resources=(resource,))
+
+    await supervisor.start()
+    assert resource.manager.get("manual").status == "configured"
+
+    await supervisor.shutdown()
+    assert resource.manager.get("manual").status == "stopped"
 
 
 @pytest.mark.asyncio
