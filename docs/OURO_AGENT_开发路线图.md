@@ -30,19 +30,6 @@ ResourceService 与 RuntimeSupervisor 已进入当前规格；本阶段剩余依
 
 ## 中期：连接与扩展
 
-### MCP 客户端
-
-目标：把远程或本地 MCP server 的工具适配到 OURO Tool 契约。
-
-范围：
-
-- stdio 与 HTTP transport；
-- 握手、能力协商、认证和工具发现；
-- 超时、取消、重连、日志和 server 状态；
-- schema 转换与错误隔离。
-
-完成条件：MCP 协议对象只存在于 `ouro.mcp`，core 和 application 只看到 OURO Tool/Result。
-
 ### 完整插件生命周期
 
 目标：提供可审计的插件发现、加载、启停和升级。

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, Protocol
 
 from ouro.application.dto import Diagnostic
 from ouro.application.runs import maybe_active_run
@@ -23,6 +23,14 @@ from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 
 _CLOSED: Final = object()
+
+
+class RuntimeManagedResource(Protocol):
+    """A long-lived process resource owned by RuntimeSupervisor."""
+
+    async def start(self) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 @dataclass
@@ -101,12 +109,20 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
 class RuntimeSupervisor:
     """Own cross-Run scheduling and Host subscriptions, not durable Run transitions."""
 
-    def __init__(self, runtime: RuntimeService, *, max_concurrency: int = 4) -> None:
+    def __init__(
+        self,
+        runtime: RuntimeService,
+        *,
+        max_concurrency: int = 4,
+        managed_resources: Iterable[RuntimeManagedResource] = (),
+    ) -> None:
         if max_concurrency <= 0:
             raise ValueError("max_concurrency must be positive")
         self.runtime = runtime
         self.store = runtime.store
         self.max_concurrency = max_concurrency
+        self._managed_resources = tuple(managed_resources)
+        self._started_resources: list[RuntimeManagedResource] = []
         self._queue: asyncio.Queue[_RunJob | None] = asyncio.Queue()
         self._workers: list[asyncio.Task[None]] = []
         self._jobs_by_session: dict[str, _RunJob] = {}
@@ -123,22 +139,33 @@ class RuntimeSupervisor:
             raise OuroError("runtime supervisor is closed")
         if self._started:
             return SupervisorStartResult()
-        recovered: list[RuntimeStatusSnapshot] = []
-        for session in self.store.list_sessions():
-            snapshot = self.store.load_session(session.session_id, recover=True)
-            for run in snapshot.runs:
-                if run.status == "recoverable":
-                    recovered.append(
-                        RuntimeStatusSnapshot(
-                            session_id=session.session_id,
-                            run_id=run.run_id,
-                            status="recoverable",
+        try:
+            for resource in self._managed_resources:
+                await resource.start()
+                self._started_resources.append(resource)
+            recovered: list[RuntimeStatusSnapshot] = []
+            for session in self.store.list_sessions():
+                snapshot = self.store.load_session(session.session_id, recover=True)
+                for run in snapshot.runs:
+                    if run.status == "recoverable":
+                        recovered.append(
+                            RuntimeStatusSnapshot(
+                                session_id=session.session_id,
+                                run_id=run.run_id,
+                                status="recoverable",
+                            )
                         )
-                    )
-        self._workers = [
-            asyncio.create_task(self._worker(index), name=f"ouro-runtime-{index}")
-            for index in range(self.max_concurrency)
-        ]
+            self._workers = [
+                asyncio.create_task(self._worker(index), name=f"ouro-runtime-{index}")
+                for index in range(self.max_concurrency)
+            ]
+        except Exception:
+            await asyncio.gather(
+                *(resource.close() for resource in reversed(self._started_resources)),
+                return_exceptions=True,
+            )
+            self._started_resources.clear()
+            raise
         self._started = True
         return SupervisorStartResult(recovered=tuple(recovered))
 
@@ -355,6 +382,14 @@ class RuntimeSupervisor:
             for subscription in tuple(subscriptions):
                 subscription.close()
         self._workers.clear()
+        close_results = await asyncio.gather(
+            *(resource.close() for resource in reversed(self._started_resources)),
+            return_exceptions=True,
+        )
+        self._started_resources.clear()
+        close_errors = [result for result in close_results if isinstance(result, Exception)]
+        if close_errors:
+            raise ExceptionGroup("runtime managed resource shutdown failed", close_errors)
 
     async def _worker(self, index: int) -> None:
         del index

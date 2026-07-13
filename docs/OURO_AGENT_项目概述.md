@@ -57,8 +57,11 @@ Provider 表示供应商级连接，Endpoint 表示具体模型目标。会话�
 OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时按需加载完整内容和资源。当前支持本地发现、
 集中启停、校验、安装、更新和安全移除。
 
-Hook、插件 contribution registry 和 MCP 生命周期已经具备代码边界。它们当前适合显式组合和测试，尚不代表
-完整的插件分发、信任管理或真实 MCP transport 已完成。
+MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy SSE，覆盖握手、能力协商、工具分页
+发现与变化通知、调用、超时取消、健康检查、重连、凭据注入、隔离诊断和关闭。远程工具固定映射为带 server
+身份的 OURO Tool，并继续经过参数校验和权限执行边界。
+
+Hook 和插件 contribution registry 已具备代码边界；完整的插件分发、信任管理和 entrypoint 生命周期尚未完成。
 
 ### 资源与后台运行
 
@@ -123,7 +126,6 @@ metadata 中。
 
 - Desktop Host：基于 application facade 的会话导航、运行视图、diff、审批和设置界面。
 - 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
-- 真实 MCP 客户端：stdio/HTTP transport、握手、认证、工具发现、重连和日志。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
 - 可替换持久化后端：在本地文件规模成为实际瓶颈后评估 SQLite 等实现。

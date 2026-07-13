@@ -255,3 +255,33 @@ def test_registry_rejects_invalid_tool_schema() -> None:
 
     with pytest.raises(ValueError, match="invalid parameters_schema for tool Broken"):
         registry.register(tool)
+
+
+def test_registry_replacement_is_atomic_when_new_contribution_conflicts() -> None:
+    registry = ToolRegistry()
+
+    def handler(invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        )
+
+    registry.register(
+        Tool(definition=ToolDefinition(name="owned", description="Owned"), handler=handler)
+    )
+    registry.register(
+        Tool(definition=ToolDefinition(name="other", description="Other"), handler=handler)
+    )
+
+    with pytest.raises(ValueError, match="already registered"):
+        registry.replace(
+            ("owned",),
+            (
+                Tool(
+                    definition=ToolDefinition(name="other", description="Conflict"),
+                    handler=handler,
+                ),
+            ),
+        )
+
+    assert registry.names() == ["other", "owned"]

@@ -15,14 +15,6 @@
 - credential DTO 只暴露引用和配置状态。
 - Desktop、未来 API 和 CLI 可复用同一用例，不直接把 config manager 当 UI service。
 
-## 完整 MCP
-
-- 支持 stdio 和 HTTP transport；SSE 能力按协议要求接入。
-- 覆盖握手、版本/能力协商、认证、工具发现、调用、取消、重连和 stop。
-- 每个 server 有 durable config、运行状态和隔离日志。
-- MCP tool schema/错误转换到 OURO Tool/ToolResult。
-- transport 生命周期由专门基础设施对象管理，资源可关闭。
-
 ## 完整插件
 
 - manifest 来源、签名/信任信息、权限和配置 schema 可审计。

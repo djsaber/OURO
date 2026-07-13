@@ -43,7 +43,7 @@ provider adapters    local implementations
 | `providers` | Provider 实现、transport、codec、adapter factory | 会话模型选择和运行状态 |
 | `tools` | 工具注册、schema 校验、权限执行和批调度 | 模型轮次状态机 |
 | `skills` | 标准 Skills 发现、解析、内容加载和安装管理 | 提示词运行编排 |
-| `plugins` / `mcp` | 扩展注册与生命周期边界 | 核心业务状态 |
+| `plugins` / `mcp` | 插件注册；MCP transport、协议适配、工具投影和连接生命周期 | 核心业务状态 |
 | `cli` | 命令定义、组合、输入输出 | 领域规则和持久化事务 |
 
 ## 核心运行链
@@ -158,6 +158,7 @@ Provider text/reasoning delta 只追加到 `events.jsonl`。快照只在消息�
 - 排队输入：`queued_inputs`；
 - 压缩：`compaction`；
 - Skills：`skills`。
+- MCP server：`mcp.servers`。
 
 无效结构必须抛出 `ConfigError`，不能静默降级或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider
 factory，业务代码不直接读取环境变量。
@@ -179,7 +180,13 @@ CLI 命令使用资源层级表达职责：
 
 - Hook 失败由 `RuntimeEventRecorder` 隔离并转为事件，不允许破坏 durable run。
 - 插件只能通过注册表贡献工具、Hook、命令、上下文 provider 或压缩策略。
-- MCP 工具最终必须适配为 OURO Tool 契约，第三方协议对象不得进入 core。
+- `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
+- 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
+  协调 owner，避免跨任务退出 AnyIO 取消域。
+- MCP 工具以 `<server_id>__<remote_name>` 形成稳定 identity，通过 ToolRegistry 原子替换 projection，并继续
+  经过 OURO schema、权限、批次和恢复边界。
+- `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；shutdown 关闭 session、HTTP
+  client、stdio 管道和子进程。
 - 外部 Agent Skills frontmatter 在 skills parser 边界校验，核心运行只接收类型化 `SkillMetadata` 和指令文本。
 
 ## 未来演进触发条件
@@ -190,7 +197,8 @@ CLI 命令使用资源层级表达职责：
 - Desktop 需要 provider/config 查询后，增加 application 配置门面；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
 - 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
-- 真实 MCP transport 落地后，在 `mcp` 内部拆分连接、协议和注册适配。
+- 第二种 MCP SDK 或自定义 transport 出现后，再抽取 SDK 之外的 transport provider 层；当前 client port 已足以
+  隔离官方 SDK 和测试实现。
 
 这些边界应由真实用例驱动，不能为了缩短文件或统一命名而增加空转 service、回调层或通用 manager。
 

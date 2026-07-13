@@ -67,13 +67,13 @@ AI-generated，然后按 priority/plugin id。
 
 ## MCP 框架边界
 
-当前 `MCPManager` 保存配置和生命周期状态，并可把调用方提供的 Tool 标记来源后注册到 ToolRegistry。
-`start/stop/restart` 只表达状态机，不建立真实 stdio/SSE/HTTP 连接。
+MCP 已从注册占位边界演进为真实客户端。当前 transport、配置、状态机、工具转换、重连和关闭契约见
+[MCP 客户端规格](mcp-client.md)。本规格只保留 MCP 与 Skills/插件 contribution 的共同扩展边界。
 
 ## 目标扩展能力
 
-完整插件与 MCP 能力必须增加：来源信任、权限确认、entrypoint/transport 生命周期、认证、工具发现、重连、
-日志、资源释放和 application DTO。协议对象不得泄漏到 core；插件不得绕过工具权限与 durable Run 事务。
+完整插件能力仍须增加来源信任、权限确认、entrypoint 生命周期、日志、资源释放和 application DTO。
+插件不得绕过工具权限与 durable Run 事务。
 
 ## 验收证据
 

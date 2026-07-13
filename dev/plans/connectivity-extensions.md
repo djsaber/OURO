@@ -1,6 +1,6 @@
 # 连接与扩展计划
 
-状态：未开始
+状态：进行中（MCP transport 已完成；插件生命周期未开始）
 
 ## 目标
 
@@ -17,31 +17,31 @@
 
 ### A1. 协议与 transport 分层
 
-- [ ] 定义 MCP client port、capabilities、server session 和 protocol error。
-- [ ] 实现 stdio transport，明确进程、stdin/stdout、stderr 和关闭所有权。
-- [ ] 实现 HTTP transport；按协议需要接入 streaming/SSE。
-- [ ] 所有请求支持 timeout、cancel 和 request id correlation。
+- [x] 定义 MCP client port、capabilities、server session 和 protocol error。
+- [x] 实现 stdio transport，明确进程、stdin/stdout、stderr 和关闭所有权。
+- [x] 实现 HTTP transport；按协议需要接入 streaming/SSE。
+- [x] 所有请求支持 timeout、cancel 和 request id correlation。
 
 ### A2. 握手与工具发现
 
-- [ ] initialize/version/capability negotiation。
-- [ ] tools list 与分页/变化通知。
-- [ ] MCP schema 到 `ToolDefinition` 的严格转换。
-- [ ] server/tool identity 冲突规则。
+- [x] initialize/version/capability negotiation。
+- [x] tools list 与分页/变化通知。
+- [x] MCP schema 到 `ToolDefinition` 的严格转换。
+- [x] server/tool identity 冲突规则。
 
 ### A3. 调用与错误
 
-- [ ] ToolInvocation 到 MCP call；content/result 到 `ToolResult`。
-- [ ] 协议错误、server error、timeout、disconnect 和 invalid schema 分类。
-- [ ] 取消时通知 server 并终止本地等待。
-- [ ] 未知副作用遵循现有 tool batch recovery 规则。
+- [x] ToolInvocation 到 MCP call；content/result 到 `ToolResult`。
+- [x] 协议错误、server error、timeout、disconnect 和 invalid schema 分类。
+- [x] 取消本地请求任务并终止等待；协议请求与 transport 取消由官方 SDK 管理。
+- [x] 未知副作用遵循现有 tool batch recovery 规则。
 
 ### A4. 生命周期
 
-- [ ] start/stop/restart/reconnect backoff。
-- [ ] credential resolution 和环境变量白名单。
-- [ ] stderr/diagnostic 日志脱敏。
-- [ ] Supervisor shutdown 关闭所有 transport 和子进程树。
+- [x] start/stop/restart/reconnect backoff。
+- [x] credential resolution 和环境变量白名单。
+- [x] stderr/diagnostic 日志脱敏。
+- [x] Supervisor shutdown 关闭所有 transport 和子进程树。
 
 ## 工作流 B：插件生命周期
 

@@ -14,7 +14,9 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
 - Read、Write、Edit、Bash、AskUser 内置工具，以及统一的权限和参数校验。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
-- Hook、插件注册和 MCP 生命周期边界；完整的插件加载与 MCP 连接能力仍在路线图中。
+- 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
+  超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
+- Hook 和插件 contribution 注册边界；完整插件加载、授权、安装与升级仍在路线图中。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。

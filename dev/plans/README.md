@@ -18,7 +18,7 @@ desktop-host   connectivity-extensions
 | 计划 | 目标 | 前置条件 |
 |---|---|---|
 | [个人工作流基础](personal-workflow-foundation.md) | ResourceService、RuntimeSupervisor、配置门面 | 当前 Session/Runtime/Config 契约 |
-| [连接与扩展](connectivity-extensions.md) | 真实 MCP、完整插件生命周期 | 配置门面；部分生命周期依赖 Supervisor |
+| [连接与扩展](connectivity-extensions.md) | 完整插件生命周期（MCP 已完成） | 配置门面、现有 MCP/Supervisor 边界 |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |
 | [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆、计划与子智能体 | ResourceService、Supervisor 和稳定 Host 控制面 |
 

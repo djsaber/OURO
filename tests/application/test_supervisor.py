@@ -76,6 +76,33 @@ class BlockingProvider:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
+class RecordingManagedResource:
+    def __init__(self) -> None:
+        self.started = False
+        self.closed = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
+    resource = RecordingManagedResource()
+    supervisor = RuntimeSupervisor(
+        _runtime(tmp_path, FauxProvider()),
+        managed_resources=(resource,),
+    )
+
+    await supervisor.start()
+    assert resource.started is True
+
+    await supervisor.shutdown()
+    assert resource.closed is True
+
+
 @pytest.mark.asyncio
 async def test_fifo_scheduler_respects_global_concurrency_limit(tmp_path) -> None:
     provider = ConcurrencyProvider()

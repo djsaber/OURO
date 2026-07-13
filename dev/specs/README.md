@@ -22,6 +22,7 @@
 | [工具与人机协同](tools-hitl.md) | 工具契约、权限、批执行、审批、AskUser 和进程取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
 | [上下文与压缩](context-compaction.md) | ContextView、原子帧、预算、摘要、投影与 lineage | `ouro/core/context.py`、`ouro/application/compaction.py` |
 | [Skills 与扩展](skills-extensions.md) | Skills、Hook、插件 contribution 和 MCP 框架边界 | `ouro/skills`、`ouro/plugins`、`ouro/mcp` |
+| [MCP 客户端](mcp-client.md) | transport、握手、工具发现/调用、重连、诊断与资源关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
 | [CLI 与 Host](cli-host.md) | 命令面、输出模式、退出码和 Host/application 边界 | `ouro/cli`、`ouro/application/facade.py` |
 | [资源与后台运行监督](resources-supervisor.md) | ResourceService、不可变 blob、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
 
@@ -29,7 +30,7 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [个人智能体平台能力](future-platform.md) | ResourceService、RuntimeSupervisor、Desktop、完整 MCP/插件、记忆与子智能体 |
+| [个人智能体平台能力](future-platform.md) | Desktop、完整插件、记忆与子智能体 |
 
 ## 规格完成标准
 
