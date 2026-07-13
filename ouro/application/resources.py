@@ -20,7 +20,7 @@ from ouro.core.errors import (
 )
 from ouro.core.resources import ResourceSource, ResourceSourceKind, SessionResourceReference
 from ouro.resources import ResourceStore
-from ouro.sessions import SessionStore
+from ouro.sessions import SessionStore, session_mutation
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
 
@@ -54,26 +54,27 @@ class ResourceService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            self._sessions.load_session_record(session_id)
-            path = Path(source_path)
-            selected_media_type = media_type or self._store.infer_media_type(path)
-            source = ResourceSource(
-                kind=source_kind,
-                name=path.name,
-                source_id=source_id,
-            )
-            try:
-                record, created = self._store.import_file(
-                    session_id,
-                    path,
-                    source=source,
-                    media_type=selected_media_type,
-                    max_bytes=self._max_resource_bytes,
+            with session_mutation(self._sessions, session_id):
+                self._sessions.load_session_record(session_id)
+                path = Path(source_path)
+                selected_media_type = media_type or self._store.infer_media_type(path)
+                source = ResourceSource(
+                    kind=source_kind,
+                    name=path.name,
+                    source_id=source_id,
                 )
-            except ValueError as exc:
-                if "media_type" in str(exc):
-                    raise UnsupportedMediaTypeError(str(exc)) from exc
-                raise
+                try:
+                    record, created = self._store.import_file(
+                        session_id,
+                        path,
+                        source=source,
+                        media_type=selected_media_type,
+                        max_bytes=self._max_resource_bytes,
+                    )
+                except ValueError as exc:
+                    if "media_type" in str(exc):
+                        raise UnsupportedMediaTypeError(str(exc)) from exc
+                    raise
         finally:
             lock.release()
         return ResourceMutationResult(
@@ -117,18 +118,19 @@ class ResourceService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            self._require_attached(session_id, resource_id)
-            snapshot = self._sessions.load_session(session_id, recover=False)
-            users = [
-                message.message_id
-                for message in snapshot.messages
-                if resource_id in message.resource_refs
-            ]
-            if users:
-                raise ResourceInUseError(
-                    f"resource {resource_id} is referenced by canonical message {users[0]}"
-                )
-            self._store.remove_session_reference(session_id, resource_id)
+            with session_mutation(self._sessions, session_id):
+                self._require_attached(session_id, resource_id)
+                snapshot = self._sessions.load_session(session_id, recover=False)
+                users = [
+                    message.message_id
+                    for message in snapshot.messages
+                    if resource_id in message.resource_refs
+                ]
+                if users:
+                    raise ResourceInUseError(
+                        f"resource {resource_id} is referenced by canonical message {users[0]}"
+                    )
+                self._store.remove_session_reference(session_id, resource_id)
         finally:
             lock.release()
         collected = not self._record_exists(resource_id)

@@ -130,6 +130,7 @@ class ToolExecutor:
             )
         context = context or ToolExecutionContext(signal=signal)
         try:
+            context.raise_if_aborted()
             result = await tool.execute(invocation, context=context)
         except ToolExecutionAborted as exc:
             result = ToolResult(

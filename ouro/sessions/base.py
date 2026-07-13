@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Protocol
 
@@ -86,3 +87,25 @@ class SessionStore(Protocol):
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionLock | None: ...
 
     def is_session_locked(self, session_id: str) -> bool: ...
+
+
+def session_mutation(
+    store: SessionStore,
+    session_id: str,
+) -> AbstractContextManager[object, None]:
+    """Use the optional short mutation boundary without breaking existing stores."""
+
+    mutation = getattr(store, "session_mutation", None)
+    if callable(mutation):
+        return mutation(session_id)
+    return nullcontext()
+
+
+def append_ordered_event(store: SessionStore, event: EventRecord) -> EventRecord:
+    """Use store-owned sequence allocation when the persistence backend supports it."""
+
+    append = getattr(store, "append_ordered_event", None)
+    if callable(append):
+        return append(event)
+    store.append_event(event)
+    return event

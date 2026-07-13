@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable
@@ -7,7 +8,7 @@ from typing import Any
 
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookFailure, HookRegistry
-from ouro.sessions import SessionStore
+from ouro.sessions import SessionStore, append_ordered_event
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
 
@@ -30,6 +31,7 @@ class RuntimeEventRecorder:
     ) -> None:
         self.store = store
         self.hooks = hooks
+        self._dispatch_lock = asyncio.Lock()
         self._event_sinks: list[RuntimeEventSink] = []
         if event_sink is not None:
             self.add_event_sink(event_sink)
@@ -47,33 +49,38 @@ class RuntimeEventRecorder:
         event_type: str,
         payload: dict[str, Any],
     ) -> int:
-        next_sequence = sequence + 1
         event = EventRecord(
             session_id=session_id,
             run_id=run_id,
             turn_id=(payload.get("turn_id") if isinstance(payload.get("turn_id"), str) else None),
             event_type=event_type,
-            sequence=next_sequence,
+            sequence=sequence + 1,
             payload=payload,
         )
-        self.store.append_event(event)
-        emitted.append(event)
-        sink_failures = await self._notify_event_sinks(event)
-        next_sequence = self._record_event_sink_failures(
-            emitted,
-            next_sequence,
-            event=event,
-            failures=sink_failures,
-        )
-        hook_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="on_event",
-                session_id=session_id,
-                run_id=run_id,
-                data={"event": event.model_dump(mode="json")},
+        async with self._dispatch_lock:
+            event = append_ordered_event(self.store, event)
+            next_sequence = event.sequence
+            emitted.append(event)
+            sink_failures = await self._notify_event_sinks(event)
+            next_sequence = self._record_event_sink_failures(
+                emitted,
+                next_sequence,
+                event=event,
+                failures=sink_failures,
             )
-        )
-        return await self.record_hook_failures(emitted, next_sequence, hook_result.failures)
+            hook_result = await self.hooks.dispatch(
+                HookContext(
+                    hook_name="on_event",
+                    session_id=session_id,
+                    run_id=run_id,
+                    data={"event": event.model_dump(mode="json")},
+                )
+            )
+            return await self._record_hook_failures(
+                emitted,
+                next_sequence,
+                hook_result.failures,
+            )
 
     async def record_hook_failures(
         self,
@@ -81,16 +88,25 @@ class RuntimeEventRecorder:
         sequence: int,
         failures: Sequence[HookFailure],
     ) -> int:
+        async with self._dispatch_lock:
+            return await self._record_hook_failures(emitted, sequence, failures)
+
+    async def _record_hook_failures(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        failures: Sequence[HookFailure],
+    ) -> int:
         for failure in failures:
-            sequence += 1
             event = EventRecord(
                 session_id=failure.session_id or "unknown",
                 run_id=failure.run_id or "unknown",
                 event_type="plugin_hook_failed",
-                sequence=sequence,
+                sequence=sequence + 1,
                 payload=failure.model_dump(mode="json"),
             )
-            self.store.append_event(event)
+            event = append_ordered_event(self.store, event)
+            sequence = event.sequence
             emitted.append(event)
             sink_failures = await self._notify_event_sinks(event)
             sequence = self._record_event_sink_failures(
@@ -130,18 +146,18 @@ class RuntimeEventRecorder:
         failures: Sequence[_EventSinkFailure],
     ) -> int:
         for failure in failures:
-            sequence += 1
             diagnostic = EventRecord(
                 session_id=event.session_id,
                 run_id=event.run_id,
                 event_type="event_sink_failed",
-                sequence=sequence,
+                sequence=sequence + 1,
                 payload={
                     "source_event_type": event.event_type,
                     "error_type": failure.error_type,
                     "error_message": failure.error_message,
                 },
             )
-            self.store.append_event(diagnostic)
+            diagnostic = append_ordered_event(self.store, diagnostic)
+            sequence = diagnostic.sequence
             emitted.append(diagnostic)
         return sequence

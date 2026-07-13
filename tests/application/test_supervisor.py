@@ -89,6 +89,31 @@ class RecordingManagedResource:
         self.closed = True
 
 
+class BlockingStartResource:
+    def __init__(self) -> None:
+        self.start_count = 0
+        self.close_count = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def start(self) -> None:
+        self.start_count += 1
+        self.entered.set()
+        await self.release.wait()
+
+    async def close(self) -> None:
+        self.close_count += 1
+
+
+class ClosableFauxProvider(FauxProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 @pytest.mark.asyncio
 async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
     resource = RecordingManagedResource()
@@ -102,6 +127,48 @@ async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
 
     await supervisor.shutdown()
     assert resource.closed is True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_closes_runtime_provider_connections(tmp_path) -> None:
+    provider = ClosableFauxProvider()
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, provider))
+
+    await supervisor.start()
+    await supervisor.shutdown()
+
+    assert provider.closed is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_supervisor_start_is_single_flight(tmp_path) -> None:
+    resource = BlockingStartResource()
+    supervisor = RuntimeSupervisor(
+        _runtime(tmp_path, FauxProvider()),
+        max_concurrency=2,
+        managed_resources=(resource,),
+    )
+
+    starts = [asyncio.create_task(supervisor.start()) for _ in range(2)]
+    await resource.entered.wait()
+    await asyncio.sleep(0)
+    assert resource.start_count == 1
+    resource.release.set()
+    await asyncio.gather(*starts)
+
+    assert len(supervisor._workers) == 2
+    await supervisor.shutdown()
+    assert resource.close_count == 1
+
+
+@pytest.mark.asyncio
+async def test_supervisor_reports_idle_for_session_without_runs(tmp_path) -> None:
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, FauxProvider()))
+    created = supervisor.runtime.sessions.create(title="Fresh")
+
+    assert supervisor.status(created.session.session_id).status == "idle"
+
+    await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from ouro.application.events import RuntimeEventRecorder
@@ -111,3 +113,58 @@ async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tm
         "plugin_hook_failed",
     ]
     assert emitted[1].payload["hook_name"] == "on_event"
+
+
+@pytest.mark.asyncio
+async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitters(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Concurrent events")
+    store.create_session(session)
+    sink_entered = asyncio.Event()
+    release_sink = asyncio.Event()
+
+    async def blocking_sink(event: EventRecord) -> None:
+        del event
+        sink_entered.set()
+        await release_sink.wait()
+
+    first = RuntimeEventRecorder(
+        store=store,
+        hooks=HookRegistry(),
+        event_sink=blocking_sink,
+    )
+    second = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    first_events: list[EventRecord] = []
+    second_events: list[EventRecord] = []
+
+    first_emit = asyncio.create_task(
+        first.emit(
+            first_events,
+            0,
+            session_id=session.session_id,
+            run_id="run_1",
+            event_type="run_started",
+            payload={},
+        )
+    )
+    await sink_entered.wait()
+    second_sequence = await second.emit(
+        second_events,
+        0,
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="model_request_started",
+        payload={},
+    )
+    release_sink.set()
+    first_sequence = await first_emit
+
+    snapshot = store.load_session(session.session_id, recover=False)
+    assert [event.sequence for event in snapshot.events] == [1, 2]
+    assert first_events[0].sequence == 1
+    assert second_events[0].sequence == 2
+    assert first_sequence == 1
+    assert second_sequence == 2

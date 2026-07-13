@@ -21,6 +21,17 @@ class OpenAICompatibleTransport(Protocol):
 class HttpxOpenAICompatibleTransport:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
         self.client = client
+        self._owns_client = client is None
+
+    def _client(self) -> httpx.AsyncClient:
+        if self.client is None:
+            self.client = httpx.AsyncClient()
+        return self.client
+
+    async def aclose(self) -> None:
+        if self._owns_client and self.client is not None:
+            await self.client.aclose()
+            self.client = None
 
     async def post_json(
         self,
@@ -77,28 +88,15 @@ class HttpxOpenAICompatibleTransport:
             **headers,
         }
         try:
-            if self.client is not None:
-                async with self.client.stream(
-                    "POST",
-                    url,
-                    headers=dict(request_headers),
-                    json=dict(payload),
-                    timeout=timeout,
-                ) as response:
-                    async for item in _stream_sse_json(response):
-                        yield item
-                return
-
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "POST",
-                    url,
-                    headers=dict(request_headers),
-                    json=dict(payload),
-                    timeout=timeout,
-                ) as response:
-                    async for item in _stream_sse_json(response):
-                        yield item
+            async with self._client().stream(
+                "POST",
+                url,
+                headers=dict(request_headers),
+                json=dict(payload),
+                timeout=timeout,
+            ) as response:
+                async for item in _stream_sse_json(response):
+                    yield item
         except httpx.TimeoutException as exc:
             raise RuntimeError("provider request timed out") from exc
         except httpx.RequestError as exc:
@@ -112,20 +110,12 @@ class HttpxOpenAICompatibleTransport:
         payload: Mapping[str, Any],
         timeout: float,
     ) -> httpx.Response:
-        if self.client is not None:
-            return await self.client.post(
-                url,
-                headers=dict(headers),
-                json=dict(payload),
-                timeout=timeout,
-            )
-        async with httpx.AsyncClient() as client:
-            return await client.post(
-                url,
-                headers=dict(headers),
-                json=dict(payload),
-                timeout=timeout,
-            )
+        return await self._client().post(
+            url,
+            headers=dict(headers),
+            json=dict(payload),
+            timeout=timeout,
+        )
 
 
 def _compact_body(body: str) -> str:

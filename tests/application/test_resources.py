@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 
 import pytest
 
@@ -214,6 +215,46 @@ def test_branch_atomically_copies_valid_resource_relationships(tmp_path) -> None
     assert resources.session_resource_ids(branch.session.session_id) == (resource.resource_id,)
     reference = resource_store.load_session_references(branch.session.session_id)[0]
     assert reference.copied_from_session_id == source_session.session_id
+
+
+def test_branch_publish_precedes_concurrent_source_trash(monkeypatch, tmp_path) -> None:
+    sessions, resource_store, resources, session_service = _services(tmp_path)
+    source_session = session_service.create(title="Branch and trash").session
+    source_file = tmp_path / "branch-trash.txt"
+    source_file.write_text("shared", encoding="utf-8")
+    resource = resources.import_resource(source_session.session_id, source_file).resource
+    message = MessageRecord.text(
+        session_id=source_session.session_id,
+        role="user",
+        text="keep attachment",
+        sequence=1,
+    ).model_copy(update={"resource_refs": [resource.resource_id]})
+    sessions.append_message(message)
+    branch_validating = Event()
+    allow_branch = Event()
+    original_branch_references = resources.branch_references
+
+    def blocked_branch_references(source_session_id, target_session_id, resource_ids):
+        branch_validating.set()
+        assert allow_branch.wait(timeout=2)
+        return original_branch_references(source_session_id, target_session_id, resource_ids)
+
+    monkeypatch.setattr(resources, "branch_references", blocked_branch_references)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        branch_future = executor.submit(
+            session_service.branch,
+            source_session.session_id,
+            message.message_id,
+        )
+        assert branch_validating.wait(timeout=2)
+        trash_future = executor.submit(session_service.trash, source_session.session_id)
+        assert not trash_future.done()
+        allow_branch.set()
+        branch = branch_future.result(timeout=2)
+        trash_future.result(timeout=2)
+
+    assert resources.session_resource_ids(branch.session.session_id) == (resource.resource_id,)
+    assert resource_store.load_record(resource.resource_id).resource_id == resource.resource_id
 
 
 def test_remove_rejects_canonical_message_reference(tmp_path) -> None:

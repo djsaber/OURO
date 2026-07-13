@@ -22,11 +22,15 @@ class ToolBatchExecutor:
         mode: ToolExecutionMode,
         max_concurrency: int,
         signal: AbortSignal | None = None,
+        on_start: Callable[[ToolInvocation], Awaitable[None]] | None = None,
         on_outcome: Callable[[ToolExecutionOutcome], Awaitable[None]] | None = None,
     ) -> list[ToolExecutionOutcome]:
         if mode == "sequential":
             outcomes: list[ToolExecutionOutcome] = []
             for invocation in invocations:
+                if signal is None or not signal.is_aborted():
+                    if on_start is not None:
+                        await on_start(invocation)
                 outcome = await self.executor.execute_prepared(invocation, signal=signal)
                 if on_outcome is not None:
                     await on_outcome(outcome)
@@ -37,9 +41,19 @@ class ToolBatchExecutor:
 
         async def run(invocation: ToolInvocation) -> ToolExecutionOutcome:
             async with semaphore:
+                if signal is None or not signal.is_aborted():
+                    if on_start is not None:
+                        await on_start(invocation)
                 outcome = await self.executor.execute_prepared(invocation, signal=signal)
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 return outcome
 
-        return list(await asyncio.gather(*(run(invocation) for invocation in invocations)))
+        completed = await asyncio.gather(
+            *(run(invocation) for invocation in invocations),
+            return_exceptions=True,
+        )
+        errors = [result for result in completed if isinstance(result, BaseException)]
+        if errors:
+            raise errors[0]
+        return [result for result in completed if isinstance(result, ToolExecutionOutcome)]

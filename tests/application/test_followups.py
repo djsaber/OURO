@@ -1,3 +1,5 @@
+from concurrent.futures import ThreadPoolExecutor
+
 from ouro.application.followups import FOLLOW_UP_QUEUE_KEY, FollowUpQueue
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
@@ -70,3 +72,29 @@ def test_follow_up_queue_peek_requires_explicit_acknowledgement(tmp_path) -> Non
     assert repeated.queue_id == first.queue_id
     queue.acknowledge(snapshot, first.queue_id)
     assert queue.peek(store.load_session(session.session_id, recover=False)) is None
+
+
+def test_follow_up_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Concurrent queue")
+    store.create_session(session)
+    queue = FollowUpQueue(store)
+    stale = store.load_session(session.session_id, recover=False)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(
+                queue.enqueue,
+                snapshot=stale,
+                prompt=f"prompt-{index}",
+                title=None,
+            )
+            for index in range(20)
+        ]
+        for future in futures:
+            future.result(timeout=2)
+
+    reloaded = store.load_session(session.session_id, recover=False)
+    prompts = [item["prompt"] for item in reloaded.session.metadata[FOLLOW_UP_QUEUE_KEY]]
+    assert sorted(prompts) == sorted(f"prompt-{index}" for index in range(20))

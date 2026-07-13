@@ -39,6 +39,12 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
     assert adapter.model.provider_id == "openai"
     assert adapter.model.endpoint_id == "fast"
     assert adapter.model.model_id == "gpt-fast"
+    assert catalog.adapter_for("openai/fast") is adapter
+
+    configs.upsert_endpoint("openai", "fast", temperature=0.5)
+    refreshed = catalog.adapter_for("openai/fast")
+    assert refreshed is not adapter
+    assert refreshed.model.temperature == 0.5
 
 
 def test_configured_model_catalog_reflects_config_changes_without_restart(tmp_path) -> None:

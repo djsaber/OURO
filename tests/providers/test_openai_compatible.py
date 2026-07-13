@@ -77,6 +77,21 @@ class FakeStreamingTransport:
 
 
 @pytest.mark.asyncio
+async def test_httpx_transport_reuses_and_closes_only_owned_client() -> None:
+    owned = HttpxOpenAICompatibleTransport()
+    owned_client = owned._client()
+    assert owned._client() is owned_client
+    await owned.aclose()
+    assert owned_client.is_closed is True
+
+    injected_client = httpx.AsyncClient()
+    injected = HttpxOpenAICompatibleTransport(injected_client)
+    await injected.aclose()
+    assert injected_client.is_closed is False
+    await injected_client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_httpx_transport_posts_json() -> None:
     requests: list[httpx.Request] = []
 

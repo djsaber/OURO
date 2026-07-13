@@ -31,7 +31,7 @@ from ouro.core.errors import (
 )
 from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord, SessionTitleSource
-from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
+from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore, session_mutation
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -208,12 +208,13 @@ class SessionService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            session = self._load_snapshot(session_id, recover=False).session
-            if session.status in {"running", "waiting_approval", "waiting_user"}:
-                raise SessionBusyError(f"session has unfinished work: {session_id}")
-            if self._resources is not None:
-                resource_ids = list(self._resources.session_resource_ids(session_id))
-            trash_id = self._store.trash_session(session_id)
+            with session_mutation(self._store, session_id):
+                session = self._load_snapshot(session_id, recover=False).session
+                if session.status in {"running", "waiting_approval", "waiting_user"}:
+                    raise SessionBusyError(f"session has unfinished work: {session_id}")
+                if self._resources is not None:
+                    resource_ids = list(self._resources.session_resource_ids(session_id))
+                trash_id = self._store.trash_session(session_id)
         finally:
             lock.release()
         diagnostics = list(self._refresh_index_diagnostics(session_id))
@@ -239,6 +240,10 @@ class SessionService:
         )
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
+        with session_mutation(self._store, source_session_id):
+            return self._branch_locked(source_session_id, message_id)
+
+    def _branch_locked(self, source_session_id: str, message_id: str) -> SessionBranchResult:
         source = self._load_snapshot(source_session_id, recover=False)
         selected_messages, source_message = select_branch_messages(
             source.messages,

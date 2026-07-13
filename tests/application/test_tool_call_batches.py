@@ -94,6 +94,54 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
 
 
 @pytest.mark.asyncio
+async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path) -> None:
+    registry = ToolRegistry()
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+    started: list[str] = []
+
+    async def blocking(invocation) -> ToolResult:
+        started.append(invocation.tool_call_id)
+        if len(started) == 2:
+            two_started.set()
+        await release.wait()
+        return _result(invocation, invocation.tool_call_id)
+
+    for name in ("First", "Second", "Third"):
+        registry.register(
+            Tool(definition=ToolDefinition(name=name, description=name), handler=blocking)
+        )
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        mode="parallel",
+        first_calls=[
+            ToolCallRequest(id="call_1", name="First", source_index=0),
+            ToolCallRequest(id="call_2", name="Second", source_index=1),
+            ToolCallRequest(id="call_3", name="Third", source_index=2),
+        ],
+    )
+
+    run_task = asyncio.create_task(runtime.run("run three"))
+    await asyncio.wait_for(two_started.wait(), timeout=1)
+    session = runtime.store.list_sessions()[0]
+    snapshot = runtime.store.load_session(session.session_id, recover=False)
+    active = next(run for run in snapshot.runs if run.status == "running")
+    assert active.active_tool_batch is not None
+    assert [call.status for call in active.active_tool_batch.calls] == [
+        "running",
+        "running",
+        "ready",
+    ]
+    started_events = [event for event in snapshot.events if event.event_type == "tool_call_started"]
+    assert [event.payload["tool_call_id"] for event in started_events] == started
+
+    release.set()
+    result = await asyncio.wait_for(run_task, timeout=2)
+    assert result.run.status == "completed"
+
+
+@pytest.mark.asyncio
 async def test_batch_waits_for_every_approval_and_marks_running_before_execution(tmp_path) -> None:
     registry = ToolRegistry()
     started = asyncio.Event()

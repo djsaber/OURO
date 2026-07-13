@@ -107,29 +107,37 @@ class ToolExecutionContext:
         timed_out = False
         aborted = False
         deadline = asyncio.get_running_loop().time() + timeout_seconds
-        while not communicate_task.done():
-            if self.is_aborted:
-                await _kill_process_tree(process)
-                aborted = True
-                break
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                await _kill_process_tree(process)
-                timed_out = True
-                break
-            await asyncio.wait({communicate_task}, timeout=min(self.poll_interval, remaining))
+        try:
+            while not communicate_task.done():
+                if self.is_aborted:
+                    await _kill_process_tree(process)
+                    aborted = True
+                    break
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    await _kill_process_tree(process)
+                    timed_out = True
+                    break
+                await asyncio.wait({communicate_task}, timeout=min(self.poll_interval, remaining))
 
-        if timed_out or aborted:
-            stdout, stderr = await communicate_task
-        else:
-            stdout, stderr = communicate_task.result()
-        return ToolProcessResult(
-            stdout=stdout.decode(errors="replace"),
-            stderr=stderr.decode(errors="replace"),
-            returncode=process.returncode,
-            timed_out=timed_out,
-            aborted=aborted,
-        )
+            if timed_out or aborted:
+                stdout, stderr = await communicate_task
+            else:
+                stdout, stderr = communicate_task.result()
+            return ToolProcessResult(
+                stdout=stdout.decode(errors="replace"),
+                stderr=stderr.decode(errors="replace"),
+                returncode=process.returncode,
+                timed_out=timed_out,
+                aborted=aborted,
+            )
+        finally:
+            if not communicate_task.done():
+                with suppress(Exception):
+                    await _kill_process_tree(process)
+                if not communicate_task.done():
+                    communicate_task.cancel()
+                await asyncio.gather(communicate_task, return_exceptions=True)
 
 
 async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:

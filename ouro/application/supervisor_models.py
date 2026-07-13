@@ -10,6 +10,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.events import EventRecord
 
 SupervisorRunStatus = Literal[
+    "idle",
     "queued",
     "running",
     "waiting_user",

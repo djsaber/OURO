@@ -8,6 +8,7 @@ from ouro.application.runs import RunLifecycle
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
+from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
@@ -126,6 +127,7 @@ class ToolCallCoordinator:
                 run_id=run.run_id,
                 event_type="run_status_changed",
                 payload={
+                    "to_status": status,
                     "status": status,
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
@@ -172,13 +174,7 @@ class ToolCallCoordinator:
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
         ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
-        running_calls = [
-            call.model_copy(update={"status": "running"}) if call in ready_calls else call
-            for call in batch.calls
-        ]
-        batch = batch.model_copy(
-            update={"phase": "executing", "calls": running_calls, "updated_at": utc_now()}
-        )
+        batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
         self.runs.save_batch_state(
             session=session,
             run=run,
@@ -198,25 +194,46 @@ class ToolCallCoordinator:
                 "execution_mode": batch.execution_mode,
             },
         )
-        for call in ready_calls:
-            assert call.invocation is not None
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="tool_call_started",
-                payload={
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                    "tool_call_id": call.invocation.tool_call_id,
-                    "tool_name": call.invocation.tool_name,
-                    "source_index": call.request.source_index,
-                },
-            )
-
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
+
+        async def checkpoint_started(invocation: ToolInvocation) -> None:
+            nonlocal checkpoint_batch, sequence
+            async with checkpoint_lock:
+                started_call: ToolBatchCall | None = None
+                calls: list[ToolBatchCall] = []
+                for item in checkpoint_batch.calls:
+                    if item.request.id != invocation.tool_call_id:
+                        calls.append(item)
+                        continue
+                    started_call = item.model_copy(update={"status": "running"})
+                    calls.append(started_call)
+                if started_call is None:
+                    raise ValueError(f"unknown tool call in batch: {invocation.tool_call_id}")
+                checkpoint_batch = checkpoint_batch.model_copy(
+                    update={"calls": calls, "updated_at": utc_now()}
+                )
+                self.runs.save_batch_state(
+                    session=session,
+                    run=run,
+                    batch=checkpoint_batch,
+                    status="running",
+                    phase="tool_execution",
+                )
+                sequence = await self.events.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="tool_call_started",
+                    payload={
+                        "batch_id": batch.batch_id,
+                        "turn_id": batch.turn_id,
+                        "tool_call_id": invocation.tool_call_id,
+                        "tool_name": invocation.tool_name,
+                        "source_index": started_call.request.source_index,
+                    },
+                )
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
@@ -240,13 +257,17 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": checkpoint_calls, "updated_at": utc_now()}
                 )
-                self.runs.save_batch_state(
-                    session=session,
-                    run=run,
-                    batch=checkpoint_batch,
-                    status="running",
-                    phase="tool_execution",
-                )
+                try:
+                    self.runs.save_batch_state(
+                        session=session,
+                        run=run,
+                        batch=checkpoint_batch,
+                        status="running",
+                        phase="tool_execution",
+                    )
+                except SessionBusyError:
+                    if not abort_signal.is_aborted():
+                        raise
                 if completed_call is not None and completed_call.result is not None:
                     result = completed_call.result
                     sequence = await self.events.emit(
@@ -270,6 +291,7 @@ class ToolCallCoordinator:
             mode=batch.execution_mode,
             max_concurrency=batch.max_concurrency,
             signal=abort_signal,
+            on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )
         batch = checkpoint_batch.model_copy(
@@ -278,13 +300,17 @@ class ToolCallCoordinator:
                 "updated_at": utc_now(),
             }
         )
-        self.runs.save_batch_state(
-            session=session,
-            run=run,
-            batch=batch,
-            status="running",
-            phase="result_commit",
-        )
+        try:
+            self.runs.save_batch_state(
+                session=session,
+                run=run,
+                batch=batch,
+                status="running",
+                phase="result_commit",
+            )
+        except SessionBusyError:
+            if not abort_signal.is_aborted():
+                raise
 
         messages: list[MessageRecord] = []
         results: list[ToolResult] = []
@@ -315,13 +341,20 @@ class ToolCallCoordinator:
                 "updated_at": utc_now(),
             }
         )
-        self.runs.save_batch_state(
-            session=session,
-            run=run,
-            batch=completed_batch if terminal_phase == "aborted" else None,
-            status="running",
-            phase="model_streaming",
-        )
+        if terminal_phase == "aborted":
+            self.runs.save_aborted_batch(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                batch=completed_batch,
+            )
+        else:
+            self.runs.save_batch_state(
+                session=session,
+                run=run,
+                batch=None,
+                status="running",
+                phase="model_streaming",
+            )
         sequence = await self.events.emit(
             emitted,
             sequence,

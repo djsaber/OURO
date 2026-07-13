@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import inspect
 from collections.abc import Callable
 from typing import Protocol
 
@@ -58,6 +60,9 @@ class FixedRuntimeAdapterCatalog:
         self.resolve(selector)
         return self._adapter
 
+    async def close(self) -> None:
+        await _close_adapters((self._adapter,))
+
 
 class ConfiguredModelCatalog:
     """Expose enabled configured endpoints as durable session model routes."""
@@ -72,6 +77,8 @@ class ConfiguredModelCatalog:
         self._configs = configs
         self._default_adapter = default_adapter
         self._adapter_builder = adapter_builder
+        self._configured_adapters: dict[str, tuple[str, RuntimeAdapter]] = {}
+        self._retired_adapters: list[RuntimeAdapter] = []
 
     def list_models(self) -> list[AvailableModel]:
         models: list[AvailableModel] = []
@@ -129,7 +136,26 @@ class ConfiguredModelCatalog:
                 endpoint_id=model.endpoint_id,
             )
         )
-        return self._adapter_builder(options)
+        fingerprint = hashlib.sha256(repr(options).encode("utf-8")).hexdigest()
+        cached = self._configured_adapters.get(model.key)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        adapter = self._adapter_builder(options)
+        if cached is not None:
+            self._retired_adapters.append(cached[1])
+        self._configured_adapters[model.key] = (fingerprint, adapter)
+        return adapter
+
+    async def close(self) -> None:
+        await _close_adapters(
+            (
+                self._default_adapter,
+                *(adapter for _, adapter in self._configured_adapters.values()),
+                *self._retired_adapters,
+            )
+        )
+        self._configured_adapters.clear()
+        self._retired_adapters.clear()
 
 
 def model_route_key(model: ModelMetadata) -> str:
@@ -147,3 +173,24 @@ def _available_model(model: ModelMetadata) -> AvailableModel:
         model_id=model.model_id,
         display_name=model.display_name,
     )
+
+
+async def _close_adapters(adapters: tuple[RuntimeAdapter, ...]) -> None:
+    seen: set[int] = set()
+    errors: list[Exception] = []
+    for adapter in adapters:
+        provider = adapter.provider
+        if id(provider) in seen:
+            continue
+        seen.add(id(provider))
+        close = getattr(provider, "close", None)
+        if close is None:
+            continue
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # noqa: BLE001 - close every owned provider before reporting.
+            errors.append(exc)
+    if errors:
+        raise ExceptionGroup("runtime provider shutdown failed", errors)

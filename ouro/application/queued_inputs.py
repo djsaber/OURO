@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.state import SessionRecord
-from ouro.sessions import SessionSnapshot, SessionStore
+from ouro.sessions import SessionSnapshot, SessionStore, session_mutation
 
 # The existing durable key remains authoritative so upgrades do not require an
 # eager metadata migration. Items now carry their own delivery mode.
@@ -43,14 +43,14 @@ class QueuedInputQueue:
         title: str | None,
     ) -> tuple[SessionRecord, QueuedInput, int]:
         item = QueuedInput(prompt=prompt, mode=mode, title=title)
-        metadata = dict(snapshot.session.metadata)
-        queue = self._raw_queue(metadata)
-        queue.append(item.model_dump(mode="python"))
-        metadata[QUEUED_INPUTS_KEY] = queue
-        session = snapshot.session.model_copy(
-            update={"metadata": metadata, "updated_at": utc_now()}
-        )
-        self.store.save_session(session)
+        with session_mutation(self.store, snapshot.session.session_id):
+            latest = self.store.load_session_record(snapshot.session.session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            queue.append(item.model_dump(mode="python"))
+            metadata[QUEUED_INPUTS_KEY] = queue
+            session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
+            self.store.save_session(session)
         return session, item, len(queue)
 
     def eligible(
@@ -64,18 +64,18 @@ class QueuedInputQueue:
 
         raw_queue = self._raw_queue(snapshot.session.metadata)
         valid: list[QueuedInput] = []
-        invalid_ids: list[int] = []
-        for index, raw_item in enumerate(raw_queue):
+        saw_invalid = False
+        for raw_item in raw_queue:
             item = self._parse_item(raw_item)
             if item is None:
-                invalid_ids.append(index)
+                saw_invalid = True
                 continue
             if mode is None or item.mode == mode:
                 valid.append(item)
                 if limit is not None and len(valid) >= limit:
                     break
-        if invalid_ids:
-            self._remove_indexes(snapshot, invalid_ids)
+        if saw_invalid:
+            self._remove_invalid(snapshot.session.session_id)
         return valid
 
     def peek(self, snapshot: SessionSnapshot) -> QueuedInput | None:
@@ -85,22 +85,27 @@ class QueuedInputQueue:
     def acknowledge(self, snapshot: SessionSnapshot, queue_id: str) -> None:
         """Remove an item only after its user message is durably appended."""
 
-        latest = self.store.load_session(snapshot.session.session_id, recover=False)
-        metadata = dict(latest.session.metadata)
-        queue = self._raw_queue(metadata)
-        for index, raw_item in enumerate(queue):
-            item = self._parse_item(raw_item)
-            if item is not None and item.queue_id == queue_id:
-                queue.pop(index)
-                self._save_queue(latest.session, metadata, queue)
-                return
+        with session_mutation(self.store, snapshot.session.session_id):
+            latest = self.store.load_session_record(snapshot.session.session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            for index, raw_item in enumerate(queue):
+                item = self._parse_item(raw_item)
+                if item is not None and item.queue_id == queue_id:
+                    queue.pop(index)
+                    self._save_queue(latest, metadata, queue)
+                    return
 
-    def _remove_indexes(self, snapshot: SessionSnapshot, indexes: list[int]) -> None:
-        metadata = dict(snapshot.session.metadata)
-        queue = self._raw_queue(metadata)
-        invalid = set(indexes)
-        queue = [item for index, item in enumerate(queue) if index not in invalid]
-        self._save_queue(snapshot.session, metadata, queue)
+    def _remove_invalid(self, session_id: str) -> None:
+        with session_mutation(self.store, session_id):
+            latest = self.store.load_session_record(session_id)
+            metadata = dict(latest.metadata)
+            queue = [
+                raw_item
+                for raw_item in self._raw_queue(metadata)
+                if self._parse_item(raw_item) is not None
+            ]
+            self._save_queue(latest, metadata, queue)
 
     def _save_queue(
         self,

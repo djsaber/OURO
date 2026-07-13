@@ -14,7 +14,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import RunRecord, SessionRecord, session_status_for_run
 from ouro.core.tool_batches import ToolBatchHandlingResult
 from ouro.core.tools import ToolCallRequest, ToolDefinition, ToolResult
 
@@ -598,7 +598,7 @@ class InnerAgentLoop:
         )
         state.session = state.session.model_copy(
             update={
-                "status": _session_status_for_run(state.run.status),
+                "status": session_status_for_run(state.run.status),
                 "updated_at": utc_now(),
             }
         )
@@ -660,16 +660,6 @@ class InnerAgentLoop:
             events=emitted,
             tool_results=tool_results,
         )
-
-
-def _session_status_for_run(status: str) -> str:
-    if status == "waiting_approval":
-        return "waiting_approval"
-    if status == "waiting_user":
-        return "waiting_user"
-    if status == "failed":
-        return "failed"
-    return "running"
 
 
 def _validate_tool_calls(tool_calls: list[ToolCallRequest]) -> None:

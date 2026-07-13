@@ -20,6 +20,9 @@ RunStatus = Literal[
     "paused",
     "recoverable",
 ]
+ACTIVE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
+    {"queued", "running", "waiting_user", "waiting_approval"}
+)
 RunKind = Literal["agent", "compaction"]
 RunOrigin = Literal["user", "follow_up", "replay", "plugin"]
 
@@ -28,6 +31,18 @@ SessionTitleSource = Literal["fallback", "generated", "user"]
 RunPhase = Literal[
     "model_streaming", "tool_preflight", "human_interaction", "tool_execution", "result_commit"
 ]
+
+
+def session_status_for_run(status: RunStatus) -> SessionStatus:
+    """Project the authoritative active Run status onto its owning Session."""
+
+    if status == "waiting_approval":
+        return "waiting_approval"
+    if status == "waiting_user":
+        return "waiting_user"
+    if status == "failed":
+        return "failed"
+    return "running"
 
 
 class SessionRecord(OuroModel):

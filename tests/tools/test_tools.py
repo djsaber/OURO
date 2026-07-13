@@ -1,7 +1,11 @@
+import asyncio
+
 import pytest
 
+from ouro.core.cancellation import AbortSignal
 from ouro.tools import (
     Tool,
+    ToolBatchExecutor,
     ToolDefinition,
     ToolExecutionContext,
     ToolExecutor,
@@ -206,6 +210,82 @@ async def test_tool_execution_aborted_still_returns_aborted_outcome() -> None:
     assert outcome.result is not None
     assert outcome.result.is_error is True
     assert "cancelled by signal" in outcome.result.content
+
+
+@pytest.mark.asyncio
+async def test_aborted_signal_prevents_tool_handler_from_starting() -> None:
+    registry = ToolRegistry()
+    started = False
+
+    async def handler(invocation: ToolInvocation) -> ToolResult:
+        nonlocal started
+        started = True
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        )
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="SideEffect", description="side effect"),
+            handler=handler,
+        )
+    )
+    signal = AbortSignal()
+    signal.abort("stopped before execution")
+
+    outcome = await ToolExecutor(registry).execute_prepared(
+        ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="SideEffect"),
+        signal=signal,
+    )
+
+    assert outcome.status == "aborted"
+    assert started is False
+
+
+@pytest.mark.asyncio
+async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None:
+    registry = ToolRegistry()
+    slow_finished = asyncio.Event()
+
+    async def fast(invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        )
+
+    async def slow(invocation: ToolInvocation) -> ToolResult:
+        await asyncio.sleep(0.02)
+        slow_finished.set()
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        )
+
+    registry.register(
+        Tool(definition=ToolDefinition(name="Fast", description="fast"), handler=fast)
+    )
+    registry.register(
+        Tool(definition=ToolDefinition(name="Slow", description="slow"), handler=slow)
+    )
+    batch = ToolBatchExecutor(ToolExecutor(registry))
+
+    async def broken_checkpoint(outcome) -> None:
+        if outcome.invocation.tool_name == "Fast":
+            raise RuntimeError("checkpoint failed")
+
+    with pytest.raises(RuntimeError, match="checkpoint failed"):
+        await batch.execute(
+            [
+                ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Fast"),
+                ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Slow"),
+            ],
+            mode="parallel",
+            max_concurrency=2,
+            on_outcome=broken_checkpoint,
+        )
+
+    assert slow_finished.is_set()
 
 
 @pytest.mark.asyncio

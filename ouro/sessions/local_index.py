@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.sessions.base import SessionSnapshot
 from ouro.sessions.index import (
     PendingInteraction,
@@ -283,16 +283,20 @@ def _sorted_entries(entries: list[SessionIndexEntry]) -> list[SessionIndexEntry]
 
 
 def _catalog_status(session: SessionRecord, latest_run: RunRecord | None) -> SessionCatalogStatus:
-    if latest_run is not None and latest_run.status == "recoverable":
-        return "recoverable"
-    if latest_run is not None and latest_run.status == "paused":
-        return "paused"
-    if session.status == "running":
-        return "active"
-    if session.status == "waiting_approval":
-        return "waiting_approval"
-    if session.status == "waiting_user":
-        return "waiting_user"
+    if latest_run is not None:
+        if latest_run.status in {"queued", "running"}:
+            return "active"
+        if latest_run.status == "waiting_approval":
+            return "waiting_approval"
+        if latest_run.status == "waiting_user":
+            return "waiting_user"
+        if latest_run.status == "recoverable":
+            return "recoverable"
+        if latest_run.status == "paused":
+            return "paused"
+        if latest_run.status == "failed" and latest_run.kind == "agent":
+            return "failed"
+        return "completed"
     if session.status == "failed":
         return "failed"
     if latest_run is not None or session.message_count > 0:
@@ -301,11 +305,10 @@ def _catalog_status(session: SessionRecord, latest_run: RunRecord | None) -> Ses
 
 
 def _active_run_id(session: SessionRecord, latest_run: RunRecord | None) -> str | None:
-    if session.status not in {"running", "waiting_approval", "waiting_user"}:
-        return None
-    if session.active_run_id is not None:
-        return session.active_run_id
-    return latest_run.run_id if latest_run is not None else session.last_run_id
+    del session
+    if latest_run is not None and latest_run.status in ACTIVE_RUN_STATUSES:
+        return latest_run.run_id
+    return None
 
 
 def _split_model_route(value: str | None) -> tuple[str | None, str | None]:

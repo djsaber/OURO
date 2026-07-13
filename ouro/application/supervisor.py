@@ -130,11 +130,16 @@ class RuntimeSupervisor:
         self._completion_events: dict[str, asyncio.Event] = {}
         self._snapshots: dict[str, RuntimeStatusSnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
+        self._lifecycle_lock = asyncio.Lock()
         self._started = False
         self._closed = False
         self.runtime.add_event_sink(self._on_event)
 
     async def start(self) -> SupervisorStartResult:
+        async with self._lifecycle_lock:
+            return await self._start()
+
+    async def _start(self) -> SupervisorStartResult:
         if self._closed:
             raise OuroError("runtime supervisor is closed")
         if self._started:
@@ -271,7 +276,7 @@ class RuntimeSupervisor:
         return RuntimeStatusSnapshot(
             session_id=handle_or_session,
             run_id=run.run_id if run is not None else None,
-            status=(run.status if run is not None else "completed"),
+            status=(run.status if run is not None else "idle"),
         )
 
     async def wait(self, handle: RunHandle) -> RuntimeStatusSnapshot:
@@ -334,6 +339,10 @@ class RuntimeSupervisor:
         return self.status(job.handle)
 
     async def shutdown(self, policy: ShutdownPolicy | None = None) -> None:
+        async with self._lifecycle_lock:
+            await self._shutdown(policy)
+
+    async def _shutdown(self, policy: ShutdownPolicy | None = None) -> None:
         if self._closed:
             return
         policy = policy or ShutdownPolicy()
@@ -383,6 +392,7 @@ class RuntimeSupervisor:
                 subscription.close()
         self._workers.clear()
         close_results = await asyncio.gather(
+            self.runtime.close(),
             *(resource.close() for resource in reversed(self._started_resources)),
             return_exceptions=True,
         )
@@ -516,7 +526,7 @@ def _status_from_event(
     current: SupervisorRunStatus,
 ) -> SupervisorRunStatus:
     if event.event_type == "run_status_changed":
-        status = event.payload.get("to_status")
+        status = event.payload.get("to_status", event.payload.get("status"))
         if status in {
             "queued",
             "running",

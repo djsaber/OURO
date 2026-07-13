@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from functools import partial
 from typing import TYPE_CHECKING
@@ -47,7 +48,7 @@ from ouro.core.state import RunRecord, RunStatus, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.sessions import SessionLock, SessionSnapshot, SessionStore
+from ouro.sessions import SessionLock, SessionSnapshot, SessionStore, session_mutation
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:
@@ -153,6 +154,13 @@ class RuntimeService:
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
+
+    async def close(self) -> None:
+        close = getattr(self.models, "close", None)
+        if close is not None:
+            result = close()
+            if inspect.isawaitable(result):
+                await result
 
     def available_models(self) -> list[AvailableModel]:
         """Return enabled model endpoints from the current system configuration."""
@@ -304,6 +312,25 @@ class RuntimeService:
             locked_snapshot = self.store.load_session(session.session_id, recover=False)
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
+            locked_active_run = maybe_active_run(locked_snapshot.runs)
+            if locked_active_run is not None:
+                if approval_mode is not None and approval_mode != session.approval_mode:
+                    raise SessionBusyError(
+                        "cannot change approval mode while the session has an active run: "
+                        f"{session.session_id}"
+                    )
+                queued_session, queued_events = await self._queue_input(
+                    snapshot=locked_snapshot,
+                    active_run=locked_active_run,
+                    prompt=prompt,
+                    title=title,
+                    mode=queue_mode,
+                )
+                return RunResult(
+                    session=queued_session,
+                    run=locked_active_run,
+                    events=queued_events,
+                )
             if approval_mode is not None and approval_mode != session.approval_mode:
                 now = utc_now()
                 session = session.model_copy(
@@ -449,6 +476,8 @@ class RuntimeService:
         terminal_run = run
         try:
             snapshot = self.store.load_session(session_id, recover=False)
+            if maybe_active_run(snapshot.runs) is not None:
+                raise SessionBusyError(f"session already has an active run: {session_id}")
             active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             terminal_run = run
@@ -533,44 +562,47 @@ class RuntimeService:
         if run.status not in ACTIVE_RUN_STATUSES:
             return RunResult(session=snapshot.session, run=run)
 
-        sequence = len(snapshot.events)
         emitted: list[EventRecord] = []
-        metadata = clear_pending_metadata(run.metadata)
-        metadata["abort_reason"] = reason
-        run = run.model_copy(
-            update={
-                "status": "aborted",
-                "ended_at": utc_now(),
-                "pending_approval_id": None,
-                "abort_requested": True,
-                "error": reason,
-                "metadata": metadata,
-            }
-        )
-        session = snapshot.session.model_copy(
-            update={
-                "status": "idle",
-                "active_run_id": None,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "last_run_id": run.run_id,
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(session)
+        signal = self._abort_signals.get(run.run_id)
+        if signal is not None:
+            signal.abort(reason)
+        with session_mutation(self.store, session_id):
+            snapshot = self.store.load_session(session_id, recover=False)
+            run = find_run(snapshot.runs, run.run_id)
+            if run.status not in ACTIVE_RUN_STATUSES:
+                return RunResult(session=snapshot.session, run=run)
+            metadata = clear_pending_metadata(run.metadata)
+            metadata["abort_reason"] = reason
+            run = run.model_copy(
+                update={
+                    "status": "aborted",
+                    "ended_at": utc_now(),
+                    "pending_approval_id": None,
+                    "abort_requested": True,
+                    "error": reason,
+                    "metadata": metadata,
+                }
+            )
+            session = snapshot.session.model_copy(
+                update={
+                    "status": "idle",
+                    "active_run_id": None,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "last_run_id": run.run_id,
+                }
+            )
+            self.store.save_run(run)
+            self.store.save_session(session)
         self.store.try_update_index(session.session_id)
-        sequence = await self.event_recorder.emit(
+        await self.event_recorder.emit(
             emitted,
-            sequence,
+            len(snapshot.events),
             session_id=session.session_id,
             run_id=run.run_id,
             event_type="run_aborted",
             payload={"reason": reason},
         )
-        del sequence
-        signal = self._abort_signals.get(run.run_id)
-        if signal is not None:
-            signal.abort(reason)
         self._finish_run_hooks(run)
         return RunResult(session=session, run=run, events=emitted)
 
@@ -760,6 +792,24 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
+            snapshot = self.store.load_session(session_id, recover=False)
+            session = snapshot.session
+            run = find_run(snapshot.runs, run.run_id)
+            if run.status != "waiting_approval":
+                raise ValueError(f"run is not waiting for approval: {run.status}")
+            batch = run.active_tool_batch
+            if batch is None:
+                raise ValueError("run has no active tool batch")
+            resolved_approval_id = approval_id or run.pending_approval_id
+            if resolved_approval_id is None:
+                raise ValueError("run has no pending approval")
+            batch = self.tool_calls.resolve_approval(
+                batch,
+                approval_id=resolved_approval_id,
+                approved=approved,
+                reason=reason,
+                arguments_override=arguments_override,
+            )
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
@@ -775,13 +825,6 @@ class RuntimeService:
                     "approved": approved,
                     "reason": None if approved else reason,
                 },
-            )
-            batch = self.tool_calls.resolve_approval(
-                batch,
-                approval_id=resolved_approval_id,
-                approved=approved,
-                reason=reason,
-                arguments_override=arguments_override,
             )
             return await self._continue_resolved_batch(
                 snapshot=snapshot,
@@ -816,6 +859,25 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
+            snapshot = self.store.load_session(session_id, recover=False)
+            session = snapshot.session
+            run = find_run(snapshot.runs, run.run_id)
+            if run.status != "waiting_user":
+                raise ValueError(f"run is not waiting for user input: {run.status}")
+            batch = run.active_tool_batch
+            if batch is None:
+                raise ValueError("run has no active tool batch")
+            waiting_call = next(
+                (call for call in batch.calls if call.status == "waiting_user"),
+                None,
+            )
+            if waiting_call is None:
+                raise ValueError("run has no tool call waiting for user input")
+            batch = self.tool_calls.resolve_user_answer(
+                batch,
+                tool_call_id=waiting_call.request.id,
+                answer=answer,
+            )
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
@@ -830,11 +892,6 @@ class RuntimeService:
                     "tool_call_id": waiting_call.request.id,
                     "answer": answer,
                 },
-            )
-            batch = self.tool_calls.resolve_user_answer(
-                batch,
-                tool_call_id=waiting_call.request.id,
-                answer=answer,
             )
             return await self._continue_resolved_batch(
                 snapshot=snapshot,
@@ -875,6 +932,7 @@ class RuntimeService:
                 run_id=run.run_id,
                 event_type="run_status_changed",
                 payload={
+                    "to_status": status,
                     "status": status,
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
@@ -919,6 +977,7 @@ class RuntimeService:
                 tool_results=handling.results,
             )
             if abort_result is not None:
+                self._finish_run_hooks(abort_result.run)
                 return abort_result
             boundary = await self._consume_turn_boundary_inputs(
                 emitted,
@@ -1001,6 +1060,7 @@ class RuntimeService:
             self._abort_signals.pop(run_id, None)
 
     def _finish_run_hooks(self, run: RunRecord) -> None:
+        self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
             self.hooks.finish_run(run.run_id)
 

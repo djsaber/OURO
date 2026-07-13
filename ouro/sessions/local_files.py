@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -15,15 +16,25 @@ from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import (
+    ACTIVE_RUN_STATUSES,
+    RunRecord,
+    SessionRecord,
+    session_status_for_run,
+)
 from ouro.sessions.base import SessionSnapshot
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.local_io import write_json_atomic, write_model_atomic
-from ouro.sessions.locks import SessionRunLock, is_lock_held
+from ouro.sessions.locks import SessionMutationLock, SessionRunLock, is_lock_held
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
+_STREAM_DELTA_EVENT_TYPES = {
+    "model_text_delta",
+    "model_reasoning_delta",
+    "model_tool_call_delta",
+}
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 
@@ -33,7 +44,9 @@ class LocalSessionStore:
         self.root = Path(root_value) if root_value is not None else Path.home() / ".ouro"
         self.sessions_dir = self.root / "sessions"
         self.session_locks_dir = self.root / "locks" / "sessions"
+        self.session_mutation_locks_dir = self.root / "locks" / "session-mutations"
         self.trash_sessions_dir = self.root / "trash" / "sessions"
+        self._event_sequence_cache: dict[str, tuple[int, int]] = {}
         self._layout_path = self.root / "layout.json"
         self._catalog = LocalSessionIndex(
             self.sessions_dir,
@@ -46,6 +59,7 @@ class LocalSessionStore:
         (self.root / "config").mkdir(parents=True, exist_ok=True)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_locks_dir.mkdir(parents=True, exist_ok=True)
+        self.session_mutation_locks_dir.mkdir(parents=True, exist_ok=True)
         self.trash_sessions_dir.mkdir(parents=True, exist_ok=True)
         self._initialize_layout()
         self._recover_trash_staging()
@@ -59,6 +73,15 @@ class LocalSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
+    ) -> None:
+        with self.session_mutation(session.session_id):
+            self._create_session_snapshot(session, messages, resource_references)
+
+    def _create_session_snapshot(
+        self,
+        session: SessionRecord,
+        messages: list[MessageRecord],
+        resource_references: list[SessionResourceReference] | None,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
@@ -85,6 +108,7 @@ class LocalSessionStore:
                 ),
             )
             staging_dir.replace(session_dir)
+            self._event_sequence_cache[session.session_id] = (0, 0)
         except (OSError, PersistenceError) as exc:
             with suppress(OSError):
                 shutil.rmtree(staging_dir)
@@ -93,10 +117,15 @@ class LocalSessionStore:
             raise PersistenceError(f"could not create session {session.session_id}: {exc}") from exc
 
     def save_session(self, session: SessionRecord) -> None:
-        session_dir = self._require_session_dir(session.session_id)
-        self._write_model_atomic(session_dir / "session.json", session)
+        with self.session_mutation(session.session_id):
+            session_dir = self._require_session_dir(session.session_id)
+            self._write_model_atomic(session_dir / "session.json", session)
 
     def trash_session(self, session_id: str) -> str:
+        with self.session_mutation(session_id):
+            return self._trash_session(session_id)
+
+    def _trash_session(self, session_id: str) -> str:
         session_dir = self._session_dir(session_id)
         if not session_dir.exists():
             raise FileNotFoundError(session_dir)
@@ -146,41 +175,80 @@ class LocalSessionStore:
         return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
-        session_dir = self._require_session_dir(message.session_id)
-        self._append_jsonl(session_dir / "messages.jsonl", message)
+        with self.session_mutation(message.session_id):
+            session_dir = self._require_session_dir(message.session_id)
+            self._append_jsonl(session_dir / "messages.jsonl", message)
 
     def append_event(self, event: EventRecord) -> None:
-        session_dir = self._require_session_dir(event.session_id)
-        self._append_jsonl(session_dir / "events.jsonl", event)
+        with self.session_mutation(event.session_id):
+            session_dir = self._require_session_dir(event.session_id)
+            self._append_jsonl(session_dir / "events.jsonl", event)
+            self._event_sequence_cache.pop(event.session_id, None)
+
+    def append_ordered_event(self, event: EventRecord) -> EventRecord:
+        with self.session_mutation(event.session_id):
+            session_dir = self._require_session_dir(event.session_id)
+            path = session_dir / "events.jsonl"
+            sequence = max(
+                event.sequence,
+                self._max_event_sequence(event.session_id, path) + 1,
+            )
+            ordered = event.model_copy(update={"sequence": sequence})
+            # Delta events are group-committed by the next durable boundary
+            # event. This preserves ordered live replay without one fsync per token.
+            self._append_jsonl(
+                path,
+                ordered,
+                durable=ordered.event_type not in _STREAM_DELTA_EVENT_TYPES,
+            )
+            self._event_sequence_cache[event.session_id] = (path.stat().st_size, sequence)
+            return ordered
 
     def save_run(self, run: RunRecord) -> None:
-        run_dir = self._require_session_dir(run.session_id) / "runs"
-        run_dir.mkdir(parents=True, exist_ok=True)
-        run_id = _validated_record_id(run.run_id, kind="run")
-        self._write_model_atomic(run_dir / f"{run_id}.json", run)
+        with self.session_mutation(run.session_id):
+            run_dir = self._require_session_dir(run.session_id) / "runs"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            run_id = _validated_record_id(run.run_id, kind="run")
+            self._write_model_atomic(run_dir / f"{run_id}.json", run)
 
     def append_compaction(self, compaction: CompactionRecord) -> None:
-        session_dir = self._require_session_dir(compaction.session_id)
-        self._append_jsonl(
-            session_dir / "compactions.jsonl",
-            compaction,
-        )
+        with self.session_mutation(compaction.session_id):
+            session_dir = self._require_session_dir(compaction.session_id)
+            self._append_jsonl(
+                session_dir / "compactions.jsonl",
+                compaction,
+            )
 
     def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord:
-        snapshot = self.load_session(session_id, recover=False)
-        if not any(item.compaction_id == compaction_id for item in snapshot.compactions):
-            raise PersistenceError(f"unknown compaction {compaction_id} for session {session_id}")
-        updated = snapshot.session.model_copy(
-            update={
-                "active_compaction_id": compaction_id,
-                "updated_at": utc_now(),
-            }
-        )
-        self.save_session(updated)
+        with self.session_mutation(session_id):
+            snapshot = self.load_session(session_id, recover=False)
+            if not any(item.compaction_id == compaction_id for item in snapshot.compactions):
+                raise PersistenceError(
+                    f"unknown compaction {compaction_id} for session {session_id}"
+                )
+            updated = snapshot.session.model_copy(
+                update={
+                    "active_compaction_id": compaction_id,
+                    "updated_at": utc_now(),
+                }
+            )
+            self.save_session(updated)
         self.try_update_index(session_id)
         return updated
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
+        with self.session_mutation(session_id):
+            snapshot, projection_changed = self._load_session(session_id, recover=recover)
+        if projection_changed:
+            self.try_update_index(session_id)
+        return snapshot
+
+    def _load_session(
+        self,
+        session_id: str,
+        *,
+        recover: bool,
+    ) -> tuple[SessionSnapshot, bool]:
         session_dir = self._session_dir(session_id)
         try:
             session = self.load_session_record(session_id)
@@ -205,8 +273,9 @@ class LocalSessionStore:
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
         runs.sort(key=_run_sort_key)
+        projection_changed = False
         if recover:
-            session, messages, events, runs = self._recover_incomplete_runs(
+            session, messages, events, runs, projection_changed = self._recover_incomplete_runs(
                 session,
                 messages,
                 events,
@@ -223,28 +292,32 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"session {session_id} references missing compaction {session.active_compaction_id}"
             )
-        return snapshot
+        return snapshot, projection_changed
 
     def load_session_record(self, session_id: str) -> SessionRecord:
-        path = self._session_dir(session_id) / "session.json"
-        try:
-            return SessionRecord.model_validate_json(path.read_text("utf-8"))
-        except FileNotFoundError:
-            raise
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(f"could not load session record {session_id}: {exc}") from exc
+        with self.session_mutation(session_id):
+            path = self._session_dir(session_id) / "session.json"
+            try:
+                return SessionRecord.model_validate_json(path.read_text("utf-8"))
+            except FileNotFoundError:
+                raise
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load session record {session_id}: {exc}"
+                ) from exc
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
-        validated_run_id = _validated_record_id(run_id, kind="run")
-        path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
-        try:
-            return RunRecord.model_validate_json(path.read_text("utf-8"))
-        except FileNotFoundError:
-            raise
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not load run {run_id} for session {session_id}: {exc}"
-            ) from exc
+        with self.session_mutation(session_id):
+            validated_run_id = _validated_record_id(run_id, kind="run")
+            path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
+            try:
+                return RunRecord.model_validate_json(path.read_text("utf-8"))
+            except FileNotFoundError:
+                raise
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load run {run_id} for session {session_id}: {exc}"
+                ) from exc
 
     def list_sessions(self) -> list[SessionRecord]:
         records: list[SessionRecord] = []
@@ -281,6 +354,12 @@ class LocalSessionStore:
                 f"could not acquire session lock for {session_id}: {exc}"
             ) from exc
 
+    def session_mutation(self, session_id: str) -> SessionMutationLock:
+        return SessionMutationLock(
+            self._mutation_lock_path(session_id),
+            session_id=session_id,
+        )
+
     def is_session_locked(self, session_id: str) -> bool:
         try:
             return is_lock_held(self._lock_path(session_id))
@@ -295,30 +374,43 @@ class LocalSessionStore:
         messages: list[MessageRecord],
         events: list[EventRecord],
         runs: list[RunRecord],
-    ) -> tuple[SessionRecord, list[MessageRecord], list[EventRecord], list[RunRecord]]:
-        if self.is_session_locked(session.session_id):
-            return session, messages, events, runs
-
+    ) -> tuple[
+        SessionRecord,
+        list[MessageRecord],
+        list[EventRecord],
+        list[RunRecord],
+        bool,
+    ]:
+        run_is_live = self.is_session_locked(session.session_id)
         recovered_runs: list[RunRecord] = []
-        changed = False
+        recovered_incomplete = False
         for run in runs:
-            if run.status in _INCOMPLETE_RUN_STATUSES:
+            interaction_error = _interaction_state_error(run)
+            if not run_is_live and (
+                run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None
+            ):
                 metadata = dict(run.metadata)
                 metadata.pop("checkpoint", None)
-                partial_message = self._append_recovered_partial_message(
-                    session=session,
-                    run=run,
-                    messages=messages,
-                    events=events,
+                partial_message = (
+                    self._append_recovered_partial_message(
+                        session=session,
+                        run=run,
+                        messages=messages,
+                        events=events,
+                    )
+                    if run.status in _INCOMPLETE_RUN_STATUSES
+                    else None
                 )
                 if partial_message is not None:
                     metadata["recovered_partial_assistant_message_id"] = partial_message.message_id
                 metadata["recovered_from_status"] = run.status
+                if interaction_error is not None:
+                    metadata["recovery_reason"] = "invalid_interaction_state"
                 active_batch = run.active_tool_batch
-                if active_batch is not None and active_batch.phase in {
-                    "executing",
-                    "committing_results",
-                }:
+                if active_batch is not None and (
+                    interaction_error is not None
+                    or active_batch.phase in {"executing", "committing_results"}
+                ):
                     recovered_calls = [
                         call.model_copy(update={"status": "unknown_outcome"})
                         if call.status == "running"
@@ -336,7 +428,7 @@ class LocalSessionStore:
                     update={
                         "status": "recoverable",
                         "ended_at": utc_now(),
-                        "error": "Run was interrupted before completion.",
+                        "error": interaction_error or "Run was interrupted before completion.",
                         "abort_requested": False,
                         "active_tool_batch": active_batch,
                         "metadata": metadata,
@@ -348,32 +440,93 @@ class LocalSessionStore:
                         session_id=session.session_id,
                         run_id=recovered.run_id,
                         previous_status=run.status,
-                        sequence=len(events) + 1,
+                        reason=(
+                            "invalid_interaction_state"
+                            if interaction_error is not None
+                            else "process_restarted"
+                        ),
                     )
                 )
                 recovered_runs.append(recovered)
-                changed = True
+                recovered_incomplete = True
             else:
                 recovered_runs.append(run)
 
-        if changed:
+        reconciled_session, projection_changed = self._reconcile_session_projection(
+            session,
+            messages,
+            recovered_runs,
+        )
+        if recovered_incomplete or projection_changed:
             metadata = dict(session.metadata)
-            metadata["recovered_incomplete_runs"] = True
-            session_update = {
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "active_run_id": None,
-                "last_message_id": messages[-1].message_id if messages else session.last_message_id,
-                "message_count": len(messages),
-                "metadata": metadata,
-            }
-            if session.status == "running":
-                session_update["status"] = "idle"
-            session = session.model_copy(update=session_update)
+            if recovered_incomplete:
+                metadata["recovered_incomplete_runs"] = True
+            if projection_changed:
+                metadata["session_state_reconciled"] = True
+            session = reconciled_session.model_copy(
+                update={
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "metadata": metadata,
+                }
+            )
             self.save_session(session)
-            self.try_update_index(session.session_id)
 
-        return session, messages, events, recovered_runs
+        return (
+            session,
+            messages,
+            events,
+            recovered_runs,
+            recovered_incomplete or projection_changed,
+        )
+
+    def _reconcile_session_projection(
+        self,
+        session: SessionRecord,
+        messages: list[MessageRecord],
+        runs: list[RunRecord],
+    ) -> tuple[SessionRecord, bool]:
+        active_runs = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
+        if len(active_runs) > 1:
+            active_ids = ", ".join(run.run_id for run in active_runs)
+            raise PersistenceError(
+                f"session {session.session_id} has multiple active runs: {active_ids}"
+            )
+
+        latest_run = runs[-1] if runs else None
+        active_run = active_runs[0] if active_runs else None
+        if active_run is not None and active_run is not latest_run:
+            raise PersistenceError(
+                f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
+            )
+        if active_run is not None:
+            expected_status = session_status_for_run(active_run.status)
+            expected_active_run_id = active_run.run_id
+        else:
+            expected_status = (
+                "failed"
+                if latest_run and latest_run.status == "failed" and latest_run.kind == "agent"
+                else "idle"
+            )
+            expected_active_run_id = None
+
+        expected_last_run_id = latest_run.run_id if latest_run is not None else None
+        expected_last_message_id = messages[-1].message_id if messages else None
+        expected_message_count = len(messages)
+        changes: dict[str, object] = {}
+        if session.status != expected_status:
+            changes["status"] = expected_status
+        if session.active_run_id != expected_active_run_id:
+            changes["active_run_id"] = expected_active_run_id
+        if session.last_run_id != expected_last_run_id:
+            changes["last_run_id"] = expected_last_run_id
+        if session.last_message_id != expected_last_message_id:
+            changes["last_message_id"] = expected_last_message_id
+        if session.message_count != expected_message_count:
+            changes["message_count"] = expected_message_count
+        if not changes:
+            return session, False
+        return session.model_copy(update=changes), True
 
     def _append_recovered_partial_message(
         self,
@@ -459,21 +612,19 @@ class LocalSessionStore:
         session_id: str,
         run_id: str,
         previous_status: str,
-        sequence: int,
+        reason: str,
     ) -> EventRecord:
         event = EventRecord(
             session_id=session_id,
             run_id=run_id,
             event_type="run_status_changed",
-            sequence=sequence,
             payload={
                 "from_status": previous_status,
                 "to_status": "recoverable",
-                "reason": "process_restarted",
+                "reason": reason,
             },
         )
-        self.append_event(event)
-        return event
+        return self.append_ordered_event(event)
 
     def _session_dir(self, session_id: str) -> Path:
         return self.sessions_dir / _validated_record_id(session_id, kind="session")
@@ -531,20 +682,44 @@ class LocalSessionStore:
         validated = _validated_record_id(session_id, kind="session")
         return self.session_locks_dir / f"{validated}.lock"
 
+    def _mutation_lock_path(self, session_id: str) -> Path:
+        validated = _validated_record_id(session_id, kind="session")
+        return self.session_mutation_locks_dir / f"{validated}.lock"
+
+    def _max_event_sequence(self, session_id: str, path: Path) -> int:
+        size = path.stat().st_size if path.exists() else 0
+        cached = self._event_sequence_cache.get(session_id)
+        if cached is not None and cached[0] == size:
+            return cached[1]
+        maximum = 0
+        for line in self._read_jsonl(path):
+            try:
+                raw = json.loads(line)
+                if not isinstance(raw, dict):
+                    raise ValueError("event record must be a JSON object")
+                value = raw.get("sequence", 0)
+                if isinstance(value, int):
+                    maximum = max(maximum, value)
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise PersistenceError(f"could not read event sequence from {path}: {exc}") from exc
+        self._event_sequence_cache[session_id] = (size, maximum)
+        return maximum
+
     def _write_model_atomic(self, path: Path, model: OuroModel) -> None:
         write_model_atomic(path, model)
 
     def _write_json_atomic(self, path: Path, value: object) -> None:
         write_json_atomic(path, value)
 
-    def _append_jsonl(self, path: Path, model: OuroModel) -> None:
+    def _append_jsonl(self, path: Path, model: OuroModel, *, durable: bool = True) -> None:
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as file:
                 file.write(model.model_dump_json())
                 file.write("\n")
                 file.flush()
-                os.fsync(file.fileno())
+                if durable:
+                    os.fsync(file.fileno())
         except (OSError, TypeError, ValueError) as exc:
             raise PersistenceError(f"could not append {path}: {exc}") from exc
 
@@ -555,6 +730,21 @@ class LocalSessionStore:
             return [line for line in path.read_text("utf-8").splitlines() if line.strip()]
         except OSError as exc:
             raise PersistenceError(f"could not read {path}: {exc}") from exc
+
+
+def _interaction_state_error(run: RunRecord) -> str | None:
+    if run.status == "waiting_approval":
+        batch = run.active_tool_batch
+        if batch is None or not batch.pending_approvals:
+            return "Run was waiting for approval without a pending approval."
+        approval_ids = {approval.approval_id for approval in batch.pending_approvals}
+        if run.pending_approval_id not in approval_ids:
+            return "Run pending approval does not match its active tool batch."
+    if run.status == "waiting_user":
+        batch = run.active_tool_batch
+        if batch is None or not any(call.status == "waiting_user" for call in batch.calls):
+            return "Run was waiting for user input without a waiting tool call."
+    return None
 
 
 def _run_sort_key(run: RunRecord) -> tuple[str, str]:

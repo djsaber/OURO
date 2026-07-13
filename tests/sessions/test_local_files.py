@@ -1,5 +1,7 @@
 import pytest
 
+from ouro.core.approvals import ApprovalRecord
+from ouro.core.base import utc_now
 from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -40,6 +42,34 @@ def test_local_file_store_round_trip(tmp_path) -> None:
     assert snapshot.events[0].event_type == "run_started"
     assert snapshot.runs[0].status == "completed"
     assert store.list_sessions()[0].session_id == session.session_id
+
+
+def test_stream_delta_events_group_commit_at_durable_boundary(monkeypatch, tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Event group commit")
+    store.create_session(session)
+    fsync_calls = 0
+    original_fsync = __import__("os").fsync
+
+    def count_fsync(descriptor):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        original_fsync(descriptor)
+
+    monkeypatch.setattr("ouro.sessions.local_files.os.fsync", count_fsync)
+    store.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="model_text_delta")
+    )
+    store.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="model_reasoning_delta")
+    )
+    assert fsync_calls == 0
+
+    store.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="model_message_completed")
+    )
+    assert fsync_calls == 1
 
 
 def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
@@ -101,6 +131,130 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
         event for event in reloaded.events if event.payload.get("to_status") == "recoverable"
     ]
     assert len(recovery_events) == 1
+
+
+def test_recovery_aligns_session_with_durable_waiting_run(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    request = ToolCallRequest(id="call_waiting", name="Protected")
+    approval = ApprovalRecord(
+        session_id="session_waiting",
+        run_id="run_waiting",
+        tool_call_id=request.id,
+    )
+    batch = ToolCallBatchRecord(
+        turn_id="turn_waiting",
+        assistant_message_id="msg_waiting",
+        phase="awaiting_interaction",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="awaiting_approval",
+                approval=approval,
+            )
+        ],
+    )
+    run = RunRecord(
+        run_id="run_waiting",
+        session_id="session_waiting",
+        status="waiting_approval",
+        pending_approval_id=approval.approval_id,
+        active_tool_batch=batch,
+    )
+    session = SessionRecord(
+        session_id=run.session_id,
+        title="Waiting mismatch",
+        status="running",
+        active_run_id=run.run_id,
+        last_run_id=run.run_id,
+    )
+    store.create_session(session)
+    store.save_run(run)
+
+    recovered = store.load_session(session.session_id)
+
+    assert recovered.session.status == "waiting_approval"
+    assert recovered.session.active_run_id == run.run_id
+    assert recovered.runs[0].status == "waiting_approval"
+
+
+def test_recovery_turns_invalid_waiting_state_into_recoverable_run(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    run = RunRecord(session_id="session_dead_wait", status="waiting_user")
+    session = SessionRecord(
+        session_id=run.session_id,
+        title="Dead waiting state",
+        status="waiting_user",
+        active_run_id=run.run_id,
+        last_run_id=run.run_id,
+    )
+    store.create_session(session)
+    store.save_run(run)
+
+    recovered = store.load_session(session.session_id)
+
+    assert recovered.session.status == "idle"
+    assert recovered.session.active_run_id is None
+    assert recovered.runs[0].status == "recoverable"
+    assert recovered.events[-1].payload["reason"] == "invalid_interaction_state"
+
+
+def test_recovery_clears_terminal_run_from_active_session_projection(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    run = RunRecord(
+        session_id="session_completed",
+        status="completed",
+        ended_at=utc_now(),
+    )
+    session = SessionRecord(
+        session_id=run.session_id,
+        title="Terminal mismatch",
+        status="running",
+        active_run_id=run.run_id,
+        last_run_id=run.run_id,
+    )
+    store.create_session(session)
+    store.save_run(run)
+
+    recovered = store.load_session(session.session_id)
+
+    assert recovered.session.status == "idle"
+    assert recovered.session.active_run_id is None
+    assert recovered.runs[0].status == "completed"
+
+
+def test_recovery_clears_missing_active_run_reference(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(
+        title="Missing active run",
+        status="running",
+        active_run_id="run_missing",
+    )
+    store.create_session(session)
+
+    recovered = store.load_session(session.session_id)
+
+    assert recovered.session.status == "idle"
+    assert recovered.session.active_run_id is None
+
+
+def test_recovery_rejects_ambiguous_multiple_active_runs(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Ambiguous active runs", status="running")
+    store.create_session(session)
+    store.save_run(RunRecord(session_id=session.session_id, status="waiting_user"))
+    store.save_run(RunRecord(session_id=session.session_id, status="waiting_approval"))
+    lock = store.acquire_session_lock(session.session_id, "run_live")
+    assert lock is not None
+    try:
+        with pytest.raises(PersistenceError, match="multiple active runs"):
+            store.load_session(session.session_id)
+    finally:
+        lock.release()
 
 
 def test_recovery_marks_in_flight_tool_outcome_unknown(tmp_path) -> None:

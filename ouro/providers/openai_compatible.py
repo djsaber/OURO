@@ -53,6 +53,11 @@ class OpenAICompatibleProvider:
         self.default_headers = dict(default_headers or {})
         self.request_options = dict(request_options or {})
 
+    async def close(self) -> None:
+        close = getattr(self.transport, "aclose", None)
+        if close is not None:
+            await close()
+
     async def stream(
         self,
         *,

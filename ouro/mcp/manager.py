@@ -420,6 +420,10 @@ class MCPManager:
             runtime.recycle_error = error
             runtime.recycle.set()
             raise MCPToolCallError(error) from exc
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
         return mcp_tool_result(invocation, remote_result)
 
     def _connected_runtime(self, server_id: str) -> _ServerRuntime:
@@ -493,19 +497,17 @@ async def _wait_for_runtime_event(
         asyncio.create_task(runtime.recycle.wait()): "recycle",
         asyncio.create_task(runtime.tools_changed.wait()): "tools_changed",
     }
-    done, pending = await asyncio.wait(
-        waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
-    )
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-    if not done:
-        return "health_check"
-    task = next(task for task in waiters if task in done)
-    for extra in done - {task}:
-        extra.cancel()
-    return waiters[task]
+    try:
+        done, _ = await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        if not done:
+            return "health_check"
+        task = next(task for task in waiters if task in done)
+        return waiters[task]
+    finally:
+        for waiter in waiters:
+            if not waiter.done():
+                waiter.cancel()
+        await asyncio.gather(*waiters, return_exceptions=True)
 
 
 def _default_credential_resolver(reference: str) -> str | None:

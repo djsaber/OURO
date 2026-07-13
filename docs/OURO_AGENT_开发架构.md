@@ -100,6 +100,8 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 
 模型路由不接受 model id 或 endpoint id 短名。这样持久化值、CLI 输入和运行时解析使用同一契约，
 不会因多个 provider 出现同名模型而产生歧义。
+同一份已解析 endpoint 配置复用 adapter 与 HTTP client；配置指纹变化时重建 adapter，Supervisor shutdown
+统一关闭其拥有的连接。调用方注入的 HTTP client 不由框架关闭。
 
 ## 消息、工具与上下文
 
@@ -126,6 +128,7 @@ OURO_HOME/
   config/config.json
   skills/
   locks/sessions/
+  locks/session-mutations/
   sessions/
     index.json
     <session_id>/
@@ -146,17 +149,22 @@ OURO_HOME/
 `session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
 
-Provider text/reasoning delta 只追加到 `events.jsonl`。快照只在消息提交和生命周期状态转换时写入。
+Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delta 事件执行组提交；状态边界事件仍同步落盘。
+快照只在消息提交和生命周期状态转换时写入。
 崩溃恢复从 durable messages、run 状态和最后模型轮次事件重建未完成输出，不重放结果未知的外部副作用。
 
 `layout.json` 的 `data_layout_version` 标识整套本地数据契约。遇到不兼容版本时初始化必须抛出
 `MigrationRequiredError`，不能在加载过程中猜测字段或隐式改写数据。
 
-每个 session 同时只允许一个 active run。进程持有的 OS lock 是存活判断依据，锁文件仅用于诊断。
+每个 session 同时只允许一个 active run。`RunRecord` 是执行状态事实，`SessionRecord.status` 与
+`active_run_id` 是可恢复的查询投影；加载恢复会校准悬空引用、跨文件写入中断和不可继续的人机等待状态。
+长生命周期 session OS lock 表示 active run 的进程所有权；独立的短生命周期 mutation lock 只覆盖
+单次 canonical 读改写、JSONL 追加和事件序号分配，两者不能互相替代。锁文件仅用于诊断。
 
 全局 resource record/blob 与 Session 引用关系是 canonical 数据；`resources/index.json` 是可重建投影。
 资源导入先 staging 并计算 SHA-256，再原子发布。分支的消息与资源引用在同一 Session staging 目录发布，
-避免先出现带悬空 resource id 的分支。
+避免先出现带悬空 resource id 的分支。分支读取、资源引用校验和目标发布持有源 Session mutation lock，
+因此源会话删除或资源移除必须在线性化点之后执行，垃圾回收不会删除正在复制的最后一份可达内容。
 
 ## 配置契约
 

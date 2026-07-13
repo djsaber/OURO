@@ -5,17 +5,23 @@ from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.core.base import utc_now
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
-from ouro.core.state import RunPhase, RunRecord, RunStatus, SessionRecord
+from ouro.core.state import (
+    ACTIVE_RUN_STATUSES,
+    RunPhase,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+    session_status_for_run,
+)
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
-from ouro.sessions import SessionStore
-
-ACTIVE_RUN_STATUSES = {"queued", "running", "waiting_user", "waiting_approval"}
+from ouro.sessions import SessionStore, session_mutation
 
 
 class RunLifecycle:
@@ -31,22 +37,33 @@ class RunLifecycle:
         self.store = store
         self.events = events
         self._validate_resource_refs = validate_resource_refs
+        self._message_cache: dict[
+            tuple[str, str],
+            dict[tuple[str, str], MessageRecord],
+        ] = {}
 
     def start(self, *, session: SessionRecord, run: RunRecord) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
-        active_run = run.model_copy(update={"status": "running"})
-        active_session = session.model_copy(
-            update={
-                "status": "running",
-                "last_run_id": active_run.run_id,
-                "active_run_id": active_run.run_id,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-            }
-        )
-        self.store.save_session(active_session)
-        self.store.save_run(active_run)
+        with session_mutation(self.store, session.session_id):
+            snapshot = self.store.load_session(session.session_id, recover=False)
+            existing = maybe_active_run(snapshot.runs)
+            if existing is not None and existing.run_id != run.run_id:
+                raise SessionBusyError(f"session already has an active run: {existing.run_id}")
+            active_run = run.model_copy(update={"status": "running"})
+            active_session = snapshot.session.model_copy(
+                update={
+                    "status": "running",
+                    "last_run_id": active_run.run_id,
+                    "active_run_id": active_run.run_id,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
+            )
+            # The Run is authoritative. If the second write fails, recovery can
+            # safely reconstruct the Session projection from this record.
+            self.store.save_run(active_run)
+            self.store.save_session(active_session)
         self.store.try_update_index(active_session.session_id)
         return active_session, active_run
 
@@ -82,16 +99,10 @@ class RunLifecycle:
         turn_id: str,
         reasoning_content: str = "",
     ) -> MessageRecord:
-        existing = next(
-            (
-                message
-                for message in self.store.load_session(session.session_id, recover=False).messages
-                if message.run_id == run.run_id
-                and message.turn_id == turn_id
-                and message.role == "assistant"
-                and message.tool_calls
-            ),
-            None,
+        existing = self._find_message(
+            session.session_id,
+            run.run_id,
+            ("assistant_tools", turn_id),
         )
         if existing is not None:
             return existing
@@ -119,16 +130,10 @@ class RunLifecycle:
     ) -> MessageRecord:
         """Durably commit a completed assistant turn without completing its run."""
 
-        existing = next(
-            (
-                message
-                for message in self.store.load_session(session.session_id, recover=False).messages
-                if message.run_id == run.run_id
-                and message.turn_id == turn_id
-                and message.role == "assistant"
-                and not message.tool_calls
-            ),
-            None,
+        existing = self._find_message(
+            session.session_id,
+            run.run_id,
+            ("assistant", turn_id),
         )
         if existing is not None:
             return existing
@@ -161,16 +166,10 @@ class RunLifecycle:
             )
         if self._validate_resource_refs is not None:
             self._validate_resource_refs(session.session_id, result.resource_refs)
-        existing = next(
-            (
-                message
-                for message in self.store.load_session(session.session_id, recover=False).messages
-                if message.run_id == run.run_id
-                and message.role == "tool_result"
-                and message.tool_result is not None
-                and message.tool_result.tool_call_id == result.tool_call_id
-            ),
-            None,
+        existing = self._find_message(
+            session.session_id,
+            run.run_id,
+            ("tool_result", result.tool_call_id),
         )
         if existing is not None:
             return existing
@@ -191,32 +190,47 @@ class RunLifecycle:
                 ),
             }
         )
-        self._append_message(session=session, run=run, message=message)
+        self._append_message(
+            session=session,
+            run=run,
+            message=message,
+            allow_interrupted=True,
+        )
         return message
 
     def record_usage(self, run: RunRecord, usage: Usage) -> RunRecord:
-        latest = self.store.load_run(run.session_id, run.run_id)
-        if latest.status == "aborted" or latest.abort_requested:
-            return latest
-        updated = latest.model_copy(update={"usage": merge_usage(latest.usage, usage)})
-        self.store.save_run(updated)
-        return updated
+        with session_mutation(self.store, run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            if latest.status not in ACTIVE_RUN_STATUSES or latest.abort_requested:
+                return latest
+            updated = latest.model_copy(update={"usage": merge_usage(latest.usage, usage)})
+            self.store.save_run(updated)
+            return updated
 
     def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> SessionRecord:
-        latest_session = self.store.load_session_record(session.session_id)
-        updated_session = latest_session.model_copy(
-            update={
-                "status": session.status,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "last_run_id": run.run_id,
-                "active_run_id": run.run_id,
-                "last_message_id": latest_session.last_message_id,
-                "message_count": latest_session.message_count,
-            }
-        )
-        self.store.save_run(run)
-        self.store.save_session(updated_session)
+        with session_mutation(self.store, session.session_id):
+            latest_session = self.store.load_session_record(session.session_id)
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            self._require_active(latest_run)
+            updated_run = run.model_copy(
+                update={
+                    "usage": latest_run.usage,
+                    "abort_requested": latest_run.abort_requested,
+                }
+            )
+            updated_session = latest_session.model_copy(
+                update={
+                    "status": session_status_for_run(updated_run.status),
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "last_run_id": run.run_id,
+                    "active_run_id": run.run_id,
+                    "last_message_id": latest_session.last_message_id,
+                    "message_count": latest_session.message_count,
+                }
+            )
+            self.store.save_run(updated_run)
+            self.store.save_session(updated_session)
         self.store.try_update_index(updated_session.session_id)
         return updated_session
 
@@ -229,36 +243,54 @@ class RunLifecycle:
         status: RunStatus,
         phase: RunPhase,
     ) -> tuple[SessionRecord, RunRecord]:
-        latest_session = self.store.load_session_record(session.session_id)
-        latest_run = self.store.load_run(session.session_id, run.run_id)
-        if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
-            if batch is not None:
-                latest_run = latest_run.model_copy(update={"active_tool_batch": batch})
-                self.store.save_run(latest_run)
-            return latest_session, latest_run
-        pending = batch.pending_approvals if batch is not None else []
-        updated_run = latest_run.model_copy(
-            update={
-                "status": status,
-                "phase": phase,
-                "active_tool_batch": batch,
-                "pending_approval_id": pending[0].approval_id if pending else None,
-            }
-        )
-        session_status = status if status in {"waiting_approval", "waiting_user"} else "running"
-        updated_session = latest_session.model_copy(
-            update={
-                "status": session_status,
-                "active_run_id": run.run_id,
-                "last_run_id": run.run_id,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-            }
-        )
-        self.store.save_run(updated_run)
-        self.store.save_session(updated_session)
-        self.store.try_update_index(updated_session.session_id)
+        with session_mutation(self.store, session.session_id):
+            latest_session = self.store.load_session_record(session.session_id)
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            self._require_active(latest_run)
+            pending = batch.pending_approvals if batch is not None else []
+            updated_run = latest_run.model_copy(
+                update={
+                    "status": status,
+                    "phase": phase,
+                    "active_tool_batch": batch,
+                    "pending_approval_id": pending[0].approval_id if pending else None,
+                }
+            )
+            session_status = session_status_for_run(status)
+            updated_session = latest_session.model_copy(
+                update={
+                    "status": session_status,
+                    "active_run_id": run.run_id,
+                    "last_run_id": run.run_id,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
+            )
+            self.store.save_run(updated_run)
+            self.store.save_session(updated_session)
+        if status in {"waiting_approval", "waiting_user"}:
+            self.store.try_update_index(updated_session.session_id)
         return updated_session, updated_run
+
+    def save_aborted_batch(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        batch: ToolCallBatchRecord,
+    ) -> RunRecord:
+        """Attach final audit outcomes without reopening an aborted Run."""
+
+        with session_mutation(self.store, session_id):
+            latest_run = self.store.load_run(session_id, run_id)
+            if latest_run.status != "aborted":
+                return latest_run
+            current = latest_run.active_tool_batch
+            if current is not None and current.batch_id != batch.batch_id:
+                raise SessionBusyError(f"aborted run batch changed: {run_id} ({current.batch_id})")
+            updated_run = latest_run.model_copy(update={"active_tool_batch": batch})
+            self.store.save_run(updated_run)
+            return updated_run
 
     async def complete(
         self,
@@ -273,51 +305,63 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        if final_text or reasoning_content:
-            assistant_message = MessageRecord.text(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                role="assistant",
-                text=final_text,
-                sequence=len(messages) + 1,
-                turn_id=turn_id,
-            )
-            if reasoning_content:
-                assistant_message = assistant_message.model_copy(
-                    update={
-                        "metadata": {
-                            **assistant_message.metadata,
-                            "reasoning_content": reasoning_content,
-                        }
-                    }
+        with session_mutation(self.store, session.session_id):
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
+                return RunResult(
+                    session=self.store.load_session_record(session.session_id),
+                    run=latest_run,
+                    final_text=final_text,
+                    events=emitted,
+                    tool_results=tool_results,
                 )
-            self._append_message(session=session, run=run, message=assistant_message)
-            messages.append(assistant_message)
+            if final_text or reasoning_content:
+                assistant_message = MessageRecord.text(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    role="assistant",
+                    text=final_text,
+                    sequence=len(messages) + 1,
+                    turn_id=turn_id,
+                )
+                if reasoning_content:
+                    assistant_message = assistant_message.model_copy(
+                        update={
+                            "metadata": {
+                                **assistant_message.metadata,
+                                "reasoning_content": reasoning_content,
+                            }
+                        }
+                    )
+                self._append_message(session=session, run=latest_run, message=assistant_message)
+                messages.append(assistant_message)
 
-        latest_session = self.store.load_session_record(session.session_id)
-        last_message_id = messages[-1].message_id if messages else session.last_message_id
-        completed_run = run.model_copy(
-            update={
-                "status": "completed",
-                "ended_at": utc_now(),
-                "pending_approval_id": None,
-                "active_tool_batch": None,
-                "metadata": clear_pending_metadata(run.metadata),
-            }
-        )
-        completed_session = latest_session.model_copy(
-            update={
-                "status": "idle",
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "active_run_id": None,
-                "last_message_id": last_message_id,
-                "message_count": len(messages),
-                "last_run_id": completed_run.run_id,
-            }
-        )
-        self.store.save_run(completed_run)
-        self.store.save_session(completed_session)
+            latest_session = self.store.load_session_record(session.session_id)
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            self._require_active(latest_run)
+            last_message_id = messages[-1].message_id if messages else session.last_message_id
+            completed_run = latest_run.model_copy(
+                update={
+                    "status": "completed",
+                    "ended_at": utc_now(),
+                    "pending_approval_id": None,
+                    "active_tool_batch": None,
+                    "metadata": clear_pending_metadata(latest_run.metadata),
+                }
+            )
+            completed_session = latest_session.model_copy(
+                update={
+                    "status": "idle",
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "active_run_id": None,
+                    "last_message_id": last_message_id,
+                    "message_count": len(messages),
+                    "last_run_id": completed_run.run_id,
+                }
+            )
+            self.store.save_run(completed_run)
+            self.store.save_session(completed_session)
         self.store.try_update_index(completed_session.session_id)
         await self.events.emit(
             emitted,
@@ -348,47 +392,58 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        latest_session = self.store.load_session_record(session.session_id)
-        if final_text or reasoning_content:
-            metadata: dict[str, Any] = {
-                "incomplete": True,
-                "failure_reason": error,
-            }
-            if reasoning_content:
-                metadata["reasoning_content"] = reasoning_content
-            assistant_message = MessageRecord.text(
-                session_id=session.session_id,
-                run_id=run.run_id,
-                role="assistant",
-                text=final_text,
-                sequence=latest_session.message_count + 1,
-                turn_id=turn_id,
-            ).model_copy(update={"metadata": metadata})
-            self._append_message(session=session, run=run, message=assistant_message)
-
+        with session_mutation(self.store, session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
-        failed_run = run.model_copy(
-            update={
-                "status": "failed",
-                "ended_at": utc_now(),
-                "error": error,
-                "active_tool_batch": None,
-                "metadata": clear_pending_metadata(run.metadata),
-            }
-        )
-        failed_session = latest_session.model_copy(
-            update={
-                "status": "failed",
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "active_run_id": None,
-                "last_message_id": latest_session.last_message_id,
-                "message_count": latest_session.message_count,
-                "last_run_id": failed_run.run_id,
-            }
-        )
-        self.store.save_run(failed_run)
-        self.store.save_session(failed_session)
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
+                return RunResult(
+                    session=latest_session,
+                    run=latest_run,
+                    final_text=final_text,
+                    events=emitted,
+                    tool_results=tool_results,
+                )
+            if final_text or reasoning_content:
+                metadata: dict[str, Any] = {
+                    "incomplete": True,
+                    "failure_reason": error,
+                }
+                if reasoning_content:
+                    metadata["reasoning_content"] = reasoning_content
+                assistant_message = MessageRecord.text(
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    role="assistant",
+                    text=final_text,
+                    sequence=latest_session.message_count + 1,
+                    turn_id=turn_id,
+                ).model_copy(update={"metadata": metadata})
+                self._append_message(session=session, run=latest_run, message=assistant_message)
+                latest_session = self.store.load_session_record(session.session_id)
+                latest_run = self.store.load_run(session.session_id, run.run_id)
+                self._require_active(latest_run)
+            failed_run = latest_run.model_copy(
+                update={
+                    "status": "failed",
+                    "ended_at": utc_now(),
+                    "error": error,
+                    "active_tool_batch": None,
+                    "metadata": clear_pending_metadata(latest_run.metadata),
+                }
+            )
+            failed_session = latest_session.model_copy(
+                update={
+                    "status": "failed",
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "active_run_id": None,
+                    "last_message_id": latest_session.last_message_id,
+                    "message_count": latest_session.message_count,
+                    "last_run_id": failed_run.run_id,
+                }
+            )
+            self.store.save_run(failed_run)
+            self.store.save_session(failed_session)
         self.store.try_update_index(failed_session.session_id)
         await self.events.emit(
             emitted,
@@ -418,33 +473,43 @@ class RunLifecycle:
         final_text: str,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        latest_session = self.store.load_session_record(session.session_id)
-        metadata = dict(run.metadata)
-        metadata["pause"] = {
-            "kind": "context_maintenance" if reason == "context_blocked" else "soft_budget",
-            "reason": reason,
-            "next_model_round": next_model_round,
-        }
-        paused_run = run.model_copy(
-            update={
-                "status": "paused",
-                "ended_at": utc_now(),
-                "pending_approval_id": None,
-                "active_tool_batch": None,
-                "metadata": metadata,
+        with session_mutation(self.store, session.session_id):
+            latest_session = self.store.load_session_record(session.session_id)
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
+                return RunResult(
+                    session=latest_session,
+                    run=latest_run,
+                    final_text=final_text,
+                    events=emitted,
+                    tool_results=tool_results,
+                )
+            metadata = dict(latest_run.metadata)
+            metadata["pause"] = {
+                "kind": ("context_maintenance" if reason == "context_blocked" else "soft_budget"),
+                "reason": reason,
+                "next_model_round": next_model_round,
             }
-        )
-        paused_session = latest_session.model_copy(
-            update={
-                "status": "idle",
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-                "active_run_id": None,
-                "last_run_id": paused_run.run_id,
-            }
-        )
-        self.store.save_run(paused_run)
-        self.store.save_session(paused_session)
+            paused_run = latest_run.model_copy(
+                update={
+                    "status": "paused",
+                    "ended_at": utc_now(),
+                    "pending_approval_id": None,
+                    "active_tool_batch": None,
+                    "metadata": metadata,
+                }
+            )
+            paused_session = latest_session.model_copy(
+                update={
+                    "status": "idle",
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                    "active_run_id": None,
+                    "last_run_id": paused_run.run_id,
+                }
+            )
+            self.store.save_run(paused_run)
+            self.store.save_session(paused_session)
         self.store.try_update_index(paused_session.session_id)
         await self.events.emit(
             emitted,
@@ -472,9 +537,23 @@ class RunLifecycle:
         session: SessionRecord,
         run: RunRecord,
         message: MessageRecord,
+        allow_interrupted: bool = False,
     ) -> None:
-        self.store.append_message(message)
-        self._persist_appended_message(session=session, run=run, message=message)
+        with session_mutation(self.store, session.session_id):
+            latest_run = self.store.load_run(session.session_id, run.run_id)
+            if not allow_interrupted or latest_run.status not in {"aborted", "recoverable"}:
+                self._require_active(latest_run)
+            self.store.append_message(message)
+            self._persist_appended_message(
+                session=session,
+                run=latest_run,
+                message=message,
+                allow_interrupted=allow_interrupted,
+            )
+            cache = self._message_cache.get((session.session_id, run.run_id))
+            key = _message_cache_key(message)
+            if cache is not None and key is not None:
+                cache[key] = message
 
     def _persist_appended_message(
         self,
@@ -482,10 +561,13 @@ class RunLifecycle:
         session: SessionRecord,
         run: RunRecord,
         message: MessageRecord,
+        allow_interrupted: bool,
     ) -> None:
         latest_session = self.store.load_session_record(session.session_id)
         latest_run = self.store.load_run(session.session_id, run.run_id)
         if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
+            if not allow_interrupted or latest_run.status not in {"aborted", "recoverable"}:
+                self._require_active(latest_run)
             updated_session = latest_session.model_copy(
                 update={
                     "updated_at": utc_now(),
@@ -500,7 +582,6 @@ class RunLifecycle:
                 }
             )
             self.store.save_session(updated_session)
-            self.store.try_update_index(updated_session.session_id)
             return
         updated_session = latest_session.model_copy(
             update={
@@ -518,6 +599,33 @@ class RunLifecycle:
         )
         self.store.save_session(updated_session)
 
+    @staticmethod
+    def _require_active(run: RunRecord) -> None:
+        if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
+            raise SessionBusyError(f"run is no longer active: {run.run_id} ({run.status})")
+
+    def _find_message(
+        self,
+        session_id: str,
+        run_id: str,
+        key: tuple[str, str],
+    ) -> MessageRecord | None:
+        cache_key = (session_id, run_id)
+        cache = self._message_cache.get(cache_key)
+        if cache is None:
+            cache = {}
+            for message in self.store.load_session(session_id, recover=False).messages:
+                if message.run_id != run_id:
+                    continue
+                message_key = _message_cache_key(message)
+                if message_key is not None:
+                    cache[message_key] = message
+            self._message_cache[cache_key] = cache
+        return cache.get(key)
+
+    def finish_run(self, run: RunRecord) -> None:
+        self._message_cache.pop((run.session_id, run.run_id), None)
+
 
 def find_run(runs: list[RunRecord], run_id: str) -> RunRecord:
     for run in runs:
@@ -526,10 +634,20 @@ def find_run(runs: list[RunRecord], run_id: str) -> RunRecord:
     raise KeyError(f"unknown run: {run_id}")
 
 
+def _message_cache_key(message: MessageRecord) -> tuple[str, str] | None:
+    if message.role == "assistant" and message.turn_id is not None:
+        return ("assistant_tools" if message.tool_calls else "assistant", message.turn_id)
+    if message.role == "tool_result" and message.tool_result is not None:
+        return ("tool_result", message.tool_result.tool_call_id)
+    return None
+
+
 def find_active_run(runs: list[RunRecord]) -> RunRecord:
-    for run in reversed(runs):
-        if run.status in ACTIVE_RUN_STATUSES:
-            return run
+    active = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
+    if len(active) > 1:
+        raise PersistenceError("multiple active runs: " + ", ".join(run.run_id for run in active))
+    if active:
+        return active[0]
     raise ValueError("no active run")
 
 

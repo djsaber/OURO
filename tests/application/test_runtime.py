@@ -918,6 +918,71 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "approve-once.txt"
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "call_once",
+                                "name": "Write",
+                                "arguments": {"path": str(target), "content": "once"},
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="done"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+    pending = await runtime.run("Write once")
+    stale = store.load_session(pending.session.session_id, recover=False)
+    await runtime.approve_tool(
+        session_id=pending.session.session_id,
+        run_id=pending.run.run_id,
+        approved=True,
+    )
+    original_load = store.load_session
+    load_count = 0
+
+    def stale_then_current(session_id, *, recover=True):
+        nonlocal load_count
+        load_count += 1
+        if load_count == 1:
+            return stale
+        return original_load(session_id, recover=recover)
+
+    monkeypatch.setattr(store, "load_session", stale_then_current)
+    with pytest.raises(ValueError, match="not waiting for approval: completed"):
+        await runtime.approve_tool(
+            session_id=pending.session.session_id,
+            run_id=pending.run.run_id,
+            approved=True,
+        )
+
+    current = original_load(pending.session.session_id, recover=False)
+    assert target.read_text(encoding="utf-8") == "once"
+    assert len([message for message in current.messages if message.role == "tool_result"]) == 1
+    assert len([event for event in current.events if event.event_type == "tool_call_started"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_abort_waiting_approval_run(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -1473,6 +1538,39 @@ async def test_runtime_releases_session_lock_when_startup_persistence_fails(tmp_
 
     session = store.list_sessions()[0]
     assert store.is_session_locked(session.session_id) is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovers_when_session_projection_fails_after_run_start(tmp_path) -> None:
+    class FailingProjectionStore(LocalSessionStore):
+        fail_active_projection = True
+
+        def save_session(self, session) -> None:
+            if self.fail_active_projection and session.active_run_id is not None:
+                raise PersistenceError("simulated session projection failure")
+            super().save_session(session)
+
+    store = FailingProjectionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="text_delta", text="unused")]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    with pytest.raises(PersistenceError, match="session projection failure"):
+        await runtime.run("hello")
+
+    session = store.list_sessions()[0]
+    assert store.is_session_locked(session.session_id) is False
+    store.fail_active_projection = False
+    recovered = store.load_session(session.session_id)
+    assert recovered.session.status == "idle"
+    assert recovered.session.active_run_id is None
+    assert recovered.runs[0].status == "recoverable"
 
 
 @pytest.mark.asyncio

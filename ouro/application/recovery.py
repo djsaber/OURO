@@ -89,6 +89,7 @@ class RunRecoveryService:
                     )
             if run_changed:
                 self._save_reconciled_run(run, batch, updated_calls)
+            self.runs.finish_run(run)
 
         if not changed:
             return snapshot
