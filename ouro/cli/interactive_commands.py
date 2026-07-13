@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from ouro.application.runtime import RuntimeService
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
 from ouro.skills import discover_available_skills
 
@@ -12,12 +14,14 @@ class CommandResult:
     session_id: str | None
     output: str = ""
     should_exit: bool = False
+    approval_mode: SessionApprovalMode | None = None
 
 
 async def handle_command(
     line: str,
     runtime: RuntimeService,
     session_id: str | None,
+    approval_mode: SessionApprovalMode = "inherit",
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -28,7 +32,11 @@ async def handle_command(
     if command == "/exit":
         return CommandResult(session_id=session_id, should_exit=True)
     if command == "/new":
-        return CommandResult(session_id=None, output="Started a new session.")
+        return CommandResult(
+            session_id=None,
+            output="Started a new session.",
+            approval_mode="inherit",
+        )
     if command == "/sessions":
         return CommandResult(session_id=session_id, output=_sessions_text(runtime))
     if command == "/open":
@@ -37,6 +45,8 @@ async def handle_command(
         return _available_models(runtime, session_id)
     if command == "/model":
         return _model_command(runtime, session_id, argument)
+    if command == "/approval-mode":
+        return _approval_mode_command(runtime, session_id, approval_mode, argument)
     if command == "/config":
         return CommandResult(session_id=session_id, output=f"OURO_HOME={runtime.store.root}")
     if command == "/export":
@@ -65,6 +75,8 @@ def _help_text() -> str:
             "/models - List configured model endpoints.",
             "/model - Show the current session model.",
             "/model <provider/endpoint> - Switch the current session model.",
+            "/approval-mode - Show the current session approval mode.",
+            "/approval-mode <inherit|auto|approval> - Set the session approval mode.",
             "/config - Show active local config path.",
             "/export - Show active session data path.",
             "/history - Show current session messages.",
@@ -124,6 +136,34 @@ def _model_command(
     )
 
 
+def _approval_mode_command(
+    runtime: RuntimeService,
+    session_id: str | None,
+    current_mode: SessionApprovalMode,
+    value: str,
+) -> CommandResult:
+    if not value:
+        mode = (
+            runtime.store.load_session(session_id, recover=False).session.approval_mode
+            if session_id is not None
+            else current_mode
+        )
+        return CommandResult(session_id=session_id, output=mode, approval_mode=mode)
+    if value not in SESSION_APPROVAL_MODES:
+        return CommandResult(
+            session_id=session_id,
+            output="Usage: /approval-mode <inherit|auto|approval>",
+        )
+    mode = cast(SessionApprovalMode, value)
+    if session_id is not None:
+        runtime.set_session_approval_mode(session_id, mode)
+    return CommandResult(
+        session_id=session_id,
+        output=f"Approval mode: {mode}",
+        approval_mode=mode,
+    )
+
+
 def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
     if not session_id:
         return CommandResult(session_id=None, output="Usage: /open <session_id>")
@@ -134,6 +174,7 @@ def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
     return CommandResult(
         session_id=snapshot.session.session_id,
         output=f"Opened session: {snapshot.session.session_id}",
+        approval_mode=snapshot.session.approval_mode,
     )
 
 

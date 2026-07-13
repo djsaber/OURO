@@ -553,7 +553,7 @@ class ToolCallCoordinator:
                 request=request, status="aborted", invocation=invocation, result=result
             ), sequence
 
-        outcome = self.executor.preflight(invocation)
+        outcome = self.executor.preflight(invocation, approval_mode=session.approval_mode)
         if outcome.status == "approval_required":
             assert outcome.approval is not None
             sequence = await self.events.emit(

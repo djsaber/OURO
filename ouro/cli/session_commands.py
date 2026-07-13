@@ -14,6 +14,7 @@ from ouro.application.session_models import (
 )
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.resources import LocalResourceStore
@@ -96,6 +97,30 @@ def rename_session(
         )
     else:
         print(f"Session renamed: {result.session.session_id} -> {result.session.title}")
+    return 0
+
+
+def set_session_approval_mode(
+    session_id: str,
+    approval_mode: SessionApprovalMode,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        result = _facade(home).set_session_approval_mode(session_id, approval_mode)
+    except (OuroError, FileNotFoundError, ValueError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(f"Session approval mode: {session_id} -> {result.session.approval_mode}")
     return 0
 
 
@@ -229,6 +254,7 @@ def show_session(
                 f"Title: {session.title}",
                 f"Status: {session.status}",
                 f"Model: {session.current_model or '-'}",
+                f"Approval mode: {session.approval_mode}",
                 f"Workspace: {session.workspace or '-'}",
                 f"Messages: {session.message_count}",
                 f"Updated: {session.updated_at}",

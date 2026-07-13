@@ -65,6 +65,7 @@ from ouro.cli.session_commands import (
     remove_session,
     rename_session,
     replay_session,
+    set_session_approval_mode,
     show_session,
 )
 from ouro.cli.skills import (
@@ -99,12 +100,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _mcp_command(args)
     if args.command == "skills":
         return _skills_command(args)
-    return asyncio.run(
-        run_interactive(
-            home=args.home,
-            system_prompt=args.system_prompt,
+    if args.interactive_approval_mode != "inherit":
+        return asyncio.run(
+            run_interactive(
+                home=args.home,
+                system_prompt=args.system_prompt,
+                approval_mode=args.interactive_approval_mode,
+            )
         )
-    )
+    return asyncio.run(run_interactive(home=args.home, system_prompt=args.system_prompt))
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -124,6 +128,7 @@ def _run_command(args: argparse.Namespace) -> int:
             provider_options=provider_options,
             system_prompt=system_prompt,
             queue_mode=args.queue_mode,
+            approval_mode=args.approval_mode,
         )
     )
 
@@ -148,6 +153,13 @@ def _session_command(args: argparse.Namespace) -> int:
         return show_session(args.session_id, home=home, json_mode=args.json)
     if command == "rename":
         return rename_session(args.session_id, args.title, home=home, json_mode=args.json)
+    if command == "approval-mode":
+        return set_session_approval_mode(
+            args.session_id,
+            args.mode,
+            home=home,
+            json_mode=args.json,
+        )
     if command in {"archive", "unarchive"}:
         return archive_session(
             args.session_id,

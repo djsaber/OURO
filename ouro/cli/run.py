@@ -23,6 +23,7 @@ from ouro.config import (
     ToolExecutionConfigManager,
 )
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
@@ -135,6 +136,7 @@ async def run_print(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
+    approval_mode: SessionApprovalMode | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -149,6 +151,7 @@ async def run_print(
                 session_id=session_id,
                 title=title,
                 queue_mode=queue_mode,
+                approval_mode=approval_mode,
             )
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -172,6 +175,7 @@ async def run_json(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
+    approval_mode: SessionApprovalMode | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -186,6 +190,7 @@ async def run_json(
                 session_id=session_id,
                 title=title,
                 queue_mode=queue_mode,
+                approval_mode=approval_mode,
             )
     except OuroError as exc:
         print(
@@ -205,6 +210,7 @@ async def run_json(
                 "session_id": result.session.session_id,
                 "run_id": result.run.run_id,
                 "status": result.run.status,
+                "approval_mode": result.session.approval_mode,
                 "final_text": result.final_text,
                 "error": result.run.error,
                 "usage": result.run.usage,

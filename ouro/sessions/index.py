@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
@@ -46,6 +47,7 @@ class SessionIndexEntry(OuroModel):
     current_provider: str | None = None
     current_endpoint: str | None = None
     current_model: str | None = None
+    approval_mode: SessionApprovalMode = "inherit"
     workspace: str | None = None
     workspace_trusted: bool = False
     archived: bool = False

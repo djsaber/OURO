@@ -8,6 +8,8 @@ from pydantic import Field
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 
 ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
+SessionApprovalMode = Literal["inherit", "auto", "approval"]
+SESSION_APPROVAL_MODES: tuple[SessionApprovalMode, ...] = ("inherit", "auto", "approval")
 
 
 class ApprovalRecord(OuroModel):

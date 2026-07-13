@@ -31,6 +31,7 @@ from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
@@ -189,6 +190,16 @@ class RuntimeService:
         finally:
             self._release_session_run_lock(lock)
 
+    def set_session_approval_mode(
+        self,
+        session_id: str,
+        approval_mode: SessionApprovalMode,
+    ) -> SessionRecord:
+        """Persist the approval policy used by future tool calls in a session."""
+
+        self.sessions.set_approval_mode(session_id, approval_mode)
+        return self.store.load_session(session_id, recover=False).session
+
     def _resolve_session_adapter(
         self,
         session: SessionRecord,
@@ -220,13 +231,17 @@ class RuntimeService:
         session_id: str | None = None,
         title: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
+        approval_mode: SessionApprovalMode | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
     ) -> RunResult:
+        if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
         if session_id is None:
             created = self.sessions.create(
                 title=title or _title_from_prompt(prompt),
                 current_model=self.models.default_model().key,
+                approval_mode=approval_mode or "inherit",
             )
             session = self.store.load_session(
                 created.session.session_id,
@@ -244,6 +259,11 @@ class RuntimeService:
             existing_events = snapshot.events
             active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
+                if approval_mode is not None and approval_mode != session.approval_mode:
+                    raise SessionBusyError(
+                        "cannot change approval mode while the session has an active run: "
+                        f"{session_id}"
+                    )
                 queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
@@ -265,6 +285,11 @@ class RuntimeService:
             snapshot = self.store.load_session(session.session_id, recover=False)
             active_run = maybe_active_run(snapshot.runs)
             if active_run is not None:
+                if approval_mode is not None and approval_mode != snapshot.session.approval_mode:
+                    raise SessionBusyError(
+                        "cannot change approval mode while the session has an active run: "
+                        f"{session.session_id}"
+                    )
                 queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
@@ -278,7 +303,19 @@ class RuntimeService:
         try:
             locked_snapshot = self.store.load_session(session.session_id, recover=False)
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
-            session, active_adapter = self._resolve_session_adapter(locked_snapshot.session)
+            session = locked_snapshot.session
+            if approval_mode is not None and approval_mode != session.approval_mode:
+                now = utc_now()
+                session = session.model_copy(
+                    update={
+                        "approval_mode": approval_mode,
+                        "updated_at": now,
+                        "last_activity_at": now,
+                    }
+                )
+                self.store.save_session(session)
+                self.store.try_update_index(session.session_id)
+            session, active_adapter = self._resolve_session_adapter(session)
             existing_messages = locked_snapshot.messages
             existing_events = locked_snapshot.events
             sequence = len(existing_events)

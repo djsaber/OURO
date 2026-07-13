@@ -46,3 +46,39 @@ async def test_permission_override_changes_mode_to_auto(tmp_path) -> None:
     assert outcome.result is not None
     assert outcome.result.is_error is False
     assert target.read_text(encoding="utf-8") == "auto-written"
+
+
+def test_session_auto_mode_overrides_protected_tool_policy() -> None:
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    executor = ToolExecutor(registry)
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="Write",
+        arguments={"path": "unused.txt", "content": "content"},
+    )
+
+    outcome = executor.preflight(invocation, approval_mode="auto")
+
+    assert outcome.status == "ready"
+    assert outcome.invocation.permission_mode == "auto"
+
+
+def test_session_approval_mode_overrides_automatic_tool_policy() -> None:
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    executor = ToolExecutor(registry, permission_overrides={"Read": "auto"})
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="Read",
+        arguments={"path": "unused.txt"},
+    )
+
+    outcome = executor.preflight(invocation, approval_mode="approval")
+
+    assert outcome.status == "approval_required"
+    assert outcome.invocation.permission_mode == "approval"

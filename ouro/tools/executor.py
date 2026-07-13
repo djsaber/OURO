@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ouro.core.approvals import ApprovalRecord
+from ouro.core.approvals import ApprovalRecord, SessionApprovalMode
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import PermissionMode
@@ -34,11 +34,13 @@ class ToolExecutor:
         arguments_override: dict[str, object] | None = None,
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
     ) -> ToolExecutionOutcome:
         prepared = self.preflight(
             invocation,
             approved=approved,
             arguments_override=arguments_override,
+            approval_mode=approval_mode,
         )
         if prepared.status != "ready":
             return prepared
@@ -51,6 +53,7 @@ class ToolExecutor:
         *,
         approved: bool = False,
         arguments_override: dict[str, object] | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
     ) -> ToolExecutionOutcome:
         try:
             tool = self.registry.get(invocation.tool_name)
@@ -63,6 +66,8 @@ class ToolExecutor:
         effective_mode = self.permission_overrides.get(
             tool.definition.name, tool.definition.permission_mode
         )
+        if approval_mode != "inherit":
+            effective_mode = approval_mode
         invocation = invocation.model_copy(
             update={
                 "source": tool.definition.source,

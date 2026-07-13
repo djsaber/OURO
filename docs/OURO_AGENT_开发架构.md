@@ -84,6 +84,11 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 工具调用以一次完整模型响应为批次边界。Provider 先完成流式响应收集，随后校验整批 tool calls，再按
 配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result 随后按 provider 原始顺序提交。
 
+会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto` 或 `approval`。
+`ToolCallCoordinator` 在工具预检时把会话模式交给 `ToolExecutor`；优先级为会话显式模式、工具权限配置、
+工具定义默认值。`inherit` 不覆盖工具策略。最终有效值写入 durable `ToolInvocation`，因此批准恢复不依赖
+当前进程的配置快照。`AskUser` 属于用户交互协议，不被会话批准模式转换成普通工具批准。
+
 ## 模型路由与 Provider 边界
 
 持久化模型路由只有一种格式：`provider_id/endpoint_id`。

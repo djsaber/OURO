@@ -20,6 +20,7 @@ from ouro.application.session_models import (
     SessionTrashResult,
 )
 from ouro.application.sessions import SessionService, SessionTitleGenerator
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
@@ -73,11 +74,13 @@ class ApplicationFacade:
         title: str = "New session",
         workspace: str | None = None,
         current_model: str | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
     ) -> SessionMutationResult:
         return self._sessions.create(
             title=title,
             workspace=workspace,
             current_model=current_model,
+            approval_mode=approval_mode,
         )
 
     def open_session(self, session_id: str, *, recover: bool = True) -> SessionDetail:
@@ -94,6 +97,13 @@ class ApplicationFacade:
 
     def pin_session(self, session_id: str, *, pinned: bool = True) -> SessionMutationResult:
         return self._sessions.set_pinned(session_id, pinned)
+
+    def set_session_approval_mode(
+        self,
+        session_id: str,
+        approval_mode: SessionApprovalMode,
+    ) -> SessionMutationResult:
+        return self._sessions.set_approval_mode(session_id, approval_mode)
 
     async def generate_session_title(
         self,
@@ -155,12 +165,14 @@ class ApplicationFacade:
         session_id: str | None = None,
         title: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
+        approval_mode: SessionApprovalMode | None = None,
     ) -> RunResult:
         return await self._require_runtime().run(
             prompt,
             session_id=session_id,
             title=title,
             queue_mode=queue_mode,
+            approval_mode=approval_mode,
         )
 
     async def abort_run(

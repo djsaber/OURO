@@ -5,11 +5,20 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ouro.core.approvals import SESSION_APPROVAL_MODES
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ouro")
     parser.add_argument("--home", help="Override OURO_HOME")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
+    parser.add_argument(
+        "--approval-mode",
+        dest="interactive_approval_mode",
+        choices=SESSION_APPROVAL_MODES,
+        default="inherit",
+        help="Initial approval mode for a new interactive session",
+    )
     parser.add_argument(
         "--version",
         "-v",
@@ -85,6 +94,11 @@ def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
     run_parser.add_argument("--title", help="Title for a new session")
     run_parser.add_argument(
+        "--approval-mode",
+        choices=SESSION_APPROVAL_MODES,
+        help="Set the session approval mode before running",
+    )
+    run_parser.add_argument(
         "--queue-mode",
         choices=["follow_up", "steer"],
         default="follow_up",
@@ -157,6 +171,19 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     rename_parser.add_argument("title", help="New title")
     rename_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     rename_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    approval_mode_parser = session_subparsers.add_parser(
+        "approval-mode",
+        help="Set the approval mode for a session",
+    )
+    approval_mode_parser.add_argument("session_id", help="Session id")
+    approval_mode_parser.add_argument(
+        "mode",
+        choices=SESSION_APPROVAL_MODES,
+        help="Session approval mode",
+    )
+    approval_mode_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    approval_mode_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     for command, help_text in (
         ("archive", "Archive a session"),

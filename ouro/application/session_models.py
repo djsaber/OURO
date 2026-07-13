@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -59,6 +60,7 @@ class SessionCatalogEntry(ApplicationDTO):
     current_provider: str | None = None
     current_endpoint: str | None = None
     current_model: str | None = None
+    approval_mode: SessionApprovalMode = "inherit"
     workspace: str | None = None
     workspace_trusted: bool = False
     archived: bool = False
@@ -92,6 +94,7 @@ class SessionView(ApplicationDTO):
     workspace: str | None = None
     workspace_trusted: bool
     current_model: str | None = None
+    approval_mode: SessionApprovalMode = "inherit"
     active_compaction_id: str | None = None
     status: SessionStatus
     active_run_id: str | None = None
@@ -119,6 +122,7 @@ class SessionView(ApplicationDTO):
             workspace=session.workspace,
             workspace_trusted=session.workspace_trusted,
             current_model=session.current_model,
+            approval_mode=session.approval_mode,
             active_compaction_id=session.active_compaction_id,
             status=session.status,
             active_run_id=session.active_run_id,

@@ -5,6 +5,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.tool_batches import ToolCallBatchRecord
 
@@ -47,6 +48,7 @@ class SessionRecord(OuroModel):
     workspace: str | None = None
     workspace_trusted: bool = False
     current_model: str | None = None
+    approval_mode: SessionApprovalMode = "inherit"
     active_compaction_id: str | None = None
     status: SessionStatus = "idle"
     active_run_id: str | None = None

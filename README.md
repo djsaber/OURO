@@ -40,10 +40,12 @@ uv run mypy ouro
 ```bash
 # 交互模式
 uv run ouro --home ./.ouro-dev
+uv run ouro --home ./.ouro-dev --approval-mode auto
 
 # 单次运行
 uv run ouro run --print --home ./.ouro-dev "hello"
 uv run ouro run --json --home ./.ouro-dev "hello"
+uv run ouro run --json --home ./.ouro-dev --approval-mode approval "review first"
 
 # 继续会话
 uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
@@ -89,6 +91,7 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 uv run ouro session list --home ./.ouro-dev --search auth --no-archived
 uv run ouro session show <session_id> --home ./.ouro-dev
 uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
+uv run ouro session approval-mode <session_id> auto --home ./.ouro-dev
 uv run ouro session branch <session_id> <message_id> --home ./.ouro-dev
 uv run ouro session replay <session_id> --home ./.ouro-dev --json
 uv run ouro session compact <session_id> --home ./.ouro-dev
@@ -109,6 +112,11 @@ uv run ouro resource remove <session_id> <resource_id> --home ./.ouro-dev --forc
 
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
 交付模式。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
+
+批准模式是会话状态，不是工具配置：`inherit` 沿用各工具定义和 `config permissions` 的结果，`auto`
+自动执行工具，`approval` 要求所有工具先批准（`AskUser` 仍按用户问答流程处理）。单次运行可使用
+`--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
+`/approval-mode <inherit|auto|approval>`。会话分支继承源会话的批准模式。
 
 ## MCP Server
 

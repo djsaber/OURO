@@ -1,5 +1,6 @@
 """Core OURO runtime models and services."""
 
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, TextContent
@@ -15,6 +16,8 @@ __all__ = [
     "RunResult",
     "ResourceRecord",
     "ResourceSource",
+    "SESSION_APPROVAL_MODES",
+    "SessionApprovalMode",
     "SessionResourceReference",
     "SessionRecord",
     "TextContent",

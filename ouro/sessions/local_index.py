@@ -259,6 +259,7 @@ def _entry_from_session(
         current_provider=provider,
         current_endpoint=endpoint,
         current_model=session.current_model,
+        approval_mode=session.approval_mode,
         workspace=session.workspace,
         workspace_trusted=session.workspace_trusted,
         archived=session.archived,

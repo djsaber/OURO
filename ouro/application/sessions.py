@@ -21,6 +21,7 @@ from ouro.application.session_models import (
     SessionTrashResult,
     SessionView,
 )
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import (
     PersistenceError,
@@ -65,6 +66,7 @@ class SessionService:
         title_source: SessionTitleSource = "fallback",
         workspace: str | None = None,
         current_model: str | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
     ) -> SessionMutationResult:
         normalized_title = _normalize_title(title)
         session = SessionRecord(
@@ -73,6 +75,7 @@ class SessionService:
             title_locked=title_source == "user",
             workspace=workspace,
             current_model=current_model,
+            approval_mode=approval_mode,
         )
         self._store.create_session(session)
         return SessionMutationResult(
@@ -131,6 +134,15 @@ class SessionService:
     def set_tags(self, session_id: str, tags: Iterable[str]) -> SessionMutationResult:
         normalized = sorted({tag.strip() for tag in tags if tag.strip()})
         return self._update_session(session_id, tags=normalized)
+
+    def set_approval_mode(
+        self,
+        session_id: str,
+        approval_mode: SessionApprovalMode,
+    ) -> SessionMutationResult:
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        return self._update_session(session_id, approval_mode=approval_mode)
 
     async def generate_title(
         self,
@@ -260,6 +272,7 @@ class SessionService:
             workspace=source.session.workspace,
             workspace_trusted=source.session.workspace_trusted,
             current_model=source.session.current_model,
+            approval_mode=source.session.approval_mode,
             tags=list(source.session.tags),
         )
         copied_messages, message_id_map = copy_branch_messages(
