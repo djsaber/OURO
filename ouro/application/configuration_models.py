@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.config.provider_models import ProviderKind
 from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
@@ -59,7 +60,7 @@ class ProviderEndpointView(ApplicationDTO):
 
 class ProviderView(ApplicationDTO):
     provider_id: str
-    kind: Literal["faux", "openai-compatible"]
+    kind: ProviderKind
     credential: CredentialStatus
     enabled: bool
     timeout: float
@@ -87,6 +88,24 @@ class ProviderEndpointCatalogView(ApplicationDTO):
     default_endpoint: str | None = None
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)
     change: ConfigurationChange | None = None
+
+
+class ProviderTemplateView(ApplicationDTO):
+    template_id: str
+    display_name: str
+    description: str
+    provider_id: str
+    kind: ProviderKind
+    credential_env: str
+    base_url: str
+    api_path: str
+    endpoint: ProviderEndpointView
+    documentation_url: str
+    verified_on: str
+
+
+class ProviderTemplateCatalogView(ApplicationDTO):
+    templates: list[ProviderTemplateView] = Field(default_factory=list)
 
 
 class SystemPromptConfigView(ApplicationDTO):

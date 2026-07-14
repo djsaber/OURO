@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ouro.config.provider_models import SUPPORTED_PROVIDER_KINDS
 from ouro.core.approvals import SESSION_APPROVAL_MODES
 
 
@@ -431,6 +432,37 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     provider_show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    provider_templates_parser = provider_subparsers.add_parser(
+        "templates",
+        help="List or show built-in provider templates",
+    )
+    provider_templates_parser.add_argument("template_id", nargs="?", help="Template id")
+    provider_templates_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    provider_templates_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    provider_configure_parser = provider_subparsers.add_parser(
+        "configure",
+        help="Configure a provider and model endpoint from a template",
+    )
+    provider_configure_parser.add_argument("template_id", help="Template id")
+    provider_configure_parser.add_argument("--provider-id", help="Override provider id")
+    provider_configure_parser.add_argument("--endpoint-id", help="Override endpoint id")
+    provider_configure_parser.add_argument("--model", help="Override provider model id")
+    provider_configure_parser.add_argument("--base-url", help="Override provider base URL")
+    credentials = provider_configure_parser.add_mutually_exclusive_group()
+    credentials.add_argument(
+        "--api-key",
+        help="Inline API key (stored as plain text; prefer --api-key-env)",
+    )
+    credentials.add_argument("--api-key-env", help="Override API key env var")
+    provider_configure_parser.add_argument(
+        "--default",
+        action="store_true",
+        help="Set provider as default",
+    )
+    provider_configure_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    provider_configure_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     provider_set_parser = provider_subparsers.add_parser(
         "set",
         help="Create or update a provider",
@@ -439,7 +471,7 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_set_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     provider_set_parser.add_argument(
         "--kind",
-        choices=["faux", "openai-compatible"],
+        choices=SUPPORTED_PROVIDER_KINDS,
         default=None,
         help="Provider kind",
     )

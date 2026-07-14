@@ -11,21 +11,51 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 
-ProviderKind = Literal["faux", "openai-compatible"]
-SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = ("faux", "openai-compatible")
+ProviderKind = Literal["faux", "openai-compatible", "anthropic-compatible"]
+SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = (
+    "faux",
+    "openai-compatible",
+    "anthropic-compatible",
+)
 BUILTIN_FAUX_PROVIDER_ID = "faux"
 
 
-def default_api_path(provider_type: ProviderKind) -> str | None:
-    """Return the default API path for a provider kind.
+@dataclass(frozen=True)
+class ProviderAdapterSpec:
+    """Configuration-facing contract for one provider wire protocol."""
 
-    Returns ``None`` for kinds that do not use HTTP URLs (e.g. ``faux``).
-    Unknown kinds should never reach this helper because ``ProviderKind`` is
-    validated by Pydantic.
-    """
-    if provider_type == "openai-compatible":
-        return "/chat/completions"
-    return None
+    kind: ProviderKind
+    default_api_path: str | None
+    requires_base_url: bool
+
+
+_PROVIDER_ADAPTER_SPECS: dict[ProviderKind, ProviderAdapterSpec] = {
+    "faux": ProviderAdapterSpec(
+        kind="faux",
+        default_api_path=None,
+        requires_base_url=False,
+    ),
+    "openai-compatible": ProviderAdapterSpec(
+        kind="openai-compatible",
+        default_api_path="/chat/completions",
+        requires_base_url=True,
+    ),
+    "anthropic-compatible": ProviderAdapterSpec(
+        kind="anthropic-compatible",
+        default_api_path="/v1/messages",
+        requires_base_url=True,
+    ),
+}
+
+
+def provider_adapter_spec(provider_type: ProviderKind) -> ProviderAdapterSpec:
+    return _PROVIDER_ADAPTER_SPECS[provider_type]
+
+
+def default_api_path(provider_type: ProviderKind) -> str | None:
+    """Return the protocol default without coupling callers to kind branches."""
+
+    return provider_adapter_spec(provider_type).default_api_path
 
 
 class ProviderConfig(OuroModel):
@@ -83,7 +113,7 @@ class ProviderConfig(OuroModel):
             raise ValueError("endpoint ids must be unique")
         if self.default_endpoint is not None and self.default_endpoint not in endpoint_ids:
             raise ValueError(f"default endpoint not found: {self.default_endpoint}")
-        if self.provider_type == "openai-compatible":
+        if provider_adapter_spec(self.provider_type).requires_base_url:
             missing_base_url = next(
                 (
                     endpoint.endpoint_id

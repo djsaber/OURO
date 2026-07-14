@@ -12,7 +12,8 @@
 Provider 表示供应商级连接和默认值：
 
 - `provider_id`；
-- `provider_type`：`faux` 或 `openai-compatible`；
+- `provider_type`：`faux`、`openai-compatible` 或 `anthropic-compatible`；类型表示线协议，
+  不表示具体厂商品牌；
 - `credential_ref`；
 - `base_url`、`api_path`、timeout 和 retry policy；
 - enabled、default endpoint 和 endpoint registry。
@@ -60,6 +61,23 @@ Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返
 configured/missing 状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
 manager。Provider retry 的关联字段作为一个原子 mutation 提交，不能留下部分更新。
 
+## 内置模板
+
+`config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据，不是新的 adapter 类型；多个
+厂商可复用同一线协议。每项包含稳定 template id、建议的 provider/endpoint id、模型 ID、连接地址、凭据
+环境变量、Endpoint capability、官方文档和核验日期。
+
+当前目录包含 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、GLM、OpenRouter 和 Mistral。模板值是便捷默认值，
+CLI 允许显式覆盖 provider id、endpoint id、model、base URL 和 credential。
+
+`provider configure <template>` 是显式复合用例：配置 manager 在一次校验和一次写盘中创建/更新 Provider 与
+默认 Endpoint。失败不得产生半配置。重复应用时保留同 Provider 的其他 Endpoint、凭据、timeout、retry 与
+extra；目标 Endpoint 使用模板和本次覆盖刷新。已存在 Provider 的线协议不匹配时明确失败。
+
+Anthropic 模板当前显式关闭 adaptive thinking。原因是 Anthropic 工具续接要求原样保存 opaque thinking
+signature，而 canonical provider continuation 尚未提供该字段；在该底层契约完善前，不用供应商特例把签名
+塞入通用 reasoning 文本。
+
 ## 模型路由
 
 持久化和 Host 输入统一使用 `provider_id/endpoint_id`。`ConfiguredModelCatalog`：
@@ -79,8 +97,9 @@ manager。Provider retry 的关联字段作为一个原子 mutation 提交，不
 3. Endpoint 配置；
 4. 本次命令覆盖。
 
-Endpoint 显式 base URL/API path 优先于 Provider 默认值。OpenAI-compatible 未设置 API path 时使用
-`/chat/completions`。数值 `0` 等合法显式值不能被 truthy 合并误替换。
+Endpoint 显式 base URL/API path 优先于 Provider 默认值。协议默认值由 adapter spec 注册表提供：
+OpenAI-compatible 使用 `/chat/completions`，Anthropic-compatible 使用 `/v1/messages`。数值 `0` 等合法
+显式值不能被 truthy 合并误替换。
 
 ## 凭据
 
@@ -92,7 +111,11 @@ Endpoint 显式 base URL/API path 优先于 Provider 默认值。OpenAI-compatib
 
 ## Provider adapter
 
-Core `Provider` 只暴露 `stream` 和 `check_connection`。OpenAI-compatible 实现负责：
+Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通过 `ProviderKind` 构造器注册表扩展，
+配置默认 API path 由对应 adapter spec 提供；调用方不维护 kind 条件分支。HTTP JSON/SSE transport、transient
+错误分类和“仅首个输出前重试”策略由协议实现共享，HTTP/SSE 对象和异常不得进入 core/application。
+
+OpenAI-compatible 实现负责：
 
 - system message、普通内容、vision、tool history 和 reasoning 字段编码；
 - 普通 JSON 与 SSE transport；
@@ -100,11 +123,12 @@ Core `Provider` 只暴露 `stream` 和 `check_connection`。OpenAI-compatible �
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力的 image/tool response 明确报错。
 
-Endpoint 声明 structured output 能力后才接受结构化 `response_format`。OpenAI-compatible transport 只对明确
-可重试的 timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型流事件，就不再重放请求。每次重试
-形成可持久化的 `run_retry_scheduled` 事件。
+Anthropic-compatible 实现负责 Messages API 的顶层 system、content blocks、vision source、tool use/result、
+usage/error 与 SSE event 映射。协议差异留在各自 codec/adapter 中。
 
-HTTP/SSE 对象和异常不得进入 core/application。
+Endpoint 声明 structured output 能力后才接受结构化 `response_format`。Transport 只对明确可重试的
+timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型流事件，就不再重放请求。每次重试形成可持久化
+的 `run_retry_scheduled` 事件。
 
 ## 配置分区
 
@@ -123,7 +147,9 @@ HTTP/SSE 对象和异常不得进入 core/application。
 - `tests/config/test_credentials_config.py`
 - `tests/providers/test_factory.py`
 - `tests/providers/test_openai_compatible.py`
+- `tests/providers/test_anthropic_compatible.py`
 - `tests/application/test_models.py`
 - `tests/application/test_configuration.py`
 - `tests/application/test_session_models.py`
 - `tests/cli/test_run_cli.py`
+- `tests/cli/test_provider_template_commands.py`

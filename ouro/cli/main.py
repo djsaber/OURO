@@ -30,8 +30,10 @@ from ouro.cli.mcp_commands import (
 from ouro.cli.parser import build_parser
 from ouro.cli.provider_commands import (
     check_provider_connection,
+    configure_provider_template,
     list_provider_configs,
     list_provider_endpoints,
+    list_provider_templates,
     remove_provider_config,
     remove_provider_endpoint,
     set_provider_config,
@@ -373,6 +375,21 @@ def _provider_command(args: argparse.Namespace) -> int:
         return list_provider_configs(home=home, json_mode=args.json)
     if args.provider_command == "show":
         return show_provider_config(args.provider_id, home=home, json_mode=args.json)
+    if args.provider_command == "templates":
+        return list_provider_templates(args.template_id, home=home, json_mode=args.json)
+    if args.provider_command == "configure":
+        return configure_provider_template(
+            args.template_id,
+            home=home,
+            provider_id=args.provider_id,
+            endpoint_id=args.endpoint_id,
+            model=args.model,
+            base_url=args.base_url,
+            api_key=args.api_key,
+            api_key_env=args.api_key_env,
+            make_default=args.default,
+            json_mode=args.json,
+        )
     if args.provider_command == "set":
         return set_provider_config(
             args.provider_id,

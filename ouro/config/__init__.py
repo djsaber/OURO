@@ -29,6 +29,11 @@ from ouro.config.provider_models import (
     ProviderKind,
     ProviderRuntimeOptions,
 )
+from ouro.config.provider_templates import (
+    ProviderTemplate,
+    get_provider_template,
+    provider_templates,
+)
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.queued_inputs import (
     QueuedInputConfig,
@@ -64,6 +69,7 @@ __all__ = [
     "ProviderKind",
     "ProviderEndpointConfig",
     "ProviderRuntimeOptions",
+    "ProviderTemplate",
     "PromptConfigManager",
     "PromptConfigSnapshot",
     "QueuedInputConfig",
@@ -75,6 +81,8 @@ __all__ = [
     "endpoint_config_to_public_dict",
     "permission_config_to_public_dict",
     "provider_config_to_public_dict",
+    "get_provider_template",
+    "provider_templates",
     "prompt_config_to_public_dict",
     "queued_input_config_to_public_dict",
     "run_budget_to_public_dict",

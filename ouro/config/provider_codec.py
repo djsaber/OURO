@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, cast
 
 from pydantic import ValidationError
 
@@ -13,6 +13,7 @@ from ouro.config.endpoints import (
     endpoint_config_to_raw,
 )
 from ouro.config.provider_models import (
+    SUPPORTED_PROVIDER_KINDS,
     ProviderConfig,
     ProviderKind,
     normalize_provider_config,
@@ -169,8 +170,6 @@ def _optional_str(value: object) -> str | None:
 
 
 def _provider_kind(value: object) -> ProviderKind:
-    if value == "openai-compatible":
-        return "openai-compatible"
-    if value == "faux":
-        return "faux"
+    if value in SUPPORTED_PROVIDER_KINDS:
+        return cast(ProviderKind, value)
     raise ValueError(f"unsupported provider kind: {value}")

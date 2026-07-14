@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import ProviderEndpointView, ProviderView
+from ouro.application.configuration_models import (
+    ProviderEndpointView,
+    ProviderTemplateView,
+    ProviderView,
+)
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
 from ouro.config import ProviderKind
@@ -97,6 +101,96 @@ def list_provider_configs(
             f"endpoint={endpoint} endpoints={provider['endpoint_count']} {enabled}"
         )
     print("\n".join(lines))
+    return 0
+
+
+def list_provider_templates(
+    template_id: str | None = None,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        facade = ConfigurationFacade(home)
+        templates = (
+            [facade.provider_template(template_id)]
+            if template_id is not None
+            else facade.provider_template_catalog().templates
+        )
+    except OuroError as exc:
+        _print_provider_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = [_template_to_public(template) for template in templates]
+    if json_mode:
+        print(json.dumps({"status": "ok", "templates": public}, ensure_ascii=False))
+        return 0
+
+    lines = ["Provider templates:"]
+    for template in public:
+        endpoint = template["endpoint"]
+        lines.append(
+            f"- {template['template_id']} ({template['display_name']}) "
+            f"kind={template['kind']} model={endpoint['model_id']} "
+            f"credential=env:{template['credential_env']}"
+        )
+    print("\n".join(lines))
+    return 0
+
+
+def configure_provider_template(
+    template_id: str,
+    *,
+    home: str | Path | None = None,
+    provider_id: str | None = None,
+    endpoint_id: str | None = None,
+    model: str | None = None,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    api_key_env: str | None = None,
+    make_default: bool = False,
+    json_mode: bool = False,
+) -> int:
+    try:
+        facade = ConfigurationFacade(home)
+        template = facade.provider_template(template_id)
+        target_provider_id = provider_id or template.provider_id
+        catalog = facade.configure_provider_template(
+            template_id,
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            make_default=make_default,
+        )
+        provider = next(
+            item for item in catalog.providers if item.provider_id == target_provider_id
+        )
+    except OuroError as exc:
+        _print_provider_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = _provider_to_public(provider)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "template_id": template_id,
+                    "config_path": catalog.config_path,
+                    "provider": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    suffix = " and set as default" if provider.default else ""
+    print(
+        f"Provider configured from {template_id}: "
+        f"{provider.provider_id}/{provider.default_endpoint}{suffix}"
+    )
     return 0
 
 
@@ -481,6 +575,10 @@ def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
 
 def _endpoint_to_public(endpoint: ProviderEndpointView) -> dict[str, Any]:
     return endpoint.model_dump(mode="json", exclude_none=True)
+
+
+def _template_to_public(template: ProviderTemplateView) -> dict[str, Any]:
+    return template.model_dump(mode="json", exclude_none=True)
 
 
 def _checked_target_label(

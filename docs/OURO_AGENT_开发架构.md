@@ -105,16 +105,18 @@ workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制
 
 - `application/models.py` 负责列出、解析和持久化会话模型路由。
 - `config` 负责 provider/endpoint 配置模型与运行参数合并。
-- `providers` 负责把已解析参数构建为具体 adapter。
+- `providers` 负责通过构造器注册表把已解析参数构建为具体协议 adapter。
 - Provider 保存供应商级连接默认值；Endpoint 保存模型 id、采样参数、能力和可选连接覆盖。
 
 模型路由不接受 model id 或 endpoint id 短名。这样持久化值、CLI 输入和运行时解析使用同一契约，
 不会因多个 provider 出现同名模型而产生歧义。
 同一份已解析 endpoint 配置复用 adapter 与 HTTP client；配置指纹变化时重建 adapter，Supervisor shutdown
 统一关闭其拥有的连接。调用方注入的 HTTP client 不由框架关闭。
-OpenAI-compatible adapter 只在尚未发出模型流事件时重试明确分类为 transient 的 transport 失败；开始输出后
-禁止重放。结构化 `response_format` 受 Endpoint capability gate 约束，重试计划通过 durable runtime event
-暴露给 Host。
+当前协议类型包括 Faux、OpenAI-compatible 和 Anthropic-compatible。配置域的 adapter spec 集中声明协议
+默认 API path 与连接要求；厂商模板只组合协议类型和 Endpoint 数据，不进入 adapter factory 分支。
+OpenAI-compatible 与 Anthropic-compatible 共享 provider-neutral HTTP JSON/SSE transport 和重试执行器：只在
+尚未发出模型流事件时重试明确分类为 transient 的失败，开始输出后禁止重放。结构化 `response_format` 受
+Endpoint capability gate 约束，重试计划通过 durable runtime event 暴露给 Host。
 
 ## 消息、工具与上下文
 
@@ -210,6 +212,8 @@ CLI 命令使用资源层级表达职责：
 
 - `provider set` 只管理 provider；
 - `provider endpoint set` 只管理 endpoint；
+- `provider templates` 查询类型化的只读厂商模板目录；
+- `provider configure <template>` 是一次原子创建 Provider 与默认 Endpoint 的显式 application 用例；
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；

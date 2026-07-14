@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -8,7 +7,6 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
-    ProviderRetryNotice,
     ProviderRetryPolicy,
     ProviderStreamEvent,
     Usage,
@@ -28,8 +26,8 @@ from ouro.providers.openai_codec import (
 from ouro.providers.openai_transport import (
     HttpxOpenAICompatibleTransport,
     OpenAICompatibleTransport,
-    OpenAITransportError,
 )
+from ouro.providers.retrying import stream_with_retries
 
 
 class OpenAICompatibleProvider:
@@ -71,41 +69,16 @@ class OpenAICompatibleProvider:
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        attempt = 1
-        while True:
-            emitted_response_event = False
-            try:
-                async for event in self._stream_once(
-                    model=model,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                ):
-                    emitted_response_event = True
-                    yield event
-                return
-            except Exception as exc:  # noqa: BLE001 - provider errors become stream events.
-                next_attempt = attempt + 1
-                if not self._can_retry(
-                    exc,
-                    next_attempt=next_attempt,
-                    emitted_response_event=emitted_response_event,
-                ):
-                    yield ProviderStreamEvent(type="error", error=str(exc))
-                    return
-                delay = self.retry_policy.delay_before_attempt(next_attempt)
-                yield ProviderStreamEvent(
-                    type="retry_scheduled",
-                    retry=ProviderRetryNotice(
-                        attempt=next_attempt,
-                        max_attempts=self.retry_policy.max_attempts,
-                        delay_seconds=delay,
-                        reason=str(exc),
-                    ),
-                )
-                if delay:
-                    await asyncio.sleep(delay)
-                attempt = next_attempt
+        async for event in stream_with_retries(
+            lambda: self._stream_once(
+                model=model,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+            ),
+            self.retry_policy,
+        ):
+            yield event
 
     async def _stream_once(
         self,
@@ -149,20 +122,6 @@ class OpenAICompatibleProvider:
             supports_tools=model.supports_tools,
         ):
             yield event
-
-    def _can_retry(
-        self,
-        exc: Exception,
-        *,
-        next_attempt: int,
-        emitted_response_event: bool,
-    ) -> bool:
-        return (
-            isinstance(exc, OpenAITransportError)
-            and exc.retryable
-            and not emitted_response_event
-            and next_attempt <= self.retry_policy.max_attempts
-        )
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
         try:

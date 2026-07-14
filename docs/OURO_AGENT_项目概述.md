@@ -42,9 +42,10 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 ### 模型与上下文
 
 Provider 表示供应商级连接，Endpoint 表示具体模型目标。会话保存完整 `provider/endpoint` 路由，
-模型参数和能力属于 Endpoint。当前提供 FauxProvider 和 OpenAI-compatible Provider。
-OpenAI-compatible 调用支持仅在首个输出事件前发生的有界重试，并将重试计划记录为运行事件；结构化输出
-只有在 Endpoint 显式声明能力时才会进入请求。
+模型参数和能力属于 Endpoint。当前提供 Faux、OpenAI-compatible 和 Anthropic-compatible 协议适配，内置
+OpenAI、Anthropic、Gemini、DeepSeek、Qwen、GLM、OpenRouter、Mistral 配置模板。HTTP 协议调用共享仅在首个
+输出事件前发生的有界重试，并将重试计划记录为运行事件；结构化输出只有在 Endpoint 显式声明能力时才会
+进入请求。
 
 上下文由 canonical messages 投影生成。系统提示词、Skills 指令、压缩摘要和最近原子模型回合在请求前
 组合；超过硬预算时明确失败或暂停，不静默丢弃 canonical history。摘要压缩使用独立记录保存覆盖范围、

@@ -16,6 +16,7 @@ from ouro.application.configuration_models import (
     ManagedSkillView,
     ProviderEndpointCatalogView,
     ProviderEndpointView,
+    ProviderTemplateView,
     ProviderView,
     SkillDiagnosticView,
     SkillManagementView,
@@ -26,6 +27,7 @@ from ouro.config import (
     CredentialResolver,
     ProviderConfig,
     ProviderEndpointConfig,
+    ProviderTemplate,
     endpoint_config_to_public_dict,
 )
 from ouro.core.errors import CredentialError
@@ -89,6 +91,25 @@ def endpoint_catalog_view(
             for endpoint in provider.endpoints
         ],
         change=change,
+    )
+
+
+def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
+    return ProviderTemplateView(
+        template_id=template.template_id,
+        display_name=template.display_name,
+        description=template.description,
+        provider_id=template.provider_id,
+        kind=template.provider_type,
+        credential_env=template.credential_env,
+        base_url=template.base_url,
+        api_path=template.api_path,
+        endpoint=endpoint_view(
+            template.endpoint,
+            default_endpoint=template.endpoint.endpoint_id,
+        ),
+        documentation_url=template.documentation_url,
+        verified_on=template.verified_on,
     )
 
 

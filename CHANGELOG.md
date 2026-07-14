@@ -7,6 +7,8 @@ This project records user-visible and framework-contract changes in this file.
 ### Added
 
 - Typed application configuration facade shared by CLI hosts.
+- Anthropic Messages protocol adapter, provider adapter registry, and reviewed CLI templates for
+  OpenAI, Anthropic, Gemini, DeepSeek, Qwen, GLM, OpenRouter, and Mistral.
 - Provider retry policy with observable retry events and structured-output capability checks.
 - Hard-deny tool permissions, workspace path policy, and bounded tool output.
 - Request-local text and image resource projection from canonical Session resource references.

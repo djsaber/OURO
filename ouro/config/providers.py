@@ -24,6 +24,7 @@ from ouro.config.provider_models import (
     normalize_provider_config,
 )
 from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
+from ouro.config.provider_templates import ProviderTemplate
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 
@@ -207,6 +208,104 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
         return updated
+
+    def configure_template(
+        self,
+        template: ProviderTemplate,
+        *,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        model_id: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        make_default: bool = False,
+    ) -> ProviderConfig:
+        """Apply a provider and its default endpoint as one config transaction."""
+
+        if api_key is not None and api_key_env is not None:
+            raise ConfigError("api_key and api_key_env cannot be combined")
+        target_provider_id = (
+            provider_id if provider_id is not None else template.provider_id
+        ).strip()
+        target_endpoint_id = (
+            endpoint_id if endpoint_id is not None else template.endpoint.endpoint_id
+        ).strip()
+        if not target_provider_id:
+            raise ConfigError("provider id is required")
+        if not target_endpoint_id:
+            raise ConfigError("endpoint id is required")
+        if target_provider_id == BUILTIN_FAUX_PROVIDER_ID:
+            raise ConfigError("built-in provider cannot be modified: faux")
+        if api_key_env is not None and not api_key_env.strip():
+            raise ConfigError("api key environment variable is required")
+        if api_key is not None and not api_key:
+            raise ConfigError("api key is required")
+
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        previous_default_provider_id = self._default_provider_id(raw, configured)
+        current = configured.get(target_provider_id)
+        if current is not None and current.provider_type != template.provider_type:
+            raise ConfigError(
+                f"provider kind does not match template {template.template_id}: "
+                f"{current.provider_type} != {template.provider_type}"
+            )
+
+        credential_ref = current.credential_ref if current is not None else CredentialRef()
+        if api_key_env is not None:
+            credential_ref = CredentialRef.parse(f"env:{api_key_env.strip()}")
+        elif api_key is not None:
+            credential_ref = CredentialRef.parse(api_key)
+        elif credential_ref.type == "none":
+            credential_ref = CredentialRef.parse(f"env:{template.credential_env}")
+
+        try:
+            endpoint = ProviderEndpointConfig.model_validate(
+                template.endpoint.model_copy(
+                    update={
+                        "endpoint_id": target_endpoint_id,
+                        "model_id": (
+                            model_id if model_id is not None else template.endpoint.model_id
+                        ),
+                    }
+                ).model_dump()
+            )
+            endpoints = (
+                {item.endpoint_id: item for item in current.endpoints}
+                if current is not None
+                else {}
+            )
+            endpoints[target_endpoint_id] = endpoint
+            provider = ProviderConfig(
+                provider_id=target_provider_id,
+                provider_type=template.provider_type,
+                credential_ref=credential_ref,
+                default_endpoint=target_endpoint_id,
+                endpoints=tuple(endpoints[key] for key in sorted(endpoints)),
+                base_url=(base_url if base_url is not None else template.base_url)
+                .strip()
+                .rstrip("/"),
+                api_path=template.api_path,
+                enabled=True,
+                timeout_seconds=current.timeout_seconds if current is not None else 60.0,
+                retry_policy=(
+                    current.retry_policy if current is not None else ProviderRetryPolicy()
+                ),
+                extra=current.extra if current is not None else {},
+            )
+        except ValidationError as exc:
+            raise ConfigError(f"invalid provider template config: {exc}") from exc
+
+        configured[target_provider_id] = provider
+        self._save_configured_providers(
+            raw,
+            configured=configured,
+            default_provider_id=(
+                target_provider_id if make_default else previous_default_provider_id
+            ),
+        )
+        return provider
 
     def upsert_endpoint(
         self,

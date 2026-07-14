@@ -13,6 +13,8 @@ from ouro.application.configuration_models import (
     ProviderCatalogView,
     ProviderEndpointCatalogView,
     ProviderEndpointView,
+    ProviderTemplateCatalogView,
+    ProviderTemplateView,
     ProviderView,
     QueuedInputConfigView,
     RunBudgetConfigView,
@@ -32,6 +34,7 @@ from ouro.application.configuration_views import (
     endpoint_view,
     loaded_skill_view,
     managed_skill_view,
+    provider_template_view,
     provider_view,
     skill_diagnostic_view,
     skill_management_view,
@@ -48,6 +51,10 @@ from ouro.config import (
     QueuedInputConsumptionMode,
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
+    get_provider_template,
+)
+from ouro.config import (
+    provider_templates as available_provider_templates,
 )
 from ouro.config.skills import SkillInstallScope
 from ouro.core.errors import ConfigError
@@ -120,6 +127,42 @@ class ConfigurationFacade:
         return provider_view(
             provider,
             is_default=provider.provider_id == snapshot.default_provider_id,
+        )
+
+    def provider_template_catalog(self) -> ProviderTemplateCatalogView:
+        return ProviderTemplateCatalogView(
+            templates=[
+                provider_template_view(template) for template in available_provider_templates()
+            ]
+        )
+
+    def provider_template(self, template_id: str) -> ProviderTemplateView:
+        return provider_template_view(get_provider_template(template_id))
+
+    def configure_provider_template(
+        self,
+        template_id: str,
+        *,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        make_default: bool = False,
+    ) -> ProviderCatalogView:
+        self.providers.configure_template(
+            get_provider_template(template_id),
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            model_id=model,
+            base_url=base_url,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            make_default=make_default,
+        )
+        return self.provider_catalog(
+            change=configuration_change("providers", "template_configured", "next_request")
         )
 
     def save_provider(

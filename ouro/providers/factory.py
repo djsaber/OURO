@@ -1,12 +1,36 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import cast
+
 from ouro.config.credentials import CredentialRef, CredentialResolver
-from ouro.config.provider_models import ProviderRuntimeOptions, default_api_path
+from ouro.config.provider_models import (
+    SUPPORTED_PROVIDER_KINDS,
+    ProviderKind,
+    ProviderRuntimeOptions,
+    default_api_path,
+    provider_adapter_spec,
+)
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
+from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
 from ouro.providers.faux import FauxProvider
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
+
+
+@dataclass(frozen=True)
+class _AdapterBuildContext:
+    options: ProviderRuntimeOptions
+    model: ModelMetadata
+    provider_id: str
+    base_url: str | None
+    api_key: str | None
+    timeout: float
+
+
+AdapterBuilder = Callable[[_AdapterBuildContext], RuntimeAdapter]
 
 
 def build_runtime_adapter(
@@ -17,9 +41,10 @@ def build_runtime_adapter(
     """Build the provider boundary from fully resolved runtime options."""
 
     provider_kind = options.provider or "faux"
-    if provider_kind not in {"faux", "openai-compatible"}:
+    if provider_kind not in SUPPORTED_PROVIDER_KINDS:
         raise ConfigError(f"unsupported provider: {provider_kind}")
-    default_provider_id = "faux" if provider_kind == "faux" else "openai-compatible"
+    provider_kind = cast(ProviderKind, provider_kind)
+    default_provider_id = "faux" if provider_kind == "faux" else provider_kind
     provider_id = _normalized_identifier(
         options.provider_id,
         default=default_provider_id,
@@ -27,38 +52,80 @@ def build_runtime_adapter(
     )
     assert provider_id is not None
     base_url = options.base_url.strip().rstrip("/") if options.base_url is not None else None
-    if provider_kind == "openai-compatible" and not base_url:
-        raise ConfigError("--base-url is required for openai-compatible provider")
+    adapter_spec = provider_adapter_spec(provider_kind)
+    if adapter_spec.requires_base_url and not base_url:
+        raise ConfigError(f"--base-url is required for {provider_kind} provider")
     model_id = _normalized_identifier(
         options.model,
         default="faux" if provider_kind == "faux" else None,
         option="--endpoint model",
     )
     if model_id is None:
-        raise ConfigError("--model is required for openai-compatible provider")
+        raise ConfigError(f"--model is required for {provider_kind} provider")
 
     timeout = 60.0 if options.timeout is None else options.timeout
     if timeout <= 0:
         raise ConfigError("timeout must be greater than 0")
 
-    model = _model_metadata(options, provider_id=provider_id, model_id=model_id)
-    if provider_kind == "faux":
-        return RuntimeAdapter(FauxProvider(), model)
-
-    if provider_kind != "openai-compatible":
-        raise ConfigError(f"unsupported provider: {provider_kind}")
-    assert base_url is not None
-    resolver = credentials or CredentialResolver()
-    provider = OpenAICompatibleProvider(
-        base_url=base_url,
-        api_key=resolver.resolve(_credential_ref(options)),
+    api_key = None
+    if provider_kind != "faux":
+        resolver = credentials or CredentialResolver()
+        api_key = resolver.resolve(_credential_ref(options))
+    context = _AdapterBuildContext(
+        options=options,
+        model=_model_metadata(options, provider_id=provider_id, model_id=model_id),
         provider_id=provider_id,
-        endpoint=options.api_path or default_api_path(provider_kind) or "/chat/completions",
+        base_url=base_url,
+        api_key=api_key,
         timeout=timeout,
-        request_options=options.extra,
-        retry_policy=options.retry_policy,
     )
-    return RuntimeAdapter(provider, model)
+    builder = _ADAPTER_BUILDERS.get(provider_kind)
+    if builder is None:
+        raise ConfigError(f"provider adapter is not registered: {provider_kind}")
+    return builder(context)
+
+
+def _build_faux(context: _AdapterBuildContext) -> RuntimeAdapter:
+    return RuntimeAdapter(FauxProvider(), context.model)
+
+
+def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
+    assert context.base_url is not None
+    endpoint = context.options.api_path or default_api_path("openai-compatible")
+    assert endpoint is not None
+    provider = OpenAICompatibleProvider(
+        base_url=context.base_url,
+        api_key=context.api_key,
+        provider_id=context.provider_id,
+        endpoint=endpoint,
+        timeout=context.timeout,
+        request_options=context.options.extra,
+        retry_policy=context.options.retry_policy,
+    )
+    return RuntimeAdapter(provider, context.model)
+
+
+def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
+    assert context.base_url is not None
+    endpoint = context.options.api_path or default_api_path("anthropic-compatible")
+    assert endpoint is not None
+    provider = AnthropicCompatibleProvider(
+        base_url=context.base_url,
+        api_key=context.api_key,
+        provider_id=context.provider_id,
+        endpoint=endpoint,
+        timeout=context.timeout,
+        request_options=context.options.extra,
+        retry_policy=context.options.retry_policy,
+    )
+    return RuntimeAdapter(provider, context.model)
+
+
+_ADAPTER_BUILDERS: dict[ProviderKind, AdapterBuilder] = {
+    "faux": _build_faux,
+    "openai-compatible": _build_openai_compatible,
+    "anthropic-compatible": _build_anthropic_compatible,
+}
 
 
 def _model_metadata(

@@ -9,7 +9,11 @@ from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
 from ouro.core.messages import MessageRecord
-from ouro.providers import OpenAICompatibleProvider, build_runtime_adapter
+from ouro.providers import (
+    AnthropicCompatibleProvider,
+    OpenAICompatibleProvider,
+    build_runtime_adapter,
+)
 
 
 class CapturingTransport:
@@ -198,3 +202,19 @@ async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
 
     provider = cast(OpenAICompatibleProvider, adapter.provider)
     assert provider.endpoint == "/custom/path"
+
+
+def test_factory_builds_anthropic_compatible_adapter_from_protocol_registry() -> None:
+    adapter = build_runtime_adapter(
+        ProviderRuntimeOptions(
+            provider="anthropic-compatible",
+            provider_id="anthropic",
+            model="claude-test",
+            base_url="https://api.example.test/",
+        )
+    )
+
+    provider = cast(AnthropicCompatibleProvider, adapter.provider)
+    assert provider.provider_id == "anthropic"
+    assert provider.base_url == "https://api.example.test"
+    assert provider.endpoint == "/v1/messages"

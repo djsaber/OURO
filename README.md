@@ -6,7 +6,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 ## 当前能力
 
 - 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
-- 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择，以及支持安全有界重试与结构化输出能力门控的 OpenAI-compatible 适配。
+- 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
@@ -55,8 +55,30 @@ uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
 
 ## Provider 与 Endpoint
 
-Provider 保存供应商级连接默认值和凭据引用，Endpoint 保存具体模型及其能力。两者使用独立命令，
-不会在一个写操作中隐式创建另一层对象。
+Provider 保存供应商级连接默认值和凭据引用，Endpoint 保存具体模型及其能力。可先查看内置模板，再用一条
+命令原子创建 Provider 与默认 Endpoint：
+
+```bash
+uv run ouro provider templates
+uv run ouro provider templates anthropic --json
+
+# 默认引用模板建议的环境变量；此例为 ANTHROPIC_API_KEY
+uv run ouro provider configure anthropic --home ./.ouro-dev --default
+
+# 可覆盖稳定配置标识、厂商模型 ID、Base URL 或凭据环境变量
+uv run ouro provider configure gemini \
+  --home ./.ouro-dev \
+  --provider-id google \
+  --model gemini-3.5-flash \
+  --api-key-env GEMINI_API_KEY \
+  --default
+```
+
+当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、GLM、OpenRouter 和 Mistral；每个模板携带官方
+文档链接与核验日期。模型 ID 会随厂商演进，生产环境可用 `--model` 固定所需版本。
+
+需要完全自定义时，`provider set` 与 `provider endpoint set` 仍是彼此独立的显式命令，不会隐式创建另一层
+对象：
 
 ```bash
 uv run ouro provider set glm \
