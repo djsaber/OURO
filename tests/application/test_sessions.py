@@ -37,6 +37,33 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
     assert reloaded.title_locked == renamed.session.title_locked
 
 
+def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = SessionRecord(title="Large", message_count=250)
+    messages = [
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text=f"message {sequence}",
+            sequence=sequence,
+        )
+        for sequence in range(1, 251)
+    ]
+    store.create_session_snapshot(session, messages)
+
+    def fail_full_load(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("paged query must not load the full Session snapshot")
+
+    monkeypatch.setattr(store, "load_session", fail_full_load)
+    page = sessions.message_page(session.session_id, limit=25)
+
+    assert len(page.messages) == 25
+    assert page.messages[0].text_content == "message 1"
+    assert page.messages[-1].text_content == "message 25"
+    assert page.next_cursor is not None
+
+
 @pytest.mark.asyncio
 async def test_generated_title_is_sanitized_and_never_overwrites_user_title(tmp_path) -> None:
     store, sessions = _service(tmp_path)

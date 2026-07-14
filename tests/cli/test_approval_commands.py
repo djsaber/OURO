@@ -34,6 +34,7 @@ def _runtime(tmp_path: Path, event_batches: list[list[ProviderStreamEvent]]) -> 
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=registry,
+        default_workspace=tmp_path,
     )
 
 

@@ -214,6 +214,48 @@ def test_session_messages_and_events(tmp_path, capsys) -> None:
     assert any(event["event_type"] == "run_completed" for event in events_payload["events"])
 
 
+def test_session_message_command_exposes_page_cursor(tmp_path, capsys) -> None:
+    run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
+    run_payload = json.loads(capsys.readouterr().out)
+    assert run_code == 0
+
+    first_code = main(
+        [
+            "session",
+            "messages",
+            run_payload["session_id"],
+            "--home",
+            str(tmp_path),
+            "--limit",
+            "1",
+            "--json",
+        ]
+    )
+    first = json.loads(capsys.readouterr().out)
+    assert first_code == 0
+    assert len(first["messages"]) == 1
+    assert first["next_cursor"] is not None
+
+    second_code = main(
+        [
+            "session",
+            "messages",
+            run_payload["session_id"],
+            "--home",
+            str(tmp_path),
+            "--cursor",
+            str(first["next_cursor"]),
+            "--limit",
+            "1",
+            "--json",
+        ]
+    )
+    second = json.loads(capsys.readouterr().out)
+    assert second_code == 0
+    assert len(second["messages"]) == 1
+    assert second["next_cursor"] is None
+
+
 class _DummyProvider:
     provider_id = "dummy"
 

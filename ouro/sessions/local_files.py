@@ -6,7 +6,7 @@ import re
 import shutil
 from contextlib import suppress
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic import ValidationError
 
@@ -36,6 +36,7 @@ _STREAM_DELTA_EVENT_TYPES = {
     "model_tool_call_delta",
 }
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
+_JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
 
 
 class LocalSessionStore:
@@ -305,6 +306,42 @@ class LocalSessionStore:
                 raise PersistenceError(
                     f"could not load session record {session_id}: {exc}"
                 ) from exc
+
+    def load_messages_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[MessageRecord], int | None]:
+        cursor, limit = _validated_page_args(cursor, limit)
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            return self._read_record_page(
+                path,
+                MessageRecord,
+                cursor=cursor,
+                limit=limit,
+            )
+
+    def load_events_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        run_id: str | None = None,
+    ) -> tuple[list[EventRecord], int | None]:
+        cursor, limit = _validated_page_args(cursor, limit)
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "events.jsonl"
+            return self._read_record_page(
+                path,
+                EventRecord,
+                cursor=cursor,
+                limit=limit,
+                run_id=run_id,
+            )
 
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
         with self.session_mutation(session_id):
@@ -731,6 +768,41 @@ class LocalSessionStore:
         except OSError as exc:
             raise PersistenceError(f"could not read {path}: {exc}") from exc
 
+    def _read_record_page(
+        self,
+        path: Path,
+        model_type: type[_JournalRecord],
+        *,
+        cursor: int,
+        limit: int,
+        run_id: str | None = None,
+    ) -> tuple[list[_JournalRecord], int | None]:
+        try:
+            size = path.stat().st_size
+            if cursor > size:
+                raise ValueError(f"cursor {cursor} is beyond end of journal ({size})")
+            with path.open("rb") as file:
+                if cursor:
+                    file.seek(cursor - 1)
+                    if file.read(1) != b"\n":
+                        raise ValueError(f"cursor {cursor} is not at a record boundary")
+                file.seek(cursor)
+                records: list[_JournalRecord] = []
+                while len(records) < limit:
+                    raw = file.readline()
+                    if not raw:
+                        break
+                    if not raw.strip():
+                        continue
+                    record = model_type.model_validate_json(raw)
+                    if run_id is not None and getattr(record, "run_id", None) != run_id:
+                        continue
+                    records.append(record)
+                position = file.tell()
+            return records, position if position < size else None
+        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not read journal page from {path}: {exc}") from exc
+
 
 def _interaction_state_error(run: RunRecord) -> str | None:
     if run.status == "waiting_approval":
@@ -755,3 +827,11 @@ def _validated_record_id(value: str, *, kind: str) -> str:
     if not _RECORD_ID.fullmatch(value):
         raise ValueError(f"invalid {kind} id: {value!r}")
     return value
+
+
+def _validated_page_args(cursor: int, limit: int) -> tuple[int, int]:
+    if cursor < 0:
+        raise ValueError("cursor must be non-negative")
+    if not 1 <= limit <= 1000:
+        raise ValueError("limit must be between 1 and 1000")
+    return cursor, limit

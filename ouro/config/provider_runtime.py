@@ -40,6 +40,7 @@ def runtime_options_from_config(
         supports_reasoning=endpoint.supports_reasoning,
         supported_thinking_levels=endpoint.supported_thinking_levels,
         thinking_level=endpoint.default_thinking_level,
+        retry_policy=provider.retry_policy,
         extra={**provider.extra, **endpoint.request_options},
     )
 
@@ -108,6 +109,9 @@ def merge_runtime_options(
         supports_reasoning=supports_reasoning,
         supported_thinking_levels=supported_thinking_levels,
         thinking_level=thinking_level,
+        retry_policy=(
+            override.retry_policy if override.retry_policy is not None else base.retry_policy
+        ),
         extra=_merge_extra(base.extra, override.extra),
     )
 

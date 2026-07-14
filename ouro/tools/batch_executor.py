@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import ToolExecutionOutcome, ToolInvocation
+from ouro.tools.base import ToolExecutionContext
 from ouro.tools.executor import ToolExecutor
 
 
@@ -22,6 +23,7 @@ class ToolBatchExecutor:
         mode: ToolExecutionMode,
         max_concurrency: int,
         signal: AbortSignal | None = None,
+        context: ToolExecutionContext | None = None,
         on_start: Callable[[ToolInvocation], Awaitable[None]] | None = None,
         on_outcome: Callable[[ToolExecutionOutcome], Awaitable[None]] | None = None,
     ) -> list[ToolExecutionOutcome]:
@@ -31,7 +33,11 @@ class ToolBatchExecutor:
                 if signal is None or not signal.is_aborted():
                     if on_start is not None:
                         await on_start(invocation)
-                outcome = await self.executor.execute_prepared(invocation, signal=signal)
+                outcome = await self.executor.execute_prepared(
+                    invocation,
+                    signal=signal,
+                    context=context,
+                )
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 outcomes.append(outcome)
@@ -44,7 +50,11 @@ class ToolBatchExecutor:
                 if signal is None or not signal.is_aborted():
                     if on_start is not None:
                         await on_start(invocation)
-                outcome = await self.executor.execute_prepared(invocation, signal=signal)
+                outcome = await self.executor.execute_prepared(
+                    invocation,
+                    signal=signal,
+                    context=context,
+                )
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 return outcome

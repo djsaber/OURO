@@ -57,6 +57,10 @@ class ResourceInUseError(ResourceError):
     """A resource reference cannot be removed while canonical messages use it."""
 
 
+class ResourceAttachmentError(ResourceError):
+    """A resource cannot be safely projected into a model request."""
+
+
 class CompactionError(OuroError):
     """Context compaction could not produce and activate a valid summary."""
 

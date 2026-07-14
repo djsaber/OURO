@@ -3,15 +3,18 @@ import sys
 
 import pytest
 
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
+from ouro.application.sessions import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
-from ouro.core.errors import PersistenceError, SessionBusyError
+from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
+    ProviderRetryNotice,
     ProviderStreamEvent,
     ToolCallDelta,
     Usage,
@@ -22,6 +25,7 @@ from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
 from ouro.providers import FauxProvider
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
@@ -263,6 +267,73 @@ async def test_runtime_allows_system_prompt_override(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_projects_resource_content_but_persists_only_reference(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    resource_store = LocalResourceStore(store.root)
+    resource_store.initialize()
+    resources = ResourceService(store=resource_store, sessions=store)
+    session = SessionService(store, resources=resources).create(title="Attachments").session
+    source = tmp_path / "brief.txt"
+    source.write_text("projected attachment", encoding="utf-8")
+    resource = resources.import_resource(session.session_id, source).resource
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+        resources=resources,
+    )
+
+    result = await runtime.run(
+        "Use the brief",
+        session_id=session.session_id,
+        resource_refs=[resource.resource_id],
+    )
+    snapshot = store.load_session(session.session_id, recover=False)
+
+    assert result.run.status == "completed"
+    assert "projected attachment" in provider.messages[0].text_content
+    assert provider.messages[0].resource_refs == [resource.resource_id]
+    assert snapshot.messages[0].text_content == "Use the brief"
+    assert snapshot.messages[0].resource_refs == [resource.resource_id]
+    assert "projected attachment" not in snapshot.messages[0].model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_runtime_validates_resource_before_starting_run_or_message(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    resource_store = LocalResourceStore(store.root)
+    resource_store.initialize()
+    resources = ResourceService(store=resource_store, sessions=store)
+    session = SessionService(store, resources=resources).create(title="Attachments").session
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([ProviderStreamEvent(type="done")]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        resources=resources,
+    )
+
+    with pytest.raises(ResourceNotFoundError, match="not attached"):
+        await runtime.run(
+            "Use missing",
+            session_id=session.session_id,
+            resource_refs=["res_" + "0" * 64],
+        )
+
+    snapshot = store.load_session(session.session_id, recover=False)
+    assert snapshot.messages == []
+    assert snapshot.runs == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_text_run(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -405,6 +476,7 @@ async def test_runtime_pauses_at_configured_soft_round_budget(tmp_path) -> None:
         ),
         tools=_tools(),
         run_budget=RunBudgetPolicy(max_model_rounds=1),
+        default_workspace=tmp_path,
     )
 
     result = await runtime.run("Read once")
@@ -944,6 +1016,7 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=_tools(),
+        default_workspace=tmp_path,
     )
 
     result = await runtime.run("Read file")
@@ -1021,6 +1094,7 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=_tools(),
+        default_workspace=tmp_path,
     )
     pending = await runtime.run("Write file")
 
@@ -1083,6 +1157,7 @@ async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=_tools(),
+        default_workspace=tmp_path,
     )
     pending = await runtime.run("Write once")
     stale = store.load_session(pending.session.session_id, recover=False)
@@ -1637,6 +1712,7 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
         tools=_tools(),
         context_builder=ContextBuilder(skill_instructions="Available skills."),
         system_prompt="System instructions.",
+        default_workspace=tmp_path,
     )
 
     result = await runtime.run("Read and summarize")
@@ -1902,3 +1978,40 @@ async def test_runtime_reports_lock_race_as_typed_session_busy_error(tmp_path) -
             await runtime.run("hello", session_id=session.session_id)
     finally:
         lock.release()
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_provider_retry_schedule_as_observable_event(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent(
+                        type="retry_scheduled",
+                        retry=ProviderRetryNotice(
+                            attempt=2,
+                            max_attempts=3,
+                            delay_seconds=0.5,
+                            reason="provider request timed out",
+                        ),
+                    ),
+                    ProviderStreamEvent(type="text_delta", text="Recovered."),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        default_workspace=tmp_path,
+    )
+
+    result = await runtime.run("retry")
+    retry = next(event for event in result.events if event.event_type == "run_retry_scheduled")
+
+    assert result.final_text == "Recovered."
+    assert retry.payload["attempt"] == 2
+    assert retry.payload["max_attempts"] == 3
+    assert retry.payload["round"] == 1

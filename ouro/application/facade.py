@@ -15,6 +15,8 @@ from ouro.application.session_models import (
     SessionCatalogQuery,
     SessionCatalogResult,
     SessionDetail,
+    SessionEventPage,
+    SessionMessagePage,
     SessionMutationResult,
     SessionReplay,
     SessionTrashResult,
@@ -85,6 +87,30 @@ class ApplicationFacade:
 
     def open_session(self, session_id: str, *, recover: bool = True) -> SessionDetail:
         return self._sessions.open(session_id, recover=recover)
+
+    def session_messages(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+    ) -> SessionMessagePage:
+        return self._sessions.message_page(session_id, cursor=cursor, limit=limit)
+
+    def session_events(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        run_id: str | None = None,
+    ) -> SessionEventPage:
+        return self._sessions.event_page(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+            run_id=run_id,
+        )
 
     def session_catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:
         return self._sessions.catalog(query)
@@ -166,6 +192,7 @@ class ApplicationFacade:
         title: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
+        resource_refs: list[str] | tuple[str, ...] | None = None,
     ) -> RunResult:
         return await self._require_runtime().run(
             prompt,
@@ -173,6 +200,7 @@ class ApplicationFacade:
             title=title,
             queue_mode=queue_mode,
             approval_mode=approval_mode,
+            resource_refs=resource_refs,
         )
 
     async def abort_run(

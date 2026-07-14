@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
+
+from ouro.application.configuration_models import (
+    CompactionConfigView,
+    CompactionModelConfigView,
+    ConfigurationChange,
+    ConfigurationEffectiveFrom,
+    ConfigurationSection,
+    CredentialStatus,
+    LoadedSkillView,
+    ManagedSkillResultView,
+    ManagedSkillView,
+    ProviderEndpointCatalogView,
+    ProviderEndpointView,
+    ProviderView,
+    SkillDiagnosticView,
+    SkillManagementView,
+    SkillView,
+)
+from ouro.config import (
+    CompactionConfig,
+    CredentialResolver,
+    ProviderConfig,
+    ProviderEndpointConfig,
+    endpoint_config_to_public_dict,
+)
+from ouro.core.errors import CredentialError
+from ouro.skills import LoadedSkill, SkillDiagnostic, SkillManagementResult, SkillMetadata
+
+
+def configuration_change(
+    section: ConfigurationSection,
+    action: str,
+    effective_from: ConfigurationEffectiveFrom,
+) -> ConfigurationChange:
+    return ConfigurationChange(
+        section=section,
+        action=action,
+        effective_from=effective_from,
+    )
+
+
+def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView:
+    return ProviderView(
+        provider_id=provider.provider_id,
+        kind=provider.provider_type,
+        credential=credential_status(provider),
+        enabled=provider.enabled,
+        timeout=provider.timeout_seconds,
+        retry_policy=provider.retry_policy,
+        base_url=provider.base_url,
+        api_path=provider.api_path,
+        default=is_default,
+        default_endpoint=provider.default_endpoint,
+        endpoints=[
+            endpoint_view(endpoint, default_endpoint=provider.default_endpoint)
+            for endpoint in provider.endpoints
+        ],
+    )
+
+
+def endpoint_view(
+    endpoint: ProviderEndpointConfig,
+    *,
+    default_endpoint: str | None,
+) -> ProviderEndpointView:
+    return ProviderEndpointView.model_validate(
+        {
+            **endpoint_config_to_public_dict(endpoint),
+            "default": endpoint.endpoint_id == default_endpoint,
+        }
+    )
+
+
+def endpoint_catalog_view(
+    provider: ProviderConfig,
+    *,
+    change: ConfigurationChange | None = None,
+) -> ProviderEndpointCatalogView:
+    return ProviderEndpointCatalogView(
+        provider_id=provider.provider_id,
+        default_endpoint=provider.default_endpoint,
+        endpoints=[
+            endpoint_view(endpoint, default_endpoint=provider.default_endpoint)
+            for endpoint in provider.endpoints
+        ],
+        change=change,
+    )
+
+
+def credential_status(provider: ProviderConfig) -> CredentialStatus:
+    reference = provider.credential_ref.display()
+    if provider.provider_type == "faux":
+        return CredentialStatus(
+            reference=reference,
+            state="not_required",
+            configured=False,
+            available=True,
+        )
+    configured = provider.credential_ref.type != "none"
+    available = False
+    if configured:
+        try:
+            available = CredentialResolver().resolve(provider.credential_ref) is not None
+        except CredentialError:
+            available = False
+    return CredentialStatus(
+        reference=reference,
+        state="configured" if available else "missing",
+        configured=configured,
+        available=available,
+    )
+
+
+def compaction_view(
+    config: CompactionConfig,
+    *,
+    config_path: Path,
+    change: ConfigurationChange | None = None,
+) -> CompactionConfigView:
+    return CompactionConfigView(
+        config_path=str(config_path),
+        strategy_id=config.strategy_id,
+        fallback_strategy_id=config.fallback_strategy_id,
+        policy=config.policy.model_dump(mode="json"),
+        model=CompactionModelConfigView.model_validate(config.model.model_dump()),
+        change=change,
+    )
+
+
+def managed_skill_view(name: str, record: Any) -> ManagedSkillView:
+    return ManagedSkillView(name=name, **record.model_dump())
+
+
+def skill_view(
+    skill: SkillMetadata,
+    *,
+    installed: Mapping[str, Any] | None = None,
+) -> SkillView:
+    installed = installed or {}
+    record = installed.get(skill.name)
+    return SkillView(
+        **skill.model_dump(),
+        managed=record is not None,
+        install=managed_skill_view(skill.name, record) if record is not None else None,
+    )
+
+
+def loaded_skill_view(
+    loaded: LoadedSkill,
+    *,
+    installed: Mapping[str, Any],
+) -> LoadedSkillView:
+    return LoadedSkillView(
+        skill=skill_view(loaded.metadata, installed=installed),
+        content=loaded.content,
+        resources=loaded.resources,
+    )
+
+
+def skill_diagnostic_view(item: SkillDiagnostic) -> SkillDiagnosticView:
+    return SkillDiagnosticView.model_validate(item.model_dump())
+
+
+def skill_management_view(result: SkillManagementResult) -> SkillManagementView:
+    return SkillManagementView(
+        action=result.action,
+        skills=[
+            ManagedSkillResultView(
+                name=item.name,
+                target=str(item.target),
+                source=item.source,
+                scope=item.scope,
+            )
+            for item in result.skills
+        ],
+        diagnostics=[skill_diagnostic_view(item) for item in result.diagnostics],
+        change=configuration_change("skills", result.action, "next_runtime"),
+    )

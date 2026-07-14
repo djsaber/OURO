@@ -92,6 +92,14 @@ def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     mode.add_argument("--json", dest="json_mode", action="store_true", help="Print JSON result")
     run_parser.add_argument("--home", dest="run_home", metavar="HOME", help="Override OURO_HOME")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
+    run_parser.add_argument(
+        "--resource",
+        dest="resource_ids",
+        action="append",
+        default=[],
+        metavar="RESOURCE_ID",
+        help="Attach an imported Session resource to this input (repeatable)",
+    )
     run_parser.add_argument("--title", help="Title for a new session")
     run_parser.add_argument(
         "--approval-mode",
@@ -226,12 +234,16 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     messages_parser = session_subparsers.add_parser("messages", help="Show session messages")
     messages_parser.add_argument("session_id", help="Session id")
     messages_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    messages_parser.add_argument("--cursor", type=int, default=0, help="JSONL byte cursor")
+    messages_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
     messages_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     events_parser = session_subparsers.add_parser("events", help="Show session events")
     events_parser.add_argument("session_id", help="Session id")
     events_parser.add_argument("--run", dest="run_id", help="Filter by run id")
     events_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    events_parser.add_argument("--cursor", type=int, default=0, help="JSONL byte cursor")
+    events_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
     events_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     compact_parser = session_subparsers.add_parser(
@@ -307,7 +319,7 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     permissions_parser.add_argument("--tool", help="Tool name")
     permissions_parser.add_argument(
         "--mode",
-        choices=["auto", "approval"],
+        choices=["auto", "approval", "deny"],
         help="Permission mode for the tool",
     )
     permissions_parser.add_argument("--json", action="store_true", help="Print JSON")
@@ -327,6 +339,18 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         type=int,
         default=None,
         help="Maximum parallel tool calls (1-64)",
+    )
+    tool_execution_parser.add_argument(
+        "--workspace-only",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Restrict built-in file paths and Bash cwd to the Session workspace",
+    )
+    tool_execution_parser.add_argument(
+        "--max-output-chars",
+        type=int,
+        default=None,
+        help="Maximum characters returned by tool output fields",
     )
     tool_execution_parser.add_argument("--json", action="store_true", help="Print JSON")
 
@@ -433,6 +457,32 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     provider_set_parser.add_argument("--api-key-env", help="API key env var")
     provider_set_parser.add_argument("--timeout", type=float, default=None, help="Timeout seconds")
+    provider_set_parser.add_argument(
+        "--retry-attempts",
+        type=int,
+        default=None,
+        help="Maximum provider request attempts (including the first request)",
+    )
+    provider_set_parser.add_argument(
+        "--retry-initial-backoff",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Delay before the first retry",
+    )
+    provider_set_parser.add_argument(
+        "--retry-max-backoff",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Maximum delay between retries",
+    )
+    provider_set_parser.add_argument(
+        "--retry-backoff-multiplier",
+        type=float,
+        default=None,
+        help="Exponential retry backoff multiplier",
+    )
     provider_set_parser.add_argument(
         "--enabled",
         action=argparse.BooleanOptionalAction,
@@ -633,7 +683,7 @@ def _add_mcp_parser(subparsers: argparse._SubParsersAction) -> None:
     set_parser.add_argument("--reconnect-backoff", type=float, metavar="SECONDS")
     set_parser.add_argument("--timeout", type=float, metavar="SECONDS")
     set_parser.add_argument("--health-check-interval", type=float, metavar="SECONDS")
-    set_parser.add_argument("--permission-mode", choices=("auto", "approval"))
+    set_parser.add_argument("--permission-mode", choices=("auto", "approval", "deny"))
     set_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = mcp_subparsers.add_parser("remove", help="Remove an MCP server")

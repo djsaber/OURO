@@ -129,6 +129,7 @@ def _run_command(args: argparse.Namespace) -> int:
             system_prompt=system_prompt,
             queue_mode=args.queue_mode,
             approval_mode=args.approval_mode,
+            resource_refs=args.resource_ids,
         )
     )
 
@@ -198,12 +199,20 @@ def _session_command(args: argparse.Namespace) -> int:
             json_mode=args.json,
         )
     if command == "messages":
-        return list_session_messages(args.session_id, home=home, json_mode=args.json)
+        return list_session_messages(
+            args.session_id,
+            home=home,
+            cursor=args.cursor,
+            limit=args.limit,
+            json_mode=args.json,
+        )
     if command == "events":
         return list_session_events(
             args.session_id,
             home=home,
             run_id=args.run_id,
+            cursor=args.cursor,
+            limit=args.limit,
             json_mode=args.json,
         )
     if command == "compact":
@@ -330,6 +339,8 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             mode=args.mode,
             max_concurrency=args.max_concurrency,
+            workspace_only=args.workspace_only,
+            max_output_chars=args.max_output_chars,
             json_mode=args.json,
         )
 
@@ -372,6 +383,10 @@ def _provider_command(args: argparse.Namespace) -> int:
             api_key=args.api_key,
             api_key_env=args.api_key_env,
             timeout=args.timeout,
+            retry_max_attempts=args.retry_attempts,
+            retry_initial_backoff_seconds=args.retry_initial_backoff,
+            retry_max_backoff_seconds=args.retry_max_backoff,
+            retry_backoff_multiplier=args.retry_backoff_multiplier,
             enabled=args.enabled,
             make_default=args.default,
             json_mode=args.json,

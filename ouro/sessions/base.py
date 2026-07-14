@@ -70,6 +70,23 @@ class SessionStore(Protocol):
 
     def load_session_record(self, session_id: str) -> SessionRecord: ...
 
+    def load_messages_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[MessageRecord], int | None]: ...
+
+    def load_events_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        run_id: str | None = None,
+    ) -> tuple[list[EventRecord], int | None]: ...
+
     def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
 
     def list_sessions(self) -> list[SessionRecord]: ...

@@ -35,6 +35,16 @@ remove 在 canonical message 仍引用资源时抛出 `ResourceInUseError`；引
 - 工具结果的 `resource_refs` 在写入 canonical message 前通过 ResourceService 校验。
 - 内置文件工具返回工作区操作结果，不把裸文件路径伪装成 resource id。
 
+## 模型附件投影
+
+用户消息只持久化 `resource_refs`，不写入展开内容或本地路径。Runtime 在 Run/Message 提交前验证资源属于目标
+Session、digest/size 完整、数量和媒体类型受支持；随后只在本次模型请求中投影资源内容，并纳入上下文 token
+预算与压缩计算。
+
+- UTF-8 文本、JSON 和 XML 以带来源标签的文本投影，单项上限 1 MiB；
+- PNG、JPEG、GIF 和 WebP 仅在 Endpoint 声明 vision 能力时以内存 data URI 投影，单项上限 20 MiB；
+- 单次最多 16 个附件；PDF 和任意二进制格式在没有专用解析 adapter 时明确拒绝。
+
 ## RuntimeSupervisor 生命周期
 
 Supervisor 管理 `session_id -> active job/handle` 的进程内 registry。单 Session 仍只有一个 active Run，
@@ -58,12 +68,14 @@ explicit abort 先通过 RuntimeService 持久化 aborted，再通知进程内�
 
 ## CLI 与 Host 边界
 
-CLI 提供 `resource import/list/show/export/remove`；Session export 包含无本地路径的资源 manifest。
+CLI 提供 `resource import/list/show/export/remove`，并通过 `run --session ... --resource ...` 将已导入资源附加到
+本次用户输入；Session export 包含无本地路径的资源 manifest。
 Supervisor 只暴露 application API，并由非交互 Host 测试覆盖；当前不提供后台 daemon 命令。
 
 ## 验收证据
 
 - `tests/application/test_resources.py`
+- `tests/application/test_runtime.py`
 - `tests/application/test_supervisor.py`
 - `tests/cli/test_resource_commands.py`
 - `tests/architecture/test_boundaries.py`

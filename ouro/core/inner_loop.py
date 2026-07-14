@@ -496,6 +496,21 @@ class InnerAgentLoop:
                         model_round,
                         provider_event.tool_call,
                     )
+                elif provider_event.type == "retry_scheduled":
+                    if provider_event.retry is None:
+                        raise ValueError("provider retry event is missing its payload")
+                    state.sequence = await self.ports.emit(
+                        state.emitted,
+                        state.sequence,
+                        session_id=state.session.session_id,
+                        run_id=state.run.run_id,
+                        event_type="run_retry_scheduled",
+                        payload={
+                            **provider_event.retry.model_dump(mode="json"),
+                            "round": model_round,
+                            "turn_id": round_state.turn_id,
+                        },
+                    )
                 elif provider_event.type == "error":
                     return await self._fail(
                         state,

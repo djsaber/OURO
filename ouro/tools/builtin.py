@@ -98,11 +98,11 @@ def builtin_tools() -> list[Tool]:
     ]
 
 
-def _path_arg(invocation: ToolInvocation) -> Path:
+def _path_arg(invocation: ToolInvocation, context: ToolExecutionContext) -> Path:
     path = invocation.arguments.get("path")
     if not isinstance(path, str) or not path:
         raise ValueError("tool argument 'path' must be a non-empty string")
-    return Path(path)
+    return context.resolve_path(path)
 
 
 def _text_arg(invocation: ToolInvocation, name: str) -> str:
@@ -112,14 +112,20 @@ def _text_arg(invocation: ToolInvocation, name: str) -> str:
     return value
 
 
-def _read(invocation: ToolInvocation) -> ToolResult:
-    path = _path_arg(invocation)
+def _read(
+    invocation: ToolInvocation,
+    *,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    path = _path_arg(invocation, context)
     if path.is_dir():
         content = "\n".join(sorted(child.name for child in path.iterdir()))
-        structured = {"kind": "directory", "path": str(path)}
+        structured: dict[str, object] = {"kind": "directory", "path": str(path)}
     else:
         content = path.read_text(encoding="utf-8")
         structured = {"kind": "file", "path": str(path)}
+    content, truncated = context.limit_output(content)
+    structured["truncated"] = truncated
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
@@ -129,8 +135,12 @@ def _read(invocation: ToolInvocation) -> ToolResult:
     )
 
 
-def _write(invocation: ToolInvocation) -> ToolResult:
-    path = _path_arg(invocation)
+def _write(
+    invocation: ToolInvocation,
+    *,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    path = _path_arg(invocation, context)
     content = _text_arg(invocation, "content")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -143,8 +153,12 @@ def _write(invocation: ToolInvocation) -> ToolResult:
     )
 
 
-def _edit(invocation: ToolInvocation) -> ToolResult:
-    path = _path_arg(invocation)
+def _edit(
+    invocation: ToolInvocation,
+    *,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    path = _path_arg(invocation, context)
     old = _text_arg(invocation, "old")
     new = _text_arg(invocation, "new")
     text = path.read_text(encoding="utf-8")
@@ -174,10 +188,11 @@ async def _bash(
 ) -> ToolResult:
     command = _text_arg(invocation, "command")
     cwd_arg = invocation.arguments.get("cwd")
-    cwd = str(cwd_arg) if isinstance(cwd_arg, str) and cwd_arg else None
+    requested_cwd = str(cwd_arg) if isinstance(cwd_arg, str) and cwd_arg else None
     timeout_raw = invocation.arguments.get("timeout_seconds", 30)
     timeout_seconds = float(timeout_raw) if isinstance(timeout_raw, int | float) else 30.0
     context = context or ToolExecutionContext()
+    cwd = context.resolve_working_directory(requested_cwd)
     process_result = await context.run_shell(
         command,
         cwd=cwd,
@@ -190,8 +205,8 @@ async def _bash(
         content = "Command aborted."
     else:
         content = ""
-    stdout_text = process_result.stdout
-    stderr_text = process_result.stderr
+    stdout_text, stdout_truncated = context.limit_output(process_result.stdout)
+    stderr_text, stderr_truncated = context.limit_output(process_result.stderr)
     if not content:
         content = stdout_text if stdout_text else stderr_text
     return ToolResult(
@@ -204,6 +219,8 @@ async def _bash(
         structured={
             "stdout": stdout_text,
             "stderr": stderr_text,
+            "stdout_truncated": stdout_truncated,
+            "stderr_truncated": stderr_truncated,
             "timed_out": process_result.timed_out,
             "aborted": process_result.aborted,
         },

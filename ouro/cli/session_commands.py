@@ -352,17 +352,24 @@ def list_session_messages(
     session_id: str,
     *,
     home: str | Path | None = None,
+    cursor: int = 0,
+    limit: int = 100,
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _facade(home).open_session(session_id)
+        page = _facade(home).session_messages(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+        )
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
         return 1
-    except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+    except (OuroError, ValueError) as exc:
+        ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
+        _print_error(ouro_exc, json_mode=json_mode)
+        return error_exit_code(ouro_exc)
 
     if json_mode:
         print(
@@ -370,21 +377,23 @@ def list_session_messages(
                 {
                     "status": "ok",
                     "messages": [
-                        message_record.model_dump(mode="json")
-                        for message_record in snapshot.messages
+                        message_record.model_dump(mode="json") for message_record in page.messages
                     ],
+                    "next_cursor": page.next_cursor,
                 },
                 ensure_ascii=False,
             )
         )
         return 0
 
-    if not snapshot.messages:
+    if not page.messages:
         print("No messages.")
         return 0
 
-    for message in snapshot.messages:
+    for message in page.messages:
         print(f"[{message.role}] {message.text_content}")
+    if page.next_cursor is not None:
+        print(f"More messages available; continue with --cursor {page.next_cursor}")
     return 0
 
 
@@ -393,21 +402,27 @@ def list_session_events(
     *,
     home: str | Path | None = None,
     run_id: str | None = None,
+    cursor: int = 0,
+    limit: int = 100,
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = _facade(home).open_session(session_id)
+        page = _facade(home).session_events(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+            run_id=run_id,
+        )
     except FileNotFoundError:
         error_message = f"session not found: {session_id}"
         _print_error(OuroError(error_message), json_mode=json_mode)
         return 1
-    except OuroError as exc:
-        _print_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
+    except (OuroError, ValueError) as exc:
+        ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
+        _print_error(ouro_exc, json_mode=json_mode)
+        return error_exit_code(ouro_exc)
 
-    events = list(snapshot.events)
-    if run_id is not None:
-        events = [event for event in events if event.run_id == run_id]
+    events = list(page.events)
 
     if json_mode:
         print(
@@ -415,6 +430,7 @@ def list_session_events(
                 {
                     "status": "ok",
                     "events": [event.model_dump(mode="json") for event in events],
+                    "next_cursor": page.next_cursor,
                 },
                 ensure_ascii=False,
             )
@@ -427,6 +443,8 @@ def list_session_events(
 
     for event in events:
         print(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
+    if page.next_cursor is not None:
+        print(f"More events available; continue with --cursor {page.next_cursor}")
     return 0
 
 

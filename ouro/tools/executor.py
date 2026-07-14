@@ -66,7 +66,7 @@ class ToolExecutor:
         effective_mode = self.permission_overrides.get(
             tool.definition.name, tool.definition.permission_mode
         )
-        if approval_mode != "inherit":
+        if effective_mode != "deny" and approval_mode != "inherit":
             effective_mode = approval_mode
         invocation = invocation.model_copy(
             update={
@@ -83,6 +83,12 @@ class ToolExecutor:
                 invocation,
                 error_type="ToolArgumentValidationError",
                 error_message=argument_error,
+            )
+        if invocation.permission_mode == "deny":
+            return _error_outcome(
+                invocation,
+                error_type="ToolPermissionDenied",
+                error_message=f"tool is disabled by permission policy: {invocation.tool_name}",
             )
         if tool.definition.name == "AskUser":
             question = str(invocation.arguments.get("question", ""))
@@ -162,6 +168,14 @@ class ToolExecutor:
                 ended_at=utc_now(),
             )
             return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        content, truncated = context.limit_output(result.content)
+        if truncated:
+            result = result.model_copy(
+                update={
+                    "content": content,
+                    "metadata": {**result.metadata, "output_truncated": True},
+                }
+            )
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
     def rejected_result(

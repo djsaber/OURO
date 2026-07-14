@@ -82,3 +82,23 @@ def test_session_approval_mode_overrides_automatic_tool_policy() -> None:
 
     assert outcome.status == "approval_required"
     assert outcome.invocation.permission_mode == "approval"
+
+
+def test_deny_policy_cannot_be_overridden_by_session_auto_mode() -> None:
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    executor = ToolExecutor(registry, permission_overrides={"Write": "deny"})
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="Write",
+        arguments={"path": "unused.txt", "content": "content"},
+    )
+
+    outcome = executor.preflight(invocation, approval_mode="auto")
+
+    assert outcome.status == "completed"
+    assert outcome.invocation.permission_mode == "deny"
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolPermissionDenied"

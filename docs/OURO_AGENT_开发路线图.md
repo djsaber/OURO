@@ -11,24 +11,9 @@
 - 不以“未来可能需要”为理由引入空接口、通用 manager 或深层依赖注入。
 - 每一项交付必须包含正常、错误、恢复和并发边界测试，并同步更新权威文档。
 
-## 近期：完成个人工作流基础
+## 近期：连接与扩展
 
-ResourceService 与 RuntimeSupervisor 已进入当前规格；本阶段剩余依赖是 Application 配置门面。
-
-### Application 配置门面
-
-目标：让非 CLI Host 通过稳定 DTO 管理 provider、endpoint、权限、压缩和 Skills 配置。
-
-范围：
-
-- 查询与命令 DTO；
-- 凭据安全输出；
-- 原子校验和错误诊断；
-- 配置变更后的 runtime 生效规则。
-
-完成条件：Desktop 不直接依赖 `ProviderConfigManager` 等基础设施 manager。
-
-## 中期：连接与扩展
+个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）已完成并转入当前规格。
 
 ### 完整插件生命周期
 
@@ -76,7 +61,8 @@ ResourceService 与 RuntimeSupervisor 已进入当前规格；本阶段剩余依
 
 ### 持久化规模化
 
-继续使用本地文件后端，直到真实数据证明查询、事务或维护成本成为瓶颈。若引入 SQLite：
+当前消息与事件已通过稳定 byte cursor 增量读取 JSONL，Host 无需全量加载长历史。继续使用本地文件后端，
+直到真实数据证明查询、事务或维护成本成为瓶颈。若引入 SQLite：
 
 - `SessionStore` 契约保持稳定；
 - 提供显式导入、验证和回滚工具；

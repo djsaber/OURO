@@ -6,13 +6,13 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 ## 当前能力
 
 - 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
-- 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择和 OpenAI-compatible 适配。
+- 基于 `provider/endpoint` 的模型配置、连接检查、会话级模型选择，以及支持安全有界重试与结构化输出能力门控的 OpenAI-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
-- 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶和回收站删除。
-- 内容寻址的本地资源导入、去重、校验、分支引用复制、导出和可达性清理。
+- 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
+- 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
 - 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界事件订阅、abort 与 shutdown 协议。
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
-- Read、Write、Edit、Bash、AskUser 内置工具，以及统一的权限和参数校验。
+- Read、Write、Edit、Bash、AskUser 内置工具，以及硬拒绝、workspace 路径约束、输出限长和统一参数校验。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
@@ -27,7 +27,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 ```bash
 uv sync --all-groups
-uv run pytest
+uv run pytest --cov=ouro --cov-report=term-missing
 uv run ruff check ouro tests
 uv run ruff format --check ouro tests
 uv run mypy ouro
@@ -63,7 +63,10 @@ uv run ouro provider set glm \
   --home ./.ouro-dev \
   --kind openai-compatible \
   --base-url https://example.test/v1 \
-  --api-key-env GLM_API_KEY
+  --api-key-env GLM_API_KEY \
+  --retry-attempts 3 \
+  --retry-initial-backoff 0.5 \
+  --retry-max-backoff 8
 
 uv run ouro provider endpoint set glm reasoning \
   --home ./.ouro-dev \
@@ -71,7 +74,7 @@ uv run ouro provider endpoint set glm reasoning \
   --temperature 0.2 \
   --context-window 200000 \
   --max-output-tokens 16000 \
-  --tools --streaming --reasoning \
+  --tools --streaming --structured-output --reasoning \
   --thinking-levels low high \
   --thinking-level high \
   --default
@@ -94,6 +97,8 @@ uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
 uv run ouro session approval-mode <session_id> auto --home ./.ouro-dev
 uv run ouro session branch <session_id> <message_id> --home ./.ouro-dev
 uv run ouro session replay <session_id> --home ./.ouro-dev --json
+uv run ouro session messages <session_id> --home ./.ouro-dev --cursor 0 --limit 100 --json
+uv run ouro session events <session_id> --home ./.ouro-dev --run <run_id> --cursor 0 --limit 100 --json
 uv run ouro session compact <session_id> --home ./.ouro-dev
 uv run ouro session archive <session_id> --home ./.ouro-dev
 uv run ouro session remove <session_id> --home ./.ouro-dev --force
@@ -104,11 +109,16 @@ uv run ouro abort <session_id> --home ./.ouro-dev
 uv run ouro run --session <session_id> --queue-mode steer "Change direction"
 
 uv run ouro resource import <session_id> ./attachment.pdf --home ./.ouro-dev
+uv run ouro resource import <session_id> ./context.txt --home ./.ouro-dev
 uv run ouro resource list <session_id> --home ./.ouro-dev
 uv run ouro resource show <session_id> <resource_id> --home ./.ouro-dev
 uv run ouro resource export <session_id> <resource_id> ./copy.pdf --home ./.ouro-dev
 uv run ouro resource remove <session_id> <resource_id> --home ./.ouro-dev --force
+uv run ouro run --session <session_id> --resource <text_resource_id> "Use this context"
 ```
+
+模型附件当前支持有大小上限的 UTF-8 文本/JSON/XML，以及 vision Endpoint 上的 PNG、JPEG、GIF、WebP。
+PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
 
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
 交付模式。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
@@ -117,6 +127,7 @@ Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>
 自动执行工具，`approval` 要求所有工具先批准（`AskUser` 仍按用户问答流程处理）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
 `/approval-mode <inherit|auto|approval>`。会话分支继承源会话的批准模式。
+工具级 `deny` 是硬拒绝，不能被会话 `auto` 或一次审批覆盖。
 
 ## MCP Server
 
@@ -186,7 +197,9 @@ stdio 中 `credential_refs` 的 key 是注入子进程的环境变量名；HTTP/
 ```bash
 uv run ouro config prompt --home ./.ouro-dev --set "Custom system prompt"
 uv run ouro config permissions --home ./.ouro-dev --tool Bash --mode approval
-uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4
+uv run ouro config permissions --home ./.ouro-dev --tool Write --mode deny
+uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4 \
+  --workspace-only --max-output-chars 100000
 uv run ouro config queued-inputs --home ./.ouro-dev --consumption-mode all_at_once
 uv run ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
 uv run ouro config compaction --home ./.ouro-dev --provider glm --endpoint reasoning
@@ -217,7 +230,9 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
   },
   "tool_execution": {
     "mode": "parallel",
-    "max_concurrency": 4
+    "max_concurrency": 4,
+    "workspace_only": true,
+    "max_output_chars": 100000
   },
   "queued_inputs": {
     "consumption_mode": "all_at_once"
@@ -244,6 +259,12 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
         "credential_ref": "env:GLM_API_KEY",
         "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
+        "retry_policy": {
+          "max_attempts": 3,
+          "initial_backoff_seconds": 0.5,
+          "max_backoff_seconds": 8.0,
+          "backoff_multiplier": 2.0
+        },
         "default_endpoint": "reasoning",
         "endpoints": {
           "reasoning": {
@@ -253,6 +274,7 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
             "max_output_tokens": 16000,
             "supports_tools": true,
             "supports_streaming": true,
+            "supports_structured_output": true,
             "supports_reasoning": true,
             "supported_thinking_levels": ["low", "high"],
             "default_thinking_level": "high"
@@ -277,3 +299,4 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
 - [执行计划索引](dev/plans/README.md)：未来能力的依赖、里程碑和退出条件。
 - [中文编码准则](docs/OURO_AGENT_编码准则_ZH.md)：实现与评审规范。
 - [English coding guidelines](docs/OURO_AGENT_编码准则_EN.md)：英文版实现与评审规范。
+- [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[变更记录](CHANGELOG.md)与[发布流程](RELEASING.md)。

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ouro.application.compaction import LLMSummaryCompactionStrategy
+from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
@@ -48,6 +49,7 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=registry,
+        default_workspace=tmp_path,
     )
 
 
@@ -592,6 +594,39 @@ def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
 
     assert code == 0
     assert calls == [("hello", "Custom")]
+
+
+def test_run_mode_passes_repeatable_resource_references(monkeypatch) -> None:
+    calls = []
+
+    async def fake_run_print(prompt, **kwargs):
+        calls.append((prompt, kwargs["session_id"], kwargs["resource_refs"]))
+        return 0
+
+    monkeypatch.setattr("ouro.cli.main.run_print", fake_run_print)
+
+    code = main(
+        [
+            "run",
+            "--session",
+            "ses_existing",
+            "--resource",
+            "res_" + "1" * 64,
+            "--resource",
+            "res_" + "2" * 64,
+            "use",
+            "attachments",
+        ]
+    )
+
+    assert code == 0
+    assert calls == [
+        (
+            "use attachments",
+            "ses_existing",
+            ["res_" + "1" * 64, "res_" + "2" * 64],
+        )
+    ]
 
 
 def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
@@ -1418,6 +1453,54 @@ def test_provider_set_base_url_without_model_creates_empty_provider(
     assert payload["provider"]["provider_id"] == "glm"
     assert payload["provider"]["base_url"] == "https://example.test/v1"
     assert payload["provider"]["endpoint_count"] == 0
+
+
+def test_provider_set_configures_validated_retry_policy(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "provider",
+            "set",
+            "glm",
+            "--home",
+            str(tmp_path),
+            "--base-url",
+            "https://example.test/v1",
+            "--retry-attempts",
+            "3",
+            "--retry-initial-backoff",
+            "0.25",
+            "--retry-max-backoff",
+            "2",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    provider = ConfigurationFacade(tmp_path).provider("glm")
+
+    assert code == 0
+    assert payload["provider"]["provider_id"] == "glm"
+    assert provider is not None
+    assert provider.retry_policy.max_attempts == 3
+    assert provider.retry_policy.initial_backoff_seconds == 0.25
+    assert provider.retry_policy.max_backoff_seconds == 2
+
+    code = main(
+        [
+            "provider",
+            "set",
+            "glm",
+            "--home",
+            str(tmp_path),
+            "--retry-attempts",
+            "0",
+            "--json",
+        ]
+    )
+    error = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert error["error_type"] == "ConfigError"
+    assert ConfigurationFacade(tmp_path).provider("glm") == provider
 
 
 def test_provider_endpoint_set_default_updates_existing_endpoint(

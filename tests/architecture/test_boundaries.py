@@ -91,6 +91,26 @@ def test_lower_layers_do_not_depend_on_application_or_cli() -> None:
     assert violations == []
 
 
+def test_cli_configuration_hosts_do_not_use_infrastructure_managers() -> None:
+    violations: list[str] = []
+    for filename in (
+        "config_commands.py",
+        "provider_commands.py",
+        "run.py",
+        "skills.py",
+    ):
+        path = PROJECT_ROOT / "ouro" / "cli" / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            for alias in node.names:
+                if alias.name.endswith(("ConfigManager", "SkillManager")):
+                    violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {alias.name}")
+
+    assert violations == []
+
+
 def _imported_modules(tree: ast.AST) -> list[str]:
     modules: list[str] = []
     for node in ast.walk(tree):

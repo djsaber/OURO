@@ -6,6 +6,23 @@ from typing import Any, Protocol
 
 import httpx
 
+_RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+
+
+class OpenAITransportError(RuntimeError):
+    """Provider transport failure with an explicit retry classification."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.status_code = status_code
+
 
 class OpenAICompatibleTransport(Protocol):
     async def post_json(
@@ -56,22 +73,37 @@ class HttpxOpenAICompatibleTransport:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             body = exc.response.text
-            raise RuntimeError(
-                f"provider HTTP {exc.response.status_code}: {_compact_body(body)}"
+            status_code = exc.response.status_code
+            raise OpenAITransportError(
+                f"provider HTTP {status_code}: {_compact_body(body)}",
+                retryable=status_code in _RETRYABLE_STATUS_CODES,
+                status_code=status_code,
             ) from exc
         except httpx.TimeoutException as exc:
-            raise RuntimeError("provider request timed out") from exc
+            raise OpenAITransportError(
+                "provider request timed out",
+                retryable=True,
+            ) from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(f"provider connection failed: {exc}") from exc
+            raise OpenAITransportError(
+                f"provider connection failed: {exc}",
+                retryable=True,
+            ) from exc
 
         if not response.content:
             return {}
         try:
             parsed = response.json()
         except ValueError as exc:
-            raise RuntimeError("provider response was not valid JSON") from exc
+            raise OpenAITransportError(
+                "provider response was not valid JSON",
+                retryable=False,
+            ) from exc
         if not isinstance(parsed, dict):
-            raise RuntimeError("provider response JSON must be an object")
+            raise OpenAITransportError(
+                "provider response JSON must be an object",
+                retryable=False,
+            )
         return parsed
 
     async def stream_json(
@@ -98,9 +130,15 @@ class HttpxOpenAICompatibleTransport:
                 async for item in _stream_sse_json(response):
                     yield item
         except httpx.TimeoutException as exc:
-            raise RuntimeError("provider request timed out") from exc
+            raise OpenAITransportError(
+                "provider request timed out",
+                retryable=True,
+            ) from exc
         except httpx.RequestError as exc:
-            raise RuntimeError(f"provider connection failed: {exc}") from exc
+            raise OpenAITransportError(
+                f"provider connection failed: {exc}",
+                retryable=True,
+            ) from exc
 
     async def _post(
         self,
@@ -126,7 +164,11 @@ def _compact_body(body: str) -> str:
 async def _stream_sse_json(response: httpx.Response) -> AsyncIterator[Mapping[str, Any]]:
     if response.status_code >= 400:
         body = (await response.aread()).decode(errors="replace")
-        raise RuntimeError(f"provider HTTP {response.status_code}: {_compact_body(body)}")
+        raise OpenAITransportError(
+            f"provider HTTP {response.status_code}: {_compact_body(body)}",
+            retryable=response.status_code in _RETRYABLE_STATUS_CODES,
+            status_code=response.status_code,
+        )
 
     data_lines: list[str] = []
     async for line in response.aiter_lines():
@@ -155,7 +197,13 @@ def _parse_sse_data(data: str) -> Mapping[str, Any] | None:
     try:
         parsed = json.loads(data)
     except ValueError as exc:
-        raise RuntimeError("provider stream chunk was not valid JSON") from exc
+        raise OpenAITransportError(
+            "provider stream chunk was not valid JSON",
+            retryable=False,
+        ) from exc
     if not isinstance(parsed, Mapping):
-        raise RuntimeError("provider stream chunk JSON must be an object")
+        raise OpenAITransportError(
+            "provider stream chunk JSON must be an object",
+            retryable=False,
+        )
     return parsed

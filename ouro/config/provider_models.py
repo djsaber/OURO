@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.provider import ThinkingLevel
+from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 
 ProviderKind = Literal["faux", "openai-compatible"]
 SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = ("faux", "openai-compatible")
@@ -40,7 +40,7 @@ class ProviderConfig(OuroModel):
     api_path: str | None = None
     enabled: bool = True
     timeout_seconds: float = Field(default=60.0, gt=0)
-    retry_policy: dict[str, int | float] = Field(default_factory=dict)
+    retry_policy: ProviderRetryPolicy = Field(default_factory=ProviderRetryPolicy)
     extra: Metadata = MetadataField
 
     @field_validator("provider_id")
@@ -130,6 +130,7 @@ class ProviderRuntimeOptions:
     supports_reasoning: bool | None = None
     supported_thinking_levels: tuple[ThinkingLevel, ...] | None = None
     thinking_level: ThinkingLevel | None = None
+    retry_policy: ProviderRetryPolicy | None = None
     extra: dict[str, Any] | None = None
 
 

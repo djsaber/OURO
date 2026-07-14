@@ -16,6 +16,8 @@ from ouro.application.session_models import (
     SessionCatalogQuery,
     SessionCatalogResult,
     SessionDetail,
+    SessionEventPage,
+    SessionMessagePage,
     SessionMutationResult,
     SessionReplay,
     SessionTrashResult,
@@ -93,6 +95,44 @@ class SessionService:
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
             diagnostics=diagnostics,
+        )
+
+    def message_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+    ) -> SessionMessagePage:
+        messages, next_cursor = self._store.load_messages_page(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+        )
+        return SessionMessagePage(
+            session_id=session_id,
+            messages=tuple(messages),
+            next_cursor=next_cursor,
+        )
+
+    def event_page(
+        self,
+        session_id: str,
+        *,
+        cursor: int = 0,
+        limit: int = 100,
+        run_id: str | None = None,
+    ) -> SessionEventPage:
+        events, next_cursor = self._store.load_events_page(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+            run_id=run_id,
+        )
+        return SessionEventPage(
+            session_id=session_id,
+            events=tuple(events),
+            next_cursor=next_cursor,
         )
 
     def catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:

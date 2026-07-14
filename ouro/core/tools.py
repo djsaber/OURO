@@ -8,7 +8,7 @@ from pydantic import Field
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 
-PermissionMode = Literal["auto", "approval"]
+PermissionMode = Literal["auto", "approval", "deny"]
 ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolSource = Literal[
     "builtin",

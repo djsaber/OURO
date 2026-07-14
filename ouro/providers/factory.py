@@ -56,6 +56,7 @@ def build_runtime_adapter(
         endpoint=options.api_path or default_api_path(provider_kind) or "/chat/completions",
         timeout=timeout,
         request_options=options.extra,
+        retry_policy=options.retry_policy,
     )
     return RuntimeAdapter(provider, model)
 

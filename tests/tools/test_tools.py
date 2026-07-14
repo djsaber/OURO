@@ -44,6 +44,120 @@ async def test_read_runs_automatically(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_relative_file_path_resolves_against_workspace(tmp_path) -> None:
+    target = tmp_path / "note.txt"
+    target.write_text("workspace content", encoding="utf-8")
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Read",
+            arguments={"path": "note.txt"},
+        ),
+        context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.content == "workspace content"
+    assert outcome.result.structured["path"] == str(target.resolve())
+
+
+@pytest.mark.asyncio
+async def test_workspace_policy_rejects_parent_traversal(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Read",
+            arguments={"path": "../outside.txt"},
+        ),
+        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.is_error is True
+    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+    assert "outside the configured workspace" in outcome.result.content
+
+
+@pytest.mark.asyncio
+async def test_workspace_policy_rejects_symlink_escape(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = workspace / "link.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are not available on this platform")
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Read",
+            arguments={"path": "link.txt"},
+        ),
+        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+
+
+@pytest.mark.asyncio
+async def test_tool_output_is_truncated_at_executor_boundary() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Verbose", description="verbose"),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                content="x" * 200,
+            ),
+        )
+    )
+
+    outcome = await ToolExecutor(registry).execute(
+        ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Verbose"),
+        context=ToolExecutionContext(max_output_chars=80),
+    )
+
+    assert outcome.result is not None
+    assert len(outcome.result.content) == 80
+    assert "tool output truncated" in outcome.result.content
+    assert outcome.result.metadata["output_truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_bash_rejects_working_directory_outside_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Bash",
+            arguments={"command": "echo unreachable", "cwd": str(tmp_path)},
+        ),
+        approved=True,
+        context=ToolExecutionContext(workspace=workspace, workspace_only=True),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+
+
+@pytest.mark.asyncio
 async def test_write_requires_approval_then_runs(tmp_path) -> None:
     target = tmp_path / "created.txt"
     executor = ToolExecutor(_registry())

@@ -44,7 +44,7 @@ class PermissionConfigManager:
         )
 
     def set_tool_mode(self, tool_name: str, mode: PermissionMode) -> PermissionConfigSnapshot:
-        if mode not in ("auto", "approval"):
+        if mode not in ("auto", "approval", "deny"):
             raise ConfigError(f"invalid permission mode: {mode}")
         raw = self.load_raw()
         config = _permission_config_from_raw(raw)

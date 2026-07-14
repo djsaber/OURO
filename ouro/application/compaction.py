@@ -4,6 +4,7 @@ import hashlib
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
@@ -39,6 +40,15 @@ from ouro.prompts import SUMMARIZATION_PROMPT
 from ouro.sessions import SessionStore
 
 _SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
+
+
+class ModelMessageProjector(Protocol):
+    def __call__(
+        self,
+        messages: list[MessageRecord],
+        *,
+        supports_vision: bool,
+    ) -> list[MessageRecord]: ...
 
 
 @dataclass(frozen=True)
@@ -286,6 +296,7 @@ class ContextPreparationService:
         strategies: CompactionStrategyRegistry,
         config: CompactionConfig,
         system_prompt: str,
+        project_model_messages: ModelMessageProjector | None = None,
     ) -> None:
         self.store = store
         self.adapter = adapter
@@ -295,6 +306,7 @@ class ContextPreparationService:
         self.strategies = strategies
         self.config = config
         self.system_prompt = system_prompt
+        self.project_model_messages = project_model_messages
 
     async def prepare(
         self,
@@ -327,6 +339,7 @@ class ContextPreparationService:
         budget = self._input_budget(active_adapter)
         active = self.store.load_session(session.session_id, recover=False).active_compaction
         effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
+        effective_messages = self._materialize_messages(effective_messages, active_adapter)
         view = self._build_view(
             messages=effective_messages,
             tools=tools,
@@ -379,6 +392,10 @@ class ContextPreparationService:
             effective_messages = project_recovery_messages(
                 project_compacted_messages(messages, active)
             )
+            effective_messages = self._materialize_messages(
+                effective_messages,
+                active_adapter,
+            )
             view = self._build_view(
                 messages=effective_messages,
                 tools=tools,
@@ -420,7 +437,8 @@ class ContextPreparationService:
         budget = self._input_budget(active_adapter)
         snapshot = self.store.load_session(session.session_id, recover=False)
         active = snapshot.active_compaction
-        projected = project_compacted_messages(messages, active)
+        materialized_messages = self._materialize_messages(messages, active_adapter)
+        projected = project_compacted_messages(materialized_messages, active)
         initial_view = self._build_view(
             messages=projected,
             tools=tools,
@@ -440,7 +458,7 @@ class ContextPreparationService:
             target_tokens - fixed_tokens - summary_output_tokens,
         )
         plan = plan_compaction(
-            messages,
+            materialized_messages,
             active,
             tail_token_budget=tail_budget,
             force=force,
@@ -522,7 +540,7 @@ class ContextPreparationService:
                 usage=artifact.usage,
                 metadata=dict(artifact.metadata),
             )
-            projected_after = project_compacted_messages(messages, record)
+            projected_after = project_compacted_messages(materialized_messages, record)
             final_view = self._build_view(
                 messages=projected_after,
                 tools=tools,
@@ -617,6 +635,18 @@ class ContextPreparationService:
             system_prompt=self.system_prompt,
             added_context=added_context,
             input_token_budget=budget,
+        )
+
+    def _materialize_messages(
+        self,
+        messages: list[MessageRecord],
+        adapter: RuntimeAdapter,
+    ) -> list[MessageRecord]:
+        if self.project_model_messages is None:
+            return messages
+        return self.project_model_messages(
+            messages,
+            supports_vision=adapter.model.supports_vision,
         )
 
     def _input_budget(self, adapter: RuntimeAdapter) -> int:

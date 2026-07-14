@@ -8,6 +8,7 @@ from ouro.tools.base import (
     ToolExecutionContext,
     ToolExecutionOutcome,
     ToolInvocation,
+    ToolPolicyError,
     ToolProcessResult,
     ToolResult,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "ToolExecutor",
     "ToolInvocation",
     "ToolProcessResult",
+    "ToolPolicyError",
     "ToolRegistry",
     "ToolResult",
     "builtin_tools",

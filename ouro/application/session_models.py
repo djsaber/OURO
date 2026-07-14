@@ -147,6 +147,18 @@ class SessionDetail(ApplicationDTO):
     diagnostics: tuple[Diagnostic, ...] = ()
 
 
+class SessionMessagePage(ApplicationDTO):
+    session_id: str
+    messages: tuple[MessageRecord, ...] = ()
+    next_cursor: int | None = None
+
+
+class SessionEventPage(ApplicationDTO):
+    session_id: str
+    events: tuple[EventRecord, ...] = ()
+    next_cursor: int | None = None
+
+
 class SessionMutationResult(ApplicationDTO):
     session: SessionView
     diagnostics: tuple[Diagnostic, ...] = ()

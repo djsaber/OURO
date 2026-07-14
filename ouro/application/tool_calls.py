@@ -21,7 +21,7 @@ from ouro.core.tool_batches import (
     ToolExecutionMode,
 )
 from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocation, ToolResult
-from ouro.tools import ToolBatchExecutor, ToolExecutor, ToolRegistry
+from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 
 
 class ToolCallCoordinator:
@@ -36,6 +36,7 @@ class ToolCallCoordinator:
         events: RuntimeEventRecorder,
         runs: RunLifecycle,
         execution_config: ToolExecutionConfig,
+        default_workspace: str | None,
         is_aborted: Callable[[str, str], bool],
     ) -> None:
         self.executor = executor
@@ -45,6 +46,7 @@ class ToolCallCoordinator:
         self.events = events
         self.runs = runs
         self.execution_config = execution_config
+        self.default_workspace = default_workspace
         self.is_aborted = is_aborted
 
     async def handle_batch(
@@ -304,11 +306,18 @@ class ToolCallCoordinator:
                         },
                     )
 
+        execution_context = ToolExecutionContext(
+            signal=abort_signal,
+            workspace=session.workspace or self.default_workspace,
+            workspace_only=self.execution_config.workspace_only,
+            max_output_chars=self.execution_config.max_output_chars,
+        )
         await self.batch_executor.execute(
             [call.invocation for call in ready_calls if call.invocation is not None],
             mode=batch.execution_mode,
             max_concurrency=batch.max_concurrency,
             signal=abort_signal,
+            context=execution_context,
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )

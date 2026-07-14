@@ -52,6 +52,34 @@ class Usage(OuroModel):
     estimated_cost: float | None = None
 
 
+class ProviderRetryPolicy(OuroModel):
+    """Bounded retry policy for transient provider transport failures."""
+
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    initial_backoff_seconds: float = Field(default=0.5, ge=0, le=60)
+    max_backoff_seconds: float = Field(default=8.0, ge=0, le=300)
+    backoff_multiplier: float = Field(default=2.0, ge=1, le=10)
+
+    @model_validator(mode="after")
+    def _validate_backoff(self) -> ProviderRetryPolicy:
+        if self.initial_backoff_seconds > self.max_backoff_seconds:
+            raise ValueError("initial_backoff_seconds must not exceed max_backoff_seconds")
+        return self
+
+    def delay_before_attempt(self, attempt: int) -> float:
+        if attempt < 2:
+            raise ValueError("retry attempt must be at least 2")
+        delay = self.initial_backoff_seconds * self.backoff_multiplier ** (attempt - 2)
+        return min(delay, self.max_backoff_seconds)
+
+
+class ProviderRetryNotice(OuroModel):
+    attempt: int = Field(ge=2)
+    max_attempts: int = Field(ge=2)
+    delay_seconds: float = Field(ge=0)
+    reason: str
+
+
 class ProviderCheckResult(OuroModel):
     provider_id: str
     ok: bool
@@ -81,6 +109,7 @@ class ProviderStreamEvent(OuroModel):
         "reasoning_delta",
         "tool_call_delta",
         "tool_call",
+        "retry_scheduled",
         "done",
         "error",
     ]
@@ -89,6 +118,7 @@ class ProviderStreamEvent(OuroModel):
     tool_call_delta: ToolCallDelta | None = None
     tool_call: ToolCallRequest | None = None
     usage: Usage | None = None
+    retry: ProviderRetryNotice | None = None
     error: str | None = None
 
     @model_validator(mode="after")
@@ -98,6 +128,7 @@ class ProviderStreamEvent(OuroModel):
             "reasoning_delta": self.reasoning_content,
             "tool_call_delta": self.tool_call_delta,
             "tool_call": self.tool_call,
+            "retry_scheduled": self.retry,
             "error": self.error,
         }
         if self.type in required_payloads and required_payloads[self.type] is None:
@@ -109,6 +140,7 @@ class ProviderStreamEvent(OuroModel):
                 self.reasoning_content,
                 self.tool_call_delta,
                 self.tool_call,
+                self.retry,
                 self.error,
             )
         ):

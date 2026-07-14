@@ -96,6 +96,7 @@ async def test_interactive_command_sets_mode_before_first_session(tmp_path) -> N
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=registry,
+        default_workspace=tmp_path,
     )
     inputs = iter(["/approval-mode auto", "write", "/exit"])
     outputs: list[str] = []

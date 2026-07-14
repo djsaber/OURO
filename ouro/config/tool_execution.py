@@ -16,6 +16,8 @@ from ouro.core.tool_batches import ToolExecutionMode
 class ToolExecutionConfig(OuroModel):
     mode: ToolExecutionMode = "sequential"
     max_concurrency: int = Field(default=4, ge=1, le=64)
+    workspace_only: bool = True
+    max_output_chars: int = Field(default=100_000, ge=1024, le=10_000_000)
 
 
 class ToolExecutionConfigManager:
@@ -42,6 +44,8 @@ class ToolExecutionConfigManager:
         *,
         mode: ToolExecutionMode | None = None,
         max_concurrency: int | None = None,
+        workspace_only: bool | None = None,
+        max_output_chars: int | None = None,
     ) -> ToolExecutionConfig:
         current = self.snapshot()
         updated = current.model_copy(
@@ -50,6 +54,12 @@ class ToolExecutionConfigManager:
                 "max_concurrency": current.max_concurrency
                 if max_concurrency is None
                 else max_concurrency,
+                "workspace_only": current.workspace_only
+                if workspace_only is None
+                else workspace_only,
+                "max_output_chars": current.max_output_chars
+                if max_output_chars is None
+                else max_output_chars,
             }
         )
         try:

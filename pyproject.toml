@@ -20,6 +20,7 @@ dev = [
     "mypy>=2.1",
     "pytest>=9",
     "pytest-asyncio>=1.3",
+    "pytest-cov>=7",
     "ruff>=0.15",
     "types-jsonschema>=4.26",
     "types-pyyaml>=6.0.12",
@@ -28,6 +29,15 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["ouro"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true
 
 [tool.ruff]
 line-length = 100

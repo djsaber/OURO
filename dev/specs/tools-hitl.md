@@ -24,14 +24,17 @@
 - Bash：执行 shell 命令，捕获 stdout/stderr/return code；
 - AskUser：暂停 Run 并请求用户输入。
 
-写入、编辑和 Bash 默认可由权限配置要求审批。路径和命令来自不可信模型输入，handler 必须自行校验。
+写入、编辑和 Bash 默认可由权限配置要求审批。Read/Write/Edit 的路径和 Bash 的工作目录统一经过
+`ToolExecutionContext` 解析；默认限制在 Session workspace 内，并拒绝 `..` 与符号链接逃逸。所有工具结果
+在 executor 边界执行统一长度上限和显式截断标记。
 
 ## 权限
 
-权限模式只有：
+权限模式包括：
 
 - `auto`：schema 通过后可执行；
-- `approval`：生成 `ApprovalRecord`，Run 进入 `waiting_approval`。
+- `approval`：生成 `ApprovalRecord`，Run 进入 `waiting_approval`；
+- `deny`：硬拒绝调用，不允许会话级 `auto` 或一次审批绕过。
 
 配置按工具名覆盖 definition 默认值。审批可批准、拒绝或替换参数；替换后的参数必须重新验证。
 拒绝生成 error ToolResult 并继续模型循环，不把用户拒绝当作应用崩溃。
@@ -70,6 +73,8 @@ AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案
 - 结果标记 timed_out 或 aborted。
 
 插件工具应使用 execution context 的协作式 API，不能屏蔽取消信号。
+
+workspace 约束只限制 Bash 的工作目录，不是操作系统命令沙箱；Bash 仍依赖权限策略、审批和部署环境隔离。
 
 ## 恢复
 

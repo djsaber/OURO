@@ -73,6 +73,26 @@ def test_config_permissions_human_readable(tmp_path, capsys) -> None:
     assert "approval" in captured.out
 
 
+def test_config_permissions_supports_hard_deny(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "config",
+            "permissions",
+            "--tool",
+            "Bash",
+            "--mode",
+            "deny",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["tools"]["Bash"] == "deny"
+
+
 @pytest.mark.parametrize(
     "permissions",
     ["approval", {"tools": []}, {"tools": {"Write": "sometimes"}}],

@@ -36,12 +36,15 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - 只读事件回放和数据导出；
 - 删除到本地回收站；
 - 进程锁、损坏索引重建和中断运行恢复；
-- active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付。
+- active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付；
+- 消息和事件按稳定 byte cursor 增量读取，长历史不要求 Host 全量加载。
 
 ### 模型与上下文
 
 Provider 表示供应商级连接，Endpoint 表示具体模型目标。会话保存完整 `provider/endpoint` 路由，
 模型参数和能力属于 Endpoint。当前提供 FauxProvider 和 OpenAI-compatible Provider。
+OpenAI-compatible 调用支持仅在首个输出事件前发生的有界重试，并将重试计划记录为运行事件；结构化输出
+只有在 Endpoint 显式声明能力时才会进入请求。
 
 上下文由 canonical messages 投影生成。系统提示词、Skills 指令、压缩摘要和最近原子模型回合在请求前
 组合；超过硬预算时明确失败或暂停，不静默丢弃 canonical history。摘要压缩使用独立记录保存覆盖范围、
@@ -52,6 +55,9 @@ Provider 表示供应商级连接，Endpoint 表示具体模型目标。会话�
 内置工具包括 Read、Write、Edit、Bash 和 AskUser。所有工具通过统一 schema 校验、权限判断、执行上下文
 和结果结构。模型一次响应中的多个工具调用组成一个批次，可按配置顺序或并行执行；结果仍按原始调用顺序
 提交。需要人工确认时，Run 进入 waiting 状态并可通过交互界面或 CLI 恢复。
+
+权限支持 `auto`、`approval` 和不可被会话覆盖的硬 `deny`。内置文件路径与 Bash 工作目录默认限制在 Session
+workspace，工具输出由统一边界限长并标记截断。Bash 的工作目录约束不是操作系统命令沙箱。
 
 ### Skills 与扩展框架
 
@@ -71,7 +77,9 @@ Hook 和插件 contribution registry 已具备代码边界；完整的插件分�
 
 ResourceService 把本地附件导入为内容寻址的不可变资源。消息只保存 resource id；相同内容去重，Session
 分支原子复制引用关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
-原始绝对路径。
+原始绝对路径。用户可把已导入资源附加到一次 Run：Runtime 在提交前验证归属与完整性，只在请求内将受支持
+的 UTF-8 文本或 vision 图片投影给模型；canonical message 仍只保存引用。PDF 等格式在没有专用 adapter 时
+明确拒绝。
 
 RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。Host
 可读取细粒度 activity，区分模型准备、等待响应、各类增量流、工具预检/执行/结果提交、人工交互和压缩。
@@ -121,7 +129,7 @@ metadata 中。
 
 ## 数据与安全边界
 
-- 所有路径写入受 `OURO_HOME`、工作区或工具参数约束；工具仍必须自行校验输入和权限。
+- 所有路径写入受 `OURO_HOME` 或工作区约束；内置工具统一使用 execution context 校验路径和权限。
 - 凭据通过环境变量引用或显式本地配置进入 Provider，不写入事件和公开输出。
 - 外部工具结果可能包含不可信内容，只作为数据回灌模型，不改变系统权限。
 - 插件是同进程可信扩展，当前不提供安全沙箱。
@@ -131,7 +139,7 @@ metadata 中。
 
 以下能力属于明确的未来方向，当前实现不应假装已经提供：
 
-- Desktop Host：基于 application facade 的会话导航、运行视图、diff、审批和设置界面。
+- Desktop Host：复用现有 application/configuration facade 的会话导航、运行视图、diff、审批和设置界面。
 - 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。

@@ -93,7 +93,9 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto` 或 `approval`。
 `ToolCallCoordinator` 在工具预检时把会话模式交给 `ToolExecutor`；优先级为会话显式模式、工具权限配置、
 工具定义默认值。`inherit` 不覆盖工具策略。最终有效值写入 durable `ToolInvocation`，因此批准恢复不依赖
-当前进程的配置快照。`AskUser` 属于用户交互协议，不被会话批准模式转换成普通工具批准。
+当前进程的配置快照。工具权限配置的 `deny` 是硬拒绝，不能被会话 `auto` 覆盖。`AskUser` 属于用户交互
+协议，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
+workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制不等同于操作系统沙箱。
 
 ## 模型路由与 Provider 边界
 
@@ -108,6 +110,9 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 不会因多个 provider 出现同名模型而产生歧义。
 同一份已解析 endpoint 配置复用 adapter 与 HTTP client；配置指纹变化时重建 adapter，Supervisor shutdown
 统一关闭其拥有的连接。调用方注入的 HTTP client 不由框架关闭。
+OpenAI-compatible adapter 只在尚未发出模型流事件时重试明确分类为 transient 的 transport 失败；开始输出后
+禁止重放。结构化 `response_format` 受 Endpoint capability gate 约束，重试计划通过 durable runtime event
+暴露给 Host。
 
 ## 消息、工具与上下文
 
@@ -123,6 +128,10 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 `ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要和
 token 预算。canonical history 永不被压缩覆盖；`CompactionRecord` 通过 message id 前缀和 digest 验证
 摘要来源。
+
+用户附件采用同一投影原则：canonical message 只保存 `resource_refs`。ResourceService 在 Run/Message 提交前
+校验 Session 归属、digest、size、媒体类型和 Endpoint 能力，再把受支持文本或图片仅注入本次模型请求；附件
+内容参与上下文预算与压缩，但不回写历史。
 
 ## 本地持久化
 
@@ -154,6 +163,8 @@ OURO_HOME/
 
 `session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
+messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后
+已有 cursor 仍可继续使用。
 
 Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delta 事件执行组提交；状态边界事件仍同步落盘。
 快照只在消息提交和生命周期状态转换时写入。
@@ -188,6 +199,8 @@ Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delt
 
 无效结构必须抛出 `ConfigError`，不能静默降级或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider
 factory，业务代码不直接读取环境变量。
+CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区；Facade 只暴露凭据
+configured/missing 状态，并报告配置变更的生效范围。具体 manager 留在 application 组合边界之后。
 
 ## CLI 契约
 
@@ -198,7 +211,9 @@ CLI 命令使用资源层级表达职责：
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；
+- `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
+- `run --resource` 将已导入资源附加到本次输入；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
 命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
@@ -222,7 +237,7 @@ MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重�
 只有出现独立变化轴时才新增层级：
 
 - 第二种 Supervisor 后端或跨进程调度出现后，再拆分当前进程内调度实现；
-- Desktop 需要 provider/config 查询后，增加 application 配置门面；
+- Desktop 配置界面直接扩展现有 `ConfigurationFacade` 用例，不另建 UI 专用 manager；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
 - 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
 - 第二种 MCP SDK 或自定义 transport 出现后，再抽取 SDK 之外的 transport provider 层；当前 client port 已足以
@@ -235,7 +250,7 @@ MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重�
 每次架构改动至少验证：
 
 ```bash
-python -m pytest
+python -m pytest --cov=ouro --cov-report=term-missing
 python -m ruff check ouro tests
 python -m ruff format --check ouro tests
 python -m mypy ouro

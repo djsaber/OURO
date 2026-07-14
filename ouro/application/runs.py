@@ -74,8 +74,16 @@ class RunLifecycle:
         run: RunRecord,
         prompt: str,
         sequence: int,
+        resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
     ) -> MessageRecord:
+        unique_resource_refs = list(dict.fromkeys(resource_refs))
+        if unique_resource_refs and self._validate_resource_refs is None:
+            raise ValueError(
+                "user message contains resource_refs but no ResourceService is configured"
+            )
+        if self._validate_resource_refs is not None:
+            self._validate_resource_refs(session.session_id, unique_resource_refs)
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -83,6 +91,8 @@ class RunLifecycle:
             text=prompt,
             sequence=sequence,
         )
+        if unique_resource_refs:
+            message = message.model_copy(update={"resource_refs": unique_resource_refs})
         if metadata:
             message = message.model_copy(update={"metadata": dict(metadata)})
         self._append_message(session=session, run=run, message=message)

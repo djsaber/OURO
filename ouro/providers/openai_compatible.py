@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
@@ -7,6 +8,8 @@ from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
+    ProviderRetryNotice,
+    ProviderRetryPolicy,
     ProviderStreamEvent,
     Usage,
 )
@@ -25,6 +28,7 @@ from ouro.providers.openai_codec import (
 from ouro.providers.openai_transport import (
     HttpxOpenAICompatibleTransport,
     OpenAICompatibleTransport,
+    OpenAITransportError,
 )
 
 
@@ -42,6 +46,7 @@ class OpenAICompatibleProvider:
         transport: OpenAICompatibleTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
         request_options: Mapping[str, Any] | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
     ) -> None:
         self.provider_id = provider_id or self.provider_id
         self.base_url = base_url.rstrip("/")
@@ -51,6 +56,7 @@ class OpenAICompatibleProvider:
         self.transport = transport or HttpxOpenAICompatibleTransport()
         self.default_headers = dict(default_headers or {})
         self.request_options = dict(request_options or {})
+        self.retry_policy = retry_policy or ProviderRetryPolicy()
 
     async def close(self) -> None:
         close = getattr(self.transport, "aclose", None)
@@ -65,42 +71,98 @@ class OpenAICompatibleProvider:
         messages: list[MessageRecord],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        try:
-            stream_json = getattr(self.transport, "stream_json", None)
-            if model.supports_streaming and callable(stream_json):
-                payload = self._chat_completion_payload(
+        attempt = 1
+        while True:
+            emitted_response_event = False
+            try:
+                async for event in self._stream_once(
                     model=model,
                     system_prompt=system_prompt,
                     messages=messages,
                     tools=tools,
-                    extra_payload={"stream": True},
-                )
-                chunks = stream_json(
-                    url=f"{self.base_url}{self.endpoint}",
-                    headers=self._headers(),
-                    payload=payload,
-                    timeout=self.timeout,
-                )
-                async for event in self._events_from_streaming_chunks(
-                    chunks,
-                    supports_tools=model.supports_tools,
                 ):
+                    emitted_response_event = True
                     yield event
-            else:
-                response = await self._post_chat_completion(
-                    model=model,
-                    system_prompt=system_prompt,
-                    messages=messages,
-                    tools=tools,
-                    extra_payload={"stream": False},
-                )
-                async for event in self._events_from_response(
-                    response,
-                    supports_tools=model.supports_tools,
+                return
+            except Exception as exc:  # noqa: BLE001 - provider errors become stream events.
+                next_attempt = attempt + 1
+                if not self._can_retry(
+                    exc,
+                    next_attempt=next_attempt,
+                    emitted_response_event=emitted_response_event,
                 ):
-                    yield event
-        except Exception as exc:  # noqa: BLE001 - providers should report errors as stream events.
-            yield ProviderStreamEvent(type="error", error=str(exc))
+                    yield ProviderStreamEvent(type="error", error=str(exc))
+                    return
+                delay = self.retry_policy.delay_before_attempt(next_attempt)
+                yield ProviderStreamEvent(
+                    type="retry_scheduled",
+                    retry=ProviderRetryNotice(
+                        attempt=next_attempt,
+                        max_attempts=self.retry_policy.max_attempts,
+                        delay_seconds=delay,
+                        reason=str(exc),
+                    ),
+                )
+                if delay:
+                    await asyncio.sleep(delay)
+                attempt = next_attempt
+
+    async def _stream_once(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str,
+        messages: list[MessageRecord],
+        tools: list[dict[str, Any]] | None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        stream_json = getattr(self.transport, "stream_json", None)
+        if model.supports_streaming and callable(stream_json):
+            payload = self._chat_completion_payload(
+                model=model,
+                system_prompt=system_prompt,
+                messages=messages,
+                tools=tools,
+                extra_payload={"stream": True},
+            )
+            chunks = stream_json(
+                url=f"{self.base_url}{self.endpoint}",
+                headers=self._headers(),
+                payload=payload,
+                timeout=self.timeout,
+            )
+            async for event in self._events_from_streaming_chunks(
+                chunks,
+                supports_tools=model.supports_tools,
+            ):
+                yield event
+            return
+
+        response = await self._post_chat_completion(
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+            extra_payload={"stream": False},
+        )
+        async for event in self._events_from_response(
+            response,
+            supports_tools=model.supports_tools,
+        ):
+            yield event
+
+    def _can_retry(
+        self,
+        exc: Exception,
+        *,
+        next_attempt: int,
+        emitted_response_event: bool,
+    ) -> bool:
+        return (
+            isinstance(exc, OpenAITransportError)
+            and exc.retryable
+            and not emitted_response_event
+            and next_attempt <= self.retry_policy.max_attempts
+        )
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
         try:
@@ -178,6 +240,8 @@ class OpenAICompatibleProvider:
         if system_prompt:
             converted_messages.insert(0, {"role": "system", "content": system_prompt})
         payload: dict[str, Any] = dict(self.request_options)
+        if "response_format" in payload and not model.supports_structured_output:
+            raise ValueError("response_format requires an endpoint with structured output support")
         payload["model"] = model.model_id
         payload["messages"] = converted_messages
         if model.temperature is not None:

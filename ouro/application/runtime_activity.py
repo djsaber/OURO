@@ -112,6 +112,8 @@ def reduce_runtime_activity(
             run_phase="model_streaming",
             compaction_id=None,
         )
+    elif event_type == "run_retry_scheduled":
+        updates.update(activity="waiting_model", status="running")
     elif event_type == "model_reasoning_delta":
         updates.update(activity="streaming_reasoning", status="running")
     elif event_type == "model_text_delta":

@@ -18,6 +18,7 @@ from ouro.config.provider_models import (
     normalize_provider_config,
 )
 from ouro.core.errors import ConfigError
+from ouro.core.provider import ProviderRetryPolicy
 
 _PROVIDER_FIELDS = frozenset(
     {
@@ -92,7 +93,7 @@ def provider_config_from_mapping(
             api_path=_optional_str(raw.get("api_path")),
             enabled=raw.get("enabled", True),
             timeout_seconds=raw.get("timeout_seconds", 60.0),
-            retry_policy=dict(raw.get("retry_policy") or {}),
+            retry_policy=ProviderRetryPolicy.model_validate(raw.get("retry_policy") or {}),
             extra=dict(raw.get("provider_options") or {}),
         )
         return normalize_provider_config(provider)
@@ -120,8 +121,8 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
         raw["base_url"] = provider.base_url
     if provider.api_path:
         raw["api_path"] = provider.api_path
-    if provider.retry_policy:
-        raw["retry_policy"] = provider.retry_policy
+    if provider.retry_policy.max_attempts > 1:
+        raw["retry_policy"] = provider.retry_policy.model_dump(mode="json")
     if provider.extra:
         raw["provider_options"] = provider.extra
     return raw

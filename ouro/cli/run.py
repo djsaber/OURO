@@ -6,36 +6,25 @@ from pathlib import Path
 from typing import Any
 
 from ouro.application.events import RuntimeEventSink
-from ouro.application.models import ConfiguredModelCatalog
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
-from ouro.cli.errors import error_exit_code
-from ouro.config import (
-    CompactionConfig,
-    CompactionConfigManager,
-    PermissionConfigManager,
-    PromptConfigManager,
-    ProviderConfigManager,
-    ProviderRuntimeOptions,
-    QueuedInputConfigManager,
-    RunBudgetConfigManager,
-    ToolExecutionConfigManager,
+from ouro.application.runtime_configuration import (
+    RuntimeConfigurationResolver,
+    RuntimeProviderOptions,
 )
+from ouro.cli.errors import error_exit_code
+from ouro.config import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.mcp import MCPRuntimeResource
-from ouro.prompts import render_agent_skills_prompt
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
-from ouro.skills import discover_available_skills
 from ouro.tools import ToolRegistry, builtin_tools
-
-RuntimeProviderOptions = ProviderRuntimeOptions
 
 _DIM_ITALIC = "\x1b[2;3m"
 _RESET = "\x1b[0m"
@@ -56,27 +45,20 @@ def build_default_runtime(
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
-    provider_config = ProviderConfigManager(store.root)
-    resolved_options = provider_config.resolve_runtime_options(
-        provider_options or RuntimeProviderOptions(),
+    configuration = RuntimeConfigurationResolver(store.root)
+    resolved = configuration.snapshot(
+        provider_options=provider_options,
+        system_prompt=system_prompt,
     )
-    adapter = build_runtime_adapter(resolved_options)
-    model_catalog = ConfiguredModelCatalog(
-        provider_config,
+    adapter = build_runtime_adapter(resolved.provider_options)
+    model_catalog = configuration.model_catalog(
         adapter,
         adapter_builder=build_runtime_adapter,
     )
-    skills_prompt = render_agent_skills_prompt(discover_available_skills(home=store.root))
-    context_builder = ContextBuilder(skill_instructions=skills_prompt)
-    resolved_system_prompt = PromptConfigManager(store.root).resolve_system_prompt(system_prompt)
-    permission_overrides = PermissionConfigManager(store.root).snapshot().tools
-    compaction_config = CompactionConfigManager(store.root).snapshot()
-    tool_execution_config = ToolExecutionConfigManager(store.root).snapshot()
-    run_budget = RunBudgetConfigManager(store.root).snapshot()
-    queued_input_config = QueuedInputConfigManager(store.root).snapshot()
+    context_builder = ContextBuilder(skill_instructions=resolved.skills_prompt)
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
-        provider_config,
-        compaction_config,
+        configuration,
+        resolved.compaction,
     )
     return RuntimeService(
         store=store,
@@ -84,16 +66,17 @@ def build_default_runtime(
         model_catalog=model_catalog,
         tools=registry,
         context_builder=context_builder,
-        system_prompt=resolved_system_prompt,
+        system_prompt=resolved.system_prompt,
         event_sink=event_sink,
-        permission_overrides=permission_overrides,
-        tool_execution_config=tool_execution_config,
-        run_budget=run_budget,
-        compaction_config=compaction_config,
+        permission_overrides=resolved.permission_overrides,
+        tool_execution_config=resolved.tool_execution,
+        run_budget=resolved.run_budget,
+        compaction_config=resolved.compaction,
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
-        queued_input_config=queued_input_config,
+        queued_input_config=resolved.queued_inputs,
         resources=resources,
+        default_workspace=Path.cwd(),
     )
 
 
@@ -104,21 +87,14 @@ def build_default_mcp_runtime(runtime: RuntimeService) -> MCPRuntimeResource:
 
 
 def _configured_compaction_adapter(
-    providers: ProviderConfigManager,
+    configuration: RuntimeConfigurationResolver,
     config: CompactionConfig,
 ) -> tuple[RuntimeAdapter | None, str | None]:
-    model = config.model
-    if not model.has_dedicated_endpoint:
+    if not config.model.has_dedicated_endpoint:
         return None, None
-    assert model.provider_id is not None
-    assert model.endpoint_id is not None
     try:
-        options = providers.resolve_runtime_options(
-            ProviderRuntimeOptions(
-                provider_id=model.provider_id,
-                endpoint_id=model.endpoint_id,
-            )
-        )
+        options = configuration.compaction_provider_options(config)
+        assert options is not None
         return build_runtime_adapter(options), None
     except Exception as exc:  # noqa: BLE001 - optional route must degrade to the runtime route.
         return (
@@ -137,6 +113,7 @@ async def run_print(
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
+    resource_refs: list[str] | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -152,6 +129,7 @@ async def run_print(
                 title=title,
                 queue_mode=queue_mode,
                 approval_mode=approval_mode,
+                resource_refs=resource_refs,
             )
     except OuroError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -176,6 +154,7 @@ async def run_json(
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
+    resource_refs: list[str] | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
@@ -191,6 +170,7 @@ async def run_json(
                 title=title,
                 queue_mode=queue_mode,
                 approval_mode=approval_mode,
+                resource_refs=resource_refs,
             )
     except OuroError as exc:
         print(

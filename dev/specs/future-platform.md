@@ -5,15 +5,8 @@
 ## 目标
 
 在保持本地优先、durable Run 和清晰依赖方向的前提下，为桌面 Host、完整扩展、长期记忆和子智能体
-提供共同目标契约。本规格不表示这些剩余能力已经实现。ResourceService 与 RuntimeSupervisor 已转入
-[当前规格](resources-supervisor.md)，不再属于本目标规格。
-
-## Application 配置门面
-
-- Provider、Endpoint、权限、压缩、预算和 Skills 暴露类型化 query/command DTO。
-- mutation 先完整校验再原子写入。
-- credential DTO 只暴露引用和配置状态。
-- Desktop、未来 API 和 CLI 可复用同一用例，不直接把 config manager 当 UI service。
+提供共同目标契约。本规格不表示这些剩余能力已经实现。ResourceService、RuntimeSupervisor 与 Application
+配置门面已转入[当前规格](resources-supervisor.md)和[Provider 与配置规格](providers-config.md)，不再属于本目标规格。
 
 ## 完整插件
 

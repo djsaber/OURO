@@ -122,6 +122,31 @@ class LocalResourceStore:
             self._verify_blob(record)
         return record
 
+    def load_content(
+        self,
+        resource_id: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> tuple[ResourceRecord, bytes]:
+        """Read and verify immutable bytes without exposing the backing path."""
+
+        record = self.load_record(resource_id)
+        if max_bytes is not None and record.size > max_bytes:
+            raise ValueError(
+                f"resource {resource_id} exceeds model attachment limit of {max_bytes} bytes"
+            )
+        blob_path = self._blob_path(record)
+        try:
+            content = blob_path.read_bytes()
+        except FileNotFoundError as exc:
+            raise ResourceIntegrityError(f"resource blob is missing: {resource_id}") from exc
+        except OSError as exc:
+            raise PersistenceError(f"could not read resource {resource_id}: {exc}") from exc
+        actual_digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+        if actual_digest != record.digest or len(content) != record.size:
+            raise ResourceIntegrityError(f"resource integrity mismatch: {resource_id}")
+        return record, content
+
     def list_session_records(self, session_id: str) -> list[ResourceRecord]:
         return [
             self.load_record(reference.resource_id)

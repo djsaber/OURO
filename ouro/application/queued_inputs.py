@@ -21,6 +21,7 @@ class QueuedInput(OuroModel):
     prompt: str = Field(min_length=1)
     mode: QueuedInputMode = "follow_up"
     title: str | None = None
+    resource_refs: tuple[str, ...] = ()
     queued_at: datetime = Field(default_factory=utc_now)
 
 
@@ -41,8 +42,14 @@ class QueuedInputQueue:
         prompt: str,
         mode: QueuedInputMode = "follow_up",
         title: str | None,
+        resource_refs: tuple[str, ...] = (),
     ) -> tuple[SessionRecord, QueuedInput, int]:
-        item = QueuedInput(prompt=prompt, mode=mode, title=title)
+        item = QueuedInput(
+            prompt=prompt,
+            mode=mode,
+            title=title,
+            resource_refs=resource_refs,
+        )
         with session_mutation(self.store, snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
             metadata = dict(latest.metadata)
@@ -134,10 +141,17 @@ class QueuedInputQueue:
         raw_mode = item.get("mode", "follow_up")
         if raw_mode not in {"follow_up", "steer"}:
             return None
+        raw_resource_refs = item.get("resource_refs", ())
+        resource_refs = (
+            tuple(value for value in raw_resource_refs if isinstance(value, str))
+            if isinstance(raw_resource_refs, list | tuple)
+            else ()
+        )
         return QueuedInput(
             queue_id=str(item.get("queue_id") or new_id("queued")),
             prompt=prompt,
             mode=raw_mode,
             title=title if isinstance(title, str) else None,
+            resource_refs=resource_refs,
             queued_at=item.get("queued_at") or utc_now(),
         )

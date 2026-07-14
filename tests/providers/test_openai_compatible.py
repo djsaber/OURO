@@ -8,10 +8,11 @@ import httpx
 import pytest
 
 from ouro.core.messages import ImageContent, MessageRecord, TextContent, ToolResultReference
-from ouro.core.provider import ModelMetadata
+from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAICompatibleProvider
 from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
+from ouro.providers.openai_transport import OpenAITransportError
 
 
 class FakeTransport:
@@ -74,6 +75,26 @@ class FakeStreamingTransport:
         )
         for chunk in self.chunks:
             yield chunk
+
+
+class SequencedTransport(FakeTransport):
+    def __init__(self, responses: list[dict[str, Any] | Exception]) -> None:
+        super().__init__({})
+        self.responses = list(responses)
+
+    async def post_json(self, **kwargs) -> dict[str, Any]:
+        self.requests.append(dict(kwargs))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class PartialFailureStreamingTransport(FakeStreamingTransport):
+    async def stream_json(self, **kwargs) -> AsyncIterator[Mapping[str, Any]]:
+        self.requests.append(dict(kwargs))
+        yield {"choices": [{"delta": {"content": "partial"}}]}
+        raise OpenAITransportError("connection lost", retryable=True)
 
 
 @pytest.mark.asyncio
@@ -451,9 +472,7 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
 
     assert [event.type for event in events] == ["tool_call", "tool_call", "done"]
     assert [
-        event.tool_call.model_dump()
-        for event in events[:-1]
-        if event.tool_call is not None
+        event.tool_call.model_dump() for event in events[:-1] if event.tool_call is not None
     ] == [
         {
             "id": "call_1",
@@ -924,3 +943,103 @@ async def test_openai_compatible_provider_sends_empty_reasoning_content_for_tool
     assert assistant_message["role"] == "assistant"
     assert "reasoning_content" in assistant_message
     assert assistant_message["reasoning_content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_provider_retries_transient_failure_before_any_response_event() -> None:
+    transport = SequencedTransport(
+        [
+            OpenAITransportError("provider request timed out", retryable=True),
+            {
+                "choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            },
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+        retry_policy=ProviderRetryPolicy(
+            max_attempts=2,
+            initial_backoff_seconds=0,
+            max_backoff_seconds=0,
+        ),
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                supports_streaming=False,
+            ),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["retry_scheduled", "text_delta", "done"]
+    assert events[0].retry is not None
+    assert events[0].retry.attempt == 2
+    assert len(transport.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_provider_does_not_retry_after_partial_stream_output() -> None:
+    transport = PartialFailureStreamingTransport([])
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+        retry_policy=ProviderRetryPolicy(
+            max_attempts=3,
+            initial_backoff_seconds=0,
+            max_backoff_seconds=0,
+        ),
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "error"]
+    assert len(transport.requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_structured_output_request_is_gated_by_endpoint_capability() -> None:
+    response = {"choices": [{"message": {"role": "assistant", "content": '{"ok":true}'}}]}
+    transport = FakeTransport(response)
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+        request_options={"response_format": {"type": "json_object"}},
+    )
+    message = MessageRecord.text(session_id="ses_1", role="user", text="hello")
+
+    rejected = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="text", provider_id="glm"),
+            messages=[message],
+        )
+    ]
+    accepted = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="json",
+                provider_id="glm",
+                supports_structured_output=True,
+                supports_streaming=False,
+            ),
+            messages=[message],
+        )
+    ]
+
+    assert [event.type for event in rejected] == ["error"]
+    assert "structured output support" in (rejected[0].error or "")
+    assert [event.type for event in accepted] == ["text_delta", "done"]
+    assert transport.requests[0]["payload"]["response_format"] == {"type": "json_object"}

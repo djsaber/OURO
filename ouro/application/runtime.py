@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Mapping
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ouro.application.compaction import (
@@ -37,7 +38,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
-from ouro.core.errors import CompactionError, SessionBusyError
+from ouro.core.errors import CompactionError, ResourceAttachmentError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
@@ -76,6 +77,7 @@ class RuntimeService:
         compaction_adapter_error: str | None = None,
         queued_input_config: QueuedInputConfig | None = None,
         resources: ResourceService | None = None,
+        default_workspace: str | Path | None = None,
     ) -> None:
         self.store = store
         self.resources = resources
@@ -86,6 +88,11 @@ class RuntimeService:
         self.adapter = adapter
         self.models = model_catalog or FixedRuntimeAdapterCatalog(adapter)
         self.tools = tools
+        self.default_workspace = (
+            str(Path(default_workspace).expanduser().resolve())
+            if default_workspace is not None
+            else None
+        )
         self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
         self.hooks = hooks or HookRegistry()
         self.event_recorder = RuntimeEventRecorder(
@@ -112,6 +119,7 @@ class RuntimeService:
             events=self.event_recorder,
             runs=self.run_lifecycle,
             execution_config=tool_execution_config or ToolExecutionConfig(),
+            default_workspace=self.default_workspace,
             is_aborted=self._is_run_aborted,
         )
         self.context_builder = context_builder or ContextBuilder()
@@ -149,6 +157,9 @@ class RuntimeService:
             strategies=self.compaction_strategies,
             config=self.compaction_config,
             system_prompt=self.system_prompt,
+            project_model_messages=(
+                resources.project_model_messages if resources is not None else None
+            ),
         )
         self._abort_signals: dict[str, AbortSignal] = {}
 
@@ -240,16 +251,24 @@ class RuntimeService:
         title: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
+        resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
+        input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
+        if input_resource_refs and session_id is None:
+            raise ResourceAttachmentError(
+                "resource attachments require an existing session; import the resource "
+                "and pass its session with session_id"
+            )
         if session_id is None:
             created = self.sessions.create(
                 title=title or _title_from_prompt(prompt),
                 current_model=self.models.default_model().key,
                 approval_mode=approval_mode or "inherit",
+                workspace=self.default_workspace,
             )
             session = self.store.load_session(
                 created.session.session_id,
@@ -266,6 +285,7 @@ class RuntimeService:
             existing_messages = snapshot.messages
             existing_events = snapshot.events
             active_run = maybe_active_run(snapshot.runs)
+            self._validate_model_resource_refs(session, input_resource_refs)
             if active_run is not None:
                 if approval_mode is not None and approval_mode != session.approval_mode:
                     raise SessionBusyError(
@@ -278,6 +298,7 @@ class RuntimeService:
                     prompt=prompt,
                     title=title,
                     mode=queue_mode,
+                    resource_refs=input_resource_refs,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         sequence = len(existing_events)
@@ -292,6 +313,7 @@ class RuntimeService:
         if run_lock is None:
             snapshot = self.store.load_session(session.session_id, recover=False)
             active_run = maybe_active_run(snapshot.runs)
+            self._validate_model_resource_refs(snapshot.session, input_resource_refs)
             if active_run is not None:
                 if approval_mode is not None and approval_mode != snapshot.session.approval_mode:
                     raise SessionBusyError(
@@ -304,6 +326,7 @@ class RuntimeService:
                     prompt=prompt,
                     title=title,
                     mode=queue_mode,
+                    resource_refs=input_resource_refs,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
@@ -325,6 +348,7 @@ class RuntimeService:
                     prompt=prompt,
                     title=title,
                     mode=queue_mode,
+                    resource_refs=input_resource_refs,
                 )
                 return RunResult(
                     session=queued_session,
@@ -346,6 +370,20 @@ class RuntimeService:
             existing_messages = locked_snapshot.messages
             existing_events = locked_snapshot.events
             sequence = len(existing_events)
+            pending_inputs = _queued_inputs or [
+                QueuedInput(
+                    prompt=prompt,
+                    title=title,
+                    mode=queue_mode,
+                    resource_refs=input_resource_refs,
+                )
+            ]
+            for pending_input in pending_inputs:
+                self._validate_model_resource_refs(
+                    session,
+                    pending_input.resource_refs,
+                    adapter=active_adapter,
+                )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             session, run = self.run_lifecycle.start(session=session, run=run)
 
@@ -358,9 +396,6 @@ class RuntimeService:
                 payload={"trigger": "user"},
             )
 
-            pending_inputs = _queued_inputs or [
-                QueuedInput(prompt=prompt, title=title, mode=queue_mode)
-            ]
             user_messages: list[MessageRecord] = []
             for queued_input in pending_inputs:
                 is_queued = _queued_inputs is not None
@@ -369,6 +404,7 @@ class RuntimeService:
                     run=run,
                     prompt=queued_input.prompt,
                     sequence=len(existing_messages) + len(user_messages) + 1,
+                    resource_refs=queued_input.resource_refs,
                     metadata=(
                         {
                             "queued_input_id": queued_input.queue_id,
@@ -391,6 +427,7 @@ class RuntimeService:
                     payload={
                         "message_id": user_message.message_id,
                         "queued_input_id": queued_input.queue_id if is_queued else None,
+                        "resource_refs": list(queued_input.resource_refs),
                     },
                 )
 
@@ -614,12 +651,14 @@ class RuntimeService:
         prompt: str,
         title: str | None,
         mode: QueuedInputMode,
+        resource_refs: tuple[str, ...] = (),
     ) -> tuple[SessionRecord, list[EventRecord]]:
         session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
             prompt=prompt,
             title=title,
             mode=mode,
+            resource_refs=resource_refs,
         )
         emitted: list[EventRecord] = []
         sequence = await self.event_recorder.emit(
@@ -636,6 +675,7 @@ class RuntimeService:
                 "queue_id": queued_input.queue_id,
                 "mode": queued_input.mode,
                 "queue_size": queue_size,
+                "resource_refs": list(queued_input.resource_refs),
             },
         )
         del sequence
@@ -727,6 +767,7 @@ class RuntimeService:
                 run=run,
                 prompt=item.prompt,
                 sequence=len(messages) + len(appended) + 1,
+                resource_refs=item.resource_refs,
                 metadata={
                     "queued_input_id": item.queue_id,
                     "queued_input_mode": item.mode,
@@ -748,6 +789,31 @@ class RuntimeService:
                 },
             )
         return TurnBoundaryInputResult(sequence=sequence, messages=appended)
+
+    def _validate_model_resource_refs(
+        self,
+        session: SessionRecord,
+        resource_refs: tuple[str, ...],
+        *,
+        adapter: RuntimeAdapter | None = None,
+    ) -> None:
+        if not resource_refs:
+            return
+        if self.resources is None:
+            raise ResourceAttachmentError(
+                "resource attachments require a configured ResourceService"
+            )
+        active_adapter = adapter
+        if active_adapter is None:
+            selection = self.models.resolve(
+                session.current_model or self.models.default_model().key
+            )
+            active_adapter = self.models.adapter_for(selection.key)
+        self.resources.validate_model_references(
+            session.session_id,
+            resource_refs,
+            supports_vision=active_adapter.model.supports_vision,
+        )
 
     @staticmethod
     def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:

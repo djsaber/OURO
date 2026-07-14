@@ -6,15 +6,12 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
+from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import ProviderEndpointView, ProviderView
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
-from ouro.config import (
-    ProviderConfigManager,
-    ProviderKind,
-    endpoint_config_to_public_dict,
-    provider_config_to_public_dict,
-)
-from ouro.core.errors import ConfigError, OuroError
+from ouro.config import ProviderKind
+from ouro.core.errors import OuroError
 from ouro.core.provider import ThinkingLevel
 
 
@@ -70,26 +67,19 @@ def list_provider_configs(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        snapshot = manager.snapshot()
+        catalog = ConfigurationFacade(home).provider_catalog()
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    providers = [
-        provider_config_to_public_dict(
-            provider,
-            is_default=provider.provider_id == snapshot.default_provider_id,
-        )
-        for provider in snapshot.providers
-    ]
+    providers = [_provider_to_public(provider) for provider in catalog.providers]
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "default": snapshot.default_provider_id,
-                    "config_path": str(snapshot.config_path),
+                    "default": catalog.default_provider_id,
+                    "config_path": catalog.config_path,
                     "providers": providers,
                 },
                 ensure_ascii=False,
@@ -97,7 +87,7 @@ def list_provider_configs(
         )
         return 0
 
-    lines = [f"Providers (default: {snapshot.default_provider_id}):"]
+    lines = [f"Providers (default: {catalog.default_provider_id}):"]
     for provider in providers:
         marker = "*" if provider["default"] else "-"
         enabled = "enabled" if provider["enabled"] else "disabled"
@@ -117,26 +107,19 @@ def show_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        snapshot = manager.snapshot()
-        target_id = provider_id or snapshot.default_provider_id
-        provider = manager.get_provider(target_id)
-        if provider is None:
-            raise ConfigError(f"provider not found: {target_id}")
+        facade = ConfigurationFacade(home)
+        provider = facade.provider(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = provider_config_to_public_dict(
-        provider,
-        is_default=provider.provider_id == snapshot.default_provider_id,
-    )
+    public = _provider_to_public(provider)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(snapshot.config_path),
+                    "config_path": str(facade.config_path),
                     "provider": public,
                 },
                 ensure_ascii=False,
@@ -155,7 +138,7 @@ def show_provider_config(
                 f"Default provider: {'yes' if public['default'] else 'no'}",
                 f"Default endpoint: {public['default_endpoint'] or '-'}",
                 f"Endpoints: {public['endpoint_count']}",
-                f"Config: {snapshot.config_path}",
+                f"Config: {facade.config_path}",
             ]
         )
     )
@@ -172,38 +155,43 @@ def set_provider_config(
     api_key: str | None = None,
     api_key_env: str | None = None,
     timeout: float | None = None,
+    retry_max_attempts: int | None = None,
+    retry_initial_backoff_seconds: float | None = None,
+    retry_max_backoff_seconds: float | None = None,
+    retry_backoff_multiplier: float | None = None,
     enabled: bool | None = None,
     make_default: bool = False,
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        provider = manager.upsert_provider(
+        facade = ConfigurationFacade(home)
+        catalog = facade.save_provider(
             provider_id,
             provider_type=provider_type,
             base_url=base_url,
             api_path=api_path,
             api_key=api_key,
             api_key_env=api_key_env,
-            timeout_seconds=timeout,
+            timeout=timeout,
+            retry_max_attempts=retry_max_attempts,
+            retry_initial_backoff_seconds=retry_initial_backoff_seconds,
+            retry_max_backoff_seconds=retry_max_backoff_seconds,
+            retry_backoff_multiplier=retry_backoff_multiplier,
             enabled=enabled,
             make_default=make_default,
         )
-        snapshot = manager.snapshot()
+        provider = next(item for item in catalog.providers if item.provider_id == provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = provider_config_to_public_dict(
-        provider,
-        is_default=provider.provider_id == snapshot.default_provider_id,
-    )
+    public = _provider_to_public(provider)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(snapshot.config_path),
+                    "config_path": catalog.config_path,
                     "provider": public,
                 },
                 ensure_ascii=False,
@@ -222,21 +210,20 @@ def use_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        provider = manager.set_default_provider(provider_id)
-        snapshot = manager.snapshot()
+        catalog = ConfigurationFacade(home).use_provider(provider_id)
+        provider = next(item for item in catalog.providers if item.provider_id == provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = provider_config_to_public_dict(provider, is_default=True)
+    public = _provider_to_public(provider)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
                     "default": provider.provider_id,
-                    "config_path": str(snapshot.config_path),
+                    "config_path": catalog.config_path,
                     "provider": public,
                 },
                 ensure_ascii=False,
@@ -254,9 +241,7 @@ def remove_provider_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        manager.remove_provider(provider_id)
-        snapshot = manager.snapshot()
+        catalog = ConfigurationFacade(home).remove_provider(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -267,8 +252,8 @@ def remove_provider_config(
                 {
                     "status": "ok",
                     "removed": provider_id,
-                    "default": snapshot.default_provider_id,
-                    "config_path": str(snapshot.config_path),
+                    "default": catalog.default_provider_id,
+                    "config_path": catalog.config_path,
                 },
                 ensure_ascii=False,
             )
@@ -285,28 +270,19 @@ def list_provider_endpoints(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        provider = manager.get_provider(provider_id)
-        if provider is None:
-            raise ConfigError(f"provider not found: {provider_id}")
+        catalog = ConfigurationFacade(home).endpoint_catalog(provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    endpoints = [
-        {
-            **endpoint_config_to_public_dict(endpoint),
-            "default": endpoint.endpoint_id == provider.default_endpoint,
-        }
-        for endpoint in provider.endpoints
-    ]
+    endpoints = [_endpoint_to_public(endpoint) for endpoint in catalog.endpoints]
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "provider_id": provider.provider_id,
-                    "default_endpoint": provider.default_endpoint,
+                    "provider_id": catalog.provider_id,
+                    "default_endpoint": catalog.default_endpoint,
                     "endpoints": endpoints,
                 },
                 ensure_ascii=False,
@@ -314,7 +290,7 @@ def list_provider_endpoints(
         )
         return 0
 
-    lines = [f"Endpoints for {provider.provider_id} (default: {provider.default_endpoint or '-'}):"]
+    lines = [f"Endpoints for {catalog.provider_id} (default: {catalog.default_endpoint or '-'}):"]
     for endpoint in endpoints:
         marker = "*" if endpoint["default"] else "-"
         lines.append(
@@ -333,35 +309,25 @@ def show_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        provider = manager.get_provider(provider_id)
-        if provider is None:
-            raise ConfigError(f"provider not found: {provider_id}")
-        endpoint = provider.endpoint(endpoint_id)
-        if endpoint is None:
-            target = endpoint_id or provider.default_endpoint or "<default>"
-            raise ConfigError(f"endpoint not found: {provider_id}/{target}")
+        endpoint = ConfigurationFacade(home).endpoint(provider_id, endpoint_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = {
-        **endpoint_config_to_public_dict(endpoint),
-        "default": endpoint.endpoint_id == provider.default_endpoint,
-    }
+    public = _endpoint_to_public(endpoint)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "provider_id": provider.provider_id,
+                    "provider_id": provider_id,
                     "endpoint": public,
                 },
                 ensure_ascii=False,
             )
         )
         return 0
-    lines = [f"Endpoint: {provider.provider_id}/{endpoint.endpoint_id}"]
+    lines = [f"Endpoint: {provider_id}/{endpoint.endpoint_id}"]
     for key, value in public.items():
         if key not in {"endpoint_id", "request_options", "metadata"}:
             lines.append(f"{key}: {value}")
@@ -392,11 +358,10 @@ def set_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        endpoint = manager.upsert_endpoint(
+        catalog = ConfigurationFacade(home).save_endpoint(
             provider_id,
             endpoint_id,
-            model_id=model,
+            model=model,
             base_url=base_url,
             api_path=api_path,
             temperature=temperature,
@@ -412,16 +377,12 @@ def set_provider_endpoint(
             request_options=request_options,
             make_default=make_default,
         )
-        provider = manager.get_provider(provider_id)
-        assert provider is not None
+        endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = {
-        **endpoint_config_to_public_dict(endpoint),
-        "default": endpoint.endpoint_id == provider.default_endpoint,
-    }
+    public = _endpoint_to_public(endpoint)
     if json_mode:
         print(
             json.dumps(
@@ -446,10 +407,8 @@ def use_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        endpoint = ProviderConfigManager(home).set_default_endpoint(
-            provider_id,
-            endpoint_id,
-        )
+        catalog = ConfigurationFacade(home).use_endpoint(provider_id, endpoint_id)
+        endpoint = next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -477,11 +436,9 @@ def remove_provider_endpoint(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ProviderConfigManager(home)
-        manager.remove_endpoint(provider_id, endpoint_id)
-        provider = manager.get_provider(provider_id)
-        snapshot = manager.snapshot()
-        assert provider is not None
+        facade = ConfigurationFacade(home)
+        catalog = facade.remove_endpoint(provider_id, endpoint_id)
+        providers = facade.provider_catalog()
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -492,8 +449,8 @@ def remove_provider_endpoint(
                     "status": "ok",
                     "provider_id": provider_id,
                     "removed": endpoint_id,
-                    "default_endpoint": provider.default_endpoint,
-                    "default_provider": snapshot.default_provider_id,
+                    "default_endpoint": catalog.default_endpoint,
+                    "default_provider": providers.default_provider_id,
                 },
                 ensure_ascii=False,
             )
@@ -501,9 +458,29 @@ def remove_provider_endpoint(
         return 0
     print(
         f"Endpoint removed: {provider_id}/{endpoint_id} "
-        f"(default provider: {snapshot.default_provider_id})"
+        f"(default provider: {providers.default_provider_id})"
     )
     return 0
+
+
+def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
+    return {
+        "provider_id": provider.provider_id,
+        "kind": provider.kind,
+        "credential": provider.credential.reference,
+        "enabled": provider.enabled,
+        "timeout": provider.timeout,
+        "base_url": provider.base_url,
+        "api_path": provider.api_path,
+        "default": provider.default,
+        "default_endpoint": provider.default_endpoint,
+        "endpoint_count": provider.endpoint_count,
+        "endpoints": [_endpoint_to_public(endpoint) for endpoint in provider.endpoints],
+    }
+
+
+def _endpoint_to_public(endpoint: ProviderEndpointView) -> dict[str, Any]:
+    return endpoint.model_dump(mode="json", exclude_none=True)
 
 
 def _checked_target_label(

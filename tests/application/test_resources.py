@@ -12,6 +12,7 @@ from ouro.application.runs import RunLifecycle
 from ouro.application.sessions import SessionService
 from ouro.core.errors import (
     PersistenceError,
+    ResourceAttachmentError,
     ResourceIntegrityError,
     ResourceInUseError,
     ResourceNotFoundError,
@@ -20,7 +21,7 @@ from ouro.core.errors import (
     UnsupportedMediaTypeError,
 )
 from ouro.core.hooks import HookRegistry
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
@@ -351,3 +352,82 @@ def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_pa
 
     assert sessions.load_session(session.session_id, recover=False).messages == []
     assert resource_store.list_session_records(session.session_id) == []
+
+
+def test_text_resource_is_projected_with_source_label_without_mutating_canonical_message(
+    tmp_path,
+) -> None:
+    _, _, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Projection").session
+    source = tmp_path / "notes.txt"
+    source.write_text("important context", encoding="utf-8")
+    resource = resources.import_resource(session.session_id, source).resource
+    canonical = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="Summarize this",
+    ).model_copy(update={"resource_refs": [resource.resource_id]})
+
+    projected = resources.project_model_messages([canonical], supports_vision=False)[0]
+
+    assert canonical.text_content == "Summarize this"
+    assert canonical.resource_refs == [resource.resource_id]
+    assert "Attached resource: notes.txt" in projected.text_content
+    assert resource.resource_id in projected.text_content
+    assert projected.text_content.endswith("important context")
+
+
+def test_image_resource_projection_is_request_local_data_uri(tmp_path) -> None:
+    _, _, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Image").session
+    source = tmp_path / "pixel.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\nimage-bytes")
+    resource = resources.import_resource(
+        session.session_id,
+        source,
+        media_type="image/png",
+    ).resource
+    canonical = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="Describe it",
+    ).model_copy(update={"resource_refs": [resource.resource_id]})
+
+    projected = resources.project_model_messages([canonical], supports_vision=True)[0]
+    image = next(block for block in projected.content if isinstance(block, ImageContent))
+
+    assert image.uri.startswith("data:image/png;base64,")
+    assert all(not isinstance(block, ImageContent) for block in canonical.content)
+
+
+def test_model_attachment_rejects_unsupported_media_and_non_vision_endpoint(tmp_path) -> None:
+    _, _, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Unsupported").session
+    binary = tmp_path / "archive.bin"
+    binary.write_bytes(b"binary")
+    binary_resource = resources.import_resource(
+        session.session_id,
+        binary,
+        media_type="application/octet-stream",
+    ).resource
+
+    with pytest.raises(UnsupportedMediaTypeError, match="not supported for model input"):
+        resources.validate_model_references(
+            session.session_id,
+            [binary_resource.resource_id],
+            supports_vision=False,
+        )
+
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    image_resource = resources.import_resource(
+        session.session_id,
+        image,
+        media_type="image/png",
+    ).resource
+    with pytest.raises(ResourceAttachmentError, match="does not support image attachment"):
+        resources.validate_model_references(
+            session.session_id,
+            [image_resource.resource_id],
+            supports_vision=False,
+        )

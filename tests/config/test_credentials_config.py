@@ -15,6 +15,7 @@ from ouro.config import (
 from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_models import default_api_path
 from ouro.core.errors import ConfigError, CredentialError
+from ouro.core.provider import ProviderRetryPolicy
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 
 
@@ -755,3 +756,53 @@ def test_removing_default_endpoint_resets_global_default_when_no_endpoint_left(
     manager.remove_endpoint("glm", "chat")
 
     assert manager.snapshot().default_provider_id == "faux"
+
+
+def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> None:
+    manager = ProviderConfigManager(tmp_path)
+    policy = ProviderRetryPolicy(
+        max_attempts=3,
+        initial_backoff_seconds=0.25,
+        max_backoff_seconds=2,
+    )
+    manager.upsert_provider(
+        "glm",
+        provider_type="openai-compatible",
+        base_url="https://chat.example.test/v1",
+        retry_policy=policy,
+    )
+    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
+
+    restored = ProviderConfigManager(tmp_path).get_provider("glm")
+    options = manager.resolve_runtime_options(
+        ProviderRuntimeOptions(provider_id="glm", endpoint_id="chat")
+    )
+
+    assert restored is not None and restored.retry_policy == policy
+    assert options.retry_policy == policy
+    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 3
+
+
+def test_invalid_provider_retry_policy_is_rejected_without_rewriting_config(tmp_path) -> None:
+    config_path = tmp_path / "config" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    raw = {
+        "providers": {
+            "default": "faux",
+            "items": {
+                "glm": {
+                    "provider_id": "glm",
+                    "provider_type": "openai-compatible",
+                    "base_url": "https://example.test/v1",
+                    "retry_policy": {"max_attempts": 0},
+                }
+            },
+        }
+    }
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigError, match="max_attempts"):
+        ProviderConfigManager(tmp_path).snapshot()
+
+    assert json.loads(config_path.read_text(encoding="utf-8")) == raw

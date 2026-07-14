@@ -25,7 +25,7 @@ from ouro.config.provider_models import (
 )
 from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
 from ouro.core.errors import ConfigError
-from ouro.core.provider import ThinkingLevel
+from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 
 
 class ProviderConfigManager:
@@ -140,6 +140,7 @@ class ProviderConfigManager:
         api_key: str | None = None,
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -182,6 +183,7 @@ class ProviderConfigManager:
                     "timeout_seconds": timeout_seconds
                     if timeout_seconds is not None
                     else current.timeout_seconds,
+                    "retry_policy": retry_policy or current.retry_policy,
                     "enabled": enabled if enabled is not None else current.enabled,
                 }
             )

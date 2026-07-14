@@ -1,6 +1,6 @@
 # 个人工作流基础计划
 
-状态：进行中（ResourceService 与 RuntimeSupervisor 已完成；配置门面待实施）
+状态：已完成
 
 ## 目标
 
@@ -36,6 +36,7 @@
 - [x] Session branch 复制 resource identity 和引用关系。
 - [x] Session trash/remove 计算资源可达性并安全清理。
 - [x] 工具结果的 `resource_refs` 在提交前验证存在。
+- [x] 用户输入的 `resource_refs` 在 Run/Message 提交前验证，并按请求投影为模型可消费内容。
 
 验收：分支不再因合法 resource refs 失败；删除不会制造悬空引用或误删共享内容。
 
@@ -49,22 +50,22 @@
 
 ### B1. DTO 与查询
 
-- [ ] 定义 Provider/Endpoint、权限、工具执行、预算、压缩和 Skills 的公开 DTO。
-- [ ] 明确 credential configured/missing 状态和脱敏规则。
-- [ ] 提供单一配置 overview query 与分区 query。
+- [x] 定义 Provider/Endpoint、权限、工具执行、预算、压缩和 Skills 的公开 DTO。
+- [x] 明确 credential configured/missing 状态和脱敏规则。
+- [x] 提供单一配置 overview query 与分区 query。
 
 ### B2. Commands
 
-- [ ] 为每个配置分区封装 validated mutation。
-- [ ] 保持 Provider 与 Endpoint 独立事务。
-- [ ] 返回 mutation result、diagnostic 和生效范围。
-- [ ] 明确运行中 Session 对配置变更的下一请求生效规则。
+- [x] 为每个配置分区封装 validated mutation。
+- [x] 保持 Provider 与 Endpoint 独立事务。
+- [x] 返回 mutation result、diagnostic 和生效范围。
+- [x] 明确运行中 Session 对配置变更的下一请求生效规则。
 
 ### B3. CLI 迁移
 
-- [ ] CLI 从直接 manager 调用迁移到配置 facade。
-- [ ] 保持命令、JSON shape 和退出码，除非新规格明确变更。
-- [ ] 加架构测试阻止 Desktop/CLI 把 config manager 当应用服务。
+- [x] CLI 从直接 manager 调用迁移到配置 facade。
+- [x] 保持命令、JSON shape 和退出码，除非新规格明确变更。
+- [x] 加架构测试阻止 Desktop/CLI 把 config manager 当应用服务。
 
 验收：config manager 只在 application 组合/基础设施路径被访问；CLI 测试继续覆盖原行为。
 

@@ -1,10 +1,17 @@
 """Application services that orchestrate OURO core runtime boundaries."""
 
+from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import ConfigurationOverview
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.facade import ApplicationFacade
 from ouro.application.followups import FollowUpQueue, QueuedFollowUp
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_configuration import (
+    RuntimeConfigurationResolver,
+    RuntimeConfigurationSnapshot,
+    RuntimeProviderOptions,
+)
 from ouro.application.session_models import (
     ReplayFrame,
     SessionBranchResult,
@@ -33,11 +40,16 @@ from ouro.core.results import RunResult
 
 __all__ = [
     "ApplicationFacade",
+    "ConfigurationFacade",
+    "ConfigurationOverview",
     "FollowUpQueue",
     "QueuedFollowUp",
     "RunResult",
     "RuntimeEventRecorder",
     "RuntimeService",
+    "RuntimeConfigurationResolver",
+    "RuntimeConfigurationSnapshot",
+    "RuntimeProviderOptions",
     "RuntimeSupervisor",
     "RuntimeSubscription",
     "ResourceService",

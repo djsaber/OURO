@@ -28,6 +28,13 @@ class ResourceStore(Protocol):
 
     def load_record(self, resource_id: str, *, verify: bool = False) -> ResourceRecord: ...
 
+    def load_content(
+        self,
+        resource_id: str,
+        *,
+        max_bytes: int | None = None,
+    ) -> tuple[ResourceRecord, bytes]: ...
+
     def list_session_records(self, session_id: str) -> list[ResourceRecord]: ...
 
     def load_session_references(self, session_id: str) -> list[SessionResourceReference]: ...

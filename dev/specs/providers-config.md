@@ -56,6 +56,10 @@ Endpoint 的输出上限不能超过 context window。Thinking level 只能在 r
 `providers.items` 和 `endpoints` 必须是以 id 为 key 的对象。未知字段、列表形态、短字段别名和根级
 `provider` 必须明确失败。读取器不能修复、迁移或静默忽略非权威结构。
 
+Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返回类型化、不可变 DTO，并只公开凭据的
+configured/missing 状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
+manager。Provider retry 的关联字段作为一个原子 mutation 提交，不能留下部分更新。
+
 ## 模型路由
 
 持久化和 Host 输入统一使用 `provider_id/endpoint_id`。`ConfiguredModelCatalog`：
@@ -96,6 +100,10 @@ Core `Provider` 只暴露 `stream` 和 `check_connection`。OpenAI-compatible �
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力的 image/tool response 明确报错。
 
+Endpoint 声明 structured output 能力后才接受结构化 `response_format`。OpenAI-compatible transport 只对明确
+可重试的 timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型流事件，就不再重放请求。每次重试
+形成可持久化的 `run_retry_scheduled` 事件。
+
 HTTP/SSE 对象和异常不得进入 core/application。
 
 ## 配置分区
@@ -116,5 +124,6 @@ HTTP/SSE 对象和异常不得进入 core/application。
 - `tests/providers/test_factory.py`
 - `tests/providers/test_openai_compatible.py`
 - `tests/application/test_models.py`
+- `tests/application/test_configuration.py`
 - `tests/application/test_session_models.py`
 - `tests/cli/test_run_cli.py`

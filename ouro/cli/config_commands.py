@@ -4,24 +4,13 @@ import json
 import sys
 from pathlib import Path
 
+from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
-from ouro.config import (
-    CompactionConfigManager,
-    PermissionConfigManager,
-    PromptConfigManager,
-    QueuedInputConfigManager,
-    QueuedInputConsumptionMode,
-    RunBudgetConfigManager,
-    ToolExecutionConfigManager,
-    compaction_config_to_public_dict,
-    permission_config_to_public_dict,
-    prompt_config_to_public_dict,
-    queued_input_config_to_public_dict,
-    run_budget_to_public_dict,
-    tool_execution_config_to_public_dict,
-)
+from ouro.config import QueuedInputConsumptionMode
 from ouro.core.errors import OuroError
 from ouro.core.provider import ThinkingLevel
+from ouro.core.tool_batches import ToolExecutionMode
+from ouro.core.tools import PermissionMode
 
 
 def show_system_prompt_config(
@@ -30,19 +19,18 @@ def show_system_prompt_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = PromptConfigManager(home)
-        snapshot = manager.snapshot()
+        config = ConfigurationFacade(home).system_prompt()
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = prompt_config_to_public_dict(snapshot)
+    public = config.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(snapshot.config_path),
+                    "config_path": config.config_path,
                     **public,
                 },
                 ensure_ascii=False,
@@ -55,7 +43,7 @@ def show_system_prompt_config(
         "\n".join(
             [
                 f"System prompt configured: {configured}",
-                f"Config: {snapshot.config_path}",
+                f"Config: {config.config_path}",
                 "System prompt:",
                 public["effective_system_prompt"],
             ]
@@ -71,8 +59,7 @@ def set_system_prompt_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = PromptConfigManager(home)
-        snapshot = manager.set_system_prompt(prompt)
+        config = ConfigurationFacade(home).set_system_prompt(prompt)
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -82,14 +69,14 @@ def set_system_prompt_config(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(snapshot.config_path),
-                    **prompt_config_to_public_dict(snapshot),
+                    "config_path": config.config_path,
+                    **config.model_dump(exclude={"config_path", "change"}),
                 },
                 ensure_ascii=False,
             )
         )
         return 0
-    print(f"System prompt saved: {snapshot.config_path}")
+    print(f"System prompt saved: {config.config_path}")
     return 0
 
 
@@ -99,8 +86,7 @@ def clear_system_prompt_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = PromptConfigManager(home)
-        snapshot = manager.clear_system_prompt()
+        config = ConfigurationFacade(home).clear_system_prompt()
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -110,14 +96,14 @@ def clear_system_prompt_config(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(snapshot.config_path),
-                    **prompt_config_to_public_dict(snapshot),
+                    "config_path": config.config_path,
+                    **config.model_dump(exclude={"config_path", "change"}),
                 },
                 ensure_ascii=False,
             )
         )
         return 0
-    print(f"System prompt cleared: {snapshot.config_path}")
+    print(f"System prompt cleared: {config.config_path}")
     return 0
 
 
@@ -125,17 +111,17 @@ def show_permissions_config(
     *,
     home: str | Path | None = None,
     tool_name: str | None = None,
-    mode: str | None = None,
+    mode: PermissionMode | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = PermissionConfigManager(home)
+        facade = ConfigurationFacade(home)
         if tool_name is not None and mode is not None:
-            snapshot = manager.set_tool_mode(tool_name, mode)  # type: ignore[arg-type]
+            config = facade.set_tool_permission(tool_name, mode)
         elif tool_name is not None and mode is None:
-            snapshot = manager.clear_tool_mode(tool_name)
+            config = facade.clear_tool_permission(tool_name)
         else:
-            snapshot = manager.snapshot()
+            config = facade.permission_config()
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -145,19 +131,19 @@ def show_permissions_config(
             json.dumps(
                 {
                     "status": "ok",
-                    **permission_config_to_public_dict(snapshot),
+                    **config.model_dump(exclude={"change"}),
                 },
                 ensure_ascii=False,
             )
         )
         return 0
 
-    if not snapshot.tools:
+    if not config.tools:
         print("No tool permission overrides configured.")
         return 0
 
     print("Tool permission overrides:")
-    for name, mode_value in sorted(snapshot.tools.items()):
+    for name, mode_value in sorted(config.tools.items()):
         print(f"- {name}: {mode_value}")
     return 0
 
@@ -176,8 +162,8 @@ def show_compaction_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = CompactionConfigManager(home)
-        config = manager.snapshot()
+        facade = ConfigurationFacade(home)
+        config = facade.compaction_config()
         has_update = any(
             (
                 provider_id is not None,
@@ -191,7 +177,7 @@ def show_compaction_config(
             )
         )
         if has_update:
-            config = manager.update_model(
+            config = facade.update_compaction_model(
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 use_runtime_endpoint=runtime_endpoint,
@@ -205,13 +191,13 @@ def show_compaction_config(
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = compaction_config_to_public_dict(config)
+    public = config.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(manager.file.path),
+                    "config_path": config.config_path,
                     "compaction": public,
                 },
                 ensure_ascii=False,
@@ -235,7 +221,7 @@ def show_compaction_config(
                 "Thinking enabled: "
                 f"{model.thinking_enabled if model.thinking_enabled is not None else '-'}",
                 f"Thinking level: {model.thinking_level or '-'}",
-                f"Config: {manager.file.path}",
+                f"Config: {config.config_path}",
             ]
         )
     )
@@ -245,28 +231,38 @@ def show_compaction_config(
 def show_tool_execution_config(
     *,
     home: str | Path | None = None,
-    mode: str | None = None,
+    mode: ToolExecutionMode | None = None,
     max_concurrency: int | None = None,
+    workspace_only: bool | None = None,
+    max_output_chars: int | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = ToolExecutionConfigManager(home)
+        facade = ConfigurationFacade(home)
         config = (
-            manager.update(mode=mode, max_concurrency=max_concurrency)  # type: ignore[arg-type]
-            if mode is not None or max_concurrency is not None
-            else manager.snapshot()
+            facade.update_tool_execution(
+                mode=mode,
+                max_concurrency=max_concurrency,
+                workspace_only=workspace_only,
+                max_output_chars=max_output_chars,
+            )
+            if any(
+                value is not None
+                for value in (mode, max_concurrency, workspace_only, max_output_chars)
+            )
+            else facade.tool_execution_config()
         )
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = tool_execution_config_to_public_dict(config)
+    public = config.model_dump(exclude={"config_path", "change"})
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(manager.file.path),
+                    "config_path": config.config_path,
                     "tool_execution": public,
                 },
                 ensure_ascii=False,
@@ -278,7 +274,9 @@ def show_tool_execution_config(
             [
                 f"Tool execution mode: {config.mode}",
                 f"Max concurrency: {config.max_concurrency}",
-                f"Config: {manager.file.path}",
+                f"Workspace only: {'yes' if config.workspace_only else 'no'}",
+                f"Max output chars: {config.max_output_chars}",
+                f"Config: {config.config_path}",
             ]
         )
     )
@@ -292,23 +290,23 @@ def show_queued_input_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = QueuedInputConfigManager(home)
+        facade = ConfigurationFacade(home)
         config = (
-            manager.update(consumption_mode=consumption_mode)
+            facade.update_queued_inputs(consumption_mode=consumption_mode)
             if consumption_mode is not None
-            else manager.snapshot()
+            else facade.queued_input_config()
         )
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = queued_input_config_to_public_dict(config)
+    public = config.model_dump(exclude={"config_path", "change"})
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(manager.file.path),
+                    "config_path": config.config_path,
                     "queued_inputs": public,
                 },
                 ensure_ascii=False,
@@ -319,7 +317,7 @@ def show_queued_input_config(
         "\n".join(
             [
                 f"Queued input consumption mode: {config.consumption_mode}",
-                f"Config: {manager.file.path}",
+                f"Config: {config.config_path}",
             ]
         )
     )
@@ -337,7 +335,7 @@ def show_run_budget_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        manager = RunBudgetConfigManager(home)
+        facade = ConfigurationFacade(home)
         has_update = clear or any(
             value is not None
             for value in (
@@ -348,7 +346,7 @@ def show_run_budget_config(
             )
         )
         policy = (
-            manager.update(
+            facade.update_run_budget(
                 max_model_rounds=max_model_rounds,
                 max_input_tokens=max_input_tokens,
                 max_output_tokens=max_output_tokens,
@@ -356,19 +354,19 @@ def show_run_budget_config(
                 clear=clear,
             )
             if has_update
-            else manager.snapshot()
+            else facade.run_budget_config()
         )
     except OuroError as exc:
         _print_config_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = run_budget_to_public_dict(policy)
+    public = policy.model_dump(exclude={"config_path", "change"}, exclude_none=True)
     if json_mode:
         print(
             json.dumps(
                 {
                     "status": "ok",
-                    "config_path": str(manager.file.path),
+                    "config_path": policy.config_path,
                     "run_budget": public,
                 },
                 ensure_ascii=False,
@@ -383,7 +381,7 @@ def show_run_budget_config(
                 f"- max input tokens: {policy.max_input_tokens or 'unlimited'}",
                 f"- max output tokens: {policy.max_output_tokens or 'unlimited'}",
                 f"- max elapsed seconds: {policy.max_elapsed_seconds or 'unlimited'}",
-                f"Config: {manager.file.path}",
+                f"Config: {policy.config_path}",
             ]
         )
     )

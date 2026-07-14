@@ -44,6 +44,103 @@ def test_local_file_store_round_trip(tmp_path) -> None:
     assert store.list_sessions()[0].session_id == session.session_id
 
 
+def test_jsonl_pages_use_stable_byte_cursors_across_appends(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Paged")
+    store.create_session(session)
+    for sequence in range(1, 6):
+        store.append_message(
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text=f"message {sequence}",
+                sequence=sequence,
+            )
+        )
+
+    first, cursor = store.load_messages_page(session.session_id, limit=2)
+    assert [message.text_content for message in first] == ["message 1", "message 2"]
+    assert cursor is not None
+
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="message 6",
+            sequence=6,
+        )
+    )
+    remaining: list[MessageRecord] = []
+    while cursor is not None:
+        page, cursor = store.load_messages_page(
+            session.session_id,
+            cursor=cursor,
+            limit=2,
+        )
+        remaining.extend(page)
+
+    assert [message.text_content for message in remaining] == [
+        "message 3",
+        "message 4",
+        "message 5",
+        "message 6",
+    ]
+
+
+def test_event_page_filters_during_incremental_scan(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Event pages")
+    store.create_session(session)
+    for sequence, run_id in enumerate(["run_a", "run_b", "run_a", "run_b"], start=1):
+        store.append_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id=run_id,
+                event_type="diagnostic",
+                sequence=sequence,
+            )
+        )
+
+    first, cursor = store.load_events_page(
+        session.session_id,
+        run_id="run_a",
+        limit=1,
+    )
+    assert [event.sequence for event in first] == [1]
+    assert cursor is not None
+    second, cursor = store.load_events_page(
+        session.session_id,
+        run_id="run_a",
+        cursor=cursor,
+        limit=1,
+    )
+    assert [event.sequence for event in second] == [3]
+    assert cursor is not None
+    final, cursor = store.load_events_page(
+        session.session_id,
+        run_id="run_a",
+        cursor=cursor,
+        limit=1,
+    )
+    assert final == []
+    assert cursor is None
+
+
+def test_page_rejects_cursor_inside_json_record(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Invalid cursor")
+    store.create_session(session)
+    store.append_message(
+        MessageRecord.text(session_id=session.session_id, role="user", text="hello")
+    )
+
+    with pytest.raises(PersistenceError, match="not at a record boundary"):
+        store.load_messages_page(session.session_id, cursor=1)
+
+
 def test_stream_delta_events_group_commit_at_durable_boundary(monkeypatch, tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from inspect import Parameter, signature
+from pathlib import Path
 
 from pydantic import Field
 
@@ -29,6 +30,7 @@ __all__ = [
     "ToolDefinition",
     "ToolExecutionAborted",
     "ToolExecutionContext",
+    "ToolPolicyError",
     "ToolExecutionOutcome",
     "ToolInvocation",
     "ToolOutcomeStatus",
@@ -44,6 +46,10 @@ class ToolExecutionAborted(Exception):
         self.reason = reason
 
 
+class ToolPolicyError(ValueError):
+    """Raised when a tool request violates an execution policy."""
+
+
 @dataclass(frozen=True)
 class ToolProcessResult:
     stdout: str
@@ -57,6 +63,9 @@ class ToolProcessResult:
 class ToolExecutionContext:
     signal: AbortSignal | None = None
     poll_interval: float = 0.05
+    workspace: str | Path | None = None
+    workspace_only: bool = False
+    max_output_chars: int | None = None
 
     @property
     def is_aborted(self) -> bool:
@@ -79,11 +88,53 @@ class ToolExecutionContext:
                 return
             await asyncio.sleep(min(self.poll_interval, remaining))
 
+    def resolve_path(self, path: str) -> Path:
+        """Resolve a tool path and enforce the configured workspace boundary."""
+
+        candidate = Path(path).expanduser()
+        workspace = self._resolved_workspace()
+        if not candidate.is_absolute():
+            candidate = (workspace or Path.cwd()) / candidate
+        candidate = candidate.resolve(strict=False)
+        if self.workspace_only:
+            if workspace is None:
+                raise ToolPolicyError(
+                    "workspace-only tool execution requires a configured workspace"
+                )
+            if not candidate.is_relative_to(workspace):
+                raise ToolPolicyError(f"path is outside the configured workspace: {candidate}")
+        return candidate
+
+    def resolve_working_directory(self, cwd: str | None) -> Path | None:
+        resolved: Path | None
+        if cwd is not None:
+            resolved = self.resolve_path(cwd)
+        elif self.workspace is not None:
+            resolved = self._resolved_workspace()
+        else:
+            resolved = None
+        if resolved is not None and not resolved.is_dir():
+            raise ToolPolicyError(f"working directory does not exist: {resolved}")
+        return resolved
+
+    def limit_output(self, text: str) -> tuple[str, bool]:
+        limit = self.max_output_chars
+        if limit is None or len(text) <= limit:
+            return text, False
+        marker = f"\n...[tool output truncated at {limit} characters]"
+        prefix_length = max(0, limit - len(marker))
+        return f"{text[:prefix_length]}{marker}", True
+
+    def _resolved_workspace(self) -> Path | None:
+        if self.workspace is None:
+            return None
+        return Path(self.workspace).expanduser().resolve(strict=False)
+
     async def run_shell(
         self,
         command: str,
         *,
-        cwd: str | None = None,
+        cwd: str | Path | None = None,
         timeout_seconds: float = 30.0,
     ) -> ToolProcessResult:
         self.raise_if_aborted()
