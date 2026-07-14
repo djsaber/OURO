@@ -14,6 +14,7 @@ EventType = Literal[
     "user_message_added",
     "model_request_started",
     "model_text_delta",
+    "model_reasoning_delta",
     "model_tool_call_delta",
     "model_message_completed",
     "tool_batch_planned",

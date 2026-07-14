@@ -81,8 +81,11 @@ model turn 完整提交后进入同一 Run 的下一次模型请求。工具请�
 steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode` 配置决定；`one_by_one` 每个边界
 只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。
 
-工具调用以一次完整模型响应为批次边界。Provider 先完成流式响应收集，随后校验整批 tool calls，再按
-配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result 随后按 provider 原始顺序提交。
+工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
+规范化为 `tool_call_delta`；`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界
+聚合、解析和校验整批 tool calls。无法提供分片的非流式 Provider 可以产生完整 `tool_call` 事件；`done`
+只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
+按 provider 原始顺序提交。
 
 会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto` 或 `approval`。
 `ToolCallCoordinator` 在工具预检时把会话模式交给 `ToolExecutor`；优先级为会话显式模式、工具权限配置、

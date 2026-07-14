@@ -449,8 +449,12 @@ async def test_openai_compatible_provider_maps_tool_calls_and_schemas() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["done"]
-    assert [call.model_dump() for call in events[0].tool_calls] == [
+    assert [event.type for event in events] == ["tool_call", "tool_call", "done"]
+    assert [
+        event.tool_call.model_dump()
+        for event in events[:-1]
+        if event.tool_call is not None
+    ] == [
         {
             "id": "call_1",
             "name": "Read",
@@ -534,19 +538,34 @@ async def test_openai_compatible_provider_streams_tool_call_chunks() -> None:
         )
     ]
 
-    assert [event.type for event in events] == ["done"]
-    assert [call.model_dump() for call in events[0].tool_calls] == [
+    assert [event.type for event in events] == [
+        "tool_call_delta",
+        "tool_call_delta",
+        "tool_call_delta",
+        "done",
+    ]
+    assert [
+        event.tool_call_delta.model_dump()
+        for event in events[:-1]
+        if event.tool_call_delta is not None
+    ] == [
         {
-            "id": "call_1",
-            "name": "Read",
-            "arguments": {"path": "README.md"},
-            "source_index": 0,
+            "index": 0,
+            "id_delta": "call_1",
+            "name_delta": "Read",
+            "arguments_delta": '{"path"',
         },
         {
-            "id": "call_2",
-            "name": "Read",
-            "arguments": {"path": "CHANGELOG.md"},
-            "source_index": 1,
+            "index": 1,
+            "id_delta": "call_2",
+            "name_delta": "Read",
+            "arguments_delta": '{"path": "CHANGELOG.md"}',
+        },
+        {
+            "index": 0,
+            "id_delta": "",
+            "name_delta": "",
+            "arguments_delta": ': "README.md"}',
         },
     ]
 

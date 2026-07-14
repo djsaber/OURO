@@ -50,7 +50,8 @@ Run 表示一次可恢复执行。状态集合为：
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 用户消息持久化并产生事件。
 6. `InnerAgentLoop` 构建上下文并调用 request-local `RuntimeAdapter`。
-7. 模型返回最终消息时完成 Run；返回工具调用时交给 `ToolCallCoordinator`。
+7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
+   `ToolCallCoordinator`，最终消息则完成 Run。
 8. waiting 状态通过 approve/reject/AskUser 恢复同一 Run。
 9. terminal Run 释放 lock、abort signal 和每 Run Hook 隔离状态。
 10. 在 model turn 边界消费 steer 输入，在 completed Run 边界串行处理 follow-up 输入。
@@ -68,6 +69,16 @@ Run 表示一次可恢复执行。状态集合为：
 - abort 结果构造。
 
 应用层不得在 core 中引入 SessionStore、CLI 或 Provider factory。
+
+## Provider 流契约
+
+- 流式 Provider 必须把每个工具调用 chunk 规范化为 `tool_call_delta`，不得在 Provider 内等待完整响应后再
+  一次性提交；只支持非流式响应的 Provider 可以产生完整 `tool_call`。
+- `tool_call_delta` 使用稳定 stream index 关联同一调用，`id_delta`、`name_delta` 和
+  `arguments_delta` 字段均保持追加分片语义。
+- `InnerAgentLoop` 按到达顺序产生 `model_tool_call_delta`，并只在 `done` 边界聚合工具调用、解析 arguments
+  JSON、校验身份和批次唯一性。
+- `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。
 
 ## 预算与暂停
 
@@ -121,4 +132,5 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 - `tests/application/test_followups.py`
 - `tests/application/test_queued_input_modes.py`
 - `tests/application/test_events.py`
+- `tests/providers/test_openai_compatible.py`
 - `tests/architecture/test_boundaries.py`

@@ -16,9 +16,8 @@ from ouro.providers.openai_codec import (
     _first_choice,
     _message_to_openai,
     _reasoning_content_to_text,
-    _tool_call_delta_parts,
+    _tool_call_deltas,
     _tool_calls_from_message,
-    _tool_calls_from_stream_parts,
     _tool_to_openai,
     _usage_from_response,
     _usage_from_response_or_none,
@@ -257,7 +256,9 @@ class OpenAICompatibleProvider:
             )
             return
 
-        yield ProviderStreamEvent(type="done", tool_calls=tool_calls, usage=usage)
+        for tool_call in tool_calls:
+            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call)
+        yield ProviderStreamEvent(type="done", usage=usage)
 
     async def _events_from_streaming_chunks(
         self,
@@ -268,7 +269,7 @@ class OpenAICompatibleProvider:
         usage: Usage | None = None
         saw_content = False
         saw_reasoning = False
-        tool_call_parts: dict[int, dict[str, str]] = {}
+        saw_tool_call = False
 
         async for chunk in chunks:
             response_error = _error_from_response(chunk)
@@ -297,29 +298,23 @@ class OpenAICompatibleProvider:
                 saw_content = True
                 yield ProviderStreamEvent(type="text_delta", text=content)
 
-            for index, part in _tool_call_delta_parts(delta):
-                current = tool_call_parts.setdefault(
-                    index,
-                    {"id": "", "name": "", "arguments": ""},
+            for tool_call_delta in _tool_call_deltas(delta):
+                if not supports_tools:
+                    yield ProviderStreamEvent(
+                        type="error",
+                        error="provider returned tool calls for an endpoint without tool support",
+                    )
+                    return
+                saw_tool_call = True
+                yield ProviderStreamEvent(
+                    type="tool_call_delta",
+                    tool_call_delta=tool_call_delta,
                 )
-                if part.get("id"):
-                    current["id"] = part["id"]
-                if part.get("name"):
-                    current["name"] += part["name"]
-                if part.get("arguments"):
-                    current["arguments"] += part["arguments"]
 
-        tool_calls = _tool_calls_from_stream_parts(tool_call_parts)
-        if tool_calls and not supports_tools:
-            yield ProviderStreamEvent(
-                type="error",
-                error="provider returned tool calls for an endpoint without tool support",
-            )
-            return
-        if not saw_content and not saw_reasoning and not tool_calls:
+        if not saw_content and not saw_reasoning and not saw_tool_call:
             yield ProviderStreamEvent(
                 type="error", error="provider returned an empty assistant message"
             )
             return
 
-        yield ProviderStreamEvent(type="done", tool_calls=tool_calls, usage=usage)
+        yield ProviderStreamEvent(type="done", usage=usage)

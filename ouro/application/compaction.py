@@ -679,13 +679,11 @@ def _consume_summary_event(
         usage = _merge_usage(usage, event.usage)
     if event.type == "text_delta" and event.text:
         text_parts.append(event.text)
-    elif event.type == "tool_call":
+    elif event.type in {"tool_call_delta", "tool_call"}:
         raise CompactionError("summary provider attempted to call a tool")
     elif event.type == "error":
         raise CompactionError(event.error or "summary provider returned an error")
     elif event.type == "done":
-        if event.tool_calls:
-            raise CompactionError("summary provider attempted to call a tool")
         saw_done = True
     return text_parts, usage, saw_done
 

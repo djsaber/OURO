@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -11,7 +12,7 @@ from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import Usage
+from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
 from ouro.core.state import RunRecord, SessionRecord, session_status_for_run
@@ -205,8 +206,21 @@ class _RoundState:
     parts: list[str] = field(default_factory=list)
     reasoning_parts: list[str] = field(default_factory=list)
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
+    tool_call_parts: dict[int, _ToolCallParts] = field(default_factory=dict)
     saw_model_done: bool = False
     completed_tool: bool = False
+
+
+@dataclass
+class _ToolCallParts:
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
+
+    def append(self, delta: ToolCallDelta) -> None:
+        self.id += delta.id_delta
+        self.name += delta.name_delta
+        self.arguments += delta.arguments_delta
 
 
 class InnerAgentLoop:
@@ -464,11 +478,23 @@ class InnerAgentLoop:
                         model_round,
                         provider_event.reasoning_content,
                     )
-                elif provider_event.type == "tool_call" and provider_event.tool_call:
-                    round_state.tool_calls.append(
-                        provider_event.tool_call.model_copy(
-                            update={"source_index": len(round_state.tool_calls)}
-                        )
+                elif provider_event.type == "tool_call_delta":
+                    if provider_event.tool_call_delta is None:
+                        raise ValueError("provider tool call delta is missing its payload")
+                    await self._record_tool_call_delta(
+                        state,
+                        round_state,
+                        model_round,
+                        provider_event.tool_call_delta,
+                    )
+                elif provider_event.type == "tool_call":
+                    if provider_event.tool_call is None:
+                        raise ValueError("provider tool call event is missing its payload")
+                    await self._record_complete_tool_call(
+                        state,
+                        round_state,
+                        model_round,
+                        provider_event.tool_call,
                     )
                 elif provider_event.type == "error":
                     return await self._fail(
@@ -479,11 +505,9 @@ class InnerAgentLoop:
                         round_state.turn_id,
                     )
                 elif provider_event.type == "done":
-                    for tool_call in provider_event.tool_calls:
-                        round_state.tool_calls.append(
-                            tool_call.model_copy(
-                                update={"source_index": len(round_state.tool_calls)}
-                            )
+                    if round_state.tool_call_parts:
+                        round_state.tool_calls = _complete_streamed_tool_calls(
+                            round_state.tool_call_parts
                         )
                     _validate_tool_calls(round_state.tool_calls)
                     round_state.saw_model_done = True
@@ -545,6 +569,67 @@ class InnerAgentLoop:
             event_type="model_reasoning_delta",
             payload={
                 "reasoning_content": reasoning,
+                "round": model_round,
+                "turn_id": round_state.turn_id,
+            },
+        )
+
+    async def _record_tool_call_delta(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        delta: ToolCallDelta,
+    ) -> None:
+        if round_state.tool_calls:
+            raise ValueError("provider mixed streamed and complete tool calls in one response")
+        parts = round_state.tool_call_parts.setdefault(delta.index, _ToolCallParts())
+        parts.append(delta)
+        await self._emit_tool_call_delta(state, round_state, model_round, delta)
+
+    async def _record_complete_tool_call(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        tool_call: ToolCallRequest,
+    ) -> None:
+        if round_state.tool_call_parts:
+            raise ValueError("provider mixed streamed and complete tool calls in one response")
+        source_index = len(round_state.tool_calls)
+        complete_call = tool_call.model_copy(update={"source_index": source_index})
+        round_state.tool_calls.append(complete_call)
+        await self._emit_tool_call_delta(
+            state,
+            round_state,
+            model_round,
+            ToolCallDelta(
+                index=source_index,
+                id_delta=complete_call.id,
+                name_delta=complete_call.name,
+                arguments_delta=json.dumps(
+                    complete_call.arguments,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
+
+    async def _emit_tool_call_delta(
+        self,
+        state: _LoopState,
+        round_state: _RoundState,
+        model_round: int,
+        delta: ToolCallDelta,
+    ) -> None:
+        state.sequence = await self.ports.emit(
+            state.emitted,
+            state.sequence,
+            session_id=state.session.session_id,
+            run_id=state.run.run_id,
+            event_type="model_tool_call_delta",
+            payload={
+                **delta.model_dump(mode="json"),
                 "round": model_round,
                 "turn_id": round_state.turn_id,
             },
@@ -672,3 +757,35 @@ def _validate_tool_calls(tool_calls: list[ToolCallRequest]) -> None:
         if call.id in ids:
             raise ValueError(f"duplicate provider tool call id: {call.id}")
         ids.add(call.id)
+
+
+def _complete_streamed_tool_calls(
+    tool_call_parts: dict[int, _ToolCallParts],
+) -> list[ToolCallRequest]:
+    tool_calls: list[ToolCallRequest] = []
+    for source_index, index in enumerate(sorted(tool_call_parts)):
+        parts = tool_call_parts[index]
+        if not parts.id:
+            raise ValueError(f"provider tool call id must not be empty at stream index {index}")
+        if not parts.name:
+            raise ValueError(f"provider tool call name must not be empty at stream index {index}")
+        try:
+            arguments = json.loads(parts.arguments) if parts.arguments.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"provider tool call arguments are not valid JSON at stream index {index}: "
+                f"{exc.msg}"
+            ) from exc
+        if not isinstance(arguments, dict):
+            raise ValueError(
+                f"provider tool call arguments must be a JSON object at stream index {index}"
+            )
+        tool_calls.append(
+            ToolCallRequest(
+                id=parts.id,
+                name=parts.name,
+                arguments=arguments,
+                source_index=source_index,
+            )
+        )
+    return tool_calls

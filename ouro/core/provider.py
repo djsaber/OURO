@@ -60,14 +60,60 @@ class ProviderCheckResult(OuroModel):
     metadata: Metadata = MetadataField
 
 
+class ToolCallDelta(OuroModel):
+    """Provider-neutral fragment of one streamed tool call."""
+
+    index: int = Field(ge=0)
+    id_delta: str = ""
+    name_delta: str = ""
+    arguments_delta: str = ""
+
+    @model_validator(mode="after")
+    def _require_content(self) -> ToolCallDelta:
+        if not (self.id_delta or self.name_delta or self.arguments_delta):
+            raise ValueError("tool call delta must contain at least one fragment")
+        return self
+
+
 class ProviderStreamEvent(OuroModel):
-    type: Literal["text_delta", "reasoning_delta", "tool_call", "done", "error"]
+    type: Literal[
+        "text_delta",
+        "reasoning_delta",
+        "tool_call_delta",
+        "tool_call",
+        "done",
+        "error",
+    ]
     text: str | None = None
     reasoning_content: str | None = None
+    tool_call_delta: ToolCallDelta | None = None
     tool_call: ToolCallRequest | None = None
-    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     usage: Usage | None = None
     error: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_payload(self) -> ProviderStreamEvent:
+        required_payloads = {
+            "text_delta": self.text,
+            "reasoning_delta": self.reasoning_content,
+            "tool_call_delta": self.tool_call_delta,
+            "tool_call": self.tool_call,
+            "error": self.error,
+        }
+        if self.type in required_payloads and required_payloads[self.type] is None:
+            raise ValueError(f"provider stream event {self.type!r} is missing its payload")
+        if self.type == "done" and any(
+            value is not None
+            for value in (
+                self.text,
+                self.reasoning_content,
+                self.tool_call_delta,
+                self.tool_call,
+                self.error,
+            )
+        ):
+            raise ValueError("provider stream done event may only contain usage")
+        return self
 
 
 class Provider(Protocol):

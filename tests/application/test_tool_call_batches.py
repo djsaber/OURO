@@ -1,11 +1,12 @@
 import asyncio
+import json
 
 import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -29,7 +30,21 @@ def _runtime(tmp_path, *, registry, first_calls, mode="sequential") -> RuntimeSe
         adapter=RuntimeAdapter(
             FauxProvider(
                 event_batches=[
-                    [ProviderStreamEvent(type="done", tool_calls=first_calls)],
+                    [
+                        *(
+                            ProviderStreamEvent(
+                                type="tool_call_delta",
+                                tool_call_delta=ToolCallDelta(
+                                    index=tool_call.source_index,
+                                    id_delta=tool_call.id,
+                                    name_delta=tool_call.name,
+                                    arguments_delta=json.dumps(tool_call.arguments),
+                                ),
+                            )
+                            for tool_call in first_calls
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
                     [
                         ProviderStreamEvent(type="text_delta", text="batch complete"),
                         ProviderStreamEvent(type="done"),

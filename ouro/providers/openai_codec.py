@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
-from ouro.core.provider import Usage
+from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tools import ToolCallRequest
 
 
@@ -180,12 +180,12 @@ def _tool_calls_from_message(message: Mapping[str, Any]) -> list[ToolCallRequest
     return tool_calls
 
 
-def _tool_call_delta_parts(delta: Mapping[str, Any]) -> list[tuple[int, dict[str, str]]]:
+def _tool_call_deltas(delta: Mapping[str, Any]) -> list[ToolCallDelta]:
     raw_tool_calls = delta.get("tool_calls")
     if not isinstance(raw_tool_calls, list):
         return []
 
-    parts: list[tuple[int, dict[str, str]]] = []
+    deltas: list[ToolCallDelta] = []
     for fallback_index, raw_tool_call in enumerate(raw_tool_calls):
         if not isinstance(raw_tool_call, Mapping):
             continue
@@ -194,33 +194,26 @@ def _tool_call_delta_parts(delta: Mapping[str, Any]) -> list[tuple[int, dict[str
         function = raw_tool_call.get("function") or {}
         if not isinstance(function, Mapping):
             function = {}
-        part = {
-            "id": str(raw_tool_call.get("id") or ""),
-            "name": str(function.get("name") or ""),
-            "arguments": str(function.get("arguments") or ""),
-        }
-        parts.append((index, part))
-    return parts
-
-
-def _tool_calls_from_stream_parts(
-    tool_call_parts: Mapping[int, Mapping[str, str]],
-) -> list[ToolCallRequest]:
-    tool_calls: list[ToolCallRequest] = []
-    for source_index, index in enumerate(sorted(tool_call_parts)):
-        part = tool_call_parts[index]
-        name = part.get("name") or ""
-        if not name:
+        id_delta = str(raw_tool_call.get("id") or "")
+        name_delta = str(function.get("name") or "")
+        raw_arguments = function.get("arguments")
+        if isinstance(raw_arguments, str):
+            arguments_delta = raw_arguments
+        elif isinstance(raw_arguments, Mapping):
+            arguments_delta = json.dumps(raw_arguments, separators=(",", ":"))
+        else:
+            arguments_delta = ""
+        if not (id_delta or name_delta or arguments_delta):
             continue
-        tool_calls.append(
-            ToolCallRequest(
-                id=part.get("id") or "",
-                name=name,
-                arguments=_arguments_to_dict(part.get("arguments")),
-                source_index=source_index,
+        deltas.append(
+            ToolCallDelta(
+                index=index,
+                id_delta=id_delta,
+                name_delta=name_delta,
+                arguments_delta=arguments_delta,
             )
         )
-    return tool_calls
+    return deltas
 
 
 def _arguments_to_dict(arguments: object) -> dict[str, Any]:

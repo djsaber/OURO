@@ -9,7 +9,13 @@ from ouro.core.context import ContextBuilder
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCheckResult,
+    ProviderStreamEvent,
+    ToolCallDelta,
+    Usage,
+)
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
@@ -91,6 +97,51 @@ class GateProvider:
             yield ProviderStreamEvent(type="done")
             return
         yield ProviderStreamEvent(type="text_delta", text="second")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
+class ToolDeltaGateProvider:
+    provider_id = "tool-delta-gate"
+
+    def __init__(self) -> None:
+        self.waiting_after_first_delta = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages,
+        tools=None,
+    ):
+        del model, system_prompt, messages, tools
+        yield ProviderStreamEvent(
+            type="tool_call_delta",
+            tool_call_delta=ToolCallDelta(
+                index=0,
+                id_delta="call_1",
+                name_delta="Write",
+                arguments_delta='{"path":"out.txt",',
+            ),
+        )
+        self.waiting_after_first_delta.set()
+        await self.release.wait()
+        yield ProviderStreamEvent(
+            type="tool_call_delta",
+            tool_call_delta=ToolCallDelta(
+                index=0,
+                arguments_delta='"content":"hello"}',
+            ),
+        )
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -242,6 +293,90 @@ async def test_runtime_persists_text_run(tmp_path) -> None:
     assert snapshot.messages[-1].run_id == result.run.run_id
     assert snapshot.messages[-1].turn_id is not None
     assert "run_completed" in [event.event_type for event in snapshot.events]
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_tool_call_deltas_before_model_response_completes(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ToolDeltaGateProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="tool-delta-gate", provider_id=provider.provider_id),
+        ),
+        tools=_tools(),
+    )
+
+    run_task = asyncio.create_task(runtime.run("Write a file"))
+    session = await _wait_for_active_session(store)
+    await asyncio.wait_for(provider.waiting_after_first_delta.wait(), timeout=1)
+
+    streaming_snapshot = store.load_session(session.session_id, recover=False)
+    delta_events = [
+        event
+        for event in streaming_snapshot.events
+        if event.event_type == "model_tool_call_delta"
+    ]
+    assert run_task.done() is False
+    assert [event.payload["arguments_delta"] for event in delta_events] == [
+        '{"path":"out.txt",'
+    ]
+
+    provider.release.set()
+    result = await asyncio.wait_for(run_task, timeout=1)
+    completed_snapshot = store.load_session(session.session_id, recover=False)
+    completed_delta_events = [
+        event
+        for event in completed_snapshot.events
+        if event.event_type == "model_tool_call_delta"
+    ]
+
+    assert result.run.status == "waiting_approval"
+    assert result.run.active_tool_batch is not None
+    assert result.run.active_tool_batch.calls[0].request.arguments == {
+        "path": "out.txt",
+        "content": "hello",
+    }
+    assert len(completed_delta_events) == 2
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_incomplete_streamed_tool_arguments_before_batch_creation(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent(
+                        type="tool_call_delta",
+                        tool_call_delta=ToolCallDelta(
+                            index=0,
+                            id_delta="call_1",
+                            name_delta="Write",
+                            arguments_delta='{"path":',
+                        ),
+                    ),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("Write a file")
+    snapshot = store.load_session(result.session.session_id, recover=False)
+
+    assert result.run.status == "failed"
+    assert "tool call arguments are not valid JSON" in (result.run.error or "")
+    assert "model_tool_call_delta" in [event.event_type for event in snapshot.events]
+    assert "tool_batch_planned" not in [event.event_type for event in snapshot.events]
 
 
 @pytest.mark.asyncio

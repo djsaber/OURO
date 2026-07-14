@@ -9,7 +9,7 @@ from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, SessionRecord
@@ -154,8 +154,21 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             FauxProvider(
                 [
                     ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={"id": "call_1", "name": "Write", "arguments": {}},
+                        type="tool_call_delta",
+                        tool_call_delta=ToolCallDelta(
+                            index=0,
+                            id_delta="call_1",
+                            name_delta="Wr",
+                            arguments_delta='{"path":',
+                        ),
+                    ),
+                    ProviderStreamEvent(
+                        type="tool_call_delta",
+                        tool_call_delta=ToolCallDelta(
+                            index=0,
+                            name_delta="ite",
+                            arguments_delta='"out.txt"}',
+                        ),
                     ),
                     ProviderStreamEvent(type="done"),
                 ]
@@ -191,12 +204,19 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
     assert result.session.status == "waiting_approval"
     assert result.run.active_tool_batch is not None
     assert result.run.active_tool_batch.calls[0].request.name == "Write"
+    assert result.run.active_tool_batch.calls[0].request.arguments == {"path": "out.txt"}
     assert result.run.active_tool_batch.calls[0].approval is not None
     assert result.run.active_tool_batch.calls[0].approval.tool_call_id == "call_1"
     assert saved_waiting_state == [(result.session, result.run)]
     assert [event.event_type for event in result.events] == [
         "model_request_started",
+        "model_tool_call_delta",
+        "model_tool_call_delta",
         "model_message_completed",
+    ]
+    assert [event.payload["arguments_delta"] for event in result.events[1:3]] == [
+        '{"path":',
+        '"out.txt"}',
     ]
 
 
