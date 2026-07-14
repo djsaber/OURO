@@ -104,10 +104,11 @@ def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,
-        endpoint=endpoint_view(
-            template.endpoint,
-            default_endpoint=template.endpoint.endpoint_id,
-        ),
+        default_endpoint=template.default_endpoint,
+        endpoints=[
+            endpoint_view(endpoint, default_endpoint=template.default_endpoint)
+            for endpoint in template.endpoints
+        ],
         documentation_url=template.documentation_url,
         verified_on=template.verified_on,
     )

@@ -221,7 +221,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
-        """Apply a provider and its default endpoint as one config transaction."""
+        """Apply a provider and all template endpoints as one config transaction."""
 
         if api_key is not None and api_key_env is not None:
             raise ConfigError("api_key and api_key_env cannot be combined")
@@ -229,7 +229,7 @@ class ProviderConfigManager:
             provider_id if provider_id is not None else template.provider_id
         ).strip()
         target_endpoint_id = (
-            endpoint_id if endpoint_id is not None else template.endpoint.endpoint_id
+            endpoint_id if endpoint_id is not None else template.default_endpoint
         ).strip()
         if not target_provider_id:
             raise ConfigError("provider id is required")
@@ -241,6 +241,16 @@ class ProviderConfigManager:
             raise ConfigError("api key environment variable is required")
         if api_key is not None and not api_key:
             raise ConfigError("api key is required")
+        template_endpoint_ids = {
+            item.endpoint_id
+            for item in template.endpoints
+            if item.endpoint_id != template.default_endpoint
+        }
+        if target_endpoint_id in template_endpoint_ids:
+            raise ConfigError(
+                "default endpoint override conflicts with another template endpoint: "
+                f"{target_endpoint_id}"
+            )
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
@@ -261,22 +271,27 @@ class ProviderConfigManager:
             credential_ref = CredentialRef.parse(f"env:{template.credential_env}")
 
         try:
-            endpoint = ProviderEndpointConfig.model_validate(
-                template.endpoint.model_copy(
-                    update={
-                        "endpoint_id": target_endpoint_id,
-                        "model_id": (
-                            model_id if model_id is not None else template.endpoint.model_id
-                        ),
-                    }
-                ).model_dump()
-            )
             endpoints = (
                 {item.endpoint_id: item for item in current.endpoints}
                 if current is not None
                 else {}
             )
-            endpoints[target_endpoint_id] = endpoint
+            for template_endpoint in template.endpoints:
+                is_default = template_endpoint.endpoint_id == template.default_endpoint
+                configured_endpoint_id = (
+                    target_endpoint_id if is_default else template_endpoint.endpoint_id
+                )
+                configured_model_id = (
+                    model_id if is_default and model_id is not None else template_endpoint.model_id
+                )
+                endpoints[configured_endpoint_id] = ProviderEndpointConfig.model_validate(
+                    template_endpoint.model_copy(
+                        update={
+                            "endpoint_id": configured_endpoint_id,
+                            "model_id": configured_model_id,
+                        }
+                    ).model_dump()
+                )
             provider = ProviderConfig(
                 provider_id=target_provider_id,
                 provider_type=template.provider_type,

@@ -128,10 +128,11 @@ def list_provider_templates(
 
     lines = ["Provider templates:"]
     for template in public:
-        endpoint = template["endpoint"]
+        models = ",".join(endpoint["model_id"] for endpoint in template["endpoints"])
         lines.append(
             f"- {template['template_id']} ({template['display_name']}) "
-            f"kind={template['kind']} model={endpoint['model_id']} "
+            f"kind={template['kind']} default={template['default_endpoint']} "
+            f"endpoints={len(template['endpoints'])} models={models} "
             f"credential=env:{template['credential_env']}"
         )
     print("\n".join(lines))
@@ -189,7 +190,8 @@ def configure_provider_template(
     suffix = " and set as default" if provider.default else ""
     print(
         f"Provider configured from {template_id}: "
-        f"{provider.provider_id}/{provider.default_endpoint}{suffix}"
+        f"{provider.provider_id}/{provider.default_endpoint} "
+        f"({provider.endpoint_count} endpoints){suffix}"
     )
     return 0
 
@@ -578,7 +580,9 @@ def _endpoint_to_public(endpoint: ProviderEndpointView) -> dict[str, Any]:
 
 
 def _template_to_public(template: ProviderTemplateView) -> dict[str, Any]:
-    return template.model_dump(mode="json", exclude_none=True)
+    public = template.model_dump(mode="json", exclude_none=True)
+    public["endpoint_count"] = template.endpoint_count
+    return public
 
 
 def _checked_target_label(

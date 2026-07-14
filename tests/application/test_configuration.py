@@ -140,11 +140,14 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
         "gemini",
         "deepseek",
         "qwen",
+        "kimi",
         "glm",
         "openrouter",
         "mistral",
     ]
     assert facade.provider_template("anthropic").kind == "anthropic-compatible"
+    assert facade.provider_template("kimi").default_endpoint == "kimi-k2.7-code"
+    assert facade.provider_template("kimi").endpoint_count == 3
 
     configured = facade.configure_provider_template("gemini", make_default=True)
     provider = next(item for item in configured.providers if item.provider_id == "gemini")
@@ -153,7 +156,12 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     assert configured.change is not None
     assert configured.change.action == "template_configured"
     assert provider.default_endpoint == "gemini-3.5-flash"
-    assert provider.endpoints[0].model_id == "gemini-3.5-flash"
+    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3.1-flash-lite",
+    }
+    assert facade.endpoint("gemini", "gemini-3.5-flash").model_id == "gemini-3.5-flash"
     assert provider.credential.reference == "env:GEMINI_API_KEY"
     assert ConfigurationFacade(tmp_path).system_prompt().system_prompt == "Keep this section"
 
@@ -178,9 +186,41 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
     assert provider.default_endpoint == "gpt-5.6"
     assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
         "gpt-5.6",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
         "legacy",
     }
     assert facade.endpoint("primary", "gpt-5.6").model_id == "gpt-custom"
+
+
+def test_provider_template_default_endpoint_override_keeps_other_template_endpoints(
+    tmp_path,
+) -> None:
+    facade = ConfigurationFacade(tmp_path)
+
+    facade.configure_provider_template(
+        "openai",
+        endpoint_id="primary",
+        model="gpt-custom",
+    )
+    provider = facade.provider("openai")
+
+    assert provider.default_endpoint == "primary"
+    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
+        "primary",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }
+    assert facade.endpoint("openai", "primary").model_id == "gpt-custom"
+
+
+def test_provider_template_rejects_default_endpoint_collision_before_write(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+
+    with pytest.raises(ConfigError, match="conflicts with another template endpoint"):
+        facade.configure_provider_template("openai", endpoint_id="gpt-5.6-terra")
+
+    assert not (tmp_path / "config" / "config.json").exists()
 
 
 def test_incompatible_template_application_leaves_config_unchanged(tmp_path) -> None:

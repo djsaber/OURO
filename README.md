@@ -56,7 +56,7 @@ uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
 ## Provider 与 Endpoint
 
 Provider 保存供应商级连接默认值和凭据引用，Endpoint 保存具体模型及其能力。可先查看内置模板，再用一条
-命令原子创建 Provider 与默认 Endpoint：
+命令原子创建 Provider 与模板预置的整组 Endpoint：
 
 ```bash
 uv run ouro provider templates
@@ -65,7 +65,7 @@ uv run ouro provider templates anthropic --json
 # 默认引用模板建议的环境变量；此例为 ANTHROPIC_API_KEY
 uv run ouro provider configure anthropic --home ./.ouro-dev --default
 
-# 可覆盖稳定配置标识、厂商模型 ID、Base URL 或凭据环境变量
+# 可覆盖稳定配置标识、默认 Endpoint 的模型 ID、Base URL 或凭据环境变量
 uv run ouro provider configure gemini \
   --home ./.ouro-dev \
   --provider-id google \
@@ -74,8 +74,9 @@ uv run ouro provider configure gemini \
   --default
 ```
 
-当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、GLM、OpenRouter 和 Mistral；每个模板携带官方
-文档链接与核验日期。模型 ID 会随厂商演进，生产环境可用 `--model` 固定所需版本。
+当前模板包括 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、OpenRouter 和 Mistral；每个模板携带
+一个明确的默认 Endpoint、多个当前主流模型 Endpoint、官方文档链接与核验日期。`--model` 和
+`--endpoint-id` 只覆盖默认 Endpoint；重复应用模板会刷新模板端点，同时保留用户自行添加的其他端点。
 
 需要完全自定义时，`provider set` 与 `provider endpoint set` 仍是彼此独立的显式命令，不会隐式创建另一层
 对象：

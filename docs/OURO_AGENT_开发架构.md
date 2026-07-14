@@ -213,7 +213,7 @@ CLI 命令使用资源层级表达职责：
 - `provider set` 只管理 provider；
 - `provider endpoint set` 只管理 endpoint；
 - `provider templates` 查询类型化的只读厂商模板目录；
-- `provider configure <template>` 是一次原子创建 Provider 与默认 Endpoint 的显式 application 用例；
+- `provider configure <template>` 是一次原子创建 Provider 与模板 Endpoint 集合的显式 application 用例；
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；

@@ -18,9 +18,18 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
         "gemini",
         "deepseek",
         "qwen",
+        "kimi",
         "glm",
         "openrouter",
         "mistral",
+    }
+    kimi = next(item for item in payload["templates"] if item["template_id"] == "kimi")
+    assert kimi["default_endpoint"] == "kimi-k2.7-code"
+    assert kimi["endpoint_count"] == 3
+    assert {endpoint["model_id"] for endpoint in kimi["endpoints"]} == {
+        "kimi-k2.7-code",
+        "kimi-k2.7-code-highspeed",
+        "kimi-k2.6",
     }
 
 
@@ -51,7 +60,9 @@ def test_provider_configure_command_persists_complete_default_route(
     assert payload["provider"]["provider_id"] == "claude"
     assert payload["provider"]["kind"] == "anthropic-compatible"
     assert payload["provider"]["default_endpoint"] == "claude-sonnet-5"
-    assert payload["provider"]["endpoints"][0]["model_id"] == "claude-custom"
+    assert payload["provider"]["endpoint_count"] == 3
+    default_endpoint = next(item for item in payload["provider"]["endpoints"] if item["default"])
+    assert default_endpoint["model_id"] == "claude-custom"
     snapshot = ProviderConfigManager(tmp_path).snapshot()
     assert snapshot.default_provider_id == "claude"
     provider = next(item for item in snapshot.providers if item.provider_id == "claude")

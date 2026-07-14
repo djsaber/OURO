@@ -99,9 +99,14 @@ class ProviderTemplateView(ApplicationDTO):
     credential_env: str
     base_url: str
     api_path: str
-    endpoint: ProviderEndpointView
+    default_endpoint: str
+    endpoints: list[ProviderEndpointView] = Field(default_factory=list)
     documentation_url: str
     verified_on: str
+
+    @property
+    def endpoint_count(self) -> int:
+        return len(self.endpoints)
 
 
 class ProviderTemplateCatalogView(ApplicationDTO):

@@ -64,19 +64,42 @@ manager。Provider retry 的关联字段作为一个原子 mutation 提交，不
 ## 内置模板
 
 `config/provider_templates.py` 保存经过核验的只读模板目录。模板是配置域数据，不是新的 adapter 类型；多个
-厂商可复用同一线协议。每项包含稳定 template id、建议的 provider/endpoint id、模型 ID、连接地址、凭据
-环境变量、Endpoint capability、官方文档和核验日期。
+厂商可复用同一线协议。每项包含稳定 template id、建议的 provider id、默认 endpoint id、非空且 id 唯一的
+Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官方文档和核验日期。默认 Endpoint 必须存在于
+模板 Endpoint 集合中。
 
-当前目录包含 OpenAI、Anthropic、Gemini、DeepSeek、Qwen、GLM、OpenRouter 和 Mistral。模板值是便捷默认值，
-CLI 允许显式覆盖 provider id、endpoint id、model、base URL 和 credential。
+当前目录包含以下经官方文档核验的配置：
+
+| 模板 | 默认 Endpoint | 其他预置 Endpoint |
+|---|---|---|
+| OpenAI | `gpt-5.6` | `gpt-5.6-terra`、`gpt-5.6-luna` |
+| Anthropic | `claude-sonnet-5` | `claude-opus-4-8`、`claude-haiku-4-5` |
+| Gemini | `gemini-3.5-flash` | `gemini-3.1-pro-preview`、`gemini-3.1-flash-lite` |
+| DeepSeek | `deepseek-v4-pro` | `deepseek-v4-flash` |
+| Qwen | `qwen3.7-plus` | `qwen3.7-max`、`qwen3.6-flash` |
+| KIMI | `kimi-k2.7-code` | `kimi-k2.7-code-highspeed`、`kimi-k2.6` |
+| GLM | `glm-5.2` | `glm-5-turbo`、`glm-5v-turbo` |
+| OpenRouter | `auto` | `free` |
+| Mistral | `mistral-medium-3-5` | `mistral-small-2603`、`mistral-large-2512` |
+
+模板值是便捷默认值。CLI 允许显式覆盖 provider id、默认 endpoint id、默认 endpoint 的 model、base URL 和
+credential；覆盖不会丢弃同一模板中的其他 Endpoint。
 
 `provider configure <template>` 是显式复合用例：配置 manager 在一次校验和一次写盘中创建/更新 Provider 与
-默认 Endpoint。失败不得产生半配置。重复应用时保留同 Provider 的其他 Endpoint、凭据、timeout、retry 与
-extra；目标 Endpoint 使用模板和本次覆盖刷新。已存在 Provider 的线协议不匹配时明确失败。
+全部模板 Endpoint。失败不得产生半配置。重复应用时保留同 Provider 的非模板 Endpoint、凭据、timeout、
+retry 与 extra；同 id 的模板 Endpoint 使用最新模板值刷新。默认 Endpoint 的 id 或 model 覆盖与其他模板
+Endpoint 冲突时，在写盘前明确失败。已存在 Provider 的线协议不匹配时同样明确失败。
 
 Anthropic 模板当前显式关闭 adaptive thinking。原因是 Anthropic 工具续接要求原样保存 opaque thinking
 signature，而 canonical provider continuation 尚未提供该字段；在该底层契约完善前，不用供应商特例把签名
 塞入通用 reasoning 文本。
+
+Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌套 `ThinkChunk`，并要求续接时原样回放；
+当前 canonical OpenAI-compatible continuation 只能稳定保存 `reasoning_content`。在建立可移植的 opaque block
+续接契约前，模板不会默认开启一个只能首轮工作、后续退化的能力。
+
+当前 `provider_type` 仍承担线协议选择职责。供应商配置类型与线协议的拆分属于目标设计，见
+[`provider-type-protocol.md`](provider-type-protocol.md)；该提案在当前版本没有运行时代码变更。
 
 ## 模型路由
 
@@ -145,6 +168,7 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 ## 验收证据
 
 - `tests/config/test_credentials_config.py`
+- `tests/config/test_provider_templates.py`
 - `tests/providers/test_factory.py`
 - `tests/providers/test_openai_compatible.py`
 - `tests/providers/test_anthropic_compatible.py`

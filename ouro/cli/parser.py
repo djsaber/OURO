@@ -442,12 +442,18 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
 
     provider_configure_parser = provider_subparsers.add_parser(
         "configure",
-        help="Configure a provider and model endpoint from a template",
+        help="Configure a provider and its model endpoints from a template",
     )
     provider_configure_parser.add_argument("template_id", help="Template id")
     provider_configure_parser.add_argument("--provider-id", help="Override provider id")
-    provider_configure_parser.add_argument("--endpoint-id", help="Override endpoint id")
-    provider_configure_parser.add_argument("--model", help="Override provider model id")
+    provider_configure_parser.add_argument(
+        "--endpoint-id",
+        help="Override the template default endpoint id",
+    )
+    provider_configure_parser.add_argument(
+        "--model",
+        help="Override the template default endpoint model id",
+    )
     provider_configure_parser.add_argument("--base-url", help="Override provider base URL")
     credentials = provider_configure_parser.add_mutually_exclusive_group()
     credentials.add_argument(
