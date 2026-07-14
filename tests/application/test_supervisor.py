@@ -214,6 +214,57 @@ async def test_fifo_scheduler_respects_global_concurrency_limit(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_activity_subscription_exposes_initial_and_live_fine_grained_state(tmp_path) -> None:
+    provider = ConcurrencyProvider()
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
+    handle = await supervisor.submit("hello")
+    subscription = supervisor.subscribe(handle.session_id, include_activity=True)
+
+    assert subscription.initial_activity is not None
+    assert subscription.initial_activity.activity == "queued"
+
+    observed: list[str] = []
+    while "waiting_model" not in observed:
+        notification = await asyncio.wait_for(subscription.get(), timeout=2)
+        if notification.kind == "activity" and notification.activity is not None:
+            observed.append(notification.activity.activity)
+
+    assert "preparing_model" in observed
+    assert supervisor.activity(handle).activity == "waiting_model"
+
+    provider.release.set()
+    terminal = await asyncio.wait_for(supervisor.wait(handle), timeout=2)
+    while "completed" not in observed:
+        notification = await asyncio.wait_for(subscription.get(), timeout=2)
+        if notification.kind == "activity" and notification.activity is not None:
+            observed.append(notification.activity.activity)
+
+    assert terminal.status == "completed"
+    assert "streaming_text" in observed
+    assert supervisor.activity(handle).activity == "completed"
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_activity_by_completed_handle_does_not_drift_to_newer_session_run(tmp_path) -> None:
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, FauxProvider()), max_concurrency=1)
+    first = await supervisor.submit("first")
+    first_terminal = await supervisor.wait(first)
+    second = await supervisor.submit("second", session_id=first.session_id)
+    second_terminal = await supervisor.wait(second)
+
+    first_activity = supervisor.activity(first)
+    session_activity = supervisor.activity(first.session_id)
+
+    assert first_activity.run_id == first_terminal.run_id
+    assert first_activity.activity == "completed"
+    assert session_activity.run_id == second_terminal.run_id
+    assert session_activity.activity == "completed"
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_single_session_registry_rejects_a_second_supervised_run(tmp_path) -> None:
     provider = ConcurrencyProvider()
     supervisor = RuntimeSupervisor(_runtime(tmp_path, provider), max_concurrency=1)
@@ -241,6 +292,28 @@ async def test_slow_subscription_reports_lag_without_blocking_run(tmp_path) -> N
     notification = await subscription.get()
 
     assert terminal.status == "completed"
+    assert notification.kind == "diagnostic"
+    assert notification.diagnostic is not None
+    assert notification.diagnostic.code == "runtime_subscription_lagged"
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_activity_initial_snapshot_remains_available_when_event_replay_lags(tmp_path) -> None:
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, FauxProvider()), max_concurrency=1)
+    handle = await supervisor.submit("hello")
+    await supervisor.wait(handle)
+
+    subscription = supervisor.subscribe(
+        handle.session_id,
+        max_buffer=1,
+        include_activity=True,
+    )
+    notification = await subscription.get()
+
+    assert subscription.initial_activity is not None
+    assert subscription.initial_activity.activity == "completed"
     assert notification.kind == "diagnostic"
     assert notification.diagnostic is not None
     assert notification.diagnostic.code == "runtime_subscription_lagged"

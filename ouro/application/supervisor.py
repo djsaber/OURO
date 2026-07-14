@@ -9,8 +9,16 @@ from typing import Final, Protocol
 from ouro.application.dto import Diagnostic
 from ouro.application.runs import maybe_active_run
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_activity import (
+    project_runtime_activity,
+    queued_runtime_activity,
+    reduce_runtime_activity,
+    runtime_activity_changed,
+    runtime_activity_for_status,
+)
 from ouro.application.supervisor_models import (
     RunHandle,
+    RuntimeActivitySnapshot,
     RuntimeNotification,
     RuntimeStatusSnapshot,
     ShutdownPolicy,
@@ -44,7 +52,12 @@ class _RunJob:
 
 
 class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
-    """Bounded non-blocking view of one Session's durable runtime events."""
+    """Bounded non-blocking view of one Session's runtime stream.
+
+    When activity is requested, ``initial_activity`` reflects the same
+    subscription boundary used to select replay events. Replayed events remain
+    historical; subsequent activity notifications describe live state changes.
+    """
 
     def __init__(
         self,
@@ -52,8 +65,12 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         session_id: str,
         *,
         max_buffer: int,
+        include_activity: bool,
+        initial_activity: RuntimeActivitySnapshot | None,
     ) -> None:
         self.session_id = session_id
+        self.include_activity = include_activity
+        self.initial_activity = initial_activity
         self._supervisor = supervisor
         self._queue: asyncio.Queue[RuntimeNotification | object] = asyncio.Queue(max_buffer)
         self._closed = False
@@ -129,6 +146,7 @@ class RuntimeSupervisor:
         self._jobs_by_handle: dict[str, _RunJob] = {}
         self._completion_events: dict[str, asyncio.Event] = {}
         self._snapshots: dict[str, RuntimeStatusSnapshot] = {}
+        self._activities: dict[str, RuntimeActivitySnapshot] = {}
         self._subscriptions: dict[str, set[RuntimeSubscription]] = {}
         self._lifecycle_lock = asyncio.Lock()
         self._started = False
@@ -211,6 +229,12 @@ class RuntimeSupervisor:
             session_id=session_id,
             status="queued",
         )
+        self._publish_activity(
+            queued_runtime_activity(
+                session_id,
+                sequence=max((event.sequence for event in durable.events), default=0),
+            )
+        )
         self._queue.put_nowait(job)
         return handle
 
@@ -220,6 +244,7 @@ class RuntimeSupervisor:
         *,
         after_sequence: int = 0,
         max_buffer: int = 256,
+        include_activity: bool = False,
     ) -> RuntimeSubscription:
         if self._closed:
             raise OuroError("runtime supervisor is closed")
@@ -229,7 +254,23 @@ class RuntimeSupervisor:
             snapshot = self.store.load_session(session_id, recover=False)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
-        subscription = RuntimeSubscription(self, session_id, max_buffer=max_buffer)
+        activity = self._activities.get(session_id)
+        if activity is None:
+            active_job = self._jobs_by_session.get(session_id)
+            status_override = (
+                self._snapshots[active_job.handle.handle_id].status
+                if active_job is not None
+                else None
+            )
+            activity = project_runtime_activity(snapshot, status_override=status_override)
+            self._activities[session_id] = activity
+        subscription = RuntimeSubscription(
+            self,
+            session_id,
+            max_buffer=max_buffer,
+            include_activity=include_activity,
+            initial_activity=activity if include_activity else None,
+        )
         self._subscriptions.setdefault(session_id, set()).add(subscription)
         for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
             if event.sequence > after_sequence:
@@ -278,6 +319,31 @@ class RuntimeSupervisor:
             run_id=run.run_id if run is not None else None,
             status=(run.status if run is not None else "idle"),
         )
+
+    def activity(self, handle_or_session: RunHandle | str) -> RuntimeActivitySnapshot:
+        session_id = self._activity_session_id(handle_or_session)
+        is_handle_lookup = isinstance(handle_or_session, RunHandle) or (
+            isinstance(handle_or_session, str)
+            and (handle_or_session in self._jobs_by_handle or handle_or_session in self._snapshots)
+        )
+        requested_status = self.status(handle_or_session)
+        cached = self._activities.get(session_id)
+        if cached is not None and (
+            requested_status.run_id is None or cached.run_id == requested_status.run_id
+        ):
+            return cached
+        try:
+            durable = self.store.load_session(session_id, recover=False)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        activity = project_runtime_activity(
+            durable,
+            run_id=requested_status.run_id,
+            status_override=requested_status.status,
+        )
+        if not is_handle_lookup and requested_status.run_id == activity.run_id:
+            self._activities[session_id] = activity
+        return activity
 
     async def wait(self, handle: RunHandle) -> RuntimeStatusSnapshot:
         done = self._completion_events.get(handle.handle_id)
@@ -416,6 +482,18 @@ class RuntimeSupervisor:
                     session_id=job.handle.session_id,
                     status="running",
                 )
+                current_activity = self._activities.get(job.handle.session_id)
+                if current_activity is None:
+                    current_activity = queued_runtime_activity(job.handle.session_id)
+                self._publish_activity(
+                    current_activity.model_copy(
+                        update={
+                            "status": "running",
+                            "activity": "preparing_model",
+                            "updated_at": utc_now(),
+                        }
+                    )
+                )
                 try:
                     job.result = await self.runtime.run(
                         job.prompt,
@@ -468,9 +546,28 @@ class RuntimeSupervisor:
                     "updated_at": utc_now(),
                 }
             )
+        subscriptions = tuple(self._subscriptions.get(event.session_id, ()))
         notification = RuntimeNotification(kind="event", event=event)
-        for subscription in tuple(self._subscriptions.get(event.session_id, ())):
+        for subscription in subscriptions:
             subscription._offer(notification)
+        previous_activity = self._activities.get(event.session_id)
+        if previous_activity is None:
+            durable = self.store.load_session(event.session_id, recover=False)
+            current_activity = project_runtime_activity(durable)
+        else:
+            current_activity = reduce_runtime_activity(previous_activity, event)
+        self._activities[event.session_id] = current_activity
+        if previous_activity is None or runtime_activity_changed(
+            previous_activity,
+            current_activity,
+        ):
+            activity_notification = RuntimeNotification(
+                kind="activity",
+                activity=current_activity,
+            )
+            for subscription in subscriptions:
+                if subscription.include_activity:
+                    subscription._offer(activity_notification)
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
         if isinstance(handle_or_session, RunHandle):
@@ -485,11 +582,50 @@ class RuntimeSupervisor:
 
     def _finish_job(self, job: _RunJob, snapshot: RuntimeStatusSnapshot) -> None:
         self._snapshots[job.handle.handle_id] = snapshot
+        current_activity = self._activities.get(job.handle.session_id)
+        if current_activity is None:
+            current_activity = RuntimeActivitySnapshot(
+                session_id=job.handle.session_id,
+                run_id=snapshot.run_id,
+                status=snapshot.status,
+                activity=runtime_activity_for_status(snapshot.status),
+            )
+        elif current_activity.status != snapshot.status:
+            current_activity = current_activity.model_copy(
+                update={
+                    "run_id": snapshot.run_id or current_activity.run_id,
+                    "status": snapshot.status,
+                    "activity": runtime_activity_for_status(snapshot.status),
+                    "updated_at": utc_now(),
+                }
+            )
+        self._publish_activity(current_activity)
         if self._jobs_by_session.get(job.handle.session_id) is job:
             self._jobs_by_session.pop(job.handle.session_id, None)
         if self._jobs_by_handle.get(job.handle.handle_id) is job:
             self._jobs_by_handle.pop(job.handle.handle_id, None)
         job.done.set()
+
+    def _publish_activity(self, activity: RuntimeActivitySnapshot) -> None:
+        previous = self._activities.get(activity.session_id)
+        self._activities[activity.session_id] = activity
+        if previous is not None and not runtime_activity_changed(previous, activity):
+            return
+        notification = RuntimeNotification(kind="activity", activity=activity)
+        for subscription in tuple(self._subscriptions.get(activity.session_id, ())):
+            if subscription.include_activity:
+                subscription._offer(notification)
+
+    def _activity_session_id(self, handle_or_session: RunHandle | str) -> str:
+        if isinstance(handle_or_session, RunHandle):
+            return handle_or_session.session_id
+        job = self._jobs_by_handle.get(handle_or_session)
+        if job is not None:
+            return job.handle.session_id
+        snapshot = self._snapshots.get(handle_or_session)
+        if snapshot is not None:
+            return snapshot.session_id
+        return handle_or_session
 
     def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:

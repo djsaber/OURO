@@ -27,6 +27,8 @@ ouro skills
 
 无子命令时启动持续 stdin/stdout Host。支持 prompt、session 切换、新建、模型查看/切换、历史、导出、
 Skills 和退出等 slash command。流式文本、reasoning、工具调用、审批和 AskUser 使用独立 I/O 适配器。
+Interactive 直接消费 `model_tool_call_delta`：分片到达时更新当前工具预览，模型响应完成后按 source index
+定稿；不得等到工具预检或执行事件才首次展示调用，也不得把未完成参数当作可执行 JSON。
 
 ### Print
 

@@ -118,6 +118,15 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列，每
 它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
 aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 由 SessionStore 在下次启动恢复。
 
+`RuntimeActivitySnapshot` 是 Host-facing 投影：Run、ToolBatch 和 ToolCall 提供 durable 权威状态，模型增量
+及 compaction 事件补足响应中的瞬时阶段。投影必须能从 SessionSnapshot 重建；`Session.status` 继续保持粗粒度，
+不得扩张为 UI 状态枚举。活动订阅是可选能力，已有 durable event 订阅语义不因 UI 投影而改变。
+
+工具批次在 `tool_batch_planned` 前持久化 planned calls 和 `tool_preflight`，结果写入 canonical messages 前产生
+`tool_batch_results_committing`。`tool_batch_started` 携带预检后的逐调用状态，交互恢复与调用完成事件也携带
+精确 ToolCall status；Host 不得仅凭 `is_error` 推断 aborted/failed。因而 Host 不需要从相邻事件间隙猜测
+预检、执行结果和提交阶段。
+
 ## 失败语义
 
 - 配置、持久化和 session lock 错误必须保持类型化异常。

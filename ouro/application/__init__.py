@@ -21,8 +21,11 @@ from ouro.application.sessions import SessionService, SessionTitleGenerator
 from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
 from ouro.application.supervisor_models import (
     RunHandle,
+    RuntimeActivity,
+    RuntimeActivitySnapshot,
     RuntimeNotification,
     RuntimeStatusSnapshot,
+    RuntimeToolCallActivity,
     ShutdownPolicy,
     SupervisorStartResult,
 )
@@ -40,7 +43,10 @@ __all__ = [
     "ResourceService",
     "RunHandle",
     "RuntimeNotification",
+    "RuntimeActivity",
+    "RuntimeActivitySnapshot",
     "RuntimeStatusSnapshot",
+    "RuntimeToolCallActivity",
     "ShutdownPolicy",
     "SupervisorStartResult",
     "ReplayFrame",

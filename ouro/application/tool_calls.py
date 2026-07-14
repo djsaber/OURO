@@ -75,6 +75,14 @@ class ToolCallCoordinator:
             assistant_message_id=assistant_message.message_id,
             execution_mode=self._effective_mode(tool_calls),
             max_concurrency=self.execution_config.max_concurrency,
+            calls=[ToolBatchCall(request=request) for request in tool_calls],
+        )
+        self.runs.save_batch_state(
+            session=session,
+            run=run,
+            batch=batch,
+            status="running",
+            phase="tool_preflight",
         )
         sequence = await self.events.emit(
             emitted,
@@ -192,6 +200,15 @@ class ToolCallCoordinator:
                 "batch_id": batch.batch_id,
                 "turn_id": batch.turn_id,
                 "execution_mode": batch.execution_mode,
+                "tool_calls": [
+                    {
+                        "tool_call_id": call.request.id,
+                        "tool_name": call.request.name,
+                        "status": call.status,
+                        "source_index": call.request.source_index,
+                    }
+                    for call in batch.calls
+                ],
             },
         )
         checkpoint_batch = batch
@@ -281,6 +298,7 @@ class ToolCallCoordinator:
                             "turn_id": batch.turn_id,
                             "tool_call_id": result.tool_call_id,
                             "tool_name": result.tool_name,
+                            "status": completed_call.status,
                             "is_error": result.is_error,
                             "source_index": completed_call.request.source_index,
                         },
@@ -311,6 +329,18 @@ class ToolCallCoordinator:
         except SessionBusyError:
             if not abort_signal.is_aborted():
                 raise
+        sequence = await self.events.emit(
+            emitted,
+            sequence,
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="tool_batch_results_committing",
+            payload={
+                "batch_id": batch.batch_id,
+                "turn_id": batch.turn_id,
+                "tool_result_count": sum(call.result is not None for call in batch.calls),
+            },
+        )
 
         messages: list[MessageRecord] = []
         results: list[ToolResult] = []

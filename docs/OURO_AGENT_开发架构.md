@@ -74,7 +74,10 @@ RuntimeService 后绕过扩展资源装配。
 
 `RuntimeSupervisor` 位于 RuntimeService 之外，只拥有跨 Session 的进程内 FIFO 调度、并发上限、Host
 订阅和 shutdown 生命周期。它不写 durable Run 状态机；submit/abort 最终调用 RuntimeService，重启恢复
-仍从 SessionStore 读取。每个订阅使用有界队列，慢 Host 不反向阻塞 Run。
+仍从 SessionStore 读取。`RuntimeActivitySnapshot` 把 durable Run/ToolBatch/ToolCall 与模型、压缩事件投影为
+Host 可直接消费的细粒度活动状态；它不是第二套状态机，并可从 Session 事件重建。订阅可选择接收活动变化，
+且在创建时取得同一边界的 initial activity。每个订阅使用有界队列，慢 Host 不反向阻塞 Run；发生 lag 后
+Host 通过 activity 快照和 durable event cursor 重新同步。
 
 排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
 model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此

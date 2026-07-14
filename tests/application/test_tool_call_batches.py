@@ -88,6 +88,23 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
             ToolCallRequest(id="call_2", name="Second", source_index=1),
         ],
     )
+    planned_states: list[tuple[str, str, list[str]]] = []
+
+    def capture_planned_state(event) -> None:
+        if event.event_type != "tool_batch_planned":
+            return
+        assert event.run_id is not None
+        durable_run = runtime.store.load_run(event.session_id, event.run_id)
+        assert durable_run.active_tool_batch is not None
+        planned_states.append(
+            (
+                durable_run.phase,
+                durable_run.active_tool_batch.phase,
+                [call.status for call in durable_run.active_tool_batch.calls],
+            )
+        )
+
+    runtime.add_event_sink(capture_planned_state)
 
     result = await runtime.run("run both")
     snapshot = runtime.store.load_session(result.session.session_id)
@@ -101,11 +118,18 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
         "assistant",
     ]
     assert [call.id for call in snapshot.messages[1].tool_calls] == ["call_1", "call_2"]
+    assert planned_states == [("tool_preflight", "planned", ["planned", "planned"])]
     assert [
         message.tool_result.tool_call_id
         for message in snapshot.messages[2:4]
         if message.tool_result is not None
     ] == ["call_1", "call_2"]
+    event_types = [event.event_type for event in snapshot.events]
+    committing_index = event_types.index("tool_batch_results_committing")
+    assert committing_index > max(
+        index for index, event_type in enumerate(event_types) if event_type == "tool_call_completed"
+    )
+    assert committing_index < event_types.index("tool_batch_completed")
 
 
 @pytest.mark.asyncio

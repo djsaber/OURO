@@ -315,22 +315,16 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
 
     streaming_snapshot = store.load_session(session.session_id, recover=False)
     delta_events = [
-        event
-        for event in streaming_snapshot.events
-        if event.event_type == "model_tool_call_delta"
+        event for event in streaming_snapshot.events if event.event_type == "model_tool_call_delta"
     ]
     assert run_task.done() is False
-    assert [event.payload["arguments_delta"] for event in delta_events] == [
-        '{"path":"out.txt",'
-    ]
+    assert [event.payload["arguments_delta"] for event in delta_events] == ['{"path":"out.txt",']
 
     provider.release.set()
     result = await asyncio.wait_for(run_task, timeout=1)
     completed_snapshot = store.load_session(session.session_id, recover=False)
     completed_delta_events = [
-        event
-        for event in completed_snapshot.events
-        if event.event_type == "model_tool_call_delta"
+        event for event in completed_snapshot.events if event.event_type == "model_tool_call_delta"
     ]
 
     assert result.run.status == "waiting_approval"
@@ -1048,7 +1042,11 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
         "assistant",
     ]
     assert snapshot.messages[1].tool_calls[0].name == "Write"
-    assert "approval_resolved" in [event.event_type for event in snapshot.events]
+    approval_resolved = next(
+        event for event in snapshot.events if event.event_type == "approval_resolved"
+    )
+    assert approval_resolved.payload["tool_call_id"] == "call_1"
+    assert approval_resolved.payload["tool_call_status"] == "ready"
     assert "run_completed" in [event.event_type for event in snapshot.events]
 
 
@@ -1391,6 +1389,11 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
     assert len(aborted_results) == 1
     assert aborted_results[0].tool_result is not None
     assert aborted_results[0].tool_result.is_error is True
+    completed_event = next(
+        event for event in snapshot.events if event.event_type == "tool_call_completed"
+    )
+    assert snapshot.runs[0].active_tool_batch is not None
+    assert completed_event.payload["status"] == snapshot.runs[0].active_tool_batch.calls[0].status
     assert snapshot.session.message_count == len(snapshot.messages)
     assert snapshot.runs[0].active_tool_batch is not None
     assert snapshot.runs[0].active_tool_batch.phase == "aborted"
@@ -1564,7 +1567,11 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     assert snapshot.messages[2].role == "tool_result"
     assert snapshot.messages[2].text_content == "notes.md"
     assert snapshot.messages[-1].text_content == "I will use notes.md."
-    assert "ask_user_resolved" in [event.event_type for event in snapshot.events]
+    ask_user_resolved = next(
+        event for event in snapshot.events if event.event_type == "ask_user_resolved"
+    )
+    assert ask_user_resolved.payload["tool_call_id"] == "ask_1"
+    assert ask_user_resolved.payload["tool_call_status"] == "completed"
 
 
 class ReasoningToolProvider:
@@ -1859,6 +1866,17 @@ async def test_runtime_returns_unknown_tool_error_to_model_and_continues(tmp_pat
         "assistant",
         "tool_result",
         "assistant",
+    ]
+    batch_started = next(
+        event for event in snapshot.events if event.event_type == "tool_batch_started"
+    )
+    assert batch_started.payload["tool_calls"] == [
+        {
+            "tool_call_id": "call_1",
+            "tool_name": "Missing",
+            "status": "failed",
+            "source_index": 0,
+        }
     ]
 
 

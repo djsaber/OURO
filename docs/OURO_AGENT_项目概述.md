@@ -73,13 +73,15 @@ ResourceService 把本地附件导入为内容寻址的不可变资源。消息�
 分支原子复制引用关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
 原始绝对路径。
 
-RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。
+RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。Host
+可读取细粒度 activity，区分模型准备、等待响应、各类增量流、工具预检/执行/结果提交、人工交互和压缩。
 Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不同的显式协议。重启后的事实仍来自
 SessionStore，而不是内存 registry。
 
 ### 运行界面
 
-- Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互。
+- Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互；工具名称及参数分片在模型
+  生成期间动态预览，完整响应后按调用顺序定稿。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。
 - JSON：stdout 输出稳定机器可读结果，并使用分类退出码。
 

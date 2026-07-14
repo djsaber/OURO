@@ -19,6 +19,7 @@ EventType = Literal[
     "model_message_completed",
     "tool_batch_planned",
     "tool_batch_started",
+    "tool_batch_results_committing",
     "tool_batch_completed",
     "tool_batch_aborted",
     "tool_call_requested",

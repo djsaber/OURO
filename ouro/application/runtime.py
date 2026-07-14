@@ -810,6 +810,11 @@ class RuntimeService:
                 reason=reason,
                 arguments_override=arguments_override,
             )
+            resolved_call = next(
+                call
+                for call in batch.calls
+                if call.approval is not None and call.approval.approval_id == resolved_approval_id
+            )
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
@@ -822,6 +827,8 @@ class RuntimeService:
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
                     "approval_id": resolved_approval_id,
+                    "tool_call_id": resolved_call.request.id,
+                    "tool_call_status": resolved_call.status,
                     "approved": approved,
                     "reason": None if approved else reason,
                 },
@@ -878,6 +885,9 @@ class RuntimeService:
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
             )
+            resolved_call = next(
+                call for call in batch.calls if call.request.id == waiting_call.request.id
+            )
             sequence = len(snapshot.events)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
@@ -890,6 +900,7 @@ class RuntimeService:
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
                     "tool_call_id": waiting_call.request.id,
+                    "tool_call_status": resolved_call.status,
                     "answer": answer,
                 },
             )
