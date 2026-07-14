@@ -127,17 +127,20 @@ async def _run_interactive_session(
                 queue_mode=queue_mode,
                 approval_mode=current_approval_mode if session_id is None else None,
             )
+            # Preserve the durable Session identity even when approval or AskUser
+            # continuation fails after the initial RunResult has been returned.
+            session_id = result.session.session_id
+            session_id = await handle_run_result(
+                result,
+                runtime=runtime,
+                input_func=input_func,
+                output_func=output_func,
+                output=output,
+            )
+            current_approval_mode = runtime.store.load_session(
+                session_id,
+                recover=False,
+            ).session.approval_mode
         except OuroError as exc:
             output_func(f"Error: {exc}")
             continue
-        session_id = await handle_run_result(
-            result,
-            runtime=runtime,
-            input_func=input_func,
-            output_func=output_func,
-            output=output,
-        )
-        current_approval_mode = runtime.store.load_session(
-            session_id,
-            recover=False,
-        ).session.approval_mode

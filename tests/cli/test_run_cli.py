@@ -500,6 +500,106 @@ async def test_interactive_aborts_waiting_approval(tmp_path) -> None:
     assert "Run aborted: User aborted" in outputs
 
 
+async def test_interactive_keeps_running_when_approval_resume_fails(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target = tmp_path / "not-written.txt"
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_1",
+                        "name": "Write",
+                        "arguments": {"path": str(target), "content": "nope"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+
+    async def fail_approval_resume(**kwargs):
+        del kwargs
+        raise PersistenceError("approval resume failed")
+
+    monkeypatch.setattr(runtime, "approve_tool", fail_approval_resume)
+    inputs = iter(["write file", "n", "", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert not target.exists()
+    assert "Approval required: Write" in outputs
+    assert "Error: approval resume failed" in outputs
+
+
+async def test_interactive_open_waiting_session_drains_follow_up_after_rejection(tmp_path) -> None:
+    target = tmp_path / "not-written.txt"
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_1",
+                        "name": "Write",
+                        "arguments": {"path": str(target), "content": "nope"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Write was rejected."),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Hello from follow-up."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    waiting = await runtime.run("write file")
+    inputs = iter(
+        [
+            f"/open {waiting.session.session_id}",
+            "hi",
+            "n",
+            "",
+            "/exit",
+        ]
+    )
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+    snapshot = runtime.store.load_session(waiting.session.session_id, recover=False)
+
+    assert code == 0
+    assert not target.exists()
+    assert [run.status for run in snapshot.runs] == ["completed", "completed"]
+    assert [message.text_content for message in snapshot.messages if message.role == "user"] == [
+        "write file",
+        "hi",
+    ]
+    assert snapshot.messages[-1].text_content == "Hello from follow-up."
+    assert "follow_up_queue" not in snapshot.session.metadata
+    assert f"Opened session: {waiting.session.session_id}" in outputs
+    assert "Approval required: Write" in outputs
+
+
 async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
     runtime = _runtime(
         tmp_path,

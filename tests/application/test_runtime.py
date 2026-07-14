@@ -1649,6 +1649,121 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     assert ask_user_resolved.payload["tool_call_status"] == "completed"
 
 
+@pytest.mark.asyncio
+async def test_runtime_drains_follow_up_after_rejected_approval_releases_run_lock(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "rejected.txt"
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "write_1",
+                                "name": "Write",
+                                "arguments": {"path": str(target), "content": "blocked"},
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Write was rejected."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Follow-up handled."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        default_workspace=tmp_path,
+    )
+    waiting = await runtime.run("Write file")
+    queued = await runtime.run("hi", session_id=waiting.session.session_id)
+
+    resumed = await runtime.approve_tool(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        approved=False,
+    )
+    snapshot = store.load_session(waiting.session.session_id, recover=False)
+
+    assert queued.run.status == "waiting_approval"
+    assert resumed.run.status == "completed"
+    assert not target.exists()
+    assert [run.status for run in snapshot.runs] == ["completed", "completed"]
+    assert [message.text_content for message in snapshot.messages if message.role == "user"] == [
+        "Write file",
+        "hi",
+    ]
+    assert snapshot.messages[-1].text_content == "Follow-up handled."
+    assert "follow_up_queue" not in snapshot.session.metadata
+
+
+@pytest.mark.asyncio
+async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "ask_1",
+                                "name": "AskUser",
+                                "arguments": {"question": "Which file?"},
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Answer accepted."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Follow-up handled."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+    waiting = await runtime.run("Need clarification")
+    queued = await runtime.run("continue", session_id=waiting.session.session_id)
+
+    resumed = await runtime.answer_user(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        answer="notes.md",
+    )
+    snapshot = store.load_session(waiting.session.session_id, recover=False)
+
+    assert queued.run.status == "waiting_user"
+    assert resumed.run.status == "completed"
+    assert [run.status for run in snapshot.runs] == ["completed", "completed"]
+    assert [message.text_content for message in snapshot.messages if message.role == "user"] == [
+        "Need clarification",
+        "continue",
+    ]
+    assert snapshot.messages[-1].text_content == "Follow-up handled."
+    assert "follow_up_queue" not in snapshot.session.metadata
+
+
 class ReasoningToolProvider:
     provider_id = "reasoning_tool"
 

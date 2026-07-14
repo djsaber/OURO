@@ -20,6 +20,11 @@ This project records user-visible and framework-contract changes in this file.
 - Resource content remains immutable and content-addressed; model materialization no longer
   requires embedding large payloads in canonical message journals.
 
+### Fixed
+
+- Release the Session run lock before draining follow-up inputs after approval or AskUser
+  continuation, and keep Interactive alive when a typed continuation error occurs.
+
 ## 0.1.0
 
 - Initial local-first agent runtime, Session/Run persistence, tool/HITL loop, Provider adapters,

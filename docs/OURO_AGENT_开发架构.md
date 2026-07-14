@@ -82,7 +82,9 @@ Host 通过 activity 快照和 durable event cursor 重新同步。
 排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
 model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此
 steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode` 配置决定；`one_by_one` 每个边界
-只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。
+只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。审批或
+AskUser 恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
+后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
 规范化为 `tool_call_delta`；`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界

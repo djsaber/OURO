@@ -899,7 +899,7 @@ class RuntimeService:
                     "reason": None if approved else reason,
                 },
             )
-            return await self._continue_resolved_batch(
+            result = await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,
                 run=run,
@@ -909,6 +909,11 @@ class RuntimeService:
             )
         finally:
             self._release_session_run_lock(run_lock)
+        # Queue draining starts a new Run and therefore must occur outside the
+        # completed interaction's non-reentrant Session run lock.
+        if result.run.status == "completed":
+            await self._drain_queued_input_queue(result.session.session_id)
+        return result
 
     async def answer_user(
         self,
@@ -970,7 +975,7 @@ class RuntimeService:
                     "answer": answer,
                 },
             )
-            return await self._continue_resolved_batch(
+            result = await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,
                 run=run,
@@ -980,6 +985,11 @@ class RuntimeService:
             )
         finally:
             self._release_session_run_lock(run_lock)
+        # Keep the same post-lock Run boundary as normal runs and approval
+        # recovery; a follow-up must acquire a fresh Session run lock.
+        if result.run.status == "completed":
+            await self._drain_queued_input_queue(result.session.session_id)
+        return result
 
     async def _continue_resolved_batch(
         self,
@@ -1083,8 +1093,6 @@ class RuntimeService:
         finally:
             self._release_abort_signal(run.run_id, active_signal)
         self._finish_run_hooks(resumed.run)
-        if resumed.run.status == "completed":
-            await self._drain_queued_input_queue(resumed.session.session_id)
         return resumed
 
     def _is_run_aborted(self, session_id: str, run_id: str) -> bool:
