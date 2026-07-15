@@ -6,13 +6,37 @@ from collections.abc import Callable
 from typing import Any
 
 from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
-from ouro.config.reasoning import EndpointReasoningConfig, reasoning_preset
+from ouro.config.reasoning import (
+    REASONING_PRESETS,
+    EndpointReasoningConfig,
+    reasoning_preset,
+)
 from ouro.core.approvals import SESSION_APPROVAL_MODES
 
 
+class OuroArgumentParser(argparse.ArgumentParser):
+    """Render command examples predictably while retaining wrapped option help."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("formatter_class", argparse.RawDescriptionHelpFormatter)
+        super().__init__(*args, **kwargs)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="ouro")
-    parser.add_argument("--home", help="Override OURO_HOME")
+    parser = OuroArgumentParser(
+        prog="ouro",
+        description=(
+            "Local-first agent runtime for interactive work, one-shot runs, and durable "
+            "Session management.\nRun without a command to start the interactive Host."
+        ),
+        epilog="""Getting started:
+  ouro provider templates
+  ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
+  ouro run "Explain this repository"
+
+Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
+    )
+    parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for interactive mode")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
     parser.add_argument(
         "--approval-mode",
@@ -87,7 +111,19 @@ def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
     run_parser = subparsers.add_parser(
         "run",
         help="Run a single prompt",
-        description="Run a single prompt. Defaults to --print (final text on stdout).",
+        description=(
+            "Run one prompt against a configured model route.\n"
+            "The command creates a Session unless --session selects an existing one.\n"
+            "Output defaults to final text on stdout."
+        ),
+        epilog="""Examples:
+  ouro run "Summarize this project"
+  ouro run --provider openai --endpoint gpt-5.6 "Review the architecture"
+  ouro run --provider custom --endpoint reasoning --thinking-mode enabled \\
+    --thinking-effort high "Solve this carefully"
+
+Reasoning mode and effort are canonical OURO intents. The selected Endpoint must support
+them exactly; unsupported requests fail before an HTTP request is sent.""",
     )
     mode = run_parser.add_mutually_exclusive_group()
     mode.add_argument("--print", dest="print_mode", action="store_true", help="Print final text")
@@ -120,7 +156,12 @@ def _add_run_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Override the default system prompt",
     )
     _add_provider_args(run_parser, prefix="run_")
-    run_parser.add_argument("prompt", nargs="+")
+    run_parser.add_argument(
+        "prompt",
+        nargs="+",
+        metavar="PROMPT",
+        help="Prompt text; multiple shell words are joined with spaces",
+    )
 
 
 def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -387,6 +428,18 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     compaction_parser = config_subparsers.add_parser(
         "compaction",
         help="Inspect or set compaction model routing and request parameters",
+        description=(
+            "Inspect or update the model route and request overrides used for context "
+            "compaction.\nOmitted options retain their current values."
+        ),
+        epilog="""Examples:
+  ouro config compaction
+  ouro config compaction --provider openai --endpoint gpt-5.6 --thinking-effort low
+  ouro config compaction --runtime-endpoint
+  ouro config compaction --clear
+
+--runtime-endpoint only clears the dedicated model route. --clear also removes temperature,
+token, and reasoning overrides.""",
     )
     compaction_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     compaction_parser.add_argument("--provider", dest="provider_id", help="Provider id")
@@ -396,17 +449,31 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         help="Clear the dedicated endpoint and use the session runtime endpoint",
     )
-    compaction_parser.add_argument("--temperature", type=float, default=None)
-    compaction_parser.add_argument("--max-output-tokens", type=int, default=None)
+    compaction_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Sampling temperature override",
+    )
+    compaction_parser.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=None,
+        metavar="INT",
+        help="Maximum output token override",
+    )
     compaction_parser.add_argument(
         "--thinking-mode",
         choices=("default", "enabled", "disabled"),
         default=None,
+        help="Reasoning intent; default uses the Endpoint's configured default",
     )
     compaction_parser.add_argument(
         "--thinking-effort",
         choices=("minimal", "low", "medium", "high", "xhigh", "max"),
         default=None,
+        help="Exact reasoning effort; implies enabled when mode is omitted",
     )
     compaction_parser.add_argument(
         "--clear",
@@ -417,7 +484,23 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
-    provider_parser = subparsers.add_parser("provider", help="Manage providers")
+    provider_parser = subparsers.add_parser(
+        "provider",
+        help="Manage providers and model endpoints",
+        description=(
+            "Manage Provider identities, credentials, connection defaults, and model "
+            "Endpoints.\nIntegrated types install reviewed Endpoint templates; compatible "
+            "types start empty."
+        ),
+        epilog="""Typical workflow:
+  ouro provider templates
+  ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
+  ouro provider endpoint list openai
+  ouro provider check openai
+
+For a private or gateway model, add an openai-compatible or anthropic-compatible Provider,
+then create its model route with 'ouro provider endpoint set'.""",
+    )
     provider_subparsers = provider_parser.add_subparsers(
         dest="provider_command",
         required=True,
@@ -435,6 +518,10 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_templates_parser = provider_subparsers.add_parser(
         "templates",
         help="List or show built-in provider templates",
+        description=(
+            "List reviewed built-in Provider templates, or show the complete Endpoint "
+            "catalog for one template."
+        ),
     )
     provider_templates_parser.add_argument("template_id", nargs="?", help="Template id")
     provider_templates_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
@@ -443,6 +530,17 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_add_parser = provider_subparsers.add_parser(
         "add",
         help="Add a provider; integrated types include preset endpoints",
+        description=(
+            "Create a new Provider. Integrated types install their reviewed Endpoint "
+            "catalog.\nCompatible types create an empty Provider for custom Endpoints."
+        ),
+        epilog="""Examples:
+  ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
+  ouro provider add private --type openai-compatible \\
+    --base-url https://models.example.com/v1 --api-key-env PRIVATE_API_KEY
+
+Provider ids are unique. Use 'provider update' for an existing Provider or 'provider replace'
+when its type and complete template-owned configuration must change.""",
     )
     provider_add_parser.add_argument("provider_id", help="Provider/supplier id")
     _add_provider_identity_args(provider_add_parser)
@@ -454,6 +552,11 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_update_parser = provider_subparsers.add_parser(
         "update",
         help="Update a provider and refresh integrated preset endpoints",
+        description=(
+            "Update connection, credential, retry, or enabled state without changing the "
+            "Provider type.\nIntegrated types refresh template-owned Endpoints and preserve "
+            "user-created Endpoints."
+        ),
     )
     provider_update_parser.add_argument("provider_id", help="Provider/supplier id")
     _add_provider_mutation_args(
@@ -464,6 +567,11 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_replace_parser = provider_subparsers.add_parser(
         "replace",
         help="Replace a provider; integrated types include preset endpoints",
+        description=(
+            "Replace an existing Provider with the selected type and its complete initial "
+            "configuration.\nUse this when changing Provider type or intentionally resetting "
+            "template-owned Endpoints."
+        ),
     )
     provider_replace_parser.add_argument("provider_id", help="Provider/supplier id")
     _add_provider_identity_args(provider_replace_parser)
@@ -485,6 +593,10 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_check_parser = provider_subparsers.add_parser(
         "check",
         help="Check provider connection",
+        description=(
+            "Send a minimal request through a configured Endpoint.\n"
+            "Runtime flags override configuration for this check only and are not persisted."
+        ),
     )
     provider_check_parser.add_argument("provider_id", nargs="?", help="Provider/supplier id")
     provider_check_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
@@ -498,6 +610,16 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     endpoint_parser = provider_subparsers.add_parser(
         "endpoint",
         help="Manage model endpoints for a provider",
+        description=(
+            "Manage stable model routes and their capabilities.\nReasoning support belongs "
+            "to the Endpoint because models behind the same Provider can differ."
+        ),
+        epilog="""Examples:
+  ouro provider endpoint list openai
+  ouro provider endpoint show openai gpt-5.6
+  ouro provider endpoint set private chat --model private-model --default
+
+Use 'ouro provider endpoint set --help' for custom capability and reasoning contracts.""",
     )
     endpoint_subparsers = endpoint_parser.add_subparsers(
         dest="endpoint_command",
@@ -518,35 +640,87 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     endpoint_set_parser = endpoint_subparsers.add_parser(
         "set",
         help="Create or update an endpoint",
+        description=(
+            "Create or update one model Endpoint.\nOmitted fields retain their stored values "
+            "when updating; reasoning preset and full JSON options are mutually exclusive."
+        ),
+        epilog=f"""Examples:
+  ouro provider endpoint set private chat --model private-model --default
+  ouro provider endpoint set private reasoning --model reasoning-model \\
+    --reasoning-preset reasoning-content-effort --default
+  ouro provider endpoint set claude custom --model custom-claude \\
+    --reasoning-preset anthropic-adaptive-effort
+
+Reasoning presets:
+  {", ".join(REASONING_PRESETS)}
+
+Presets are explicit declarations, not capability detection. Use --reasoning-config when a
+model supports different native fields or only a subset of efforts. Its JSON shape is:
+  {{"capability": {{...}}, "profile": {{"name": "...", "variants": {{...}}}}}}
+
+Reasoning-owned fields must not also appear in --request-options. Invalid or incomplete
+contracts are rejected before configuration is written.""",
     )
     endpoint_set_parser.add_argument("provider_id", help="Provider/supplier id")
     endpoint_set_parser.add_argument("endpoint_id", help="Stable endpoint id")
     endpoint_set_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    endpoint_set_parser.add_argument("--model", help="Provider model id")
-    endpoint_set_parser.add_argument("--base-url", help="Endpoint base URL")
-    endpoint_set_parser.add_argument(
-        "--api-path",
-        help="API path (defaults to provider api_path or protocol default)",
+
+    route_group = endpoint_set_parser.add_argument_group("model route")
+    route_group.add_argument("--model", metavar="MODEL_ID", help="Provider-native model id")
+    route_group.add_argument(
+        "--base-url",
+        metavar="URL",
+        help="Endpoint URL override; otherwise inherit the Provider base URL",
     )
-    endpoint_set_parser.add_argument("--temperature", type=float, default=None)
-    endpoint_set_parser.add_argument("--context-window", type=int, default=None)
-    endpoint_set_parser.add_argument("--max-output-tokens", type=int, default=None)
-    _add_endpoint_capability_args(endpoint_set_parser)
-    endpoint_reasoning_group = endpoint_set_parser.add_mutually_exclusive_group()
+    route_group.add_argument(
+        "--api-path",
+        metavar="PATH",
+        help="API path override; otherwise inherit Provider or protocol default",
+    )
+    route_group.add_argument(
+        "--temperature",
+        type=float,
+        default=None,
+        metavar="FLOAT",
+        help="Sampling temperature (0-2)",
+    )
+    route_group.add_argument(
+        "--context-window",
+        type=int,
+        default=None,
+        metavar="TOKENS",
+        help="Total model context window",
+    )
+    route_group.add_argument(
+        "--max-output-tokens",
+        type=int,
+        default=None,
+        metavar="TOKENS",
+        help="Maximum output tokens; must not exceed context window",
+    )
+
+    capability_group = endpoint_set_parser.add_argument_group("endpoint capabilities")
+    _add_endpoint_capability_args(capability_group)
+
+    reasoning_group = endpoint_set_parser.add_argument_group("reasoning contract")
+    endpoint_reasoning_group = reasoning_group.add_mutually_exclusive_group()
     endpoint_reasoning_group.add_argument(
         "--reasoning-preset",
         type=_reasoning_preset,
-        help="Common reasoning contract preset for a compatible endpoint",
+        metavar="PRESET",
+        help="Install a common native reasoning mapping; see preset list below",
     )
     endpoint_reasoning_group.add_argument(
         "--reasoning-config",
         type=_endpoint_reasoning_config,
-        help="Complete endpoint reasoning contract as a JSON object",
+        metavar="JSON",
+        help="Complete capability and native profile mapping as one JSON object",
     )
-    endpoint_set_parser.add_argument(
+    reasoning_group.add_argument(
         "--request-options",
         type=_json_object,
-        help="Provider-specific request options as a JSON object",
+        metavar="JSON",
+        help="Additional provider request fields not owned by the reasoning profile",
     )
     endpoint_set_parser.add_argument(
         "--default",
@@ -574,7 +748,10 @@ def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
         dest="provider_type",
         choices=CONFIGURABLE_PROVIDER_TYPES,
         required=True,
-        help="Provider product or generic configuration type",
+        help=(
+            "Provider product type; integrated types install templates, compatible types "
+            "start without Endpoints"
+        ),
     )
 
 
@@ -605,7 +782,11 @@ def _add_provider_mutation_args(
         "--api-key",
         help="Inline API key (stored as plain text in local config; prefer --api-key-env)",
     )
-    credentials.add_argument("--api-key-env", help="API key env var")
+    credentials.add_argument(
+        "--api-key-env",
+        metavar="ENV",
+        help="Environment variable containing the API key",
+    )
     parser.add_argument("--timeout", type=float, default=None, help="Timeout seconds")
     parser.add_argument(
         "--retry-attempts",
@@ -893,45 +1074,46 @@ def _add_provider_args(
     prefix: str = "",
     include_provider: bool = True,
 ) -> None:
+    route_group = parser.add_argument_group("model route overrides")
     if include_provider:
-        parser.add_argument(
+        route_group.add_argument(
             "--provider",
             dest=f"{prefix}provider_id",
             default=None,
             metavar="PROVIDER_ID",
             help="Configured provider id",
         )
-    parser.add_argument(
+    route_group.add_argument(
         "--endpoint",
         dest=f"{prefix}endpoint_id",
         metavar="ENDPOINT_ID",
         help="Configured endpoint id",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--base-url",
         dest=f"{prefix}base_url",
         metavar="URL",
         help="Provider base URL",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--api-path",
         dest=f"{prefix}api_path",
         metavar="PATH",
         help="Provider API path",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--api-key",
         dest=f"{prefix}api_key",
         metavar="KEY",
         help="Inline API key for this command (prefer --api-key-env)",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--api-key-env",
         dest=f"{prefix}api_key_env",
         metavar="ENV",
         help="API key env var",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--timeout",
         dest=f"{prefix}timeout",
         type=float,
@@ -939,7 +1121,7 @@ def _add_provider_args(
         metavar="SECONDS",
         help="Provider timeout seconds",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--temperature",
         dest=f"{prefix}temperature",
         type=float,
@@ -947,7 +1129,7 @@ def _add_provider_args(
         metavar="FLOAT",
         help="Sampling temperature",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--context-window",
         dest=f"{prefix}context_window",
         type=int,
@@ -955,7 +1137,7 @@ def _add_provider_args(
         metavar="INT",
         help="Endpoint context window",
     )
-    parser.add_argument(
+    route_group.add_argument(
         "--max-output-tokens",
         dest=f"{prefix}max_output_tokens",
         type=int,
@@ -963,22 +1145,23 @@ def _add_provider_args(
         metavar="INT",
         help="Endpoint maximum output tokens",
     )
-    _add_endpoint_capability_args(parser, prefix=prefix)
-    parser.add_argument(
+    capability_group = parser.add_argument_group("endpoint capability overrides")
+    _add_endpoint_capability_args(capability_group, prefix=prefix)
+
+    reasoning_group = parser.add_argument_group("reasoning intent")
+    reasoning_group.add_argument(
         "--thinking-mode",
         dest=f"{prefix}thinking_mode",
         choices=("default", "enabled", "disabled"),
         default=None,
-        metavar="MODE",
-        help="Reasoning activation intent",
+        help="Reasoning intent; default uses the Endpoint's configured default",
     )
-    parser.add_argument(
+    reasoning_group.add_argument(
         "--thinking-effort",
         dest=f"{prefix}thinking_effort",
         choices=_THINKING_EFFORTS,
         default=None,
-        metavar="EFFORT",
-        help="Reasoning effort intent",
+        help="Exact reasoning effort; implies enabled when mode is omitted",
     )
 
 
@@ -986,7 +1169,7 @@ _THINKING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _add_endpoint_capability_args(
-    parser: argparse.ArgumentParser,
+    parser: argparse._ActionsContainer,
     *,
     prefix: str = "",
 ) -> None:
