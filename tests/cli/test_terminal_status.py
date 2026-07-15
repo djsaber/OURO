@@ -29,7 +29,10 @@ async def test_animated_status_replaces_one_terminal_line() -> None:
     status = TerminalStatusLine(outputs.append, animated=True)
 
     await status.start("tool_execution", "Running tool · Read")
-    await asyncio.sleep(SPINNER_THEMES["tool_execution"].interval_seconds * 1.5)
+    for _ in range(20):
+        if len(outputs) >= 2:
+            break
+        await asyncio.sleep(0.01)
     await status.clear()
 
     frames = [item for item in outputs if "Running tool · Read" in item]

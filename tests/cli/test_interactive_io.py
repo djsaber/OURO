@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.cli.interactive_io import InteractiveOutput
+from ouro.cli.terminal_status import SPINNER_THEMES
 from ouro.core.events import EventRecord
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
@@ -138,6 +139,62 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
         )
     )
     assert outputs[-1] == "✓ Read · completed\n"
+    assert output.active_tool_calls == {}
+
+
+async def test_interactive_output_tracks_parallel_tool_execution() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+
+    await output.handle_event(
+        _event(
+            1,
+            "tool_call_started",
+            {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
+        )
+    )
+    await output.handle_event(
+        _event(
+            2,
+            "tool_call_started",
+            {"tool_call_id": "call_2", "tool_name": "Write", "source_index": 1},
+        )
+    )
+    assert output.status_line.message == "Running 2 tools · Read, Write"
+
+    await output.handle_event(
+        _event(
+            3,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Read",
+                "status": "completed",
+                "is_error": False,
+                "source_index": 0,
+            },
+        )
+    )
+    execution_frame = SPINNER_THEMES["tool_execution"].frames[0]
+    assert outputs[-2:] == [
+        "✓ Read · completed\n",
+        f"{execution_frame} Running tool · Write\n",
+    ]
+
+    await output.handle_event(
+        _event(
+            4,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_2",
+                "tool_name": "Write",
+                "status": "failed",
+                "is_error": True,
+                "source_index": 1,
+            },
+        )
+    )
+    assert outputs[-1] == "✗ Write · failed\n"
     assert output.active_tool_calls == {}
 
 
