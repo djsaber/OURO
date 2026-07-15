@@ -82,12 +82,11 @@ class SessionRunLock:
         self.release()
 
 
-class SessionMutationLock:
-    """Short, re-entrant cross-process lock for one Session persistence mutation."""
+class FileMutationLock:
+    """Short, re-entrant cross-process lock for one local persistence mutation."""
 
-    def __init__(self, path: Path, *, session_id: str) -> None:
+    def __init__(self, path: Path) -> None:
         self.path = path
-        self.session_id = session_id
         self._key = str(path.resolve())
         with _LOCAL_LOCKS_GUARD:
             self._local_lock = _LOCAL_MUTATION_LOCKS.setdefault(self._key, threading.RLock())
@@ -155,6 +154,14 @@ class SessionMutationLock:
     ) -> None:
         del exc_type, exc, traceback
         self.release()
+
+
+class SessionMutationLock(FileMutationLock):
+    """File mutation lock carrying the owning Session identity for diagnostics."""
+
+    def __init__(self, path: Path, *, session_id: str) -> None:
+        super().__init__(path)
+        self.session_id = session_id
 
 
 def is_lock_held(path: Path) -> bool:

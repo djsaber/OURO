@@ -53,11 +53,17 @@ class ModelMetadata(OuroModel):
 
 
 class Usage(OuroModel):
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    estimated_cost: float | None = None
+    """Canonical token usage decoded from a provider response.
+
+    This type must never be populated from OURO's context-size estimator.
+    ``estimated_cost``, when supplied by an adapter, is denominated in USD.
+    """
+
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    cache_read_tokens: int = Field(default=0, ge=0)
+    cache_write_tokens: int = Field(default=0, ge=0)
+    estimated_cost: float | None = Field(default=None, ge=0)
 
 
 class ProviderRetryPolicy(OuroModel):
@@ -157,6 +163,8 @@ class ProviderStreamEvent(OuroModel):
             )
         ):
             raise ValueError("provider stream done event may only contain usage")
+        if self.type != "done" and self.usage is not None:
+            raise ValueError("provider usage may only be emitted on a done event")
         return self
 
 

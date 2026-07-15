@@ -126,8 +126,8 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             messages=[assistant_message],
         )
 
-    def record_usage(run, usage):
-        del usage
+    def record_usage(run, usage, *, model, request_id, purpose):
+        del usage, model, request_id, purpose
         return run
 
     def aborted_result(**kwargs):
@@ -307,8 +307,8 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
             results=[result],
         )
 
-    def record_usage(run, usage):
-        del usage
+    def record_usage(run, usage, *, model, request_id, purpose):
+        del usage, model, request_id, purpose
         return run
 
     def aborted_result(**kwargs):

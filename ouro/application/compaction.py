@@ -10,6 +10,7 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id
+from ouro.core.billing import UsagePurpose
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
     CompactionArtifact,
@@ -33,7 +34,7 @@ from ouro.core.errors import CompactionError, ContextBlockedError, ContextOverfl
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ProviderStreamEvent, Usage
+from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import SUMMARIZATION_PROMPT
@@ -49,6 +50,19 @@ class ModelMessageProjector(Protocol):
         *,
         supports_vision: bool,
     ) -> list[MessageRecord]: ...
+
+
+class CompactionUsageRecorder(Protocol):
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        usage: Usage,
+        model: ModelMetadata,
+        request_id: str,
+        purpose: UsagePurpose,
+    ) -> RunRecord: ...
 
 
 @dataclass(frozen=True)
@@ -80,12 +94,14 @@ class LLMSummaryCompactionStrategy:
         configured_adapter_error: str | None = None,
         model_config: CompactionModelConfig | None = None,
         runtime_adapter_resolver: Callable[[str], RuntimeAdapter] | None = None,
+        usage_recorder: CompactionUsageRecorder | None = None,
     ) -> None:
         self.runtime_adapter = adapter
         self.runtime_adapter_resolver = runtime_adapter_resolver
         self.configured_adapter = configured_adapter
         self.configured_adapter_error = configured_adapter_error
         self.model_config = model_config or CompactionModelConfig()
+        self.usage_recorder = usage_recorder
         self.prompt = prompt
         self.prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
@@ -174,6 +190,7 @@ class LLMSummaryCompactionStrategy:
             rolling_summary, usage = await self._summarize_chunk(
                 adapter=adapter,
                 session_id=request.session_id,
+                run_id=request.run_id,
                 previous_summary=rolling_summary,
                 messages=chunk,
                 summary_output_tokens=summary_output_tokens,
@@ -244,6 +261,7 @@ class LLMSummaryCompactionStrategy:
         *,
         adapter: RuntimeAdapter,
         session_id: str,
+        run_id: str | None,
         previous_summary: str | None,
         messages: Sequence[MessageRecord],
         summary_output_tokens: int,
@@ -262,6 +280,7 @@ class LLMSummaryCompactionStrategy:
         text_parts: list[str] = []
         usage: dict[str, int | float] = {}
         saw_done = False
+        request_id = new_id("req")
         async for event in adapter.stream(
             context,
             signal=signal,
@@ -273,6 +292,20 @@ class LLMSummaryCompactionStrategy:
                 usage=usage,
                 saw_done=saw_done,
             )
+            if (
+                event.type == "done"
+                and event.usage is not None
+                and self.usage_recorder is not None
+                and run_id is not None
+            ):
+                self.usage_recorder(
+                    session_id=session_id,
+                    run_id=run_id,
+                    usage=event.usage,
+                    model=adapter.model,
+                    request_id=request_id,
+                    purpose="compaction",
+                )
         if signal is not None and signal.is_aborted():
             raise CompactionError("summary compaction was aborted")
         if not saw_done:
@@ -509,6 +542,7 @@ class ContextPreparationService:
 
         request = CompactionRequest(
             session_id=session.session_id,
+            run_id=run.run_id,
             strategy_id=self.config.strategy_id,
             trigger=trigger,
             previous_summary=active.summary if active else None,

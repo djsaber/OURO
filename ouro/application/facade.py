@@ -22,7 +22,16 @@ from ouro.application.session_models import (
     SessionTrashResult,
 )
 from ouro.application.sessions import SessionService, SessionTitleGenerator
+from ouro.application.usage import UsageService
+from ouro.application.usage_models import (
+    UsageAuditLog,
+    UsageEntryList,
+    UsageGroupBy,
+    UsageMutationResult,
+    UsageSummary,
+)
 from ouro.core.approvals import SessionApprovalMode
+from ouro.core.billing import ProviderUsageEntry, UsageFilter
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
@@ -42,10 +51,12 @@ class ApplicationFacade:
         sessions: SessionService,
         runtime: RuntimeService | None = None,
         resources: ResourceService | None = None,
+        usage: UsageService | None = None,
     ) -> None:
         self._runtime = runtime
         self._sessions = sessions
         self._resources = resources
+        self._usage = usage
 
     @classmethod
     def from_runtime(cls, runtime: RuntimeService) -> ApplicationFacade:
@@ -53,6 +64,7 @@ class ApplicationFacade:
             sessions=runtime.sessions,
             runtime=runtime,
             resources=runtime.resources,
+            usage=runtime.usage,
         )
 
     @classmethod
@@ -69,6 +81,10 @@ class ApplicationFacade:
             sessions=SessionService(store, resources=resources),
             resources=resources,
         )
+
+    @classmethod
+    def with_usage(cls, store: SessionStore, usage: UsageService) -> ApplicationFacade:
+        return cls(sessions=SessionService(store), usage=usage)
 
     def create_session(
         self,
@@ -219,6 +235,59 @@ class ApplicationFacade:
     async def compact_session(self, session_id: str) -> CompactionCommandResult:
         return await self._require_runtime().compact(session_id=session_id)
 
+    def usage_summary(
+        self,
+        usage_filter: UsageFilter | None = None,
+        *,
+        group_by: UsageGroupBy | None = None,
+    ) -> UsageSummary:
+        return self._require_usage().summarize(usage_filter, group_by=group_by)
+
+    def usage_entries(
+        self,
+        usage_filter: UsageFilter | None = None,
+        *,
+        limit: int = 100,
+    ) -> UsageEntryList:
+        return self._require_usage().list_entries(usage_filter, limit=limit)
+
+    def usage_entry(self, entry_id: str) -> ProviderUsageEntry:
+        return self._require_usage().get_entry(entry_id)
+
+    def replace_usage_entry(
+        self,
+        entry_id: str,
+        *,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        cache_read_tokens: int | None = None,
+        cache_write_tokens: int | None = None,
+        estimated_cost: float | None = None,
+        clear_estimated_cost: bool = False,
+        note: str,
+    ) -> UsageMutationResult:
+        return self._require_usage().replace_entry(
+            entry_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            estimated_cost=estimated_cost,
+            clear_estimated_cost=clear_estimated_cost,
+            note=note,
+        )
+
+    def reset_usage(
+        self,
+        usage_filter: UsageFilter | None = None,
+        *,
+        note: str,
+    ) -> UsageMutationResult:
+        return self._require_usage().reset(usage_filter, note=note)
+
+    def usage_audit(self, *, limit: int = 100) -> UsageAuditLog:
+        return self._require_usage().audit(limit=limit)
+
     def _require_runtime(self) -> RuntimeService:
         if self._runtime is None:
             raise OuroError("this application facade has no runtime commands configured")
@@ -228,3 +297,8 @@ class ApplicationFacade:
         if self._resources is None:
             raise OuroError("this application facade has no resource commands configured")
         return self._resources
+
+    def _require_usage(self) -> UsageService:
+        if self._usage is None:
+            raise OuroError("this application facade has no usage commands configured")
+        return self._usage

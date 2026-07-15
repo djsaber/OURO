@@ -6,6 +6,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Global provider-response usage ledger for agent and compaction requests, with date/route/session
+  filters, grouped token and partial-cost summaries, audited corrections, selective resets, and CLI.
 - Typed application configuration facade shared by CLI hosts.
 - Anthropic Messages protocol adapter, provider adapter registry, and reviewed multi-endpoint CLI
   templates for OpenAI, Anthropic, Gemini, DeepSeek, Qwen, KIMI, GLM, OpenRouter, and Mistral.

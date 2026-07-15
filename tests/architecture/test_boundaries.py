@@ -9,6 +9,7 @@ CONFIG_DIR = PROJECT_ROOT / "ouro" / "config"
 APPLICATION_DIR = PROJECT_ROOT / "ouro" / "application"
 ALLOWED_CORE_PREFIX = "ouro.core"
 LOWER_LAYER_DIRS = (
+    "billing",
     "config",
     "mcp",
     "plugins",

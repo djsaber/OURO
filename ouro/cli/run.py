@@ -13,6 +13,8 @@ from ouro.application.runtime_configuration import (
     RuntimeConfigurationResolver,
     RuntimeProviderOptions,
 )
+from ouro.application.usage import UsageService
+from ouro.billing import LocalUsageLedger
 from ouro.cli.errors import error_exit_code
 from ouro.config import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -42,6 +44,9 @@ def build_default_runtime(
     resource_store = LocalResourceStore(store.root)
     resource_store.initialize()
     resources = ResourceService(store=resource_store, sessions=store)
+    usage_ledger = LocalUsageLedger(store.root)
+    usage_ledger.initialize()
+    usage_service = UsageService(usage_ledger)
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
@@ -76,6 +81,7 @@ def build_default_runtime(
         compaction_adapter_error=compaction_adapter_error,
         queued_input_config=resolved.queued_inputs,
         resources=resources,
+        usage_service=usage_service,
         default_workspace=Path.cwd(),
     )
 

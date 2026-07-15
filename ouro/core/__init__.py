@@ -1,6 +1,7 @@
 """Core OURO runtime models and services."""
 
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
+from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, TextContent
@@ -14,6 +15,7 @@ __all__ = [
     "CompactionRecord",
     "MessageRecord",
     "ProviderRetryPolicy",
+    "ProviderUsageEntry",
     "RunRecord",
     "RunResult",
     "ResourceRecord",
@@ -23,4 +25,6 @@ __all__ = [
     "SessionResourceReference",
     "SessionRecord",
     "TextContent",
+    "UsageFilter",
+    "UsageLedgerEvent",
 ]

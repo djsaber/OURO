@@ -99,4 +99,5 @@ class RunRecord(OuroModel):
     abort_requested: bool = False
     error: str | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
+    usage_entry_ids: list[str] = Field(default_factory=list)
     metadata: Metadata = MetadataField

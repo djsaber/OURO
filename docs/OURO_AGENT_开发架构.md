@@ -144,6 +144,20 @@ token 预算。canonical history 永不被压缩覆盖；`CompactionRecord` 通�
 校验 Session 归属、digest、size、媒体类型和 Endpoint 能力，再把受支持文本或图片仅注入本次模型请求；附件
 内容参与上下文预算与压缩，但不回写历史。
 
+## Provider Usage 与全局费用账本
+
+Provider adapter 只在 `done` 边界产生类型化 `Usage`，数据源必须是供应商响应。`core/context.py` 的 token
+estimator 属于上下文预算域，只负责溢出判断和压缩触发；它与费用账本没有回退、同步或推导关系。
+
+`UsageService` 把普通模型回合和压缩模型请求统一写入 `UsageLedger`。每条有效记录绑定 provider、endpoint、
+model、Session、Run、用途、请求身份和接收时间；Run 通过 `usage_entry_ids` 保持幂等聚合。压缩在收到
+Provider `done` 时立即记账，因此即使后续摘要格式校验失败或路由回退，已经发生的供应商调用也不会漏记。
+
+本地实现使用 `OURO_HOME/billing/usage.jsonl` 追加事件和独立跨进程写锁。`record` 保存供应商事实，
+`replace` 保存带原因的人工修订，`reset` 在当时的有效视图上选择性失效匹配记录；查询重放事件得到当前
+有效视图，历史审计事件始终保留。入口层只解析过滤条件和格式化输出，日期/路由过滤、汇总与修订规则位于
+应用层，文件和锁细节留在基础设施层。
+
 ## 本地持久化
 
 默认 `LocalSessionStore` 在 `OURO_HOME` 下保存可读文件：
@@ -155,6 +169,8 @@ OURO_HOME/
   skills/
   locks/sessions/
   locks/session-mutations/
+  locks/billing-mutations.lock
+  billing/usage.jsonl
   sessions/
     index.json
     <session_id>/
@@ -174,6 +190,7 @@ OURO_HOME/
 
 `session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
+`billing/usage.jsonl` 是独立的全局 canonical 账本，不随 Session 归档或进入回收站而删除。
 messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后
 已有 cursor 仍可继续使用。
 

@@ -25,6 +25,11 @@ def test_provider_done_event_is_only_a_completion_boundary() -> None:
         ProviderStreamEvent(type="done", text="unexpected")
 
 
+def test_provider_usage_is_only_valid_on_done_events() -> None:
+    with pytest.raises(ValueError, match="usage may only be emitted"):
+        ProviderStreamEvent(type="text_delta", text="hello", usage=Usage(input_tokens=1))
+
+
 def test_provider_retry_policy_is_bounded_and_retry_event_requires_payload() -> None:
     policy = ProviderRetryPolicy(
         max_attempts=4,

@@ -33,6 +33,7 @@ class CompactionPolicy(OuroModel):
 
 class CompactionRequest(OuroModel):
     session_id: str
+    run_id: str | None = None
     strategy_id: str
     trigger: CompactionTrigger
     previous_summary: str | None = None

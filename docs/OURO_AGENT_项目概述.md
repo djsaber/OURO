@@ -112,6 +112,11 @@ SessionStore，而不是内存 registry。
 
 一次可恢复执行。Run 保存来源、状态、当前阶段、模型、usage、待处理人工交互和活动工具批次。
 
+### Provider usage ledger
+
+跨 Session 的供应商请求级 token/费用账本。usage 只采集 Provider 响应，按日期、模型和路由等维度查询；
+上下文 token 估算不进入账本。人工修订和重置保留追加式审计历史。
+
 ### Model turn
 
 一次完整 Provider 响应及其工具 continuation 边界。assistant 工具请求和对应结果共享 `turn_id`，用于恢复和

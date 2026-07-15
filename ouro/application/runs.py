@@ -4,11 +4,13 @@ from collections.abc import Callable, Iterable
 from typing import Any
 
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.usage import UsageService
 from ouro.core.base import utc_now
+from ouro.core.billing import UsagePurpose
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, ToolResultReference
-from ouro.core.provider import Usage
+from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
 from ouro.core.state import (
@@ -32,10 +34,12 @@ class RunLifecycle:
         *,
         store: SessionStore,
         events: RuntimeEventRecorder,
+        usage_service: UsageService | None = None,
         validate_resource_refs: Callable[[str, Iterable[str]], None] | None = None,
     ) -> None:
         self.store = store
         self.events = events
+        self.usage_service = usage_service
         self._validate_resource_refs = validate_resource_refs
         self._message_cache: dict[
             tuple[str, str],
@@ -217,14 +221,67 @@ class RunLifecycle:
         )
         return message
 
-    def record_usage(self, run: RunRecord, usage: Usage) -> RunRecord:
+    def record_usage(
+        self,
+        run: RunRecord,
+        usage: Usage,
+        *,
+        model: ModelMetadata,
+        request_id: str,
+        purpose: UsagePurpose,
+    ) -> RunRecord:
+        """Persist provider usage to both the global ledger and owning Run."""
+
         with session_mutation(self.store, run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
-            if latest.status not in ACTIVE_RUN_STATUSES or latest.abort_requested:
+            if self.usage_service is not None:
+                entry = self.usage_service.record_provider_usage(
+                    run=latest,
+                    usage=usage,
+                    model=model,
+                    request_id=request_id,
+                    purpose=purpose,
+                )
+                usage_entry_id = entry.entry_id
+            else:
+                usage_entry_id = ":".join(
+                    (
+                        purpose,
+                        request_id,
+                        model.provider_id,
+                        model.endpoint_id or "",
+                        model.model_id,
+                    )
+                )
+            if usage_entry_id in latest.usage_entry_ids:
                 return latest
-            updated = latest.model_copy(update={"usage": merge_usage(latest.usage, usage)})
+            updated = latest.model_copy(
+                update={
+                    "usage": merge_usage(latest.usage, usage),
+                    "usage_entry_ids": [*latest.usage_entry_ids, usage_entry_id],
+                }
+            )
             self.store.save_run(updated)
             return updated
+
+    def record_usage_for_run(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        usage: Usage,
+        model: ModelMetadata,
+        request_id: str,
+        purpose: UsagePurpose,
+    ) -> RunRecord:
+        run = self.store.load_run(session_id, run_id)
+        return self.record_usage(
+            run,
+            usage,
+            model=model,
+            request_id=request_id,
+            purpose=purpose,
+        )
 
     def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> SessionRecord:
         with session_mutation(self.store, session.session_id):

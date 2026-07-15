@@ -83,6 +83,15 @@ from ouro.cli.skills import (
     update_skill,
     validate_skills,
 )
+from ouro.cli.usage_commands import (
+    UsageFilterArgs,
+    audit_usage,
+    list_usage,
+    modify_usage_entry,
+    reset_usage,
+    show_usage_entry,
+    summarize_usage,
+)
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.mcp import MCPServerConfigUpdate
@@ -126,6 +135,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _mcp_command(args)
     if args.command == "skills":
         return _skills_command(args)
+    if args.command == "usage":
+        return _usage_command(args)
     if args.interactive_approval_mode != "inherit":
         return asyncio.run(
             run_interactive(
@@ -591,6 +602,63 @@ def _skills_command(args: argparse.Namespace) -> int:
             json_mode=args.json,
         )
     raise AssertionError(f"unknown skills command: {args.skills_command}")
+
+
+def _usage_command(args: argparse.Namespace) -> int:
+    command = args.usage_command
+    common = {"home": args.home, "json_mode": args.json}
+    if command == "summary":
+        return summarize_usage(
+            home=args.home,
+            json_mode=args.json,
+            **_usage_filters(args),
+            group_by=args.group_by,
+        )
+    if command == "list":
+        return list_usage(
+            home=args.home,
+            json_mode=args.json,
+            **_usage_filters(args),
+            limit=args.limit,
+        )
+    if command == "show":
+        return show_usage_entry(args.entry_id, **common)
+    if command == "modify":
+        return modify_usage_entry(
+            args.entry_id,
+            **common,
+            input_tokens=args.input_tokens,
+            output_tokens=args.output_tokens,
+            cache_read_tokens=args.cache_read_tokens,
+            cache_write_tokens=args.cache_write_tokens,
+            estimated_cost=args.estimated_cost,
+            clear_estimated_cost=args.clear_estimated_cost,
+            note=args.note,
+        )
+    if command == "reset":
+        return reset_usage(
+            home=args.home,
+            json_mode=args.json,
+            **_usage_filters(args),
+            force=args.force,
+            note=args.note,
+        )
+    if command == "audit":
+        return audit_usage(**common, limit=args.limit)
+    raise AssertionError(f"unknown usage command: {command}")
+
+
+def _usage_filters(args: argparse.Namespace) -> UsageFilterArgs:
+    return {
+        "since": args.since,
+        "until": args.until,
+        "provider_ids": args.provider_ids,
+        "endpoint_ids": args.endpoint_ids,
+        "model_ids": args.model_ids,
+        "session_ids": args.session_ids,
+        "run_ids": args.run_ids,
+        "purposes": args.purposes,
+    }
 
 
 def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeProviderOptions:

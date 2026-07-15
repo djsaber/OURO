@@ -12,6 +12,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
 - 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界事件订阅、abort 与 shutdown 协议。
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
+- 供应商响应驱动的全局 token/费用账本，支持日期、Provider、Endpoint、模型、Session、Run、用途过滤，
+  以及分组汇总、审计式修改和选择性重置。
 - Read、Write、Edit、Bash、AskUser 内置工具，以及硬拒绝、workspace 路径约束、输出限长和统一参数校验。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
@@ -181,6 +183,39 @@ Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
 `/approval-mode <inherit|auto|approval>`。会话分支继承源会话的批准模式。
 工具级 `deny` 是硬拒绝，不能被会话 `auto` 或一次审批覆盖。
+
+## 全局 Token 与费用统计
+
+全局账本按每次完成的供应商模型请求记录 usage，覆盖普通 Agent 回合和上下文压缩请求。这里的 token
+只来自 Provider 响应；`ContextBuilder` 对上下文长度的本地估算仅用于预算和触发压缩，绝不会作为账本
+缺失值的回退来源。`estimated_cost` 的框架契约固定为 USD；只有 adapter 能保证该语义时才可自动填入，
+否则保持未定价状态，可按账单手动修订。
+
+```bash
+# 全局汇总；裸日期按 UTC 自然日处理，--until 裸日期包含当天
+uv run ouro usage summary --home ./.ouro-dev
+uv run ouro usage summary --home ./.ouro-dev \
+  --since 2026-07-01 --until 2026-07-15 \
+  --provider anthropic --model claude-sonnet-5 --group-by date --json
+
+# 请求级明细及更多过滤维度
+uv run ouro usage list --home ./.ouro-dev --purpose compaction --limit 100
+uv run ouro usage show <usage_entry_id> --home ./.ouro-dev --json
+
+# 修改和重置都是追加式审计操作，不会悄悄覆写或删除历史事件
+uv run ouro usage modify <usage_entry_id> --home ./.ouro-dev \
+  --input-tokens 1234 --estimated-cost 0.42 --note "provider invoice correction"
+uv run ouro usage reset --home ./.ouro-dev --model old-model \
+  --note "start a new accounting period" --force
+uv run ouro usage audit --home ./.ouro-dev --limit 100 --json
+```
+
+`summary`、`list` 和 `reset` 共享 `--since`、`--until`、`--provider`、`--endpoint`、`--model`、
+`--session`、`--run`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。cache read/write token 保留为
+供应商 usage 的独立类别；`total_tokens` 只计算 input + output，避免把供应商的 cache 明细重复计入。
+升级前已经存在的 Run 仍保留原有 `run.usage`，但框架不会在缺少历史请求路由和请求边界时猜测并回填全局
+账本；全局统计从该账本启用后的供应商调用开始。人工修改或重置只改变可审计的全局费用视图，不改写
+Session 中保存的原始 Run usage。
 
 ## MCP Server
 

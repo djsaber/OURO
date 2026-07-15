@@ -29,6 +29,7 @@ from ouro.application.runs import (
 )
 from ouro.application.sessions import SessionService
 from ouro.application.tool_calls import ToolCallCoordinator
+from ouro.application.usage import UsageService
 from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
@@ -77,10 +78,12 @@ class RuntimeService:
         compaction_adapter_error: str | None = None,
         queued_input_config: QueuedInputConfig | None = None,
         resources: ResourceService | None = None,
+        usage_service: UsageService | None = None,
         default_workspace: str | Path | None = None,
     ) -> None:
         self.store = store
         self.resources = resources
+        self.usage = usage_service
         self.sessions = SessionService(store, resources=resources)
         self.queued_inputs = QueuedInputQueue(store)
         self.follow_ups = FollowUpQueue(store)
@@ -103,6 +106,7 @@ class RuntimeService:
         self.run_lifecycle = RunLifecycle(
             store=store,
             events=self.event_recorder,
+            usage_service=usage_service,
             validate_resource_refs=(
                 resources.validate_references if resources is not None else None
             ),
@@ -146,6 +150,7 @@ class RuntimeService:
                     configured_adapter_error=configured_adapter_error,
                     model_config=self.compaction_config.model,
                     runtime_adapter_resolver=self._adapter_for_session_id,
+                    usage_recorder=self.run_lifecycle.record_usage_for_run,
                 )
             )
         self.context_preparation = ContextPreparationService(

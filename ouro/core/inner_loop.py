@@ -7,12 +7,13 @@ from typing import Any, Protocol
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
+from ouro.core.billing import UsagePurpose
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
-from ouro.core.provider import ToolCallDelta, Usage
+from ouro.core.provider import ModelMetadata, ToolCallDelta, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
 from ouro.core.state import RunRecord, SessionRecord, session_status_for_run
@@ -61,7 +62,15 @@ class ToolBatchHandler(Protocol):
 
 
 class UsageRecorder(Protocol):
-    def __call__(self, run: RunRecord, usage: Usage) -> RunRecord: ...
+    def __call__(
+        self,
+        run: RunRecord,
+        usage: Usage,
+        *,
+        model: ModelMetadata,
+        request_id: str,
+        purpose: UsagePurpose,
+    ) -> RunRecord: ...
 
 
 class ToolDefinitionProvider(Protocol):
@@ -454,6 +463,8 @@ class InnerAgentLoop:
             run_id=state.run.run_id,
             event_type="model_request_started",
             payload={
+                "provider": self.adapter.model.provider_id,
+                "endpoint": self.adapter.model.endpoint_id,
                 "model": self.adapter.model.model_id,
                 "round": model_round,
                 "turn_id": turn_id,
@@ -475,8 +486,14 @@ class InnerAgentLoop:
     ) -> RunResult | None:
         try:
             async for provider_event in self.adapter.stream(context, signal=abort_signal):
-                if provider_event.usage is not None:
-                    state.run = self.ports.record_usage(state.run, provider_event.usage)
+                if provider_event.type == "done" and provider_event.usage is not None:
+                    state.run = self.ports.record_usage(
+                        state.run,
+                        provider_event.usage,
+                        model=self.adapter.model,
+                        request_id=round_state.turn_id,
+                        purpose="agent",
+                    )
                 if aborted := self._aborted_result(state, round_state.parts):
                     return aborted
 
