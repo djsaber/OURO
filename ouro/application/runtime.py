@@ -38,7 +38,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
-from ouro.core.errors import CompactionError, ResourceAttachmentError, SessionBusyError
+from ouro.core.errors import CompactionError, ConfigError, ResourceAttachmentError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
@@ -194,7 +194,13 @@ class RuntimeService:
             snapshot = self.store.load_session(session_id, recover=False)
             if maybe_active_run(snapshot.runs) is not None:
                 raise SessionBusyError(f"session already has an active run: {session_id}")
-            model = self.models.resolve(selector)
+            normalized = selector.strip()
+            model = next(
+                (item for item in self.models.list_models() if item.key == normalized),
+                None,
+            )
+            if model is None:
+                raise ConfigError(f"model not found: {selector}")
             self.models.adapter_for(model.key)
             session = snapshot.session.model_copy(
                 update={

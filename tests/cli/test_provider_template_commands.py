@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from ouro.cli.main import main
+from ouro.cli.parser import build_parser
 from ouro.config import ProviderConfigManager
 
 
@@ -26,24 +29,19 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
     kimi = next(item for item in payload["templates"] if item["template_id"] == "kimi")
     assert kimi["default_endpoint"] == "kimi-k2.7-code"
     assert kimi["endpoint_count"] == 3
-    assert {endpoint["model_id"] for endpoint in kimi["endpoints"]} == {
-        "kimi-k2.7-code",
-        "kimi-k2.7-code-highspeed",
-        "kimi-k2.6",
-    }
 
 
-def test_provider_configure_command_persists_complete_default_route(
+def test_provider_add_integrated_type_persists_complete_default_route(
     tmp_path,
     capsys,
 ) -> None:
     code = main(
         [
             "provider",
-            "configure",
-            "anthropic",
-            "--provider-id",
+            "add",
             "claude",
+            "--type",
+            "anthropic",
             "--model",
             "claude-custom",
             "--api-key-env",
@@ -57,33 +55,176 @@ def test_provider_configure_command_persists_complete_default_route(
 
     assert code == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["provider"]["provider_id"] == "claude"
-    assert payload["provider"]["kind"] == "anthropic-compatible"
-    assert payload["provider"]["default_endpoint"] == "claude-sonnet-5"
-    assert payload["provider"]["endpoint_count"] == 3
-    default_endpoint = next(item for item in payload["provider"]["endpoints"] if item["default"])
-    assert default_endpoint["model_id"] == "claude-custom"
+    provider = payload["provider"]
+    assert provider["provider_id"] == "claude"
+    assert provider["provider_type"] == "anthropic"
+    assert provider["protocol"] == "anthropic-messages"
+    assert provider["default_endpoint"] == "claude-sonnet-5"
+    assert provider["endpoint_count"] == 3
+    assert next(item for item in provider["endpoints"] if item["default"])["model_id"] == (
+        "claude-custom"
+    )
     snapshot = ProviderConfigManager(tmp_path).snapshot()
     assert snapshot.default_provider_id == "claude"
-    provider = next(item for item in snapshot.providers if item.provider_id == "claude")
-    assert provider.endpoint() is not None
-    assert provider.credential_ref.display() == "env:CLAUDE_KEY"
+    configured = ProviderConfigManager(tmp_path).get_provider("claude")
+    assert configured is not None
+    assert configured.credential_ref.display() == "env:CLAUDE_KEY"
 
 
-def test_unknown_provider_template_returns_config_error(tmp_path, capsys) -> None:
+def test_removed_configure_custom_and_protocol_are_not_parseable() -> None:
+    parser = build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["provider", "configure", "openai"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["provider", "add", "local", "--type", "custom"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(
+            [
+                "provider",
+                "add",
+                "local",
+                "--type",
+                "openai-compatible",
+                "--protocol",
+                "openai-chat-completions",
+            ]
+        )
+
+
+def test_integrated_type_conflict_prompts_update_or_replace(tmp_path, capsys) -> None:
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "primary",
+                "--type",
+                "anthropic",
+                "--home",
+                str(tmp_path),
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
     code = main(
         [
             "provider",
-            "configure",
-            "unknown",
+            "add",
+            "primary",
+            "--type",
+            "openai",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    error = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert "provider update" in error["error"]
+    assert "provider replace" in error["error"]
+    assert ProviderConfigManager(tmp_path).get_provider("primary").provider_type == "anthropic"
+
+    code = main(
+        [
+            "provider",
+            "replace",
+            "primary",
+            "--type",
+            "openai",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["operation"] == "replace"
+    assert payload["provider"]["provider_type"] == "openai"
+    assert payload["provider"]["endpoint_count"] == 3
+
+
+def test_compatible_add_update_and_replace_infer_protocol(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "provider",
+            "add",
+            "local",
+            "--type",
+            "anthropic-compatible",
+            "--base-url",
+            "https://example.test",
+            "--api-key-env",
+            "LOCAL_KEY",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["provider"]["provider_type"] == "anthropic-compatible"
+    assert payload["provider"]["protocol"] == "anthropic-messages"
+    assert payload["provider"]["endpoint_count"] == 0
+
+    code = main(
+        [
+            "provider",
+            "update",
+            "local",
+            "--timeout",
+            "12",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["provider"]["provider_type"] == "anthropic-compatible"
+    assert payload["provider"]["protocol"] == "anthropic-messages"
+    assert payload["provider"]["timeout"] == 12
+
+    code = main(
+        [
+            "provider",
+            "replace",
+            "local",
+            "--type",
+            "openai-compatible",
+            "--base-url",
+            "https://replacement.test/v1",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert payload["provider"]["provider_type"] == "openai-compatible"
+    assert payload["provider"]["protocol"] == "openai-chat-completions"
+    assert payload["provider"]["endpoint_count"] == 0
+
+
+def test_compatible_add_rejects_template_only_route_options(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "provider",
+            "add",
+            "local",
+            "--type",
+            "openai-compatible",
+            "--model",
+            "model-name",
             "--home",
             str(tmp_path),
             "--json",
         ]
     )
 
-    assert code != 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["status"] == "failed"
-    assert payload["error_type"] == "ConfigError"
+    assert code == 2
+    assert "explicit endpoint commands" in payload["error"]
     assert not (tmp_path / "config" / "config.json").exists()

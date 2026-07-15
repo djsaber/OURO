@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from ouro.application.runtime import RuntimeService
+from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
 from ouro.skills import discover_available_skills
@@ -122,7 +123,13 @@ def _model_command(
     selector: str,
 ) -> CommandResult:
     if not selector:
-        return CommandResult(session_id=session_id, output=runtime.current_model(session_id).key)
+        current = runtime.current_model(session_id)
+        output = (
+            "No configured model selected."
+            if current.provider_id == BUILTIN_FAUX_PROVIDER_ID
+            else current.key
+        )
+        return CommandResult(session_id=session_id, output=output)
     if session_id is None:
         return CommandResult(
             session_id=None,

@@ -259,7 +259,7 @@ def test_run_mode_can_continue_existing_session(tmp_path, capsys) -> None:
 
 
 async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
-    inputs = iter(["hello", "/sessions", "/model", "/export", "/new", "/exit"])
+    inputs = iter(["hello", "/sessions", "/models", "/model", "/export", "/new", "/exit"])
     outputs: list[str] = []
 
     async_code = await run_interactive(
@@ -271,7 +271,8 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert async_code == 0
     assert "Hello from OURO." in outputs
     assert any(output.startswith("Sessions:") for output in outputs)
-    assert "faux/faux" in outputs
+    assert "No configured models available." in outputs
+    assert "No configured model selected." in outputs
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
 
@@ -783,7 +784,7 @@ def test_build_runtime_with_openai_compatible_provider_options(
     runtime = build_default_runtime(
         tmp_path,
         provider_options=RuntimeProviderOptions(
-            provider="openai-compatible",
+            protocol="openai-chat-completions",
             provider_id="glm",
             model="glm-test",
             base_url="https://example.test/v1",
@@ -813,6 +814,7 @@ def test_build_runtime_reads_local_config_file(tmp_path, monkeypatch) -> None:
                     "items": {
                         "configured": {
                             "provider_type": "openai-compatible",
+                            "protocol": "openai-chat-completions",
                             "provider_id": "configured",
                             "credential_ref": "env:OURO_TEST_KEY",
                             "timeout_seconds": 9.0,
@@ -983,26 +985,24 @@ def test_run_json_reports_provider_config_error(tmp_path, capsys) -> None:
     assert "provider not found" in payload["error"]
 
 
-def test_provider_check_faux_provider_outputs_status(tmp_path, capsys) -> None:
+def test_provider_check_requires_user_configured_default(tmp_path, capsys) -> None:
     code = main(["provider", "check", "--home", str(tmp_path)])
 
     captured = capsys.readouterr()
 
-    assert code == 0
-    assert captured.out.strip() == "Provider check OK: faux/faux"
+    assert code == 2
+    assert "default provider is not configured" in captured.err
 
 
-def test_provider_check_json_outputs_provider_result(tmp_path, capsys) -> None:
+def test_provider_check_json_hides_internal_default(tmp_path, capsys) -> None:
     code = main(["provider", "check", "--json", "--home", str(tmp_path)])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
 
-    assert code == 0
-    assert payload["status"] == "ok"
-    assert payload["ok"] is True
-    assert payload["provider_id"] == "faux"
-    assert payload["model_id"] == "faux"
+    assert code == 2
+    assert payload["status"] == "failed"
+    assert "default provider is not configured" in payload["error"]
 
 
 def test_provider_check_json_reports_provider_config_error(tmp_path, capsys) -> None:
@@ -1036,11 +1036,11 @@ def test_provider_commands_manage_config_and_runtime_default(
     set_code = main(
         [
             "provider",
-            "set",
+            "add",
             "glm",
             "--home",
             str(tmp_path),
-            "--kind",
+            "--type",
             "openai-compatible",
             "--base-url",
             "https://example.test/v1",
@@ -1087,10 +1087,7 @@ def test_provider_commands_manage_config_and_runtime_default(
 
     assert list_code == 0
     assert list_payload["default"] == "glm"
-    assert {provider["provider_id"] for provider in list_payload["providers"]} == {
-        "faux",
-        "glm",
-    }
+    assert {provider["provider_id"] for provider in list_payload["providers"]} == {"glm"}
 
     show_code = main(["provider", "show", "glm", "--home", str(tmp_path), "--json"])
     show_output = capsys.readouterr().out
@@ -1117,11 +1114,11 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
         main(
             [
                 "provider",
-                "set",
+                "add",
                 "glm",
                 "--home",
                 str(tmp_path),
-                "--kind",
+                "--type",
                 "openai-compatible",
                 "--api-key-env",
                 "OURO_TEST_KEY",
@@ -1134,7 +1131,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     list_code = main(["provider", "list", "--home", str(tmp_path), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
     assert list_code == 0
-    assert list_payload["default"] == "faux"
+    assert list_payload["default"] is None
 
     set_code = main(
         [
@@ -1241,10 +1238,10 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     remove_payload = json.loads(capsys.readouterr().out)
     assert remove_code == 0
     assert remove_payload["default_endpoint"] is None
-    assert remove_payload["default_provider"] == "faux"
+    assert remove_payload["default_provider"] is None
 
 
-def test_provider_check_can_target_builtin_faux(tmp_path, capsys) -> None:
+def test_provider_check_cannot_target_internal_faux(tmp_path, capsys) -> None:
     code = main(
         [
             "provider",
@@ -1260,24 +1257,22 @@ def test_provider_check_can_target_builtin_faux(tmp_path, capsys) -> None:
 
     payload = json.loads(capsys.readouterr().out)
 
-    assert code == 0
-    assert payload["status"] == "ok"
-    assert payload["provider_id"] == "faux"
-    assert payload["model_id"] == "faux"
-    assert payload["metadata"]["endpoint_id"] == "faux"
+    assert code == 2
+    assert payload["status"] == "failed"
+    assert "provider not found: faux" in payload["error"]
 
 
-def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:
+def test_provider_remove_clears_user_visible_default(tmp_path, capsys) -> None:
     assert (
         main(
             [
                 "provider",
-                "set",
+                "add",
                 "local",
+                "--type",
+                "openai",
                 "--home",
                 str(tmp_path),
-                "--kind",
-                "faux",
                 "--default",
             ]
         )
@@ -1289,7 +1284,7 @@ def test_provider_remove_resets_default_to_faux(tmp_path, capsys) -> None:
     remove_payload = json.loads(capsys.readouterr().out)
 
     assert remove_code == 0
-    assert remove_payload["default"] == "faux"
+    assert remove_payload["default"] is None
 
 
 def _write_skill(root, skill_name: str, name: str, description: str) -> None:
@@ -1372,7 +1367,7 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     assert any("\x1b[0m" in o for o in outputs)
 
 
-def test_provider_set_api_path_defaults_and_endpoint_inherits(
+def test_provider_add_api_path_defaults_and_endpoint_inherits(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1383,11 +1378,11 @@ def test_provider_set_api_path_defaults_and_endpoint_inherits(
         main(
             [
                 "provider",
-                "set",
+                "add",
                 "glm",
                 "--home",
                 str(tmp_path),
-                "--kind",
+                "--type",
                 "openai-compatible",
                 "--base-url",
                 "https://example.test/v1",
@@ -1458,11 +1453,11 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
         main(
             [
                 "provider",
-                "set",
+                "add",
                 "glm",
                 "--home",
                 str(tmp_path),
-                "--kind",
+                "--type",
                 "openai-compatible",
                 "--base-url",
                 "https://example.test/v1",
@@ -1524,7 +1519,7 @@ def test_provider_endpoint_set_api_path_overrides_provider_default(
     assert provider.endpoint == "/chat/completions"
 
 
-def test_provider_set_base_url_without_model_creates_empty_provider(
+def test_provider_add_base_url_without_model_creates_empty_provider(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1534,11 +1529,11 @@ def test_provider_set_base_url_without_model_creates_empty_provider(
     code = main(
         [
             "provider",
-            "set",
+            "add",
             "glm",
             "--home",
             str(tmp_path),
-            "--kind",
+            "--type",
             "openai-compatible",
             "--base-url",
             "https://example.test/v1",
@@ -1555,14 +1550,16 @@ def test_provider_set_base_url_without_model_creates_empty_provider(
     assert payload["provider"]["endpoint_count"] == 0
 
 
-def test_provider_set_configures_validated_retry_policy(tmp_path, capsys) -> None:
+def test_provider_add_and_update_configure_validated_retry_policy(tmp_path, capsys) -> None:
     code = main(
         [
             "provider",
-            "set",
+            "add",
             "glm",
             "--home",
             str(tmp_path),
+            "--type",
+            "openai-compatible",
             "--base-url",
             "https://example.test/v1",
             "--retry-attempts",
@@ -1587,7 +1584,7 @@ def test_provider_set_configures_validated_retry_policy(tmp_path, capsys) -> Non
     code = main(
         [
             "provider",
-            "set",
+            "update",
             "glm",
             "--home",
             str(tmp_path),
@@ -1613,11 +1610,11 @@ def test_provider_endpoint_set_default_updates_existing_endpoint(
         main(
             [
                 "provider",
-                "set",
+                "add",
                 "glm",
                 "--home",
                 str(tmp_path),
-                "--kind",
+                "--type",
                 "openai-compatible",
                 "--api-key-env",
                 "OURO_TEST_KEY",
@@ -1725,6 +1722,7 @@ def test_runtime_composes_configured_compaction_endpoint(tmp_path) -> None:
                         "glm": {
                             "provider_id": "glm",
                             "provider_type": "openai-compatible",
+                            "protocol": "openai-chat-completions",
                             "default_endpoint": "summary",
                             "endpoints": {
                                 "summary": {

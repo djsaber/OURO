@@ -11,58 +11,155 @@ from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 
-ProviderKind = Literal["faux", "openai-compatible", "anthropic-compatible"]
-SUPPORTED_PROVIDER_KINDS: tuple[ProviderKind, ...] = (
+ProviderType = Literal[
     "faux",
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "qwen",
+    "kimi",
+    "glm",
+    "openrouter",
+    "mistral",
     "openai-compatible",
     "anthropic-compatible",
+]
+ProviderProtocol = Literal[
+    "faux",
+    "openai-chat-completions",
+    "anthropic-messages",
+]
+
+INTEGRATED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
+    "openai",
+    "anthropic",
+    "gemini",
+    "deepseek",
+    "qwen",
+    "kimi",
+    "glm",
+    "openrouter",
+    "mistral",
+)
+CONFIGURABLE_PROVIDER_TYPES: tuple[ProviderType, ...] = (
+    *INTEGRATED_PROVIDER_TYPES,
+    "openai-compatible",
+    "anthropic-compatible",
+)
+SUPPORTED_PROVIDER_TYPES: tuple[ProviderType, ...] = (
+    "faux",
+    *CONFIGURABLE_PROVIDER_TYPES,
+)
+SUPPORTED_PROVIDER_PROTOCOLS: tuple[ProviderProtocol, ...] = (
+    "faux",
+    "openai-chat-completions",
+    "anthropic-messages",
 )
 BUILTIN_FAUX_PROVIDER_ID = "faux"
 
 
 @dataclass(frozen=True)
-class ProviderAdapterSpec:
-    """Configuration-facing contract for one provider wire protocol."""
+class ProviderTypeSpec:
+    """Product-level provider profile and its supported wire protocols."""
 
-    kind: ProviderKind
+    provider_type: ProviderType
+    default_protocol: ProviderProtocol | None
+    allowed_protocols: tuple[ProviderProtocol, ...]
+
+
+@dataclass(frozen=True)
+class ProviderProtocolSpec:
+    """Connection requirements owned by one registered wire protocol."""
+
+    protocol: ProviderProtocol
     default_api_path: str | None
     requires_base_url: bool
 
 
-_PROVIDER_ADAPTER_SPECS: dict[ProviderKind, ProviderAdapterSpec] = {
-    "faux": ProviderAdapterSpec(
-        kind="faux",
+_OPENAI_PROTOCOL: tuple[ProviderProtocol, ...] = ("openai-chat-completions",)
+_ANTHROPIC_PROTOCOL: tuple[ProviderProtocol, ...] = ("anthropic-messages",)
+
+_PROVIDER_TYPE_SPECS: dict[ProviderType, ProviderTypeSpec] = {
+    "faux": ProviderTypeSpec("faux", "faux", ("faux",)),
+    "openai": ProviderTypeSpec("openai", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "anthropic": ProviderTypeSpec("anthropic", "anthropic-messages", _ANTHROPIC_PROTOCOL),
+    "gemini": ProviderTypeSpec("gemini", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "deepseek": ProviderTypeSpec("deepseek", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "qwen": ProviderTypeSpec("qwen", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "kimi": ProviderTypeSpec("kimi", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "glm": ProviderTypeSpec("glm", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "openrouter": ProviderTypeSpec("openrouter", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "mistral": ProviderTypeSpec("mistral", "openai-chat-completions", _OPENAI_PROTOCOL),
+    "openai-compatible": ProviderTypeSpec(
+        "openai-compatible",
+        "openai-chat-completions",
+        _OPENAI_PROTOCOL,
+    ),
+    "anthropic-compatible": ProviderTypeSpec(
+        "anthropic-compatible",
+        "anthropic-messages",
+        _ANTHROPIC_PROTOCOL,
+    ),
+}
+
+_PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
+    "faux": ProviderProtocolSpec(
+        protocol="faux",
         default_api_path=None,
         requires_base_url=False,
     ),
-    "openai-compatible": ProviderAdapterSpec(
-        kind="openai-compatible",
+    "openai-chat-completions": ProviderProtocolSpec(
+        protocol="openai-chat-completions",
         default_api_path="/chat/completions",
         requires_base_url=True,
     ),
-    "anthropic-compatible": ProviderAdapterSpec(
-        kind="anthropic-compatible",
+    "anthropic-messages": ProviderProtocolSpec(
+        protocol="anthropic-messages",
         default_api_path="/v1/messages",
         requires_base_url=True,
     ),
 }
 
 
-def provider_adapter_spec(provider_type: ProviderKind) -> ProviderAdapterSpec:
-    return _PROVIDER_ADAPTER_SPECS[provider_type]
+def provider_type_spec(provider_type: ProviderType) -> ProviderTypeSpec:
+    try:
+        return _PROVIDER_TYPE_SPECS[provider_type]
+    except KeyError as exc:
+        raise ValueError(f"unsupported provider type: {provider_type}") from exc
 
 
-def default_api_path(provider_type: ProviderKind) -> str | None:
-    """Return the protocol default without coupling callers to kind branches."""
+def provider_protocol_spec(protocol: ProviderProtocol) -> ProviderProtocolSpec:
+    return _PROVIDER_PROTOCOL_SPECS[protocol]
 
-    return provider_adapter_spec(provider_type).default_api_path
+
+def resolve_provider_protocol(
+    provider_type: ProviderType,
+    protocol: ProviderProtocol | None,
+) -> ProviderProtocol:
+    """Resolve a profile default and reject unsupported type/protocol pairs."""
+
+    spec = provider_type_spec(provider_type)
+    selected = protocol or spec.default_protocol
+    if selected is None:
+        raise ValueError(f"protocol is required for provider type: {provider_type}")
+    if selected not in spec.allowed_protocols:
+        raise ValueError(
+            f"protocol {selected!r} is not supported by provider type {provider_type!r}"
+        )
+    return selected
+
+
+def default_api_path(protocol: ProviderProtocol) -> str | None:
+    return provider_protocol_spec(protocol).default_api_path
 
 
 class ProviderConfig(OuroModel):
-    """Supplier-level connection configuration and its endpoint registry."""
+    """Supplier-level product identity, protocol, connection, and endpoints."""
 
     provider_id: str
-    provider_type: ProviderKind = "openai-compatible"
+    provider_type: ProviderType
+    protocol: ProviderProtocol
     credential_ref: CredentialRef = Field(default_factory=CredentialRef)
     default_endpoint: str | None = None
     endpoints: tuple[ProviderEndpointConfig, ...] = Field(default_factory=tuple)
@@ -107,13 +204,14 @@ class ProviderConfig(OuroModel):
         return value
 
     @model_validator(mode="after")
-    def _validate_endpoint_registry(self) -> ProviderConfig:
+    def _validate_provider(self) -> ProviderConfig:
+        resolve_provider_protocol(self.provider_type, self.protocol)
         endpoint_ids = [endpoint.endpoint_id for endpoint in self.endpoints]
         if len(set(endpoint_ids)) != len(endpoint_ids):
             raise ValueError("endpoint ids must be unique")
         if self.default_endpoint is not None and self.default_endpoint not in endpoint_ids:
             raise ValueError(f"default endpoint not found: {self.default_endpoint}")
-        if provider_adapter_spec(self.provider_type).requires_base_url:
+        if provider_protocol_spec(self.protocol).requires_base_url:
             missing_base_url = next(
                 (
                     endpoint.endpoint_id
@@ -140,7 +238,7 @@ class ProviderConfig(OuroModel):
 
 @dataclass(frozen=True)
 class ProviderRuntimeOptions:
-    provider: ProviderKind | None = None
+    protocol: ProviderProtocol | None = None
     provider_id: str | None = None
     endpoint_id: str | None = None
     model: str | None = None
@@ -172,9 +270,9 @@ class ProviderConfigSnapshot:
 
 
 def normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
-    """Install provider-type defaults without performing persistence work."""
+    """Install built-in provider defaults without performing persistence work."""
 
-    if provider.provider_type == "faux" and not provider.endpoints:
+    if provider.protocol == "faux" and not provider.endpoints:
         endpoint = ProviderEndpointConfig(endpoint_id="faux", model_id="faux")
         return ProviderConfig.model_validate(
             provider.model_copy(
@@ -192,6 +290,7 @@ def builtin_faux_provider() -> ProviderConfig:
     return ProviderConfig(
         provider_id=BUILTIN_FAUX_PROVIDER_ID,
         provider_type="faux",
+        protocol="faux",
         default_endpoint=endpoint.endpoint_id,
         endpoints=(endpoint,),
         enabled=True,

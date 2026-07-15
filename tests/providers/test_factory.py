@@ -42,14 +42,14 @@ class CapturingTransport:
 def test_factory_uses_ad_hoc_provider_identity_and_preserves_zero_temperature() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
-            provider="openai-compatible",
+            protocol="openai-chat-completions",
             model="test-model",
             base_url="https://example.test/v1/",
             temperature=0,
         )
     )
 
-    assert adapter.model.provider_id == "openai-compatible"
+    assert adapter.model.provider_id == "openai-chat-completions"
     assert adapter.model.temperature == 0
     provider = cast(OpenAICompatibleProvider, adapter.provider)
     assert provider.base_url == "https://example.test/v1"
@@ -78,7 +78,7 @@ def test_runtime_credential_override_wins_over_configured_reference(
     monkeypatch.setenv("CONFIGURED_KEY", "configured")
     monkeypatch.setenv("RUNTIME_KEY", "runtime")
     manager = ProviderConfigManager(tmp_path)
-    manager.upsert_provider(
+    manager.create_provider(
         "glm",
         provider_type="openai-compatible",
         base_url="https://example.test/v1",
@@ -118,7 +118,7 @@ def test_factory_rejects_inconsistent_thinking_capabilities(
 @pytest.mark.asyncio
 async def test_configured_endpoint_drives_model_metadata_and_provider_request(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.upsert_provider("glm", provider_type="openai-compatible")
+    manager.create_provider("glm", provider_type="openai-compatible")
     manager.upsert_endpoint(
         "glm",
         "reasoning",
@@ -176,10 +176,10 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
 
 
 @pytest.mark.asyncio
-async def test_ad_hoc_openai_compatible_uses_kind_default_api_path() -> None:
+async def test_ad_hoc_openai_compatible_uses_protocol_default_api_path() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
-            provider="openai-compatible",
+            protocol="openai-chat-completions",
             model="test-model",
             base_url="https://example.test/v1",
         )
@@ -193,7 +193,7 @@ async def test_ad_hoc_openai_compatible_uses_kind_default_api_path() -> None:
 async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
-            provider="openai-compatible",
+            protocol="openai-chat-completions",
             model="test-model",
             base_url="https://example.test/v1",
             api_path="/custom/path",
@@ -207,7 +207,7 @@ async def test_ad_hoc_openai_compatible_respects_custom_api_path() -> None:
 def test_factory_builds_anthropic_compatible_adapter_from_protocol_registry() -> None:
     adapter = build_runtime_adapter(
         ProviderRuntimeOptions(
-            provider="anthropic-compatible",
+            protocol="anthropic-messages",
             provider_id="anthropic",
             model="claude-test",
             base_url="https://api.example.test/",

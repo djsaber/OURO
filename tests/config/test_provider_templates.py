@@ -43,6 +43,7 @@ def _template(**updates: object) -> ProviderTemplate:
         "description": "Example provider template.",
         "provider_id": "example",
         "provider_type": "openai-compatible",
+        "protocol": "openai-chat-completions",
         "credential_env": "EXAMPLE_API_KEY",
         "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
@@ -62,6 +63,8 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
     for template_id, (default_endpoint, endpoint_ids) in _EXPECTED_ENDPOINTS.items():
         template = templates[template_id]
         assert template.default_endpoint == default_endpoint
+        assert template.provider_type == template_id
+        assert template.protocol in {"openai-chat-completions", "anthropic-messages"}
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
         assert template.verified_on == "2026-07-14"
 

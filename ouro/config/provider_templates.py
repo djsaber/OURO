@@ -3,7 +3,11 @@ from __future__ import annotations
 from pydantic import ConfigDict, field_validator, model_validator
 
 from ouro.config.endpoints import ProviderEndpointConfig
-from ouro.config.provider_models import ProviderKind
+from ouro.config.provider_models import (
+    ProviderProtocol,
+    ProviderType,
+    resolve_provider_protocol,
+)
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
@@ -17,7 +21,8 @@ class ProviderTemplate(OuroModel):
     display_name: str
     description: str
     provider_id: str
-    provider_type: ProviderKind
+    provider_type: ProviderType
+    protocol: ProviderProtocol
     credential_env: str
     base_url: str
     api_path: str
@@ -36,6 +41,7 @@ class ProviderTemplate(OuroModel):
 
     @model_validator(mode="after")
     def _validate_endpoint_registry(self) -> ProviderTemplate:
+        resolve_provider_protocol(self.provider_type, self.protocol)
         endpoint_ids = [endpoint.endpoint_id for endpoint in self.endpoints]
         if not endpoint_ids:
             raise ValueError("provider template must contain at least one endpoint")
@@ -65,7 +71,8 @@ _PROVIDER_TEMPLATES = (
         display_name="OpenAI",
         description="OpenAI Chat Completions with current GPT-5.6 quality tiers.",
         provider_id="openai",
-        provider_type="openai-compatible",
+        provider_type="openai",
+        protocol="openai-chat-completions",
         credential_env="OPENAI_API_KEY",
         base_url="https://api.openai.com/v1",
         api_path="/chat/completions",
@@ -140,7 +147,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Anthropic",
         description="Anthropic Messages API with current Claude production models.",
         provider_id="anthropic",
-        provider_type="anthropic-compatible",
+        provider_type="anthropic",
+        protocol="anthropic-messages",
         credential_env="ANTHROPIC_API_KEY",
         base_url="https://api.anthropic.com",
         api_path="/v1/messages",
@@ -191,7 +199,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Google Gemini",
         description="Gemini through Google's official OpenAI-compatible endpoint.",
         provider_id="gemini",
-        provider_type="openai-compatible",
+        provider_type="gemini",
+        protocol="openai-chat-completions",
         credential_env="GEMINI_API_KEY",
         base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         api_path="/chat/completions",
@@ -245,7 +254,8 @@ _PROVIDER_TEMPLATES = (
         display_name="DeepSeek",
         description="DeepSeek's OpenAI-compatible API with current V4 models.",
         provider_id="deepseek",
-        provider_type="openai-compatible",
+        provider_type="deepseek",
+        protocol="openai-chat-completions",
         credential_env="DEEPSEEK_API_KEY",
         base_url="https://api.deepseek.com",
         api_path="/chat/completions",
@@ -284,7 +294,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Alibaba Cloud Qwen",
         description="DashScope's OpenAI-compatible China endpoint with current Qwen models.",
         provider_id="qwen",
-        provider_type="openai-compatible",
+        provider_type="qwen",
+        protocol="openai-chat-completions",
         credential_env="DASHSCOPE_API_KEY",
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         api_path="/chat/completions",
@@ -335,7 +346,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Moonshot AI Kimi",
         description="Kimi's OpenAI-compatible API with current multimodal Agent models.",
         provider_id="kimi",
-        provider_type="openai-compatible",
+        provider_type="kimi",
+        protocol="openai-chat-completions",
         credential_env="MOONSHOT_API_KEY",
         base_url="https://api.moonshot.ai/v1",
         api_path="/chat/completions",
@@ -386,7 +398,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Zhipu GLM",
         description="Zhipu's OpenAI-compatible API with current text and vision models.",
         provider_id="glm",
-        provider_type="openai-compatible",
+        provider_type="glm",
+        protocol="openai-chat-completions",
         credential_env="ZAI_API_KEY",
         base_url="https://open.bigmodel.cn/api/paas/v4",
         api_path="/chat/completions",
@@ -439,7 +452,8 @@ _PROVIDER_TEMPLATES = (
         display_name="OpenRouter",
         description="OpenRouter's automatic paid and free model routers.",
         provider_id="openrouter",
-        provider_type="openai-compatible",
+        provider_type="openrouter",
+        protocol="openai-chat-completions",
         credential_env="OPENROUTER_API_KEY",
         base_url="https://openrouter.ai/api/v1",
         api_path="/chat/completions",
@@ -476,7 +490,8 @@ _PROVIDER_TEMPLATES = (
         display_name="Mistral AI",
         description="Mistral's Chat Completions API with current general models.",
         provider_id="mistral",
-        provider_type="openai-compatible",
+        provider_type="mistral",
+        protocol="openai-chat-completions",
         credential_env="MISTRAL_API_KEY",
         base_url="https://api.mistral.ai/v1",
         api_path="/chat/completions",

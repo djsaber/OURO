@@ -9,8 +9,9 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
     tmp_path,
 ) -> None:
     configs = ProviderConfigManager(tmp_path)
-    configs.upsert_provider(
+    configs.create_provider(
         "openai",
+        provider_type="openai",
         base_url="https://models.example/v1",
         api_key="test-key",
     )
@@ -27,7 +28,6 @@ def test_configured_model_catalog_lists_enabled_endpoints_and_builds_adapter(
     )
 
     assert [model.key for model in catalog.list_models()] == [
-        "faux/faux",
         "openai/fast",
         "openai/smart",
     ]
@@ -59,22 +59,27 @@ def test_configured_model_catalog_reflects_config_changes_without_restart(tmp_pa
         adapter_builder=build_runtime_adapter,
     )
 
-    assert [model.key for model in catalog.list_models()] == ["faux/faux"]
+    assert catalog.list_models() == []
 
-    configs.upsert_provider("local", base_url="http://localhost:1234/v1")
+    configs.create_provider(
+        "local",
+        provider_type="openai-compatible",
+        base_url="http://localhost:1234/v1",
+    )
     configs.upsert_endpoint("local", "coder", model_id="local-coder")
 
-    assert [model.key for model in catalog.list_models()] == [
-        "faux/faux",
-        "local/coder",
-    ]
+    assert [model.key for model in catalog.list_models()] == ["local/coder"]
 
 
 def test_configured_model_catalog_preserves_runtime_overrides_for_default_route(
     tmp_path,
 ) -> None:
     configs = ProviderConfigManager(tmp_path)
-    configs.upsert_provider("openai", base_url="https://configured.example/v1")
+    configs.create_provider(
+        "openai",
+        provider_type="openai",
+        base_url="https://configured.example/v1",
+    )
     configs.upsert_endpoint("openai", "default", model_id="gpt")
     runtime_adapter = RuntimeAdapter(
         FauxProvider(),

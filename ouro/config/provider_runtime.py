@@ -22,13 +22,13 @@ def runtime_options_from_config(
         target = endpoint_id or provider.default_endpoint or "<default>"
         raise ConfigError(f"endpoint not found: {provider.provider_id}/{target}")
     return ProviderRuntimeOptions(
-        provider=provider.provider_type,
+        protocol=provider.protocol,
         provider_id=provider.provider_id,
         endpoint_id=endpoint.endpoint_id,
         model=endpoint.model_id,
         base_url=endpoint.base_url or provider.base_url,
-        api_path=endpoint.api_path or provider.api_path or default_api_path(provider.provider_type),
-        credential_ref=None if provider.provider_type == "faux" else provider.credential_ref,
+        api_path=endpoint.api_path or provider.api_path or default_api_path(provider.protocol),
+        credential_ref=None if provider.protocol == "faux" else provider.credential_ref,
         timeout=provider.timeout_seconds,
         temperature=endpoint.temperature,
         context_window=endpoint.context_window,
@@ -67,7 +67,7 @@ def merge_runtime_options(
         else (None if override.supports_reasoning is False else base.thinking_level)
     )
     return ProviderRuntimeOptions(
-        provider=override.provider if override.provider is not None else base.provider,
+        protocol=override.protocol if override.protocol is not None else base.protocol,
         provider_id=override.provider_id if override.provider_id is not None else base.provider_id,
         endpoint_id=override.endpoint_id if override.endpoint_id is not None else base.endpoint_id,
         model=override.model if override.model is not None else base.model,

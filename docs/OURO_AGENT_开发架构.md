@@ -112,9 +112,9 @@ workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制
 不会因多个 provider 出现同名模型而产生歧义。
 同一份已解析 endpoint 配置复用 adapter 与 HTTP client；配置指纹变化时重建 adapter，Supervisor shutdown
 统一关闭其拥有的连接。调用方注入的 HTTP client 不由框架关闭。
-当前协议类型包括 Faux、OpenAI-compatible 和 Anthropic-compatible。配置域的 adapter spec 集中声明协议
-默认 API path 与连接要求；厂商模板只组合协议类型和 Endpoint 数据，不进入 adapter factory 分支。
-OpenAI-compatible 与 Anthropic-compatible 共享 provider-neutral HTTP JSON/SSE transport 和重试执行器：只在
+当前协议类型包括 Faux、OpenAI Chat Completions 和 Anthropic Messages。配置域的协议档案集中声明默认 API
+path 与连接要求，产品档案声明允许/默认协议；厂商模板只组合产品类型、协议和 Endpoint 数据，不进入 adapter
+factory 分支。OpenAI 与 Anthropic 协议实现共享 provider-neutral HTTP JSON/SSE transport 和重试执行器：只在
 尚未发出模型流事件时重试明确分类为 transient 的失败，开始输出后禁止重放。结构化 `response_format` 受
 Endpoint capability gate 约束，重试计划通过 durable runtime event 暴露给 Host。
 
@@ -201,8 +201,9 @@ Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delt
 - Skills：`skills`。
 - MCP server：`mcp.servers`。
 
-无效结构必须抛出 `ConfigError`，不能静默降级或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider
-factory，业务代码不直接读取环境变量。
+Provider 配置同时持久化实例 `provider_id`、产品配置 `provider_type` 和线协议 `protocol`。产品档案负责约束
+允许/默认协议，adapter factory 只按 `protocol` 分派。无效结构必须抛出 `ConfigError`，不能静默降级、推导
+缺失协议或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider factory，业务代码不直接读取环境变量。
 CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区；Facade 只暴露凭据
 configured/missing 状态，并报告配置变更的生效范围。具体 manager 留在 application 组合边界之后。
 
@@ -210,10 +211,13 @@ configured/missing 状态，并报告配置变更的生效范围。具体 manage
 
 CLI 命令使用资源层级表达职责：
 
-- `provider set` 只管理 provider；
+- `provider add/update/replace` 分别表达 Provider 创建、同类型更新和完整替换；
 - `provider endpoint set` 只管理 endpoint；
 - `provider templates` 查询类型化的只读厂商模板目录；
-- `provider configure <template>` 是一次原子创建 Provider 与模板 Endpoint 集合的显式 application 用例；
+- `provider add <id> --type <type>` 统一创建 Provider；内置厂商类型原子装载模板参数与 Endpoint，compatible
+  类型创建空 Provider 并由 endpoint 命令补充模型；同 id 冲突提示显式使用 `update` 或 `replace`；
+- 内置厂商的 `provider update` 刷新模板并保留用户扩展，`provider replace` 按新类型完整替换；
+- 内部 Faux Provider 不进入用户侧目录、默认展示或连接检查；
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；

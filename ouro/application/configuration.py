@@ -41,12 +41,14 @@ from ouro.application.configuration_views import (
     skill_view,
 )
 from ouro.config import (
+    BUILTIN_FAUX_PROVIDER_ID,
+    INTEGRATED_PROVIDER_TYPES,
     CompactionConfigManager,
     PermissionConfigManager,
     PromptConfigManager,
     ProviderConfig,
     ProviderConfigManager,
-    ProviderKind,
+    ProviderType,
     QueuedInputConfigManager,
     QueuedInputConsumptionMode,
     RunBudgetConfigManager,
@@ -104,10 +106,15 @@ class ConfigurationFacade:
         *,
         change: ConfigurationChange | None = None,
     ) -> ProviderCatalogView:
-        snapshot = self.providers.snapshot()
+        snapshot = self.providers.snapshot(include_builtin=False)
+        default_provider_id = (
+            None
+            if snapshot.default_provider_id == BUILTIN_FAUX_PROVIDER_ID
+            else snapshot.default_provider_id
+        )
         return ProviderCatalogView(
             config_path=str(snapshot.config_path),
-            default_provider_id=snapshot.default_provider_id,
+            default_provider_id=default_provider_id,
             providers=[
                 provider_view(
                     provider,
@@ -119,9 +126,15 @@ class ConfigurationFacade:
         )
 
     def provider(self, provider_id: str | None = None) -> ProviderView:
-        snapshot = self.providers.snapshot()
-        target_id = provider_id or snapshot.default_provider_id
-        provider = self.providers.get_provider(target_id)
+        snapshot = self.providers.snapshot(include_builtin=False)
+        target_id = provider_id or (
+            None
+            if snapshot.default_provider_id == BUILTIN_FAUX_PROVIDER_ID
+            else snapshot.default_provider_id
+        )
+        if target_id is None:
+            raise ConfigError("default provider is not configured")
+        provider = self.providers.get_provider(target_id, include_builtin=False)
         if provider is None:
             raise ConfigError(f"provider not found: {target_id}")
         return provider_view(
@@ -139,37 +152,78 @@ class ConfigurationFacade:
     def provider_template(self, template_id: str) -> ProviderTemplateView:
         return provider_template_view(get_provider_template(template_id))
 
-    def configure_provider_template(
-        self,
-        template_id: str,
-        *,
-        provider_id: str | None = None,
-        endpoint_id: str | None = None,
-        model: str | None = None,
-        base_url: str | None = None,
-        api_key: str | None = None,
-        api_key_env: str | None = None,
-        make_default: bool = False,
-    ) -> ProviderCatalogView:
-        self.providers.configure_template(
-            get_provider_template(template_id),
-            provider_id=provider_id,
-            endpoint_id=endpoint_id,
-            model_id=model,
-            base_url=base_url,
-            api_key=api_key,
-            api_key_env=api_key_env,
-            make_default=make_default,
-        )
-        return self.provider_catalog(
-            change=configuration_change("providers", "template_configured", "next_request")
-        )
-
-    def save_provider(
+    def add_provider(
         self,
         provider_id: str,
         *,
-        provider_type: ProviderKind | None = None,
+        provider_type: ProviderType,
+        endpoint_id: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        retry_max_attempts: int | None = None,
+        retry_initial_backoff_seconds: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+        retry_backoff_multiplier: float | None = None,
+        enabled: bool = True,
+        make_default: bool = False,
+    ) -> ProviderCatalogView:
+        retry_policy = self._resolve_provider_retry_policy(
+            provider_id,
+            preserve_current=False,
+            retry_policy=retry_policy,
+            max_attempts=retry_max_attempts,
+            initial_backoff_seconds=retry_initial_backoff_seconds,
+            max_backoff_seconds=retry_max_backoff_seconds,
+            backoff_multiplier=retry_backoff_multiplier,
+        )
+        if provider_type in INTEGRATED_PROVIDER_TYPES:
+            self.providers.create_from_template(
+                get_provider_template(provider_type),
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+                model_id=model,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+                make_default=make_default,
+            )
+        else:
+            self._reject_template_options(
+                provider_type,
+                endpoint_id=endpoint_id,
+                model=model,
+                make_default=make_default,
+            )
+            self.providers.create_provider(
+                provider_id,
+                provider_type=provider_type,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+            )
+        return self.provider_catalog(
+            change=configuration_change("providers", "created", "next_request")
+        )
+
+    def update_provider(
+        self,
+        provider_id: str,
+        *,
+        endpoint_id: str | None = None,
+        model: str | None = None,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -183,44 +237,176 @@ class ConfigurationFacade:
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderCatalogView:
-        retry_updates = {
+        retry_policy = self._resolve_provider_retry_policy(
+            provider_id,
+            preserve_current=True,
+            retry_policy=retry_policy,
+            max_attempts=retry_max_attempts,
+            initial_backoff_seconds=retry_initial_backoff_seconds,
+            max_backoff_seconds=retry_max_backoff_seconds,
+            backoff_multiplier=retry_backoff_multiplier,
+        )
+        current = self._require_provider(provider_id)
+        if current.provider_type in INTEGRATED_PROVIDER_TYPES:
+            self.providers.update_from_template(
+                get_provider_template(current.provider_type),
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+                model_id=model,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+                make_default=make_default,
+            )
+        else:
+            self._reject_template_options(
+                current.provider_type,
+                endpoint_id=endpoint_id,
+                model=model,
+                make_default=False,
+            )
+            self.providers.update_provider(
+                provider_id,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+                make_default=make_default,
+            )
+        return self.provider_catalog(
+            change=configuration_change("providers", "updated", "next_request")
+        )
+
+    def replace_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_type: ProviderType,
+        endpoint_id: str | None = None,
+        model: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        retry_max_attempts: int | None = None,
+        retry_initial_backoff_seconds: float | None = None,
+        retry_max_backoff_seconds: float | None = None,
+        retry_backoff_multiplier: float | None = None,
+        enabled: bool = True,
+        make_default: bool = False,
+    ) -> ProviderCatalogView:
+        retry_policy = self._resolve_provider_retry_policy(
+            provider_id,
+            preserve_current=False,
+            retry_policy=retry_policy,
+            max_attempts=retry_max_attempts,
+            initial_backoff_seconds=retry_initial_backoff_seconds,
+            max_backoff_seconds=retry_max_backoff_seconds,
+            backoff_multiplier=retry_backoff_multiplier,
+        )
+        if provider_type in INTEGRATED_PROVIDER_TYPES:
+            self.providers.replace_from_template(
+                get_provider_template(provider_type),
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+                model_id=model,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+                make_default=make_default,
+            )
+        else:
+            self._reject_template_options(
+                provider_type,
+                endpoint_id=endpoint_id,
+                model=model,
+                make_default=make_default,
+            )
+            self.providers.replace_provider(
+                provider_id,
+                provider_type=provider_type,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout_seconds=timeout,
+                retry_policy=retry_policy,
+                enabled=enabled,
+            )
+        return self.provider_catalog(
+            change=configuration_change("providers", "replaced", "next_request")
+        )
+
+    def _resolve_provider_retry_policy(
+        self,
+        provider_id: str,
+        *,
+        preserve_current: bool,
+        retry_policy: ProviderRetryPolicy | None,
+        max_attempts: int | None,
+        initial_backoff_seconds: float | None,
+        max_backoff_seconds: float | None,
+        backoff_multiplier: float | None,
+    ) -> ProviderRetryPolicy | None:
+        updates = {
             key: value
             for key, value in {
-                "max_attempts": retry_max_attempts,
-                "initial_backoff_seconds": retry_initial_backoff_seconds,
-                "max_backoff_seconds": retry_max_backoff_seconds,
-                "backoff_multiplier": retry_backoff_multiplier,
+                "max_attempts": max_attempts,
+                "initial_backoff_seconds": initial_backoff_seconds,
+                "max_backoff_seconds": max_backoff_seconds,
+                "backoff_multiplier": backoff_multiplier,
             }.items()
             if value is not None
         }
-        if retry_policy is not None and retry_updates:
+        if retry_policy is not None and updates:
             raise ConfigError("retry_policy cannot be combined with individual retry options")
-        if retry_updates:
-            current = self.providers.get_provider(provider_id)
-            base_retry = current.retry_policy if current is not None else ProviderRetryPolicy()
-            try:
-                retry_policy = ProviderRetryPolicy.model_validate(
-                    base_retry.model_copy(update=retry_updates).model_dump()
-                )
-            except ValueError as exc:
-                raise ConfigError(f"invalid provider retry policy: {exc}") from exc
-        self.providers.upsert_provider(
-            provider_id,
-            provider_type=provider_type,
-            base_url=base_url,
-            api_path=api_path,
-            api_key=api_key,
-            api_key_env=api_key_env,
-            timeout_seconds=timeout,
-            retry_policy=retry_policy,
-            enabled=enabled,
-            make_default=make_default,
-        )
-        return self.provider_catalog(
-            change=configuration_change("providers", "saved", "next_request")
-        )
+        if not updates:
+            return retry_policy
+        current = self.providers.get_provider(provider_id) if preserve_current else None
+        if preserve_current and current is None:
+            raise ConfigError(f"provider not found: {provider_id}")
+        base_retry = current.retry_policy if current is not None else ProviderRetryPolicy()
+        try:
+            return ProviderRetryPolicy.model_validate(
+                base_retry.model_copy(update=updates).model_dump()
+            )
+        except ValueError as exc:
+            raise ConfigError(f"invalid provider retry policy: {exc}") from exc
+
+    @staticmethod
+    def _reject_template_options(
+        provider_type: ProviderType,
+        *,
+        endpoint_id: str | None,
+        model: str | None,
+        make_default: bool,
+    ) -> None:
+        if endpoint_id is not None or model is not None:
+            raise ConfigError(
+                "--endpoint-id and --model require an integrated provider type; "
+                f"{provider_type} uses explicit endpoint commands"
+            )
+        if make_default:
+            raise ConfigError(
+                "--default requires a provider with a default endpoint; "
+                "add an endpoint and then use provider use"
+            )
 
     def use_provider(self, provider_id: str) -> ProviderCatalogView:
+        self._require_provider(provider_id)
         self.providers.set_default_provider(provider_id)
         return self.provider_catalog(
             change=configuration_change("providers", "default_changed", "next_request")
@@ -597,7 +783,7 @@ class ConfigurationFacade:
         return skill_management_view(self.skills.set_enabled(name, enabled=enabled))
 
     def _require_provider(self, provider_id: str) -> ProviderConfig:
-        provider = self.providers.get_provider(provider_id)
+        provider = self.providers.get_provider(provider_id, include_builtin=False)
         if provider is None:
             raise ConfigError(f"provider not found: {provider_id}")
         return provider

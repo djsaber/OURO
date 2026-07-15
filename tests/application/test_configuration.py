@@ -12,8 +12,8 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     overview = ConfigurationFacade(tmp_path).overview()
 
     assert overview.config_path.endswith("config.json")
-    assert overview.providers.default_provider_id == "faux"
-    assert overview.providers.providers[0].credential.state == "not_required"
+    assert overview.providers.default_provider_id is None
+    assert overview.providers.providers == []
     assert overview.prompt.configured is False
     assert overview.permissions.tools == {}
     assert overview.tool_execution.mode == "sequential"
@@ -29,7 +29,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
     facade = ConfigurationFacade(tmp_path)
     monkeypatch.delenv("GLM_API_KEY", raising=False)
 
-    saved = facade.save_provider(
+    saved = facade.add_provider(
         "glm",
         provider_type="openai-compatible",
         base_url="https://example.test/v1",
@@ -63,7 +63,7 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
 
 def test_inline_provider_credential_is_never_exposed(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.save_provider(
+    facade.add_provider(
         "local",
         provider_type="openai-compatible",
         base_url="https://example.test/v1",
@@ -107,7 +107,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
 
 def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.save_provider(
+    facade.add_provider(
         "glm",
         provider_type="openai-compatible",
         base_url="https://example.test/v1",
@@ -145,16 +145,17 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
         "openrouter",
         "mistral",
     ]
-    assert facade.provider_template("anthropic").kind == "anthropic-compatible"
+    assert facade.provider_template("anthropic").provider_type == "anthropic"
+    assert facade.provider_template("anthropic").protocol == "anthropic-messages"
     assert facade.provider_template("kimi").default_endpoint == "kimi-k2.7-code"
     assert facade.provider_template("kimi").endpoint_count == 3
 
-    configured = facade.configure_provider_template("gemini", make_default=True)
+    configured = facade.add_provider("gemini", provider_type="gemini", make_default=True)
     provider = next(item for item in configured.providers if item.provider_id == "gemini")
 
     assert configured.default_provider_id == "gemini"
     assert configured.change is not None
-    assert configured.change.action == "template_configured"
+    assert configured.change.action == "created"
     assert provider.default_endpoint == "gemini-3.5-flash"
     assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
         "gemini-3.5-flash",
@@ -168,21 +169,19 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
 
 def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.configure_provider_template(
-        "openai",
-        provider_id="primary",
+    facade.add_provider(
+        "primary",
+        provider_type="openai",
         api_key_env="CUSTOM_OPENAI_KEY",
     )
     facade.save_endpoint("primary", "legacy", model="gpt-legacy")
+    facade.update_provider("primary", enabled=False)
 
-    facade.configure_provider_template(
-        "openai",
-        provider_id="primary",
-        model="gpt-custom",
-    )
+    facade.update_provider("primary", model="gpt-custom")
     provider = facade.provider("primary")
 
     assert provider.credential.reference == "env:CUSTOM_OPENAI_KEY"
+    assert provider.enabled is False
     assert provider.default_endpoint == "gpt-5.6"
     assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
         "gpt-5.6",
@@ -198,8 +197,9 @@ def test_provider_template_default_endpoint_override_keeps_other_template_endpoi
 ) -> None:
     facade = ConfigurationFacade(tmp_path)
 
-    facade.configure_provider_template(
+    facade.add_provider(
         "openai",
+        provider_type="openai",
         endpoint_id="primary",
         model="gpt-custom",
     )
@@ -218,21 +218,46 @@ def test_provider_template_rejects_default_endpoint_collision_before_write(tmp_p
     facade = ConfigurationFacade(tmp_path)
 
     with pytest.raises(ConfigError, match="conflicts with another template endpoint"):
-        facade.configure_provider_template("openai", endpoint_id="gpt-5.6-terra")
+        facade.add_provider(
+            "openai",
+            provider_type="openai",
+            endpoint_id="gpt-5.6-terra",
+        )
 
     assert not (tmp_path / "config" / "config.json").exists()
 
 
-def test_incompatible_template_application_leaves_config_unchanged(tmp_path) -> None:
+def test_integrated_provider_update_is_detected_from_persisted_type(tmp_path) -> None:
     facade = ConfigurationFacade(tmp_path)
-    facade.configure_provider_template("anthropic", provider_id="primary")
+    facade.add_provider("primary", provider_type="anthropic")
+    facade.update_provider("primary", model="claude-custom")
+
+    provider = facade.provider("primary")
+    assert provider.provider_type == "anthropic"
+    assert provider.protocol == "anthropic-messages"
+    assert facade.endpoint("primary", "claude-sonnet-5").model_id == "claude-custom"
+
+
+def test_provider_create_conflict_and_explicit_replace_are_atomic(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="anthropic")
     config_path = tmp_path / "config" / "config.json"
     before = config_path.read_text(encoding="utf-8")
 
-    with pytest.raises(ConfigError, match="provider kind does not match template"):
-        facade.configure_provider_template("openai", provider_id="primary")
+    with pytest.raises(ConfigError, match="provider already exists"):
+        facade.add_provider("primary", provider_type="openai")
 
     assert config_path.read_text(encoding="utf-8") == before
+
+    replaced = facade.replace_provider("primary", provider_type="openai")
+    provider = next(item for item in replaced.providers if item.provider_id == "primary")
+    assert provider.provider_type == "openai"
+    assert provider.protocol == "openai-chat-completions"
+    assert {endpoint.endpoint_id for endpoint in provider.endpoints} == {
+        "gpt-5.6",
+        "gpt-5.6-terra",
+        "gpt-5.6-luna",
+    }
 
 
 def test_skill_queries_and_management_use_application_dtos(tmp_path) -> None:

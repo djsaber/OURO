@@ -49,7 +49,8 @@ def configuration_change(
 def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView:
     return ProviderView(
         provider_id=provider.provider_id,
-        kind=provider.provider_type,
+        provider_type=provider.provider_type,
+        protocol=provider.protocol,
         credential=credential_status(provider),
         enabled=provider.enabled,
         timeout=provider.timeout_seconds,
@@ -100,7 +101,8 @@ def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
         display_name=template.display_name,
         description=template.description,
         provider_id=template.provider_id,
-        kind=template.provider_type,
+        provider_type=template.provider_type,
+        protocol=template.protocol,
         credential_env=template.credential_env,
         base_url=template.base_url,
         api_path=template.api_path,
@@ -116,7 +118,7 @@ def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
 
 def credential_status(provider: ProviderConfig) -> CredentialStatus:
     reference = provider.credential_ref.display()
-    if provider.provider_type == "faux":
+    if provider.protocol == "faux":
         return CredentialStatus(
             reference=reference,
             state="not_required",

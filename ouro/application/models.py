@@ -82,7 +82,7 @@ class ConfiguredModelCatalog:
 
     def list_models(self) -> list[AvailableModel]:
         models: list[AvailableModel] = []
-        for provider in self._configs.snapshot().providers:
+        for provider in self._configs.snapshot(include_builtin=False).providers:
             if not provider.enabled:
                 continue
             for endpoint in provider.endpoints:

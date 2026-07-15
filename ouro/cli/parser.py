@@ -5,7 +5,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from ouro.config.provider_models import SUPPORTED_PROVIDER_KINDS
+from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
 from ouro.core.approvals import SESSION_APPROVAL_MODES
 
 
@@ -440,99 +440,37 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     provider_templates_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     provider_templates_parser.add_argument("--json", action="store_true", help="Print JSON")
 
-    provider_configure_parser = provider_subparsers.add_parser(
-        "configure",
-        help="Configure a provider and its model endpoints from a template",
+    provider_add_parser = provider_subparsers.add_parser(
+        "add",
+        help="Add a provider; integrated types include preset endpoints",
     )
-    provider_configure_parser.add_argument("template_id", help="Template id")
-    provider_configure_parser.add_argument("--provider-id", help="Override provider id")
-    provider_configure_parser.add_argument(
-        "--endpoint-id",
-        help="Override the template default endpoint id",
+    provider_add_parser.add_argument("provider_id", help="Provider/supplier id")
+    _add_provider_identity_args(provider_add_parser)
+    _add_provider_mutation_args(
+        provider_add_parser,
+        enabled_default=True,
     )
-    provider_configure_parser.add_argument(
-        "--model",
-        help="Override the template default endpoint model id",
-    )
-    provider_configure_parser.add_argument("--base-url", help="Override provider base URL")
-    credentials = provider_configure_parser.add_mutually_exclusive_group()
-    credentials.add_argument(
-        "--api-key",
-        help="Inline API key (stored as plain text; prefer --api-key-env)",
-    )
-    credentials.add_argument("--api-key-env", help="Override API key env var")
-    provider_configure_parser.add_argument(
-        "--default",
-        action="store_true",
-        help="Set provider as default",
-    )
-    provider_configure_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    provider_configure_parser.add_argument("--json", action="store_true", help="Print JSON")
 
-    provider_set_parser = provider_subparsers.add_parser(
-        "set",
-        help="Create or update a provider",
+    provider_update_parser = provider_subparsers.add_parser(
+        "update",
+        help="Update a provider and refresh integrated preset endpoints",
     )
-    provider_set_parser.add_argument("provider_id", help="Provider/supplier id")
-    provider_set_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    provider_set_parser.add_argument(
-        "--kind",
-        choices=SUPPORTED_PROVIDER_KINDS,
-        default=None,
-        help="Provider kind",
+    provider_update_parser.add_argument("provider_id", help="Provider/supplier id")
+    _add_provider_mutation_args(
+        provider_update_parser,
+        enabled_default=None,
     )
-    provider_set_parser.add_argument(
-        "--base-url",
-        help="Provider base URL used as the default for endpoints",
+
+    provider_replace_parser = provider_subparsers.add_parser(
+        "replace",
+        help="Replace a provider; integrated types include preset endpoints",
     )
-    provider_set_parser.add_argument(
-        "--api-path",
-        help="Provider API path used as the default for endpoints",
+    provider_replace_parser.add_argument("provider_id", help="Provider/supplier id")
+    _add_provider_identity_args(provider_replace_parser)
+    _add_provider_mutation_args(
+        provider_replace_parser,
+        enabled_default=True,
     )
-    provider_set_parser.add_argument(
-        "--api-key",
-        help="Inline API key (stored as plain text in local config; prefer --api-key-env)",
-    )
-    provider_set_parser.add_argument("--api-key-env", help="API key env var")
-    provider_set_parser.add_argument("--timeout", type=float, default=None, help="Timeout seconds")
-    provider_set_parser.add_argument(
-        "--retry-attempts",
-        type=int,
-        default=None,
-        help="Maximum provider request attempts (including the first request)",
-    )
-    provider_set_parser.add_argument(
-        "--retry-initial-backoff",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="Delay before the first retry",
-    )
-    provider_set_parser.add_argument(
-        "--retry-max-backoff",
-        type=float,
-        default=None,
-        metavar="SECONDS",
-        help="Maximum delay between retries",
-    )
-    provider_set_parser.add_argument(
-        "--retry-backoff-multiplier",
-        type=float,
-        default=None,
-        help="Exponential retry backoff multiplier",
-    )
-    provider_set_parser.add_argument(
-        "--enabled",
-        action=argparse.BooleanOptionalAction,
-        default=None,
-        help="Enable or disable provider",
-    )
-    provider_set_parser.add_argument(
-        "--default",
-        action="store_true",
-        help="Set provider as default",
-    )
-    provider_set_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     provider_use_parser = provider_subparsers.add_parser("use", help="Set default provider")
     provider_use_parser.add_argument("provider_id", help="Provider/supplier id")
@@ -588,7 +526,7 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     endpoint_set_parser.add_argument("--base-url", help="Endpoint base URL")
     endpoint_set_parser.add_argument(
         "--api-path",
-        help="API path (defaults to provider api_path or kind default)",
+        help="API path (defaults to provider api_path or protocol default)",
     )
     endpoint_set_parser.add_argument("--temperature", type=float, default=None)
     endpoint_set_parser.add_argument("--context-window", type=int, default=None)
@@ -630,6 +568,85 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     endpoint_remove_parser.add_argument("endpoint_id", help="Endpoint id")
     endpoint_remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     endpoint_remove_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+
+def _add_provider_identity_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--type",
+        dest="provider_type",
+        choices=CONFIGURABLE_PROVIDER_TYPES,
+        required=True,
+        help="Provider product or generic configuration type",
+    )
+
+
+def _add_provider_mutation_args(
+    parser: argparse.ArgumentParser,
+    *,
+    enabled_default: bool | None,
+) -> None:
+    parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    parser.add_argument(
+        "--endpoint-id",
+        help="Override the default preset endpoint id (integrated types only)",
+    )
+    parser.add_argument(
+        "--model",
+        help="Override the default preset endpoint model id (integrated types only)",
+    )
+    parser.add_argument(
+        "--base-url",
+        help="Provider base URL used as the default for endpoints",
+    )
+    parser.add_argument(
+        "--api-path",
+        help="Provider API path used as the default for endpoints",
+    )
+    credentials = parser.add_mutually_exclusive_group()
+    credentials.add_argument(
+        "--api-key",
+        help="Inline API key (stored as plain text in local config; prefer --api-key-env)",
+    )
+    credentials.add_argument("--api-key-env", help="API key env var")
+    parser.add_argument("--timeout", type=float, default=None, help="Timeout seconds")
+    parser.add_argument(
+        "--retry-attempts",
+        type=int,
+        default=None,
+        help="Maximum provider request attempts (including the first request)",
+    )
+    parser.add_argument(
+        "--retry-initial-backoff",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Delay before the first retry",
+    )
+    parser.add_argument(
+        "--retry-max-backoff",
+        type=float,
+        default=None,
+        metavar="SECONDS",
+        help="Maximum delay between retries",
+    )
+    parser.add_argument(
+        "--retry-backoff-multiplier",
+        type=float,
+        default=None,
+        help="Exponential retry backoff multiplier",
+    )
+    parser.add_argument(
+        "--enabled",
+        action=argparse.BooleanOptionalAction,
+        default=enabled_default,
+        help="Enable or disable provider",
+    )
+    parser.add_argument(
+        "--default",
+        action="store_true",
+        help="Set provider as default when it has a default endpoint",
+    )
+    parser.add_argument("--json", action="store_true", help="Print JSON")
 
 
 def _add_mcp_parser(subparsers: argparse._SubParsersAction) -> None:

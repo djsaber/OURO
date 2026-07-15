@@ -13,9 +13,11 @@ from ouro.config.endpoints import (
     endpoint_config_to_raw,
 )
 from ouro.config.provider_models import (
-    SUPPORTED_PROVIDER_KINDS,
+    SUPPORTED_PROVIDER_PROTOCOLS,
+    SUPPORTED_PROVIDER_TYPES,
     ProviderConfig,
-    ProviderKind,
+    ProviderProtocol,
+    ProviderType,
     normalize_provider_config,
 )
 from ouro.core.errors import ConfigError
@@ -24,6 +26,7 @@ from ouro.core.provider import ProviderRetryPolicy
 _PROVIDER_FIELDS = frozenset(
     {
         "provider_type",
+        "protocol",
         "provider_id",
         "credential_ref",
         "default_endpoint",
@@ -47,7 +50,8 @@ def provider_config_to_public_dict(
 
     return {
         "provider_id": provider.provider_id,
-        "kind": provider.provider_type,
+        "provider_type": provider.provider_type,
+        "protocol": provider.protocol,
         "credential": provider.credential_ref.display(),
         "enabled": provider.enabled,
         "timeout": provider.timeout_seconds,
@@ -86,7 +90,8 @@ def provider_config_from_mapping(
     try:
         provider = ProviderConfig(
             provider_id=configured_provider_id,
-            provider_type=_provider_kind(raw.get("provider_type") or "openai-compatible"),
+            provider_type=_provider_type(raw.get("provider_type")),
+            protocol=_provider_protocol(raw.get("protocol")),
             credential_ref=_credential_ref_from_mapping(raw),
             default_endpoint=_optional_str(raw.get("default_endpoint")),
             endpoints=_endpoints_from_mapping(raw),
@@ -107,6 +112,7 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
 
     raw: dict[str, Any] = {
         "provider_type": provider.provider_type,
+        "protocol": provider.protocol,
         "provider_id": provider.provider_id,
         "enabled": provider.enabled,
         "timeout_seconds": provider.timeout_seconds,
@@ -169,7 +175,13 @@ def _optional_str(value: object) -> str | None:
     return None
 
 
-def _provider_kind(value: object) -> ProviderKind:
-    if value in SUPPORTED_PROVIDER_KINDS:
-        return cast(ProviderKind, value)
-    raise ValueError(f"unsupported provider kind: {value}")
+def _provider_type(value: object) -> ProviderType:
+    if value in SUPPORTED_PROVIDER_TYPES:
+        return cast(ProviderType, value)
+    raise ValueError(f"unsupported provider type: {value}")
+
+
+def _provider_protocol(value: object) -> ProviderProtocol:
+    if value in SUPPORTED_PROVIDER_PROTOCOLS:
+        return cast(ProviderProtocol, value)
+    raise ValueError(f"unsupported provider protocol: {value}")

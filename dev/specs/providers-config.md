@@ -11,9 +11,9 @@
 
 Provider 表示供应商级连接和默认值：
 
-- `provider_id`；
-- `provider_type`：`faux`、`openai-compatible` 或 `anthropic-compatible`；类型表示线协议，
-  不表示具体厂商品牌；
+- `provider_id`：用户拥有的配置实例 id；
+- `provider_type`：集成厂商产品档案，或 `openai-compatible`、`anthropic-compatible` 通用入口；
+- `protocol`：`faux`、`openai-chat-completions` 或 `anthropic-messages`，只负责线协议 adapter 选择；
 - `credential_ref`；
 - `base_url`、`api_path`、timeout 和 retry policy；
 - enabled、default endpoint 和 endpoint registry。
@@ -39,6 +39,7 @@ Endpoint 的输出上限不能超过 context window。Thinking level 只能在 r
       "supplier": {
         "provider_id": "supplier",
         "provider_type": "openai-compatible",
+        "protocol": "openai-chat-completions",
         "credential_ref": "env:API_KEY",
         "base_url": "https://example.test/v1",
         "api_path": "/chat/completions",
@@ -85,10 +86,14 @@ Endpoint 集合、连接地址、凭据环境变量、Endpoint capability、官�
 模板值是便捷默认值。CLI 允许显式覆盖 provider id、默认 endpoint id、默认 endpoint 的 model、base URL 和
 credential；覆盖不会丢弃同一模板中的其他 Endpoint。
 
-`provider configure <template>` 是显式复合用例：配置 manager 在一次校验和一次写盘中创建/更新 Provider 与
-全部模板 Endpoint。失败不得产生半配置。重复应用时保留同 Provider 的非模板 Endpoint、凭据、timeout、
-retry 与 extra；同 id 的模板 Endpoint 使用最新模板值刷新。默认 Endpoint 的 id 或 model 覆盖与其他模板
-Endpoint 冲突时，在写盘前明确失败。已存在 Provider 的线协议不匹配时同样明确失败。
+`provider add <id> --type <type>` 是唯一创建用例。application 根据 type 判断：集成厂商类型由配置 manager
+在一次校验和一次写盘中创建 Provider 与全部模板 Endpoint；compatible 类型只创建 Provider，Endpoint 由独立
+命令管理。失败不得产生半配置。若 id 已存在，明确提示使用 `provider update` 或 `provider replace`。内置类型的
+update 刷新模板 Endpoint 并保留非模板 Endpoint、凭据、enabled、timeout、retry 与 extra；replace 按所选类型
+完整替换。默认 Endpoint 的 id 或 model 覆盖与其他模板 Endpoint 冲突时，在写盘前明确失败。
+
+Faux 只作为框架内部安全运行时和测试实现存在，不进入 application/CLI 的 Provider 目录、默认展示、选择或
+连接检查；没有用户配置时，公开目录的默认 Provider 为 `null`。
 
 Anthropic 模板当前显式关闭 adaptive thinking。原因是 Anthropic 工具续接要求原样保存 opaque thinking
 signature，而 canonical provider continuation 尚未提供该字段；在该底层契约完善前，不用供应商特例把签名
@@ -98,8 +103,7 @@ Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌�
 当前 canonical OpenAI-compatible continuation 只能稳定保存 `reasoning_content`。在建立可移植的 opaque block
 续接契约前，模板不会默认开启一个只能首轮工作、后续退化的能力。
 
-当前 `provider_type` 仍承担线协议选择职责。供应商配置类型与线协议的拆分属于目标设计，见
-[`provider-type-protocol.md`](provider-type-protocol.md)；该提案在当前版本没有运行时代码变更。
+类型与协议的设计约束、组合和 CLI 冲突语义见 [`provider-type-protocol.md`](provider-type-protocol.md)。
 
 ## 模型路由
 
@@ -115,14 +119,14 @@ Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌�
 
 运行参数按以下顺序合并，后者覆盖前者：
 
-1. Provider 类型默认值；
+1. Provider 产品档案中的协议默认值；
 2. Provider 配置；
 3. Endpoint 配置；
 4. 本次命令覆盖。
 
-Endpoint 显式 base URL/API path 优先于 Provider 默认值。协议默认值由 adapter spec 注册表提供：
-OpenAI-compatible 使用 `/chat/completions`，Anthropic-compatible 使用 `/v1/messages`。数值 `0` 等合法
-显式值不能被 truthy 合并误替换。
+Endpoint 显式 base URL/API path 优先于 Provider 默认值。API path 默认值由协议档案提供：
+`openai-chat-completions` 使用 `/chat/completions`，`anthropic-messages` 使用 `/v1/messages`。数值 `0`
+等合法显式值不能被 truthy 合并误替换。
 
 ## 凭据
 
@@ -134,8 +138,8 @@ OpenAI-compatible 使用 `/chat/completions`，Anthropic-compatible 使用 `/v1/
 
 ## Provider adapter
 
-Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通过 `ProviderKind` 构造器注册表扩展，
-配置默认 API path 由对应 adapter spec 提供；调用方不维护 kind 条件分支。HTTP JSON/SSE transport、transient
+Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通过 `ProviderProtocol` 构造器注册表
+扩展，配置默认 API path 由对应协议档案提供；factory 不读取厂商类型或实例 id。HTTP JSON/SSE transport、transient
 错误分类和“仅首个输出前重试”策略由协议实现共享，HTTP/SSE 对象和异常不得进入 core/application。
 
 OpenAI-compatible 实现负责：

@@ -4,7 +4,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
@@ -14,7 +14,7 @@ from ouro.application.configuration_models import (
 )
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
-from ouro.config import ProviderKind
+from ouro.config import ProviderType
 from ouro.core.errors import OuroError
 from ouro.core.provider import ThinkingLevel
 
@@ -26,9 +26,11 @@ async def check_provider_connection(
     json_mode: bool = False,
 ) -> int:
     try:
+        options = provider_options or RuntimeProviderOptions()
+        ConfigurationFacade(home).provider(options.provider_id)
         runtime = build_default_runtime(
             home,
-            provider_options=provider_options or RuntimeProviderOptions(),
+            provider_options=options,
         )
         result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
     except OuroError as exc:
@@ -91,13 +93,14 @@ def list_provider_configs(
         )
         return 0
 
-    lines = [f"Providers (default: {catalog.default_provider_id}):"]
+    lines = [f"Providers (default: {catalog.default_provider_id or '-'}):"]
     for provider in providers:
         marker = "*" if provider["default"] else "-"
         enabled = "enabled" if provider["enabled"] else "disabled"
         endpoint = provider["default_endpoint"] or "-"
         lines.append(
-            f"{marker} {provider['provider_id']} {provider['kind']} "
+            f"{marker} {provider['provider_id']} type={provider['provider_type']} "
+            f"protocol={provider['protocol']} "
             f"endpoint={endpoint} endpoints={provider['endpoint_count']} {enabled}"
         )
     print("\n".join(lines))
@@ -131,68 +134,12 @@ def list_provider_templates(
         models = ",".join(endpoint["model_id"] for endpoint in template["endpoints"])
         lines.append(
             f"- {template['template_id']} ({template['display_name']}) "
-            f"kind={template['kind']} default={template['default_endpoint']} "
+            f"type={template['provider_type']} protocol={template['protocol']} "
+            f"default={template['default_endpoint']} "
             f"endpoints={len(template['endpoints'])} models={models} "
             f"credential=env:{template['credential_env']}"
         )
     print("\n".join(lines))
-    return 0
-
-
-def configure_provider_template(
-    template_id: str,
-    *,
-    home: str | Path | None = None,
-    provider_id: str | None = None,
-    endpoint_id: str | None = None,
-    model: str | None = None,
-    base_url: str | None = None,
-    api_key: str | None = None,
-    api_key_env: str | None = None,
-    make_default: bool = False,
-    json_mode: bool = False,
-) -> int:
-    try:
-        facade = ConfigurationFacade(home)
-        template = facade.provider_template(template_id)
-        target_provider_id = provider_id or template.provider_id
-        catalog = facade.configure_provider_template(
-            template_id,
-            provider_id=provider_id,
-            endpoint_id=endpoint_id,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            api_key_env=api_key_env,
-            make_default=make_default,
-        )
-        provider = next(
-            item for item in catalog.providers if item.provider_id == target_provider_id
-        )
-    except OuroError as exc:
-        _print_provider_error(exc, json_mode=json_mode)
-        return error_exit_code(exc)
-
-    public = _provider_to_public(provider)
-    if json_mode:
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "template_id": template_id,
-                    "config_path": catalog.config_path,
-                    "provider": public,
-                },
-                ensure_ascii=False,
-            )
-        )
-        return 0
-    suffix = " and set as default" if provider.default else ""
-    print(
-        f"Provider configured from {template_id}: "
-        f"{provider.provider_id}/{provider.default_endpoint} "
-        f"({provider.endpoint_count} endpoints){suffix}"
-    )
     return 0
 
 
@@ -227,7 +174,8 @@ def show_provider_config(
         "\n".join(
             [
                 f"Provider: {public['provider_id']}",
-                f"Kind: {public['kind']}",
+                f"Type: {public['provider_type']}",
+                f"Protocol: {public['protocol']}",
                 f"Credential: {public['credential']}",
                 f"Timeout: {public['timeout']}",
                 f"Enabled: {'yes' if public['enabled'] else 'no'}",
@@ -241,11 +189,14 @@ def show_provider_config(
     return 0
 
 
-def set_provider_config(
+def mutate_provider_config(
+    operation: Literal["add", "update", "replace"],
     provider_id: str,
     *,
     home: str | Path | None = None,
-    provider_type: ProviderKind | None = None,
+    provider_type: ProviderType | None = None,
+    endpoint_id: str | None = None,
+    model: str | None = None,
     base_url: str | None = None,
     api_path: str | None = None,
     api_key: str | None = None,
@@ -261,21 +212,63 @@ def set_provider_config(
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
-        catalog = facade.save_provider(
-            provider_id,
-            provider_type=provider_type,
-            base_url=base_url,
-            api_path=api_path,
-            api_key=api_key,
-            api_key_env=api_key_env,
-            timeout=timeout,
-            retry_max_attempts=retry_max_attempts,
-            retry_initial_backoff_seconds=retry_initial_backoff_seconds,
-            retry_max_backoff_seconds=retry_max_backoff_seconds,
-            retry_backoff_multiplier=retry_backoff_multiplier,
-            enabled=enabled,
-            make_default=make_default,
-        )
+        if operation == "update":
+            catalog = facade.update_provider(
+                provider_id,
+                endpoint_id=endpoint_id,
+                model=model,
+                base_url=base_url,
+                api_path=api_path,
+                api_key=api_key,
+                api_key_env=api_key_env,
+                timeout=timeout,
+                retry_max_attempts=retry_max_attempts,
+                retry_initial_backoff_seconds=retry_initial_backoff_seconds,
+                retry_max_backoff_seconds=retry_max_backoff_seconds,
+                retry_backoff_multiplier=retry_backoff_multiplier,
+                enabled=enabled,
+                make_default=make_default,
+            )
+        else:
+            if provider_type is None:
+                raise AssertionError(f"provider type is required for {operation}")
+            configured_enabled = True if enabled is None else enabled
+            if operation == "add":
+                catalog = facade.add_provider(
+                    provider_id,
+                    provider_type=provider_type,
+                    endpoint_id=endpoint_id,
+                    model=model,
+                    base_url=base_url,
+                    api_path=api_path,
+                    api_key=api_key,
+                    api_key_env=api_key_env,
+                    timeout=timeout,
+                    retry_max_attempts=retry_max_attempts,
+                    retry_initial_backoff_seconds=retry_initial_backoff_seconds,
+                    retry_max_backoff_seconds=retry_max_backoff_seconds,
+                    retry_backoff_multiplier=retry_backoff_multiplier,
+                    enabled=configured_enabled,
+                    make_default=make_default,
+                )
+            else:
+                catalog = facade.replace_provider(
+                    provider_id,
+                    provider_type=provider_type,
+                    endpoint_id=endpoint_id,
+                    model=model,
+                    base_url=base_url,
+                    api_path=api_path,
+                    api_key=api_key,
+                    api_key_env=api_key_env,
+                    timeout=timeout,
+                    retry_max_attempts=retry_max_attempts,
+                    retry_initial_backoff_seconds=retry_initial_backoff_seconds,
+                    retry_max_backoff_seconds=retry_max_backoff_seconds,
+                    retry_backoff_multiplier=retry_backoff_multiplier,
+                    enabled=configured_enabled,
+                    make_default=make_default,
+                )
         provider = next(item for item in catalog.providers if item.provider_id == provider_id)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -287,6 +280,7 @@ def set_provider_config(
             json.dumps(
                 {
                     "status": "ok",
+                    "operation": operation,
                     "config_path": catalog.config_path,
                     "provider": public,
                 },
@@ -295,7 +289,8 @@ def set_provider_config(
         )
         return 0
     suffix = " and set as default" if public["default"] else ""
-    print(f"Provider saved: {provider.provider_id}{suffix}")
+    action = {"add": "added", "update": "updated", "replace": "replaced"}[operation]
+    print(f"Provider {action}: {provider.provider_id}{suffix}")
     return 0
 
 
@@ -554,7 +549,7 @@ def remove_provider_endpoint(
         return 0
     print(
         f"Endpoint removed: {provider_id}/{endpoint_id} "
-        f"(default provider: {providers.default_provider_id})"
+        f"(default provider: {providers.default_provider_id or '-'})"
     )
     return 0
 
@@ -562,7 +557,8 @@ def remove_provider_endpoint(
 def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
     return {
         "provider_id": provider.provider_id,
-        "kind": provider.kind,
+        "provider_type": provider.provider_type,
+        "protocol": provider.protocol,
         "credential": provider.credential.reference,
         "enabled": provider.enabled,
         "timeout": provider.timeout,

@@ -5,7 +5,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
-from ouro.config.provider_models import ProviderKind
+from ouro.config.provider_models import ProviderProtocol, ProviderType
 from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
@@ -60,7 +60,8 @@ class ProviderEndpointView(ApplicationDTO):
 
 class ProviderView(ApplicationDTO):
     provider_id: str
-    kind: ProviderKind
+    provider_type: ProviderType
+    protocol: ProviderProtocol
     credential: CredentialStatus
     enabled: bool
     timeout: float
@@ -78,7 +79,7 @@ class ProviderView(ApplicationDTO):
 
 class ProviderCatalogView(ApplicationDTO):
     config_path: str
-    default_provider_id: str
+    default_provider_id: str | None = None
     providers: list[ProviderView] = Field(default_factory=list)
     change: ConfigurationChange | None = None
 
@@ -95,7 +96,8 @@ class ProviderTemplateView(ApplicationDTO):
     display_name: str
     description: str
     provider_id: str
-    kind: ProviderKind
+    provider_type: ProviderType
+    protocol: ProviderProtocol
     credential_env: str
     base_url: str
     api_path: str

@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import cast
 
 from ouro.config.credentials import CredentialRef, CredentialResolver
 from ouro.config.provider_models import (
-    SUPPORTED_PROVIDER_KINDS,
-    ProviderKind,
+    SUPPORTED_PROVIDER_PROTOCOLS,
+    ProviderProtocol,
     ProviderRuntimeOptions,
     default_api_path,
-    provider_adapter_spec,
+    provider_protocol_spec,
 )
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
@@ -40,11 +39,10 @@ def build_runtime_adapter(
 ) -> RuntimeAdapter:
     """Build the provider boundary from fully resolved runtime options."""
 
-    provider_kind = options.provider or "faux"
-    if provider_kind not in SUPPORTED_PROVIDER_KINDS:
-        raise ConfigError(f"unsupported provider: {provider_kind}")
-    provider_kind = cast(ProviderKind, provider_kind)
-    default_provider_id = "faux" if provider_kind == "faux" else provider_kind
+    protocol = options.protocol or "faux"
+    if protocol not in SUPPORTED_PROVIDER_PROTOCOLS:
+        raise ConfigError(f"unsupported provider protocol: {protocol}")
+    default_provider_id = "faux" if protocol == "faux" else protocol
     provider_id = _normalized_identifier(
         options.provider_id,
         default=default_provider_id,
@@ -52,23 +50,23 @@ def build_runtime_adapter(
     )
     assert provider_id is not None
     base_url = options.base_url.strip().rstrip("/") if options.base_url is not None else None
-    adapter_spec = provider_adapter_spec(provider_kind)
-    if adapter_spec.requires_base_url and not base_url:
-        raise ConfigError(f"--base-url is required for {provider_kind} provider")
+    protocol_spec = provider_protocol_spec(protocol)
+    if protocol_spec.requires_base_url and not base_url:
+        raise ConfigError(f"--base-url is required for {protocol} protocol")
     model_id = _normalized_identifier(
         options.model,
-        default="faux" if provider_kind == "faux" else None,
+        default="faux" if protocol == "faux" else None,
         option="--endpoint model",
     )
     if model_id is None:
-        raise ConfigError(f"--model is required for {provider_kind} provider")
+        raise ConfigError(f"--model is required for {protocol} protocol")
 
     timeout = 60.0 if options.timeout is None else options.timeout
     if timeout <= 0:
         raise ConfigError("timeout must be greater than 0")
 
     api_key = None
-    if provider_kind != "faux":
+    if protocol != "faux":
         resolver = credentials or CredentialResolver()
         api_key = resolver.resolve(_credential_ref(options))
     context = _AdapterBuildContext(
@@ -79,9 +77,9 @@ def build_runtime_adapter(
         api_key=api_key,
         timeout=timeout,
     )
-    builder = _ADAPTER_BUILDERS.get(provider_kind)
+    builder = _ADAPTER_BUILDERS.get(protocol)
     if builder is None:
-        raise ConfigError(f"provider adapter is not registered: {provider_kind}")
+        raise ConfigError(f"provider protocol adapter is not registered: {protocol}")
     return builder(context)
 
 
@@ -91,7 +89,7 @@ def _build_faux(context: _AdapterBuildContext) -> RuntimeAdapter:
 
 def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
-    endpoint = context.options.api_path or default_api_path("openai-compatible")
+    endpoint = context.options.api_path or default_api_path("openai-chat-completions")
     assert endpoint is not None
     provider = OpenAICompatibleProvider(
         base_url=context.base_url,
@@ -107,7 +105,7 @@ def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
 
 def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
     assert context.base_url is not None
-    endpoint = context.options.api_path or default_api_path("anthropic-compatible")
+    endpoint = context.options.api_path or default_api_path("anthropic-messages")
     assert endpoint is not None
     provider = AnthropicCompatibleProvider(
         base_url=context.base_url,
@@ -121,10 +119,10 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
     return RuntimeAdapter(provider, context.model)
 
 
-_ADAPTER_BUILDERS: dict[ProviderKind, AdapterBuilder] = {
+_ADAPTER_BUILDERS: dict[ProviderProtocol, AdapterBuilder] = {
     "faux": _build_faux,
-    "openai-compatible": _build_openai_compatible,
-    "anthropic-compatible": _build_anthropic_compatible,
+    "openai-chat-completions": _build_openai_compatible,
+    "anthropic-messages": _build_anthropic_compatible,
 }
 
 

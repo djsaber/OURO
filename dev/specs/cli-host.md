@@ -42,15 +42,17 @@ Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 
 
 ## 命令资源层级
 
-- `provider set/show/list/use/remove/check` 管理供应商；
+- `provider add/update/replace/show/list/use/remove/check` 管理供应商；
+- `provider add <id> --type <type>` 是唯一创建入口：内置厂商类型自动装载模板，compatible 类型创建空 Provider；
+- 同 id 创建失败并提示 `provider update` 或 `provider replace`；内部 Faux 不出现在用户侧 Provider 命令中；
 - `provider endpoint ...` 管理具体 Endpoint；
 - `session ...` 管理持久化会话；
 - `config prompt|permissions|tool-execution|queued-inputs|run-budget|compaction` 管理独立配置分区；
 - `skills ...` 管理 Agent Skills；
 - `approve/reject/abort` 恢复或终止 active Run。
 
-Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 endpoint 和参数 flags。Provider 创建和
-Endpoint 创建是独立命令。Skills 单项安装可省略 selector，集合必须明确选择。
+Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 endpoint 和参数 flags。Provider 创建、更新、
+替换和 Endpoint 创建是独立意图；同 id 创建不得静默更新。Skills 单项安装可省略 selector，集合必须明确选择。
 
 ## Home 与覆盖
 

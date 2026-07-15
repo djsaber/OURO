@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ValidationError
 
@@ -18,10 +18,11 @@ from ouro.config.provider_models import (
     BUILTIN_FAUX_PROVIDER_ID,
     ProviderConfig,
     ProviderConfigSnapshot,
-    ProviderKind,
+    ProviderProtocol,
     ProviderRuntimeOptions,
+    ProviderType,
     builtin_faux_provider,
-    normalize_provider_config,
+    resolve_provider_protocol,
 )
 from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
 from ouro.config.provider_templates import ProviderTemplate
@@ -92,7 +93,7 @@ class ProviderConfigManager:
         if (
             requested_id is not None
             and not requested_is_configured
-            and runtime_options.provider is None
+            and runtime_options.protocol is None
         ):
             raise ConfigError(f"provider not found: {requested_id}")
 
@@ -102,26 +103,25 @@ class ProviderConfigManager:
             else snapshot.default_provider_id
         )
         selected = providers.get(selected_id) or builtin_faux_provider()
-        selected_kind = selected.provider_type
         if (
             requested_is_configured
-            and runtime_options.provider is not None
-            and runtime_options.provider != selected_kind
+            and runtime_options.protocol is not None
+            and runtime_options.protocol != selected.protocol
         ):
             raise ConfigError(
-                f"provider kind does not match configured provider {selected.provider_id}: "
-                f"{runtime_options.provider} != {selected_kind}"
+                f"protocol does not match configured provider {selected.provider_id}: "
+                f"{runtime_options.protocol} != {selected.protocol}"
             )
 
         ad_hoc_provider = (requested_id is not None and not requested_is_configured) or (
             requested_id is None
-            and runtime_options.provider is not None
-            and runtime_options.provider != selected_kind
+            and runtime_options.protocol is not None
+            and runtime_options.protocol != selected.protocol
         )
         if ad_hoc_provider:
             if runtime_options.endpoint_id is not None:
                 raise ConfigError("--endpoint requires a configured provider")
-            base_options = ProviderRuntimeOptions(provider=runtime_options.provider)
+            base_options = ProviderRuntimeOptions(protocol=runtime_options.protocol)
         else:
             if not selected.enabled:
                 raise ConfigError(f"provider is disabled: {selected.provider_id}")
@@ -131,11 +131,53 @@ class ProviderConfigManager:
             )
         return merge_runtime_options(base_options, runtime_options)
 
-    def upsert_provider(
+    def create_provider(
         self,
         provider_id: str,
         *,
-        provider_type: ProviderKind | None = None,
+        provider_type: ProviderType,
+        protocol: ProviderProtocol | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool = True,
+    ) -> ProviderConfig:
+        """Create a new empty provider and fail if its id already exists."""
+
+        provider_id = self._validate_mutable_provider_id(provider_id)
+        self._reject_faux_type(provider_type)
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        if provider_id in configured:
+            raise ConfigError(
+                f"provider already exists: {provider_id}; use provider update or provider replace"
+            )
+        try:
+            provider = ProviderConfig(
+                provider_id=provider_id,
+                provider_type=provider_type,
+                protocol=resolve_provider_protocol(provider_type, protocol),
+                credential_ref=self._updated_credential(
+                    CredentialRef(), api_key=api_key, api_key_env=api_key_env
+                ),
+                base_url=base_url,
+                api_path=api_path,
+                timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
+                retry_policy=retry_policy or ProviderRetryPolicy(),
+                enabled=enabled,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise ConfigError(f"invalid provider config: {exc}") from exc
+        self._store_provider(raw, configured=configured, provider=provider, make_default=False)
+        return provider
+
+    def update_provider(
+        self,
+        provider_id: str,
+        *,
         base_url: str | None = None,
         api_path: str | None = None,
         api_key: str | None = None,
@@ -145,71 +187,84 @@ class ProviderConfigManager:
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
-        """Create or update a provider.
+        """Update mutable settings without changing provider type or protocol."""
 
-        Provider-level ``base_url`` and ``api_path`` act as defaults for the
-        endpoints owned by this provider. Endpoint creation and selection use
-        ``upsert_endpoint`` and ``set_default_endpoint`` as separate transactions.
-        """
-
-        provider_id = provider_id.strip()
-        if not provider_id:
-            raise ConfigError("provider id is required")
-        if provider_id == BUILTIN_FAUX_PROVIDER_ID:
-            raise ConfigError("built-in provider cannot be modified: faux")
-
+        provider_id = self._validate_mutable_provider_id(provider_id)
         raw = self.load_raw()
         configured = self._configured_providers(raw)
-        previous_default_provider_id = self._default_provider_id(raw, configured)
+        current = configured.get(provider_id)
+        if current is None:
+            raise ConfigError(f"provider not found: {provider_id}")
         try:
-            current = configured.get(provider_id)
-            if current is None:
-                current = ProviderConfig(
-                    provider_id=provider_id,
-                    provider_type=provider_type or "openai-compatible",
-                )
-
-            credential_ref = current.credential_ref
-            if api_key_env is not None:
-                credential_ref = CredentialRef.parse(f"env:{api_key_env}")
-            elif api_key is not None:
-                credential_ref = CredentialRef.parse(api_key)
-
-            updated = current.model_copy(
-                update={
-                    "provider_type": provider_type or current.provider_type,
-                    "credential_ref": credential_ref,
-                    "base_url": base_url if base_url is not None else current.base_url,
-                    "api_path": api_path if api_path is not None else current.api_path,
-                    "timeout_seconds": timeout_seconds
-                    if timeout_seconds is not None
-                    else current.timeout_seconds,
-                    "retry_policy": retry_policy or current.retry_policy,
-                    "enabled": enabled if enabled is not None else current.enabled,
-                }
+            provider = ProviderConfig.model_validate(
+                current.model_copy(
+                    update={
+                        "credential_ref": self._updated_credential(
+                            current.credential_ref,
+                            api_key=api_key,
+                            api_key_env=api_key_env,
+                        ),
+                        "base_url": base_url if base_url is not None else current.base_url,
+                        "api_path": api_path if api_path is not None else current.api_path,
+                        "timeout_seconds": (
+                            timeout_seconds
+                            if timeout_seconds is not None
+                            else current.timeout_seconds
+                        ),
+                        "retry_policy": retry_policy or current.retry_policy,
+                        "enabled": enabled if enabled is not None else current.enabled,
+                    }
+                ).model_dump()
             )
-            updated = normalize_provider_config(updated)
-            updated = ProviderConfig.model_validate(updated.model_dump())
         except ValidationError as exc:
             raise ConfigError(f"invalid provider config: {exc}") from exc
-        if make_default and (not updated.enabled or updated.endpoint() is None):
-            raise ConfigError("a default provider must be enabled and have a default endpoint")
-
-        configured[provider_id] = updated
-        if make_default:
-            default_provider_id = provider_id
-        elif previous_default_provider_id == provider_id and not updated.enabled:
-            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
-        else:
-            default_provider_id = previous_default_provider_id
-        self._save_configured_providers(
-            raw,
-            configured=configured,
-            default_provider_id=default_provider_id,
+        self._store_provider(
+            raw, configured=configured, provider=provider, make_default=make_default
         )
-        return updated
+        return provider
 
-    def configure_template(
+    def replace_provider(
+        self,
+        provider_id: str,
+        *,
+        provider_type: ProviderType,
+        protocol: ProviderProtocol | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool = True,
+    ) -> ProviderConfig:
+        """Replace an existing provider and discard its endpoint registry."""
+
+        provider_id = self._validate_mutable_provider_id(provider_id)
+        self._reject_faux_type(provider_type)
+        raw = self.load_raw()
+        configured = self._configured_providers(raw)
+        if provider_id not in configured:
+            raise ConfigError(f"provider not found: {provider_id}")
+        try:
+            provider = ProviderConfig(
+                provider_id=provider_id,
+                provider_type=provider_type,
+                protocol=resolve_provider_protocol(provider_type, protocol),
+                credential_ref=self._updated_credential(
+                    CredentialRef(), api_key=api_key, api_key_env=api_key_env
+                ),
+                base_url=base_url,
+                api_path=api_path,
+                timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
+                retry_policy=retry_policy or ProviderRetryPolicy(),
+                enabled=enabled,
+            )
+        except (ValueError, ValidationError) as exc:
+            raise ConfigError(f"invalid provider config: {exc}") from exc
+        self._store_provider(raw, configured=configured, provider=provider, make_default=False)
+        return provider
+
+    def create_from_template(
         self,
         template: ProviderTemplate,
         *,
@@ -217,30 +272,121 @@ class ProviderConfigManager:
         endpoint_id: str | None = None,
         model_id: str | None = None,
         base_url: str | None = None,
+        api_path: str | None = None,
         api_key: str | None = None,
         api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool = True,
         make_default: bool = False,
     ) -> ProviderConfig:
-        """Apply a provider and all template endpoints as one config transaction."""
+        return self._configure_template(
+            template,
+            operation="create",
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            model_id=model_id,
+            base_url=base_url,
+            api_path=api_path,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout_seconds=timeout_seconds,
+            retry_policy=retry_policy,
+            enabled=enabled,
+            make_default=make_default,
+        )
 
-        if api_key is not None and api_key_env is not None:
-            raise ConfigError("api_key and api_key_env cannot be combined")
-        target_provider_id = (
+    def update_from_template(
+        self,
+        template: ProviderTemplate,
+        *,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        model_id: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool | None = None,
+        make_default: bool = False,
+    ) -> ProviderConfig:
+        return self._configure_template(
+            template,
+            operation="update",
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            model_id=model_id,
+            base_url=base_url,
+            api_path=api_path,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout_seconds=timeout_seconds,
+            retry_policy=retry_policy,
+            enabled=enabled,
+            make_default=make_default,
+        )
+
+    def replace_from_template(
+        self,
+        template: ProviderTemplate,
+        *,
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        model_id: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool = True,
+        make_default: bool = False,
+    ) -> ProviderConfig:
+        return self._configure_template(
+            template,
+            operation="replace",
+            provider_id=provider_id,
+            endpoint_id=endpoint_id,
+            model_id=model_id,
+            base_url=base_url,
+            api_path=api_path,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout_seconds=timeout_seconds,
+            retry_policy=retry_policy,
+            enabled=enabled,
+            make_default=make_default,
+        )
+
+    def _configure_template(
+        self,
+        template: ProviderTemplate,
+        *,
+        operation: Literal["create", "update", "replace"],
+        provider_id: str | None = None,
+        endpoint_id: str | None = None,
+        model_id: str | None = None,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout_seconds: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool | None = None,
+        make_default: bool = False,
+    ) -> ProviderConfig:
+        """Apply all template endpoints in one validated config transaction."""
+
+        target_provider_id = self._validate_mutable_provider_id(
             provider_id if provider_id is not None else template.provider_id
-        ).strip()
+        )
         target_endpoint_id = (
             endpoint_id if endpoint_id is not None else template.default_endpoint
         ).strip()
-        if not target_provider_id:
-            raise ConfigError("provider id is required")
         if not target_endpoint_id:
             raise ConfigError("endpoint id is required")
-        if target_provider_id == BUILTIN_FAUX_PROVIDER_ID:
-            raise ConfigError("built-in provider cannot be modified: faux")
-        if api_key_env is not None and not api_key_env.strip():
-            raise ConfigError("api key environment variable is required")
-        if api_key is not None and not api_key:
-            raise ConfigError("api key is required")
         template_endpoint_ids = {
             item.endpoint_id
             for item in template.endpoints
@@ -254,26 +400,42 @@ class ProviderConfigManager:
 
         raw = self.load_raw()
         configured = self._configured_providers(raw)
-        previous_default_provider_id = self._default_provider_id(raw, configured)
         current = configured.get(target_provider_id)
-        if current is not None and current.provider_type != template.provider_type:
+        if operation == "create" and current is not None:
             raise ConfigError(
-                f"provider kind does not match template {template.template_id}: "
-                f"{current.provider_type} != {template.provider_type}"
+                f"provider already exists: {target_provider_id}; "
+                "use provider update or provider replace"
+            )
+        if operation != "create" and current is None:
+            raise ConfigError(f"provider not found: {target_provider_id}")
+        if (
+            operation == "update"
+            and current is not None
+            and (
+                current.provider_type != template.provider_type
+                or current.protocol != template.protocol
+            )
+        ):
+            raise ConfigError(
+                f"provider type/protocol does not match template {template.template_id}: "
+                f"{current.provider_type}/{current.protocol} != "
+                f"{template.provider_type}/{template.protocol}"
             )
 
-        credential_ref = current.credential_ref if current is not None else CredentialRef()
-        if api_key_env is not None:
-            credential_ref = CredentialRef.parse(f"env:{api_key_env.strip()}")
-        elif api_key is not None:
-            credential_ref = CredentialRef.parse(api_key)
-        elif credential_ref.type == "none":
+        preserve_current = operation == "update" and current is not None
+        credential_ref = (
+            current.credential_ref if preserve_current and current is not None else CredentialRef()
+        )
+        credential_ref = self._updated_credential(
+            credential_ref, api_key=api_key, api_key_env=api_key_env
+        )
+        if credential_ref.type == "none":
             credential_ref = CredentialRef.parse(f"env:{template.credential_env}")
 
         try:
             endpoints = (
                 {item.endpoint_id: item for item in current.endpoints}
-                if current is not None
+                if preserve_current and current is not None
                 else {}
             )
             for template_endpoint in template.endpoints:
@@ -295,30 +457,40 @@ class ProviderConfigManager:
             provider = ProviderConfig(
                 provider_id=target_provider_id,
                 provider_type=template.provider_type,
+                protocol=template.protocol,
                 credential_ref=credential_ref,
                 default_endpoint=target_endpoint_id,
                 endpoints=tuple(endpoints[key] for key in sorted(endpoints)),
-                base_url=(base_url if base_url is not None else template.base_url)
-                .strip()
-                .rstrip("/"),
-                api_path=template.api_path,
-                enabled=True,
-                timeout_seconds=current.timeout_seconds if current is not None else 60.0,
-                retry_policy=(
-                    current.retry_policy if current is not None else ProviderRetryPolicy()
+                base_url=base_url if base_url is not None else template.base_url,
+                api_path=api_path if api_path is not None else template.api_path,
+                enabled=(
+                    enabled
+                    if enabled is not None
+                    else current.enabled
+                    if preserve_current and current is not None
+                    else True
                 ),
-                extra=current.extra if current is not None else {},
+                timeout_seconds=(
+                    timeout_seconds
+                    if timeout_seconds is not None
+                    else current.timeout_seconds
+                    if preserve_current and current is not None
+                    else 60.0
+                ),
+                retry_policy=(
+                    retry_policy
+                    or (
+                        current.retry_policy
+                        if preserve_current and current is not None
+                        else ProviderRetryPolicy()
+                    )
+                ),
+                extra=current.extra if preserve_current and current is not None else {},
             )
         except ValidationError as exc:
             raise ConfigError(f"invalid provider template config: {exc}") from exc
-
-        configured[target_provider_id] = provider
-        self._save_configured_providers(
-            raw,
-            configured=configured,
-            default_provider_id=(
-                target_provider_id if make_default else previous_default_provider_id
-            ),
+        self._store_provider(
+            raw, configured=configured, provider=provider, make_default=make_default
         )
         return provider
 
@@ -532,6 +704,66 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
 
+    @staticmethod
+    def _validate_mutable_provider_id(provider_id: str) -> str:
+        normalized = provider_id.strip()
+        if not normalized:
+            raise ConfigError("provider id is required")
+        if normalized == BUILTIN_FAUX_PROVIDER_ID:
+            raise ConfigError("built-in provider cannot be modified: faux")
+        return normalized
+
+    @staticmethod
+    def _reject_faux_type(provider_type: ProviderType) -> None:
+        if provider_type == "faux":
+            raise ConfigError("provider type is reserved for the built-in Faux provider: faux")
+
+    @staticmethod
+    def _updated_credential(
+        current: CredentialRef,
+        *,
+        api_key: str | None,
+        api_key_env: str | None,
+    ) -> CredentialRef:
+        if api_key is not None and api_key_env is not None:
+            raise ConfigError("api_key and api_key_env cannot be combined")
+        if api_key_env is not None:
+            normalized = api_key_env.strip()
+            if not normalized:
+                raise ConfigError("api key environment variable is required")
+            return CredentialRef.parse(f"env:{normalized}")
+        if api_key is not None:
+            if not api_key:
+                raise ConfigError("api key is required")
+            return CredentialRef.parse(api_key)
+        return current
+
+    def _store_provider(
+        self,
+        raw: Mapping[str, Any],
+        *,
+        configured: dict[str, ProviderConfig],
+        provider: ProviderConfig,
+        make_default: bool,
+    ) -> None:
+        previous_default_provider_id = self._default_provider_id(raw, configured)
+        if make_default and (not provider.enabled or provider.endpoint() is None):
+            raise ConfigError("a default provider must be enabled and have a default endpoint")
+        configured[provider.provider_id] = provider
+        if make_default:
+            default_provider_id = provider.provider_id
+        elif previous_default_provider_id == provider.provider_id and (
+            not provider.enabled or provider.endpoint() is None
+        ):
+            default_provider_id = BUILTIN_FAUX_PROVIDER_ID
+        else:
+            default_provider_id = previous_default_provider_id
+        self._save_configured_providers(
+            raw,
+            configured=configured,
+            default_provider_id=default_provider_id,
+        )
+
     def load_raw(self) -> dict[str, Any]:
         return self._file.read()
 
@@ -565,6 +797,8 @@ class ProviderConfigManager:
     def _reject_reserved_provider(provider: ProviderConfig) -> None:
         if provider.provider_id == BUILTIN_FAUX_PROVIDER_ID:
             raise ConfigError("provider id is reserved for the built-in Faux provider: faux")
+        if provider.provider_type == "faux" or provider.protocol == "faux":
+            raise ConfigError("provider type is reserved for the built-in Faux provider: faux")
 
     def _default_provider_id(
         self,

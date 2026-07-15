@@ -24,10 +24,14 @@ from ouro.config.prompts import (
 )
 from ouro.config.provider_codec import provider_config_to_public_dict
 from ouro.config.provider_models import (
+    BUILTIN_FAUX_PROVIDER_ID,
+    CONFIGURABLE_PROVIDER_TYPES,
+    INTEGRATED_PROVIDER_TYPES,
     ProviderConfig,
     ProviderConfigSnapshot,
-    ProviderKind,
+    ProviderProtocol,
     ProviderRuntimeOptions,
+    ProviderType,
 )
 from ouro.config.provider_templates import (
     ProviderTemplate,
@@ -66,10 +70,14 @@ __all__ = [
     "ProviderConfig",
     "ProviderConfigManager",
     "ProviderConfigSnapshot",
-    "ProviderKind",
+    "ProviderProtocol",
+    "ProviderType",
+    "CONFIGURABLE_PROVIDER_TYPES",
     "ProviderEndpointConfig",
     "ProviderRuntimeOptions",
     "ProviderTemplate",
+    "BUILTIN_FAUX_PROVIDER_ID",
+    "INTEGRATED_PROVIDER_TYPES",
     "PromptConfigManager",
     "PromptConfigSnapshot",
     "QueuedInputConfig",

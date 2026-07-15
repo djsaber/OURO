@@ -17,6 +17,14 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Provider configuration now separates user instance id, product-level provider type, and wire
+  protocol; runtime adapter dispatch depends only on the registered protocol.
+- Provider creation now has one `add` entry point: integrated provider types load their complete
+  template automatically, while compatible types infer their protocol and start without endpoints.
+  The former `configure`, `custom`, and user-selectable `--protocol` paths were removed; id
+  conflicts direct users to explicit `update` or `replace` commands.
+- The internal Faux provider is omitted from user-facing provider catalogs, defaults, selection,
+  and connection checks.
 - Configuration, Provider, Skills, and runtime composition CLI paths now use application services
   instead of infrastructure managers.
 - Resource content remains immutable and content-addressed; model materialization no longer
