@@ -10,7 +10,7 @@ from ouro.application.queued_inputs import (
     QueuedInputQueue,
 )
 from ouro.core.state import SessionRecord
-from ouro.sessions import SessionSnapshot, SessionStore
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 class FollowUpQueue:
@@ -22,7 +22,7 @@ class FollowUpQueue:
     def enqueue(
         self,
         *,
-        snapshot: SessionSnapshot,
+        snapshot: RuntimeSessionSnapshot,
         prompt: str,
         title: str | None,
     ) -> tuple[SessionRecord, int]:
@@ -34,16 +34,16 @@ class FollowUpQueue:
         )
         return session, size
 
-    def pop(self, snapshot: SessionSnapshot) -> QueuedFollowUp | None:
+    def pop(self, snapshot: RuntimeSessionSnapshot) -> QueuedFollowUp | None:
         item = self.peek(snapshot)
         if item is not None:
             self.acknowledge(snapshot, item.queue_id)
         return item
 
-    def peek(self, snapshot: SessionSnapshot) -> QueuedFollowUp | None:
+    def peek(self, snapshot: RuntimeSessionSnapshot) -> QueuedFollowUp | None:
         return self._queue.peek(snapshot)
 
-    def acknowledge(self, snapshot: SessionSnapshot, queue_id: str) -> None:
+    def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
         self._queue.acknowledge(snapshot, queue_id)
 
 

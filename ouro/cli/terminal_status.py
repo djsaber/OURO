@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import shutil
 import sys
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ from typing import Literal
 TerminalOutput = Callable[[str], None]
 SpinnerSemantic = Literal[
     "mcp_connection",
+    "model_wait",
     "compaction",
     "tool_input",
     "tool_execution",
@@ -43,9 +45,14 @@ SPINNER_THEMES: dict[SpinnerSemantic, SpinnerTheme] = {
         interval_seconds=0.12,
         color=_CYAN,
     ),
+    "model_wait": SpinnerTheme(
+        frames=("⁙", "⁘"),
+        interval_seconds=0.2,
+        color=_BLUE,
+    ),
     "compaction": SpinnerTheme(
-        frames=("█", "▇", "▆", "▅", "▄", "▃", "▂", "▁", "▂", "▃", "▄", "▅", "▆", "▇"),
-        interval_seconds=0.1,
+        frames=("⌜", "⌝", "⌟", "⌞"),
+        interval_seconds=0.12,
         color=_BLUE,
     ),
     "tool_input": SpinnerTheme(
@@ -76,8 +83,10 @@ class TerminalStatusLine:
         output_func: TerminalOutput,
         *,
         animated: bool | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.output_func = output_func
+        self._clock = clock
         self.animated = (
             output_func is print and sys.stdout.isatty() if animated is None else animated
         )
@@ -89,6 +98,7 @@ class TerminalStatusLine:
         )
         self.semantic: SpinnerSemantic | None = None
         self.message = ""
+        self._elapsed_started_at: float | None = None
         self._frame_index = 0
         self._animation_task: asyncio.Task[None] | None = None
 
@@ -97,12 +107,30 @@ class TerminalStatusLine:
         return self.semantic is not None
 
     async def start(self, semantic: SpinnerSemantic, message: str) -> None:
+        await self._start(semantic, message, timed=False)
+
+    async def start_timed(self, semantic: SpinnerSemantic, message: str) -> None:
+        """Start one animated phase whose elapsed seconds update with each frame."""
+
+        await self._start(semantic, message, timed=True)
+
+    async def _start(
+        self,
+        semantic: SpinnerSemantic,
+        message: str,
+        *,
+        timed: bool,
+    ) -> None:
         if self.semantic == semantic:
-            self.update(message)
+            self.message = _status_text(message, self._message_limit)
+            self._elapsed_started_at = self._clock() if timed else None
+            if self.animated:
+                self._render_frame()
             return
         await self.clear()
         self.semantic = semantic
         self.message = _status_text(message, self._message_limit)
+        self._elapsed_started_at = self._clock() if timed else None
         self._frame_index = 0
         self._render_frame()
         if self.animated:
@@ -132,6 +160,7 @@ class TerminalStatusLine:
         had_status = self.semantic is not None
         self.semantic = None
         self.message = ""
+        self._elapsed_started_at = None
         self._frame_index = 0
         if had_status and self.animated:
             self._write(f"\r{_CLEAR_LINE}")
@@ -159,7 +188,11 @@ class TerminalStatusLine:
         rendered_frame = f"{theme.color}{frame}{_RESET}" if self.animated else frame
         prefix = f"\r{_CLEAR_LINE}" if self.animated else ""
         suffix = "" if self.animated else "\n"
-        self._write(f"{prefix}{rendered_frame} {self.message}{suffix}")
+        message = self.message
+        if self._elapsed_started_at is not None:
+            elapsed = max(0.0, self._clock() - self._elapsed_started_at)
+            message = _status_text(f"{message} · {elapsed:.1f}s", self._message_limit)
+        self._write(f"{prefix}{rendered_frame} {message}{suffix}")
 
     def _write(self, text: str) -> None:
         if self.output_func is print:

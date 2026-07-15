@@ -64,6 +64,11 @@ Canonical 数据包括：
 端口覆盖：初始化、创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、加载、索引、
 回收站发布以及 session lock。新的后端必须保持这些行为语义，而不只是复制方法签名。
 
+运行热路径使用不含 events 的 `RuntimeSessionSnapshot`；`SessionSnapshot` 是包含完整事件历史的查询与回放
+视图。application 只有在检查、导出、回放或重建活动投影时才能请求完整快照，普通 Run、工具恢复、上下文
+准备和队列消费不得为了 Session 状态或 event sequence 加载完整事件日志。event sequence 由 Store 通过独立
+轻量端口提供。
+
 ## 锁与并发
 
 - session run lock 由 OS descriptor 持有。
@@ -85,6 +90,8 @@ Canonical 数据包括：
 - 恢复事件只写入一次。
 
 恢复不重放工具调用，不把 partial assistant 输出视为完成答案。
+无未完成 Run 的常规加载不读取 events；只有检测到需要恢复的中断 Run 时，Store 才加载恢复所需的模型流
+事件。该读取属于冷恢复路径，不能污染后续 Run 的正常成本。
 
 ## 会话查询与维护
 

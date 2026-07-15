@@ -12,11 +12,12 @@ from ouro.cli.terminal_status import (
 def test_spinner_semantics_have_distinct_extensible_frame_sets() -> None:
     assert set(SPINNER_THEMES) == {
         "mcp_connection",
+        "model_wait",
         "compaction",
         "tool_input",
         "tool_execution",
     }
-    assert len({theme.frames for theme in SPINNER_THEMES.values()}) == 4
+    assert len({theme.frames for theme in SPINNER_THEMES.values()}) == 5
     assert all(theme.frames and theme.interval_seconds > 0 for theme in SPINNER_THEMES.values())
 
 
@@ -59,6 +60,26 @@ async def test_status_finish_clears_animation_and_emits_stable_result() -> None:
 
     assert status.active is False
     assert outputs[-1] == "✓ MCP connected\n"
+
+
+async def test_timed_status_updates_elapsed_seconds_with_animation() -> None:
+    outputs: list[str] = []
+    now = 10.0
+    status = TerminalStatusLine(
+        outputs.append,
+        animated=True,
+        clock=lambda: now,
+    )
+
+    await status.start_timed("model_wait", "Waiting · model response")
+    now = 12.4
+    for _ in range(20):
+        if any("2.4s" in item for item in outputs):
+            break
+        await asyncio.sleep(0.01)
+    await status.clear()
+
+    assert any("Waiting · model response · 2.4s" in item for item in outputs)
 
 
 async def test_nonanimated_region_emits_each_status_once_when_committed() -> None:

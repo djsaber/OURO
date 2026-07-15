@@ -367,6 +367,69 @@ async def test_runtime_persists_text_run(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_hot_path_does_not_load_complete_replay_snapshot(tmp_path) -> None:
+    class RuntimeOnlyStore(LocalSessionStore):
+        def load_session(self, session_id: str, *, recover: bool = True):
+            raise AssertionError("runtime hot path loaded replay events")
+
+    store = RuntimeOnlyStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("Say hi")
+
+    assert result.run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_existing_session_loads_message_history_once_before_provider_stream(tmp_path) -> None:
+    class CountingStore(LocalSessionStore):
+        runtime_snapshot_loads = 0
+
+        def load_runtime_session(self, session_id: str, *, recover: bool = True):
+            self.runtime_snapshot_loads += 1
+            return super().load_runtime_session(session_id, recover=recover)
+
+    class LoadObservingProvider(CapturingProvider):
+        loads_at_stream_start: int | None = None
+
+        async def stream(self, **kwargs):
+            self.loads_at_stream_start = store.runtime_snapshot_loads
+            async for event in super().stream(**kwargs):
+                yield event
+
+    store = CountingStore(tmp_path)
+    store.initialize()
+    session = SessionService(store).create(title="Existing").session
+    store.runtime_snapshot_loads = 0
+    provider = LoadObservingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run(
+        "Say hi",
+        session_id=session.session_id,
+        approval_mode="auto",
+    )
+
+    assert result.run.status == "completed"
+    assert provider.loads_at_stream_start == 1
+
+
+@pytest.mark.asyncio
 async def test_runtime_persists_tool_call_deltas_before_model_response_completes(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

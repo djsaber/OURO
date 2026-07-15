@@ -13,7 +13,7 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.sessions.base import SessionSnapshot
+from ouro.sessions.base import RuntimeSessionSnapshot
 from ouro.sessions.index import (
     PendingInteraction,
     SessionCatalogStatus,
@@ -25,7 +25,7 @@ from ouro.sessions.local_io import write_model_atomic, write_text_atomic
 from ouro.sessions.locks import SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SnapshotLoader = Callable[[str], SessionSnapshot]
+SnapshotLoader = Callable[[str], RuntimeSessionSnapshot]
 
 
 class LocalSessionIndex:
@@ -79,7 +79,12 @@ class LocalSessionIndex:
             return str(exc)
         return None
 
-    def try_update(self, session_id: str) -> str | None:
+    def try_update(
+        self,
+        session_id: str,
+        *,
+        snapshot: RuntimeSessionSnapshot | None = None,
+    ) -> str | None:
         lock = self._new_lock()
         try:
             if not lock.acquire():
@@ -99,7 +104,11 @@ class LocalSessionIndex:
             entries = [entry for entry in index.sessions if entry.session_id != session_id]
             session_dir = self.sessions_dir / session_id
             if session_dir.exists():
-                entries.append(self._build_entry(session_dir))
+                entries.append(
+                    self._entry_from_snapshot(snapshot)
+                    if snapshot is not None
+                    else self._build_entry(session_dir)
+                )
             self._write(SessionIndex(sessions=_sorted_entries(entries)))
         except (OSError, PersistenceError, ValueError) as exc:
             self._mark_dirty(str(exc))
@@ -150,7 +159,7 @@ class LocalSessionIndex:
             return _entry_from_session(session, health="corrupt")
         return self._entry_from_snapshot(snapshot)
 
-    def _entry_from_snapshot(self, snapshot: SessionSnapshot) -> SessionIndexEntry:
+    def _entry_from_snapshot(self, snapshot: RuntimeSessionSnapshot) -> SessionIndexEntry:
         session = snapshot.session
         latest_run = snapshot.runs[-1] if snapshot.runs else None
         status = _catalog_status(session, latest_run)
@@ -163,8 +172,6 @@ class LocalSessionIndex:
             last_activity_at = max(last_activity_at, snapshot.messages[-1].created_at)
         if latest_run is not None:
             last_activity_at = max(last_activity_at, latest_run.ended_at or latest_run.started_at)
-        if snapshot.events:
-            last_activity_at = max(last_activity_at, snapshot.events[-1].created_at)
         return _entry_from_session(
             session,
             status=status,

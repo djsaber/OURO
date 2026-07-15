@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.cli.interactive_io import InteractiveOutput
-from ouro.cli.terminal_status import TerminalStatusRegion
+from ouro.cli.terminal_status import TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
@@ -19,6 +19,86 @@ def _event(
         sequence=sequence,
         payload={"turn_id": "turn_1", **payload},
     )
+
+
+async def test_interactive_output_reports_preparation_and_model_wait_durations() -> None:
+    outputs: list[str] = []
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False, clock=clock),
+        clock=clock,
+    )
+
+    await output.start_waiting()
+    now = 1.25
+    await output.handle_event(_event(1, "run_started", {}))
+    now = 2.0
+    await output.handle_event(_event(2, "model_request_started", {}))
+    now = 5.5
+    await output.handle_event(_event(3, "model_text_delta", {"text": "Hello"}))
+
+    assert "✓ Response started · 5.5s total · preparing 2.0s · model 3.5s\n" in outputs
+    assert outputs[-1] == "Hello"
+    await output.close()
+
+
+async def test_interactive_output_finishes_wait_when_model_has_no_stream_delta() -> None:
+    outputs: list[str] = []
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False, clock=clock),
+        clock=clock,
+    )
+
+    await output.start_waiting()
+    now = 2.0
+    await output.handle_event(_event(1, "model_request_started", {}))
+    now = 4.0
+    await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 0}))
+
+    assert "✓ Response started · 4.0s total · preparing 2.0s · model 2.0s\n" in outputs
+    assert output.wait_timing is None
+    await output.close()
+
+
+async def test_interactive_output_reports_compaction_as_a_distinct_wait_phase() -> None:
+    outputs: list[str] = []
+    now = 0.0
+
+    def clock() -> float:
+        return now
+
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False, clock=clock),
+        clock=clock,
+    )
+
+    await output.start_waiting()
+    now = 1.0
+    await output.handle_event(_event(1, "compaction_started", {"trigger": "auto"}))
+    now = 3.0
+    await output.handle_event(_event(2, "compaction_completed", {}))
+    now = 4.0
+    await output.handle_event(_event(3, "model_request_started", {}))
+    now = 6.0
+    await output.handle_event(_event(4, "model_reasoning_delta", {"reasoning_content": "Think"}))
+
+    assert (
+        "✓ Response started · 6.0s total · preparing 2.0s · compacting 2.0s · model 2.0s\n"
+        in outputs
+    )
+    await output.close()
 
 
 async def test_interactive_output_replaces_streamed_arguments_with_tool_input_status() -> None:
@@ -100,9 +180,7 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
         await output.handle_event(_event(sequence, "model_tool_call_delta", payload))
 
     await output.handle_event(_event(4, "model_message_completed", {"tool_call_count": 2}))
-    for index, (tool_call_id, tool_name) in enumerate(
-        (("call_1", "Read"), ("call_2", "Write"))
-    ):
+    for index, (tool_call_id, tool_name) in enumerate((("call_1", "Read"), ("call_2", "Write"))):
         await output.handle_event(
             _event(
                 5 + index,
@@ -129,7 +207,7 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
         )
     await output.handle_event(_event(9, "tool_batch_completed", {"batch_id": "batch_1"}))
 
-    final_lines = outputs[-2:]
+    final_lines = [line for line in outputs if "completed" in line][-2:]
     assert "Read" in final_lines[0]
     assert "Write" in final_lines[1]
 
@@ -250,7 +328,10 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
     )
     await output.handle_event(_event(6, "tool_batch_completed", {"batch_id": "batch_1"}))
 
-    assert outputs == ["✓ Read · completed\n"]
+    assert outputs == [
+        "✓ Read · completed\n",
+        "◐ Waiting · preparing next model turn · 0.0s\n",
+    ]
     assert output.active_tool_calls == {}
 
 
@@ -307,6 +388,7 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
     assert outputs == [
         "✓ Read · completed\n",
         "✗ Write · failed\n",
+        "◐ Waiting · preparing next model turn · 0.0s\n",
     ]
     assert output.active_tool_calls == {}
 
@@ -315,6 +397,7 @@ async def test_interactive_output_animates_compaction_progress_and_completion() 
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
 
+    await output.handle_event(_event(0, "run_started", {"kind": "compaction"}))
     await output.handle_event(
         _event(
             1,
@@ -351,6 +434,7 @@ async def test_interactive_output_animates_compaction_progress_and_completion() 
     )
     assert outputs[-1] == ("✓ Context compaction completed · 3 messages · 800 → 300 tokens\n")
     assert output.status_line.active is False
+    assert output.wait_timing is None
 
 
 async def test_interactive_output_reports_compaction_failure_and_skip() -> None:

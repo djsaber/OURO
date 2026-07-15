@@ -72,6 +72,10 @@ RuntimeService 后绕过扩展资源装配。
 串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
 上下文、事件、工具和持久化副作用。`RunLifecycle` 集中承载模型循环中的 run/session 状态转换。
 
+运行事务读取 `RuntimeSessionSnapshot`，其中只包含 Session、messages、runs 和 compactions；包含完整
+events 的 `SessionSnapshot` 只服务查询、回放、导出和活动投影重建。正常 Run 在取得锁前后复用同一份运行态
+快照，并用轻量 SessionRecord 重读检测竞争更新；上下文准备和 catalog 刷新都不得反向加载 replay events。
+
 `RuntimeSupervisor` 位于 RuntimeService 之外，只拥有跨 Session 的进程内 FIFO 调度、并发上限、Host
 订阅和 shutdown 生命周期。它不写 durable Run 状态机；submit/abort 最终调用 RuntimeService，重启恢复
 仍从 SessionStore 读取。`RuntimeActivitySnapshot` 把 durable Run/ToolBatch/ToolCall 与模型、压缩事件投影为
@@ -261,6 +265,11 @@ Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLi
 真实 TTY 对工具参数生成、执行与结果进行原位重绘，非 TTY 则让每个工具只输出最终稳定行。工具参数 delta 保持
 durable 事件与完整累积；参数摘要仅在等待审批时进入工具行和审批提示，批准、拒绝或开始执行后隐藏，避免把
 不可操作的信息持续留在终端中。
+
+循环终端在提交用户输入前启动本地单调时钟；`run_started` 表示请求与上下文准备阶段，
+`model_request_started` 表示等待 Provider 阶段，首个 reasoning/text/tool-call delta 结束等待。状态行动态显示
+当前阶段秒数，并在响应开始时稳定输出总等待及分阶段耗时；自动压缩作为独立阶段计时，手动压缩不伪装成
+模型等待。
 
 ## 扩展边界
 

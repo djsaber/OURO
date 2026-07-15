@@ -23,7 +23,7 @@ from ouro.core.state import (
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
-from ouro.sessions import SessionStore, session_mutation
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore, session_mutation
 
 
 class RunLifecycle:
@@ -46,16 +46,26 @@ class RunLifecycle:
             dict[tuple[str, str], MessageRecord],
         ] = {}
 
-    def start(self, *, session: SessionRecord, run: RunRecord) -> tuple[SessionRecord, RunRecord]:
+    def start(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        snapshot: RuntimeSessionSnapshot,
+    ) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
         with session_mutation(self.store, session.session_id):
-            snapshot = self.store.load_session(session.session_id, recover=False)
+            latest_session = self.store.load_session_record(session.session_id)
             existing = maybe_active_run(snapshot.runs)
             if existing is not None and existing.run_id != run.run_id:
                 raise SessionBusyError(f"session already has an active run: {existing.run_id}")
+            if latest_session.active_run_id not in {None, run.run_id}:
+                raise SessionBusyError(
+                    f"session already has an active run: {latest_session.active_run_id}"
+                )
             active_run = run.model_copy(update={"status": "running"})
-            active_session = snapshot.session.model_copy(
+            active_session = latest_session.model_copy(
                 update={
                     "status": "running",
                     "last_run_id": active_run.run_id,
@@ -68,7 +78,15 @@ class RunLifecycle:
             # safely reconstruct the Session projection from this record.
             self.store.save_run(active_run)
             self.store.save_session(active_session)
-        self.store.try_update_index(active_session.session_id)
+        self.store.try_update_index(
+            active_session.session_id,
+            snapshot=snapshot.model_copy(
+                update={
+                    "session": active_session,
+                    "runs": [*snapshot.runs, active_run],
+                }
+            ),
+        )
         return active_session, active_run
 
     def append_user_message(
@@ -693,7 +711,10 @@ class RunLifecycle:
         cache = self._message_cache.get(cache_key)
         if cache is None:
             cache = {}
-            for message in self.store.load_session(session_id, recover=False).messages:
+            for message in self.store.load_runtime_session(
+                session_id,
+                recover=False,
+            ).messages:
                 if message.run_id != run_id:
                     continue
                 message_key = _message_cache_key(message)

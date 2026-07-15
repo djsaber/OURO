@@ -15,10 +15,11 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
 
 
-class SessionSnapshot(OuroModel):
+class RuntimeSessionSnapshot(OuroModel):
+    """Canonical state required to execute a Session, excluding replay events."""
+
     session: SessionRecord
     messages: list[MessageRecord] = Field(default_factory=list)
-    events: list[EventRecord] = Field(default_factory=list)
     runs: list[RunRecord] = Field(default_factory=list)
     compactions: list[CompactionRecord] = Field(default_factory=list)
 
@@ -31,6 +32,12 @@ class SessionSnapshot(OuroModel):
             if compaction.compaction_id == active_id:
                 return compaction
         return None
+
+
+class SessionSnapshot(RuntimeSessionSnapshot):
+    """Complete Session view for recovery, inspection, export, and replay."""
+
+    events: list[EventRecord] = Field(default_factory=list)
 
 
 class SessionLock(Protocol):
@@ -68,7 +75,18 @@ class SessionStore(Protocol):
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot: ...
 
+    def load_runtime_session(
+        self,
+        session_id: str,
+        *,
+        recover: bool = True,
+    ) -> RuntimeSessionSnapshot: ...
+
     def load_session_record(self, session_id: str) -> SessionRecord: ...
+
+    def load_active_compaction(self, session_id: str) -> CompactionRecord | None: ...
+
+    def latest_event_sequence(self, session_id: str) -> int: ...
 
     def load_messages_page(
         self,
@@ -97,7 +115,11 @@ class SessionStore(Protocol):
 
     def try_rebuild_index(self) -> str | None: ...
 
-    def try_update_index(self, session_id: str) -> str | None: ...
+    def try_update_index(
+        self,
+        session_id: str,
+        snapshot: RuntimeSessionSnapshot | None = None,
+    ) -> str | None: ...
 
     def load_index(self) -> SessionIndex: ...
 

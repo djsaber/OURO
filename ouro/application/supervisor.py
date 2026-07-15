@@ -168,7 +168,7 @@ class RuntimeSupervisor:
                 self._started_resources.append(resource)
             recovered: list[RuntimeStatusSnapshot] = []
             for session in self.store.list_sessions():
-                snapshot = self.store.load_session(session.session_id, recover=True)
+                snapshot = self.store.load_runtime_session(session.session_id, recover=True)
                 for run in snapshot.runs:
                     if run.status == "recoverable":
                         recovered.append(
@@ -215,7 +215,7 @@ class RuntimeSupervisor:
                 raise SessionNotFoundError(f"session not found: {session_id}") from exc
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        durable = self.store.load_session(session_id, recover=False)
+        durable = self.store.load_runtime_session(session_id, recover=False)
         if maybe_active_run(durable.runs) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
@@ -232,7 +232,7 @@ class RuntimeSupervisor:
         self._publish_activity(
             queued_runtime_activity(
                 session_id,
-                sequence=max((event.sequence for event in durable.events), default=0),
+                sequence=self.store.latest_event_sequence(session_id),
             )
         )
         self._queue.put_nowait(job)
@@ -301,7 +301,10 @@ class RuntimeSupervisor:
         if active is not None:
             return self._snapshots[active.handle.handle_id]
         try:
-            durable_snapshot = self.store.load_session(handle_or_session, recover=False)
+            durable_snapshot = self.store.load_runtime_session(
+                handle_or_session,
+                recover=False,
+            )
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {handle_or_session}") from exc
         run = maybe_active_run(durable_snapshot.runs)
@@ -629,7 +632,10 @@ class RuntimeSupervisor:
 
     def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            durable = self.store.load_session(job.handle.session_id, recover=False)
+            durable = self.store.load_runtime_session(
+                job.handle.session_id,
+                recover=False,
+            )
             active = maybe_active_run(durable.runs)
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None

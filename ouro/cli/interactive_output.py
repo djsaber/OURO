@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -46,6 +47,27 @@ class _ToolCallPreview:
         return "".join(self.argument_chunks)
 
 
+@dataclass
+class _WaitTiming:
+    total_started_at: float
+    phase_started_at: float
+    phase: str = "preparing"
+    run_id: str | None = None
+    durations: dict[str, float] = field(default_factory=dict)
+
+    def transition(self, phase: str, now: float) -> None:
+        self.durations[self.phase] = self.durations.get(self.phase, 0.0) + max(
+            0.0,
+            now - self.phase_started_at,
+        )
+        self.phase = phase
+        self.phase_started_at = now
+
+    def finish(self, now: float) -> tuple[float, dict[str, float]]:
+        self.transition(self.phase, now)
+        return max(0.0, now - self.total_started_at), dict(self.durations)
+
+
 class InteractiveOutput:
     """Project lifecycle events into bounded interactive terminal output."""
 
@@ -55,9 +77,11 @@ class InteractiveOutput:
         *,
         status_line: TerminalStatusLine | None = None,
         tool_lines: TerminalStatusRegion | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.output_func = output_func
-        self.status_line = status_line or TerminalStatusLine(output_func)
+        self._clock = clock
+        self.status_line = status_line or TerminalStatusLine(output_func, clock=clock)
         self.tool_lines = tool_lines or TerminalStatusRegion(output_func)
         self.streamed_run_ids: set[str] = set()
         self.in_reasoning = False
@@ -65,6 +89,23 @@ class InteractiveOutput:
         self.tool_call_previews: dict[tuple[str, str, int], _ToolCallPreview] = {}
         self.tool_call_keys: dict[tuple[str, str], tuple[str, str, int]] = {}
         self.active_tool_calls: dict[tuple[str, str], tuple[str, str, int]] = {}
+        self.wait_timing: _WaitTiming | None = None
+
+    async def start_waiting(
+        self,
+        message: str = "Waiting · preparing request",
+        *,
+        run_id: str | None = None,
+    ) -> None:
+        """Start a user-visible timer before the runtime emits its first event."""
+
+        now = self._clock()
+        self.wait_timing = _WaitTiming(
+            total_started_at=now,
+            phase_started_at=now,
+            run_id=run_id,
+        )
+        await self.status_line.start_timed("model_wait", message)
 
     async def start_mcp_connection(self, configs: tuple[MCPServerConfig, ...]) -> None:
         if not configs:
@@ -114,24 +155,43 @@ class InteractiveOutput:
         self.tool_call_previews.clear()
         self.tool_call_keys.clear()
         self.active_tool_calls.clear()
+        self.wait_timing = None
 
     async def handle_event(self, event: EventRecord) -> None:
         if event.run_id is None:
             return
-        if event.event_type == "model_text_delta":
+        if event.event_type == "run_started":
+            if event.payload.get("kind") == "compaction":
+                return
+            if self.wait_timing is None:
+                await self.start_waiting(run_id=event.run_id)
+            else:
+                self.wait_timing.run_id = event.run_id
+                self.status_line.update("Waiting · preparing context")
+        elif event.event_type == "model_request_started":
+            await self._transition_waiting(
+                event.run_id,
+                "model",
+                "Waiting · model response",
+            )
+        elif event.event_type == "model_text_delta":
             text = event.payload.get("text")
             if isinstance(text, str) and text:
+                await self._finish_waiting(event.run_id)
                 self.streamed_run_ids.add(event.run_id)
                 await self._stream_text_delta(text)
         elif event.event_type == "model_reasoning_delta":
             reasoning = event.payload.get("reasoning_content")
             if isinstance(reasoning, str) and reasoning:
+                await self._finish_waiting(event.run_id)
                 self.streamed_run_ids.add(event.run_id)
                 await self._stream_reasoning_delta(reasoning)
         elif event.event_type == "model_tool_call_delta":
+            await self._finish_waiting(event.run_id)
             self.streamed_run_ids.add(event.run_id)
             await self._stream_tool_call_delta(event)
         elif event.event_type == "model_message_completed":
+            await self._finish_waiting(event.run_id)
             tool_call_count = event.payload.get("tool_call_count")
             if isinstance(tool_call_count, int) and tool_call_count > 0:
                 await self._finish_tool_call_turn(event.run_id, event.turn_id)
@@ -158,12 +218,24 @@ class InteractiveOutput:
             await self._finish_tool_execution(event)
         elif event.event_type in {"tool_batch_completed", "tool_batch_aborted"}:
             await self._finish_tool_batch(event)
+            if event.event_type == "tool_batch_completed":
+                await self.start_waiting(
+                    "Waiting · preparing next model turn",
+                    run_id=event.run_id,
+                )
         elif event.event_type == "compaction_started":
             self._end_streamed_content_line()
-            await self.status_line.start(
-                "compaction",
-                _compaction_activity(event.payload),
-            )
+            if self.wait_timing is None:
+                await self.status_line.start(
+                    "compaction",
+                    _compaction_activity(event.payload),
+                )
+            else:
+                await self._transition_waiting(
+                    event.run_id,
+                    "compaction",
+                    _compaction_activity(event.payload),
+                )
         elif event.event_type == "compaction_progress":
             message = _compaction_activity(event.payload)
             if self.status_line.semantic == "compaction":
@@ -171,25 +243,47 @@ class InteractiveOutput:
             else:
                 await self.status_line.start("compaction", message)
         elif event.event_type == "compaction_completed":
+            is_model_wait = self.wait_timing is not None
             await self.status_line.finish(
                 _compaction_completed(event.payload),
                 tone="success",
             )
+            if is_model_wait:
+                await self._transition_waiting(
+                    event.run_id,
+                    "preparing",
+                    "Waiting · preparing model request",
+                )
         elif event.event_type == "compaction_failed":
+            is_model_wait = self.wait_timing is not None
             error = event.payload.get("error") or "unknown error"
             await self.status_line.finish(
                 f"Context compaction failed · {error}",
                 tone="error",
             )
+            if is_model_wait:
+                await self._transition_waiting(
+                    event.run_id,
+                    "preparing",
+                    "Waiting · preparing model request",
+                )
         elif event.event_type == "compaction_skipped":
             reason = str(event.payload.get("reason") or "not required").replace("_", " ")
             await self.status_line.finish(
                 f"Context compaction skipped · {reason}",
                 tone="neutral",
             )
+            if self.wait_timing is not None:
+                await self._transition_waiting(
+                    event.run_id,
+                    "preparing",
+                    "Waiting · preparing model request",
+                )
 
     async def finish_run(self, run_id: str) -> bool:
         await self.status_line.clear()
+        if self.wait_timing is not None and self.wait_timing.run_id in {None, run_id}:
+            self.wait_timing = None
         streamed = run_id in self.streamed_run_ids
         self.streamed_run_ids.discard(run_id)
         if not streamed:
@@ -206,6 +300,31 @@ class InteractiveOutput:
         """Keep tool state while freeing the cursor for an interactive prompt."""
 
         await self.tool_lines.suspend()
+
+    async def _transition_waiting(
+        self,
+        run_id: str,
+        phase: str,
+        message: str,
+    ) -> None:
+        if self.wait_timing is None:
+            await self.start_waiting(run_id=run_id)
+        assert self.wait_timing is not None
+        self.wait_timing.run_id = run_id
+        self.wait_timing.transition(phase, self._clock())
+        semantic: SpinnerSemantic = "compaction" if phase == "compaction" else "model_wait"
+        await self.status_line.start_timed(semantic, message)
+
+    async def _finish_waiting(self, run_id: str) -> None:
+        timing = self.wait_timing
+        if timing is None or timing.run_id not in {None, run_id}:
+            return
+        total, durations = timing.finish(self._clock())
+        self.wait_timing = None
+        await self.status_line.finish(
+            _wait_summary(total, durations),
+            tone="success",
+        )
 
     async def _stream_text_delta(self, text: str) -> None:
         await self.status_line.clear()
@@ -553,6 +672,20 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1] + "…"
+
+
+def _wait_summary(total: float, durations: dict[str, float]) -> str:
+    parts = ["Response started", f"{total:.1f}s total"]
+    labels = {
+        "preparing": "preparing",
+        "compaction": "compacting",
+        "model": "model",
+    }
+    for phase in ("preparing", "compaction", "model"):
+        duration = durations.get(phase)
+        if duration is not None:
+            parts.append(f"{labels[phase]} {duration:.1f}s")
+    return " · ".join(parts)
 
 
 def _compaction_activity(payload: dict[str, Any]) -> str:

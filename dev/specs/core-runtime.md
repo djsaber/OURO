@@ -47,11 +47,12 @@ Run 表示一次可恢复执行。状态集合为：
 ## 运行流程
 
 1. Host 调用 `RuntimeService.run`。
-2. 新会话被创建，或现有会话在无进程锁时执行恢复检查。
+2. 新会话被创建，或现有会话通过不含 replay events 的运行态快照执行恢复检查。
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 用户消息持久化并产生事件。
-6. `InnerAgentLoop` 构建上下文并调用 request-local `RuntimeAdapter`。
+6. `InnerAgentLoop` 复用已加载的 canonical messages 构建上下文并调用 request-local `RuntimeAdapter`；正常
+   模型轮次不得重新加载完整 Session 事件历史。
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
    `ToolCallCoordinator`，最终消息则完成 Run。
 8. waiting 状态通过 approve/reject/AskUser 恢复同一 Run。

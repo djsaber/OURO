@@ -173,7 +173,7 @@ def _approval_mode_command(
 ) -> CommandResult:
     if not value:
         mode = (
-            runtime.store.load_session(session_id, recover=False).session.approval_mode
+            runtime.store.load_session_record(session_id).approval_mode
             if session_id is not None
             else current_mode
         )

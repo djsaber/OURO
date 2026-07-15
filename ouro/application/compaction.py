@@ -372,7 +372,7 @@ class ContextPreparationService:
         )
         added_context = [text for result in hook_result.results for text in result.added_context]
         budget = self._input_budget(active_adapter)
-        active = self.store.load_session(session.session_id, recover=False).active_compaction
+        active = self.store.load_active_compaction(session.session_id)
         effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
         effective_messages = self._materialize_messages(effective_messages, active_adapter)
         view = self._build_view(
@@ -401,7 +401,7 @@ class ContextPreparationService:
                     adapter=active_adapter,
                 )
             except CompactionError as exc:
-                sequence = len(self.store.load_session(session.session_id, recover=False).events)
+                sequence = self.store.latest_event_sequence(session.session_id)
                 if view.context_metadata["over_budget"]:
                     raise ContextBlockedError(
                         f"context compaction is required before the run can continue: {exc}"
@@ -470,8 +470,7 @@ class ContextPreparationService:
     ) -> CompactionExecution:
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
-        snapshot = self.store.load_session(session.session_id, recover=False)
-        active = snapshot.active_compaction
+        active = self.store.load_active_compaction(session.session_id)
         materialized_messages = self._materialize_messages(messages, active_adapter)
         projected = project_compacted_messages(materialized_messages, active)
         initial_view = self._build_view(

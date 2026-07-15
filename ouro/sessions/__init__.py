@@ -1,6 +1,7 @@
 """Session persistence contracts and local infrastructure."""
 
 from ouro.sessions.base import (
+    RuntimeSessionSnapshot,
     SessionLock,
     SessionSnapshot,
     SessionStore,
@@ -21,6 +22,7 @@ __all__ = [
     "SessionLock",
     "SessionIndex",
     "SessionIndexEntry",
+    "RuntimeSessionSnapshot",
     "SessionSnapshot",
     "SessionStore",
     "append_ordered_event",

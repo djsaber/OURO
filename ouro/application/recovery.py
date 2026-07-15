@@ -7,7 +7,7 @@ from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
 from ouro.core.tools import ToolResult
-from ouro.sessions import SessionSnapshot, SessionStore
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 class RunRecoveryService:
@@ -24,8 +24,11 @@ class RunRecoveryService:
         self.runs = runs
         self.events = events
 
-    async def reconcile(self, snapshot: SessionSnapshot) -> SessionSnapshot:
-        sequence = len(snapshot.events)
+    async def reconcile(
+        self,
+        snapshot: RuntimeSessionSnapshot,
+    ) -> RuntimeSessionSnapshot:
+        sequence = self.store.latest_event_sequence(snapshot.session.session_id)
         emitted: list[EventRecord] = []
         changed = False
         messages = list(snapshot.messages)
@@ -93,7 +96,10 @@ class RunRecoveryService:
 
         if not changed:
             return snapshot
-        return self.store.load_session(snapshot.session.session_id, recover=False)
+        return self.store.load_runtime_session(
+            snapshot.session.session_id,
+            recover=False,
+        )
 
     @staticmethod
     def _recovery_result(

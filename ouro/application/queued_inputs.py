@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.state import SessionRecord
-from ouro.sessions import SessionSnapshot, SessionStore, session_mutation
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore, session_mutation
 
 # The existing durable key remains authoritative so upgrades do not require an
 # eager metadata migration. Items now carry their own delivery mode.
@@ -38,7 +38,7 @@ class QueuedInputQueue:
     def enqueue(
         self,
         *,
-        snapshot: SessionSnapshot,
+        snapshot: RuntimeSessionSnapshot,
         prompt: str,
         mode: QueuedInputMode = "follow_up",
         title: str | None,
@@ -62,7 +62,7 @@ class QueuedInputQueue:
 
     def eligible(
         self,
-        snapshot: SessionSnapshot,
+        snapshot: RuntimeSessionSnapshot,
         *,
         mode: QueuedInputMode | None = None,
         limit: int | None = None,
@@ -85,11 +85,11 @@ class QueuedInputQueue:
             self._remove_invalid(snapshot.session.session_id)
         return valid
 
-    def peek(self, snapshot: SessionSnapshot) -> QueuedInput | None:
+    def peek(self, snapshot: RuntimeSessionSnapshot) -> QueuedInput | None:
         items = self.eligible(snapshot, limit=1)
         return items[0] if items else None
 
-    def acknowledge(self, snapshot: SessionSnapshot, queue_id: str) -> None:
+    def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
         """Remove an item only after its user message is durably appended."""
 
         with session_mutation(self.store, snapshot.session.session_id):

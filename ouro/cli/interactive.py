@@ -131,6 +131,7 @@ async def _run_interactive_session(
             continue
 
         try:
+            await output.start_waiting()
             result = await runtime.run(
                 line,
                 session_id=session_id,
@@ -148,10 +149,7 @@ async def _run_interactive_session(
                 output_func=output_func,
                 output=output,
             )
-            current_approval_mode = runtime.store.load_session(
-                session_id,
-                recover=False,
-            ).session.approval_mode
+            current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
         except OuroError as exc:
             await output.close()
             output_func(f"Error: {exc}")

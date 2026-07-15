@@ -142,7 +142,7 @@ class ResourceService:
         try:
             with session_mutation(self._sessions, session_id):
                 self._require_attached(session_id, resource_id)
-                snapshot = self._sessions.load_session(session_id, recover=False)
+                snapshot = self._sessions.load_runtime_session(session_id, recover=False)
                 users = [
                     message.message_id
                     for message in snapshot.messages

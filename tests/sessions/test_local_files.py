@@ -44,6 +44,49 @@ def test_local_file_store_round_trip(tmp_path) -> None:
     assert store.list_sessions()[0].session_id == session.session_id
 
 
+def test_runtime_snapshot_never_reads_replay_event_journal(monkeypatch, tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Runtime state")
+    store.create_session(session)
+    store.append_message(
+        MessageRecord.text(session_id=session.session_id, role="user", text="hello")
+    )
+    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
+    read_paths: list[str] = []
+    original = store._read_jsonl
+
+    def record_read(path):
+        read_paths.append(path.name)
+        return original(path)
+
+    monkeypatch.setattr(store, "_read_jsonl", record_read)
+
+    snapshot = store.load_runtime_session(session.session_id, recover=False)
+
+    assert snapshot.messages[0].text_content == "hello"
+    assert "events.jsonl" not in read_paths
+
+
+def test_latest_event_sequence_reads_only_ordered_journal_tail(monkeypatch, tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Event tail")
+    store.create_session(session)
+    store.append_ordered_event(EventRecord(session_id=session.session_id, event_type="run_started"))
+    store.append_ordered_event(
+        EventRecord(session_id=session.session_id, event_type="model_request_started")
+    )
+    reopened = LocalSessionStore(tmp_path)
+
+    def reject_full_journal_read(path):
+        raise AssertionError(f"unexpected full journal read: {path}")
+
+    monkeypatch.setattr(reopened, "_read_jsonl", reject_full_journal_read)
+
+    assert reopened.latest_event_sequence(session.session_id) == 2
+
+
 def test_jsonl_pages_use_stable_byte_cursors_across_appends(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

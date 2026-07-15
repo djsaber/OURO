@@ -50,7 +50,7 @@ from ouro.core.state import RunRecord, RunStatus, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
-from ouro.sessions import SessionLock, SessionSnapshot, SessionStore, session_mutation
+from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore, session_mutation
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:
@@ -186,7 +186,7 @@ class RuntimeService:
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         if session_id is None:
             return self.models.default_model()
-        session = self.store.load_session(session_id, recover=False).session
+        session = self.store.load_session_record(session_id)
         return self.models.resolve(session.current_model or self.models.default_model().key)
 
     def resolve_model(self, selector: str) -> AvailableModel:
@@ -203,7 +203,7 @@ class RuntimeService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session_id, recover=False)
             if maybe_active_run(snapshot.runs) is not None:
                 raise SessionBusyError(f"session already has an active run: {session_id}")
             normalized = selector.strip()
@@ -235,11 +235,13 @@ class RuntimeService:
         """Persist the approval policy used by future tool calls in a session."""
 
         self.sessions.set_approval_mode(session_id, approval_mode)
-        return self.store.load_session(session_id, recover=False).session
+        return self.store.load_session_record(session_id)
 
     def _resolve_session_adapter(
         self,
         session: SessionRecord,
+        *,
+        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> tuple[SessionRecord, RuntimeAdapter]:
         selection = self.models.resolve(session.current_model or self.models.default_model().key)
         adapter = self.models.adapter_for(selection.key)
@@ -253,11 +255,16 @@ class RuntimeService:
             }
         )
         self.store.save_session(session)
-        self.store.try_update_index(session.session_id)
+        self.store.try_update_index(
+            session.session_id,
+            snapshot=(
+                snapshot.model_copy(update={"session": session}) if snapshot is not None else None
+            ),
+        )
         return session, adapter
 
     def _adapter_for_session_id(self, session_id: str) -> RuntimeAdapter:
-        session = self.store.load_session(session_id, recover=False).session
+        session = self.store.load_session_record(session_id)
         _, adapter = self._resolve_session_adapter(session)
         return adapter
 
@@ -296,20 +303,14 @@ class RuntimeService:
                 approval_mode=approval_mode or "inherit",
                 workspace=self.default_workspace,
             )
-            session = self.store.load_session(
-                created.session.session_id,
-                recover=False,
-            ).session
-            existing_messages: list[MessageRecord] = []
-            existing_events: list[EventRecord] = []
+            session = self.store.load_session_record(created.session.session_id)
+            snapshot = RuntimeSessionSnapshot(session=session)
         else:
-            snapshot = self.store.load_session(
+            snapshot = self.store.load_runtime_session(
                 session_id,
                 recover=not self._is_session_run_locked(session_id),
             )
             session = snapshot.session
-            existing_messages = snapshot.messages
-            existing_events = snapshot.events
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(session, input_resource_refs)
             if active_run is not None:
@@ -327,7 +328,6 @@ class RuntimeService:
                     resource_refs=input_resource_refs,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
-        sequence = len(existing_events)
         emitted: list[EventRecord] = []
 
         run = RunRecord(
@@ -337,7 +337,7 @@ class RuntimeService:
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
-            snapshot = self.store.load_session(session.session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session.session_id, recover=False)
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(snapshot.session, input_resource_refs)
             if active_run is not None:
@@ -358,7 +358,12 @@ class RuntimeService:
             raise SessionBusyError(f"session is already locked: {session.session_id}")
         abort_signal: AbortSignal | None = None
         try:
-            locked_snapshot = self.store.load_session(session.session_id, recover=False)
+            latest_session = self.store.load_session_record(session.session_id)
+            locked_snapshot = (
+                snapshot
+                if latest_session == snapshot.session
+                else self.store.load_runtime_session(session.session_id, recover=False)
+            )
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
             locked_active_run = maybe_active_run(locked_snapshot.runs)
@@ -391,11 +396,16 @@ class RuntimeService:
                     }
                 )
                 self.store.save_session(session)
-                self.store.try_update_index(session.session_id)
-            session, active_adapter = self._resolve_session_adapter(session)
+                locked_snapshot = locked_snapshot.model_copy(update={"session": session})
+                self.store.try_update_index(
+                    session.session_id,
+                    snapshot=locked_snapshot,
+                )
+            session, active_adapter = self._resolve_session_adapter(
+                session,
+                snapshot=locked_snapshot,
+            )
             existing_messages = locked_snapshot.messages
-            existing_events = locked_snapshot.events
-            sequence = len(existing_events)
             pending_inputs = _queued_inputs or [
                 QueuedInput(
                     prompt=prompt,
@@ -411,8 +421,13 @@ class RuntimeService:
                     adapter=active_adapter,
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
-            session, run = self.run_lifecycle.start(session=session, run=run)
+            session, run = self.run_lifecycle.start(
+                session=session,
+                run=run,
+                snapshot=locked_snapshot,
+            )
 
+            sequence = self.store.latest_event_sequence(session.session_id)
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -442,7 +457,10 @@ class RuntimeService:
                 )
                 user_messages.append(user_message)
                 if is_queued:
-                    latest = self.store.load_session(session.session_id, recover=False)
+                    latest = self.store.load_runtime_session(
+                        session.session_id,
+                        recover=False,
+                    )
                     self.queued_inputs.acknowledge(latest, queued_input.queue_id)
                 sequence = await self.event_recorder.emit(
                     emitted,
@@ -521,7 +539,7 @@ class RuntimeService:
     async def compact(self, *, session_id: str) -> CompactionCommandResult:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
 
-        snapshot = self.store.load_session(session_id)
+        snapshot = self.store.load_runtime_session(session_id)
         if maybe_active_run(snapshot.runs) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         run = RunRecord(
@@ -534,17 +552,24 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"session is already locked: {session_id}")
         emitted: list[EventRecord] = []
-        sequence = len(snapshot.events)
+        sequence = self.store.latest_event_sequence(session_id)
         abort_signal = self._activate_abort_signal(session_id, run.run_id)
         terminal_run = run
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session_id, recover=False)
             if maybe_active_run(snapshot.runs) is not None:
                 raise SessionBusyError(f"session already has an active run: {session_id}")
-            active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
+            active_session, active_adapter = self._resolve_session_adapter(
+                snapshot.session,
+                snapshot=snapshot,
+            )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             terminal_run = run
-            active_session, run = self.run_lifecycle.start(session=active_session, run=run)
+            active_session, run = self.run_lifecycle.start(
+                session=active_session,
+                run=run,
+                snapshot=snapshot,
+            )
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -570,7 +595,7 @@ class RuntimeService:
             except Exception as exc:
                 failed = await self.run_lifecycle.fail(
                     emitted,
-                    len(self.store.load_session(session_id, recover=False).events),
+                    self.store.latest_event_sequence(session_id),
                     session=active_session,
                     run=run,
                     error=str(exc),
@@ -620,7 +645,7 @@ class RuntimeService:
         run_id: str | None = None,
         reason: str = "User aborted",
     ) -> RunResult:
-        snapshot = self.store.load_session(session_id, recover=False)
+        snapshot = self.store.load_runtime_session(session_id, recover=False)
         run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
         if run.status not in ACTIVE_RUN_STATUSES:
             return RunResult(session=snapshot.session, run=run)
@@ -630,7 +655,7 @@ class RuntimeService:
         if signal is not None:
             signal.abort(reason)
         with session_mutation(self.store, session_id):
-            snapshot = self.store.load_session(session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session_id, recover=False)
             run = find_run(snapshot.runs, run.run_id)
             if run.status not in ACTIVE_RUN_STATUSES:
                 return RunResult(session=snapshot.session, run=run)
@@ -660,7 +685,7 @@ class RuntimeService:
         self.store.try_update_index(session.session_id)
         await self.event_recorder.emit(
             emitted,
-            len(snapshot.events),
+            self.store.latest_event_sequence(session_id),
             session_id=session.session_id,
             run_id=run.run_id,
             event_type="run_aborted",
@@ -672,7 +697,7 @@ class RuntimeService:
     async def _queue_input(
         self,
         *,
-        snapshot: SessionSnapshot,
+        snapshot: RuntimeSessionSnapshot,
         active_run: RunRecord,
         prompt: str,
         title: str | None,
@@ -689,7 +714,7 @@ class RuntimeService:
         emitted: list[EventRecord] = []
         sequence = await self.event_recorder.emit(
             emitted,
-            len(snapshot.events),
+            self.store.latest_event_sequence(session.session_id),
             session_id=session.session_id,
             run_id=active_run.run_id,
             event_type=(
@@ -709,7 +734,7 @@ class RuntimeService:
 
     async def _drain_queued_input_queue(self, session_id: str) -> None:
         while True:
-            snapshot = self.store.load_session(
+            snapshot = self.store.load_runtime_session(
                 session_id,
                 recover=not self._is_session_run_locked(session_id),
             )
@@ -752,7 +777,7 @@ class RuntimeService:
         assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
     ) -> TurnBoundaryInputResult:
-        snapshot = self.store.load_session(session.session_id, recover=False)
+        snapshot = self.store.load_runtime_session(session.session_id, recover=False)
         limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
         eligible = self.queued_inputs.eligible(snapshot, mode="steer", limit=limit)
         if not eligible:
@@ -773,7 +798,7 @@ class RuntimeService:
                 appended.append(assistant_message)
 
         for item in eligible:
-            latest = self.store.load_session(session.session_id, recover=False)
+            latest = self.store.load_runtime_session(session.session_id, recover=False)
             if self._queued_input_is_durable(latest.messages, item.queue_id):
                 self.queued_inputs.acknowledge(latest, item.queue_id)
                 durable = next(
@@ -802,7 +827,7 @@ class RuntimeService:
                 },
             )
             appended.append(user_message)
-            latest = self.store.load_session(session.session_id, recover=False)
+            latest = self.store.load_runtime_session(session.session_id, recover=False)
             self.queued_inputs.acknowledge(latest, item.queue_id)
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -871,7 +896,7 @@ class RuntimeService:
         reason: str = "User rejected",
         arguments_override: dict[str, object] | None = None,
     ) -> RunResult:
-        snapshot = self.store.load_session(session_id)
+        snapshot = self.store.load_runtime_session(session_id)
         session = snapshot.session
         run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
         if run.status != "waiting_approval":
@@ -886,7 +911,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session_id, recover=False)
             session = snapshot.session
             run = find_run(snapshot.runs, run.run_id)
             if run.status != "waiting_approval":
@@ -909,7 +934,7 @@ class RuntimeService:
                 for call in batch.calls
                 if call.approval is not None and call.approval.approval_id == resolved_approval_id
             )
-            sequence = len(snapshot.events)
+            sequence = self.store.latest_event_sequence(session_id)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -950,7 +975,7 @@ class RuntimeService:
         run_id: str,
         answer: str,
     ) -> RunResult:
-        snapshot = self.store.load_session(session_id)
+        snapshot = self.store.load_runtime_session(session_id)
         session = snapshot.session
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_user":
@@ -965,7 +990,7 @@ class RuntimeService:
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
+            snapshot = self.store.load_runtime_session(session_id, recover=False)
             session = snapshot.session
             run = find_run(snapshot.runs, run.run_id)
             if run.status != "waiting_user":
@@ -987,7 +1012,7 @@ class RuntimeService:
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
             )
-            sequence = len(snapshot.events)
+            sequence = self.store.latest_event_sequence(session_id)
             emitted: list[EventRecord] = []
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -1022,7 +1047,7 @@ class RuntimeService:
     async def _continue_resolved_batch(
         self,
         *,
-        snapshot: SessionSnapshot,
+        snapshot: RuntimeSessionSnapshot,
         session: SessionRecord,
         run: RunRecord,
         batch: ToolCallBatchRecord,
@@ -1068,11 +1093,14 @@ class RuntimeService:
                     abort_signal=active_signal,
                 )
             except Exception as exc:  # noqa: BLE001 - coordinator is a runtime boundary.
-                latest = self.store.load_session(session.session_id, recover=False)
+                latest = self.store.load_runtime_session(
+                    session.session_id,
+                    recover=False,
+                )
                 latest_run = find_run(latest.runs, run.run_id)
                 failed = await self.run_lifecycle.fail(
                     emitted,
-                    len(latest.events),
+                    self.store.latest_event_sequence(session.session_id),
                     session=latest.session,
                     run=latest_run,
                     error=f"tool batch handling failed: {exc}",
@@ -1081,7 +1109,7 @@ class RuntimeService:
                 )
                 self._finish_run_hooks(failed.run)
                 return failed
-            latest = self.store.load_session(session.session_id)
+            latest = self.store.load_runtime_session(session.session_id)
             session = latest.session
             run = find_run(latest.runs, run.run_id)
             abort_result = self._aborted_result(
@@ -1105,10 +1133,16 @@ class RuntimeService:
                 assistant_continuation=None,
                 turn_id=batch.turn_id,
             )
-            latest = self.store.load_session(session.session_id, recover=False)
+            latest = self.store.load_runtime_session(
+                session.session_id,
+                recover=False,
+            )
             session = latest.session
             run = find_run(latest.runs, run.run_id)
-            session, active_adapter = self._resolve_session_adapter(session)
+            session, active_adapter = self._resolve_session_adapter(
+                session,
+                snapshot=latest,
+            )
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,

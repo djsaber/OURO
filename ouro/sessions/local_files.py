@@ -22,7 +22,7 @@ from ouro.core.state import (
     SessionRecord,
     session_status_for_run,
 )
-from ouro.sessions.base import SessionSnapshot
+from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
@@ -222,12 +222,13 @@ class LocalSessionStore:
 
     def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord:
         with self.session_mutation(session_id):
-            snapshot = self.load_session(session_id, recover=False)
-            if not any(item.compaction_id == compaction_id for item in snapshot.compactions):
+            session_dir = self._require_session_dir(session_id)
+            compactions = self._load_compactions(session_dir)
+            if not any(item.compaction_id == compaction_id for item in compactions):
                 raise PersistenceError(
                     f"unknown compaction {compaction_id} for session {session_id}"
                 )
-            updated = snapshot.session.model_copy(
+            updated = self.load_session_record(session_id).model_copy(
                 update={
                     "active_compaction_id": compaction_id,
                     "updated_at": utc_now(),
@@ -239,17 +240,47 @@ class LocalSessionStore:
 
     def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
         with self.session_mutation(session_id):
-            snapshot, projection_changed = self._load_session(session_id, recover=recover)
+            runtime, projection_changed = self._load_runtime_session(
+                session_id,
+                recover=recover,
+            )
+            session_dir = self._session_dir(session_id)
+            try:
+                events = [
+                    EventRecord.model_validate_json(line)
+                    for line in self._read_jsonl(session_dir / "events.jsonl")
+                ]
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
+            snapshot = SessionSnapshot(
+                **runtime.model_dump(),
+                events=events,
+            )
         if projection_changed:
             self.try_update_index(session_id)
         return snapshot
 
-    def _load_session(
+    def load_runtime_session(
+        self,
+        session_id: str,
+        *,
+        recover: bool = True,
+    ) -> RuntimeSessionSnapshot:
+        with self.session_mutation(session_id):
+            snapshot, projection_changed = self._load_runtime_session(
+                session_id,
+                recover=recover,
+            )
+        if projection_changed:
+            self.try_update_index(session_id)
+        return snapshot
+
+    def _load_runtime_session(
         self,
         session_id: str,
         *,
         recover: bool,
-    ) -> tuple[SessionSnapshot, bool]:
+    ) -> tuple[RuntimeSessionSnapshot, bool]:
         session_dir = self._session_dir(session_id)
         try:
             session = self.load_session_record(session_id)
@@ -257,18 +288,11 @@ class LocalSessionStore:
                 MessageRecord.model_validate_json(line)
                 for line in self._read_jsonl(session_dir / "messages.jsonl")
             ]
-            events = [
-                EventRecord.model_validate_json(line)
-                for line in self._read_jsonl(session_dir / "events.jsonl")
-            ]
             runs = [
                 RunRecord.model_validate_json(path.read_text("utf-8"))
                 for path in sorted((session_dir / "runs").glob("*.json"))
             ]
-            compactions = [
-                CompactionRecord.model_validate_json(line)
-                for line in self._read_jsonl(session_dir / "compactions.jsonl")
-            ]
+            compactions = self._load_compactions(session_dir)
         except FileNotFoundError:
             raise
         except (OSError, ValidationError, ValueError) as exc:
@@ -276,16 +300,24 @@ class LocalSessionStore:
         runs.sort(key=_run_sort_key)
         projection_changed = False
         if recover:
+            events = (
+                [
+                    EventRecord.model_validate_json(line)
+                    for line in self._read_jsonl(session_dir / "events.jsonl")
+                ]
+                if any(run.status in _INCOMPLETE_RUN_STATUSES for run in runs)
+                and not self.is_session_locked(session_id)
+                else []
+            )
             session, messages, events, runs, projection_changed = self._recover_incomplete_runs(
                 session,
                 messages,
                 events,
                 runs,
             )
-        snapshot = SessionSnapshot(
+        snapshot = RuntimeSessionSnapshot(
             session=session,
             messages=messages,
-            events=events,
             runs=runs,
             compactions=compactions,
         )
@@ -294,6 +326,32 @@ class LocalSessionStore:
                 f"session {session_id} references missing compaction {session.active_compaction_id}"
             )
         return snapshot, projection_changed
+
+    def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
+        with self.session_mutation(session_id):
+            session = self.load_session_record(session_id)
+            active_id = session.active_compaction_id
+            if active_id is None:
+                return None
+            session_dir = self._require_session_dir(session_id)
+            active = next(
+                (
+                    compaction
+                    for compaction in self._load_compactions(session_dir)
+                    if compaction.compaction_id == active_id
+                ),
+                None,
+            )
+            if active is None:
+                raise PersistenceError(
+                    f"session {session_id} references missing compaction {active_id}"
+                )
+            return active
+
+    def latest_event_sequence(self, session_id: str) -> int:
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "events.jsonl"
+            return self._max_event_sequence(session_id, path)
 
     def load_session_record(self, session_id: str) -> SessionRecord:
         with self.session_mutation(session_id):
@@ -376,8 +434,12 @@ class LocalSessionStore:
     def try_rebuild_index(self) -> str | None:
         return self._catalog.try_rebuild()
 
-    def try_update_index(self, session_id: str) -> str | None:
-        return self._catalog.try_update(session_id)
+    def try_update_index(
+        self,
+        session_id: str,
+        snapshot: RuntimeSessionSnapshot | None = None,
+    ) -> str | None:
+        return self._catalog.try_update(session_id, snapshot=snapshot)
 
     def load_index(self) -> SessionIndex:
         return self._catalog.load()
@@ -688,8 +750,8 @@ class LocalSessionStore:
                 f"found {manifest.data_layout_version}, expected {DATA_LAYOUT_VERSION}"
             )
 
-    def _load_snapshot_for_index(self, session_id: str) -> SessionSnapshot:
-        return self.load_session(session_id, recover=False)
+    def _load_snapshot_for_index(self, session_id: str) -> RuntimeSessionSnapshot:
+        return self.load_runtime_session(session_id, recover=False)
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):
@@ -727,19 +789,27 @@ class LocalSessionStore:
         cached = self._event_sequence_cache.get(session_id)
         if cached is not None and cached[0] == size:
             return cached[1]
-        maximum = 0
-        for line in self._read_jsonl(path):
-            try:
-                raw = json.loads(line)
-                if not isinstance(raw, dict):
-                    raise ValueError("event record must be a JSON object")
-                value = raw.get("sequence", 0)
-                if isinstance(value, int):
-                    maximum = max(maximum, value)
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                raise PersistenceError(f"could not read event sequence from {path}: {exc}") from exc
-        self._event_sequence_cache[session_id] = (size, maximum)
-        return maximum
+        if size == 0:
+            self._event_sequence_cache[session_id] = (0, 0)
+            return 0
+        try:
+            line = _read_last_nonempty_line(path)
+            raw = json.loads(line)
+            if not isinstance(raw, dict):
+                raise ValueError("event record must be a JSON object")
+            value = raw.get("sequence", 0)
+            if not isinstance(value, int) or value < 0:
+                raise ValueError("event sequence must be a non-negative integer")
+        except (OSError, UnicodeDecodeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise PersistenceError(f"could not read event sequence from {path}: {exc}") from exc
+        self._event_sequence_cache[session_id] = (size, value)
+        return value
+
+    def _load_compactions(self, session_dir: Path) -> list[CompactionRecord]:
+        return [
+            CompactionRecord.model_validate_json(line)
+            for line in self._read_jsonl(session_dir / "compactions.jsonl")
+        ]
 
     def _write_model_atomic(self, path: Path, model: OuroModel) -> None:
         write_model_atomic(path, model)
@@ -834,3 +904,23 @@ def _validated_page_args(cursor: int, limit: int) -> tuple[int, int]:
     if not 1 <= limit <= 1000:
         raise ValueError("limit must be between 1 and 1000")
     return cursor, limit
+
+
+def _read_last_nonempty_line(path: Path, *, chunk_size: int = 8192) -> str:
+    """Read the ordered journal tail without materializing the complete file."""
+
+    with path.open("rb") as file:
+        position = file.seek(0, os.SEEK_END)
+        buffer = b""
+        while position > 0:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            file.seek(position)
+            buffer = file.read(read_size) + buffer
+            lines = buffer.splitlines()
+            if position > 0 and len(lines) <= 1:
+                continue
+            for raw in reversed(lines):
+                if raw.strip():
+                    return raw.decode("utf-8")
+        return ""
