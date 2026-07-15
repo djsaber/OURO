@@ -33,12 +33,12 @@ class SpinnerTheme:
 
 SPINNER_THEMES: dict[SpinnerSemantic, SpinnerTheme] = {
     "mcp_connection": SpinnerTheme(
-        frames=("◐", "◓", "◑", "◒"),
+        frames=("◜", "◝", "◞", "◟"),
         interval_seconds=0.12,
         color=_CYAN,
     ),
     "tool_input": SpinnerTheme(
-        frames=("▹", "▸", "▹", "▸"),
+        frames=("◱", "◰", "◳", "◲"),
         interval_seconds=0.16,
         color=_MAGENTA,
     ),
