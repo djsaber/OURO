@@ -179,6 +179,39 @@ async def test_runtime_resource_leaves_explicit_non_auto_server_disconnected(tmp
         assert registry.names() == []
 
 
+def test_runtime_resource_exposes_only_enabled_auto_start_configs(tmp_path) -> None:
+    store = MCPConfigStore(tmp_path)
+    store.upsert(
+        MCPServerConfig(
+            server_id="auto",
+            name="Auto",
+            command="auto-server",
+            auto_start=True,
+        )
+    )
+    store.upsert(
+        MCPServerConfig(
+            server_id="manual",
+            name="Manual",
+            command="manual-server",
+            auto_start=False,
+        )
+    )
+    store.upsert(
+        MCPServerConfig(
+            server_id="disabled",
+            name="Disabled",
+            command="disabled-server",
+            enabled=False,
+            auto_start=True,
+        )
+    )
+
+    resource = MCPRuntimeResource.from_config(tmp_path, ToolRegistry())
+
+    assert [config.server_id for config in resource.startup_configs] == ["auto"]
+
+
 @pytest.mark.parametrize(
     ("values", "message"),
     [

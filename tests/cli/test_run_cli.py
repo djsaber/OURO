@@ -332,6 +332,10 @@ async def test_interactive_composes_mcp_for_process_lifetime(
 
     assert code == 0
     assert "Interactive MCP done." in outputs
+    rendered = "".join(outputs)
+    assert "Connecting MCP · 1 server(s) · Echo" in rendered
+    assert "MCP · 1 connected · 1 tool(s)" in rendered
+    assert "✓ Echo [echo] · stdio · 1 tool(s)" in rendered
     assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
 
 

@@ -21,6 +21,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Interactive terminal rendering now uses semantic, single-line spinners for MCP startup, tool
+  input collection, and tool execution; streamed tool arguments are finalized once instead of
+  repainting their partial contents.
 - Provider configuration now separates user instance id, product-level provider type, and wire
   protocol; runtime adapter dispatch depends only on the registered protocol.
 - Endpoint reasoning configuration now separates activation, effort, visible output, continuation,

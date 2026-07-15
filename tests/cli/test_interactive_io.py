@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 from ouro.cli.interactive_io import InteractiveOutput
 from ouro.core.events import EventRecord
+from ouro.mcp import MCPServerConfig, MCPServerRecord
 
 
 def _event(
@@ -17,11 +20,11 @@ def _event(
     )
 
 
-def test_interactive_output_renders_tool_call_fragments_before_model_completion() -> None:
+async def test_interactive_output_replaces_streamed_arguments_with_tool_input_status() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
 
-    output.handle_event(
+    await output.handle_event(
         _event(
             1,
             "model_tool_call_delta",
@@ -34,10 +37,11 @@ def test_interactive_output_renders_tool_call_fragments_before_model_completion(
         )
     )
 
-    assert "Read" in outputs[-1]
-    assert '{"path"' in outputs[-1]
+    assert "Receiving tool input · Read" in outputs[-1]
+    assert '{"path"' not in outputs[-1]
+    output_count = len(outputs)
 
-    output.handle_event(
+    await output.handle_event(
         _event(
             2,
             "model_tool_call_delta",
@@ -49,15 +53,16 @@ def test_interactive_output_renders_tool_call_fragments_before_model_completion(
             },
         )
     )
-    assert '"README.md"' in outputs[-1]
-    output.handle_event(_event(3, "model_message_completed", {"tool_call_count": 1}))
+    assert len(outputs) == output_count
+    assert "README.md" not in "".join(outputs)
 
+    await output.handle_event(_event(3, "model_message_completed", {"tool_call_count": 1}))
     rendered = "".join(outputs)
     assert "Read" in rendered
     assert '{"path": "README.md"}' in rendered
 
 
-def test_interactive_output_finalizes_interleaved_tool_calls_in_source_order() -> None:
+async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_order() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
     deltas = [
@@ -71,20 +76,20 @@ def test_interactive_output_finalizes_interleaved_tool_calls_in_source_order() -
         {"index": 0, "id_delta": "", "name_delta": "", "arguments_delta": "}"},
     ]
     for sequence, payload in enumerate(deltas, start=1):
-        output.handle_event(_event(sequence, "model_tool_call_delta", payload))
+        await output.handle_event(_event(sequence, "model_tool_call_delta", payload))
 
-    output.handle_event(_event(4, "model_message_completed", {"tool_call_count": 2}))
+    await output.handle_event(_event(4, "model_message_completed", {"tool_call_count": 2}))
 
     final_lines = outputs[-2:]
     assert "Read" in final_lines[0]
     assert "Write" in final_lines[1]
 
 
-def test_interactive_output_bounds_and_sanitizes_live_argument_preview() -> None:
+async def test_interactive_output_bounds_and_sanitizes_completed_argument_preview() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
 
-    output.handle_event(
+    await output.handle_event(
         _event(
             1,
             "model_tool_call_delta",
@@ -96,8 +101,80 @@ def test_interactive_output_bounds_and_sanitizes_live_argument_preview() -> None
             },
         )
     )
+    assert "x" not in outputs[-1]
 
-    assert "\n" not in outputs[-1]
-    assert "\\n" in outputs[-1]
-    assert "…" in outputs[-1]
-    assert len(outputs[-1]) < 320
+    await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 1}))
+    final = outputs[-1]
+    assert "\n" not in final.rstrip("\n")
+    assert "\\n" in final
+    assert "…" in final
+    assert len(final) < 320
+
+
+async def test_interactive_output_animates_tool_execution_and_reports_result() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+
+    await output.handle_event(
+        _event(
+            1,
+            "tool_call_started",
+            {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
+        )
+    )
+    assert "Running tool · Read" in outputs[-1]
+
+    await output.handle_event(
+        _event(
+            2,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Read",
+                "status": "completed",
+                "is_error": False,
+                "source_index": 0,
+            },
+        )
+    )
+    assert outputs[-1] == "✓ Read · completed\n"
+    assert output.active_tool_calls == {}
+
+
+async def test_interactive_output_summarizes_mcp_connection_records() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+    connected_config = MCPServerConfig(
+        server_id="docs",
+        name="Docs",
+        command="mcp-docs",
+        auto_start=True,
+    )
+    failed_config = MCPServerConfig(
+        server_id="broken",
+        name="Broken",
+        command="missing",
+        auto_start=True,
+    )
+
+    await output.start_mcp_connection((connected_config, failed_config))
+    assert "Connecting MCP · 2 server(s)" in outputs[-1]
+    await output.finish_mcp_connection(
+        (
+            MCPServerRecord(
+                config=connected_config,
+                status="connected",
+                tool_names=("docs__search", "docs__open"),
+            ),
+            MCPServerRecord(
+                config=failed_config,
+                status="failed",
+                error="process exited",
+            ),
+        )
+    )
+
+    rendered = "".join(outputs)
+    assert "MCP · 1 connected · 1 failed · 2 tool(s)" in rendered
+    assert "✓ Docs [docs] · stdio · 2 tool(s)" in rendered
+    assert "✗ Broken [broken] · failed · process exited" in rendered

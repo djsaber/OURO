@@ -37,8 +37,18 @@ ouro skills
 
 无子命令时启动持续 stdin/stdout Host。支持 prompt、session 切换、新建、模型查看/切换、历史、导出、
 Skills 和退出等 slash command。流式文本、reasoning、工具调用、审批和 AskUser 使用独立 I/O 适配器。
-Interactive 直接消费 `model_tool_call_delta`：分片到达时更新当前工具预览，模型响应完成后按 source index
-定稿；不得等到工具预检或执行事件才首次展示调用，也不得把未完成参数当作可执行 JSON。
+Interactive 直接消费 `model_tool_call_delta`：参数分片只更新单行 `tool_input` 动态状态，不逐片打印参数；模型
+响应完成后按 source index 一次性输出有界的参数摘要。不得等到工具预检或执行事件才首次展示调用，也不得把
+未完成参数当作可执行 JSON。`tool_call_started/completed` 驱动独立的 `tool_execution` 动态状态，并为每个工具
+留下成功、失败或中止的稳定结果行。
+
+动态状态由 CLI 终端适配器集中管理，一个终端同时只有一条可替换状态行。MCP 连接、工具参数收集和工具执行
+使用不同的语义帧集合；新增动画只扩展主题目录，不在事件分支中硬编码帧。真实 TTY 使用异步动画和 ANSI 清行，
+重定向输出及测试环境退化为单次开始状态与稳定结果，不输出持续帧。动画任务在 Run 结束、异常、EOF 和 Host
+退出时必须清理。
+
+Interactive 启动配置了 auto-start MCP 时，先显示 `mcp_connection` 动态状态；连接完成后按 server 输出脱敏的
+connected/failed 状态、transport 和工具数量。MCP manager/resource 只暴露类型化连接结果，不依赖终端展示。
 Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 Host 错误边界；类型化 application 错误应
 显示后继续输入循环，并保留已经返回的 durable Session identity，不得以 traceback 终止整个 Host。
 

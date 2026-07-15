@@ -45,15 +45,20 @@ async def run_interactive(
                 event_sink=output.handle_event,
             )
             owned_mcp = build_default_mcp_runtime(runtime)
+            await output.start_mcp_connection(owned_mcp.startup_configs)
             await owned_mcp.start()
+            await output.finish_mcp_connection(owned_mcp.startup_records)
         except OuroError as exc:
+            await output.close()
+            if owned_mcp is not None:
+                await owned_mcp.close()
             output_func(f"Error: {exc}")
             return 1
-        for record in owned_mcp.startup_failures:
-            output_func(
-                f"Warning: MCP server {record.config.server_id} failed to start: "
-                f"{record.error or 'unknown error'}"
-            )
+        except BaseException:
+            await output.close()
+            if owned_mcp is not None:
+                await owned_mcp.close()
+            raise
     else:
         runtime.add_event_sink(output.handle_event)
 
@@ -66,6 +71,7 @@ async def run_interactive(
             approval_mode=approval_mode,
         )
     finally:
+        await output.close()
         if owned_mcp is not None:
             await owned_mcp.close()
 
@@ -142,5 +148,6 @@ async def _run_interactive_session(
                 recover=False,
             ).session.approval_mode
         except OuroError as exc:
+            await output.close()
             output_func(f"Error: {exc}")
             continue

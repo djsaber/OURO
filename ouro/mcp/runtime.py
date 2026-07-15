@@ -5,7 +5,7 @@ from pathlib import Path
 
 from ouro.mcp.configuration import MCPConfigStore
 from ouro.mcp.manager import MCPManager
-from ouro.mcp.models import MCPServerRecord
+from ouro.mcp.models import MCPServerConfig, MCPServerRecord
 from ouro.tools import ToolRegistry
 
 
@@ -45,6 +45,16 @@ class MCPRuntimeResource:
 
     async def close(self) -> None:
         await self.manager.close()
+
+    @property
+    def startup_configs(self) -> tuple[MCPServerConfig, ...]:
+        """Enabled auto-start servers that this process resource will connect."""
+
+        return tuple(
+            record.config
+            for record in self.manager.list()
+            if record.config.enabled and record.config.auto_start
+        )
 
     @property
     def startup_failures(self) -> tuple[MCPServerRecord, ...]:
