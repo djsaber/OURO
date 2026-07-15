@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.cli.interactive_io import InteractiveOutput
-from ouro.cli.terminal_status import SPINNER_THEMES
+from ouro.cli.terminal_status import TerminalStatusRegion
 from ouro.core.events import EventRecord
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
@@ -23,7 +23,10 @@ def _event(
 
 async def test_interactive_output_replaces_streamed_arguments_with_tool_input_status() -> None:
     outputs: list[str] = []
-    output = InteractiveOutput(outputs.append)
+    output = InteractiveOutput(
+        outputs.append,
+        tool_lines=TerminalStatusRegion(outputs.append, animated=True),
+    )
 
     await output.handle_event(
         _event(
@@ -38,7 +41,7 @@ async def test_interactive_output_replaces_streamed_arguments_with_tool_input_st
         )
     )
 
-    assert "Receiving tool input · Read" in outputs[-1]
+    assert "\x1b[1;36mRead\x1b[0m · generating parameters" in outputs[-1]
     assert '{"path"' not in outputs[-1]
     output_count = len(outputs)
 
@@ -61,6 +64,7 @@ async def test_interactive_output_replaces_streamed_arguments_with_tool_input_st
     rendered = "".join(outputs)
     assert "Read" in rendered
     assert '{"path": "README.md"}' in rendered
+    await output.close()
 
 
 async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_order() -> None:
@@ -80,6 +84,34 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
         await output.handle_event(_event(sequence, "model_tool_call_delta", payload))
 
     await output.handle_event(_event(4, "model_message_completed", {"tool_call_count": 2}))
+    for index, (tool_call_id, tool_name) in enumerate(
+        (("call_1", "Read"), ("call_2", "Write"))
+    ):
+        await output.handle_event(
+            _event(
+                5 + index,
+                "tool_call_started",
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "source_index": index,
+                },
+            )
+        )
+        await output.handle_event(
+            _event(
+                7 + index,
+                "tool_call_completed",
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "status": "completed",
+                    "is_error": False,
+                    "source_index": index,
+                },
+            )
+        )
+    await output.handle_event(_event(9, "tool_batch_completed", {"batch_id": "batch_1"}))
 
     final_lines = outputs[-2:]
     assert "Read" in final_lines[0]
@@ -102,9 +134,23 @@ async def test_interactive_output_bounds_and_sanitizes_completed_argument_previe
             },
         )
     )
-    assert "x" not in outputs[-1]
+    assert outputs == []
 
     await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 1}))
+    await output.handle_event(
+        _event(
+            3,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Write",
+                "status": "completed",
+                "is_error": False,
+                "source_index": 0,
+            },
+        )
+    )
+    await output.handle_event(_event(4, "tool_batch_completed", {"batch_id": "batch_1"}))
     final = outputs[-1]
     assert "\n" not in final.rstrip("\n")
     assert "\\n" in final
@@ -119,15 +165,34 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
     await output.handle_event(
         _event(
             1,
+            "model_tool_call_delta",
+            {
+                "index": 0,
+                "id_delta": "call_1",
+                "name_delta": "Read",
+                "arguments_delta": '{"path":"README.md"}',
+            },
+        )
+    )
+    await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 1}))
+    await output.handle_event(
+        _event(
+            3,
+            "tool_call_requested",
+            {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
+        )
+    )
+    await output.handle_event(
+        _event(
+            4,
             "tool_call_started",
             {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
         )
     )
-    assert "Running tool · Read" in outputs[-1]
 
     await output.handle_event(
         _event(
-            2,
+            5,
             "tool_call_completed",
             {
                 "tool_call_id": "call_1",
@@ -138,7 +203,9 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
             },
         )
     )
-    assert outputs[-1] == "✓ Read · completed\n"
+    await output.handle_event(_event(6, "tool_batch_completed", {"batch_id": "batch_1"}))
+
+    assert outputs == ['✓ Read · completed · ({"path": "README.md"})\n']
     assert output.active_tool_calls == {}
 
 
@@ -160,7 +227,8 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
             {"tool_call_id": "call_2", "tool_name": "Write", "source_index": 1},
         )
     )
-    assert output.status_line.message == "Running 2 tools · Read, Write"
+    assert output.tool_lines.active is True
+    assert outputs == []
 
     await output.handle_event(
         _event(
@@ -175,11 +243,7 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
             },
         )
     )
-    execution_frame = SPINNER_THEMES["tool_execution"].frames[0]
-    assert outputs[-2:] == [
-        "✓ Read · completed\n",
-        f"{execution_frame} Running tool · Write\n",
-    ]
+    assert outputs == []
 
     await output.handle_event(
         _event(
@@ -194,7 +258,11 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
             },
         )
     )
-    assert outputs[-1] == "✗ Write · failed\n"
+    await output.handle_event(_event(5, "tool_batch_completed", {"batch_id": "batch_1"}))
+    assert outputs == [
+        "✓ Read · completed · ()\n",
+        "✗ Write · failed · ()\n",
+    ]
     assert output.active_tool_calls == {}
 
 

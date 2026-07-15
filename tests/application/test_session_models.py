@@ -122,6 +122,42 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
 
 
 @pytest.mark.asyncio
+async def test_initial_model_creates_first_session_on_selected_route(tmp_path) -> None:
+    runtime, _, providers = _runtime(tmp_path)
+
+    result = await runtime.run("first", initial_model="beta/fast")
+
+    assert result.session.current_model == "beta/fast"
+    assert result.run.model == "beta-model"
+    assert result.final_text == "beta-response"
+    assert providers["alpha"].models == []
+    assert providers["beta"].models == ["beta-model"]
+
+
+@pytest.mark.asyncio
+async def test_initial_model_is_rejected_for_an_existing_session(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    session = runtime.sessions.create(current_model="alpha/default").session
+
+    with pytest.raises(ValueError, match="only be set when creating a session"):
+        await runtime.run(
+            "hello",
+            session_id=session.session_id,
+            initial_model="beta/fast",
+        )
+
+
+@pytest.mark.asyncio
+async def test_invalid_initial_model_does_not_create_an_empty_session(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+
+    with pytest.raises(ConfigError, match="model not found"):
+        await runtime.run("hello", initial_model="missing/model")
+
+    assert runtime.sessions.catalog().entries == ()
+
+
+@pytest.mark.asyncio
 async def test_noncanonical_persisted_model_route_is_rejected(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
     session = runtime.sessions.create(current_model="beta-model").session
@@ -172,4 +208,35 @@ async def test_interactive_lists_switches_and_reports_session_model(tmp_path) ->
     assert "Switched model: beta/fast (beta-model)" in outputs
     assert "beta/fast" in outputs
     assert providers["alpha"].models == ["alpha-model"]
+    assert providers["beta"].models == ["beta-model"]
+
+
+@pytest.mark.asyncio
+async def test_interactive_selects_model_before_creating_first_session(tmp_path) -> None:
+    runtime, _, providers = _runtime(tmp_path)
+    inputs = iter(
+        [
+            "/models",
+            "/model beta/fast",
+            "/models",
+            "/model",
+            "hello",
+            "/exit",
+        ]
+    )
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Selected model for new session: beta/fast (beta-model)" in outputs
+    assert "beta/fast" in outputs
+    model_lists = [output for output in outputs if output.startswith("Available models:")]
+    assert model_lists[0].splitlines()[1].startswith("*")
+    assert any(line.startswith("* beta/fast") for line in model_lists[1].splitlines())
+    assert providers["alpha"].models == []
     assert providers["beta"].models == ["beta-model"]

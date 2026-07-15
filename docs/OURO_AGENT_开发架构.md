@@ -255,10 +255,11 @@ CLI 命令使用资源层级表达职责：
 
 命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
 MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置和完整校验由 `MCPConfigStore` 负责。
-Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理唯一的可替换状态行和动画任务，
-`InteractiveOutput` 把 MCP 启动结果及既有 Run 事件投影为 `mcp_connection`、`compaction`、`tool_input`、`tool_execution`
-语义。Core/application 不感知 spinner 帧；非 TTY 输出自动降级为有限的稳定文本。工具参数 delta 保持 durable
-事件与完整累积，但终端只在模型回合定稿后输出一次有界摘要，避免参数流刷屏。
+Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
+`TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
+`mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；
+真实 TTY 对工具参数生成、执行与结果进行原位重绘，非 TTY 则让每个工具只输出最终稳定行。工具参数 delta 保持
+durable 事件与完整累积，但终端仅在参数定稿后把有界摘要合入同一工具行，避免参数流刷屏和重复结果行。
 
 ## 扩展边界
 

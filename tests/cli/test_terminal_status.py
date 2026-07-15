@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 
-from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine
+from ouro.cli.terminal_status import (
+    SPINNER_THEMES,
+    TerminalStatusLine,
+    TerminalStatusRegion,
+)
 
 
 def test_spinner_semantics_have_distinct_extensible_frame_sets() -> None:
@@ -55,3 +59,33 @@ async def test_status_finish_clears_animation_and_emits_stable_result() -> None:
 
     assert status.active is False
     assert outputs[-1] == "✓ MCP connected\n"
+
+
+async def test_nonanimated_region_emits_each_status_once_when_committed() -> None:
+    outputs: list[str] = []
+    region = TerminalStatusRegion(outputs.append, animated=False)
+
+    await region.upsert("call_1", "tool_input", "Read · generating parameters")
+    await region.upsert("call_1", "tool_execution", "Read · running · (path)")
+    await region.finish("call_1", "Read · completed · (path)", tone="success")
+    await region.commit()
+
+    assert outputs == ["✓ Read · completed · (path)\n"]
+
+
+async def test_animated_region_updates_multiple_rows_in_place() -> None:
+    outputs: list[str] = []
+    region = TerminalStatusRegion(outputs.append, animated=True)
+
+    await region.upsert("call_1", "tool_input", "Read · generating parameters")
+    await region.upsert("call_2", "tool_input", "Write · generating parameters")
+    await region.upsert("call_1", "tool_execution", "Read · running · (path)")
+    await region.finish("call_1", "Read · completed · (path)", tone="success")
+    await region.finish("call_2", "Write · failed · (path)", tone="error")
+    await region.commit()
+
+    rendered = "".join(outputs)
+    assert "\x1b[1A" in rendered
+    assert "Read · completed · (path)" in rendered
+    assert "Write · failed · (path)" in rendered
+    assert rendered.count("\n") == 2

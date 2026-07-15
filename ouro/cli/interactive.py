@@ -86,6 +86,7 @@ async def _run_interactive_session(
 ) -> int:
     session_id: str | None = None
     current_approval_mode = approval_mode
+    initial_model = runtime.current_model().key
     output_func("OURO interactive. Type /help for commands, /exit to quit.")
 
     while True:
@@ -113,6 +114,7 @@ async def _run_interactive_session(
                     runtime,
                     session_id,
                     current_approval_mode,
+                    initial_model,
                 )
             except OuroError as exc:
                 output_func(f"Error: {exc}")
@@ -120,6 +122,8 @@ async def _run_interactive_session(
             session_id = command_result.session_id
             if command_result.approval_mode is not None:
                 current_approval_mode = command_result.approval_mode
+            if command_result.initial_model is not None:
+                initial_model = command_result.initial_model
             if command_result.output:
                 output_func(command_result.output)
             if command_result.should_exit:
@@ -130,6 +134,7 @@ async def _run_interactive_session(
             result = await runtime.run(
                 line,
                 session_id=session_id,
+                initial_model=initial_model if session_id is None else None,
                 queue_mode=queue_mode,
                 approval_mode=current_approval_mode if session_id is None else None,
             )

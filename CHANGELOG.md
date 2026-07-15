@@ -23,9 +23,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- Interactive terminal rendering now uses semantic, single-line spinners for MCP startup, context
-  compaction, tool input collection, and tool execution; streamed tool arguments are finalized once
-  instead of repainting their partial contents.
+- Interactive terminal rendering now uses semantic status adapters: MCP startup and context
+  compaction own one replaceable line, while each tool call owns one keyed row that is updated in
+  place from argument generation through completion. Redirected output emits one final row per tool.
 - Provider configuration now separates user instance id, product-level provider type, and wire
   protocol; runtime adapter dispatch depends only on the registered protocol.
 - Endpoint reasoning configuration now separates activation, effort, visible output, continuation,
@@ -43,6 +43,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Allow Interactive `/model provider/endpoint` before the first prompt and atomically persist that
+  selection when the new Session is created.
 - Release the Session run lock before draining follow-up inputs after approval or AskUser
   continuation, and keep Interactive alive when a typed continuation error occurs.
 

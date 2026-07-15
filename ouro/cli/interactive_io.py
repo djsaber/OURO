@@ -31,6 +31,7 @@ async def handle_run_result(
                 runtime=runtime,
                 input_func=input_func,
                 output_func=output_func,
+                output=output,
             )
             if resolved is None:
                 return current.session.session_id
@@ -42,6 +43,7 @@ async def handle_run_result(
                 runtime=runtime,
                 input_func=input_func,
                 output_func=output_func,
+                output=output,
             )
             if resolved is None:
                 return current.session.session_id
@@ -77,7 +79,9 @@ async def _resolve_approval(
     runtime: RuntimeService,
     input_func: InputFunc,
     output_func: OutputFunc,
+    output: InteractiveOutput,
 ) -> RunResult | None:
+    await output.suspend_tools_for_prompt()
     invocation = _pending_invocation(result)
     output_func(f"Approval required: {invocation.get('tool_name') or 'unknown'}")
 
@@ -126,7 +130,9 @@ async def _resolve_user_question(
     runtime: RuntimeService,
     input_func: InputFunc,
     output_func: OutputFunc,
+    output: InteractiveOutput,
 ) -> RunResult | None:
+    await output.suspend_tools_for_prompt()
     output_func(f"Question: {_pending_question(result)}")
     try:
         answer = input_func("Answer: ")

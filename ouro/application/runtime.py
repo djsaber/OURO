@@ -189,6 +189,13 @@ class RuntimeService:
         session = self.store.load_session(session_id, recover=False).session
         return self.models.resolve(session.current_model or self.models.default_model().key)
 
+    def resolve_model(self, selector: str) -> AvailableModel:
+        """Resolve and validate a model route before it is attached to a session."""
+
+        model = self.models.resolve(selector)
+        self.models.adapter_for(model.key)
+        return model
+
     def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
         """Persist an idle session's model route without changing other sessions."""
 
@@ -260,6 +267,7 @@ class RuntimeService:
         *,
         session_id: str | None = None,
         title: str | None = None,
+        initial_model: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
         resource_refs: list[str] | tuple[str, ...] | None = None,
@@ -268,6 +276,8 @@ class RuntimeService:
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if initial_model is not None and session_id is not None:
+            raise ValueError("initial_model can only be set when creating a session")
         input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
         if input_resource_refs and session_id is None:
             raise ResourceAttachmentError(
@@ -275,9 +285,14 @@ class RuntimeService:
                 "and pass its session with session_id"
             )
         if session_id is None:
+            selected_model = (
+                self.resolve_model(initial_model)
+                if initial_model is not None
+                else self.models.default_model()
+            )
             created = self.sessions.create(
                 title=title or _title_from_prompt(prompt),
-                current_model=self.models.default_model().key,
+                current_model=selected_model.key,
                 approval_mode=approval_mode or "inherit",
                 workspace=self.default_workspace,
             )

@@ -16,6 +16,7 @@ class CommandResult:
     output: str = ""
     should_exit: bool = False
     approval_mode: SessionApprovalMode | None = None
+    initial_model: str | None = None
 
 
 async def handle_command(
@@ -23,6 +24,7 @@ async def handle_command(
     runtime: RuntimeService,
     session_id: str | None,
     approval_mode: SessionApprovalMode = "inherit",
+    initial_model: str | None = None,
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -37,15 +39,16 @@ async def handle_command(
             session_id=None,
             output="Started a new session.",
             approval_mode="inherit",
+            initial_model=runtime.current_model().key,
         )
     if command == "/sessions":
         return CommandResult(session_id=session_id, output=_sessions_text(runtime))
     if command == "/open":
         return _open_session(runtime, argument)
     if command == "/models":
-        return _available_models(runtime, session_id)
+        return _available_models(runtime, session_id, initial_model)
     if command == "/model":
-        return _model_command(runtime, session_id, argument)
+        return _model_command(runtime, session_id, initial_model, argument)
     if command == "/approval-mode":
         return _approval_mode_command(runtime, session_id, approval_mode, argument)
     if command == "/config":
@@ -74,8 +77,8 @@ def _help_text() -> str:
             "/sessions - List local sessions.",
             "/open <session_id> - Continue a session.",
             "/models - List configured model endpoints.",
-            "/model - Show the current session model.",
-            "/model <provider/endpoint> - Switch the current session model.",
+            "/model - Show the active or next-session model.",
+            "/model <provider/endpoint> - Select the active or next-session model.",
             "/approval-mode - Show the current session approval mode.",
             "/approval-mode <inherit|auto|approval> - Set the session approval mode.",
             "/config - Show active local config path.",
@@ -104,11 +107,19 @@ def _sessions_text(runtime: RuntimeService) -> str:
     return "\n".join(lines)
 
 
-def _available_models(runtime: RuntimeService, session_id: str | None) -> CommandResult:
+def _available_models(
+    runtime: RuntimeService,
+    session_id: str | None,
+    initial_model: str | None,
+) -> CommandResult:
     models = runtime.available_models()
     if not models:
         return CommandResult(session_id=session_id, output="No configured models available.")
-    current = runtime.current_model(session_id)
+    current = (
+        runtime.current_model(session_id)
+        if session_id is not None
+        else runtime.resolve_model(initial_model or runtime.current_model().key)
+    )
     lines = ["Available models:"]
     for model in models:
         marker = "*" if model.key == current.key else "-"
@@ -120,20 +131,31 @@ def _available_models(runtime: RuntimeService, session_id: str | None) -> Comman
 def _model_command(
     runtime: RuntimeService,
     session_id: str | None,
+    initial_model: str | None,
     selector: str,
 ) -> CommandResult:
     if not selector:
-        current = runtime.current_model(session_id)
+        current = (
+            runtime.current_model(session_id)
+            if session_id is not None
+            else runtime.resolve_model(initial_model or runtime.current_model().key)
+        )
         output = (
             "No configured model selected."
             if current.provider_id == BUILTIN_FAUX_PROVIDER_ID
             else current.key
         )
-        return CommandResult(session_id=session_id, output=output)
+        return CommandResult(
+            session_id=session_id,
+            output=output,
+            initial_model=current.key if session_id is None else None,
+        )
     if session_id is None:
+        model = runtime.resolve_model(selector)
         return CommandResult(
             session_id=None,
-            output="No active session. Start a conversation before switching models.",
+            output=f"Selected model for new session: {model.key} ({model.model_id})",
+            initial_model=model.key,
         )
     runtime.switch_session_model(session_id, selector)
     model = runtime.current_model(session_id)

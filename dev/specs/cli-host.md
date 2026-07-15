@@ -37,15 +37,18 @@ ouro skills
 
 无子命令时启动持续 stdin/stdout Host。支持 prompt、session 切换、新建、模型查看/切换、历史、导出、
 Skills 和退出等 slash command。流式文本、reasoning、工具调用、审批和 AskUser 使用独立 I/O 适配器。
-Interactive 直接消费 `model_tool_call_delta`：参数分片只更新单行 `tool_input` 动态状态，不逐片打印参数；模型
-响应完成后按 source index 一次性输出有界的参数摘要。不得等到工具预检或执行事件才首次展示调用，也不得把
-未完成参数当作可执行 JSON。`tool_call_started/completed` 驱动独立的 `tool_execution` 动态状态，并为每个工具
-留下成功、失败或中止的稳定结果行。
+Interactive 直接消费 `model_tool_call_delta`：参数分片只更新该工具的单行动态状态，不逐片打印参数；模型
+响应完成后在同一行显示有界的参数摘要。不得等到工具预检或执行事件才首次展示调用，也不得把未完成参数当作
+可执行 JSON。参数生成、预检、等待交互、执行和完成事件共同驱动按 tool call identity 建立的行生命周期；每个
+工具始终只占一行，状态和动效原位更新，最终留下成功、失败或中止的稳定结果。
 
-动态状态由 CLI 终端适配器集中管理，一个终端同时只有一条可替换状态行。MCP 连接、上下文压缩、工具参数收集和工具执行
-使用不同的语义帧集合；新增动画只扩展主题目录，不在事件分支中硬编码帧。真实 TTY 使用异步动画和 ANSI 清行，
-重定向输出及测试环境退化为单次开始状态与稳定结果，不输出持续帧。动画任务在 Run 结束、异常、EOF 和 Host
-退出时必须清理。
+动态状态由 CLI 终端适配器集中管理：MCP 连接和上下文压缩使用单一可替换状态行，工具调用使用按 key 管理的
+稳定多行区域。不同语义使用不同帧集合；新增动画只扩展主题目录，不在事件分支中硬编码帧。真实 TTY 使用异步
+动画和 ANSI 行/光标控制原位重绘；重定向输出及测试环境不输出持续帧，每个工具只输出最终稳定行。动画任务在
+Run 结束、异常、EOF 和 Host 退出时必须清理。
+
+`/model <provider/endpoint>` 在已有空闲 Session 上持久化切换；没有 Session 时只更新 Host 的下一会话选择。
+首条普通消息通过 application 的新会话参数原子校验并持久化该模型，不得为了选择模型提前创建空 Session。
 
 Interactive 启动配置了 auto-start MCP 时，先显示 `mcp_connection` 动态状态；连接完成后按 server 输出脱敏的
 connected/failed 状态、transport 和工具数量。MCP manager/resource 只暴露类型化连接结果，不依赖终端展示。

@@ -6,7 +6,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from ouro.cli.terminal_status import StatusTone, TerminalStatusLine
+from ouro.cli.terminal_status import (
+    SpinnerSemantic,
+    StatusTone,
+    TerminalStatusLine,
+    TerminalStatusRegion,
+)
 from ouro.core.events import EventRecord
 from ouro.mcp.models import MCPServerConfig, MCPServerRecord
 
@@ -14,17 +19,20 @@ OutputFunc = Callable[[str], None]
 
 _DIM_ITALIC = "\x1b[2;3m"
 _DIM = "\x1b[2m"
-_YELLOW = "\x1b[33m"
 _GREEN = "\x1b[32m"
 _RED = "\x1b[31m"
 _RESET = "\x1b[0m"
-_MAX_TOOL_ARGUMENT_PREVIEW = 240
+_TOOL_NAME_STYLE = "\x1b[1;36m"
+_MAX_TOOL_NAME_LENGTH = 32
+_MAX_TOOL_ARGUMENT_PREVIEW = 120
 
 
 @dataclass
 class _ToolCallPreview:
     tool_name: str = ""
     argument_chunks: list[str] = field(default_factory=list)
+    phase: str = "generating parameters"
+    tone: StatusTone | None = None
 
     def append(self, payload: dict[str, Any]) -> None:
         self.tool_name += _payload_text(payload, "name_delta")
@@ -45,14 +53,17 @@ class InteractiveOutput:
         output_func: OutputFunc,
         *,
         status_line: TerminalStatusLine | None = None,
+        tool_lines: TerminalStatusRegion | None = None,
     ) -> None:
         self.output_func = output_func
         self.status_line = status_line or TerminalStatusLine(output_func)
+        self.tool_lines = tool_lines or TerminalStatusRegion(output_func)
         self.streamed_run_ids: set[str] = set()
         self.in_reasoning = False
         self.streamed_text = False
         self.tool_call_previews: dict[tuple[str, str, int], _ToolCallPreview] = {}
-        self.active_tool_calls: dict[tuple[str, str], str] = {}
+        self.tool_call_keys: dict[tuple[str, str], tuple[str, str, int]] = {}
+        self.active_tool_calls: dict[tuple[str, str], tuple[str, str, int]] = {}
 
     async def start_mcp_connection(self, configs: tuple[MCPServerConfig, ...]) -> None:
         if not configs:
@@ -91,6 +102,7 @@ class InteractiveOutput:
 
     async def close(self) -> None:
         await self.status_line.clear()
+        await self.tool_lines.clear()
         if self.in_reasoning:
             self._write(f"{_RESET}\n")
         elif self.streamed_text:
@@ -99,6 +111,7 @@ class InteractiveOutput:
         self.streamed_text = False
         self.streamed_run_ids.clear()
         self.tool_call_previews.clear()
+        self.tool_call_keys.clear()
         self.active_tool_calls.clear()
 
     async def handle_event(self, event: EventRecord) -> None:
@@ -121,12 +134,24 @@ class InteractiveOutput:
             tool_call_count = event.payload.get("tool_call_count")
             if isinstance(tool_call_count, int) and tool_call_count > 0:
                 await self._finish_tool_call_turn(event.run_id, event.turn_id)
+        elif event.event_type == "tool_call_requested":
+            await self._bind_tool_call(event)
+        elif event.event_type == "approval_requested":
+            await self._set_tool_phase(event, "approval required", semantic="tool_execution")
+        elif event.event_type == "approval_resolved":
+            await self._resolve_tool_interaction(event)
+        elif event.event_type == "ask_user_requested":
+            await self._set_tool_phase(event, "waiting for input", semantic="tool_execution")
+        elif event.event_type == "ask_user_resolved":
+            await self._resolve_tool_interaction(event)
+        elif event.event_type == "tool_batch_started":
+            await self._start_tool_batch(event)
         elif event.event_type == "tool_call_started":
             await self._start_tool_execution(event)
         elif event.event_type == "tool_call_completed":
             await self._finish_tool_execution(event)
         elif event.event_type in {"tool_batch_completed", "tool_batch_aborted"}:
-            await self._clear_tool_execution(event.run_id)
+            await self._finish_tool_batch(event)
         elif event.event_type == "compaction_started":
             self._end_streamed_content_line()
             await self.status_line.start(
@@ -159,7 +184,6 @@ class InteractiveOutput:
 
     async def finish_run(self, run_id: str) -> bool:
         await self.status_line.clear()
-        self._remove_active_tools(run_id)
         streamed = run_id in self.streamed_run_ids
         self.streamed_run_ids.discard(run_id)
         if not streamed:
@@ -171,6 +195,11 @@ class InteractiveOutput:
         self._write("\n")
         self.streamed_text = False
         return True
+
+    async def suspend_tools_for_prompt(self) -> None:
+        """Keep tool state while freeing the cursor for an interactive prompt."""
+
+        await self.tool_lines.suspend()
 
     async def _stream_text_delta(self, text: str) -> None:
         await self.status_line.clear()
@@ -204,11 +233,11 @@ class InteractiveOutput:
         key = (event.run_id or "", turn_id, index)
         preview = self.tool_call_previews.setdefault(key, _ToolCallPreview())
         preview.append(event.payload)
-        message = self._tool_input_status(event.run_id or "", turn_id)
-        if self.status_line.semantic == "tool_input":
-            self.status_line.update(message)
-        else:
-            await self.status_line.start("tool_input", message)
+        await self.tool_lines.upsert(
+            _tool_row_key(key),
+            "tool_input",
+            self._tool_message(preview, include_arguments=False),
+        )
 
     async def _finish_tool_call_turn(self, run_id: str, turn_id: str | None) -> None:
         keys = sorted(
@@ -221,11 +250,15 @@ class InteractiveOutput:
         )
         if not keys:
             return
-        await self.status_line.clear()
         self._end_streamed_content_line()
         for key in keys:
-            preview = self.tool_call_previews.pop(key)
-            self._write(f"{self._render_tool_call(preview, final=True)}\n")
+            preview = self.tool_call_previews[key]
+            preview.phase = "ready"
+            await self.tool_lines.upsert(
+                _tool_row_key(key),
+                "tool_input",
+                self._tool_message(preview),
+            )
 
     async def _finish_incomplete_tool_calls(self, run_id: str) -> None:
         keys = sorted(
@@ -234,33 +267,133 @@ class InteractiveOutput:
         )
         if not keys:
             return
-        await self.status_line.clear()
         self._end_streamed_content_line()
         for key in keys:
-            preview = self.tool_call_previews.pop(key)
-            self._write(f"{self._render_tool_call(preview)} {_DIM}(incomplete){_RESET}\n")
+            preview = self.tool_call_previews[key]
+            if preview.tone is not None:
+                continue
+            preview.phase = "incomplete"
+            preview.tone = "warning"
+            await self.tool_lines.finish(
+                _tool_row_key(key),
+                self._tool_message(preview),
+                tone="warning",
+            )
+        await self.tool_lines.commit()
+        self._remove_tool_state(run_id)
+
+    async def _bind_tool_call(self, event: EventRecord) -> None:
+        tool_call_id = _payload_text(event.payload, "tool_call_id")
+        source_index = event.payload.get("source_index")
+        if not tool_call_id or not isinstance(source_index, int):
+            return
+        key = (event.run_id or "", event.turn_id or "", source_index)
+        preview = self.tool_call_previews.setdefault(key, _ToolCallPreview())
+        if not preview.tool_name:
+            preview.tool_name = _payload_text(event.payload, "tool_name")
+        if not preview.argument_chunks:
+            arguments = event.payload.get("arguments")
+            if isinstance(arguments, dict):
+                preview.argument_chunks.append(json.dumps(arguments, ensure_ascii=False))
+        self.tool_call_keys[(event.run_id or "", tool_call_id)] = key
+        await self.tool_lines.upsert(
+            _tool_row_key(key),
+            "tool_input",
+            self._tool_message(preview),
+        )
+
+    async def _set_tool_phase(
+        self,
+        event: EventRecord,
+        phase: str,
+        *,
+        semantic: SpinnerSemantic,
+    ) -> None:
+        key = self._tool_key_for_event(event)
+        if key is None:
+            return
+        preview = self.tool_call_previews[key]
+        preview.phase = phase
+        await self.tool_lines.upsert(
+            _tool_row_key(key),
+            semantic,
+            self._tool_message(preview),
+        )
+
+    async def _resolve_tool_interaction(self, event: EventRecord) -> None:
+        key = self._tool_key_for_event(event)
+        if key is None:
+            return
+        preview = self.tool_call_previews[key]
+        status = _payload_text(event.payload, "tool_call_status")
+        if status in {"rejected", "aborted"}:
+            await self._finish_tool_row(key, status, "warning")
+        elif status == "failed":
+            await self._finish_tool_row(key, "failed", "error")
+        elif status == "completed":
+            await self._finish_tool_row(key, "completed", "success")
+        else:
+            preview.phase = "approved" if event.event_type == "approval_resolved" else "ready"
+            await self.tool_lines.upsert(
+                _tool_row_key(key),
+                "tool_execution",
+                self._tool_message(preview),
+            )
+
+    async def _start_tool_batch(self, event: EventRecord) -> None:
+        calls = event.payload.get("tool_calls")
+        if not isinstance(calls, list):
+            return
+        for call in calls:
+            if not isinstance(call, dict):
+                continue
+            synthetic = event.model_copy(update={"payload": call})
+            key = self._tool_key_for_event(synthetic)
+            if key is None:
+                continue
+            status = _payload_text(call, "status")
+            if status in {"completed", "failed", "aborted", "rejected"}:
+                tone: StatusTone = (
+                    "success"
+                    if status == "completed"
+                    else "error"
+                    if status == "failed"
+                    else "warning"
+                )
+                await self._finish_tool_row(key, status, tone)
+                continue
+            preview = self.tool_call_previews[key]
+            preview.phase = "queued"
+            await self.tool_lines.upsert(
+                _tool_row_key(key),
+                "tool_execution",
+                self._tool_message(preview),
+            )
 
     async def _start_tool_execution(self, event: EventRecord) -> None:
         tool_call_id = _payload_text(event.payload, "tool_call_id")
         if not tool_call_id:
             return
-        tool_name = _payload_text(event.payload, "tool_name") or "unknown tool"
-        self.active_tool_calls[(event.run_id or "", tool_call_id)] = tool_name
-        message = self._tool_execution_status(event.run_id or "")
-        if self.status_line.semantic == "tool_execution":
-            self.status_line.update(message)
-        else:
-            await self.status_line.start("tool_execution", message)
+        key = self._tool_key_for_event(event)
+        if key is None:
+            return
+        preview = self.tool_call_previews[key]
+        preview.phase = "running"
+        self.active_tool_calls[(event.run_id or "", tool_call_id)] = key
+        await self.tool_lines.upsert(
+            _tool_row_key(key),
+            "tool_execution",
+            self._tool_message(preview),
+        )
 
     async def _finish_tool_execution(self, event: EventRecord) -> None:
         tool_call_id = _payload_text(event.payload, "tool_call_id")
         if not tool_call_id:
             return
-        key = (event.run_id or "", tool_call_id)
-        tool_name = self.active_tool_calls.pop(
-            key,
-            _payload_text(event.payload, "tool_name") or "unknown tool",
-        )
+        call_key = (event.run_id or "", tool_call_id)
+        key = self.active_tool_calls.pop(call_key, None) or self._tool_key_for_event(event)
+        if key is None:
+            return
         status = _payload_text(event.payload, "status")
         is_error = event.payload.get("is_error") is True
         if status == "aborted":
@@ -272,44 +405,73 @@ class InteractiveOutput:
         else:
             tone = "success"
             result_text = "completed"
-        await self.status_line.finish(f"{tool_name} · {result_text}", tone=tone)
-        remaining = self._tool_execution_status(event.run_id or "")
-        if remaining:
-            await self.status_line.start("tool_execution", remaining)
+        await self._finish_tool_row(key, result_text, tone)
 
-    async def _clear_tool_execution(self, run_id: str) -> None:
-        self._remove_active_tools(run_id)
-        if self.status_line.semantic == "tool_execution":
-            await self.status_line.clear()
-
-    def _remove_active_tools(self, run_id: str) -> None:
-        for key in [key for key in self.active_tool_calls if key[0] == run_id]:
-            self.active_tool_calls.pop(key, None)
-
-    def _tool_input_status(self, run_id: str, turn_id: str) -> str:
-        previews = [
-            preview
-            for key, preview in sorted(self.tool_call_previews.items())
-            if key[0] == run_id and key[1] == turn_id
+    async def _finish_tool_batch(self, event: EventRecord) -> None:
+        run_id = event.run_id or ""
+        turn_id = event.turn_id or ""
+        matching = [
+            key
+            for key in self.tool_call_previews
+            if key[0] == run_id and (not turn_id or key[1] == turn_id)
         ]
-        names = [preview.tool_name for preview in previews if preview.tool_name]
-        if not names:
-            return "Receiving tool input"
-        if len(names) == 1:
-            return f"Receiving tool input · {names[0]}"
-        return f"Receiving {len(previews)} tool inputs · {', '.join(names)}"
+        for key in matching:
+            preview = self.tool_call_previews[key]
+            if preview.tone is not None:
+                continue
+            phase = "aborted" if event.event_type == "tool_batch_aborted" else "finished"
+            tone: StatusTone = "warning" if phase == "aborted" else "neutral"
+            await self._finish_tool_row(key, phase, tone)
+        await self.tool_lines.commit()
+        self._remove_tool_state(run_id, turn_id=turn_id or None)
 
-    def _tool_execution_status(self, run_id: str) -> str:
-        names = [
-            name
-            for (active_run_id, _), name in self.active_tool_calls.items()
-            if active_run_id == run_id
+    async def _finish_tool_row(
+        self,
+        key: tuple[str, str, int],
+        phase: str,
+        tone: StatusTone,
+    ) -> None:
+        preview = self.tool_call_previews[key]
+        preview.phase = phase
+        preview.tone = tone
+        await self.tool_lines.finish(
+            _tool_row_key(key),
+            self._tool_message(preview),
+            tone=tone,
+        )
+
+    def _tool_key_for_event(self, event: EventRecord) -> tuple[str, str, int] | None:
+        run_id = event.run_id or ""
+        tool_call_id = _payload_text(event.payload, "tool_call_id")
+        if tool_call_id:
+            mapped = self.tool_call_keys.get((run_id, tool_call_id))
+            if mapped is not None:
+                return mapped
+        source_index = event.payload.get("source_index")
+        if not isinstance(source_index, int):
+            return None
+        key = (run_id, event.turn_id or "", source_index)
+        preview = self.tool_call_previews.setdefault(key, _ToolCallPreview())
+        if not preview.tool_name:
+            preview.tool_name = _payload_text(event.payload, "tool_name")
+        if tool_call_id:
+            self.tool_call_keys[(run_id, tool_call_id)] = key
+        return key
+
+    def _remove_tool_state(self, run_id: str, *, turn_id: str | None = None) -> None:
+        keys = [
+            key
+            for key in self.tool_call_previews
+            if key[0] == run_id and (turn_id is None or key[1] == turn_id)
         ]
-        if not names:
-            return ""
-        if len(names) == 1:
-            return f"Running tool · {names[0]}"
-        return f"Running {len(names)} tools · {', '.join(names)}"
+        for key in keys:
+            self.tool_call_previews.pop(key, None)
+        for call_key, preview_key in list(self.tool_call_keys.items()):
+            if preview_key in keys:
+                self.tool_call_keys.pop(call_key, None)
+        for call_key, preview_key in list(self.active_tool_calls.items()):
+            if preview_key in keys:
+                self.active_tool_calls.pop(call_key, None)
 
     def _end_streamed_content_line(self) -> None:
         if self.in_reasoning:
@@ -319,16 +481,22 @@ class InteractiveOutput:
             self._write("\n")
             self.streamed_text = False
 
-    @staticmethod
-    def _render_tool_call(preview: _ToolCallPreview, *, final: bool = False) -> str:
-        tool_name = _single_line(preview.tool_name or "preparing tool")
-        arguments = (
-            _format_completed_arguments(preview.arguments)
-            if final
-            else _single_line(preview.arguments)
+    def _tool_message(
+        self,
+        preview: _ToolCallPreview,
+        *,
+        include_arguments: bool = True,
+    ) -> str:
+        tool_name = _truncate(
+            _single_line(preview.tool_name or "preparing tool"),
+            _MAX_TOOL_NAME_LENGTH,
         )
+        if self.tool_lines.animated:
+            tool_name = f"{_TOOL_NAME_STYLE}{tool_name}{_RESET}"
+        arguments = _format_completed_arguments(preview.arguments) if include_arguments else ""
         arguments = _truncate(arguments, _MAX_TOOL_ARGUMENT_PREVIEW)
-        return f"{_DIM}>{_RESET} {_YELLOW}{tool_name}{_RESET}({_DIM}{arguments}{_RESET})"
+        status = f"{tool_name} · {preview.phase}"
+        return f"{status} · ({arguments})" if include_arguments else status
 
     def _status_symbol(self, symbol: str, color: str) -> str:
         return f"{color}{symbol}{_RESET}" if self.status_line.animated else symbol
@@ -344,6 +512,10 @@ class InteractiveOutput:
 def _payload_text(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     return value if isinstance(value, str) else ""
+
+
+def _tool_row_key(key: tuple[str, str, int]) -> str:
+    return f"{key[0]}:{key[1]}:{key[2]}"
 
 
 def _format_completed_arguments(arguments: str) -> str:

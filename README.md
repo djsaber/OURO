@@ -141,7 +141,8 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 因此 `openai-compatible` 和 `anthropic-compatible` 的任意自定义模型都使用同一套配置与运行时 flags。
 
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
-通过 `/model provider/endpoint` 切换当前会话模型。
+通过 `/model provider/endpoint` 选择模型；若会话尚未创建，该选择会用于下一条普通消息创建的首个会话，
+否则切换当前空闲会话的模型。
 
 ## 会话与运行控制
 

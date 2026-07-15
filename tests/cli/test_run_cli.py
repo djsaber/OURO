@@ -1441,11 +1441,10 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     )
 
     assert code == 0
-    assert any("\x1b[2m>\x1b[0m \x1b[33mWrite\x1b[0m(" in o for o in outputs)
-    assert any('"path"' in o and '"content"' in o for o in outputs)
-    assert any("\x1b[2m{" in o for o in outputs)
-    assert any('"path"' in o and '"content"' in o for o in outputs)
-    assert any("\x1b[0m" in o for o in outputs)
+    tool_outputs = [output for output in outputs if "Write · completed" in output]
+    assert len(tool_outputs) == 1
+    assert tool_outputs[0].startswith("✓ Write · completed · (")
+    assert '"path"' in tool_outputs[0] and '"content"' in tool_outputs[0]
 
 
 def test_provider_add_api_path_defaults_and_endpoint_inherits(
