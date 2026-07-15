@@ -9,6 +9,7 @@ from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
 from ouro.core.results import RunResult
 
 InputFunc = Callable[[str], str]
+_MAX_APPROVAL_ARGUMENT_PREVIEW = 240
 
 
 async def handle_run_result(
@@ -83,7 +84,7 @@ async def _resolve_approval(
 ) -> RunResult | None:
     await output.suspend_tools_for_prompt()
     invocation = _pending_invocation(result)
-    output_func(f"Approval required: {invocation.get('tool_name') or 'unknown'}")
+    output_func(_approval_request(invocation))
 
     while True:
         try:
@@ -169,6 +170,17 @@ def _pending_invocation(result: RunResult) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _approval_request(invocation: dict[str, Any]) -> str:
+    tool_name = _single_line(str(invocation.get("tool_name") or "unknown"))
+    arguments = invocation.get("arguments")
+    if not isinstance(arguments, dict):
+        return f"Approval required: {tool_name}"
+    preview = json.dumps(arguments, ensure_ascii=False)
+    if len(preview) > _MAX_APPROVAL_ARGUMENT_PREVIEW:
+        preview = preview[: _MAX_APPROVAL_ARGUMENT_PREVIEW - 1] + "…"
+    return f"Approval required: {tool_name}({preview})"
+
+
 def _pending_question(result: RunResult) -> str:
     batch = result.run.active_tool_batch
     if batch is not None:
@@ -194,6 +206,10 @@ def _input_optional(input_func: InputFunc, output_func: OutputFunc, prompt: str)
     except EOFError:
         output_func("")
         return ""
+
+
+def _single_line(value: str) -> str:
+    return value.replace("\r", "\\r").replace("\n", "\\n")
 
 
 def _input_json_object(

@@ -63,7 +63,23 @@ async def test_interactive_output_replaces_streamed_arguments_with_tool_input_st
     await output.handle_event(_event(3, "model_message_completed", {"tool_call_count": 1}))
     rendered = "".join(outputs)
     assert "Read" in rendered
-    assert '{"path": "README.md"}' in rendered
+    assert "README.md" not in rendered
+
+    await output.handle_event(
+        _event(
+            4,
+            "tool_call_requested",
+            {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
+        )
+    )
+    await output.handle_event(
+        _event(
+            5,
+            "approval_requested",
+            {"tool_call_id": "call_1", "tool_name": "Read", "source_index": 0},
+        )
+    )
+    assert '{"path": "README.md"}' in outputs[-1]
     await output.close()
 
 
@@ -118,9 +134,12 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
     assert "Write" in final_lines[1]
 
 
-async def test_interactive_output_bounds_and_sanitizes_completed_argument_preview() -> None:
+async def test_interactive_output_only_shows_bounded_arguments_while_awaiting_approval() -> None:
     outputs: list[str] = []
-    output = InteractiveOutput(outputs.append)
+    output = InteractiveOutput(
+        outputs.append,
+        tool_lines=TerminalStatusRegion(outputs.append, animated=True),
+    )
 
     await output.handle_event(
         _event(
@@ -134,12 +153,42 @@ async def test_interactive_output_bounds_and_sanitizes_completed_argument_previe
             },
         )
     )
-    assert outputs == []
+    assert "x" not in outputs[-1]
 
     await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 1}))
     await output.handle_event(
         _event(
             3,
+            "tool_call_requested",
+            {"tool_call_id": "call_1", "tool_name": "Write", "source_index": 0},
+        )
+    )
+    assert "x" not in outputs[-1]
+
+    await output.handle_event(
+        _event(
+            4,
+            "approval_requested",
+            {"tool_call_id": "call_1", "tool_name": "Write", "source_index": 0},
+        )
+    )
+    approval = outputs[-1]
+    assert "\n" not in approval.rstrip("\n")
+    assert "\\n" in approval
+    assert "…" in approval
+    assert len(approval) < 320
+
+    await output.handle_event(
+        _event(
+            5,
+            "tool_call_started",
+            {"tool_call_id": "call_1", "tool_name": "Write", "source_index": 0},
+        )
+    )
+    assert "x\\n" not in outputs[-1]
+    await output.handle_event(
+        _event(
+            6,
             "tool_call_completed",
             {
                 "tool_call_id": "call_1",
@@ -150,12 +199,8 @@ async def test_interactive_output_bounds_and_sanitizes_completed_argument_previe
             },
         )
     )
-    await output.handle_event(_event(4, "tool_batch_completed", {"batch_id": "batch_1"}))
-    final = outputs[-1]
-    assert "\n" not in final.rstrip("\n")
-    assert "\\n" in final
-    assert "…" in final
-    assert len(final) < 320
+    await output.handle_event(_event(7, "tool_batch_completed", {"batch_id": "batch_1"}))
+    assert "x\\n" not in outputs[-1]
 
 
 async def test_interactive_output_animates_tool_execution_and_reports_result() -> None:
@@ -205,7 +250,7 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
     )
     await output.handle_event(_event(6, "tool_batch_completed", {"batch_id": "batch_1"}))
 
-    assert outputs == ['✓ Read · completed · ({"path": "README.md"})\n']
+    assert outputs == ["✓ Read · completed\n"]
     assert output.active_tool_calls == {}
 
 
@@ -260,8 +305,8 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
     )
     await output.handle_event(_event(5, "tool_batch_completed", {"batch_id": "batch_1"}))
     assert outputs == [
-        "✓ Read · completed · ()\n",
-        "✗ Write · failed · ()\n",
+        "✓ Read · completed\n",
+        "✗ Write · failed\n",
     ]
     assert output.active_tool_calls == {}
 

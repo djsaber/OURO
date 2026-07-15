@@ -259,7 +259,8 @@ Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLi
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
 `mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；
 真实 TTY 对工具参数生成、执行与结果进行原位重绘，非 TTY 则让每个工具只输出最终稳定行。工具参数 delta 保持
-durable 事件与完整累积，但终端仅在参数定稿后把有界摘要合入同一工具行，避免参数流刷屏和重复结果行。
+durable 事件与完整累积；参数摘要仅在等待审批时进入工具行和审批提示，批准、拒绝或开始执行后隐藏，避免把
+不可操作的信息持续留在终端中。
 
 ## 扩展边界
 

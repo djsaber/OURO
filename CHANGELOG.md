@@ -25,7 +25,8 @@ This project records user-visible and framework-contract changes in this file.
 
 - Interactive terminal rendering now uses semantic status adapters: MCP startup and context
   compaction own one replaceable line, while each tool call owns one keyed row that is updated in
-  place from argument generation through completion. Redirected output emits one final row per tool.
+  place from argument generation through completion. Tool arguments are visible only while approval
+  is pending, and redirected output emits one final row per tool.
 - Provider configuration now separates user instance id, product-level provider type, and wire
   protocol; runtime adapter dispatch depends only on the registered protocol.
 - Endpoint reasoning configuration now separates activation, effort, visible output, continuation,

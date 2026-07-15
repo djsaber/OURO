@@ -33,6 +33,7 @@ class _ToolCallPreview:
     argument_chunks: list[str] = field(default_factory=list)
     phase: str = "generating parameters"
     tone: StatusTone | None = None
+    show_arguments: bool = False
 
     def append(self, payload: dict[str, Any]) -> None:
         self.tool_name += _payload_text(payload, "name_delta")
@@ -137,7 +138,12 @@ class InteractiveOutput:
         elif event.event_type == "tool_call_requested":
             await self._bind_tool_call(event)
         elif event.event_type == "approval_requested":
-            await self._set_tool_phase(event, "approval required", semantic="tool_execution")
+            await self._set_tool_phase(
+                event,
+                "approval required",
+                semantic="tool_execution",
+                show_arguments=True,
+            )
         elif event.event_type == "approval_resolved":
             await self._resolve_tool_interaction(event)
         elif event.event_type == "ask_user_requested":
@@ -236,7 +242,7 @@ class InteractiveOutput:
         await self.tool_lines.upsert(
             _tool_row_key(key),
             "tool_input",
-            self._tool_message(preview, include_arguments=False),
+            self._tool_message(preview),
         )
 
     async def _finish_tool_call_turn(self, run_id: str, turn_id: str | None) -> None:
@@ -254,6 +260,7 @@ class InteractiveOutput:
         for key in keys:
             preview = self.tool_call_previews[key]
             preview.phase = "ready"
+            preview.show_arguments = False
             await self.tool_lines.upsert(
                 _tool_row_key(key),
                 "tool_input",
@@ -274,6 +281,7 @@ class InteractiveOutput:
                 continue
             preview.phase = "incomplete"
             preview.tone = "warning"
+            preview.show_arguments = False
             await self.tool_lines.finish(
                 _tool_row_key(key),
                 self._tool_message(preview),
@@ -295,6 +303,7 @@ class InteractiveOutput:
             arguments = event.payload.get("arguments")
             if isinstance(arguments, dict):
                 preview.argument_chunks.append(json.dumps(arguments, ensure_ascii=False))
+        preview.show_arguments = False
         self.tool_call_keys[(event.run_id or "", tool_call_id)] = key
         await self.tool_lines.upsert(
             _tool_row_key(key),
@@ -308,12 +317,14 @@ class InteractiveOutput:
         phase: str,
         *,
         semantic: SpinnerSemantic,
+        show_arguments: bool = False,
     ) -> None:
         key = self._tool_key_for_event(event)
         if key is None:
             return
         preview = self.tool_call_previews[key]
         preview.phase = phase
+        preview.show_arguments = show_arguments
         await self.tool_lines.upsert(
             _tool_row_key(key),
             semantic,
@@ -325,6 +336,7 @@ class InteractiveOutput:
         if key is None:
             return
         preview = self.tool_call_previews[key]
+        preview.show_arguments = False
         status = _payload_text(event.payload, "tool_call_status")
         if status in {"rejected", "aborted"}:
             await self._finish_tool_row(key, status, "warning")
@@ -364,6 +376,7 @@ class InteractiveOutput:
                 continue
             preview = self.tool_call_previews[key]
             preview.phase = "queued"
+            preview.show_arguments = False
             await self.tool_lines.upsert(
                 _tool_row_key(key),
                 "tool_execution",
@@ -379,6 +392,7 @@ class InteractiveOutput:
             return
         preview = self.tool_call_previews[key]
         preview.phase = "running"
+        preview.show_arguments = False
         self.active_tool_calls[(event.run_id or "", tool_call_id)] = key
         await self.tool_lines.upsert(
             _tool_row_key(key),
@@ -434,6 +448,7 @@ class InteractiveOutput:
         preview = self.tool_call_previews[key]
         preview.phase = phase
         preview.tone = tone
+        preview.show_arguments = False
         await self.tool_lines.finish(
             _tool_row_key(key),
             self._tool_message(preview),
@@ -484,8 +499,6 @@ class InteractiveOutput:
     def _tool_message(
         self,
         preview: _ToolCallPreview,
-        *,
-        include_arguments: bool = True,
     ) -> str:
         tool_name = _truncate(
             _single_line(preview.tool_name or "preparing tool"),
@@ -493,10 +506,14 @@ class InteractiveOutput:
         )
         if self.tool_lines.animated:
             tool_name = f"{_TOOL_NAME_STYLE}{tool_name}{_RESET}"
-        arguments = _format_completed_arguments(preview.arguments) if include_arguments else ""
-        arguments = _truncate(arguments, _MAX_TOOL_ARGUMENT_PREVIEW)
         status = f"{tool_name} · {preview.phase}"
-        return f"{status} · ({arguments})" if include_arguments else status
+        if not preview.show_arguments:
+            return status
+        arguments = _truncate(
+            _format_completed_arguments(preview.arguments),
+            _MAX_TOOL_ARGUMENT_PREVIEW,
+        )
+        return f"{status} · ({arguments})"
 
     def _status_symbol(self, symbol: str, color: str) -> str:
         return f"{color}{symbol}{_RESET}" if self.status_line.animated else symbol

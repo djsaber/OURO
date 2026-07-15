@@ -427,7 +427,7 @@ async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
 
     assert code == 0
     assert target.read_text(encoding="utf-8") == "approved"
-    assert "Approval required: Write" in outputs
+    assert any(output.startswith("Approval required: Write(") for output in outputs)
     assert "Done." in outputs
 
 
@@ -503,7 +503,7 @@ async def test_interactive_aborts_waiting_approval(tmp_path) -> None:
 
     assert code == 0
     assert not target.exists()
-    assert "Approval required: Write" in outputs
+    assert any(output.startswith("Approval required: Write(") for output in outputs)
     assert "Run aborted: User aborted" in outputs
 
 
@@ -545,7 +545,7 @@ async def test_interactive_keeps_running_when_approval_resume_fails(
 
     assert code == 0
     assert not target.exists()
-    assert "Approval required: Write" in outputs
+    assert any(output.startswith("Approval required: Write(") for output in outputs)
     assert "Error: approval resume failed" in outputs
 
 
@@ -604,7 +604,7 @@ async def test_interactive_open_waiting_session_drains_follow_up_after_rejection
     assert snapshot.messages[-1].text_content == "Hello from follow-up."
     assert "follow_up_queue" not in snapshot.session.metadata
     assert f"Opened session: {waiting.session.session_id}" in outputs
-    assert "Approval required: Write" in outputs
+    assert any(output.startswith("Approval required: Write(") for output in outputs)
 
 
 async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
@@ -1443,8 +1443,10 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     assert code == 0
     tool_outputs = [output for output in outputs if "Write · completed" in output]
     assert len(tool_outputs) == 1
-    assert tool_outputs[0].startswith("✓ Write · completed · (")
-    assert '"path"' in tool_outputs[0] and '"content"' in tool_outputs[0]
+    assert tool_outputs[0] == "✓ Write · completed\n"
+    approval_outputs = [output for output in outputs if output.startswith("Approval required:")]
+    assert len(approval_outputs) == 1
+    assert '"path"' in approval_outputs[0] and '"content"' in approval_outputs[0]
 
 
 def test_provider_add_api_path_defaults_and_endpoint_inherits(
