@@ -6,8 +6,13 @@ from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine
 
 
 def test_spinner_semantics_have_distinct_extensible_frame_sets() -> None:
-    assert set(SPINNER_THEMES) == {"mcp_connection", "tool_input", "tool_execution"}
-    assert len({theme.frames for theme in SPINNER_THEMES.values()}) == 3
+    assert set(SPINNER_THEMES) == {
+        "mcp_connection",
+        "compaction",
+        "tool_input",
+        "tool_execution",
+    }
+    assert len({theme.frames for theme in SPINNER_THEMES.values()}) == 4
     assert all(theme.frames and theme.interval_seconds > 0 for theme in SPINNER_THEMES.values())
 
 

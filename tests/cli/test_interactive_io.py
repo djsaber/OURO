@@ -198,6 +198,78 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
     assert output.active_tool_calls == {}
 
 
+async def test_interactive_output_animates_compaction_progress_and_completion() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+
+    await output.handle_event(
+        _event(
+            1,
+            "compaction_started",
+            {"compaction_id": "cmp_1", "trigger": "manual"},
+        )
+    )
+    assert output.status_line.semantic == "compaction"
+    assert "Compacting context · manual" in outputs[-1]
+    output_count = len(outputs)
+
+    await output.handle_event(
+        _event(
+            2,
+            "compaction_progress",
+            {"compaction_id": "cmp_1", "trigger": "manual", "phase": "generating"},
+        )
+    )
+    assert len(outputs) == output_count
+    assert output.status_line.message == ("Compacting context · manual · generating summary")
+
+    await output.handle_event(
+        _event(
+            3,
+            "compaction_completed",
+            {
+                "compaction_id": "cmp_1",
+                "trigger": "manual",
+                "covered_message_count": 3,
+                "tokens_before": 800,
+                "tokens_after": 300,
+            },
+        )
+    )
+    assert outputs[-1] == ("✓ Context compaction completed · 3 messages · 800 → 300 tokens\n")
+    assert output.status_line.active is False
+
+
+async def test_interactive_output_reports_compaction_failure_and_skip() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+
+    await output.handle_event(
+        _event(
+            1,
+            "compaction_started",
+            {"compaction_id": "cmp_1", "trigger": "auto"},
+        )
+    )
+    await output.handle_event(
+        _event(
+            2,
+            "compaction_failed",
+            {"compaction_id": "cmp_1", "error": "provider\nfailed"},
+        )
+    )
+    assert outputs[-1] == "✗ Context compaction failed · provider failed\n"
+
+    await output.handle_event(
+        _event(
+            3,
+            "compaction_skipped",
+            {"trigger": "manual", "reason": "no_eligible_closed_turn"},
+        )
+    )
+    assert outputs[-1] == ("· Context compaction skipped · no eligible closed turn\n")
+
+
 async def test_interactive_output_summarizes_mcp_connection_records() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)

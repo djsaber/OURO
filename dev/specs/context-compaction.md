@@ -72,6 +72,7 @@ metadata 中记录原因；这是当前运行策略，不是配置格式兼容�
 - 手动 `session compact` 强制尝试覆盖至少一个旧帧。
 - 无可压缩前缀时产生 skipped 结果，不创建空记录。
 - 压缩 Run 使用同一 session lock、RunLifecycle、事件和 abort signal。
+- Interactive Host 把 `started/progress/completed/failed/skipped` 事件投影为单行动态状态和稳定结果；压缩核心逻辑不依赖终端实现。
 
 ## 失败语义
 

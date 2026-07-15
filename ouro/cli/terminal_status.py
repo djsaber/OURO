@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from typing import Literal
 
 TerminalOutput = Callable[[str], None]
-SpinnerSemantic = Literal["mcp_connection", "tool_input", "tool_execution"]
+SpinnerSemantic = Literal[
+    "mcp_connection",
+    "compaction",
+    "tool_input",
+    "tool_execution",
+]
 StatusTone = Literal["success", "error", "warning", "neutral"]
 
 _CLEAR_LINE = "\x1b[2K"
@@ -18,6 +23,7 @@ _GREEN = "\x1b[32m"
 _YELLOW = "\x1b[33m"
 _RED = "\x1b[31m"
 _CYAN = "\x1b[36m"
+_BLUE = "\x1b[34m"
 _MAGENTA = "\x1b[35m"
 _MAX_STATUS_LENGTH = 160
 
@@ -36,6 +42,11 @@ SPINNER_THEMES: dict[SpinnerSemantic, SpinnerTheme] = {
         frames=("◜", "◝", "◞", "◟"),
         interval_seconds=0.12,
         color=_CYAN,
+    ),
+    "compaction": SpinnerTheme(
+        frames=("█", "▇", "▆", "▅", "▄", "▃", "▂", "▁", "▂", "▃", "▄", "▅", "▆", "▇"),
+        interval_seconds=0.1,
+        color=_BLUE,
     ),
     "tool_input": SpinnerTheme(
         frames=("◱", "◰", "◳", "◲"),

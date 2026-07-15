@@ -536,6 +536,6 @@ async def test_interactive_compact_command_displays_progress_and_completion(tmp_
     )
 
     assert code == 0
-    assert "Context manual compaction in progress..." in outputs
-    assert any(output.startswith("Context compaction completed") for output in outputs)
+    assert any("Compacting context · manual" in output for output in outputs)
+    assert any("Context compaction completed" in output for output in outputs)
     assert any(output.startswith("Active compaction: cmp_") for output in outputs)

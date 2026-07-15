@@ -128,17 +128,34 @@ class InteractiveOutput:
         elif event.event_type in {"tool_batch_completed", "tool_batch_aborted"}:
             await self._clear_tool_execution(event.run_id)
         elif event.event_type == "compaction_started":
-            await self.status_line.clear()
-            trigger = str(event.payload.get("trigger") or "auto")
-            self.output_func(f"Context {trigger} compaction in progress...")
+            self._end_streamed_content_line()
+            await self.status_line.start(
+                "compaction",
+                _compaction_activity(event.payload),
+            )
+        elif event.event_type == "compaction_progress":
+            message = _compaction_activity(event.payload)
+            if self.status_line.semantic == "compaction":
+                self.status_line.update(message)
+            else:
+                await self.status_line.start("compaction", message)
         elif event.event_type == "compaction_completed":
-            await self.status_line.clear()
-            covered = int(event.payload.get("covered_message_count") or 0)
-            self.output_func(f"Context compaction completed ({covered} messages covered).")
+            await self.status_line.finish(
+                _compaction_completed(event.payload),
+                tone="success",
+            )
         elif event.event_type == "compaction_failed":
-            await self.status_line.clear()
             error = event.payload.get("error") or "unknown error"
-            self.output_func(f"Context compaction failed: {error}")
+            await self.status_line.finish(
+                f"Context compaction failed · {error}",
+                tone="error",
+            )
+        elif event.event_type == "compaction_skipped":
+            reason = str(event.payload.get("reason") or "not required").replace("_", " ")
+            await self.status_line.finish(
+                f"Context compaction skipped · {reason}",
+                tone="neutral",
+            )
 
     async def finish_run(self, run_id: str) -> bool:
         await self.status_line.clear()
@@ -347,3 +364,26 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 1] + "…"
+
+
+def _compaction_activity(payload: dict[str, Any]) -> str:
+    trigger = str(payload.get("trigger") or "auto")
+    message = f"Compacting context · {trigger}"
+    phase = str(payload.get("phase") or "")
+    if not phase:
+        return message
+    phase_label = "generating summary" if phase == "generating" else phase.replace("_", " ")
+    return f"{message} · {phase_label}"
+
+
+def _compaction_completed(payload: dict[str, Any]) -> str:
+    parts = ["Context compaction completed"]
+    covered = payload.get("covered_message_count")
+    if isinstance(covered, int):
+        noun = "message" if covered == 1 else "messages"
+        parts.append(f"{covered} {noun}")
+    before = payload.get("tokens_before")
+    after = payload.get("tokens_after")
+    if isinstance(before, int) and isinstance(after, int):
+        parts.append(f"{before} → {after} tokens")
+    return " · ".join(parts)
