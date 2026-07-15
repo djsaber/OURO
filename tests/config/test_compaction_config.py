@@ -9,6 +9,7 @@ from ouro.config import (
     CompactionModelConfig,
 )
 from ouro.core.errors import ConfigError
+from ouro.core.reasoning import ReasoningRequest
 
 
 def test_compaction_model_config_persists_without_replacing_other_sections(tmp_path) -> None:
@@ -24,8 +25,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
             endpoint_id="summary",
             temperature=0.1,
             max_output_tokens=4096,
-            thinking_enabled=False,
-            thinking_level="off",
+            reasoning=ReasoningRequest(mode="disabled"),
         )
     )
     restored = CompactionConfigManager(tmp_path).snapshot()
@@ -34,7 +34,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     assert restored == saved
     assert restored.model.provider_id == "glm"
     assert restored.model.endpoint_id == "summary"
-    assert restored.model.thinking_level == "off"
+    assert restored.model.reasoning == ReasoningRequest(mode="disabled")
     assert raw["providers"] == {"default": "faux"}
     assert raw["compaction"]["model"]["max_output_tokens"] == 4096
 
@@ -43,14 +43,8 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     ("kwargs", "message"),
     [
         ({"provider_id": "glm"}, "configured together"),
-        (
-            {"thinking_enabled": False, "thinking_level": "high"},
-            "must be off",
-        ),
-        (
-            {"thinking_enabled": True, "thinking_level": "off"},
-            "cannot be off",
-        ),
+        ({"reasoning": {"mode": "disabled", "effort": "high"}}, "cannot specify"),
+        ({"reasoning": {"effort": "extreme"}}, "Input should be"),
     ],
 )
 def test_compaction_model_config_rejects_inconsistent_options(

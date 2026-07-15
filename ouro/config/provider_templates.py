@@ -8,8 +8,14 @@ from ouro.config.provider_models import (
     ProviderType,
     resolve_provider_protocol,
 )
+from ouro.config.reasoning import (
+    mapped_reasoning,
+    openai_effort_reasoning,
+    toggle_reasoning,
+)
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
+from ouro.core.reasoning import ReasoningRequest
 
 
 class ProviderTemplate(OuroModel):
@@ -65,6 +71,119 @@ class ProviderTemplate(OuroModel):
 _VERIFIED_ON = "2026-07-14"
 
 
+_OPENAI_REASONING = openai_effort_reasoning(
+    supported_efforts=("low", "medium", "high", "xhigh", "max"),
+)
+_GEMINI_FLASH_REASONING = openai_effort_reasoning(
+    activation="always_on",
+    supported_efforts=("minimal", "low", "medium", "high"),
+    default_effort="medium",
+)
+_GEMINI_PRO_REASONING = openai_effort_reasoning(
+    activation="always_on",
+    supported_efforts=("low", "medium", "high"),
+    default_effort="high",
+)
+_GEMINI_FLASH_LITE_REASONING = openai_effort_reasoning(
+    activation="always_on",
+    supported_efforts=("minimal", "low", "medium", "high"),
+    default_effort="minimal",
+)
+_DEEPSEEK_REASONING = mapped_reasoning(
+    name="deepseek-thinking-effort",
+    activation="toggle",
+    supported_efforts=("high", "max"),
+    default=ReasoningRequest(mode="enabled", effort="high"),
+    output="text",
+    continuation="text",
+    variants={
+        "disabled": {"thinking": {"type": "disabled"}},
+        "enabled": {"thinking": {"type": "enabled"}},
+        "high": {"thinking": {"type": "enabled"}, "reasoning_effort": "high"},
+        "max": {"thinking": {"type": "enabled"}, "reasoning_effort": "max"},
+    },
+)
+_QWEN_REASONING = toggle_reasoning(
+    name="qwen-thinking-toggle",
+    enabled={"enable_thinking": True, "preserve_thinking": True},
+    disabled={"enable_thinking": False, "preserve_thinking": False},
+)
+_KIMI_REASONING = toggle_reasoning(
+    name="kimi-thinking-toggle",
+    enabled={"thinking": {"type": "enabled", "keep": "all"}},
+    disabled={"thinking": {"type": "disabled"}},
+)
+_KIMI_ALWAYS_ON_REASONING = mapped_reasoning(
+    name="kimi-always-on-thinking",
+    activation="always_on",
+    default=ReasoningRequest(mode="enabled"),
+    output="text",
+    continuation="text",
+    variants={"enabled": {}},
+)
+_GLM_REASONING = toggle_reasoning(
+    name="glm-thinking-toggle",
+    enabled={"thinking": {"type": "enabled", "clear_thinking": False}},
+    disabled={"thinking": {"type": "disabled"}},
+)
+_ANTHROPIC_SONNET_REASONING = mapped_reasoning(
+    name="anthropic-default-adaptive-effort",
+    activation="toggle",
+    supported_efforts=("low", "medium", "high", "xhigh", "max"),
+    default=ReasoningRequest(mode="enabled", effort="high"),
+    output="summary",
+    continuation="opaque",
+    variants={
+        "disabled": {"thinking": {"type": "disabled"}},
+        "enabled": {},
+        **{
+            effort: {"output_config": {"effort": effort}}
+            for effort in ("low", "medium", "high", "xhigh", "max")
+        },
+    },
+)
+_ANTHROPIC_ADAPTIVE_REASONING = mapped_reasoning(
+    name="anthropic-adaptive-effort",
+    activation="toggle",
+    supported_efforts=("low", "medium", "high", "xhigh", "max"),
+    default=ReasoningRequest(mode="enabled", effort="high"),
+    output="summary",
+    continuation="opaque",
+    variants={
+        "disabled": {"thinking": {"type": "disabled"}},
+        "enabled": {"thinking": {"type": "adaptive"}},
+        "low": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "low"},
+        },
+        "medium": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "medium"},
+        },
+        "high": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "high"},
+        },
+        "xhigh": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "xhigh"},
+        },
+        "max": {
+            "thinking": {"type": "adaptive"},
+            "output_config": {"effort": "max"},
+        },
+    },
+)
+_ANTHROPIC_MANUAL_REASONING = toggle_reasoning(
+    name="anthropic-manual-thinking",
+    enabled={"thinking": {"type": "enabled", "budget_tokens": 8192}},
+    disabled={"thinking": {"type": "disabled"}},
+    default_enabled=False,
+    output="summary",
+    continuation="opaque",
+)
+
+
 _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="openai",
@@ -87,16 +206,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=(
-                    "off",
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                ),
-                default_thinking_level="medium",
+                reasoning=_OPENAI_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="gpt-5.6-terra",
@@ -107,16 +217,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=(
-                    "off",
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                ),
-                default_thinking_level="medium",
+                reasoning=_OPENAI_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="gpt-5.6-luna",
@@ -127,16 +228,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=(
-                    "off",
-                    "low",
-                    "medium",
-                    "high",
-                    "xhigh",
-                    "max",
-                ),
-                default_thinking_level="medium",
+                reasoning=_OPENAI_REASONING,
             ),
         ),
         documentation_url="https://developers.openai.com/api/docs/models",
@@ -163,8 +255,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=False,
-                supports_reasoning=False,
-                request_options={"thinking": {"type": "disabled"}},
+                reasoning=_ANTHROPIC_SONNET_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="claude-opus-4-8",
@@ -175,8 +266,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=False,
-                supports_reasoning=False,
-                request_options={"thinking": {"type": "disabled"}},
+                reasoning=_ANTHROPIC_ADAPTIVE_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="claude-haiku-4-5",
@@ -187,8 +277,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=False,
-                supports_reasoning=False,
-                request_options={"thinking": {"type": "disabled"}},
+                reasoning=_ANTHROPIC_MANUAL_REASONING,
             ),
         ),
         documentation_url="https://platform.claude.com/docs/en/about-claude/models/overview",
@@ -215,9 +304,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=("minimal", "low", "medium", "high"),
-                default_thinking_level="medium",
+                reasoning=_GEMINI_FLASH_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.1-pro-preview",
@@ -228,9 +315,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=("minimal", "low", "medium", "high"),
-                default_thinking_level="medium",
+                reasoning=_GEMINI_PRO_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="gemini-3.1-flash-lite",
@@ -241,9 +326,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=("minimal", "low", "medium", "high"),
-                default_thinking_level="medium",
+                reasoning=_GEMINI_FLASH_LITE_REASONING,
             ),
         ),
         documentation_url="https://ai.google.dev/gemini-api/docs/models",
@@ -270,8 +353,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_DEEPSEEK_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="deepseek-v4-flash",
@@ -282,8 +364,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_DEEPSEEK_REASONING,
             ),
         ),
         documentation_url="https://api-docs.deepseek.com/quick_start/pricing/",
@@ -310,8 +391,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"enable_thinking": True},
+                reasoning=_QWEN_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.7-max",
@@ -322,8 +402,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=False,
-                supports_reasoning=True,
-                request_options={"enable_thinking": True},
+                reasoning=_QWEN_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="qwen3.6-flash",
@@ -334,8 +413,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"enable_thinking": True},
+                reasoning=_QWEN_REASONING,
             ),
         ),
         documentation_url="https://help.aliyun.com/zh/model-studio/text-generation-model",
@@ -362,8 +440,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_KIMI_ALWAYS_ON_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.7-code-highspeed",
@@ -374,8 +451,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_KIMI_ALWAYS_ON_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.6",
@@ -386,8 +462,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_KIMI_REASONING,
             ),
         ),
         documentation_url="https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart",
@@ -414,10 +489,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                supported_thinking_levels=("max",),
-                default_thinking_level="max",
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_GLM_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5-turbo",
@@ -428,8 +500,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=False,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_GLM_REASONING,
             ),
             ProviderEndpointConfig(
                 endpoint_id="glm-5v-turbo",
@@ -440,8 +511,7 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=False,
-                supports_reasoning=True,
-                request_options={"thinking": {"type": "enabled"}},
+                reasoning=_GLM_REASONING,
             ),
         ),
         documentation_url="https://docs.bigmodel.cn/cn/guide/start/model-overview",
@@ -468,7 +538,6 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=False,
             ),
             ProviderEndpointConfig(
                 endpoint_id="free",
@@ -479,7 +548,6 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=False,
             ),
         ),
         documentation_url="https://openrouter.ai/docs/guides/routing/routers/auto-router",
@@ -506,7 +574,6 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=False,
             ),
             ProviderEndpointConfig(
                 endpoint_id="mistral-small-2603",
@@ -517,7 +584,6 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=False,
             ),
             ProviderEndpointConfig(
                 endpoint_id="mistral-large-2512",
@@ -528,7 +594,6 @@ _PROVIDER_TEMPLATES = (
                 supports_vision=True,
                 supports_streaming=True,
                 supports_structured_output=True,
-                supports_reasoning=False,
             ),
         ),
         documentation_url="https://docs.mistral.ai/models/model-selection-guide",

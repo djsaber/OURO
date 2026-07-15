@@ -3,7 +3,11 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.context import ContextBuilder, estimate_message_tokens
-from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.messages import (
+    MessageRecord,
+    ProviderContinuationArtifact,
+    ToolResultReference,
+)
 from ouro.core.tools import ToolCallRequest
 
 
@@ -102,3 +106,25 @@ def test_message_token_estimate_includes_typed_tool_protocol_fields() -> None:
     assert estimate_message_tokens(tool_result) > estimate_message_tokens(
         MessageRecord.text(session_id="ses_1", role="tool_result", text="ok")
     )
+
+
+def test_message_token_estimate_includes_provider_continuation() -> None:
+    plain = MessageRecord.text(session_id="ses_1", role="assistant", text="")
+    with_continuation = plain.model_copy(
+        update={
+            "provider_continuation": ProviderContinuationArtifact(
+                provider_id="anthropic",
+                protocol="anthropic-messages",
+                model_id="claude-test",
+                blocks=(
+                    {
+                        "type": "thinking",
+                        "thinking": "private thought " * 100,
+                        "signature": "sig",
+                    },
+                ),
+            )
+        }
+    )
+
+    assert estimate_message_tokens(with_continuation) > estimate_message_tokens(plain) + 200

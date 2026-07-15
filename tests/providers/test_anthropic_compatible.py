@@ -5,15 +5,19 @@ from typing import Any
 
 import pytest
 
+from ouro.config import get_provider_template
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
+    ProviderContinuationArtifact,
     TextContent,
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import AnthropicCompatibleProvider
+from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
 class FakeTransport:
@@ -71,7 +75,11 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         {
             "type": "message",
             "content": [
-                {"type": "thinking", "thinking": "I should inspect the file."},
+                {
+                    "type": "thinking",
+                    "thinking": "I should inspect the file.",
+                    "signature": "sig_1",
+                },
                 {"type": "text", "text": "I'll read it."},
                 {
                     "type": "tool_use",
@@ -87,10 +95,12 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
             },
         }
     )
+    reasoning = get_provider_template("anthropic").endpoint().reasoning
     provider = AnthropicCompatibleProvider(
         base_url="https://api.example.test",
         api_key="secret",
         transport=transport,
+        reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
     )
     assistant = MessageRecord.text(
         session_id="ses_1", role="assistant", text="I'll inspect it."
@@ -128,9 +138,8 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         provider_id="anthropic",
         supports_streaming=False,
         supports_vision=True,
-        supports_reasoning=True,
-        supported_thinking_levels=("low", "high"),
-        default_thinking_level="low",
+        reasoning=reasoning.capability,
+        reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
     )
 
     events = [
@@ -165,10 +174,13 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         "reasoning_delta",
         "text_delta",
         "tool_call",
+        "continuation",
         "done",
     ]
     assert events[2].tool_call is not None
     assert events[2].tool_call.arguments == {"path": "CHANGELOG.md"}
+    assert events[3].continuation is not None
+    assert events[3].continuation.blocks[0]["signature"] == "sig_1"
     assert events[-1].usage is not None
     assert events[-1].usage.cache_read_tokens == 3
     request = transport.requests[0]
@@ -263,6 +275,105 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 5
     assert events[-1].usage.output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_preserves_signed_thinking_for_same_route_only() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {"type": "message_start", "message": {"usage": {"input_tokens": 2}}},
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": "", "signature": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "check"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "signature_delta", "signature": "sig"},
+            },
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "Read",
+                    "input": {},
+                },
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    reasoning = get_provider_template("anthropic").endpoint("claude-opus-4-8").reasoning
+    provider = AnthropicCompatibleProvider(
+        base_url="https://api.example.test",
+        provider_id="anthropic",
+        transport=transport,
+        reasoning_encoder=ReasoningPayloadEncoder(reasoning.profile),
+    )
+    model = ModelMetadata(
+        model_id="claude-opus-4-8",
+        provider_id="anthropic",
+        reasoning=reasoning.capability,
+        reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=model,
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="think")],
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "tool_call_delta",
+        "continuation",
+        "done",
+    ]
+    continuation = events[2].continuation
+    assert continuation is not None
+    assert continuation.blocks == ({"type": "thinking", "thinking": "check", "signature": "sig"},)
+
+    replay_transport = FakeTransport(
+        {"type": "message", "content": [{"type": "text", "text": "ok"}]}
+    )
+    provider.transport = replay_transport
+    matching = MessageRecord.text(
+        session_id="ses_1", role="assistant", text="calling tool"
+    ).model_copy(
+        update={
+            "provider_continuation": continuation,
+            "tool_calls": [ToolCallRequest(id="call_1", name="Read", arguments={})],
+        }
+    )
+    mismatched = matching.model_copy(
+        update={
+            "provider_continuation": ProviderContinuationArtifact(
+                provider_id="anthropic",
+                protocol="anthropic-messages",
+                model_id="other-model",
+                blocks=continuation.blocks,
+            )
+        }
+    )
+
+    async for _ in provider.stream(model=model, messages=[matching]):
+        pass
+    async for _ in provider.stream(model=model, messages=[mismatched]):
+        pass
+
+    matching_content = replay_transport.requests[0]["payload"]["messages"][0]["content"]
+    mismatched_content = replay_transport.requests[1]["payload"]["messages"][0]["content"]
+    assert matching_content[0] == continuation.blocks[0]
+    assert all(block.get("type") != "thinking" for block in mismatched_content)
     assert transport.requests[0]["payload"]["stream"] is True
 
 

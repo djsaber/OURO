@@ -7,12 +7,22 @@ from typing import Any
 import httpx
 import pytest
 
-from ouro.core.messages import ImageContent, MessageRecord, TextContent, ToolResultReference
+from ouro.config import openai_effort_reasoning
+from ouro.core.messages import (
+    ImageContent,
+    MessageRecord,
+    ProviderContinuationArtifact,
+    TextContent,
+    ToolResultReference,
+)
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAICompatibleProvider
 from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
 from ouro.providers.openai_transport import OpenAITransportError
+from ouro.providers.reasoning import ReasoningPayloadEncoder
+
+_OPENAI_REASONING = openai_effort_reasoning(output="text", continuation="text")
 
 
 class FakeTransport:
@@ -230,10 +240,19 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
             "stream": True,
             "temperature": 1.9,
             "max_tokens": 999,
-            "reasoning_effort": "low",
             "tools": [{"type": "wrong"}],
         },
+        reasoning_encoder=ReasoningPayloadEncoder(
+            openai_effort_reasoning(
+                supported_efforts=("low", "high"),
+                default_effort="high",
+            ).profile
+        ),
         transport=transport,
+    )
+    reasoning = openai_effort_reasoning(
+        supported_efforts=("low", "high"),
+        default_effort="high",
     )
     model = ModelMetadata(
         model_id="reasoning-model",
@@ -242,9 +261,8 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
         temperature=0.2,
         max_output_tokens=4096,
         supports_streaming=False,
-        supports_reasoning=True,
-        supported_thinking_levels=("low", "high"),
-        default_thinking_level="high",
+        reasoning=reasoning.capability,
+        reasoning_request=reasoning.capability.default,
     )
 
     events = [
@@ -777,7 +795,11 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_response() 
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="2+2")],
         )
     ]
@@ -810,7 +832,11 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chun
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="go")],
         )
     ]
@@ -850,13 +876,72 @@ async def test_openai_compatible_provider_reasoning_only_response_is_not_empty()
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
             messages=[MessageRecord.text(session_id="ses_1", role="user", text="think")],
         )
     ]
 
-    assert [event.type for event in events] == ["reasoning_delta", "done"]
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "done",
+    ]
     assert events[0].reasoning_content == "Only reasoning, no content."
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_preserves_reasoning_only_for_tool_continuation() -> None:
+    transport = FakeTransport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "I should inspect the file.",
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "Read",
+                                    "arguments": '{"path":"README.md"}',
+                                },
+                            }
+                        ],
+                    }
+                }
+            ]
+        }
+    )
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
+        )
+    ]
+
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "tool_call",
+        "continuation",
+        "done",
+    ]
+    assert events[2].continuation is not None
+    assert events[2].continuation.blocks == ({"reasoning_content": "I should inspect the file."},)
 
 
 @pytest.mark.asyncio
@@ -876,7 +961,13 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
                     arguments={"path": "README.md"},
                 )
             ],
-            "metadata": {"reasoning_content": "I need to read the file."},
+            "reasoning_content": "I need to read the file.",
+            "provider_continuation": ProviderContinuationArtifact(
+                provider_id="openai-compatible",
+                protocol="openai-chat-completions",
+                model_id="glm-test",
+                blocks=({"reasoning_content": "I need to read the file."},),
+            ),
         }
     )
     tool_result = MessageRecord.text(
@@ -888,7 +979,11 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
     events = [
         event
         async for event in provider.stream(
-            model=ModelMetadata(model_id="glm-test", provider_id="glm"),
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
             messages=[
                 MessageRecord.text(session_id="ses_1", role="user", text="read"),
                 assistant,
@@ -905,7 +1000,44 @@ async def test_openai_compatible_provider_sends_reasoning_content_in_history() -
 
 
 @pytest.mark.asyncio
-async def test_openai_compatible_provider_sends_empty_reasoning_content_for_tool_calls() -> None:
+async def test_openai_compatible_provider_does_not_replay_cross_route_continuation() -> None:
+    transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+    provider = OpenAICompatibleProvider(
+        base_url="https://example.test/v1",
+        transport=transport,
+    )
+    assistant = MessageRecord.text(
+        session_id="ses_1", role="assistant", text="prior answer"
+    ).model_copy(
+        update={
+            "reasoning_content": "private prior reasoning",
+            "provider_continuation": ProviderContinuationArtifact(
+                provider_id="openai-compatible",
+                protocol="openai-chat-completions",
+                model_id="different-model",
+                blocks=({"reasoning_content": "private prior reasoning"},),
+            ),
+        }
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(
+                model_id="glm-test",
+                provider_id="glm",
+                reasoning=_OPENAI_REASONING.capability,
+            ),
+            messages=[assistant],
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    assert "reasoning_content" not in transport.requests[0]["payload"]["messages"][0]
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_provider_omits_empty_reasoning_content_for_tool_calls() -> None:
     transport = FakeTransport({"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
     provider = OpenAICompatibleProvider(
         base_url="https://example.test/v1",
@@ -914,16 +1046,13 @@ async def test_openai_compatible_provider_sends_empty_reasoning_content_for_tool
     )
     assistant = MessageRecord.text(session_id="ses_1", role="assistant", text="").model_copy(
         update={
-            "metadata": {
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "name": "Read",
-                        "arguments": {"path": "README.md"},
-                    }
-                ],
-                "reasoning_content": "",
-            }
+            "tool_calls": [
+                ToolCallRequest(
+                    id="call_1",
+                    name="Read",
+                    arguments={"path": "README.md"},
+                )
+            ],
         }
     )
 
@@ -941,8 +1070,7 @@ async def test_openai_compatible_provider_sends_empty_reasoning_content_for_tool
     assert [event.type for event in events] == ["text_delta", "done"]
     assistant_message = transport.requests[0]["payload"]["messages"][1]
     assert assistant_message["role"] == "assistant"
-    assert "reasoning_content" in assistant_message
-    assert assistant_message["reasoning_content"] == ""
+    assert "reasoning_content" not in assistant_message
 
 
 @pytest.mark.asyncio

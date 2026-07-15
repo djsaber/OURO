@@ -118,13 +118,20 @@ factory 分支。OpenAI 与 Anthropic 协议实现共享 provider-neutral HTTP J
 尚未发出模型流事件时重试明确分类为 transient 的失败，开始输出后禁止重放。结构化 `response_format` 受
 Endpoint capability gate 约束，重试计划通过 durable runtime event 暴露给 Host。
 
+模型思考使用四段式边界：core 的 `ReasoningRequest` 表达统一意图，Endpoint 的 `ReasoningCapability` 表达
+真实能力，config 的 `ReasoningProfileConfig` 声明解析后 variant 对应的原生请求片段，provider encoder 只负责编码。
+解析严格拒绝不支持的开关和 effort，不在厂商等级之间近似。可展示 reasoning 与工具续接状态分开建模；
+续接状态使用路由绑定的 `ProviderContinuationArtifact`，OpenAI-compatible 只回放声明过的
+`reasoning_content` 文本，Anthropic 只在工具续接时原样回放同 provider/protocol/model 的签名 thinking blocks。
+
 ## 消息、工具与上下文
 
 `MessageRecord` 使用类型化字段表达工具关系：
 
 - assistant 工具请求写入 `tool_calls`；
 - tool result 关联写入 `tool_result`；
-- `metadata` 只保存非结构化附加信息，不保存工具请求或关联身份。
+- 可展示思考写入 `reasoning_content`，协议私有续接状态写入 `provider_continuation`；
+- `metadata` 只保存非结构化附加信息，不保存工具请求、关联身份或思考续接状态。
 
 一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
 没有模型回合身份的普通消息按用户请求分组；不完整工具交换及其后续恢复上下文作为受保护后缀。
@@ -204,6 +211,8 @@ Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delt
 Provider 配置同时持久化实例 `provider_id`、产品配置 `provider_type` 和线协议 `protocol`。产品档案负责约束
 允许/默认协议，adapter factory 只按 `protocol` 分派。无效结构必须抛出 `ConfigError`，不能静默降级、推导
 缺失协议或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider factory，业务代码不直接读取环境变量。
+Endpoint 的 `reasoning.capability/profile` 是同一权威配置的一部分；profile 与 `request_options` 的字段所有权
+冲突、协议无法保存的 continuation 以及运行时不支持的 effort 均在 HTTP 前失败。
 CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区；Facade 只暴露凭据
 configured/missing 状态，并报告配置变更的生效范围。具体 manager 留在 application 组合边界之后。
 
@@ -213,6 +222,7 @@ CLI 命令使用资源层级表达职责：
 
 - `provider add/update/replace` 分别表达 Provider 创建、同类型更新和完整替换；
 - `provider endpoint set` 只管理 endpoint；
+- `provider endpoint set --reasoning-preset/--reasoning-config` 为内置或自定义模型声明思考契约；
 - `provider templates` 查询类型化的只读厂商模板目录；
 - `provider add <id> --type <type>` 统一创建 Provider；内置厂商类型原子装载模板参数与 Endpoint，compatible
   类型创建空 Provider 并由 endpoint 命令补充模型；同 id 冲突提示显式使用 `update` 或 `replace`；

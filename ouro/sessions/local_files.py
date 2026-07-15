@@ -625,8 +625,6 @@ class LocalSessionStore:
             "recovered_from_event_journal": True,
             "run_id": run.run_id,
         }
-        if reasoning:
-            metadata["reasoning_content"] = reasoning
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -637,6 +635,7 @@ class LocalSessionStore:
         ).model_copy(
             update={
                 "metadata": metadata,
+                "reasoning_content": reasoning,
             }
         )
         self.append_message(message)

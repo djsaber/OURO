@@ -69,6 +69,58 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         assert template.verified_on == "2026-07-14"
 
 
+def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
+    templates = {template.template_id: template for template in provider_templates()}
+
+    openai = templates["openai"].endpoint().reasoning
+    assert openai.capability.supported_efforts == (
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+    )
+    assert openai.capability.output == "none"
+    assert openai.profile is not None
+    assert openai.profile.variants["enabled"] == {"reasoning_effort": "medium"}
+    assert openai.profile.variants["disabled"] == {"reasoning_effort": "none"}
+
+    anthropic = templates["anthropic"]
+    assert anthropic.endpoint("claude-sonnet-5").reasoning.capability.default.effort == "high"
+    assert anthropic.endpoint("claude-opus-4-8").reasoning.capability.continuation == "opaque"
+    assert anthropic.endpoint("claude-haiku-4-5").reasoning.capability.supported_efforts == ()
+
+    gemini = templates["gemini"]
+    assert gemini.endpoint("gemini-3.5-flash").reasoning.capability.activation == "always_on"
+    assert gemini.endpoint("gemini-3.1-pro-preview").reasoning.capability.supported_efforts == (
+        "low",
+        "medium",
+        "high",
+    )
+
+    deepseek = templates["deepseek"].endpoint().reasoning
+    assert deepseek.capability.supported_efforts == ("high", "max")
+    assert deepseek.profile is not None
+    assert deepseek.profile.variants["max"] == {
+        "thinking": {"type": "enabled"},
+        "reasoning_effort": "max",
+    }
+
+    qwen = templates["qwen"].endpoint().reasoning
+    assert qwen.profile is not None
+    assert qwen.profile.variants["enabled"]["preserve_thinking"] is True
+
+    kimi = templates["kimi"]
+    assert kimi.endpoint("kimi-k2.7-code").reasoning.capability.activation == "always_on"
+    assert kimi.endpoint("kimi-k2.6").reasoning.capability.activation == "toggle"
+
+    glm = templates["glm"].endpoint().reasoning
+    assert glm.profile is not None
+    assert glm.profile.variants["enabled"] == {
+        "thinking": {"type": "enabled", "clear_thinking": False}
+    }
+
+
 def test_provider_template_requires_a_resolvable_default_endpoint() -> None:
     with pytest.raises(ValidationError, match="default endpoint not found"):
         _template(default_endpoint="missing")

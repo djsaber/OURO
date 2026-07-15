@@ -42,7 +42,7 @@ from ouro.core.errors import CompactionError, ConfigError, ResourceAttachmentErr
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, RunStatus, SessionRecord
@@ -729,6 +729,7 @@ class RuntimeService:
         messages: list[MessageRecord],
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
     ) -> TurnBoundaryInputResult:
         snapshot = self.store.load_session(session.session_id, recover=False)
@@ -738,12 +739,13 @@ class RuntimeService:
             return TurnBoundaryInputResult(sequence=sequence)
 
         appended: list[MessageRecord] = []
-        if assistant_text or assistant_reasoning:
+        if assistant_text or assistant_reasoning or assistant_continuation is not None:
             assistant_message = self.run_lifecycle.append_assistant_message(
                 session=session,
                 run=run,
                 text=assistant_text,
                 reasoning_content=assistant_reasoning,
+                provider_continuation=assistant_continuation,
                 sequence=len(messages) + 1,
                 turn_id=turn_id,
             )
@@ -1080,6 +1082,7 @@ class RuntimeService:
                 messages=latest.messages,
                 assistant_text="",
                 assistant_reasoning="",
+                assistant_continuation=None,
                 turn_id=batch.turn_id,
             )
             latest = self.store.load_session(session.session_id, recover=False)

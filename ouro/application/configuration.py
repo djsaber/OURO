@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -44,6 +44,7 @@ from ouro.config import (
     BUILTIN_FAUX_PROVIDER_ID,
     INTEGRATED_PROVIDER_TYPES,
     CompactionConfigManager,
+    EndpointReasoningConfig,
     PermissionConfigManager,
     PromptConfigManager,
     ProviderConfig,
@@ -60,7 +61,8 @@ from ouro.config import (
 )
 from ouro.config.skills import SkillInstallScope
 from ouro.core.errors import ConfigError
-from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
+from ouro.core.provider import ProviderRetryPolicy
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
 from ouro.prompts import render_agent_skills_prompt
@@ -445,9 +447,7 @@ class ConfigurationFacade:
         supports_vision: bool | None = None,
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
-        supports_reasoning: bool | None = None,
-        supported_thinking_levels: Sequence[ThinkingLevel] | None = None,
-        default_thinking_level: ThinkingLevel | None = None,
+        reasoning: EndpointReasoningConfig | None = None,
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointCatalogView:
@@ -464,9 +464,7 @@ class ConfigurationFacade:
             supports_vision=supports_vision,
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
-            supports_reasoning=supports_reasoning,
-            supported_thinking_levels=supported_thinking_levels,
-            default_thinking_level=default_thinking_level,
+            reasoning=reasoning,
             request_options=request_options,
             make_default=make_default,
         )
@@ -646,8 +644,7 @@ class ConfigurationFacade:
         use_runtime_endpoint: bool = False,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
-        thinking_enabled: bool | None = None,
-        thinking_level: ThinkingLevel | None = None,
+        reasoning: ReasoningRequest | None = None,
         clear: bool = False,
     ) -> CompactionConfigView:
         config = self.compaction.update_model(
@@ -656,8 +653,7 @@ class ConfigurationFacade:
             use_runtime_endpoint=use_runtime_endpoint,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
-            thinking_enabled=thinking_enabled,
-            thinking_level=thinking_level,
+            reasoning=reasoning,
             clear=clear,
         )
         return compaction_view(

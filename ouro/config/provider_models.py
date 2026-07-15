@@ -8,8 +8,10 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
+from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
+from ouro.core.provider import ProviderRetryPolicy
+from ouro.core.reasoning import ReasoningContinuation, ReasoningRequest
 
 ProviderType = Literal[
     "faux",
@@ -75,6 +77,7 @@ class ProviderProtocolSpec:
     protocol: ProviderProtocol
     default_api_path: str | None
     requires_base_url: bool
+    reasoning_continuations: tuple[ReasoningContinuation, ...]
 
 
 _OPENAI_PROTOCOL: tuple[ProviderProtocol, ...] = ("openai-chat-completions",)
@@ -108,16 +111,19 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
         protocol="faux",
         default_api_path=None,
         requires_base_url=False,
+        reasoning_continuations=("none",),
     ),
     "openai-chat-completions": ProviderProtocolSpec(
         protocol="openai-chat-completions",
         default_api_path="/chat/completions",
         requires_base_url=True,
+        reasoning_continuations=("none", "text"),
     ),
     "anthropic-messages": ProviderProtocolSpec(
         protocol="anthropic-messages",
         default_api_path="/v1/messages",
         requires_base_url=True,
+        reasoning_continuations=("none", "opaque"),
     ),
 }
 
@@ -152,6 +158,23 @@ def resolve_provider_protocol(
 
 def default_api_path(protocol: ProviderProtocol) -> str | None:
     return provider_protocol_spec(protocol).default_api_path
+
+
+def validate_reasoning_protocol_compatibility(
+    protocol: ProviderProtocol,
+    reasoning: EndpointReasoningConfig,
+) -> None:
+    """Reject continuation contracts a wire adapter cannot faithfully replay."""
+
+    capability = reasoning.capability
+    spec = provider_protocol_spec(protocol)
+    if capability.continuation not in spec.reasoning_continuations:
+        raise ValueError(
+            f"reasoning continuation {capability.continuation!r} is not supported by "
+            f"protocol {protocol!r}"
+        )
+    if protocol == "faux" and capability.activation != "unsupported":
+        raise ValueError("faux protocol does not support reasoning controls")
 
 
 class ProviderConfig(OuroModel):
@@ -206,6 +229,8 @@ class ProviderConfig(OuroModel):
     @model_validator(mode="after")
     def _validate_provider(self) -> ProviderConfig:
         resolve_provider_protocol(self.provider_type, self.protocol)
+        for endpoint in self.endpoints:
+            validate_reasoning_protocol_compatibility(self.protocol, endpoint.reasoning)
         endpoint_ids = [endpoint.endpoint_id for endpoint in self.endpoints]
         if len(set(endpoint_ids)) != len(endpoint_ids):
             raise ValueError("endpoint ids must be unique")
@@ -255,9 +280,8 @@ class ProviderRuntimeOptions:
     supports_vision: bool | None = None
     supports_streaming: bool | None = None
     supports_structured_output: bool | None = None
-    supports_reasoning: bool | None = None
-    supported_thinking_levels: tuple[ThinkingLevel, ...] | None = None
-    thinking_level: ThinkingLevel | None = None
+    reasoning: EndpointReasoningConfig | None = None
+    reasoning_request: ReasoningRequest | None = None
     retry_policy: ProviderRetryPolicy | None = None
     extra: dict[str, Any] | None = None
 

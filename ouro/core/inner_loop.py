@@ -11,7 +11,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
@@ -55,6 +55,7 @@ class ToolBatchHandler(Protocol):
         message_sequence: int,
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult: ...
 
@@ -90,6 +91,7 @@ class RunCompleter(Protocol):
         messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str,
+        provider_continuation: ProviderContinuationArtifact | None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
@@ -115,6 +117,7 @@ class RunFailer(Protocol):
         error: str,
         final_text: str,
         reasoning_content: str,
+        provider_continuation: ProviderContinuationArtifact | None,
         turn_id: str | None,
         tool_results: list[ToolResult],
     ) -> RunResult: ...
@@ -161,6 +164,7 @@ class TurnBoundaryInputConsumer(Protocol):
         messages: list[MessageRecord],
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
     ) -> TurnBoundaryInputResult: ...
 
@@ -205,6 +209,7 @@ class _RoundState:
     turn_id: str = field(default_factory=lambda: new_id("turn"))
     parts: list[str] = field(default_factory=list)
     reasoning_parts: list[str] = field(default_factory=list)
+    continuation: ProviderContinuationArtifact | None = None
     tool_calls: list[ToolCallRequest] = field(default_factory=list)
     tool_call_parts: dict[int, _ToolCallParts] = field(default_factory=dict)
     saw_model_done: bool = False
@@ -316,6 +321,7 @@ class InnerAgentLoop:
                     round_state.parts,
                     round_state.reasoning_parts,
                     round_state.turn_id,
+                    provider_continuation=round_state.continuation,
                 )
             if round_state.tool_calls:
                 try:
@@ -346,6 +352,7 @@ class InnerAgentLoop:
                     round_parts=None,
                     round_reasoning_parts=round_state.reasoning_parts,
                     turn_id=round_state.turn_id,
+                    provider_continuation=round_state.continuation,
                 )
 
             state.final_parts.extend(round_state.parts)
@@ -364,6 +371,7 @@ class InnerAgentLoop:
                 messages=state.messages,
                 final_text=state.final_text(),
                 reasoning_content="".join(round_state.reasoning_parts),
+                provider_continuation=round_state.continuation,
                 turn_id=round_state.turn_id,
                 tool_results=state.tool_results,
             )
@@ -421,6 +429,9 @@ class InnerAgentLoop:
             assistant_reasoning=""
             if assistant_already_committed
             else "".join(round_state.reasoning_parts),
+            assistant_continuation=None
+            if assistant_already_committed
+            else round_state.continuation,
             turn_id=round_state.turn_id,
         )
         state.sequence = result.sequence
@@ -435,6 +446,7 @@ class InnerAgentLoop:
         model_round: int,
         turn_id: str,
     ) -> None:
+        reasoning = self.adapter.model.reasoning_resolution
         state.sequence = await self.ports.emit(
             state.emitted,
             state.sequence,
@@ -445,6 +457,10 @@ class InnerAgentLoop:
                 "model": self.adapter.model.model_id,
                 "round": model_round,
                 "turn_id": turn_id,
+                "reasoning": {
+                    "requested": reasoning.requested.model_dump(mode="json"),
+                    "effective": reasoning.effective.model_dump(mode="json"),
+                },
             },
         )
 
@@ -478,6 +494,12 @@ class InnerAgentLoop:
                         model_round,
                         provider_event.reasoning_content,
                     )
+                elif provider_event.type == "continuation":
+                    if provider_event.continuation is None:
+                        raise ValueError("provider continuation event is missing its payload")
+                    if round_state.continuation is not None:
+                        raise ValueError("provider emitted multiple continuation artifacts")
+                    round_state.continuation = provider_event.continuation
                 elif provider_event.type == "tool_call_delta":
                     if provider_event.tool_call_delta is None:
                         raise ValueError("provider tool call delta is missing its payload")
@@ -518,6 +540,7 @@ class InnerAgentLoop:
                         round_state.parts,
                         round_state.reasoning_parts,
                         round_state.turn_id,
+                        provider_continuation=round_state.continuation,
                     )
                 elif provider_event.type == "done":
                     if round_state.tool_call_parts:
@@ -548,6 +571,7 @@ class InnerAgentLoop:
                 round_state.parts,
                 round_state.reasoning_parts,
                 round_state.turn_id,
+                provider_continuation=round_state.continuation,
             )
         return None
 
@@ -669,6 +693,7 @@ class InnerAgentLoop:
             message_sequence=len(state.messages) + 1,
             assistant_text=assistant_text,
             assistant_reasoning=assistant_reasoning,
+            assistant_continuation=round_state.continuation,
             abort_signal=abort_signal,
         )
         state.sequence = handling.sequence
@@ -731,6 +756,7 @@ class InnerAgentLoop:
         round_parts: list[str] | None = None,
         round_reasoning_parts: list[str] | None = None,
         turn_id: str | None = None,
+        provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> RunResult:
         return await self.ports.fail_run(
             state.emitted,
@@ -740,6 +766,7 @@ class InnerAgentLoop:
             error=error,
             final_text=state.final_text(round_parts),
             reasoning_content="".join(round_reasoning_parts or []),
+            provider_continuation=provider_continuation,
             turn_id=turn_id,
             tool_results=state.tool_results,
         )

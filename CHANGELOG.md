@@ -10,6 +10,10 @@ This project records user-visible and framework-contract changes in this file.
 - Anthropic Messages protocol adapter, provider adapter registry, and reviewed multi-endpoint CLI
   templates for OpenAI, Anthropic, Gemini, DeepSeek, Qwen, KIMI, GLM, OpenRouter, and Mistral.
 - Provider retry policy with observable retry events and structured-output capability checks.
+- Provider-neutral reasoning intent/capability contracts, declarative native payload profiles,
+  custom endpoint presets, and strict pre-request effort validation.
+- Route-scoped reasoning continuation for OpenAI-compatible tool turns and opaque signed
+  Anthropic thinking blocks.
 - Hard-deny tool permissions, workspace path policy, and bounded tool output.
 - Request-local text and image resource projection from canonical Session resource references.
 - Cursor-based incremental Session message and event queries.
@@ -19,6 +23,8 @@ This project records user-visible and framework-contract changes in this file.
 
 - Provider configuration now separates user instance id, product-level provider type, and wire
   protocol; runtime adapter dispatch depends only on the registered protocol.
+- Endpoint reasoning configuration now separates activation, effort, visible output, continuation,
+  and native encoding. The former boolean reasoning/thinking-level fields are no longer accepted.
 - Provider creation now has one `add` entry point: integrated provider types load their complete
   template automatically, while compatible types infer their protocol and start without endpoints.
   The former `configure`, `custom`, and user-selectable `--protocol` paths were removed; id

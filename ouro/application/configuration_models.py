@@ -6,7 +6,9 @@ from pydantic import Field
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.config.provider_models import ProviderProtocol, ProviderType
-from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
+from ouro.config.reasoning import EndpointReasoningConfig
+from ouro.core.provider import ProviderRetryPolicy
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
 
@@ -50,9 +52,7 @@ class ProviderEndpointView(ApplicationDTO):
     supports_vision: bool
     supports_streaming: bool
     supports_structured_output: bool
-    supports_reasoning: bool
-    supported_thinking_levels: tuple[ThinkingLevel, ...] = Field(default_factory=tuple)
-    default_thinking_level: ThinkingLevel | None = None
+    reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
     request_options: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     default: bool = False
@@ -158,8 +158,7 @@ class CompactionModelConfigView(ApplicationDTO):
     endpoint_id: str | None = None
     temperature: float | None = None
     max_output_tokens: int | None = None
-    thinking_enabled: bool | None = None
-    thinking_level: ThinkingLevel | None = None
+    reasoning: ReasoningRequest | None = None
 
     @property
     def has_dedicated_endpoint(self) -> bool:

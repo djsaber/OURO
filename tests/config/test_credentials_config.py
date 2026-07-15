@@ -12,11 +12,14 @@ from ouro.config import (
     ProviderEndpointConfig,
     ProviderRuntimeOptions,
     endpoint_config_to_public_dict,
+    mapped_reasoning,
+    openai_effort_reasoning,
 )
 from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_models import default_api_path
 from ouro.core.errors import ConfigError, CredentialError
 from ouro.core.provider import ProviderRetryPolicy
+from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 
 
@@ -47,6 +50,14 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
                 "nested": {"password": "password-value"},
                 "seed": 7,
             },
+            reasoning=mapped_reasoning(
+                name="private-native-config",
+                activation="toggle",
+                variants={
+                    "enabled": {"thinking": {"type": "enabled", "password": "secret"}},
+                    "disabled": {"thinking": {"type": "disabled"}},
+                },
+            ),
         )
     )
 
@@ -55,6 +66,7 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
         "nested": {"password": "***"},
         "seed": 7,
     }
+    assert public["reasoning"]["profile"]["variants"]["enabled"]["thinking"]["password"] == "***"
 
 
 def test_config_service_precedence() -> None:
@@ -268,6 +280,9 @@ def test_provider_type_protocol_combinations_are_validated() -> None:
         "model",
         "endpoint",
         "supports_multimodal",
+        "supports_reasoning",
+        "supported_thinking_levels",
+        "default_thinking_level",
         "thinking_levels",
         "default_reasoning_level",
         "extra",
@@ -308,6 +323,10 @@ def test_provider_config_rejects_noncanonical_shapes(tmp_path, raw) -> None:
 
 
 def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
+    reasoning = openai_effort_reasoning(
+        supported_efforts=("low", "high"),
+        default_effort="high",
+    )
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "config.json").write_text(
@@ -336,9 +355,7 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
                                     "supports_tools": False,
                                     "supports_vision": True,
                                     "supports_streaming": False,
-                                    "supports_reasoning": True,
-                                    "supported_thinking_levels": ["low", "high"],
-                                    "default_thinking_level": "high",
+                                    "reasoning": reasoning.model_dump(mode="json"),
                                     "request_options": {"seed": 7},
                                 },
                             },
@@ -363,24 +380,27 @@ def test_provider_config_resolves_endpoint_capabilities(tmp_path) -> None:
     assert options.supports_tools is False
     assert options.supports_vision is True
     assert options.supports_streaming is False
-    assert options.supports_reasoning is True
-    assert options.supported_thinking_levels == ("low", "high")
-    assert options.thinking_level == "high"
+    assert options.reasoning == reasoning
+    assert options.reasoning_request is None
+    assert resolve_reasoning(reasoning.capability, options.reasoning_request).effective == (
+        ReasoningRequest(mode="enabled", effort="high")
+    )
     assert options.extra == {"seed": 7, "top_p": 0.8}
 
     disabled_reasoning = ProviderConfigManager(tmp_path).resolve_runtime_options(
         ProviderRuntimeOptions(
             provider_id="glm",
             endpoint_id="reasoning",
-            supports_reasoning=False,
+            reasoning_request=ReasoningRequest(mode="disabled"),
         )
     )
-    assert disabled_reasoning.supports_reasoning is False
-    assert disabled_reasoning.supported_thinking_levels == ()
-    assert disabled_reasoning.thinking_level is None
+    assert disabled_reasoning.reasoning == reasoning
+    assert disabled_reasoning.reasoning_request == ReasoningRequest(mode="disabled")
 
 
-def test_provider_endpoint_writes_new_shape_and_validates_thinking_levels(tmp_path) -> None:
+def test_provider_endpoint_writes_reasoning_profile_and_rejects_option_conflicts(
+    tmp_path,
+) -> None:
     manager = ProviderConfigManager(tmp_path)
     manager.create_provider(
         "glm",
@@ -388,14 +408,16 @@ def test_provider_endpoint_writes_new_shape_and_validates_thinking_levels(tmp_pa
         api_key_env="OURO_TEST_KEY",
     )
 
+    reasoning = openai_effort_reasoning(
+        supported_efforts=("low", "high"),
+        default_effort="high",
+    )
     endpoint = manager.upsert_endpoint(
         "glm",
         "reasoning",
         model_id="glm-reasoning",
         base_url="https://example.test/v1",
-        supports_reasoning=True,
-        supported_thinking_levels=("low", "high"),
-        default_thinking_level="high",
+        reasoning=reasoning,
         make_default=True,
     )
 
@@ -406,13 +428,13 @@ def test_provider_endpoint_writes_new_shape_and_validates_thinking_levels(tmp_pa
     assert "base_url" not in provider_raw
     assert provider_raw["default_endpoint"] == "reasoning"
     assert provider_raw["endpoints"]["reasoning"]["model_id"] == "glm-reasoning"
+    assert provider_raw["endpoints"]["reasoning"]["reasoning"] == reasoning.model_dump(mode="json")
 
-    with pytest.raises(ConfigError, match="default_thinking_level"):
+    with pytest.raises(ConfigError, match="reasoning_effort"):
         manager.upsert_endpoint(
             "glm",
             "reasoning",
-            supported_thinking_levels=("low",),
-            default_thinking_level="high",
+            request_options={"reasoning_effort": "low"},
         )
 
 

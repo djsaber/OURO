@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 
 from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
+from ouro.config.reasoning import EndpointReasoningConfig, reasoning_preset
 from ouro.core.approvals import SESSION_APPROVAL_MODES
 
 
@@ -398,14 +399,13 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     compaction_parser.add_argument("--temperature", type=float, default=None)
     compaction_parser.add_argument("--max-output-tokens", type=int, default=None)
     compaction_parser.add_argument(
-        "--thinking",
-        action=argparse.BooleanOptionalAction,
+        "--thinking-mode",
+        choices=("default", "enabled", "disabled"),
         default=None,
-        help="Enable or disable thinking for compaction requests",
     )
     compaction_parser.add_argument(
-        "--thinking-level",
-        choices=("off", "minimal", "low", "medium", "high", "xhigh", "max"),
+        "--thinking-effort",
+        choices=("minimal", "low", "medium", "high", "xhigh", "max"),
         default=None,
     )
     compaction_parser.add_argument(
@@ -532,18 +532,16 @@ def _add_provider_parser(subparsers: argparse._SubParsersAction) -> None:
     endpoint_set_parser.add_argument("--context-window", type=int, default=None)
     endpoint_set_parser.add_argument("--max-output-tokens", type=int, default=None)
     _add_endpoint_capability_args(endpoint_set_parser)
-    endpoint_set_parser.add_argument(
-        "--thinking-levels",
-        nargs="+",
-        choices=_THINKING_LEVELS,
-        default=None,
-        help="Supported thinking levels",
+    endpoint_reasoning_group = endpoint_set_parser.add_mutually_exclusive_group()
+    endpoint_reasoning_group.add_argument(
+        "--reasoning-preset",
+        type=_reasoning_preset,
+        help="Common reasoning contract preset for a compatible endpoint",
     )
-    endpoint_set_parser.add_argument(
-        "--thinking-level",
-        choices=_THINKING_LEVELS,
-        default=None,
-        help="Default thinking level",
+    endpoint_reasoning_group.add_argument(
+        "--reasoning-config",
+        type=_endpoint_reasoning_config,
+        help="Complete endpoint reasoning contract as a JSON object",
     )
     endpoint_set_parser.add_argument(
         "--request-options",
@@ -967,16 +965,24 @@ def _add_provider_args(
     )
     _add_endpoint_capability_args(parser, prefix=prefix)
     parser.add_argument(
-        "--thinking-level",
-        dest=f"{prefix}thinking_level",
-        choices=_THINKING_LEVELS,
+        "--thinking-mode",
+        dest=f"{prefix}thinking_mode",
+        choices=("default", "enabled", "disabled"),
         default=None,
-        metavar="LEVEL",
-        help="Reasoning/thinking level",
+        metavar="MODE",
+        help="Reasoning activation intent",
+    )
+    parser.add_argument(
+        "--thinking-effort",
+        dest=f"{prefix}thinking_effort",
+        choices=_THINKING_EFFORTS,
+        default=None,
+        metavar="EFFORT",
+        help="Reasoning effort intent",
     )
 
 
-_THINKING_LEVELS = ("off", "minimal", "low", "medium", "high", "xhigh", "max")
+_THINKING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 def _add_endpoint_capability_args(
@@ -989,7 +995,6 @@ def _add_endpoint_capability_args(
         (("vision",), "supports_vision", "image/multimodal input"),
         (("streaming",), "supports_streaming", "streaming output"),
         (("structured-output",), "supports_structured_output", "structured output"),
-        (("reasoning",), "supports_reasoning", "reasoning/thinking controls"),
     ):
         parser.add_argument(
             *(f"--{option}" for option in options),
@@ -1008,6 +1013,20 @@ def _json_object(value: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise argparse.ArgumentTypeError("request options must be a JSON object")
     return parsed
+
+
+def _endpoint_reasoning_config(value: str) -> EndpointReasoningConfig:
+    try:
+        return EndpointReasoningConfig.model_validate(_json_object(value))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"invalid reasoning config: {exc}") from exc
+
+
+def _reasoning_preset(value: str) -> EndpointReasoningConfig:
+    try:
+        return reasoning_preset(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def _key_value(value: str) -> tuple[str, str]:

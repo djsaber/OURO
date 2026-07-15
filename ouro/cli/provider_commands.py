@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
@@ -14,9 +14,8 @@ from ouro.application.configuration_models import (
 )
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime
-from ouro.config import ProviderType
+from ouro.config import EndpointReasoningConfig, ProviderType
 from ouro.core.errors import OuroError
-from ouro.core.provider import ThinkingLevel
 
 
 async def check_provider_connection(
@@ -441,9 +440,7 @@ def set_provider_endpoint(
     supports_vision: bool | None = None,
     supports_streaming: bool | None = None,
     supports_structured_output: bool | None = None,
-    supports_reasoning: bool | None = None,
-    supported_thinking_levels: Sequence[ThinkingLevel] | None = None,
-    default_thinking_level: ThinkingLevel | None = None,
+    reasoning: EndpointReasoningConfig | None = None,
     request_options: Mapping[str, Any] | None = None,
     make_default: bool = False,
     json_mode: bool = False,
@@ -462,9 +459,7 @@ def set_provider_endpoint(
             supports_vision=supports_vision,
             supports_streaming=supports_streaming,
             supports_structured_output=supports_structured_output,
-            supports_reasoning=supports_reasoning,
-            supported_thinking_levels=supported_thinking_levels,
-            default_thinking_level=default_thinking_level,
+            reasoning=reasoning,
             request_options=request_options,
             make_default=make_default,
         )

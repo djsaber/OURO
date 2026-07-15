@@ -49,6 +49,11 @@ OpenAI、Anthropic、Gemini、DeepSeek、Qwen、KIMI、GLM、OpenRouter、Mistra
 输出事件前发生的有界重试，并将重试计划记录为运行事件；结构化输出只有在 Endpoint 显式声明能力时才会
 进入请求。
 
+思考配置使用统一意图、Endpoint 真实能力和声明式原生参数 profile 三层契约。用户可对内置模板或任意
+OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和精确 effort；协议不支持的意图会在网络请求前
+明确失败，不会被近似成相邻等级。可展示 reasoning 与工具续接状态独立保存，签名或私有 continuation 只在
+同 provider/protocol/model 的工具回合中重放。
+
 上下文由 canonical messages 投影生成。系统提示词、Skills 指令、压缩摘要和最近原子模型回合在请求前
 组合；超过硬预算时明确失败或暂停，不静默丢弃 canonical history。摘要压缩使用独立记录保存覆盖范围、
 来源 digest、策略和 usage。
@@ -115,7 +120,8 @@ SessionStore，而不是内存 registry。
 ### Message
 
 会话的 canonical 对话记录。工具请求使用 `tool_calls`，工具结果关联使用 `tool_result`；两者不隐藏在
-metadata 中。
+metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具续接状态使用路由绑定的
+`provider_continuation`。
 
 ### Event
 

@@ -6,10 +6,14 @@ from typing import Any, Literal, Protocol
 from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.reasoning import (
+    ReasoningCapability,
+    ReasoningRequest,
+    ReasoningResolution,
+    resolve_reasoning,
+)
 from ouro.core.tools import ToolCallRequest
-
-ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh", "max"]
 
 
 class ModelCost(OuroModel):
@@ -31,9 +35,8 @@ class ModelMetadata(OuroModel):
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
-    supports_reasoning: bool = False
-    supported_thinking_levels: tuple[ThinkingLevel, ...] = ()
-    default_thinking_level: ThinkingLevel | None = None
+    reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)
+    reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     cost: ModelCost | None = None
     metadata: Metadata = MetadataField
 
@@ -41,7 +44,12 @@ class ModelMetadata(OuroModel):
     def _validate_token_limits(self) -> ModelMetadata:
         if self.max_output_tokens > self.context_window:
             raise ValueError("max_output_tokens must not exceed context_window")
+        resolve_reasoning(self.reasoning, self.reasoning_request)
         return self
+
+    @property
+    def reasoning_resolution(self) -> ReasoningResolution:
+        return resolve_reasoning(self.reasoning, self.reasoning_request)
 
 
 class Usage(OuroModel):
@@ -107,6 +115,7 @@ class ProviderStreamEvent(OuroModel):
     type: Literal[
         "text_delta",
         "reasoning_delta",
+        "continuation",
         "tool_call_delta",
         "tool_call",
         "retry_scheduled",
@@ -115,6 +124,7 @@ class ProviderStreamEvent(OuroModel):
     ]
     text: str | None = None
     reasoning_content: str | None = None
+    continuation: ProviderContinuationArtifact | None = None
     tool_call_delta: ToolCallDelta | None = None
     tool_call: ToolCallRequest | None = None
     usage: Usage | None = None
@@ -126,6 +136,7 @@ class ProviderStreamEvent(OuroModel):
         required_payloads = {
             "text_delta": self.text,
             "reasoning_delta": self.reasoning_content,
+            "continuation": self.continuation,
             "tool_call_delta": self.tool_call_delta,
             "tool_call": self.tool_call,
             "retry_scheduled": self.retry,
@@ -138,6 +149,7 @@ class ProviderStreamEvent(OuroModel):
             for value in (
                 self.text,
                 self.reasoning_content,
+                self.continuation,
                 self.tool_call_delta,
                 self.tool_call,
                 self.retry,

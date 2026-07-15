@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
@@ -14,6 +15,9 @@ def messages_to_anthropic(
     *,
     system_prompt: str,
     supports_vision: bool,
+    provider_id: str,
+    model_id: str,
+    include_continuation: bool,
 ) -> tuple[str, list[dict[str, Any]]]:
     """Project canonical history into Anthropic's top-level system/messages shape."""
 
@@ -24,7 +28,13 @@ def messages_to_anthropic(
             if message.text_content:
                 system_parts.append(message.text_content)
             continue
-        item = _message_to_anthropic(message, supports_vision=supports_vision)
+        item = _message_to_anthropic(
+            message,
+            supports_vision=supports_vision,
+            provider_id=provider_id,
+            model_id=model_id,
+            include_continuation=include_continuation,
+        )
         if converted and converted[-1]["role"] == item["role"]:
             converted[-1]["content"].extend(item["content"])
         else:
@@ -77,6 +87,19 @@ def content_blocks_from_response(
     return text_parts, reasoning_parts, tool_calls
 
 
+def continuation_blocks_from_response(
+    response: Mapping[str, Any],
+) -> tuple[dict[str, Any], ...]:
+    raw_content = response.get("content")
+    if not isinstance(raw_content, list):
+        return ()
+    return tuple(
+        deepcopy(dict(block))
+        for block in raw_content
+        if isinstance(block, Mapping) and block.get("type") in {"thinking", "redacted_thinking"}
+    )
+
+
 def usage_from_anthropic(value: object) -> Usage:
     raw = value if isinstance(value, Mapping) else {}
     return Usage(
@@ -114,6 +137,9 @@ def _message_to_anthropic(
     message: MessageRecord,
     *,
     supports_vision: bool,
+    provider_id: str,
+    model_id: str,
+    include_continuation: bool,
 ) -> dict[str, Any]:
     if message.role == "tool_result":
         if message.tool_result is None:
@@ -133,6 +159,18 @@ def _message_to_anthropic(
     role = "assistant" if message.role == "assistant" else "user"
     content = _message_content(message, supports_vision=supports_vision)
     if role == "assistant":
+        continuation = message.provider_continuation
+        if (
+            include_continuation
+            and message.tool_calls
+            and continuation is not None
+            and continuation.matches(
+                provider_id=provider_id,
+                protocol="anthropic-messages",
+                model_id=model_id,
+            )
+        ):
+            content = [*(deepcopy(block) for block in continuation.blocks), *content]
         content.extend(
             {
                 "type": "tool_use",

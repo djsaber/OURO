@@ -36,6 +36,17 @@ def test_message_rejects_tool_fields_in_metadata() -> None:
         )
 
 
+def test_message_rejects_reasoning_state_in_metadata() -> None:
+    with pytest.raises(ValueError, match="typed message fields"):
+        MessageRecord.model_validate(
+            {
+                "session_id": "ses_1",
+                "role": "assistant",
+                "metadata": {"reasoning_content": "private reasoning"},
+            }
+        )
+
+
 def test_event_round_trip() -> None:
     event = EventRecord(session_id="ses_1", run_id="run_1", event_type="run_started", sequence=1)
 

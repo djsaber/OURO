@@ -109,16 +109,34 @@ uv run ouro provider endpoint set glm reasoning \
   --temperature 0.2 \
   --context-window 200000 \
   --max-output-tokens 16000 \
-  --tools --streaming --structured-output --reasoning \
-  --thinking-levels low high \
-  --thinking-level high \
+  --tools --streaming --structured-output \
+  --reasoning-preset thinking-toggle \
   --default
+
+# Anthropic-compatible 自定义模型也可声明 adaptive thinking 与 effort
+uv run ouro provider endpoint set private-model claude \
+  --home ./.ouro-dev \
+  --model custom-claude-model \
+  --reasoning-preset anthropic-adaptive-effort \
+  --default
+
+# 单次运行覆盖统一的思考意图；不支持的模式或等级会在发起 HTTP 前失败
+uv run ouro run --home ./.ouro-dev \
+  --provider glm --endpoint reasoning \
+  --thinking-mode enabled --thinking-effort high \
+  "Analyze this problem"
 
 uv run ouro provider use glm --home ./.ouro-dev
 uv run ouro provider check glm --endpoint reasoning --home ./.ouro-dev
 uv run ouro provider list --home ./.ouro-dev
 uv run ouro provider endpoint list glm --home ./.ouro-dev
 ```
+
+`--reasoning-preset` 提供 `none`、`openai-effort`、`reasoning-content-effort`、
+`thinking-toggle`、`enable-thinking-toggle` 和 `anthropic-adaptive-effort`。Preset 是用户对目标模型协议能力的
+显式声明，不是自动探测；若模型只支持部分等级，或参数值与 preset 不同，应使用
+`--reasoning-config '<JSON>'` 完整声明 capability 与各 variant 的原生请求片段。思考配置归 Endpoint 所有，
+因此 `openai-compatible` 和 `anthropic-compatible` 的任意自定义模型都使用同一套配置与运行时 flags。
 
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
 通过 `/model provider/endpoint` 切换当前会话模型。
@@ -311,9 +329,22 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
             "supports_tools": true,
             "supports_streaming": true,
             "supports_structured_output": true,
-            "supports_reasoning": true,
-            "supported_thinking_levels": ["low", "high"],
-            "default_thinking_level": "high"
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "supported_efforts": [],
+                "default": {"mode": "enabled", "effort": null},
+                "output": "text",
+                "continuation": "text"
+              },
+              "profile": {
+                "name": "thinking-object-toggle",
+                "variants": {
+                  "enabled": {"thinking": {"type": "enabled"}},
+                  "disabled": {"thinking": {"type": "disabled"}}
+                }
+              }
+            }
           }
         },
         "timeout_seconds": 60,

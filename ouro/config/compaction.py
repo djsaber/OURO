@@ -8,7 +8,7 @@ from ouro.config.file import JsonConfigFile
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
-from ouro.core.provider import ThinkingLevel
+from ouro.core.reasoning import ReasoningRequest
 
 
 class CompactionModelConfig(OuroModel):
@@ -18,8 +18,7 @@ class CompactionModelConfig(OuroModel):
     endpoint_id: str | None = None
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_output_tokens: int | None = Field(default=None, ge=1)
-    thinking_enabled: bool | None = None
-    thinking_level: ThinkingLevel | None = None
+    reasoning: ReasoningRequest | None = None
 
     @field_validator("provider_id", "endpoint_id")
     @classmethod
@@ -34,12 +33,6 @@ class CompactionModelConfig(OuroModel):
         if (self.provider_id is None) != (self.endpoint_id is None):
             raise ValueError(
                 "compaction model provider_id and endpoint_id must be configured together"
-            )
-        if self.thinking_enabled is False and self.thinking_level not in {None, "off"}:
-            raise ValueError("compaction thinking_level must be off when thinking_enabled is false")
-        if self.thinking_enabled is True and self.thinking_level == "off":
-            raise ValueError(
-                "compaction thinking_level cannot be off when thinking_enabled is true"
             )
         return self
 
@@ -99,8 +92,7 @@ class CompactionConfigManager:
         use_runtime_endpoint: bool = False,
         temperature: float | None = None,
         max_output_tokens: int | None = None,
-        thinking_enabled: bool | None = None,
-        thinking_level: ThinkingLevel | None = None,
+        reasoning: ReasoningRequest | None = None,
         clear: bool = False,
     ) -> CompactionConfig:
         """Merge one validated CLI/application update into persisted model settings."""
@@ -116,8 +108,7 @@ class CompactionConfigManager:
                 use_runtime_endpoint,
                 temperature is not None,
                 max_output_tokens is not None,
-                thinking_enabled is not None,
-                thinking_level is not None,
+                reasoning is not None,
             )
         ):
             raise ConfigError("clear cannot be combined with compaction model options")
@@ -138,10 +129,8 @@ class CompactionConfigManager:
             updates["temperature"] = temperature
         if max_output_tokens is not None:
             updates["max_output_tokens"] = max_output_tokens
-        if thinking_enabled is not None:
-            updates["thinking_enabled"] = thinking_enabled
-        if thinking_level is not None:
-            updates["thinking_level"] = thinking_level
+        if reasoning is not None:
+            updates["reasoning"] = reasoning
         try:
             updated = CompactionModelConfig.model_validate(
                 model.model_copy(update=updates).model_dump()

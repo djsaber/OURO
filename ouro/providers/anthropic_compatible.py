@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -14,6 +14,7 @@ from ouro.core.provider import (
 )
 from ouro.providers.anthropic_codec import (
     content_blocks_from_response,
+    continuation_blocks_from_response,
     error_from_anthropic,
     merge_usage,
     messages_to_anthropic,
@@ -21,6 +22,7 @@ from ouro.providers.anthropic_codec import (
     usage_from_anthropic,
 )
 from ouro.providers.http_transport import HttpxProviderHTTPTransport, ProviderHTTPTransport
+from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.retrying import stream_with_retries
 
 
@@ -40,6 +42,7 @@ class AnthropicCompatibleProvider:
         transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
         request_options: Mapping[str, Any] | None = None,
+        reasoning_encoder: ReasoningPayloadEncoder | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
     ) -> None:
         self.provider_id = provider_id or self.provider_id
@@ -50,6 +53,7 @@ class AnthropicCompatibleProvider:
         self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})
         self.request_options = dict(request_options or {})
+        self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)
         self.retry_policy = retry_policy or ProviderRetryPolicy()
 
     async def close(self) -> None:
@@ -91,7 +95,11 @@ class AnthropicCompatibleProvider:
                 tools=None,
                 extra_payload={"stream": False, "max_tokens": 1},
             )
-            events = self._events_from_response(response, supports_tools=model.supports_tools)
+            events = self._events_from_response(
+                response,
+                model=model,
+                supports_tools=model.supports_tools,
+            )
             async for event in events:
                 if event.type == "error":
                     raise RuntimeError(event.error or "provider connection check failed")
@@ -135,7 +143,9 @@ class AnthropicCompatibleProvider:
                 timeout=self.timeout,
             )
             async for event in self._events_from_stream(
-                chunks, supports_tools=model.supports_tools
+                chunks,
+                model=model,
+                supports_tools=model.supports_tools,
             ):
                 yield event
             return
@@ -149,6 +159,7 @@ class AnthropicCompatibleProvider:
         )
         async for event in self._events_from_response(
             response,
+            model=model,
             supports_tools=model.supports_tools,
         ):
             yield event
@@ -188,6 +199,9 @@ class AnthropicCompatibleProvider:
             messages,
             system_prompt=system_prompt,
             supports_vision=model.supports_vision,
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            include_continuation=model.reasoning.continuation == "opaque",
         )
         payload: dict[str, Any] = dict(self.request_options)
         payload.update(
@@ -205,12 +219,7 @@ class AnthropicCompatibleProvider:
             payload["temperature"] = model.temperature
         else:
             payload.pop("temperature", None)
-        level = model.default_thinking_level
-        if model.supports_reasoning and level not in {None, "off"}:
-            output_config = payload.get("output_config")
-            output_config = dict(output_config) if isinstance(output_config, Mapping) else {}
-            output_config["effort"] = "low" if level == "minimal" else level
-            payload["output_config"] = output_config
+        self.reasoning_encoder.apply(payload, model)
         if tools and model.supports_tools:
             payload["tools"] = [tool_to_anthropic(tool) for tool in tools]
         else:
@@ -228,6 +237,7 @@ class AnthropicCompatibleProvider:
         self,
         response: Mapping[str, Any],
         *,
+        model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         response_error = error_from_anthropic(response)
@@ -236,13 +246,16 @@ class AnthropicCompatibleProvider:
             return
 
         text_parts, reasoning_parts, tool_calls = content_blocks_from_response(response)
+        continuation_blocks = continuation_blocks_from_response(response)
+        if model.reasoning.output not in {"summary", "text"}:
+            reasoning_parts = []
         if tool_calls and not supports_tools:
             yield ProviderStreamEvent(
                 type="error",
                 error="provider returned tool calls for an endpoint without tool support",
             )
             return
-        if not text_parts and not reasoning_parts and not tool_calls:
+        if not text_parts and not reasoning_parts and not tool_calls and not continuation_blocks:
             stop_reason = response.get("stop_reason")
             suffix = f" stop_reason={stop_reason}" if isinstance(stop_reason, str) else ""
             yield ProviderStreamEvent(
@@ -256,16 +269,29 @@ class AnthropicCompatibleProvider:
             yield ProviderStreamEvent(type="text_delta", text=text)
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call)
+        if tool_calls and continuation_blocks and model.reasoning.continuation == "opaque":
+            yield ProviderStreamEvent(
+                type="continuation",
+                continuation=ProviderContinuationArtifact(
+                    provider_id=self.provider_id,
+                    protocol="anthropic-messages",
+                    model_id=model.model_id,
+                    blocks=continuation_blocks,
+                ),
+            )
         yield ProviderStreamEvent(type="done", usage=usage_from_anthropic(response.get("usage")))
 
     async def _events_from_stream(
         self,
         chunks: AsyncIterator[Mapping[str, Any]],
         *,
+        model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage = Usage()
         saw_content = False
+        saw_tool_call = False
+        continuation_blocks: dict[int, dict[str, Any]] = {}
         async for chunk in chunks:
             response_error = error_from_anthropic(chunk)
             if response_error:
@@ -295,6 +321,7 @@ class AnthropicCompatibleProvider:
                     call_id = block.get("id")
                     if isinstance(name, str) and name and isinstance(call_id, str) and call_id:
                         saw_content = True
+                        saw_tool_call = True
                         yield ProviderStreamEvent(
                             type="tool_call_delta",
                             tool_call_delta=ToolCallDelta(
@@ -303,6 +330,10 @@ class AnthropicCompatibleProvider:
                                 name_delta=name,
                             ),
                         )
+                elif block.get("type") in {"thinking", "redacted_thinking"}:
+                    if model.reasoning.continuation == "opaque":
+                        continuation_blocks[index] = dict(block)
+                    saw_content = True
             elif event_type == "content_block_delta":
                 delta = chunk.get("delta")
                 index = chunk.get("index")
@@ -318,10 +349,18 @@ class AnthropicCompatibleProvider:
                     thinking = str(delta["thinking"])
                     if thinking:
                         saw_content = True
-                        yield ProviderStreamEvent(
-                            type="reasoning_delta",
-                            reasoning_content=thinking,
-                        )
+                        if model.reasoning.output in {"summary", "text"}:
+                            yield ProviderStreamEvent(
+                                type="reasoning_delta",
+                                reasoning_content=thinking,
+                            )
+                    if isinstance(index, int) and index in continuation_blocks:
+                        current = str(continuation_blocks[index].get("thinking") or "")
+                        continuation_blocks[index]["thinking"] = current + thinking
+                elif delta_type == "signature_delta" and isinstance(delta.get("signature"), str):
+                    if isinstance(index, int) and index in continuation_blocks:
+                        current = str(continuation_blocks[index].get("signature") or "")
+                        continuation_blocks[index]["signature"] = current + str(delta["signature"])
                 elif (
                     delta_type == "input_json_delta"
                     and isinstance(index, int)
@@ -345,6 +384,18 @@ class AnthropicCompatibleProvider:
                         error="provider returned an empty assistant message",
                     )
                     return
+                if saw_tool_call and continuation_blocks:
+                    yield ProviderStreamEvent(
+                        type="continuation",
+                        continuation=ProviderContinuationArtifact(
+                            provider_id=self.provider_id,
+                            protocol="anthropic-messages",
+                            model_id=model.model_id,
+                            blocks=tuple(
+                                continuation_blocks[index] for index in sorted(continuation_blocks)
+                            ),
+                        ),
+                    )
                 yield ProviderStreamEvent(type="done", usage=usage)
                 return
 

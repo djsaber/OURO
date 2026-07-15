@@ -7,7 +7,7 @@ from ouro.application.events import RuntimeEventRecorder
 from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, ToolResultReference
 from ouro.core.provider import Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
@@ -108,6 +108,7 @@ class RunLifecycle:
         sequence: int,
         turn_id: str,
         reasoning_content: str = "",
+        provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> MessageRecord:
         existing = self._find_message(
             session.session_id,
@@ -116,7 +117,6 @@ class RunLifecycle:
         )
         if existing is not None:
             return existing
-        metadata: dict[str, Any] = {"reasoning_content": reasoning_content}
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -124,7 +124,13 @@ class RunLifecycle:
             text=text,
             sequence=sequence,
             turn_id=turn_id,
-        ).model_copy(update={"metadata": metadata, "tool_calls": list(tool_calls)})
+        ).model_copy(
+            update={
+                "tool_calls": list(tool_calls),
+                "reasoning_content": reasoning_content,
+                "provider_continuation": provider_continuation,
+            }
+        )
         self._append_message(session=session, run=run, message=message)
         return message
 
@@ -137,6 +143,7 @@ class RunLifecycle:
         sequence: int,
         turn_id: str,
         reasoning_content: str = "",
+        provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> MessageRecord:
         """Durably commit a completed assistant turn without completing its run."""
 
@@ -147,9 +154,6 @@ class RunLifecycle:
         )
         if existing is not None:
             return existing
-        metadata: dict[str, Any] = {}
-        if reasoning_content:
-            metadata["reasoning_content"] = reasoning_content
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -157,7 +161,12 @@ class RunLifecycle:
             text=text,
             sequence=sequence,
             turn_id=turn_id,
-        ).model_copy(update={"metadata": metadata})
+        ).model_copy(
+            update={
+                "reasoning_content": reasoning_content,
+                "provider_continuation": provider_continuation,
+            }
+        )
         self._append_message(session=session, run=run, message=message)
         return message
 
@@ -312,6 +321,7 @@ class RunLifecycle:
         messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str = "",
+        provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
@@ -325,7 +335,7 @@ class RunLifecycle:
                     events=emitted,
                     tool_results=tool_results,
                 )
-            if final_text or reasoning_content:
+            if final_text or reasoning_content or provider_continuation is not None:
                 assistant_message = MessageRecord.text(
                     session_id=session.session_id,
                     run_id=run.run_id,
@@ -334,15 +344,12 @@ class RunLifecycle:
                     sequence=len(messages) + 1,
                     turn_id=turn_id,
                 )
-                if reasoning_content:
-                    assistant_message = assistant_message.model_copy(
-                        update={
-                            "metadata": {
-                                **assistant_message.metadata,
-                                "reasoning_content": reasoning_content,
-                            }
-                        }
-                    )
+                assistant_message = assistant_message.model_copy(
+                    update={
+                        "reasoning_content": reasoning_content,
+                        "provider_continuation": provider_continuation,
+                    }
+                )
                 self._append_message(session=session, run=latest_run, message=assistant_message)
                 messages.append(assistant_message)
 
@@ -399,6 +406,7 @@ class RunLifecycle:
         error: str,
         final_text: str,
         reasoning_content: str = "",
+        provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
@@ -413,13 +421,11 @@ class RunLifecycle:
                     events=emitted,
                     tool_results=tool_results,
                 )
-            if final_text or reasoning_content:
+            if final_text or reasoning_content or provider_continuation is not None:
                 metadata: dict[str, Any] = {
                     "incomplete": True,
                     "failure_reason": error,
                 }
-                if reasoning_content:
-                    metadata["reasoning_content"] = reasoning_content
                 assistant_message = MessageRecord.text(
                     session_id=session.session_id,
                     run_id=run.run_id,
@@ -427,7 +433,13 @@ class RunLifecycle:
                     text=final_text,
                     sequence=latest_session.message_count + 1,
                     turn_id=turn_id,
-                ).model_copy(update={"metadata": metadata})
+                ).model_copy(
+                    update={
+                        "metadata": metadata,
+                        "reasoning_content": reasoning_content,
+                        "provider_continuation": provider_continuation,
+                    }
+                )
                 self._append_message(session=session, run=latest_run, message=assistant_message)
                 latest_session = self.store.load_session_record(session.session_id)
                 latest_run = self.store.load_run(session.session_id, run.run_id)

@@ -5,8 +5,8 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
+from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.provider import ThinkingLevel
 
 _SENSITIVE_PUBLIC_KEYS = frozenset(
     {
@@ -32,9 +32,7 @@ _ENDPOINT_FIELDS = frozenset(
         "supports_vision",
         "supports_streaming",
         "supports_structured_output",
-        "supports_reasoning",
-        "supported_thinking_levels",
-        "default_thinking_level",
+        "reasoning",
         "request_options",
         "metadata",
     }
@@ -55,9 +53,7 @@ class ProviderEndpointConfig(OuroModel):
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
-    supports_reasoning: bool = False
-    supported_thinking_levels: tuple[ThinkingLevel, ...] = Field(default_factory=tuple)
-    default_thinking_level: ThinkingLevel | None = None
+    reasoning: EndpointReasoningConfig = Field(default_factory=EndpointReasoningConfig)
     request_options: Metadata = MetadataField
     metadata: Metadata = MetadataField
 
@@ -91,18 +87,7 @@ class ProviderEndpointConfig(OuroModel):
     def _validate_capabilities(self) -> ProviderEndpointConfig:
         if self.max_output_tokens > self.context_window:
             raise ValueError("max_output_tokens must not exceed context_window")
-        if len(set(self.supported_thinking_levels)) != len(self.supported_thinking_levels):
-            raise ValueError("supported_thinking_levels must not contain duplicates")
-        if not self.supports_reasoning and (
-            self.supported_thinking_levels or self.default_thinking_level is not None
-        ):
-            raise ValueError("thinking levels require supports_reasoning=true")
-        if (
-            self.default_thinking_level is not None
-            and self.supported_thinking_levels
-            and self.default_thinking_level not in self.supported_thinking_levels
-        ):
-            raise ValueError("default_thinking_level must be listed in supported_thinking_levels")
+        self.reasoning.validate_request_options(self.request_options)
         return self
 
 
@@ -131,9 +116,7 @@ def endpoint_config_from_mapping(
         supports_vision=raw.get("supports_vision", False),
         supports_streaming=raw.get("supports_streaming", True),
         supports_structured_output=raw.get("supports_structured_output", False),
-        supports_reasoning=raw.get("supports_reasoning", False),
-        supported_thinking_levels=tuple(raw.get("supported_thinking_levels") or ()),
-        default_thinking_level=raw.get("default_thinking_level"),
+        reasoning=EndpointReasoningConfig.model_validate(raw.get("reasoning") or {}),
         request_options=dict(raw.get("request_options") or {}),
         metadata=dict(raw.get("metadata") or {}),
     )
@@ -149,7 +132,7 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
         "supports_vision": endpoint.supports_vision,
         "supports_streaming": endpoint.supports_streaming,
         "supports_structured_output": endpoint.supports_structured_output,
-        "supports_reasoning": endpoint.supports_reasoning,
+        "reasoning": endpoint.reasoning.model_dump(mode="json", exclude_none=True),
     }
     if endpoint.base_url:
         raw["base_url"] = endpoint.base_url
@@ -157,10 +140,6 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
         raw["api_path"] = endpoint.api_path
     if endpoint.temperature is not None:
         raw["temperature"] = endpoint.temperature
-    if endpoint.supported_thinking_levels:
-        raw["supported_thinking_levels"] = list(endpoint.supported_thinking_levels)
-    if endpoint.default_thinking_level is not None:
-        raw["default_thinking_level"] = endpoint.default_thinking_level
     if endpoint.request_options:
         raw["request_options"] = endpoint.request_options
     if endpoint.metadata:
@@ -170,7 +149,7 @@ def endpoint_config_to_raw(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
 
 def endpoint_config_to_public_dict(endpoint: ProviderEndpointConfig) -> dict[str, Any]:
     public = endpoint.model_dump(mode="json", exclude_none=True)
-    for field in ("request_options", "metadata"):
+    for field in ("reasoning", "request_options", "metadata"):
         if field in public:
             public[field] = _redact_public_value(public[field])
     return public

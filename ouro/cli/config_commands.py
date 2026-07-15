@@ -8,7 +8,7 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.config import QueuedInputConsumptionMode
 from ouro.core.errors import OuroError
-from ouro.core.provider import ThinkingLevel
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
 
@@ -156,8 +156,7 @@ def show_compaction_config(
     runtime_endpoint: bool = False,
     temperature: float | None = None,
     max_output_tokens: int | None = None,
-    thinking_enabled: bool | None = None,
-    thinking_level: ThinkingLevel | None = None,
+    reasoning: ReasoningRequest | None = None,
     clear: bool = False,
     json_mode: bool = False,
 ) -> int:
@@ -171,8 +170,7 @@ def show_compaction_config(
                 runtime_endpoint,
                 temperature is not None,
                 max_output_tokens is not None,
-                thinking_enabled is not None,
-                thinking_level is not None,
+                reasoning is not None,
                 clear,
             )
         )
@@ -183,8 +181,7 @@ def show_compaction_config(
                 use_runtime_endpoint=runtime_endpoint,
                 temperature=temperature,
                 max_output_tokens=max_output_tokens,
-                thinking_enabled=thinking_enabled,
-                thinking_level=thinking_level,
+                reasoning=reasoning,
                 clear=clear,
             )
     except OuroError as exc:
@@ -218,9 +215,9 @@ def show_compaction_config(
                 f"Temperature: {model.temperature if model.temperature is not None else '-'}",
                 "Max output tokens: "
                 f"{model.max_output_tokens if model.max_output_tokens is not None else '-'}",
-                "Thinking enabled: "
-                f"{model.thinking_enabled if model.thinking_enabled is not None else '-'}",
-                f"Thinking level: {model.thinking_level or '-'}",
+                f"Thinking mode: {model.reasoning.mode if model.reasoning is not None else '-'}",
+                "Thinking effort: "
+                f"{model.reasoning.effort if model.reasoning is not None else '-'}",
                 f"Config: {config.config_path}",
             ]
         )

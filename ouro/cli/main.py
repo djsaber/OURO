@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
+import sys
 from collections.abc import Sequence
 
 from ouro.cli.approval_commands import (
@@ -19,6 +21,7 @@ from ouro.cli.config_commands import (
     show_system_prompt_config,
     show_tool_execution_config,
 )
+from ouro.cli.errors import error_exit_code
 from ouro.cli.interactive import run_interactive
 from ouro.cli.mcp_commands import (
     check_mcp_connection,
@@ -80,11 +83,33 @@ from ouro.cli.skills import (
     update_skill,
     validate_skills,
 )
+from ouro.core.errors import ConfigError, OuroError
+from ouro.core.reasoning import ReasoningRequest
 from ouro.mcp import MCPServerConfigUpdate
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        return _dispatch(args)
+    except OuroError as exc:
+        if bool(getattr(args, "json", False) or getattr(args, "json_mode", False)):
+            print(
+                json.dumps(
+                    {
+                        "status": "failed",
+                        "error": str(exc),
+                        "error_type": type(exc).__name__,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print(f"Error: {exc}", file=sys.stderr)
+        return error_exit_code(exc)
+
+
+def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "run":
         return _run_command(args)
     if args.command == "session":
@@ -329,8 +354,7 @@ def _config_command(args: argparse.Namespace) -> int:
             runtime_endpoint=args.runtime_endpoint,
             temperature=args.temperature,
             max_output_tokens=args.max_output_tokens,
-            thinking_enabled=args.thinking,
-            thinking_level=args.thinking_level,
+            reasoning=_reasoning_request(args),
             clear=args.clear,
             json_mode=args.json,
         )
@@ -501,9 +525,7 @@ def _provider_endpoint_command(
             supports_vision=args.supports_vision,
             supports_streaming=args.supports_streaming,
             supports_structured_output=args.supports_structured_output,
-            supports_reasoning=args.supports_reasoning,
-            supported_thinking_levels=args.thinking_levels,
-            default_thinking_level=args.thinking_level,
+            reasoning=args.reasoning_config or args.reasoning_preset,
             request_options=args.request_options,
             make_default=args.default,
             json_mode=args.json,
@@ -591,9 +613,23 @@ def _provider_options(args: argparse.Namespace, *, prefix: str = "") -> RuntimeP
             prefix,
             "supports_structured_output",
         ),
-        supports_reasoning=_argument_value(args, prefix, "supports_reasoning"),
-        thinking_level=_argument_value(args, prefix, "thinking_level"),
+        reasoning_request=_reasoning_request(args, prefix=prefix),
     )
+
+
+def _reasoning_request(
+    args: argparse.Namespace,
+    *,
+    prefix: str = "",
+) -> ReasoningRequest | None:
+    mode = _argument_value(args, prefix, "thinking_mode")
+    effort = _argument_value(args, prefix, "thinking_effort")
+    if mode is None and effort is None:
+        return None
+    try:
+        return ReasoningRequest(mode=mode or "default", effort=effort)
+    except ValueError as exc:
+        raise ConfigError(f"invalid reasoning request: {exc}") from exc
 
 
 def _argument_value(

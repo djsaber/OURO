@@ -14,6 +14,8 @@ Provider 配置把用户实例、产品配置和线协议表达为三个独立�
 | `protocol` | adapter 使用的已注册线协议 | `openai-chat-completions`、`anthropic-messages` |
 
 `provider_id` 不参与协议推断；相同厂商可以有多个用户实例，多个厂商也可以复用同一个协议 adapter。
+Endpoint 的 reasoning capability/profile 同样不参与 adapter 分派；它只在选定协议内声明该模型的真实控制能力和
+原生参数映射。
 
 ## 产品类型与协议
 
@@ -24,6 +26,10 @@ Provider 配置把用户实例、产品配置和线协议表达为三个独立�
 
 - `openai-compatible`：固定使用 `openai-chat-completions`；
 - `anthropic-compatible`：固定使用 `anthropic-messages`。
+
+两种 compatible 类型都允许用户为自定义 Endpoint 声明思考配置。协议档案同时限制 adapter 能忠实保存的
+continuation：OpenAI Chat Completions 支持 `none/text`，Anthropic Messages 支持 `none/opaque`。不兼容的
+声明在配置或 adapter 构造时失败，不能接受后再丢弃。
 
 `faux` 类型和协议只保留给内部安全运行时与测试，不属于用户可配置类型，也不出现在用户 Provider 目录中。当前注册协议是 `faux`、
 `openai-chat-completions` 和 `anthropic-messages`。不接受任意协议字符串，也不通过 provider id 猜测厂商。
@@ -72,7 +78,7 @@ Provider mutation 使用三个明确操作：
 
 当前不引入动态协议插件、任意请求 schema、供应商专属 adapter 基类或历史配置自动迁移。新增原生协议时，
 只需增加协议类型、协议档案、adapter 构造器和允许该协议的产品档案，并用边界测试证明 factory 仍不依赖厂商
-名称。
+名称。Reasoning profile 仅是经过校验的静态请求片段，不是动态 schema 或可执行插件。
 
 ## 验收
 

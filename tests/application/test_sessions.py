@@ -185,7 +185,7 @@ def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) ->
         role="assistant",
         text="latest preview",
         sequence=2,
-    ).model_copy(update={"metadata": {"reasoning_content": "private-reasoning-needle"}})
+    ).model_copy(update={"reasoning_content": "private-reasoning-needle"})
     store.append_message(first)
     store.append_message(second)
     canonical = store.load_session(session.session_id, recover=False).session

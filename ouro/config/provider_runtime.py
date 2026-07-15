@@ -37,9 +37,7 @@ def runtime_options_from_config(
         supports_vision=endpoint.supports_vision,
         supports_streaming=endpoint.supports_streaming,
         supports_structured_output=endpoint.supports_structured_output,
-        supports_reasoning=endpoint.supports_reasoning,
-        supported_thinking_levels=endpoint.supported_thinking_levels,
-        thinking_level=endpoint.default_thinking_level,
+        reasoning=endpoint.reasoning,
         retry_policy=provider.retry_policy,
         extra={**provider.extra, **endpoint.request_options},
     )
@@ -51,21 +49,6 @@ def merge_runtime_options(
 ) -> ProviderRuntimeOptions:
     """Apply explicit runtime options over the selected configured endpoint."""
 
-    supports_reasoning = (
-        override.supports_reasoning
-        if override.supports_reasoning is not None
-        else base.supports_reasoning
-    )
-    supported_thinking_levels = (
-        override.supported_thinking_levels
-        if override.supported_thinking_levels is not None
-        else (() if override.supports_reasoning is False else base.supported_thinking_levels)
-    )
-    thinking_level = (
-        override.thinking_level
-        if override.thinking_level is not None
-        else (None if override.supports_reasoning is False else base.thinking_level)
-    )
     return ProviderRuntimeOptions(
         protocol=override.protocol if override.protocol is not None else base.protocol,
         provider_id=override.provider_id if override.provider_id is not None else base.provider_id,
@@ -106,9 +89,12 @@ def merge_runtime_options(
             if override.supports_structured_output is not None
             else base.supports_structured_output
         ),
-        supports_reasoning=supports_reasoning,
-        supported_thinking_levels=supported_thinking_levels,
-        thinking_level=thinking_level,
+        reasoning=override.reasoning if override.reasoning is not None else base.reasoning,
+        reasoning_request=(
+            override.reasoning_request
+            if override.reasoning_request is not None
+            else base.reasoning_request
+        ),
         retry_policy=(
             override.retry_policy if override.retry_policy is not None else base.retry_policy
         ),

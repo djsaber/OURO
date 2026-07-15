@@ -23,11 +23,12 @@ Endpoint 表示一个具体可调用模型：
 - `endpoint_id` 与 `model_id`；
 - 可覆盖的 base URL/API path；
 - temperature、context window、max output tokens；
-- tools、vision、streaming、structured output、reasoning 能力；
-- supported/default thinking level；
+- tools、vision、streaming、structured output 能力；
+- 类型化 reasoning capability 与声明式原生参数 profile；
 - request options 与展示 metadata。
 
-Endpoint 的输出上限不能超过 context window。Thinking level 只能在 reasoning 开启时配置。
+Endpoint 的输出上限不能超过 context window。思考能力、原生编码和运行时意图使用下文的统一契约；
+`request_options` 不能同时拥有 reasoning profile 已管理的顶层字段。
 
 ## 权威配置结构
 
@@ -46,7 +47,23 @@ Endpoint 的输出上限不能超过 context window。Thinking level 只能在 r
         "default_endpoint": "chat",
         "endpoints": {
           "chat": {
-            "model_id": "model-name"
+            "model_id": "model-name",
+            "reasoning": {
+              "capability": {
+                "activation": "toggle",
+                "supported_efforts": [],
+                "default": {"mode": "enabled", "effort": null},
+                "output": "text",
+                "continuation": "text"
+              },
+              "profile": {
+                "name": "thinking-object-toggle",
+                "variants": {
+                  "enabled": {"thinking": {"type": "enabled"}},
+                  "disabled": {"thinking": {"type": "disabled"}}
+                }
+              }
+            }
           }
         }
       }
@@ -57,6 +74,48 @@ Endpoint 的输出上限不能超过 context window。Thinking level 只能在 r
 
 `providers.items` 和 `endpoints` 必须是以 id 为 key 的对象。未知字段、列表形态、短字段别名和根级
 `provider` 必须明确失败。读取器不能修复、迁移或静默忽略非权威结构。
+
+## 思考契约
+
+思考能力分为四个相互独立的概念，避免把厂商差异泄漏到 core 或 CLI：
+
+1. `ReasoningRequest` 是本次调用的供应商无关意图：`mode` 为 `default`、`enabled` 或 `disabled`，可选
+   `effort` 为 `minimal`、`low`、`medium`、`high`、`xhigh` 或 `max`；
+2. `ReasoningCapability` 是 Endpoint 的真实能力：是否不支持、始终开启或可切换，精确支持哪些 effort，
+   Endpoint 默认意图，以及是否有可展示输出和需要续接的私有状态；
+3. `ReasoningProfileConfig` 按解析后的 variant 保存静态、经过校验的厂商原生请求片段；
+4. `ReasoningResolution` 严格把一次意图解析为一个有效 variant，再由协议 adapter 编码。
+
+解析不近似等级、不猜测厂商参数，也不静默降级：不支持的开启/关闭/effort 在 adapter 构造、HTTP 请求之前
+转为 `ConfigError`。对于可关闭或原生默认值可能关闭思考的模型，`mode=enabled` 的 profile 必须包含能真实开启
+思考的原生参数；已声明为 `always_on` 的模型可使用空片段。`mode=default` 使用 Endpoint 的类型化默认意图。
+
+Capability 的输出和续接是两条独立轴：
+
+- `output` 为 `none`、`summary` 或 `text`，只决定是否把可展示思考投影为 canonical reasoning；
+- `continuation` 为 `none`、`text` 或 `opaque`，只决定工具回合中是否保存供应商要求回传的状态；
+- `opaque` continuation 使用带 `provider_id`、`protocol`、`model_id` 的
+  `ProviderContinuationArtifact`，只允许同一路由重放；Anthropic 签名 thinking block 仅在 assistant 工具调用
+  与其 tool result 的续接请求中原样回放，不塞入通用文本字段。
+
+Provider profile 只拥有 reasoning 相关顶层字段，禁止覆盖 `model`、`messages`、`tools`、token limit、
+`stream` 和 `system` 等 core 请求字段。若 `request_options` 与 profile 字段冲突，配置明确失败，避免由合并顺序
+暗中改变行为。
+
+### 自定义模型
+
+`openai-compatible` 与 `anthropic-compatible` 创建空 Provider 后，用户可在任意 Endpoint 上使用
+`--reasoning-preset` 声明常见契约，或使用 `--reasoning-config '<JSON>'` 提交完整的 capability/profile。
+Preset 包括：
+
+- `none`；
+- `openai-effort`、`reasoning-content-effort`；
+- `thinking-toggle`、`enable-thinking-toggle`；
+- `anthropic-adaptive-effort`。
+
+Preset 是显式配置，不代表 OURO 自动探测了自定义模型。模型仅支持部分 effort 或使用不同参数时，完整 JSON
+必须只列出实际支持的 effort，并为 `enabled`、可用 effort 以及可切换模型的 `disabled` 提供精确原生片段。
+运行和压缩模型统一接受 `--thinking-mode` 与 `--thinking-effort`；Endpoint 不支持请求意图时立即失败。
 
 Host 通过 application `ConfigurationFacade` 查询和修改配置。Facade 返回类型化、不可变 DTO，并只公开凭据的
 configured/missing 状态；每次 mutation 返回变更项和生效范围。CLI、Desktop 等 Host 不直接依赖各 config
@@ -95,13 +154,14 @@ update 刷新模板 Endpoint 并保留非模板 Endpoint、凭据、enabled、ti
 Faux 只作为框架内部安全运行时和测试实现存在，不进入 application/CLI 的 Provider 目录、默认展示、选择或
 连接检查；没有用户配置时，公开目录的默认 Provider 为 `null`。
 
-Anthropic 模板当前显式关闭 adaptive thinking。原因是 Anthropic 工具续接要求原样保存 opaque thinking
-signature，而 canonical provider continuation 尚未提供该字段；在该底层契约完善前，不用供应商特例把签名
-塞入通用 reasoning 文本。
+内置模板的思考 profile 按模型分别声明，不能从厂商品牌推导：OpenAI/Gemini 使用模型各自允许的
+`reasoning_effort`；DeepSeek、Qwen、KIMI、GLM 使用其原生开关和经过核验的 effort；Anthropic adaptive 或
+manual thinking 同时声明可展示摘要和 opaque continuation。始终思考的模型拒绝关闭请求，只支持开关的模型
+不伪造 effort 等级。
 
 Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌套 `ThinkChunk`，并要求续接时原样回放；
-当前 canonical OpenAI-compatible continuation 只能稳定保存 `reasoning_content`。在建立可移植的 opaque block
-续接契约前，模板不会默认开启一个只能首轮工作、后续退化的能力。
+当前 OpenAI-compatible continuation 只声明可验证的 `reasoning_content` 文本；Mistral 的嵌套
+`ThinkChunk` 尚未进入该协议契约，因此模板不会默认开启一个只能首轮工作、后续退化的能力。
 
 类型与协议的设计约束、组合和 CLI 冲突语义见 [`provider-type-protocol.md`](provider-type-protocol.md)。
 
@@ -144,14 +204,15 @@ Core `Provider` 只暴露 `stream` 和 `check_connection`。Adapter factory 通�
 
 OpenAI-compatible 实现负责：
 
-- system message、普通内容、vision、tool history 和 reasoning 字段编码；
+- system message、普通内容、vision、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
 - usage、tool call、reasoning 和错误响应解码；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力的 image/tool response 明确报错。
 
 Anthropic-compatible 实现负责 Messages API 的顶层 system、content blocks、vision source、tool use/result、
-usage/error 与 SSE event 映射。协议差异留在各自 codec/adapter 中。
+usage/error 与 SSE event 映射，并在工具续接边界原样保存/重放同路由的签名 thinking blocks。协议差异留在
+各自 codec/adapter 中。
 
 Endpoint 声明 structured output 能力后才接受结构化 `response_format`。Transport 只对明确可重试的
 timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型流事件，就不再重放请求。每次重试形成可持久化
@@ -165,6 +226,7 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 ## 失败语义
 
 - 配置结构错误统一转换为 `ConfigError`。
+- 不支持的思考模式或 effort、profile 覆盖不完整、原生字段归属冲突统一在 HTTP 前失败。
 - 默认 Provider 必须存在、enabled 且有默认 Endpoint；否则不能被设为默认。
 - 删除或禁用当前默认目标时安全回退到内置 Faux。
 - Provider connection check 返回类型化结果；CLI 以退出码区分连接失败和配置错误。
@@ -173,6 +235,8 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 
 - `tests/config/test_credentials_config.py`
 - `tests/config/test_provider_templates.py`
+- `tests/config/test_reasoning_config.py`
+- `tests/core/test_reasoning.py`
 - `tests/providers/test_factory.py`
 - `tests/providers/test_openai_compatible.py`
 - `tests/providers/test_anthropic_compatible.py`

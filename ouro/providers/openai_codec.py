@@ -13,6 +13,9 @@ def _message_to_openai(
     message: MessageRecord,
     *,
     supports_vision: bool = False,
+    provider_id: str,
+    model_id: str,
+    include_continuation: bool,
 ) -> dict[str, Any]:
     role = message.role
     if role == "system_synthetic":
@@ -32,8 +35,20 @@ def _message_to_openai(
                 _tool_call_message_to_openai(item.model_dump(mode="json"))
                 for item in message.tool_calls
             ]
-        if "reasoning_content" in message.metadata:
-            converted["reasoning_content"] = str(message.metadata["reasoning_content"])
+        continuation = message.provider_continuation
+        if (
+            include_continuation
+            and message.tool_calls
+            and continuation is not None
+            and continuation.matches(
+                provider_id=provider_id,
+                protocol="openai-chat-completions",
+                model_id=model_id,
+            )
+        ):
+            for block in continuation.blocks:
+                if "reasoning_content" in block:
+                    converted["reasoning_content"] = block["reasoning_content"]
     if openai_role == "tool":
         if message.tool_result is None:
             raise ValueError("tool_result message is missing its tool result reference")

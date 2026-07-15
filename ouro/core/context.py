@@ -113,6 +113,9 @@ def estimate_message_tokens(
         "tool_result": message.tool_result.model_dump(mode="json")
         if message.tool_result is not None
         else None,
+        "provider_continuation": message.provider_continuation.model_dump(mode="json")
+        if message.provider_continuation is not None
+        else None,
         "metadata": message.metadata,
     }
     return 4 + active_estimator(json.dumps(payload, ensure_ascii=False, sort_keys=True))

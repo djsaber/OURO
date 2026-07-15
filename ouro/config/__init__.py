@@ -45,6 +45,16 @@ from ouro.config.queued_inputs import (
     QueuedInputConsumptionMode,
     queued_input_config_to_public_dict,
 )
+from ouro.config.reasoning import (
+    REASONING_PRESETS,
+    EndpointReasoningConfig,
+    ReasoningProfileConfig,
+    mapped_reasoning,
+    openai_effort_reasoning,
+    reasoning_preset,
+    toggle_reasoning,
+    unsupported_reasoning,
+)
 from ouro.config.run_budget import (
     RunBudgetConfigManager,
     run_budget_to_public_dict,
@@ -64,6 +74,7 @@ __all__ = [
     "compaction_config_to_public_dict",
     "CredentialRef",
     "CredentialResolver",
+    "EndpointReasoningConfig",
     "PermissionConfigManager",
     "PermissionConfig",
     "PermissionConfigSnapshot",
@@ -75,6 +86,8 @@ __all__ = [
     "CONFIGURABLE_PROVIDER_TYPES",
     "ProviderEndpointConfig",
     "ProviderRuntimeOptions",
+    "ReasoningProfileConfig",
+    "REASONING_PRESETS",
     "ProviderTemplate",
     "BUILTIN_FAUX_PROVIDER_ID",
     "INTEGRATED_PROVIDER_TYPES",
@@ -91,8 +104,13 @@ __all__ = [
     "provider_config_to_public_dict",
     "get_provider_template",
     "provider_templates",
+    "mapped_reasoning",
+    "openai_effort_reasoning",
+    "reasoning_preset",
     "prompt_config_to_public_dict",
     "queued_input_config_to_public_dict",
     "run_budget_to_public_dict",
     "tool_execution_config_to_public_dict",
+    "toggle_reasoning",
+    "unsupported_reasoning",
 ]

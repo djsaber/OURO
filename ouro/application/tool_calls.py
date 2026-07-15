@@ -11,7 +11,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import (
     ToolBatchCall,
@@ -61,6 +61,7 @@ class ToolCallCoordinator:
         message_sequence: int,
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
         assistant_message = self.runs.append_assistant_tool_batch_message(
@@ -71,6 +72,7 @@ class ToolCallCoordinator:
             sequence=message_sequence,
             turn_id=turn_id,
             reasoning_content=assistant_reasoning,
+            provider_continuation=assistant_continuation,
         )
         batch = ToolCallBatchRecord(
             turn_id=turn_id,

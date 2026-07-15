@@ -45,7 +45,8 @@ Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 
 - `provider add/update/replace/show/list/use/remove/check` 管理供应商；
 - `provider add <id> --type <type>` 是唯一创建入口：内置厂商类型自动装载模板，compatible 类型创建空 Provider；
 - 同 id 创建失败并提示 `provider update` 或 `provider replace`；内部 Faux 不出现在用户侧 Provider 命令中；
-- `provider endpoint ...` 管理具体 Endpoint；
+- `provider endpoint ...` 管理具体 Endpoint；`set` 通过互斥的 `--reasoning-preset` 或
+  `--reasoning-config` 声明思考契约；
 - `session ...` 管理持久化会话；
 - `config prompt|permissions|tool-execution|queued-inputs|run-budget|compaction` 管理独立配置分区；
 - `skills ...` 管理 Agent Skills；
@@ -53,6 +54,9 @@ Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 
 
 Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 endpoint 和参数 flags。Provider 创建、更新、
 替换和 Endpoint 创建是独立意图；同 id 创建不得静默更新。Skills 单项安装可省略 selector，集合必须明确选择。
+`run` 与 `config compaction` 使用统一的 `--thinking-mode`、`--thinking-effort` 输入。Host 只构造
+`ReasoningRequest`；能力判断、默认解析和厂商参数编码不进入 CLI。非法的 `disabled + effort` 由统一错误边界
+返回配置退出码 `2`，不得输出 traceback。
 
 ## Home 与覆盖
 

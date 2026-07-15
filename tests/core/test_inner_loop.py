@@ -82,9 +82,10 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         message_sequence,
         assistant_text,
         assistant_reasoning,
+        assistant_continuation,
         abort_signal,
     ):
-        del emitted, abort_signal
+        del emitted, assistant_continuation, abort_signal
         assistant_message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -261,9 +262,10 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         message_sequence,
         assistant_text,
         assistant_reasoning,
+        assistant_continuation,
         abort_signal,
     ):
-        del emitted, abort_signal
+        del emitted, assistant_continuation, abort_signal
         captured["assistant_text"] = assistant_text
         captured["assistant_reasoning"] = assistant_reasoning
         assistant_message = MessageRecord.text(

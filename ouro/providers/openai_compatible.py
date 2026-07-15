@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -27,6 +27,7 @@ from ouro.providers.openai_transport import (
     HttpxOpenAICompatibleTransport,
     OpenAICompatibleTransport,
 )
+from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.retrying import stream_with_retries
 
 
@@ -44,6 +45,7 @@ class OpenAICompatibleProvider:
         transport: OpenAICompatibleTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
         request_options: Mapping[str, Any] | None = None,
+        reasoning_encoder: ReasoningPayloadEncoder | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
     ) -> None:
         self.provider_id = provider_id or self.provider_id
@@ -54,6 +56,7 @@ class OpenAICompatibleProvider:
         self.transport = transport or HttpxOpenAICompatibleTransport()
         self.default_headers = dict(default_headers or {})
         self.request_options = dict(request_options or {})
+        self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)
         self.retry_policy = retry_policy or ProviderRetryPolicy()
 
     async def close(self) -> None:
@@ -105,6 +108,7 @@ class OpenAICompatibleProvider:
             )
             async for event in self._events_from_streaming_chunks(
                 chunks,
+                model=model,
                 supports_tools=model.supports_tools,
             ):
                 yield event
@@ -119,6 +123,7 @@ class OpenAICompatibleProvider:
         )
         async for event in self._events_from_response(
             response,
+            model=model,
             supports_tools=model.supports_tools,
         ):
             yield event
@@ -140,6 +145,7 @@ class OpenAICompatibleProvider:
             )
             async for event in self._events_from_response(
                 response,
+                model=model,
                 supports_tools=model.supports_tools,
             ):
                 if event.type == "error":
@@ -193,7 +199,13 @@ class OpenAICompatibleProvider:
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
         converted_messages = [
-            _message_to_openai(message, supports_vision=model.supports_vision)
+            _message_to_openai(
+                message,
+                supports_vision=model.supports_vision,
+                provider_id=self.provider_id,
+                model_id=model.model_id,
+                include_continuation=model.reasoning.continuation == "text",
+            )
             for message in messages
         ]
         if system_prompt:
@@ -208,14 +220,7 @@ class OpenAICompatibleProvider:
         else:
             payload.pop("temperature", None)
         payload["max_tokens"] = model.max_output_tokens
-        if (
-            model.supports_reasoning
-            and model.default_thinking_level is not None
-            and model.default_thinking_level != "off"
-        ):
-            payload["reasoning_effort"] = model.default_thinking_level
-        else:
-            payload.pop("reasoning_effort", None)
+        self.reasoning_encoder.apply(payload, model)
         if tools and model.supports_tools:
             payload["tools"] = [_tool_to_openai(tool) for tool in tools]
         else:
@@ -233,6 +238,7 @@ class OpenAICompatibleProvider:
         self,
         response: Mapping[str, Any],
         *,
+        model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         response_error = _error_from_response(response)
@@ -251,7 +257,10 @@ class OpenAICompatibleProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
-        reasoning = _reasoning_content_to_text(message.get("reasoning_content"))
+        raw_reasoning = message.get("reasoning_content")
+        reasoning = _reasoning_content_to_text(raw_reasoning)
+        if model.reasoning.output not in {"summary", "text"}:
+            reasoning = ""
         if reasoning:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
@@ -281,18 +290,30 @@ class OpenAICompatibleProvider:
 
         for tool_call in tool_calls:
             yield ProviderStreamEvent(type="tool_call", tool_call=tool_call)
+        if tool_calls and reasoning and model.reasoning.continuation == "text":
+            yield ProviderStreamEvent(
+                type="continuation",
+                continuation=ProviderContinuationArtifact(
+                    provider_id=self.provider_id,
+                    protocol="openai-chat-completions",
+                    model_id=model.model_id,
+                    blocks=({"reasoning_content": raw_reasoning},),
+                ),
+            )
         yield ProviderStreamEvent(type="done", usage=usage)
 
     async def _events_from_streaming_chunks(
         self,
         chunks: AsyncIterator[Mapping[str, Any]],
         *,
+        model: ModelMetadata,
         supports_tools: bool,
     ) -> AsyncIterator[ProviderStreamEvent]:
         usage: Usage | None = None
         saw_content = False
         saw_reasoning = False
         saw_tool_call = False
+        continuation_reasoning: list[str] = []
 
         async for chunk in chunks:
             response_error = _error_from_response(chunk)
@@ -313,8 +334,11 @@ class OpenAICompatibleProvider:
 
             reasoning = _reasoning_content_to_text(delta.get("reasoning_content"))
             if reasoning:
-                saw_reasoning = True
-                yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
+                if model.reasoning.continuation == "text":
+                    continuation_reasoning.append(reasoning)
+                if model.reasoning.output in {"summary", "text"}:
+                    saw_reasoning = True
+                    yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
 
             content = _content_to_text(delta.get("content"))
             if content:
@@ -340,4 +364,14 @@ class OpenAICompatibleProvider:
             )
             return
 
+        if saw_tool_call and continuation_reasoning:
+            yield ProviderStreamEvent(
+                type="continuation",
+                continuation=ProviderContinuationArtifact(
+                    provider_id=self.provider_id,
+                    protocol="openai-chat-completions",
+                    model_id=model.model_id,
+                    blocks=({"reasoning_content": "".join(continuation_reasoning)},),
+                ),
+            )
         yield ProviderStreamEvent(type="done", usage=usage)

@@ -24,9 +24,8 @@ def test_config_compaction_command_persists_and_displays_model_options(
             "0.1",
             "--max-output-tokens",
             "4096",
-            "--no-thinking",
-            "--thinking-level",
-            "off",
+            "--thinking-mode",
+            "disabled",
             "--json",
         ]
     )
@@ -38,7 +37,8 @@ def test_config_compaction_command_persists_and_displays_model_options(
     assert payload["compaction"]["model"]["endpoint_id"] == "summary"
     assert restored.model.provider_id == "glm"
     assert restored.model.temperature == 0.1
-    assert restored.model.thinking_enabled is False
+    assert restored.model.reasoning is not None
+    assert restored.model.reasoning.mode == "disabled"
 
 
 def test_config_compaction_runtime_endpoint_preserves_parameter_overrides(

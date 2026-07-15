@@ -195,7 +195,9 @@ class LLMSummaryCompactionStrategy:
                 "model_id": adapter.model.model_id,
                 "model_temperature": adapter.model.temperature,
                 "model_max_output_tokens": adapter.model.max_output_tokens,
-                "model_thinking_level": adapter.model.default_thinking_level,
+                "model_reasoning": adapter.model.reasoning_resolution.effective.model_dump(
+                    mode="json"
+                ),
             },
         )
 
@@ -669,33 +671,16 @@ def _apply_compaction_model_config(
             )
         updates["max_output_tokens"] = config.max_output_tokens
 
-    thinking_level = config.thinking_level
-    thinking_requested = config.thinking_enabled is True or thinking_level not in {None, "off"}
-    if thinking_requested:
-        if not adapter.model.supports_reasoning:
-            raise CompactionError(
-                "compaction thinking is enabled but the selected endpoint does not support it"
-            )
-        if (
-            thinking_level is not None
-            and adapter.model.supported_thinking_levels
-            and thinking_level not in adapter.model.supported_thinking_levels
-        ):
-            raise CompactionError(
-                f"compaction thinking level {thinking_level!r} is not supported by "
-                "the selected endpoint"
-            )
-        if thinking_level is not None:
-            updates["default_thinking_level"] = thinking_level
-        elif adapter.model.default_thinking_level == "off":
-            updates["default_thinking_level"] = None
-    elif config.thinking_enabled is False or thinking_level == "off":
-        updates["default_thinking_level"] = "off"
+    if config.reasoning is not None:
+        updates["reasoning_request"] = config.reasoning
 
-    return RuntimeAdapter(
-        provider=adapter.provider,
-        model=adapter.model.model_copy(update=updates),
-    )
+    try:
+        model = type(adapter.model).model_validate(
+            adapter.model.model_copy(update=updates).model_dump()
+        )
+    except ValueError as exc:
+        raise CompactionError(f"invalid compaction reasoning request: {exc}") from exc
+    return RuntimeAdapter(provider=adapter.provider, model=model)
 
 
 def _consume_summary_event(

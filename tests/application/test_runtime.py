@@ -1843,7 +1843,7 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
     assistant_messages = [m for m in second_call_messages if m.role == "assistant"]
     assert len(assistant_messages) == 1
     assistant_message = assistant_messages[0]
-    assert assistant_message.metadata.get("reasoning_content") == "I should read the file."
+    assert assistant_message.reasoning_content == "I should read the file."
     assert assistant_message.tool_calls
     assert snapshot.messages[-1].text_content == "Done"
 

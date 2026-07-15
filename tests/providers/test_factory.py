@@ -5,10 +5,16 @@ from typing import Any, cast
 
 import pytest
 
-from ouro.config import ProviderConfigManager, ProviderRuntimeOptions
+from ouro.config import (
+    ProviderConfigManager,
+    ProviderRuntimeOptions,
+    openai_effort_reasoning,
+    reasoning_preset,
+)
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
 from ouro.core.messages import MessageRecord
+from ouro.core.reasoning import ReasoningRequest
 from ouro.providers import (
     AnthropicCompatibleProvider,
     OpenAICompatibleProvider,
@@ -37,6 +43,12 @@ class CapturingTransport:
             }
         )
         return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+
+class AnthropicCapturingTransport(CapturingTransport):
+    async def post_json(self, **kwargs) -> dict[str, Any]:
+        self.requests.append(dict(kwargs))
+        return {"type": "message", "content": [{"type": "text", "text": "ok"}]}
 
 
 def test_factory_uses_ad_hoc_provider_identity_and_preserves_zero_temperature() -> None:
@@ -98,17 +110,17 @@ def test_runtime_credential_override_wins_over_configured_reference(
 @pytest.mark.parametrize(
     "options",
     [
+        ProviderRuntimeOptions(reasoning_request=ReasoningRequest(mode="enabled")),
         ProviderRuntimeOptions(
-            supports_reasoning=False,
-            supported_thinking_levels=("low",),
-        ),
-        ProviderRuntimeOptions(
-            supports_reasoning=True,
-            supported_thinking_levels=("low", "low"),
+            reasoning=openai_effort_reasoning(
+                supported_efforts=("low",),
+                default_effort="low",
+            ),
+            reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
         ),
     ],
 )
-def test_factory_rejects_inconsistent_thinking_capabilities(
+def test_factory_rejects_unfulfillable_reasoning_requests(
     options: ProviderRuntimeOptions,
 ) -> None:
     with pytest.raises(ConfigError):
@@ -132,9 +144,10 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         supports_vision=True,
         supports_streaming=False,
         supports_structured_output=True,
-        supports_reasoning=True,
-        supported_thinking_levels=("low", "high"),
-        default_thinking_level="high",
+        reasoning=openai_effort_reasoning(
+            supported_efforts=("low", "high"),
+            default_effort="high",
+        ),
         request_options={"seed": 7},
         make_default=True,
     )
@@ -173,6 +186,67 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     assert payload["stream"] is False
     assert payload["seed"] == 7
     assert "tools" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocol", "reasoning", "intent", "expected"),
+    [
+        (
+            "openai-chat-completions",
+            reasoning_preset("thinking-toggle"),
+            ReasoningRequest(mode="disabled"),
+            {"thinking": {"type": "disabled"}},
+        ),
+        (
+            "anthropic-messages",
+            reasoning_preset("anthropic-adaptive-effort"),
+            ReasoningRequest(mode="enabled", effort="xhigh"),
+            {
+                "thinking": {"type": "adaptive"},
+                "output_config": {"effort": "xhigh"},
+            },
+        ),
+    ],
+)
+async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
+    protocol,
+    reasoning,
+    intent,
+    expected,
+) -> None:
+    adapter = build_runtime_adapter(
+        ProviderRuntimeOptions(
+            protocol=protocol,
+            provider_id="custom",
+            model="custom-model",
+            base_url="https://example.test/v1",
+            supports_streaming=False,
+            reasoning=reasoning,
+            reasoning_request=intent,
+        )
+    )
+    provider = adapter.provider
+    transport = (
+        AnthropicCapturingTransport()
+        if isinstance(provider, AnthropicCompatibleProvider)
+        else CapturingTransport()
+    )
+    provider.transport = transport
+
+    events = [
+        event
+        async for event in adapter.stream(
+            ContextView(
+                model_messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")]
+            )
+        )
+    ]
+
+    assert [event.type for event in events] == ["text_delta", "done"]
+    payload = transport.requests[0]["payload"]
+    for key, value in expected.items():
+        assert payload[key] == value
 
 
 @pytest.mark.asyncio

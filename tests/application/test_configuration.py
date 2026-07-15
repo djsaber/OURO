@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.config import openai_effort_reasoning
 from ouro.core.errors import ConfigError
 
 
@@ -43,13 +44,14 @@ def test_provider_commands_return_safe_views_and_explicit_effect_scope(
         "glm",
         "reasoning",
         model="model-name",
-        supports_reasoning=True,
-        supported_thinking_levels=("low", "high"),
-        default_thinking_level="high",
+        reasoning=openai_effort_reasoning(
+            supported_efforts=("low", "high"),
+            default_effort="high",
+        ),
         make_default=True,
     )
     assert endpoints.default_endpoint == "reasoning"
-    assert endpoints.endpoints[0].supports_reasoning is True
+    assert endpoints.endpoints[0].reasoning.capability.default.effort == "high"
 
     facade.use_provider("glm")
     monkeypatch.setenv("GLM_API_KEY", "top-secret")

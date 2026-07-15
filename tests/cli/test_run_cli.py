@@ -9,9 +9,11 @@ from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
+from ouro.config import openai_effort_reasoning
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.reasoning import ReasoningRequest
 from ouro.mcp import MCPConfigStore, MCPServerConfig
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAICompatibleProvider
@@ -754,8 +756,9 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
             "--vision",
             "--no-streaming",
             "--structured-output",
-            "--reasoning",
-            "--thinking-level",
+            "--thinking-mode",
+            "enabled",
+            "--thinking-effort",
             "high",
             "hello",
         ]
@@ -771,8 +774,29 @@ def test_run_mode_passes_endpoint_capability_overrides(monkeypatch) -> None:
     assert options.supports_vision is True
     assert options.supports_streaming is False
     assert options.supports_structured_output is True
-    assert options.supports_reasoning is True
-    assert options.thinking_level == "high"
+    assert options.reasoning_request == ReasoningRequest(mode="enabled", effort="high")
+
+
+def test_run_mode_rejects_effort_when_reasoning_is_disabled(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "run",
+            "--json",
+            "--home",
+            str(tmp_path),
+            "--thinking-mode",
+            "disabled",
+            "--thinking-effort",
+            "high",
+            "hello",
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 2
+    assert payload["status"] == "failed"
+    assert payload["error_type"] == "ConfigError"
+    assert "disabled reasoning cannot specify an effort" in payload["error"]
 
 
 def test_build_runtime_with_openai_compatible_provider_options(
@@ -1109,6 +1133,10 @@ def test_provider_commands_manage_config_and_runtime_default(
 
 
 def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, capsys) -> None:
+    reasoning = openai_effort_reasoning(
+        supported_efforts=("low", "high"),
+        default_effort="high",
+    )
     monkeypatch.setenv("OURO_TEST_KEY", "secret")
     assert (
         main(
@@ -1158,12 +1186,8 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
             "--vision",
             "--no-streaming",
             "--structured-output",
-            "--reasoning",
-            "--thinking-levels",
-            "low",
-            "high",
-            "--thinking-level",
-            "high",
+            "--reasoning-config",
+            json.dumps(reasoning.model_dump(mode="json")),
             "--request-options",
             '{"seed": 7}',
             "--default",
@@ -1178,7 +1202,7 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert endpoint["supports_tools"] is False
     assert endpoint["supports_vision"] is True
     assert endpoint["supports_streaming"] is False
-    assert endpoint["default_thinking_level"] == "high"
+    assert endpoint["reasoning"] == reasoning.model_dump(mode="json")
 
     list_code = main(["provider", "endpoint", "list", "glm", "--home", str(tmp_path), "--json"])
     list_payload = json.loads(capsys.readouterr().out)
@@ -1216,9 +1240,11 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert runtime.adapter.model.supports_vision is True
     assert runtime.adapter.model.supports_streaming is False
     assert runtime.adapter.model.supports_structured_output is True
-    assert runtime.adapter.model.supports_reasoning is True
-    assert runtime.adapter.model.supported_thinking_levels == ("low", "high")
-    assert runtime.adapter.model.default_thinking_level == "high"
+    assert runtime.adapter.model.reasoning == reasoning.capability
+    assert runtime.adapter.model.reasoning_request == ReasoningRequest()
+    assert runtime.adapter.model.reasoning_resolution.effective == ReasoningRequest(
+        mode="enabled", effort="high"
+    )
     provider = cast(OpenAICompatibleProvider, runtime.adapter.provider)
     assert provider.endpoint == "/chat/completions"
     assert provider.request_options == {"seed": 7}
@@ -1239,6 +1265,57 @@ def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, c
     assert remove_code == 0
     assert remove_payload["default_endpoint"] is None
     assert remove_payload["default_provider"] is None
+
+
+def test_provider_endpoint_reasoning_preset_configures_custom_model(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    monkeypatch.setenv("CUSTOM_KEY", "secret")
+    assert (
+        main(
+            [
+                "provider",
+                "add",
+                "custom",
+                "--home",
+                str(tmp_path),
+                "--type",
+                "openai-compatible",
+                "--api-key-env",
+                "CUSTOM_KEY",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+
+    code = main(
+        [
+            "provider",
+            "endpoint",
+            "set",
+            "custom",
+            "chat",
+            "--home",
+            str(tmp_path),
+            "--model",
+            "custom-thinking-model",
+            "--base-url",
+            "https://example.test/v1",
+            "--reasoning-preset",
+            "thinking-toggle",
+            "--default",
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    reasoning = payload["endpoint"]["reasoning"]
+    assert reasoning["capability"]["activation"] == "toggle"
+    assert reasoning["profile"]["variants"]["enabled"] == {"thinking": {"type": "enabled"}}
 
 
 def test_provider_check_cannot_target_internal_faux(tmp_path, capsys) -> None:

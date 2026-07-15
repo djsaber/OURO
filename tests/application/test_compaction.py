@@ -16,6 +16,7 @@ from ouro.core.compaction import (
 from ouro.core.errors import CompactionError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
@@ -177,9 +178,14 @@ def _summary_adapter(
             context_window=context_window,
             max_output_tokens=min(2048, context_window),
             temperature=0.8,
-            supports_reasoning=True,
-            supported_thinking_levels=("low", "high"),
-            default_thinking_level="low",
+            reasoning=ReasoningCapability(
+                activation="toggle",
+                supported_efforts=("low", "high"),
+                default=ReasoningRequest(mode="enabled", effort="low"),
+                output="text",
+                continuation="text",
+            ),
+            reasoning_request=ReasoningRequest(mode="enabled", effort="low"),
         ),
     )
 
@@ -206,8 +212,7 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
             endpoint_id="compact",
             temperature=0.1,
             max_output_tokens=512,
-            thinking_enabled=True,
-            thinking_level="high",
+            reasoning=ReasoningRequest(mode="enabled", effort="high"),
         ),
     )
 
@@ -218,10 +223,12 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
     request_model = configured_provider.models[0]
     assert request_model.temperature == 0.1
     assert request_model.max_output_tokens == 512
-    assert request_model.default_thinking_level == "high"
+    assert request_model.reasoning_request == ReasoningRequest(mode="enabled", effort="high")
     assert configured_adapter.model.temperature == 0.8
     assert configured_adapter.model.max_output_tokens == 2048
-    assert configured_adapter.model.default_thinking_level == "low"
+    assert configured_adapter.model.reasoning_request == ReasoningRequest(
+        mode="enabled", effort="low"
+    )
     assert artifact.metadata["model_route"] == "configured"
     assert artifact.metadata["model_endpoint_id"] == "compact"
 
@@ -247,8 +254,7 @@ async def test_compaction_provider_error_retries_runtime_route_with_same_paramet
             endpoint_id="compact",
             temperature=0.2,
             max_output_tokens=700,
-            thinking_enabled=False,
-            thinking_level="off",
+            reasoning=ReasoningRequest(mode="disabled"),
         ),
     )
 
@@ -259,9 +265,9 @@ async def test_compaction_provider_error_retries_runtime_route_with_same_paramet
     fallback_model = runtime_provider.models[0]
     assert fallback_model.temperature == 0.2
     assert fallback_model.max_output_tokens == 700
-    assert fallback_model.default_thinking_level == "off"
+    assert fallback_model.reasoning_request == ReasoningRequest(mode="disabled")
     assert runtime_adapter.model.temperature == 0.8
-    assert runtime_adapter.model.default_thinking_level == "low"
+    assert runtime_adapter.model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_route"] == "runtime_fallback"
     assert "dedicated unavailable" in str(artifact.metadata["model_fallback_reason"])
 

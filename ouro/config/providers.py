@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Literal
@@ -26,8 +26,9 @@ from ouro.config.provider_models import (
 )
 from ouro.config.provider_runtime import merge_runtime_options, runtime_options_from_config
 from ouro.config.provider_templates import ProviderTemplate
+from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.errors import ConfigError
-from ouro.core.provider import ProviderRetryPolicy, ThinkingLevel
+from ouro.core.provider import ProviderRetryPolicy
 
 
 class ProviderConfigManager:
@@ -509,9 +510,7 @@ class ProviderConfigManager:
         supports_vision: bool | None = None,
         supports_streaming: bool | None = None,
         supports_structured_output: bool | None = None,
-        supports_reasoning: bool | None = None,
-        supported_thinking_levels: Sequence[ThinkingLevel] | None = None,
-        default_thinking_level: ThinkingLevel | None = None,
+        reasoning: EndpointReasoningConfig | None = None,
         request_options: Mapping[str, Any] | None = None,
         make_default: bool = False,
     ) -> ProviderEndpointConfig:
@@ -539,23 +538,6 @@ class ProviderConfigManager:
         except ValidationError as exc:
             raise ConfigError(f"invalid endpoint config: {exc}") from exc
 
-        next_supports_reasoning = (
-            supports_reasoning if supports_reasoning is not None else current.supports_reasoning
-        )
-        next_levels = (
-            tuple(supported_thinking_levels)
-            if supported_thinking_levels is not None
-            else current.supported_thinking_levels
-        )
-        next_default_level = (
-            default_thinking_level
-            if default_thinking_level is not None
-            else current.default_thinking_level
-        )
-        if not next_supports_reasoning:
-            next_levels = ()
-            next_default_level = None
-
         try:
             updated = current.model_copy(
                 update={
@@ -581,9 +563,7 @@ class ProviderConfigManager:
                     "supports_structured_output": supports_structured_output
                     if supports_structured_output is not None
                     else current.supports_structured_output,
-                    "supports_reasoning": next_supports_reasoning,
-                    "supported_thinking_levels": next_levels,
-                    "default_thinking_level": next_default_level,
+                    "reasoning": reasoning if reasoning is not None else current.reasoning,
                     "request_options": dict(request_options)
                     if request_options is not None
                     else current.request_options,

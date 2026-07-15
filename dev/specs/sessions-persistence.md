@@ -79,6 +79,8 @@ Canonical 数据包括：
 - Session 清除 active run 并恢复可操作状态；
 - 活动工具批次中 running 调用转为 `unknown_outcome`；
 - 最后模型轮次的 text/reasoning delta 可投影为 incomplete assistant message；
+- 只有随 durable assistant 工具消息提交的完整 `provider_continuation` 才可恢复；流中未提交的 opaque
+  continuation 不从文本事件猜测或重建；
 - 已有 durable assistant/tool message 的模型轮次不能重复投影；
 - 恢复事件只写入一次。
 

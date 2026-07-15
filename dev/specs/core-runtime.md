@@ -38,9 +38,11 @@ Run 表示一次可恢复执行。状态集合为：
 - 用户和普通 assistant 消息属于 canonical history。
 - assistant 工具请求写入类型化 `tool_calls`。
 - 工具结果写入类型化 `tool_result`。
+- 可展示的模型思考写入类型化 `reasoning_content`。
+- 协议私有的工具续接状态写入 `provider_continuation`，并绑定 provider、protocol 和 model 路由。
 - 一次模型响应中的 assistant 工具请求及其结果共享 `turn_id`。
 - `turn_id` 只能出现在拥有 `run_id` 的消息上。
-- 工具身份不得写入 `metadata`。
+- 工具身份与思考续接状态不得写入 `metadata`。
 
 ## 运行流程
 
@@ -78,6 +80,8 @@ Run 表示一次可恢复执行。状态集合为：
   `arguments_delta` 字段均保持追加分片语义。
 - `InnerAgentLoop` 按到达顺序产生 `model_tool_call_delta`，并只在 `done` 边界聚合工具调用、解析 arguments
   JSON、校验身份和批次唯一性。
+- Provider 可在工具调用响应中产生一个 `continuation` 事件；Inner loop 只接受一个类型化 artifact，并与
+  assistant 工具消息原子提交。普通最终回答不保存协议续接状态。
 - `done` 只携带完成边界和 usage，不重复携带工具调用，避免增量流和最终快照成为两个互相竞争的真相来源。
 
 ## 预算与暂停

@@ -10,13 +10,17 @@ from ouro.config.provider_models import (
     ProviderRuntimeOptions,
     default_api_path,
     provider_protocol_spec,
+    validate_reasoning_protocol_compatibility,
 )
+from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
+from ouro.core.reasoning import ReasoningRequest
 from ouro.providers.anthropic_compatible import AnthropicCompatibleProvider
 from ouro.providers.faux import FauxProvider
 from ouro.providers.openai_compatible import OpenAICompatibleProvider
+from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 
 @dataclass(frozen=True)
@@ -71,7 +75,12 @@ def build_runtime_adapter(
         api_key = resolver.resolve(_credential_ref(options))
     context = _AdapterBuildContext(
         options=options,
-        model=_model_metadata(options, provider_id=provider_id, model_id=model_id),
+        model=_model_metadata(
+            options,
+            protocol=protocol,
+            provider_id=provider_id,
+            model_id=model_id,
+        ),
         provider_id=provider_id,
         base_url=base_url,
         api_key=api_key,
@@ -98,6 +107,9 @@ def _build_openai_compatible(context: _AdapterBuildContext) -> RuntimeAdapter:
         endpoint=endpoint,
         timeout=context.timeout,
         request_options=context.options.extra,
+        reasoning_encoder=ReasoningPayloadEncoder(
+            context.options.reasoning.profile if context.options.reasoning is not None else None
+        ),
         retry_policy=context.options.retry_policy,
     )
     return RuntimeAdapter(provider, context.model)
@@ -114,6 +126,9 @@ def _build_anthropic_compatible(context: _AdapterBuildContext) -> RuntimeAdapter
         endpoint=endpoint,
         timeout=context.timeout,
         request_options=context.options.extra,
+        reasoning_encoder=ReasoningPayloadEncoder(
+            context.options.reasoning.profile if context.options.reasoning is not None else None
+        ),
         retry_policy=context.options.retry_policy,
     )
     return RuntimeAdapter(provider, context.model)
@@ -129,6 +144,7 @@ _ADAPTER_BUILDERS: dict[ProviderProtocol, AdapterBuilder] = {
 def _model_metadata(
     options: ProviderRuntimeOptions,
     *,
+    protocol: ProviderProtocol,
     provider_id: str,
     model_id: str,
 ) -> ModelMetadata:
@@ -141,38 +157,35 @@ def _model_metadata(
     if options.temperature is not None and not 0.0 <= options.temperature <= 2.0:
         raise ConfigError("temperature must be between 0 and 2")
 
-    supports_reasoning = options.supports_reasoning or False
-    thinking_levels = options.supported_thinking_levels or ()
-    thinking_level = options.thinking_level
-    if len(set(thinking_levels)) != len(thinking_levels):
-        raise ConfigError("supported_thinking_levels must not contain duplicates")
-    if not supports_reasoning and thinking_levels:
-        raise ConfigError("supported_thinking_levels require supports_reasoning=true")
-    if not supports_reasoning and thinking_level not in {None, "off"}:
-        raise ConfigError("thinking_level requires supports_reasoning=true")
-    if thinking_level is not None and thinking_levels and thinking_level not in thinking_levels:
-        raise ConfigError(f"thinking level {thinking_level!r} is not supported by endpoint")
+    reasoning = options.reasoning or EndpointReasoningConfig()
+    try:
+        reasoning.validate_request_options(options.extra or {})
+        validate_reasoning_protocol_compatibility(protocol, reasoning)
+    except ValueError as exc:
+        raise ConfigError(f"invalid endpoint reasoning config: {exc}") from exc
 
-    return ModelMetadata(
-        model_id=model_id,
-        provider_id=provider_id,
-        endpoint_id=options.endpoint_id,
-        display_name=model_id,
-        context_window=context_window,
-        max_output_tokens=max_output_tokens,
-        temperature=options.temperature,
-        supports_tools=True if options.supports_tools is None else options.supports_tools,
-        supports_vision=False if options.supports_vision is None else options.supports_vision,
-        supports_streaming=True
-        if options.supports_streaming is None
-        else options.supports_streaming,
-        supports_structured_output=False
-        if options.supports_structured_output is None
-        else options.supports_structured_output,
-        supports_reasoning=supports_reasoning,
-        supported_thinking_levels=thinking_levels,
-        default_thinking_level=thinking_level,
-    )
+    try:
+        return ModelMetadata(
+            model_id=model_id,
+            provider_id=provider_id,
+            endpoint_id=options.endpoint_id,
+            display_name=model_id,
+            context_window=context_window,
+            max_output_tokens=max_output_tokens,
+            temperature=options.temperature,
+            supports_tools=True if options.supports_tools is None else options.supports_tools,
+            supports_vision=False if options.supports_vision is None else options.supports_vision,
+            supports_streaming=True
+            if options.supports_streaming is None
+            else options.supports_streaming,
+            supports_structured_output=False
+            if options.supports_structured_output is None
+            else options.supports_structured_output,
+            reasoning=reasoning.capability,
+            reasoning_request=options.reasoning_request or ReasoningRequest(),
+        )
+    except ValueError as exc:
+        raise ConfigError(f"invalid model reasoning request: {exc}") from exc
 
 
 def _credential_ref(options: ProviderRuntimeOptions) -> CredentialRef:
