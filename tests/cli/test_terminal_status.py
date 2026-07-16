@@ -59,7 +59,7 @@ async def test_status_finish_clears_animation_and_emits_stable_result() -> None:
     await status.finish("MCP connected", tone="success")
 
     assert status.active is False
-    assert outputs[-1] == "✓ MCP connected\n"
+    assert outputs[-1] == "● MCP connected\n"
 
 
 async def test_timed_status_updates_elapsed_seconds_with_animation() -> None:
@@ -91,7 +91,7 @@ async def test_nonanimated_region_emits_each_status_once_when_committed() -> Non
     await region.finish("call_1", "Read · completed · (path)", tone="success")
     await region.commit()
 
-    assert outputs == ["✓ Read · completed · (path)\n"]
+    assert outputs == ["● Read · completed · (path)\n"]
 
 
 async def test_animated_region_updates_multiple_rows_in_place() -> None:

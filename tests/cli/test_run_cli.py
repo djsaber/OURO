@@ -337,7 +337,7 @@ async def test_interactive_composes_mcp_for_process_lifetime(
     rendered = "".join(outputs)
     assert "Connecting MCP · 1 server(s) · Echo" in rendered
     assert "MCP · 1 connected · 1 tool(s)" in rendered
-    assert "✓ Echo [echo] · stdio · 1 tool(s)" in rendered
+    assert "● Echo [echo] · stdio · 1 tool(s)" in rendered
     assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
 
 
@@ -1445,7 +1445,7 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
     assert code == 0
     tool_outputs = [output for output in outputs if "Write · completed" in output]
     assert len(tool_outputs) == 1
-    assert tool_outputs[0] == "✓ Write · completed\n"
+    assert tool_outputs[0] == "● Write · completed\n"
     approval_outputs = [output for output in outputs if output.startswith("Approval required:")]
     assert len(approval_outputs) == 1
     assert '"path"' in approval_outputs[0] and '"content"' in approval_outputs[0]

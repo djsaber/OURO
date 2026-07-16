@@ -12,6 +12,7 @@ from ouro.cli.terminal_status import (
     StatusTone,
     TerminalStatusLine,
     TerminalStatusRegion,
+    tone_style,
 )
 from ouro.core.events import EventRecord
 from ouro.mcp.models import MCPServerConfig, MCPServerRecord
@@ -20,8 +21,6 @@ OutputFunc = Callable[[str], None]
 
 _DIM_ITALIC = "\x1b[2;3m"
 _DIM = "\x1b[2m"
-_GREEN = "\x1b[32m"
-_RED = "\x1b[31m"
 _RESET = "\x1b[0m"
 _TOOL_NAME_STYLE = "\x1b[1;36m"
 _MAX_TOOL_NAME_LENGTH = 32
@@ -131,10 +130,10 @@ class InteractiveOutput:
         self._write(f"{rendered_summary}\n")
         for record in records:
             if record.status == "connected":
-                symbol = self._status_symbol("✓", _GREEN)
+                symbol = self._status_symbol("success")
                 details = f"{record.config.transport} · {len(record.tool_names)} tool(s)"
             else:
-                symbol = self._status_symbol("✗", _RED)
+                symbol = self._status_symbol("error")
                 details = f"failed · {record.error or 'unknown error'}"
             identity = _truncate(
                 _single_line(f"{record.config.name} [{record.config.server_id}]"),
@@ -634,7 +633,8 @@ class InteractiveOutput:
         )
         return f"{status} · ({arguments})"
 
-    def _status_symbol(self, symbol: str, color: str) -> str:
+    def _status_symbol(self, tone: StatusTone) -> str:
+        symbol, color = tone_style(tone)
         return f"{color}{symbol}{_RESET}" if self.status_line.animated else symbol
 
     def _write(self, text: str) -> None:

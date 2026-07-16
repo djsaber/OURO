@@ -68,11 +68,16 @@ SPINNER_THEMES: dict[SpinnerSemantic, SpinnerTheme] = {
 }
 
 _TONE_STYLE: dict[StatusTone, tuple[str, str]] = {
-    "success": ("✓", _GREEN),
-    "error": ("✗", _RED),
-    "warning": ("!", _YELLOW),
-    "neutral": ("·", _CYAN),
+    "success": ("●", _GREEN),
+    "error": ("●", _RED),
+    "warning": ("●", _YELLOW),
+    "neutral": ("●", _CYAN),
 }
+
+
+def tone_style(tone: StatusTone) -> tuple[str, str]:
+    """Return the (symbol, color) pair for a status tone."""
+    return _TONE_STYLE[tone]
 
 
 class TerminalStatusLine:

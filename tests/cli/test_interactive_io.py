@@ -42,7 +42,7 @@ async def test_interactive_output_reports_preparation_and_model_wait_durations()
     now = 5.5
     await output.handle_event(_event(3, "model_text_delta", {"text": "Hello"}))
 
-    assert "✓ Response started · 5.5s total · preparing 2.0s · model 3.5s\n" in outputs
+    assert "● Response started · 5.5s total · preparing 2.0s · model 3.5s\n" in outputs
     assert outputs[-1] == "Hello"
     await output.close()
 
@@ -66,7 +66,7 @@ async def test_interactive_output_finishes_wait_when_model_has_no_stream_delta()
     now = 4.0
     await output.handle_event(_event(2, "model_message_completed", {"tool_call_count": 0}))
 
-    assert "✓ Response started · 4.0s total · preparing 2.0s · model 2.0s\n" in outputs
+    assert "● Response started · 4.0s total · preparing 2.0s · model 2.0s\n" in outputs
     assert output.wait_timing is None
     await output.close()
 
@@ -95,7 +95,7 @@ async def test_interactive_output_reports_compaction_as_a_distinct_wait_phase() 
     await output.handle_event(_event(4, "model_reasoning_delta", {"reasoning_content": "Think"}))
 
     assert (
-        "✓ Response started · 6.0s total · preparing 2.0s · compacting 2.0s · model 2.0s\n"
+        "● Response started · 6.0s total · preparing 2.0s · compacting 2.0s · model 2.0s\n"
         in outputs
     )
     await output.close()
@@ -329,7 +329,7 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
     await output.handle_event(_event(6, "tool_batch_completed", {"batch_id": "batch_1"}))
 
     assert outputs == [
-        "✓ Read · completed\n",
+        "● Read · completed\n",
         f"{SPINNER_THEMES['model_wait'].frames[0]} Waiting · preparing next model turn · 0.0s\n",
     ]
     assert output.active_tool_calls == {}
@@ -386,8 +386,8 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
     )
     await output.handle_event(_event(5, "tool_batch_completed", {"batch_id": "batch_1"}))
     assert outputs == [
-        "✓ Read · completed\n",
-        "✗ Write · failed\n",
+        "● Read · completed\n",
+        "● Write · failed\n",
         f"{SPINNER_THEMES['model_wait'].frames[0]} Waiting · preparing next model turn · 0.0s\n",
     ]
     assert output.active_tool_calls == {}
@@ -432,7 +432,7 @@ async def test_interactive_output_animates_compaction_progress_and_completion() 
             },
         )
     )
-    assert outputs[-1] == ("✓ Context compaction completed · 3 messages · 800 → 300 tokens\n")
+    assert outputs[-1] == ("● Context compaction completed · 3 messages · 800 → 300 tokens\n")
     assert output.status_line.active is False
     assert output.wait_timing is None
 
@@ -455,7 +455,7 @@ async def test_interactive_output_reports_compaction_failure_and_skip() -> None:
             {"compaction_id": "cmp_1", "error": "provider\nfailed"},
         )
     )
-    assert outputs[-1] == "✗ Context compaction failed · provider failed\n"
+    assert outputs[-1] == "● Context compaction failed · provider failed\n"
 
     await output.handle_event(
         _event(
@@ -464,7 +464,7 @@ async def test_interactive_output_reports_compaction_failure_and_skip() -> None:
             {"trigger": "manual", "reason": "no_eligible_closed_turn"},
         )
     )
-    assert outputs[-1] == ("· Context compaction skipped · no eligible closed turn\n")
+    assert outputs[-1] == ("● Context compaction skipped · no eligible closed turn\n")
 
 
 async def test_interactive_output_summarizes_mcp_connection_records() -> None:
@@ -502,5 +502,5 @@ async def test_interactive_output_summarizes_mcp_connection_records() -> None:
 
     rendered = "".join(outputs)
     assert "MCP · 1 connected · 1 failed · 2 tool(s)" in rendered
-    assert "✓ Docs [docs] · stdio · 2 tool(s)" in rendered
-    assert "✗ Broken [broken] · failed · process exited" in rendered
+    assert "● Docs [docs] · stdio · 2 tool(s)" in rendered
+    assert "● Broken [broken] · failed · process exited" in rendered
