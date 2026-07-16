@@ -24,6 +24,10 @@ from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocatio
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 
 
+def _optional_text(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
 class ToolCallCoordinator:
     """Coordinate complete assistant tool-call batches across application boundaries."""
 
@@ -578,6 +582,13 @@ class ToolCallCoordinator:
         request: ToolCallRequest,
         abort_signal: AbortSignal,
     ) -> tuple[ToolBatchCall, int]:
+        try:
+            metadata = self.registry.get(request.name).definition.metadata
+        except KeyError:
+            # Preserve the executor's typed unknown-tool outcome.  Plugin
+            # identity is enrichment for known tools, not a new lookup failure
+            # path that bypasses model recovery.
+            metadata = {}
         invocation = ToolInvocation(
             session_id=session.session_id,
             run_id=run.run_id,
@@ -585,6 +596,11 @@ class ToolCallCoordinator:
             tool_call_id=request.id,
             tool_name=request.name,
             arguments=request.arguments,
+            plugin_id=_optional_text(metadata.get("plugin_id")),
+            plugin_version=_optional_text(metadata.get("plugin_version")),
+            package_digest=_optional_text(metadata.get("package_digest")),
+            generation_id=_optional_text(metadata.get("generation_id")),
+            contract_hash=_optional_text(metadata.get("contract_hash")),
         )
         sequence = await self.events.emit(
             emitted,

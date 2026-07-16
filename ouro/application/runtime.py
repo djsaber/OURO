@@ -56,6 +56,7 @@ from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
+    from ouro.plugins.runtime import ExtensionCatalogSnapshot, PluginRuntimeResource
 
 
 class RuntimeService:
@@ -173,6 +174,13 @@ class RuntimeService:
             ),
         )
         self._abort_signals: dict[str, AbortSignal] = {}
+        self._extension_catalog: PluginRuntimeResource | None = None
+        self._extension_snapshots: dict[str, ExtensionCatalogSnapshot] = {}
+
+    def attach_extension_catalog(self, catalog: PluginRuntimeResource) -> None:
+        if self._extension_catalog is not None and self._extension_catalog is not catalog:
+            raise RuntimeError("runtime already has an extension catalog")
+        self._extension_catalog = catalog
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
@@ -190,6 +198,9 @@ class RuntimeService:
             return
         self._closed = True
         errors: list[Exception] = []
+        for snapshot in self._extension_snapshots.values():
+            snapshot.close()
+        self._extension_snapshots.clear()
         try:
             await self.event_recorder.close()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
@@ -384,6 +395,7 @@ class RuntimeService:
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
         abort_signal: AbortSignal | None = None
+        result: RunResult | None = None
         try:
             latest_session = self.store.load_session_record(session.session_id)
             locked_snapshot = (
@@ -448,6 +460,7 @@ class RuntimeService:
                     adapter=active_adapter,
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
+            run = self._attach_extension_snapshot(run)
             session, run = self.run_lifecycle.start(
                 session=session,
                 run=run,
@@ -512,7 +525,10 @@ class RuntimeService:
         finally:
             if abort_signal is not None:
                 self._release_abort_signal(run.run_id, abort_signal)
+            if result is None:
+                self._release_extension_snapshot(run.run_id)
             self._release_session_run_lock(run_lock)
+        assert result is not None
         self._finish_run_hooks(result.run)
         if _drain_queued_inputs and result.run.status == "completed":
             await self._drain_queued_input_queue(result.session.session_id)
@@ -588,6 +604,7 @@ class RuntimeService:
                 snapshot=snapshot,
             )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
+            run = self._attach_extension_snapshot(run)
             terminal_run = run
             active_session, run = self.run_lifecycle.start(
                 session=active_session,
@@ -661,6 +678,7 @@ class RuntimeService:
             self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
             self._finish_run_hooks(terminal_run)
+            self._release_extension_snapshot(run.run_id)
 
     async def abort_run(
         self,
@@ -1088,6 +1106,7 @@ class RuntimeService:
         emitted: list[EventRecord],
         sequence: int,
     ) -> RunResult:
+        self._ensure_extension_snapshot(run)
         pending_approvals = batch.pending_approvals
         waiting_user = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if pending_approvals or waiting_user is not None:
@@ -1239,6 +1258,34 @@ class RuntimeService:
         self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
             self.hooks.finish_run(run.run_id)
+            snapshot = self._extension_snapshots.pop(run.run_id, None)
+            if snapshot is not None:
+                snapshot.close()
+
+    def _release_extension_snapshot(self, run_id: str) -> None:
+        snapshot = self._extension_snapshots.pop(run_id, None)
+        if snapshot is not None:
+            snapshot.close()
+
+    def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
+        if self._extension_catalog is None:
+            return run
+        snapshot = self._extension_catalog.snapshot()
+        self._extension_snapshots[run.run_id] = snapshot
+        metadata = dict(run.metadata)
+        metadata["extension_generations"] = [
+            generation.model_dump(mode="json", exclude_none=True)
+            for generation in snapshot.generations
+        ]
+        return run.model_copy(update={"metadata": metadata})
+
+    def _ensure_extension_snapshot(self, run: RunRecord) -> None:
+        if self._extension_catalog is None or run.run_id in self._extension_snapshots:
+            return
+        raw = run.metadata.get("extension_generations", [])
+        if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+            raise ValueError("run has invalid extension generation metadata")
+        self._extension_snapshots[run.run_id] = self._extension_catalog.snapshot_for(raw)
 
 
 def _title_from_prompt(prompt: str) -> str:

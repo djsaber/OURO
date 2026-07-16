@@ -129,6 +129,24 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
         assert not any(module.startswith(forbidden) for module in modules)
 
 
+def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
+    application_plugins = ast.parse(
+        (APPLICATION_DIR / "plugins.py").read_text(encoding="utf-8")
+    )
+    application_imports = _imported_modules(application_plugins)
+    assert "ouro.local_application" not in application_imports
+
+    cli_plugins = ast.parse(
+        (PROJECT_ROOT / "ouro" / "cli" / "plugin_commands.py").read_text(encoding="utf-8")
+    )
+    cli_imports = _imported_modules(cli_plugins)
+    assert "ouro.local_application" in cli_imports
+    assert not any(
+        module.startswith(("ouro.plugins.store", "ouro.plugins.runtime"))
+        for module in cli_imports
+    )
+
+
 def test_session_backend_selection_is_owned_by_deployment_composition() -> None:
     deployment = ast.parse((PROJECT_ROOT / "ouro" / "deployment.py").read_text(encoding="utf-8"))
     assert not any(

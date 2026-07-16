@@ -78,3 +78,46 @@ async def test_third_party_hook_failure_is_isolated_for_run() -> None:
     assert second.failures == []
     assert len(after_finish.failures) == 1
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_one_failed_hook_does_not_disable_sibling_hook_for_same_event() -> None:
+    registry = HookRegistry()
+    calls: list[str] = []
+
+    def fail(_context):
+        calls.append("fail")
+        raise RuntimeError("broken")
+
+    def succeed(_context):
+        calls.append("succeed")
+        return HookResult(added_context=["ok"])
+
+    registry.register_many(
+        (
+            HookRegistration(
+                plugin_id="dev.ouro.hooks",
+                hook_name="after_context_build",
+                hook_id="fail",
+                handler=fail,
+            ),
+            HookRegistration(
+                plugin_id="dev.ouro.hooks",
+                hook_name="after_context_build",
+                hook_id="succeed",
+                handler=succeed,
+            ),
+        )
+    )
+    context = HookContext(
+        hook_name="after_context_build",
+        session_id="ses_1",
+        run_id="run_1",
+    )
+
+    first = await registry.dispatch(context)
+    second = await registry.dispatch(context)
+
+    assert [item.added_context for item in first.results] == [["ok"]]
+    assert [item.added_context for item in second.results] == [["ok"]]
+    assert calls == ["fail", "succeed", "succeed"]

@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Native OURO plugin system with strict manifests, local/Git/archive installation, immutable
+  package storage, separate code-trust and capability grants, declarative/in-process/worker
+  runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
+  durable Run metadata, dependency resolution, compatibility reports, application DTOs, and CLI.
 - Global provider-response usage ledger for agent and compaction requests, with date/route/session
   filters, grouped token and partial-cost summaries, audited corrections, selective resets, and CLI.
 - Typed application configuration facade shared by CLI hosts.
@@ -23,6 +27,14 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Plugin startup now isolates broken desired roots, verifies immutable package bytes before every
+  execution, validates credential slots end to end, negotiates the worker protocol without sending
+  secrets in JSON-RPC, restores the previous generation after failed activation/configuration, and
+  keeps CLI JSON output free of in-process plugin stdout. Repeated enable is generation-idempotent,
+  and resumable Runs retain their exact generation against ordinary replacement operations.
+- Plugin digest selection now validates the enabled dependency graph atomically; active
+  dependencies cannot be disabled out from under dependants, shared data can only be purged with
+  the final installed digest, and Host shutdown drains Runtime generation leases before owners.
 - Interactive terminal rendering now uses semantic status adapters: MCP startup and context
   compaction own one replaceable line, while each tool call owns one keyed row that is updated in
   place from argument generation through completion. Tool arguments are visible only while approval

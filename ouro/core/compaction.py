@@ -101,6 +101,7 @@ class CompactionStrategy(Protocol):
 class CompactionStrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, CompactionStrategy] = {}
+        self._owners: dict[str, str] = {}
 
     def register(self, strategy: CompactionStrategy) -> None:
         self.replace((), (strategy,))
@@ -111,13 +112,56 @@ class CompactionStrategyRegistry:
         strategies: Sequence[CompactionStrategy],
     ) -> None:
         updated = dict(self._strategies)
+        owners = dict(self._owners)
         for strategy_id in previous_ids:
             updated.pop(strategy_id, None)
+            owners.pop(strategy_id, None)
         for strategy in strategies:
             if strategy.strategy_id in updated:
                 raise ValueError(f"compaction strategy already registered: {strategy.strategy_id}")
             updated[strategy.strategy_id] = strategy
         self._strategies = updated
+        self._owners = owners
+
+    def replace_owner(
+        self,
+        owner: str,
+        strategies: Sequence[CompactionStrategy],
+    ) -> None:
+        retained = {
+            identity: strategy
+            for identity, strategy in self._strategies.items()
+            if self._owners.get(identity) != owner
+        }
+        owners = {
+            identity: item_owner
+            for identity, item_owner in self._owners.items()
+            if item_owner != owner
+        }
+        identities = [strategy.strategy_id for strategy in strategies]
+        if len(identities) != len(set(identities)):
+            raise ValueError("replacement contains duplicate compaction strategy ids")
+        for strategy in strategies:
+            if strategy.strategy_id in retained:
+                raise ValueError(f"compaction strategy already registered: {strategy.strategy_id}")
+            retained[strategy.strategy_id] = strategy
+            owners[strategy.strategy_id] = owner
+        self._strategies = retained
+        self._owners = owners
+
+    def unregister_owner(self, owner: str) -> None:
+        self.replace_owner(owner, ())
+
+    def snapshot(
+        self,
+    ) -> tuple[dict[str, CompactionStrategy], dict[str, str]]:
+        return dict(self._strategies), dict(self._owners)
+
+    def restore(
+        self,
+        snapshot: tuple[dict[str, CompactionStrategy], dict[str, str]],
+    ) -> None:
+        self._strategies, self._owners = dict(snapshot[0]), dict(snapshot[1])
 
     def get(self, strategy_id: str) -> CompactionStrategy:
         try:

@@ -20,8 +20,9 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
-- Hook 和插件 contribution 注册边界，包含不可自报的来源、capability/permission enforcement、超时与失败隔离；
-  完整插件安装、升级、权限确认 UI 与 entrypoint 生命周期仍在路线图中。
+- 完整插件系统：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
+  declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
+  side-by-side 更新/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见
@@ -66,6 +67,40 @@ uv run ouro session list --home ./.ouro-dev --session-backend sqlite
 Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设置当前 Host 的默认值；命令行
 `--session-backend files|sqlite` 优先于环境变量。交互、run、session、resource 和审批命令使用同一选择结果。
 切换后端不会隐式迁移数据，文件和 SQLite 是两个独立数据集；迁移必须通过显式、可验证、可回滚的导入流程完成。
+
+## 插件
+
+原生插件使用 `.ouro-plugin/plugin.json`。安装只做静态校验和不可变发布，不 import entrypoint、启动 worker
+或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。第三方工具即使声明 `auto` 也会降级为审批。
+
+```bash
+uv run ouro plugin validate ./my-plugin --home ./.ouro-dev
+uv run ouro plugin install ./my-plugin --home ./.ouro-dev
+uv run ouro plugin authorize dev.example.plugin --home ./.ouro-dev
+uv run ouro plugin trust-code dev.example.plugin --home ./.ouro-dev
+uv run ouro plugin enable dev.example.plugin --home ./.ouro-dev
+
+uv run ouro plugin list --home ./.ouro-dev
+uv run ouro plugin show dev.example.plugin --home ./.ouro-dev
+uv run ouro plugin commands --home ./.ouro-dev
+uv run ouro plugin run-command dev.example.plugin:command "argument" --home ./.ouro-dev
+
+uv run ouro plugin update dev.example.plugin ./new-version --home ./.ouro-dev
+uv run ouro plugin authorize dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
+uv run ouro plugin trust-code dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
+uv run ouro plugin select dev.example.plugin <candidate_digest> --home ./.ouro-dev
+uv run ouro plugin rollback dev.example.plugin <package_digest> --home ./.ouro-dev
+uv run ouro plugin disable dev.example.plugin --home ./.ouro-dev
+uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
+```
+
+`python-inprocess` 是用户明确授予的同进程完整代码信任；`worker` 提供进程和协议隔离，但不等于 OS 安全
+沙箱。`update` 只并排安装候选 digest，不隐式切换运行版本；候选版本须单独授权、配置并通过 `select` 发布。
+插件配置中的凭据只接受 manifest `credentials.use` 声明槽位对应的 `env:VARIABLE` 引用；worker 只得到临时
+环境变量名，秘密值不进入初始化 JSON。Claude/Codex/Pi/OpenCode 等社区包先通过
+`plugin import-report` 输出逐项兼容结论，OURO 不透明执行未知社区 Hook 或安装脚本。
+仍被可恢复 Run 引用的 plugin generation 不允许普通重启、禁用、选版或活动配置替换；重复 `enable` 不会
+隐式重建 generation。
 
 ## Provider 与 Endpoint
 

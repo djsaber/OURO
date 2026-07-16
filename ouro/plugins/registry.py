@@ -54,6 +54,7 @@ class PluginCommand:
     plugin_id: str = ""
     source: PluginSource = "third_party"
     timeout_seconds: float = 5.0
+    owner: str | None = None
 
     @property
     def command_id(self) -> str:
@@ -91,6 +92,39 @@ class PluginCommandRegistry:
                 raise ValueError(f"plugin command already registered: {command.command_id}")
             updated[command.command_id] = command
         self._commands = updated
+
+    def replace_owner(self, owner: str, commands: tuple[PluginCommand, ...]) -> None:
+        updated = {
+            identity: command
+            for identity, command in self._commands.items()
+            if command.owner != owner
+        }
+        for command in commands:
+            prepared = replace(command, owner=owner)
+            if not prepared.plugin_id:
+                raise ValueError("plugin command requires plugin_id")
+            if _COMMAND_NAME.fullmatch(prepared.name) is None:
+                raise ValueError(
+                    "plugin command name must use lowercase letters, numbers, '_' or '-'"
+                )
+            if prepared.timeout_seconds <= 0:
+                raise ValueError("plugin command timeout must be positive")
+            if prepared.command_id in updated:
+                conflict = updated[prepared.command_id].owner or "builtin"
+                raise ValueError(
+                    f"plugin command already registered: {prepared.command_id} (owner: {conflict})"
+                )
+            updated[prepared.command_id] = prepared
+        self._commands = updated
+
+    def unregister_owner(self, owner: str) -> None:
+        self.replace_owner(owner, ())
+
+    def snapshot(self) -> dict[str, PluginCommand]:
+        return dict(self._commands)
+
+    def restore(self, snapshot: dict[str, PluginCommand]) -> None:
+        self._commands = dict(snapshot)
 
     def get(self, command_id: str) -> PluginCommand:
         try:

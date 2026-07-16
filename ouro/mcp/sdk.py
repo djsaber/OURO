@@ -155,7 +155,14 @@ class SDKMCPClientFactory:
         headers.update(secrets)
         timeout = httpx.Timeout(config.timeout_seconds, read=config.timeout_seconds)
         try:
-            async with httpx.AsyncClient(headers=headers, timeout=timeout) as http_client:
+            # MCP transport configuration is authoritative.  Implicit OS/env
+            # proxies can route even loopback servers through an unrelated
+            # process and may expose configured credential headers.
+            async with httpx.AsyncClient(
+                headers=headers,
+                timeout=timeout,
+                trust_env=False,
+            ) as http_client:
                 if config.transport == "http":
                     async with streamable_http_client(
                         config.url or "",

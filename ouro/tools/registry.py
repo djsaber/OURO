@@ -9,6 +9,7 @@ from ouro.tools.schema import validate_tool_definition
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
+        self._owners: dict[str, str] = {}
 
     def register(self, tool: Tool) -> None:
         self.replace((), (tool,))
@@ -25,14 +26,51 @@ class ToolRegistry:
             validate_tool_definition(tool.definition)
 
         updated = dict(self._tools)
+        owners = dict(self._owners)
         for name in previous:
             updated.pop(name, None)
+            owners.pop(name, None)
         for tool in additions:
             name = tool.definition.name
             if name in updated:
                 raise ValueError(f"tool already registered: {name}")
             updated[name] = tool
         self._tools = updated
+        self._owners = owners
+
+    def replace_owner(self, owner: str, tools: Iterable[Tool]) -> None:
+        """Atomically replace every tool owned by one extension generation."""
+
+        additions = list(tools)
+        names = [tool.definition.name for tool in additions]
+        if len(names) != len(set(names)):
+            raise ValueError("replacement contains duplicate tool names")
+        for tool in additions:
+            validate_tool_definition(tool.definition)
+        updated = {
+            name: tool for name, tool in self._tools.items() if self._owners.get(name) != owner
+        }
+        owners = {
+            name: item_owner for name, item_owner in self._owners.items() if item_owner != owner
+        }
+        for tool in additions:
+            name = tool.definition.name
+            if name in updated:
+                conflict = owners.get(name, "builtin")
+                raise ValueError(f"tool already registered: {name} (owner: {conflict})")
+            updated[name] = tool
+            owners[name] = owner
+        self._tools = updated
+        self._owners = owners
+
+    def unregister_owner(self, owner: str) -> None:
+        self.replace_owner(owner, ())
+
+    def snapshot(self) -> tuple[dict[str, Tool], dict[str, str]]:
+        return dict(self._tools), dict(self._owners)
+
+    def restore(self, snapshot: tuple[dict[str, Tool], dict[str, str]]) -> None:
+        self._tools, self._owners = dict(snapshot[0]), dict(snapshot[1])
 
     def unregister(self, names: Iterable[str]) -> None:
         self.replace(names, ())
@@ -48,3 +86,6 @@ class ToolRegistry:
 
     def names(self) -> list[str]:
         return sorted(self._tools)
+
+    def owner_of(self, name: str) -> str | None:
+        return self._owners.get(name)

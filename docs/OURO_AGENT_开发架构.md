@@ -65,7 +65,7 @@ CLI / TUI / Desktop Host
     -> queued input drain
 ```
 
-默认 CLI 的单次 Run、Interactive 和审批恢复均通过 `LocalApplication` 启动并关闭 Runtime/MCP；Runtime
+默认 CLI 的单次 Run、Interactive 和审批恢复均通过 `LocalApplication` 启动并关闭 Runtime、插件与 MCP；Runtime
 自身又关闭模型 adapter、事件 worker 和专用压缩 adapter。TUI/Desktop 必须复用同一 async lifecycle，
 不得从 Session adapter 路径推导部署配置，也不得只构建 RuntimeService 后绕过扩展资源装配。
 
@@ -297,14 +297,36 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 - Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
   observational hook 使用不同超时上限。
-- 插件只能通过注册表贡献工具、Hook、Host-neutral command、上下文 provider 或压缩策略。manifest 的
+- 插件只能通过 owner-aware transaction 贡献工具、Hook、Host-neutral command、上下文 provider、压缩策略、
+  Skills、MCP 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
   未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。
-- 完整插件系统将 package、install/provenance、authorization 和 runtime generation 分层；目标契约见
+- 插件系统将 package、install/provenance、authorization 和 runtime generation 分层；规范与实现取舍见
   [插件系统规格](../dev/specs/plugin-system.md)。新 Run 获取不可变 extension snapshot，更新不得让同一 Run
   混用两个插件版本；同进程插件为 full trust，worker 不宣称 OS 沙箱。
+- `PluginPackageStore` 分离 immutable code、mutable state 与 plugin data；installer 从真实 local/Git/archive
+  来源生成 provenance。安装阶段只校验包、路径、schema、MCP 描述符和兼容范围，不 import 或启动插件代码；
+  激活前重新验证存储树和 digest，避免被修改的“不可变”包进入执行边界。
+- code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先撤销 registry
+  projection，再等待 generation lease 关闭。配置按 digest 保存，候选版本不会覆盖当前 generation 的配置。
+- 启用依赖图只使用显式选择的已安装 digest；切换已启用 digest 会在 state 原子提交前重新验证完整依赖锁定图，
+  active dependent 存在时不能禁用依赖项。Host 启动按 desired root 隔离依赖失败，无关插件继续启动。不同 digest
+  共用 plugin data，只有最后一个安装被移除时才允许 purge；候选 generation 启动失败会恢复旧选择和旧 generation。
+- `ContributionCoordinator` 在短临界区内跨 Tool、Hook、command 与 compaction registry 原子发布 owner set；
+  import、worker/MCP 启动和插件回调均不在 registry 锁内执行。
+- 由于当前模型上下文和工具注册表仍是进程级共享资源，任何插件目录变更使用全局 catalog barrier：先阻止新
+  Run 获取 snapshot，再等待已有 Run 释放。该策略比同进程并行双 generation 更保守，但能从底层保证一个
+  Run 不会观察到快照与全局注册表不一致。
+- `LocalApplication` shutdown 先关闭 Runtime 并释放其 generation snapshot，再关闭 MCP 与插件 owner；插件
+  runtime 等待 lease drain 到 deadline，逾期记录诊断后继续清理，避免资源 owner 先于消费者失效。
+- 本地 store、credential resolver、registry 和 runtime 的具体装配只属于 `ouro.local_application`；
+  `ouro.application.plugins.PluginService` 保持 Host-neutral，不提供隐藏的本地构造入口。
+- pending tool invocation 持久化 plugin id/version/digest/generation/contract hash；恢复要求完整 catalog 精确匹配。
+  进程重启后若原 generation 无法精确重建，会显式进入恢复失败，不用同名新工具替代。
+- 重复 plugin `enable` 不替换 active generation；仍被 queued/running/waiting/paused/recoverable Run 引用的 generation
+  不能被普通 restart、disable、digest selection 或活动配置更新替换。安全 revoke 是明确的 fail-closed 例外。
 - `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
   协调 owner，避免跨任务退出 AnyIO 取消域。

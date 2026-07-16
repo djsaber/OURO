@@ -1,37 +1,46 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.compaction import CompactionStrategy, CompactionStrategyRegistry
+from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
 from ouro.core.redaction import redact_text
 from ouro.core.tools import ToolSource
+from ouro.plugins.contributions import PluginContributions
 from ouro.plugins.manifest import (
+    LegacyPluginManifest,
     PluginCapability,
     PluginManifest,
     PluginPermissions,
-    PluginStatus,
 )
+from ouro.plugins.package import load_plugin_manifest
 from ouro.plugins.registry import (
-    PluginCommand,
     PluginCommandRegistry,
-    PluginContextProvider,
     bind_plugin_command,
     context_provider_hook,
 )
 from ouro.tools import Tool, ToolRegistry
 
+LegacyPluginStatus = Literal[
+    "discovered",
+    "enabled",
+    "disabled",
+    "failed",
+    "needs_authorization",
+    "needs_configuration",
+]
+
 
 class DiscoveredPlugin(OuroModel):
     path: str
-    manifest: PluginManifest | None = None
-    status: PluginStatus = "discovered"
+    manifest: PluginManifest | LegacyPluginManifest | None = None
+    status: LegacyPluginStatus = "discovered"
     enabled: bool = False
     source: PluginSource = "third_party"
     granted_permissions: PluginPermissions = Field(default_factory=PluginPermissions)
@@ -47,15 +56,6 @@ class PluginRegistrationResult(OuroModel):
     registered_context_providers: list[str] = Field(default_factory=list)
     registered_compaction_strategies: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
-
-
-@dataclass
-class PluginContributions:
-    tools: list[Tool] = field(default_factory=list)
-    hooks: list[HookRegistration] = field(default_factory=list)
-    commands: list[PluginCommand] = field(default_factory=list)
-    context_providers: list[PluginContextProvider] = field(default_factory=list)
-    compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
 
 
 class PluginLoader:
@@ -99,7 +99,12 @@ class PluginLoader:
             result.errors.append(plugin.error or "plugin is disabled")
             return result
 
-        capabilities = set(plugin.manifest.capabilities)
+        if not isinstance(plugin.manifest, LegacyPluginManifest):
+            result.errors.append(
+                "native plugin contributions require the generation runtime, not PluginLoader"
+            )
+            return result
+        capabilities = _legacy_capabilities(plugin.manifest)
 
         if contributions.tools and _requires_capability(result, capabilities, "tools"):
             prepared_tools: list[Tool] = []
@@ -124,7 +129,7 @@ class PluginLoader:
             except Exception as exc:  # noqa: BLE001 - plugin registration is an isolation boundary.
                 result.errors.append(redact_text(str(exc)))
 
-        if contributions.hooks and _requires_capability(result, capabilities, "runtime_hooks"):
+        if contributions.hooks and _requires_capability(result, capabilities, "hooks"):
             prepared_hooks: list[HookRegistration] = []
             declared_hooks = {spec.hook_name: spec for spec in plugin.manifest.runtime_hooks}
             try:
@@ -229,27 +234,41 @@ class PluginLoader:
         return result
 
     def _manifest_paths(self) -> Iterable[Path]:
-        direct_manifest = self.root / "plugin.json"
-        if direct_manifest.exists():
-            yield direct_manifest
+        direct_native = self.root / ".ouro-plugin" / "plugin.json"
+        direct_legacy = self.root / "plugin.json"
+        if direct_native.exists():
+            yield direct_native
+        elif direct_legacy.exists():
+            yield direct_legacy
         if not self.root.exists():
             return
         for child in self.root.iterdir():
-            manifest = child / "plugin.json"
-            if child.is_dir() and manifest.exists():
-                yield manifest
+            if not child.is_dir():
+                continue
+            native = child / ".ouro-plugin" / "plugin.json"
+            legacy = child / "plugin.json"
+            if native.exists():
+                yield native
+            elif legacy.exists():
+                yield legacy
 
     def _load_manifest(self, path: Path) -> DiscoveredPlugin:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            manifest = PluginManifest.model_validate(raw)
+            package_root = path.parent.parent if path.parent.name == ".ouro-plugin" else path.parent
+            native, legacy = load_plugin_manifest(package_root)
+            manifest: PluginManifest | LegacyPluginManifest = legacy or native
             requested_enabled = (
                 self.default_enabled or manifest.plugin_id in self.enabled_plugin_ids
             )
             grant = self.permission_grants.get(manifest.plugin_id, PluginPermissions())
-            missing_permissions = manifest.permissions.missing_from(grant)
+            requested_permissions = (
+                manifest.permissions
+                if isinstance(manifest, LegacyPluginManifest)
+                else PluginPermissions()
+            )
+            missing_permissions = requested_permissions.missing_from(grant)
             enabled = requested_enabled and not missing_permissions
-            status: PluginStatus = (
+            status: LegacyPluginStatus = (
                 "needs_authorization"
                 if requested_enabled and missing_permissions
                 else "enabled"
@@ -269,7 +288,9 @@ class PluginLoader:
                     else None
                 ),
                 metadata={
-                    "declared_source_type": manifest.source_type,
+                    "declared_source_type": (
+                        manifest.source_type if isinstance(manifest, LegacyPluginManifest) else None
+                    ),
                     "effective_source_type": self.trusted_source,
                 },
             )
@@ -298,3 +319,23 @@ def _requires_capability(
         return True
     result.errors.append(f"plugin contribution requires undeclared capability: {required}")
     return False
+
+
+def _legacy_capabilities(manifest: LegacyPluginManifest) -> set[PluginCapability]:
+    mapped: set[PluginCapability] = set()
+    for capability in manifest.capabilities:
+        if capability == "runtime_hooks":
+            mapped.add("hooks")
+        elif capability in {
+            "tools",
+            "commands",
+            "context_providers",
+            "compaction_strategies",
+            "skills",
+            "mcp_servers",
+        }:
+            mapped.add(capability)  # type: ignore[arg-type]
+    # The bridge retains its historical capability spelling for existing callers.
+    if "runtime_hooks" in manifest.capabilities:
+        mapped.add("hooks")
+    return mapped

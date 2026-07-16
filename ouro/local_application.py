@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.events import RuntimeEventSink
+from ouro.application.plugins import PluginService
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import (
@@ -16,12 +19,18 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
-from ouro.config import CompactionConfig
+from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
+from ouro.core.hooks import HookRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
+from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.registry import PluginCommandRegistry
+from ouro.plugins.runtime import PluginRuntimeResource
+from ouro.plugins.store import PluginPackageStore
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
@@ -36,6 +45,7 @@ class LocalServices:
     resources: ResourceService
     usage: UsageService
     configuration: ConfigurationFacade
+    plugins: PluginService
 
 
 @dataclass(frozen=True)
@@ -50,9 +60,20 @@ class LocalSessionServices:
 class LocalApplication:
     """Own one local OURO runtime and all process-scoped resources around it."""
 
-    def __init__(self, runtime: RuntimeService, mcp: MCPRuntimeResource) -> None:
+    def __init__(
+        self,
+        runtime: RuntimeService,
+        mcp: MCPRuntimeResource,
+        *,
+        plugin_runtime: PluginRuntimeResource | None = None,
+        plugin_commands: PluginCommandRegistry | None = None,
+        plugins: PluginService | None = None,
+    ) -> None:
         self.runtime = runtime
         self.mcp = mcp
+        self.plugin_runtime = plugin_runtime
+        self.plugin_commands = plugin_commands or PluginCommandRegistry()
+        self.plugins = plugins
         self._started = False
         self._closed = False
 
@@ -82,7 +103,26 @@ class LocalApplication:
         *,
         home: str | Path | None = None,
     ) -> LocalApplication:
-        return cls(runtime, build_local_mcp_runtime(runtime, home=home))
+        configured_home = runtime.environment.home
+        if configured_home is None and home is not None:
+            configured_home = resolve_local_home(home)
+        if configured_home is None:
+            raise OuroError("runtime has no configured deployment home")
+        plugin_runtime, commands, plugins = _build_local_plugin_runtime(
+            configured_home,
+            tools=runtime.tools,
+            hooks=runtime.hooks,
+            compaction=runtime.compaction_strategies,
+            session_store=runtime.store,
+        )
+        runtime.attach_extension_catalog(plugin_runtime)
+        return cls(
+            runtime,
+            build_local_mcp_runtime(runtime, home=home),
+            plugin_runtime=plugin_runtime,
+            plugin_commands=commands,
+            plugins=plugins,
+        )
 
     async def __aenter__(self) -> LocalApplication:
         await self.start()
@@ -97,9 +137,17 @@ class LocalApplication:
         if self._started:
             return
         try:
+            if self.plugin_runtime is not None:
+                await self.plugin_runtime.start()
             await self.mcp.start()
         except BaseException:
-            await self.runtime.close()
+            with suppress(Exception):
+                await self.mcp.close()
+            if self.plugin_runtime is not None:
+                with suppress(Exception):
+                    await self.plugin_runtime.close()
+            with suppress(Exception):
+                await self.runtime.close()
             self._closed = True
             raise
         self._started = True
@@ -110,15 +158,45 @@ class LocalApplication:
         self._closed = True
         errors: list[Exception] = []
         try:
-            await self.mcp.close()
-        except Exception as exc:  # noqa: BLE001 - close every owned resource.
-            errors.append(exc)
-        try:
+            # Runtime is the consumer of plugin generation snapshots and MCP
+            # tools.  Close it first so every run lease is released before its
+            # extension owners are drained.
             await self.runtime.close()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
+        try:
+            await self.mcp.close()
+        except Exception as exc:  # noqa: BLE001 - close every owned resource.
+            errors.append(exc)
+        if self.plugin_runtime is not None:
+            try:
+                await self.plugin_runtime.close()
+            except Exception as exc:  # noqa: BLE001 - close every owned resource.
+                errors.append(exc)
         if errors:
             raise ExceptionGroup("local application shutdown failed", errors)
+
+
+@asynccontextmanager
+async def open_local_plugins(
+    home: str | Path | None = None,
+    *,
+    session_backend: SessionBackend | None = None,
+) -> AsyncIterator[PluginService]:
+    root = resolve_local_home(home)
+    session_services = build_local_session_services(root, session_backend=session_backend)
+    runtime, _, service = _build_local_plugin_runtime(
+        root,
+        tools=ToolRegistry(),
+        hooks=HookRegistry(),
+        compaction=CompactionStrategyRegistry(),
+        session_store=session_services._store,
+    )
+    await runtime.start()
+    try:
+        yield service
+    finally:
+        await runtime.close()
 
 
 def build_local_runtime(
@@ -190,6 +268,7 @@ def build_local_services(
         resources=session_services.resources,
         usage=build_local_usage_service(root),
         configuration=ConfigurationFacade(root),
+        plugins=build_local_plugin_service(root, session_store=session_services._store),
     )
 
 
@@ -228,6 +307,18 @@ def build_local_usage_service(home: str | Path | None = None) -> UsageService:
     return UsageService(usage_ledger)
 
 
+def build_local_plugin_service(
+    home: str | Path | None = None,
+    *,
+    session_store: SessionStore | None = None,
+) -> PluginService:
+    """Build the static local plugin use-case facade without a runtime owner."""
+
+    store = PluginPackageStore(resolve_local_home(home))
+    store.initialize()
+    return PluginService(store, session_store=session_store)
+
+
 def build_local_mcp_runtime(
     runtime: RuntimeService,
     *,
@@ -244,6 +335,43 @@ def build_local_mcp_runtime(
 def resolve_local_home(home: str | Path | None = None) -> Path:
     root = home if home is not None else os.environ.get("OURO_HOME")
     return (Path(root) if root is not None else Path.home() / ".ouro").expanduser().resolve()
+
+
+def resolve_plugin_credential(reference: str) -> str:
+    value = CredentialResolver().resolve(CredentialRef.parse(reference))
+    if value is None:
+        raise ValueError(f"plugin credential is unavailable: {reference}")
+    return value
+
+
+def _build_local_plugin_runtime(
+    home: Path,
+    *,
+    tools: ToolRegistry,
+    hooks: HookRegistry,
+    compaction: CompactionStrategyRegistry,
+    session_store: SessionStore | None,
+) -> tuple[PluginRuntimeResource, PluginCommandRegistry, PluginService]:
+    store = PluginPackageStore(home)
+    store.initialize()
+    commands = PluginCommandRegistry()
+    runtime = PluginRuntimeResource(
+        store,
+        ContributionCoordinator(
+            tools=tools,
+            hooks=hooks,
+            commands=commands,
+            compaction=compaction,
+        ),
+        credential_resolver=resolve_plugin_credential,
+    )
+    service = PluginService(
+        store,
+        runtime=runtime,
+        commands=commands,
+        session_store=session_store,
+    )
+    return runtime, commands, service
 
 
 def _configured_compaction_adapter(

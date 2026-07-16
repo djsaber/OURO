@@ -31,6 +31,7 @@ from ouro.cli.mcp_commands import (
     show_mcp_config,
 )
 from ouro.cli.parser import build_parser
+from ouro.cli.plugin_commands import run_plugin_command
 from ouro.cli.provider_commands import (
     check_provider_connection,
     list_provider_configs,
@@ -134,6 +135,8 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _provider_command(args)
     if args.command == "mcp":
         return _mcp_command(args)
+    if args.command == "plugin":
+        return run_plugin_command(args)
     if args.command == "skills":
         return _skills_command(args)
     if args.command == "usage":

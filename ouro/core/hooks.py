@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 from pydantic import Field
@@ -61,6 +61,9 @@ class HookRegistration:
     priority: int = 100
     enabled: bool = True
     timeout_seconds: float | None = None
+    hook_id: str = ""
+    owner: str | None = None
+    generation_id: str | None = None
 
 
 @dataclass
@@ -86,7 +89,7 @@ class HookRegistry:
         if semantic_timeout_seconds <= 0 or observational_timeout_seconds <= 0:
             raise ValueError("hook timeouts must be positive")
         self._registrations: list[HookRegistration] = []
-        self._disabled_for_run: set[tuple[str | None, str, HookName]] = set()
+        self._disabled_for_run: set[tuple[str | None, str, HookName, str]] = set()
         self._semantic_timeout_seconds = semantic_timeout_seconds
         self._observational_timeout_seconds = observational_timeout_seconds
 
@@ -99,13 +102,54 @@ class HookRegistry:
                 raise ValueError("hook timeout must be positive")
         self._registrations.extend(registrations)
 
+    def replace_owner(
+        self,
+        owner: str,
+        registrations: tuple[HookRegistration, ...],
+    ) -> None:
+        for registration in registrations:
+            if registration.timeout_seconds is not None and registration.timeout_seconds <= 0:
+                raise ValueError("hook timeout must be positive")
+        retained = [item for item in self._registrations if item.owner != owner]
+        identities = [(item.plugin_id, item.hook_name, item.hook_id) for item in registrations]
+        if len(identities) != len(set(identities)):
+            raise ValueError("replacement contains duplicate hook identities")
+        self._registrations = [
+            *retained,
+            *(replace(registration, owner=owner) for registration in registrations),
+        ]
+
+    def unregister_owner(self, owner: str) -> None:
+        self.replace_owner(owner, ())
+
+    def snapshot(
+        self,
+    ) -> tuple[list[HookRegistration], set[tuple[str | None, str, HookName, str]]]:
+        return list(self._registrations), set(self._disabled_for_run)
+
+    def restore(
+        self,
+        snapshot: tuple[
+            list[HookRegistration],
+            set[tuple[str | None, str, HookName, str]],
+        ],
+    ) -> None:
+        self._registrations = list(snapshot[0])
+        self._disabled_for_run = set(snapshot[1])
+
     def registered(self, hook_name: HookName | None = None) -> list[HookRegistration]:
         registrations = self._registrations
         if hook_name is not None:
             registrations = [item for item in registrations if item.hook_name == hook_name]
         return sorted(
             registrations,
-            key=lambda item: (_SOURCE_ORDER[item.source], item.priority, item.plugin_id),
+            key=lambda item: (
+                _SOURCE_ORDER[item.source],
+                item.priority,
+                item.plugin_id,
+                item.hook_id,
+                item.owner or "",
+            ),
         )
 
     def finish_run(self, run_id: str) -> None:
@@ -118,7 +162,13 @@ class HookRegistry:
         for registration in self.registered(context.hook_name):
             if not registration.enabled:
                 continue
-            disabled_key = (context.run_id, registration.plugin_id, registration.hook_name)
+            identity = registration.hook_id or f"handler:{id(registration.handler)}"
+            disabled_key = (
+                context.run_id,
+                registration.plugin_id,
+                registration.hook_name,
+                f"{registration.owner or ''}:{identity}",
+            )
             if disabled_key in self._disabled_for_run:
                 continue
             try:

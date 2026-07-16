@@ -1,10 +1,11 @@
 # OURO 插件系统目标规格
 
-状态：目标
+状态：首个稳定面已实现（2026-07-16），长期目标尚未全部实现；准确边界见第 24 节
 
-本文定义 OURO 完整插件系统必须满足的包、来源、信任、授权、运行时、贡献、生命周期、兼容和恢复契约。
-当前已实现的 contribution 注册边界仍以 [Skills 与扩展规格](skills-extensions.md) 和代码测试为准；本文不表示
-安装、entrypoint 或 worker runtime 已经可用。
+本文定义 OURO 插件系统的包、来源、信任、授权、运行时、贡献、生命周期、兼容和恢复契约。schema v1、
+安装/存储、entrypoint、基础 worker、授权、generation、应用 facade 与 CLI 已实现。本文前半部分保留目标
+架构与长期约束，不等于每一项均已交付；当前能力、部分实现与明确延期项在第 24 节逐项列出，不以空接口
+或预留字段表示支持。
 
 外部项目事实与设计经验见
 [Agent 插件系统调研报告](../../docs/Agent_插件系统调研报告_2026-07-16.md)。
@@ -269,22 +270,24 @@ Python factory 在 OURO 进程中运行，提供最深扩展能力和最低调�
 
 Worker 通过版本化双向 JSON-RPC/stdio 协议贡献工具、Hook、命令和 Host service 调用：
 
-- 每个 digest 拥有独立依赖环境；Python 只安装带 hash 的预构建 wheel，拒绝 sdist/build script；
+- 长期目标是每个 digest 拥有独立依赖环境；Python 只安装带 hash 的预构建 wheel，拒绝 sdist/build script；
 - stdout 专用于协议，stderr 进入限流、脱敏 diagnostic；
-- 进程、请求、取消、重启和 shutdown 由 `RuntimeSupervisor`/plugin owner 管理；
-- 初始化协商 protocol version、plugin id、digest、grants、feature flags 和调用上限；
+- 当前进程、请求超时、cancel 通知和 shutdown 由 plugin owner 管理；自动重启/熔断属于后续 supervisor；
+- 当前初始化校验精确的 worker protocol 版本并传递 plugin id、digest、grants、feature flags 和调用上限；
 - runtime 返回的 contribution 必须与 manifest 声明匹配；
 - worker crash 隔离于 OURO 进程，依赖也不进入主解释器。
 
 Worker 提供崩溃和依赖隔离，**不自动提供 OS 权限隔离**。未来 OS sandbox 只能作为 worker process runner 的
 附加 policy，不改变 worker protocol 或夸大当前安全性。
 
-建议协议方法：
+当前协议方法：
 
 - `initialize`、`contributions.prepare`、`lifecycle.start`、`lifecycle.stop`、`shutdown`；
 - `tool.call`、`hook.call`、`command.call`、`compaction.call`；
-- 反向 `host.resources.*`、`host.sessions.*`、`host.models.invoke`、`host.credentials.resolve`；
 - `cancel`、`ping`、`diagnostic.emit`。
+
+反向 `host.resources.*`、`host.sessions.*`、`host.models.invoke`、`host.credentials.resolve` 是后续协议扩展，
+当前 worker 不得假定这些方法存在。
 
 ## 8. Plugin API
 
@@ -319,8 +322,8 @@ Context 只暴露按授权裁剪的稳定 service ports：
 - 私有 data/resource store；
 - 脱敏 logger 和 structured diagnostics；
 - 受监督 task/process client；
-- 经授权的 session query、resource、model invoke 等 application service；
-- 当前 workspace/session/run 的最小类型化 view，仅在具体调用需要时提供。
+- 后续可增加经授权的 session query、resource、model invoke 等 application service；
+- 后续可增加当前 workspace/session/run 的最小类型化 view，仅在具体调用需要时提供。
 
 不得暴露 RuntimeService、SessionStore、底层数据库连接、全局 registry、Host 对象、原始配置文件或凭据仓库。
 即使授予 `sessions.write`，Context 也只得到类型化 application command，不得到任意 record mutation 或 repository
@@ -329,7 +332,7 @@ Context 只暴露按授权裁剪的稳定 service ports：
 ### 8.3 API 兼容
 
 - `plugin_api` 遵循 major/minor：major 可破坏，minor 只能增加可选字段、方法或 feature；
-- worker handshake 必须协商共同 major/minor 和 feature；
+- 当前 worker handshake 只接受精确 `1.0`；共同 minor/feature 协商在协议出现首个兼容扩展时再引入；
 - 插件只能使用 manifest `engines.plugin_api` 声明范围内的能力；
 - Host 对已废弃 API 提供至少一个明确迁移周期和 diagnostic；
 - durable record 存 contribution contract version/hash，不能仅按 Python 类型名恢复。
@@ -500,8 +503,8 @@ OURO_HOME/plugins/
 - data 跨版本保留，不位于代码目录；
 - 插件优先使用 scoped Resource/KV service，而不是任意文件路径；
 - remove 默认删除 install/activation 引用，保留 data；`remove --purge-data` 单独确认；
-- 数据迁移只在新代码已 code-trusted 后执行，迁移前备份，失败恢复；
-- manifest 声明 data schema 和 rollback compatibility；不可逆迁移会明确阻止自动 rollback。
+- 数据迁移、data schema 和 rollback compatibility 尚未进入首个稳定面。引入时必须满足：只在新代码已
+  code-trusted 后执行，迁移前备份，失败恢复；不可逆迁移明确阻止自动 rollback。
 
 ## 13. 来源、安装与依赖
 
@@ -705,7 +708,8 @@ ouro plugin check <plugin-id>
 TUI/Desktop 使用同一 DTO 展示 provenance、digest、权限 diff、配置缺失、依赖、贡献、active generation 和
 脱敏诊断。Host 可以把 `<plugin_id>:<command>` 映射为 slash command/action，但插件 API 不包含 Host widget。
 
-所有改变状态的 use case 支持 preview/dry-run、幂等 request id 和稳定 exit/error code。
+当前 `install`、`authorize`、`trust-code`、`configure` 支持 preview；其余变更命令尚未宣称通用 dry-run。
+`request-id` 当前仅作为审计关联 id，不提供重复请求去重语义；真正幂等请求需要持久化结果账本后再承诺。
 
 ## 18. Diagnostics 与审计
 
@@ -731,7 +735,7 @@ canonical transaction 的单点故障。
 - 全局 ContributionCoordinator 只保护短暂快照交换，不在锁内 import、执行插件代码或做磁盘/网络 I/O；
 - observer 使用独立有界队列；满队列产生可诊断 drop/coalesce，不阻塞 durable event；
 - semantic Hook、tool、command、worker call 均有 event-specific timeout、cancel 和 output limit；
-- worker restart 使用有上限 backoff/circuit breaker；重复崩溃进入 failed，不无限重启；
+- 后续 worker supervisor 使用有上限 backoff/circuit breaker；当前 worker crash 直接进入 failed，不自动重启；
 - 同一插件的并发 update 请求按 expected digest 做 compare-and-swap；过期请求返回 conflict；
 - Host 崩溃后根据 persistent desired state 重建，不相信上次的 transient `active` 标记。
 
@@ -792,7 +796,7 @@ Supervisor shutdown 期间按 owner/依赖顺序关闭。
 迁移期间不得把 legacy manifest 的 `source_type=official` 转为 trusted provenance，也不得因当前测试使用该字段
 而保留自报信任行为。
 
-## 22. 分阶段交付
+## 22. 分阶段路线图
 
 ### M1：包与审计，不执行代码
 
@@ -885,3 +889,54 @@ Supervisor shutdown 期间按 owner/依赖顺序关闭。
 - `core` 不依赖 manifest/store/import/worker；
 - stdout JSON 模式无插件日志污染；
 - 全量 pytest、ruff、mypy、compileall、coverage 和 dependency tests 通过。
+
+## 24. 当前实现边界与设计调整
+
+截至 2026-07-16：M1、M2、M3 已完成；M4 完成 generation snapshot、lease、精确恢复校验和失败回滚，
+不含 data migration；M5 完成基础 worker、Skills/MCP 和 compatibility report，不含独立环境、自动重启、
+熔断、反向 Host service 与通用 feature negotiation；M6 只完成已安装 digest 的依赖图，不含 catalog、签名、
+publisher policy 和自动第三方依赖求解。
+
+下列能力明确不属于当前已实现面：通用 mutation dry-run、request-id 幂等账本、data migration、worker 独立
+依赖环境与 restart supervisor、OS sandbox、worker 反向 Host service、catalog/marketplace、签名验证和
+publisher trust root。它们只有在真实需求和完整不变量可以一起交付时才进入实现，不预建空抽象。
+
+实现保留第 3 节不变量，但基于 OURO 当前共享 registry/context 的真实底层，对原方案做以下收口：
+
+1. **目录变更采用全局 generation barrier。** enable、disable、upgrade、rollback、配置替换和撤权会先阻止
+   新 Run 获取 extension snapshot，并等待现有 snapshot 释放后再更换全局 registry。当前不在同一进程中让
+   两套 in-process generation 面向不同 Run 并行服务；这避免 Python module cache 和全局工具目录产生混用。
+2. **安全撤权优先。** revoke 在等待旧 lease drain 前先撤销 owner contribution，使旧 Run 的后续调用失败，
+   而不是继续使用已撤销能力。普通 disable/upgrade 仍执行有序 drain。
+3. **恢复只接受精确 generation。** snapshot 持久化 plugin id/version/digest/generation/contract hash；进程重启
+   后若不能重建原 generation，恢复显式失败。首版不把“相同 digest 的新进程实例”冒充原 generation。
+4. **依赖解析不隐式下载。** resolver 只使用已安装且显式选中的 digest，检查 SemVer、冲突和环，并按拓扑
+   顺序启停。缺少依赖返回 incompatible；安装器不访问 registry 或执行第三方依赖安装脚本。
+5. **配置按 digest 隔离。** 候选版本的 schema/config 可在切换前独立验证，不能覆盖当前 generation 的配置；
+   凭据状态只保存 `env:` 引用，SDK/worker/MCP 在授权后的激活阶段解析值。
+6. **MCP 动态发现冻结到 generation。** auto-start MCP 在隔离 ToolRegistry 中完成连接和工具发现，再把该次
+   发现结果作为 owner contribution 原子发布；服务端后续 tools-list 变化只在下一 generation 生效。
+7. **社区兼容先报告、后迁移。** `import-report` 识别 Agent Skills、MCP 与不可移植 Hook/LSP/theme/app，输出
+   类型化 supported/converted/ignored/incompatible 结果。首版不自动生成或执行转换后的社区代码。
+8. **不建立虚假的供应链能力。** 当前来源为 local、archive 和 Git；catalog、签名验证、publisher trust root、
+   自动环境创建和第三方依赖求解不属于已实现面。当前 provenance 不暴露无生产者的 publisher/signature 字段，
+   code trust 只绑定精确 digest；真实 source verifier 与状态迁移一起落地后再扩展 schema。
+9. **worker 是协议隔离，不是沙箱。** worker 使用受限环境、JSON-RPC 消息上限、超时/cancel、stderr 脱敏与
+   幂等 shutdown；没有 OS sandbox 时不声称可以安全运行恶意代码。
+10. **部署 home 是首版 scope 边界。** state 中保留 user/workspace/managed scope 与授权绑定，但首版不在单一
+    进程内叠加多个 home 的同 id overlay。需要并行不同 digest 时使用独立部署 home 或 worker 进程。
+11. **选择 digest 是依赖锁定事务。** 已启用插件切换 digest 前原子校验完整 desired dependency graph；存在
+    active dependent 时拒绝禁用依赖项。更新仍只做 side-by-side 安装，授权、配置和选择候选版本是显式步骤。
+12. **共享数据与 owner 生命周期分离。** 同一 plugin id 的不同 digest 共用私有数据目录，因此只有移除最后一个
+    安装 digest 时才能 purge。Host 关闭先让 Runtime 释放 generation snapshot，再按 owner 逆序 drain 插件资源；
+    超过关闭 deadline 时记录 forced-shutdown 诊断并继续幂等清理。
+13. **durable generation 引用优先于管理便利。** 重复 `enable` 只确认 desired state，不隐式重启。queued、running、
+    waiting、paused 或 recoverable Run 仍引用当前 generation 时，普通 disable、restart、digest selection 和活动配置
+    替换被拒绝；安全撤权仍可优先撤销能力并让旧 Run 显式失败。
+14. **秘密按解析出的真实值全链路脱敏。** manifest slot 同时约束 SDK、worker 和 MCP；in-process logger 的格式化
+    参数、structured diagnostic、启动异常和后台 task 异常，以及 worker stderr/JSON-RPC error 都使用动态精确值
+    脱敏，不能只依赖 `token=` 等字符串模式。
+
+对应实现集中在 `ouro/plugins/`、`ouro/sdk/plugins/v1.py`、`ouro/application/plugins.py`、
+`ouro/cli/plugin_commands.py` 与 `LocalApplication`；legacy `PluginLoader` 仅作为一个兼容周期的无自动 import
+桥接层，新原生插件必须走 installer/runtime generation 路径。

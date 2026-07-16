@@ -1,0 +1,362 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from collections.abc import AsyncIterator, Callable, Sequence
+from contextlib import asynccontextmanager, nullcontext, redirect_stdout
+from io import StringIO
+from pathlib import Path
+
+from ouro.application.plugin_models import PluginActionResult
+from ouro.application.plugins import PluginService
+from ouro.core.base import OuroModel
+from ouro.core.errors import OuroError
+from ouro.core.redaction import redact_text
+from ouro.local_application import (
+    build_local_plugin_service,
+    open_local_plugins,
+    resolve_local_home,
+)
+
+
+def run_plugin_command(args) -> int:
+    try:
+        return _run_plugin_command(args)
+    except OuroError:
+        raise
+    except Exception as exc:
+        raise OuroError(redact_text(str(exc))) from exc
+
+
+def _run_plugin_command(args) -> int:
+    command = args.plugin_command
+    home = resolve_local_home(args.home)
+    service = build_local_plugin_service(home)
+    if command == "validate":
+        validation = service.validate(args.source, ref=args.ref, subdirectory=args.subdirectory)
+        return _emit(validation, json_mode=args.json)
+    if command == "import-report":
+        return _emit(service.import_compatibility(args.source), json_mode=args.json)
+    if command == "list":
+        return _emit_many(service.list(), json_mode=args.json)
+    if command == "show":
+        return _emit(service.show(args.plugin_id), json_mode=args.json)
+    if command in {"commands", "run-command"}:
+        return asyncio.run(_plugin_contributed_command(home, args))
+    if command == "install":
+        install_result = service.install(
+            args.source,
+            ref=args.ref,
+            subdirectory=args.subdirectory,
+            scope=args.scope,
+            request_id=args.request_id,
+            preview=args.preview,
+        )
+        return _emit(install_result, json_mode=args.json)
+    if command == "authorize":
+        return _emit(
+            service.authorize(
+                args.plugin_id,
+                package_digest=args.digest,
+                request_id=args.request_id,
+                preview=args.preview,
+            ),
+            json_mode=args.json,
+        )
+    if command == "trust-code":
+        return _emit(
+            service.trust_code(
+                args.plugin_id,
+                package_digest=args.digest,
+                request_id=args.request_id,
+                preview=args.preview,
+            ),
+            json_mode=args.json,
+        )
+    if command == "revoke":
+        return asyncio.run(
+            _revoke_command(
+                home,
+                args.plugin_id,
+                code_trust=args.code_trust,
+                request_id=args.request_id,
+                json_mode=args.json,
+            )
+        )
+    if command == "configure":
+        values = _json_object(args.values, option="--values")
+        credentials = (
+            _json_string_map(args.credentials, option="--credentials")
+            if args.credentials is not None
+            else None
+        )
+        return asyncio.run(
+            _configure_command(
+                home,
+                args.plugin_id,
+                values,
+                credential_refs=credentials,
+                package_digest=args.digest,
+                request_id=args.request_id,
+                preview=args.preview,
+                json_mode=args.json,
+            )
+        )
+    if command == "select":
+        return asyncio.run(
+            _select_command(
+                home,
+                args.plugin_id,
+                args.digest,
+                expected_digest=args.expected_digest,
+                json_mode=args.json,
+            )
+        )
+    if command in {"enable", "disable", "restart", "check"}:
+        return asyncio.run(_lifecycle_command(home, command, args.plugin_id, args.json))
+    if command == "update":
+        return asyncio.run(
+            _update_command(
+                home,
+                args.plugin_id,
+                args.source,
+                ref=args.ref,
+                subdirectory=args.subdirectory,
+                request_id=args.request_id,
+                json_mode=args.json,
+            )
+        )
+    if command == "rollback":
+        return asyncio.run(
+            _rollback_command(home, args.plugin_id, args.digest, json_mode=args.json)
+        )
+    if command == "remove":
+        return asyncio.run(
+            _remove_command(
+                home,
+                args.plugin_id,
+                digest=args.digest,
+                purge_data=args.purge_data,
+                request_id=args.request_id,
+                json_mode=args.json,
+            )
+        )
+    if command == "gc":
+        removed = service.gc()
+        if args.json:
+            print(json.dumps({"removed": removed}, ensure_ascii=False))
+        else:
+            print(f"Removed {len(removed)} unreferenced plugin paths.")
+        return 0
+    raise AssertionError(f"unknown plugin command: {command}")
+
+
+async def _lifecycle_command(
+    home: Path,
+    command: str,
+    plugin_id: str,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        operation: Callable[[str], object]
+        if command == "check":
+            result = service.check(plugin_id)
+        else:
+            operation = getattr(service, command)
+            result = await operation(plugin_id)  # type: ignore[misc]
+    return _emit(result, json_mode=json_mode)
+
+
+async def _plugin_contributed_command(home: Path, args) -> int:
+    async with _plugin_session(home, quiet=args.json) as service:
+        if args.plugin_command == "commands":
+            values = service.list_commands()
+            result = None
+        else:
+            values = None
+            result = await service.execute_command(
+                args.command_id,
+                args.argument,
+                session_id=args.session_id,
+                workspace=args.workspace,
+            )
+    if values is not None:
+        return _emit_many(values, json_mode=args.json)
+    assert result is not None
+    return _emit(result, json_mode=args.json)
+
+
+async def _revoke_command(
+    home: Path,
+    plugin_id: str,
+    *,
+    code_trust: bool,
+    request_id: str | None,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.revoke(
+            plugin_id,
+            code_trust=code_trust,
+            request_id=request_id,
+        )
+    return _emit(result, json_mode=json_mode)
+
+
+async def _configure_command(
+    home: Path,
+    plugin_id: str,
+    values: dict[str, object],
+    *,
+    credential_refs: dict[str, str] | None,
+    package_digest: str | None,
+    request_id: str | None,
+    preview: bool,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.configure(
+            plugin_id,
+            values,
+            credential_refs=credential_refs,
+            package_digest=package_digest,
+            request_id=request_id,
+            preview=preview,
+        )
+    return _emit(result, json_mode=json_mode)
+
+
+async def _select_command(
+    home: Path,
+    plugin_id: str,
+    digest: str,
+    *,
+    expected_digest: str | None,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.select(
+            plugin_id,
+            digest,
+            expected_digest=expected_digest,
+        )
+    return _emit(result, json_mode=json_mode)
+
+
+async def _update_command(
+    home: Path,
+    plugin_id: str,
+    source: str,
+    *,
+    ref: str | None,
+    subdirectory: str | None,
+    request_id: str | None,
+    json_mode: bool,
+) -> int:
+    service = build_local_plugin_service(home)
+    result = await service.update(
+        plugin_id,
+        source,
+        ref=ref,
+        subdirectory=subdirectory,
+        request_id=request_id,
+    )
+    return _emit(result, json_mode=json_mode)
+
+
+async def _rollback_command(
+    home: Path,
+    plugin_id: str,
+    digest: str,
+    *,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.rollback(plugin_id, digest)
+    return _emit(result, json_mode=json_mode)
+
+
+async def _remove_command(
+    home: Path,
+    plugin_id: str,
+    *,
+    digest: str | None,
+    purge_data: bool,
+    request_id: str | None,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.remove(
+            plugin_id,
+            package_digest=digest,
+            purge_data=purge_data,
+            request_id=request_id,
+        )
+    return _emit(result, json_mode=json_mode)
+
+
+@asynccontextmanager
+async def _plugin_session(home: Path, *, quiet: bool) -> AsyncIterator[PluginService]:
+    """Keep plugin stdout out of the CLI's machine-readable JSON channel."""
+
+    output = redirect_stdout(StringIO()) if quiet else nullcontext()
+    with output:
+        async with open_local_plugins(home) as service:
+            yield service
+
+
+def _json_object(value: str, *, option: str) -> dict[str, object]:
+    try:
+        raw = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{option} must be a JSON object: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError(f"{option} must be a JSON object")
+    return {str(key): item for key, item in raw.items()}
+
+
+def _json_string_map(value: str, *, option: str) -> dict[str, str]:
+    raw = _json_object(value, option=option)
+    if any(not isinstance(item, str) for item in raw.values()):
+        raise ValueError(f"{option} values must be strings")
+    return {key: str(item) for key, item in raw.items()}
+
+
+def _emit(value, *, json_mode: bool) -> int:
+    if json_mode:
+        print(value.model_dump_json(exclude_none=True))
+    elif isinstance(value, PluginActionResult):
+        suffix = f" ({value.package_digest})" if value.package_digest else ""
+        print(f"{value.action}: {value.plugin_id}: {value.status}{suffix}")
+        for diagnostic in value.diagnostics:
+            print(f"[{diagnostic.severity}] {diagnostic.code}: {diagnostic.message}")
+    else:
+        print(
+            json.dumps(
+                value.model_dump(mode="json", exclude_none=True),
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+    return 0
+
+
+def _emit_many(values: Sequence[OuroModel], *, json_mode: bool) -> int:
+    if json_mode:
+        print(
+            json.dumps(
+                [value.model_dump(mode="json", exclude_none=True) for value in values],
+                ensure_ascii=False,
+            )
+        )
+    else:
+        for value in values:
+            raw = value.model_dump(mode="json", exclude_none=True)
+            if "command_id" in raw:
+                print(f"{raw.get('command_id', '')}\t{raw.get('description', '')}")
+                continue
+            print(
+                f"{raw.get('plugin_id', '')}\t{raw.get('version', '')}\t"
+                f"{raw.get('status', '')}\t{raw.get('package_digest', '')}"
+            )
+    return 0

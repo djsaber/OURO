@@ -59,6 +59,11 @@ class ToolInvocation(OuroModel):
     requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
     approval_id: str | None = None
+    plugin_id: str | None = None
+    plugin_version: str | None = None
+    package_digest: str | None = None
+    generation_id: str | None = None
+    contract_hash: str | None = None
 
 
 class ToolResult(OuroModel):
