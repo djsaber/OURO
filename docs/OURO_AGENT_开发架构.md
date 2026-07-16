@@ -302,6 +302,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。
+- 完整插件系统将 package、install/provenance、authorization 和 runtime generation 分层；目标契约见
+  [插件系统规格](../dev/specs/plugin-system.md)。新 Run 获取不可变 extension snapshot，更新不得让同一 Run
+  混用两个插件版本；同进程插件为 full trust，worker 不宣称 OS 沙箱。
 - `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
   协调 owner，避免跨任务退出 AnyIO 取消域。

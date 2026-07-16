@@ -167,7 +167,8 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 
 - TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
 - Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
-- 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
+- 完整插件系统：按[目标规格](../dev/specs/plugin-system.md)实现来源、授权、双运行时、durable generation、
+  社区兼容、升级与回滚。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。

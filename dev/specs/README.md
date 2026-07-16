@@ -31,7 +31,8 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [个人智能体平台能力](future-platform.md) | Desktop、完整插件、记忆与子智能体 |
+| [插件系统](plugin-system.md) | 包、来源、信任、授权、双运行时、贡献事务、durable generation、兼容、更新与回滚 |
+| [个人智能体平台能力](future-platform.md) | Desktop、记忆与子智能体等跨能力目标 |
 
 ## 规格完成标准
 

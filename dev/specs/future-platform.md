@@ -10,11 +10,9 @@
 
 ## 完整插件
 
-- manifest 来源、签名/信任信息、权限和配置 schema 可审计。
-- entrypoint 加载前完成授权；失败插件不阻止主程序启动。
-- install/update/remove 具备 staging、回滚和来源记录。
-- contributions 冲突有稳定规则；插件不能覆盖 builtin identity。
-- 同进程插件明确标注为可信扩展，不宣称安全沙箱。
+完整契约见[插件系统目标规格](plugin-system.md)。本平台规格只保留以下总体约束：插件生命周期不得改变
+core 依赖方向和 durable Run 语义；同进程插件明确标注 full trust，worker 只承诺崩溃/依赖隔离而不冒充
+OS 沙箱；任意 Host 都通过 application facade/DTO 管理插件。
 
 ## Desktop Host
 

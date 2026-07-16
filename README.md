@@ -24,7 +24,9 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
   完整插件安装、升级、权限确认 UI 与 entrypoint 生命周期仍在路线图中。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
-[开发架构](docs/OURO_AGENT_开发架构.md)。
+[开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见
+[Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的目标设计见
+[插件系统规格](dev/specs/plugin-system.md)。
 
 ## 开发环境
 

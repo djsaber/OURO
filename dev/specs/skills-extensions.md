@@ -72,8 +72,10 @@ MCP 已从注册占位边界演进为真实客户端。当前 transport、配置
 
 ## 目标扩展能力
 
-完整插件能力仍须增加来源信任、权限确认、entrypoint 生命周期、日志、资源释放和 application DTO。
-插件不得绕过工具权限与 durable Run 事务。
+完整插件的包、来源信任、权限确认、entrypoint/worker 生命周期、贡献事务、durable generation、兼容、
+更新与回滚由[插件系统目标规格](plugin-system.md)定义。本规格继续作为当前 Skills、Hook 和 contribution
+注册边界的事实来源；目标实现不得重新建立一套绕过现有 ToolExecutor、Hook failure 和 durable Run 的
+平行执行路径。
 
 ## 验收证据
 
