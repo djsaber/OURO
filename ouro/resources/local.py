@@ -23,24 +23,20 @@ from ouro.core.errors import (
 from ouro.core.resources import (
     ResourceRecord,
     ResourceSource,
-    SessionResourceReference,
-    SessionResourceReferences,
 )
 from ouro.sessions.local_io import write_json_atomic, write_model_atomic
 from ouro.sessions.locks import SessionRunLock
 
 _RESOURCE_ID = re.compile(r"res_[0-9a-f]{64}\Z")
-_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _CHUNK_SIZE = 1024 * 1024
 _STALE_STAGING_SECONDS = 24 * 60 * 60
 
 
 class LocalResourceStore:
-    """Local immutable blob store with canonical per-Session reference records."""
+    """Local immutable content-addressed blob and metadata store."""
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root)
-        self.sessions_dir = self.root / "sessions"
         self.resources_dir = self.root / "resources"
         self.records_dir = self.resources_dir / "records"
         self.blobs_dir = self.resources_dir / "blobs" / "sha256"
@@ -63,7 +59,6 @@ class LocalResourceStore:
 
     def import_file(
         self,
-        session_id: str,
         source_path: Path,
         *,
         source: ResourceSource,
@@ -71,7 +66,6 @@ class LocalResourceStore:
         max_bytes: int,
     ) -> tuple[ResourceRecord, bool]:
         source_path = self._safe_import_path(source_path)
-        self._require_session_dir(session_id)
         staged_path = self.staging_dir / f"{new_id('resource')}.blob"
         try:
             digest, size = self._stage_file(source_path, staged_path, max_bytes=max_bytes)
@@ -86,23 +80,12 @@ class LocalResourceStore:
             with self._catalog_lock():
                 existing = self._load_optional_record(resource_id)
                 created = existing is None
-                published_blob = False
                 if existing is not None:
                     self._verify_record_compatibility(existing, record)
                     self._verify_blob(existing)
                     record = existing
                 else:
-                    published_blob = self._publish_blob_and_record(staged_path, record)
-                try:
-                    self._attach_reference(session_id, resource_id)
-                except Exception:
-                    if created:
-                        with suppress(FileNotFoundError):
-                            (self.records_dir / f"{resource_id}.json").unlink()
-                        if published_blob:
-                            with suppress(FileNotFoundError):
-                                self._blob_path(record).unlink()
-                    raise
+                    self._publish_blob_and_record(staged_path, record)
                 self._try_update_index_or_mark_dirty()
             return record, created
         finally:
@@ -147,40 +130,6 @@ class LocalResourceStore:
             raise ResourceIntegrityError(f"resource integrity mismatch: {resource_id}")
         return record, content
 
-    def list_session_records(self, session_id: str) -> list[ResourceRecord]:
-        return [
-            self.load_record(reference.resource_id)
-            for reference in self.load_session_references(session_id)
-        ]
-
-    def load_session_references(self, session_id: str) -> list[SessionResourceReference]:
-        path = self._reference_path(session_id)
-        try:
-            raw = path.read_text("utf-8")
-            return SessionResourceReferences.model_validate_json(raw).resources
-        except FileNotFoundError as exc:
-            raise ResourceNotFoundError(f"session resource index not found: {session_id}") from exc
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not load resource references for session {session_id}: {exc}"
-            ) from exc
-
-    def remove_session_reference(self, session_id: str, resource_id: str) -> None:
-        resource_id = _validated_resource_id(resource_id)
-        with self._catalog_lock():
-            references = self.load_session_references(session_id)
-            if not any(item.resource_id == resource_id for item in references):
-                raise ResourceNotFoundError(
-                    f"resource {resource_id} is not attached to session {session_id}"
-                )
-            remaining = [item for item in references if item.resource_id != resource_id]
-            write_model_atomic(
-                self._reference_path(session_id),
-                SessionResourceReferences(resources=remaining),
-            )
-            self.collect_unreferenced([resource_id], _locked=True)
-            self._try_update_index_or_mark_dirty()
-
     def export_file(self, resource_id: str, destination: Path, *, overwrite: bool) -> Path:
         record = self.load_record(resource_id, verify=True)
         destination = self._safe_export_path(destination)
@@ -205,42 +154,30 @@ class LocalResourceStore:
                 with suppress(OSError):
                     temp_path.unlink()
 
-    def collect_unreferenced(
-        self,
-        resource_ids: Iterable[str],
-        *,
-        _locked: bool = False,
-    ) -> list[str]:
-        if not _locked:
-            with self._catalog_lock():
-                return self.collect_unreferenced(resource_ids, _locked=True)
-        reachable = {
-            reference.resource_id
-            for session_dir in self.sessions_dir.glob("*/resources/index.json")
-            for reference in self._load_reference_file(session_dir)
-        }
-        removed: list[str] = []
-        for resource_id in dict.fromkeys(resource_ids):
-            resource_id = _validated_resource_id(resource_id)
-            if resource_id in reachable:
-                continue
-            record = self._load_optional_record(resource_id)
-            if record is None:
-                continue
-            with suppress(FileNotFoundError):
-                (self.records_dir / f"{resource_id}.json").unlink()
-            digest = record.digest.removeprefix("sha256:")
-            if not any(
-                candidate.digest == record.digest
-                for candidate in self._scan_records()
-                if candidate.resource_id != resource_id
-            ):
+    def delete_resources(self, resource_ids: Iterable[str]) -> list[str]:
+        """Delete candidate records after the application proves they are unreachable."""
+
+        with self._catalog_lock():
+            removed: list[str] = []
+            for resource_id in dict.fromkeys(resource_ids):
+                resource_id = _validated_resource_id(resource_id)
+                record = self._load_optional_record(resource_id)
+                if record is None:
+                    continue
                 with suppress(FileNotFoundError):
-                    (self.blobs_dir / digest).unlink()
-            removed.append(resource_id)
-        if removed:
-            self._try_update_index_or_mark_dirty()
-        return removed
+                    (self.records_dir / f"{resource_id}.json").unlink()
+                digest = record.digest.removeprefix("sha256:")
+                if not any(
+                    candidate.digest == record.digest
+                    for candidate in self._scan_records()
+                    if candidate.resource_id != resource_id
+                ):
+                    with suppress(FileNotFoundError):
+                        (self.blobs_dir / digest).unlink()
+                removed.append(resource_id)
+            if removed:
+                self._try_update_index_or_mark_dirty()
+            return removed
 
     def rebuild_index(self) -> None:
         with self._catalog_lock():
@@ -248,23 +185,9 @@ class LocalResourceStore:
 
     def _rebuild_index_locked(self) -> None:
         records = self._scan_records()
-        references: dict[str, list[str]] = {}
-        for path in self.sessions_dir.glob("*/resources/index.json"):
-            session_id = path.parents[1].name
-            for reference in self._load_reference_file(path):
-                references.setdefault(reference.resource_id, []).append(session_id)
         write_json_atomic(
             self.index_path,
-            {
-                "resources": [
-                    {
-                        **record.model_dump(mode="json"),
-                        "session_ids": sorted(references.get(record.resource_id, [])),
-                        "reference_count": len(references.get(record.resource_id, [])),
-                    }
-                    for record in records
-                ]
-            },
+            {"resources": [record.model_dump(mode="json") for record in records]},
         )
         with suppress(OSError):
             self.index_dirty_path.unlink()
@@ -337,14 +260,6 @@ class LocalResourceStore:
             ) from exc
         return published_blob
 
-    def _attach_reference(self, session_id: str, resource_id: str) -> None:
-        path = self._reference_path(session_id)
-        references = self.load_session_references(session_id)
-        if any(item.resource_id == resource_id for item in references):
-            return
-        references.append(SessionResourceReference(resource_id=resource_id))
-        write_model_atomic(path, SessionResourceReferences(resources=references))
-
     def _verify_blob(self, record: ResourceRecord) -> None:
         blob_path = self._blob_path(record)
         try:
@@ -383,25 +298,6 @@ class LocalResourceStore:
             return self.load_record(resource_id)
         except ResourceNotFoundError:
             return None
-
-    def _load_reference_file(self, path: Path) -> list[SessionResourceReference]:
-        try:
-            return SessionResourceReferences.model_validate_json(path.read_text("utf-8")).resources
-        except (OSError, ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not load session resource references {path}: {exc}"
-            ) from exc
-
-    def _reference_path(self, session_id: str) -> Path:
-        return self._require_session_dir(session_id) / "resources" / "index.json"
-
-    def _require_session_dir(self, session_id: str) -> Path:
-        if not _SESSION_ID.fullmatch(session_id):
-            raise ResourceNotFoundError(f"invalid session id: {session_id!r}")
-        path = self.sessions_dir / session_id
-        if not (path / "session.json").is_file():
-            raise FileNotFoundError(path)
-        return path
 
     def _blob_path(self, record: ResourceRecord) -> Path:
         return self.blobs_dir / record.digest.removeprefix("sha256:")

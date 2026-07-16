@@ -8,9 +8,11 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、AskUser、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
-- 本地会话、消息、事件、运行记录和压缩记录；支持恢复、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
+- 后端中立的会话、消息、事件、运行记录和压缩记录；本地文件与 SQLite 实现共享同一契约，支持显式恢复、
+  原子验证迁移、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
-- 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界事件订阅、abort 与 shutdown 协议。
+- 进程内 RuntimeSupervisor：跨 Session FIFO 调度、并发上限、有界类型化事件订阅、abort 与 shutdown 协议；
+  `LocalApplication` 统一拥有 Runtime、MCP 和后台 worker 生命周期。
 - 持久化 LLM 摘要压缩、上下文硬预算和可选的运行软预算。
 - 供应商响应驱动的全局 token/费用账本，支持日期、Provider、Endpoint、模型、Session、Run、用途过滤，
   以及分组汇总、审计式修改和选择性重置。
@@ -18,7 +20,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
-- Hook 和插件 contribution 注册边界；完整插件加载、授权、安装与升级仍在路线图中。
+- Hook 和插件 contribution 注册边界，包含不可自报的来源、capability/permission enforcement、超时与失败隔离；
+  完整插件安装、升级、权限确认 UI 与 entrypoint 生命周期仍在路线图中。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。

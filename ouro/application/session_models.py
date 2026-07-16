@@ -140,11 +140,19 @@ class SessionCatalogResult(ApplicationDTO):
 
 class SessionDetail(ApplicationDTO):
     session: SessionView
+    recent_run: RunRecord | None = None
+    active_compaction: CompactionRecord | None = None
+    diagnostics: tuple[Diagnostic, ...] = ()
+
+
+class SessionExport(ApplicationDTO):
+    """Explicit complete-history transfer DTO; interactive Host reads stay paged."""
+
+    session: SessionView
     messages: tuple[MessageRecord, ...] = ()
     events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     compactions: tuple[CompactionRecord, ...] = ()
-    diagnostics: tuple[Diagnostic, ...] = ()
 
 
 class SessionMessagePage(ApplicationDTO):

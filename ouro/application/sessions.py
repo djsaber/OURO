@@ -17,23 +17,24 @@ from ouro.application.session_models import (
     SessionCatalogResult,
     SessionDetail,
     SessionEventPage,
+    SessionExport,
     SessionMessagePage,
     SessionMutationResult,
     SessionReplay,
     SessionTrashResult,
     SessionView,
 )
+from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import (
-    PersistenceError,
     SessionBranchError,
     SessionBusyError,
     SessionNotFoundError,
 )
 from ouro.core.messages import MessageRecord
 from ouro.core.state import SessionRecord, SessionTitleSource
-from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore, session_mutation
+from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -60,6 +61,7 @@ class SessionService:
     ) -> None:
         self._store = store
         self._resources = resources
+        self._recovery = SessionRecoveryService(store)
 
     def create(
         self,
@@ -86,15 +88,35 @@ class SessionService:
         )
 
     def open(self, session_id: str, *, recover: bool = True) -> SessionDetail:
-        snapshot = self._load_snapshot(session_id, recover=recover)
+        try:
+            session = self._store.load_session_record(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        if recover and (
+            session.active_run_id is not None
+            or session.status in {"running", "waiting_approval", "waiting_user"}
+        ):
+            session = self._recovery.recover_runtime(session_id).session
+        recent_run_id = session.active_run_id or session.last_run_id
+        recent_run = (
+            self._store.load_run(session_id, recent_run_id) if recent_run_id is not None else None
+        )
         diagnostics = self._refresh_index_diagnostics(session_id) if recover else ()
         return SessionDetail(
+            session=SessionView.from_record(session),
+            recent_run=recent_run,
+            active_compaction=self._store.load_active_compaction(session_id),
+            diagnostics=diagnostics,
+        )
+
+    def export(self, session_id: str) -> SessionExport:
+        snapshot = self._load_snapshot(session_id, recover=False)
+        return SessionExport(
             session=SessionView.from_record(snapshot.session),
             messages=tuple(snapshot.messages),
             events=tuple(snapshot.events),
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
-            diagnostics=diagnostics,
         )
 
     def message_page(
@@ -136,25 +158,10 @@ class SessionService:
         )
 
     def catalog(self, query: SessionCatalogQuery | None = None) -> SessionCatalogResult:
-        diagnostics: tuple[Diagnostic, ...] = ()
-        try:
-            index = self._store.load_index()
-        except PersistenceError as exc:
-            index = self._store.scan_index()
-            diagnostics = (
-                Diagnostic(
-                    code="session_index_unavailable",
-                    severity="warning",
-                    component="sessions.catalog",
-                    message=str(exc),
-                    recoverable=True,
-                    suggested_action="Rebuild the session index.",
-                ),
-            )
+        index = self._store.read_catalog()
         entries = _filter_entries(index.sessions, query or SessionCatalogQuery())
         return SessionCatalogResult(
             entries=tuple(SessionCatalogEntry.from_index(entry) for entry in entries),
-            diagnostics=diagnostics,
         )
 
     def rename(self, session_id: str, title: str) -> SessionMutationResult:
@@ -248,7 +255,7 @@ class SessionService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            with session_mutation(self._store, session_id):
+            with self._store.session_mutation(session_id):
                 session = self._load_snapshot(session_id, recover=False).session
                 if session.status in {"running", "waiting_approval", "waiting_user"}:
                     raise SessionBusyError(f"session has unfinished work: {session_id}")
@@ -280,7 +287,7 @@ class SessionService:
         )
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
-        with session_mutation(self._store, source_session_id):
+        with self._store.session_mutation(source_session_id):
             return self._branch_locked(source_session_id, message_id)
 
     def _branch_locked(self, source_session_id: str, message_id: str) -> SessionBranchResult:
@@ -383,7 +390,7 @@ class SessionService:
         )
 
     def _refresh_index_diagnostics(self, session_id: str) -> tuple[Diagnostic, ...]:
-        error = self._store.try_update_index(session_id)
+        error = self._store.refresh_catalog(session_id)
         if error is None:
             return ()
         return (
@@ -400,7 +407,9 @@ class SessionService:
 
     def _load_snapshot(self, session_id: str, *, recover: bool) -> SessionSnapshot:
         try:
-            return self._store.load_session(session_id, recover=recover)
+            if recover:
+                return self._recovery.recover(session_id)
+            return self._store.load_session(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
 

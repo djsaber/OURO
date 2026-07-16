@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from ouro.core.approvals import ApprovalRecord, SessionApprovalMode
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
+from ouro.core.redaction import redact_text
 from ouro.core.tools import PermissionMode
 from ouro.tools.base import (
     ToolExecutionAborted,
@@ -155,7 +156,7 @@ class ToolExecutor:
             # failure from the rest of the run so the model can observe the
             # error and decide how to proceed.
             error_type = type(exc).__name__
-            error_message = str(exc)
+            error_message = redact_text(str(exc))
             result = ToolResult(
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,

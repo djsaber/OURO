@@ -18,8 +18,10 @@ from ouro.core.messages import (
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAICompatibleProvider
-from ouro.providers.openai_compatible import HttpxOpenAICompatibleTransport
-from ouro.providers.openai_transport import OpenAITransportError
+from ouro.providers.http_transport import (
+    HttpxProviderHTTPTransport,
+    ProviderTransportError,
+)
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 
 _OPENAI_REASONING = openai_effort_reasoning(output="text", continuation="text")
@@ -104,19 +106,19 @@ class PartialFailureStreamingTransport(FakeStreamingTransport):
     async def stream_json(self, **kwargs) -> AsyncIterator[Mapping[str, Any]]:
         self.requests.append(dict(kwargs))
         yield {"choices": [{"delta": {"content": "partial"}}]}
-        raise OpenAITransportError("connection lost", retryable=True)
+        raise ProviderTransportError("connection lost", retryable=True)
 
 
 @pytest.mark.asyncio
 async def test_httpx_transport_reuses_and_closes_only_owned_client() -> None:
-    owned = HttpxOpenAICompatibleTransport()
+    owned = HttpxProviderHTTPTransport()
     owned_client = owned._client()
     assert owned._client() is owned_client
     await owned.aclose()
     assert owned_client.is_closed is True
 
     injected_client = httpx.AsyncClient()
-    injected = HttpxOpenAICompatibleTransport(injected_client)
+    injected = HttpxProviderHTTPTransport(injected_client)
     await injected.aclose()
     assert injected_client.is_closed is False
     await injected_client.aclose()
@@ -131,7 +133,7 @@ async def test_httpx_transport_posts_json() -> None:
         return httpx.Response(200, json={"ok": True})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        transport = HttpxOpenAICompatibleTransport(client)
+        transport = HttpxProviderHTTPTransport(client)
         result = await transport.post_json(
             url="https://example.test/v1/chat/completions",
             headers={"authorization": "Bearer secret"},
@@ -158,7 +160,7 @@ async def test_httpx_transport_streams_sse_json() -> None:
         )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        transport = HttpxOpenAICompatibleTransport(client)
+        transport = HttpxProviderHTTPTransport(client)
         chunks = [
             chunk
             async for chunk in transport.stream_json(
@@ -181,7 +183,7 @@ async def test_httpx_transport_reports_http_errors() -> None:
         return httpx.Response(429, text="too many requests")
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        transport = HttpxOpenAICompatibleTransport(client)
+        transport = HttpxProviderHTTPTransport(client)
         with pytest.raises(RuntimeError, match="provider HTTP 429"):
             await transport.post_json(
                 url="https://example.test/v1/chat/completions",
@@ -1077,7 +1079,7 @@ async def test_openai_compatible_provider_omits_empty_reasoning_content_for_tool
 async def test_provider_retries_transient_failure_before_any_response_event() -> None:
     transport = SequencedTransport(
         [
-            OpenAITransportError("provider request timed out", retryable=True),
+            ProviderTransportError("provider request timed out", retryable=True),
             {
                 "choices": [{"message": {"role": "assistant", "content": "ok"}}],
             },

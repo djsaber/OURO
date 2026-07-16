@@ -6,14 +6,12 @@ from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import TypedDict, Unpack
 
-from ouro.application.facade import ApplicationFacade
 from ouro.application.usage import UsageService
 from ouro.application.usage_models import UsageGroupBy, UsageTotals
-from ouro.billing import LocalUsageLedger
 from ouro.cli.errors import error_exit_code
 from ouro.core.billing import UsageFilter, UsagePurpose
 from ouro.core.errors import OuroError
-from ouro.sessions import LocalSessionStore
+from ouro.local_application import build_local_usage_service
 
 
 class UsageFilterArgs(TypedDict, total=False):
@@ -35,7 +33,7 @@ def summarize_usage(
     **filters: Unpack[UsageFilterArgs],
 ) -> int:
     try:
-        result = _facade(home).usage_summary(_usage_filter(**filters), group_by=group_by)
+        result = _usage(home).summarize(_usage_filter(**filters), group_by=group_by)
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -64,7 +62,7 @@ def list_usage(
     **filters: Unpack[UsageFilterArgs],
 ) -> int:
     try:
-        result = _facade(home).usage_entries(_usage_filter(**filters), limit=limit)
+        result = _usage(home).list_entries(_usage_filter(**filters), limit=limit)
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -94,7 +92,7 @@ def show_usage_entry(
     json_mode: bool = False,
 ) -> int:
     try:
-        entry = _facade(home).usage_entry(entry_id)
+        entry = _usage(home).get_entry(entry_id)
     except KeyError:
         return _print_error(ValueError(f"usage entry not found: {entry_id}"), json_mode=json_mode)
     except OuroError as exc:
@@ -121,7 +119,7 @@ def modify_usage_entry(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _facade(home).replace_usage_entry(
+        result = _usage(home).replace_entry(
             entry_id,
             input_tokens=input_tokens,
             output_tokens=output_tokens,
@@ -160,7 +158,7 @@ def reset_usage(
             if confirm not in {"y", "yes"}:
                 print("Cancelled.")
                 return 0
-        result = _facade(home).reset_usage(usage_filter, note=note)
+        result = _usage(home).reset(usage_filter, note=note)
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -180,7 +178,7 @@ def audit_usage(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _facade(home).usage_audit(limit=limit)
+        result = _usage(home).audit(limit=limit)
     except (OuroError, ValueError) as exc:
         return _print_error(exc, json_mode=json_mode)
     if json_mode:
@@ -239,12 +237,8 @@ def _parse_boundary(value: str | None, *, inclusive_date_end: bool) -> datetime 
         raise ValueError(f"invalid ISO usage date/time: {value}") from exc
 
 
-def _facade(home: str | Path | None) -> ApplicationFacade:
-    sessions = LocalSessionStore(home)
-    sessions.initialize()
-    ledger = LocalUsageLedger(sessions.root)
-    ledger.initialize()
-    return ApplicationFacade.with_usage(sessions, UsageService(ledger))
+def _usage(home: str | Path | None) -> UsageService:
+    return build_local_usage_service(home)
 
 
 def _print_totals(totals: UsageTotals, *, prefix: str = "") -> None:

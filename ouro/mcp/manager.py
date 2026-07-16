@@ -9,6 +9,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 
 from ouro.core.base import utc_now
+from ouro.core.redaction import redact_text
 from ouro.mcp.client import MCPClientFactory, MCPClientSession
 from ouro.mcp.errors import (
     MCPDisconnectedError,
@@ -479,7 +480,7 @@ class MCPManager:
                 secret = self._resolve_credential(reference)
                 if secret:
                     message = message.replace(secret, "***")
-        return message
+        return redact_text(message)
 
     def _update(self, server_id: str, **changes: object) -> MCPServerRecord:
         record = self.get(server_id).model_copy(update=changes)

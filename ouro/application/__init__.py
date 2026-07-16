@@ -1,10 +1,14 @@
 """Application services that orchestrate OURO core runtime boundaries."""
 
 from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import ConfigurationOverview
+from ouro.application.configuration_models import (
+    ConfigurationOverview,
+    MCPConfigCatalogView,
+    MCPConnectionCheckView,
+    MCPServerConfigView,
+)
+from ouro.application.event_models import RuntimeEventView
 from ouro.application.events import RuntimeEventRecorder
-from ouro.application.facade import ApplicationFacade
-from ouro.application.followups import FollowUpQueue, QueuedFollowUp
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import (
@@ -19,6 +23,9 @@ from ouro.application.session_models import (
     SessionCatalogQuery,
     SessionCatalogResult,
     SessionDetail,
+    SessionEventPage,
+    SessionExport,
+    SessionMessagePage,
     SessionMutationResult,
     SessionReplay,
     SessionTrashResult,
@@ -47,13 +54,14 @@ from ouro.application.usage_models import (
 from ouro.core.results import RunResult
 
 __all__ = [
-    "ApplicationFacade",
     "ConfigurationFacade",
     "ConfigurationOverview",
-    "FollowUpQueue",
-    "QueuedFollowUp",
+    "MCPConfigCatalogView",
+    "MCPConnectionCheckView",
+    "MCPServerConfigView",
     "RunResult",
     "RuntimeEventRecorder",
+    "RuntimeEventView",
     "RuntimeService",
     "RuntimeConfigurationResolver",
     "RuntimeConfigurationSnapshot",
@@ -83,6 +91,9 @@ __all__ = [
     "SessionCatalogQuery",
     "SessionCatalogResult",
     "SessionDetail",
+    "SessionEventPage",
+    "SessionExport",
+    "SessionMessagePage",
     "SessionMutationResult",
     "SessionReplay",
     "SessionTrashResult",

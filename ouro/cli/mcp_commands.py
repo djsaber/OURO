@@ -5,15 +5,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
-from ouro.core.errors import ConfigError, OuroError
-from ouro.mcp import (
-    MCPConfigStore,
-    MCPServerConfig,
-    MCPServerConfigUpdate,
-    check_mcp_server_connection,
-    mcp_config_to_public_dict,
-)
+from ouro.core.errors import OuroError
+from ouro.mcp import MCPServerConfigUpdate
 
 
 def list_mcp_configs(
@@ -22,16 +17,16 @@ def list_mcp_configs(
     json_mode: bool = False,
 ) -> int:
     try:
-        snapshot = MCPConfigStore(home).snapshot()
+        snapshot = ConfigurationFacade(home).mcp_catalog()
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    servers = [mcp_config_to_public_dict(config) for config in snapshot.servers]
+    servers = [config.model_dump(mode="json") for config in snapshot.servers]
     if json_mode:
         _print_json(
             status="ok",
-            config_path=str(snapshot.config_path),
+            config_path=snapshot.config_path,
             servers=servers,
         )
         return 0
@@ -57,17 +52,17 @@ def show_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        store = MCPConfigStore(home)
-        config = _require_config(store, server_id)
+        facade = ConfigurationFacade(home)
+        config = facade.mcp_server(server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = mcp_config_to_public_dict(config)
+    public = config.model_dump(mode="json")
     if json_mode:
         _print_json(
             status="ok",
-            config_path=str(store.config_path),
+            config_path=str(facade.config_path),
             server=public,
         )
         return 0
@@ -84,7 +79,7 @@ def show_mcp_config(
                 f"Auto start: {'yes' if public['auto_start'] else 'no'}",
                 f"Auto reconnect: {'yes' if public['auto_reconnect'] else 'no'}",
                 f"Permission: {public['permission_mode']}",
-                f"Config: {store.config_path}",
+                f"Config: {facade.config_path}",
             ]
         )
     )
@@ -99,17 +94,18 @@ def set_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        store = MCPConfigStore(home)
-        config = store.update(server_id, update)
+        facade = ConfigurationFacade(home)
+        catalog = facade.save_mcp_server(server_id, update)
+        config = next(item for item in catalog.servers if item.server_id == server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    public = mcp_config_to_public_dict(config)
+    public = config.model_dump(mode="json")
     if json_mode:
         _print_json(
             status="ok",
-            config_path=str(store.config_path),
+            config_path=catalog.config_path,
             server=public,
         )
         return 0
@@ -124,8 +120,8 @@ def remove_mcp_config(
     json_mode: bool = False,
 ) -> int:
     try:
-        store = MCPConfigStore(home)
-        store.remove(server_id)
+        facade = ConfigurationFacade(home)
+        catalog = facade.remove_mcp_server(server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -133,7 +129,7 @@ def remove_mcp_config(
     if json_mode:
         _print_json(
             status="ok",
-            config_path=str(store.config_path),
+            config_path=catalog.config_path,
             removed=server_id,
         )
         return 0
@@ -148,19 +144,18 @@ async def check_mcp_connection(
     json_mode: bool = False,
 ) -> int:
     try:
-        store = MCPConfigStore(home)
-        config = _require_config(store, server_id)
+        facade = ConfigurationFacade(home)
+        check = await facade.check_mcp_server(server_id)
     except OuroError as exc:
         _print_mcp_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
 
-    check = await check_mcp_server_connection(config)
     result: dict[str, Any] = {
         "status": "ok" if check.ok else "failed",
-        "config_path": str(store.config_path),
-        "server": mcp_config_to_public_dict(config),
+        "config_path": str(facade.config_path),
+        "server": check.server.model_dump(mode="json"),
         "connection_status": check.status,
-        "server_info": check.server_info.model_dump(mode="json") if check.server_info else None,
+        "server_info": check.server_info,
         "tools": list(check.tool_names),
         "error": check.error,
         "diagnostics": [item.model_dump(mode="json") for item in check.diagnostics],
@@ -175,13 +170,6 @@ async def check_mcp_connection(
     else:
         print(f"MCP check failed: {server_id} - {result['error']}", file=sys.stderr)
     return 0 if result["status"] == "ok" else 3
-
-
-def _require_config(store: MCPConfigStore, server_id: str) -> MCPServerConfig:
-    config = store.get(server_id)
-    if config is None:
-        raise ConfigError(f"MCP server not found: {server_id}")
-    return config
 
 
 def _print_mcp_error(exc: OuroError, *, json_mode: bool) -> None:

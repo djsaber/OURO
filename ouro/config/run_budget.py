@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.errors import ConfigError
 from ouro.core.run_budget import RunBudgetPolicy
 
@@ -20,6 +20,7 @@ class RunBudgetConfigManager:
         except ValueError as exc:
             raise ConfigError(f"invalid run_budget config: {exc}") from exc
 
+    @atomic_config_update
     def save(self, policy: RunBudgetPolicy) -> RunBudgetPolicy:
         try:
             validated = RunBudgetPolicy.model_validate(policy.model_dump())
@@ -34,6 +35,7 @@ class RunBudgetConfigManager:
         self.file.write(raw)
         return validated
 
+    @atomic_config_update
     def update(
         self,
         *,

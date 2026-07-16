@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import ValidationError
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
@@ -39,6 +39,7 @@ class QueuedInputConfigManager:
         except ValidationError as exc:
             raise ConfigError(f"invalid queued_inputs config: {exc}") from exc
 
+    @atomic_config_update
     def update(
         self,
         *,

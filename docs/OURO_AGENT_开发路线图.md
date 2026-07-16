@@ -13,7 +13,8 @@
 
 ## 近期：连接与扩展
 
-个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）已完成并转入当前规格。
+个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）、后端中立 SessionRepository、
+SQLite adapter、类型化 Host 事件、LocalApplication 生命周期和插件 contribution 安全边界已完成并转入当前规格。
 
 ### 完整插件生命周期
 
@@ -21,12 +22,27 @@
 
 范围：
 
-- manifest 与 entrypoint 加载；
-- 来源、信任和权限确认；
+- 安装器/包管理器与 entrypoint 生命周期；
+- 来源证明、用户信任确认和权限变更 UI；
 - contribution 冲突、排序和失败隔离；
 - 安装、升级、回滚和诊断。
 
-完成条件：插件不能绕过工具权限、持久化事务或 Hook 失败边界。
+现有 manifest loader 已禁止来源自升、校验 capability/permission、限制 Hook/command 超时并原子注册贡献；
+剩余工作不应重新实现这些底层规则。完成条件：安装、升级、禁用和权限撤销都能撤回贡献，插件不能绕过
+工具权限、持久化事务、脱敏或 Hook 失败边界。
+
+### TUI Host
+
+目标：以终端原生布局复用 application 的类型化会话、运行和配置能力。
+
+范围：
+
+- session catalog、分页历史与 activity 面板；
+- 流式运行、工具批次、审批、AskUser、steer/follow-up 和 abort；
+- 配置与 MCP 诊断；
+- 通过 RuntimeSupervisor 的有界订阅和 cursor 重同步处理慢消费者。
+
+完成条件：TUI 只负责渲染和输入映射，不解析 Session 文件/SQLite，不从原始 event payload 重建业务状态。
 
 ### Desktop Host
 
@@ -39,7 +55,7 @@
 - 文件 diff、资源预览和设置；
 - 通过 RuntimeSupervisor 订阅后台运行。
 
-完成条件：Desktop 只依赖 application facade/DTO，不复制运行规则或直接解析本地文件。
+完成条件：Desktop 只依赖内聚 application service、DTO 与通知，不复制运行规则或直接解析本地文件/SQLite。
 
 ## 后续：高级个人智能体能力
 
@@ -59,15 +75,17 @@
 
 只有 RuntimeSupervisor 和资源身份稳定后才进入该能力，避免用临时进程和裸文本拼接模拟任务系统。
 
-### 持久化规模化
+### SQLite 产品化
 
-当前消息与事件已通过稳定 byte cursor 增量读取 JSONL，Host 无需全量加载长历史。继续使用本地文件后端，
-直到真实数据证明查询、事务或维护成本成为瓶颈。若引入 SQLite：
+文件与 SQLite 已通过同一 SessionStore contract；SQLite 使用 adapter 内部事务和索引，文件到 SQLite 的
+导入 API 会验证并整体回滚。进入用户可选阶段前仍需：
 
-- `SessionStore` 契约保持稳定；
-- 提供显式导入、验证和回滚工具；
-- 不让 ORM 或表结构进入 core；
-- 文件后端仍作为可读导出格式或受支持实现。
+- 提供明确的 CLI/Desktop 后端选择和迁移预检/进度/备份体验；
+- 在真实长会话数据上建立查询、写入、WAL 维护和恢复基准；
+- 定义版本升级、备份恢复和损坏诊断流程；
+- 保留文件后端作为可读实现和显式导出来源。
+
+不得为两种实现再增加通用 ORM、UoW 或第二套领域恢复规则。
 
 ## 跨阶段质量门槛
 
@@ -77,5 +95,5 @@
 - 不新增 core 对外层的依赖；
 - 敏感数据不进入日志、事件或公开 DTO；
 - 资源有明确关闭路径；
-- CLI、Desktop 和协议适配器不复制 application 规则；
+- CLI、TUI、Desktop 和协议适配器不复制 application 规则；
 - README、项目概述和开发架构与代码保持一致。

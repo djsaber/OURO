@@ -75,22 +75,22 @@ def test_failed_oversized_import_leaves_no_visible_reference_or_staging_file(tmp
     assert resources.list_resources(session.session_id).resources == ()
     assert list(resource_store.staging_dir.iterdir()) == []
     assert list(resource_store.records_dir.iterdir()) == []
-    assert sessions.load_session(session.session_id, recover=False).messages == []
+    assert sessions.load_session(session.session_id).messages == []
 
 
 def test_reference_publish_failure_rolls_back_new_canonical_record(
     monkeypatch,
     tmp_path,
 ) -> None:
-    _, resource_store, resources, session_service = _services(tmp_path)
+    sessions, resource_store, resources, session_service = _services(tmp_path)
     session = session_service.create(title="Rollback").session
     source = tmp_path / "rollback.txt"
     source.write_text("rollback", encoding="utf-8")
 
-    def fail_attach(_session_id, _resource_id):
+    def fail_attach(_session_id, _reference):
         raise OSError("injected reference failure")
 
-    monkeypatch.setattr(resource_store, "_attach_reference", fail_attach)
+    monkeypatch.setattr(sessions, "attach_resource_reference", fail_attach)
 
     with pytest.raises(OSError, match="injected reference failure"):
         resources.import_resource(session.session_id, source)
@@ -210,11 +210,11 @@ def test_branch_atomically_copies_valid_resource_relationships(tmp_path) -> None
     sessions.append_message(message)
 
     branch = session_service.branch(source_session.session_id, message.message_id)
-    branch_snapshot = sessions.load_session(branch.session.session_id, recover=False)
+    branch_snapshot = sessions.load_session(branch.session.session_id)
 
     assert branch_snapshot.messages[0].resource_refs == [resource.resource_id]
     assert resources.session_resource_ids(branch.session.session_id) == (resource.resource_id,)
-    reference = resource_store.load_session_references(branch.session.session_id)[0]
+    reference = sessions.load_resource_references(branch.session.session_id)[0]
     assert reference.copied_from_session_id == source_session.session_id
 
 
@@ -350,8 +350,8 @@ def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_pa
             sequence=1,
         )
 
-    assert sessions.load_session(session.session_id, recover=False).messages == []
-    assert resource_store.list_session_records(session.session_id) == []
+    assert sessions.load_session(session.session_id).messages == []
+    assert sessions.load_resource_references(session.session_id) == []
 
 
 def test_text_resource_is_projected_with_source_label_without_mutating_canonical_message(

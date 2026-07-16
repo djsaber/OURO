@@ -125,7 +125,7 @@ def _append_turns(
     *,
     offset: int = 0,
 ) -> None:
-    snapshot = store.load_session(session_id, recover=False)
+    snapshot = store.load_session(session_id)
     sequence = len(snapshot.messages)
     for index in range(offset, offset + count):
         sequence += 1

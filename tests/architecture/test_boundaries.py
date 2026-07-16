@@ -44,18 +44,18 @@ def test_model_catalog_is_owned_by_application_not_core_or_providers() -> None:
     assert not (PROJECT_ROOT / "ouro" / "providers" / "catalog.py").exists()
 
 
-def test_session_use_cases_and_host_facade_are_application_owned() -> None:
+def test_session_use_cases_and_host_services_are_application_owned() -> None:
     assert (APPLICATION_DIR / "sessions.py").exists()
     assert (APPLICATION_DIR / "session_models.py").exists()
-    assert (APPLICATION_DIR / "facade.py").exists()
+    assert not (APPLICATION_DIR / "facade.py").exists()
     assert not (PROJECT_ROOT / "ouro" / "sessions" / "service.py").exists()
 
     session_commands = ast.parse(
         (PROJECT_ROOT / "ouro" / "cli" / "session_commands.py").read_text(encoding="utf-8")
     )
     imports = _imported_modules(session_commands)
-    assert "ouro.application.facade" in imports
-    assert "ouro.application.sessions" not in imports
+    assert "ouro.application.sessions" in imports
+    assert "ouro.application.facade" not in imports
 
 
 def test_application_does_not_depend_on_cli_or_provider_implementations() -> None:
@@ -92,6 +92,13 @@ def test_lower_layers_do_not_depend_on_application_or_cli() -> None:
     assert violations == []
 
 
+def test_shared_local_infrastructure_is_not_owned_by_a_feature_adapter() -> None:
+    for relative_path in ("billing/local.py", "config/file.py"):
+        path = PROJECT_ROOT / "ouro" / relative_path
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        assert not any(module.startswith("ouro.sessions") for module in _imported_modules(tree))
+
+
 def test_cli_configuration_hosts_do_not_use_infrastructure_managers() -> None:
     violations: list[str] = []
     for filename in (
@@ -110,6 +117,16 @@ def test_cli_configuration_hosts_do_not_use_infrastructure_managers() -> None:
                     violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {alias.name}")
 
     assert violations == []
+
+
+def test_cli_application_commands_use_local_composition_boundary() -> None:
+    forbidden = ("ouro.sessions", "ouro.resources", "ouro.billing")
+    for filename in ("session_commands.py", "resource_commands.py", "usage_commands.py"):
+        path = PROJECT_ROOT / "ouro" / "cli" / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        modules = _imported_modules(tree)
+        assert "ouro.local_application" in modules
+        assert not any(module.startswith(forbidden) for module in modules)
 
 
 def _imported_modules(tree: ast.AST) -> list[str]:

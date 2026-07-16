@@ -23,7 +23,7 @@ from ouro.core.errors import (
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
 from ouro.core.resources import ResourceSource, ResourceSourceKind, SessionResourceReference
 from ouro.resources import ResourceStore
-from ouro.sessions import SessionStore, session_mutation
+from ouro.sessions import SessionRepository
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
 DEFAULT_MAX_MODEL_TEXT_BYTES = 1 * 1024 * 1024
@@ -40,7 +40,7 @@ class ResourceService:
         self,
         *,
         store: ResourceStore,
-        sessions: SessionStore,
+        sessions: SessionRepository,
         max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
         max_model_text_bytes: int = DEFAULT_MAX_MODEL_TEXT_BYTES,
         max_model_image_bytes: int = DEFAULT_MAX_MODEL_IMAGE_BYTES,
@@ -76,7 +76,7 @@ class ResourceService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            with session_mutation(self._sessions, session_id):
+            with self._sessions.session_mutation(session_id):
                 self._sessions.load_session_record(session_id)
                 path = Path(source_path)
                 selected_media_type = media_type or self._store.infer_media_type(path)
@@ -87,12 +87,22 @@ class ResourceService:
                 )
                 try:
                     record, created = self._store.import_file(
-                        session_id,
                         path,
                         source=source,
                         media_type=selected_media_type,
                         max_bytes=self._max_resource_bytes,
                     )
+                    try:
+                        self._sessions.attach_resource_reference(
+                            session_id,
+                            SessionResourceReference(resource_id=record.resource_id),
+                        )
+                    except Exception:
+                        if created and not self._sessions.is_resource_referenced(
+                            record.resource_id
+                        ):
+                            self._store.delete_resources([record.resource_id])
+                        raise
                 except ValueError as exc:
                     if "media_type" in str(exc):
                         raise UnsupportedMediaTypeError(str(exc)) from exc
@@ -107,7 +117,10 @@ class ResourceService:
 
     def list_resources(self, session_id: str) -> ResourceListResult:
         self._sessions.load_session_record(session_id)
-        records = self._store.list_session_records(session_id)
+        records = [
+            self._store.load_record(reference.resource_id)
+            for reference in self._sessions.load_resource_references(session_id)
+        ]
         return ResourceListResult(
             session_id=session_id,
             resources=tuple(ResourceView.from_record(record) for record in records),
@@ -140,9 +153,9 @@ class ResourceService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            with session_mutation(self._sessions, session_id):
+            with self._sessions.session_mutation(session_id):
                 self._require_attached(session_id, resource_id)
-                snapshot = self._sessions.load_runtime_session(session_id, recover=False)
+                snapshot = self._sessions.load_runtime_session(session_id)
                 users = [
                     message.message_id
                     for message in snapshot.messages
@@ -152,9 +165,11 @@ class ResourceService:
                     raise ResourceInUseError(
                         f"resource {resource_id} is referenced by canonical message {users[0]}"
                     )
-                self._store.remove_session_reference(session_id, resource_id)
+                self._sessions.remove_resource_reference(session_id, resource_id)
         finally:
             lock.release()
+        if not self._sessions.is_resource_referenced(resource_id):
+            self._store.delete_resources([resource_id])
         collected = not self._record_exists(resource_id)
         return ResourceRemoveResult(
             session_id=session_id,
@@ -165,7 +180,8 @@ class ResourceService:
 
     def validate_references(self, session_id: str, resource_ids: Iterable[str]) -> None:
         attached = {
-            reference.resource_id for reference in self._store.load_session_references(session_id)
+            reference.resource_id
+            for reference in self._sessions.load_resource_references(session_id)
         }
         for resource_id in dict.fromkeys(resource_ids):
             if resource_id not in attached:
@@ -308,18 +324,24 @@ class ResourceService:
         ]
 
     def collect_after_session_trash(self, resource_ids: Iterable[str]) -> tuple[str, ...]:
-        return tuple(self._store.collect_unreferenced(resource_ids))
+        candidates = [
+            resource_id
+            for resource_id in dict.fromkeys(resource_ids)
+            if not self._sessions.is_resource_referenced(resource_id)
+        ]
+        return tuple(self._store.delete_resources(candidates))
 
     def session_resource_ids(self, session_id: str) -> tuple[str, ...]:
         return tuple(
-            reference.resource_id for reference in self._store.load_session_references(session_id)
+            reference.resource_id
+            for reference in self._sessions.load_resource_references(session_id)
         )
 
     def _require_attached(self, session_id: str, resource_id: str) -> None:
         self._sessions.load_session_record(session_id)
         if not any(
             reference.resource_id == resource_id
-            for reference in self._store.load_session_references(session_id)
+            for reference in self._sessions.load_resource_references(session_id)
         ):
             raise ResourceNotFoundError(
                 f"resource {resource_id} is not attached to session {session_id}"

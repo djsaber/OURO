@@ -13,12 +13,11 @@ from ouro.cli.interactive_io import (
 )
 from ouro.cli.run import (
     RuntimeProviderOptions,
-    build_default_mcp_runtime,
     build_default_runtime,
 )
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
-from ouro.mcp import MCPRuntimeResource
+from ouro.local_application import LocalApplication
 
 _CYAN = "\x1b[36m"
 _RESET = "\x1b[0m"
@@ -35,7 +34,8 @@ async def run_interactive(
     output_func: OutputFunc = print,
 ) -> int:
     output = InteractiveOutput(output_func)
-    owned_mcp: MCPRuntimeResource | None = None
+    owned_application: LocalApplication | None = None
+    owns_runtime = runtime is None
     if runtime is None:
         try:
             runtime = build_default_runtime(
@@ -44,20 +44,24 @@ async def run_interactive(
                 system_prompt=system_prompt,
                 event_sink=output.handle_event,
             )
-            owned_mcp = build_default_mcp_runtime(runtime)
-            await output.start_mcp_connection(owned_mcp.startup_configs)
-            await owned_mcp.start()
-            await output.finish_mcp_connection(owned_mcp.startup_records)
+            owned_application = LocalApplication.from_runtime(runtime, home=home)
+            await output.start_mcp_connection(owned_application.mcp.startup_configs)
+            await owned_application.start()
+            await output.finish_mcp_connection(owned_application.mcp.startup_records)
         except OuroError as exc:
             await output.close()
-            if owned_mcp is not None:
-                await owned_mcp.close()
+            if owned_application is not None:
+                await owned_application.close()
+            elif runtime is not None:
+                await runtime.close()
             output_func(f"Error: {exc}")
             return 1
         except BaseException:
             await output.close()
-            if owned_mcp is not None:
-                await owned_mcp.close()
+            if owned_application is not None:
+                await owned_application.close()
+            elif runtime is not None:
+                await runtime.close()
             raise
     else:
         runtime.add_event_sink(output.handle_event)
@@ -72,8 +76,10 @@ async def run_interactive(
         )
     finally:
         await output.close()
-        if owned_mcp is not None:
-            await owned_mcp.close()
+        if owned_application is not None:
+            await owned_application.close()
+        elif owns_runtime:
+            await runtime.close()
 
 
 async def _run_interactive_session(

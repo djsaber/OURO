@@ -62,15 +62,19 @@ def _runtime(tmp_path, *, registry, first_calls, mode="sequential") -> RuntimeSe
 async def test_parallel_batch_preserves_one_assistant_message_and_source_order(tmp_path) -> None:
     registry = ToolRegistry()
     completed: list[str] = []
+    first_started = asyncio.Event()
+    second_completed = asyncio.Event()
 
     async def first(invocation) -> ToolResult:
-        await asyncio.sleep(0.05)
+        first_started.set()
+        await asyncio.wait_for(second_completed.wait(), timeout=1.0)
         completed.append("first")
         return _result(invocation, "first result")
 
     async def second(invocation) -> ToolResult:
-        await asyncio.sleep(0.01)
+        await asyncio.wait_for(first_started.wait(), timeout=1.0)
         completed.append("second")
+        second_completed.set()
         return _result(invocation, "second result")
 
     registry.register(
@@ -164,7 +168,7 @@ async def test_parallel_batch_marks_only_handlers_that_actually_started(tmp_path
     run_task = asyncio.create_task(runtime.run("run three"))
     await asyncio.wait_for(two_started.wait(), timeout=1)
     session = runtime.store.list_sessions()[0]
-    snapshot = runtime.store.load_session(session.session_id, recover=False)
+    snapshot = runtime.store.load_session(session.session_id)
     active = next(run for run in snapshot.runs if run.status == "running")
     assert active.active_tool_batch is not None
     assert [call.status for call in active.active_tool_batch.calls] == [
@@ -245,7 +249,7 @@ async def test_batch_waits_for_every_approval_and_marks_running_before_execution
         )
     )
     await asyncio.wait_for(started.wait(), timeout=1)
-    executing = runtime.store.load_session(pending.session.session_id, recover=False)
+    executing = runtime.store.load_session(pending.session.session_id)
     executing_run = next(item for item in executing.runs if item.run_id == pending.run.run_id)
     assert executing.session.status == "running"
     assert executing_run.status == "running"

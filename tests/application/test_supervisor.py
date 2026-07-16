@@ -9,6 +9,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import SessionBusyError
+from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
@@ -322,6 +323,63 @@ async def test_activity_initial_snapshot_remains_available_when_event_replay_lag
 
 
 @pytest.mark.asyncio
+async def test_subscription_replay_is_bounded_and_never_loads_full_history(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    session = runtime.sessions.create(title="Bounded replay").session
+    for index in range(8):
+        runtime.store.append_ordered_event(
+            EventRecord(
+                session_id=session.session_id,
+                run_id="run_history",
+                event_type="history",
+                payload={"index": index},
+            )
+        )
+
+    def reject_full_history(*_args, **_kwargs):
+        raise AssertionError("supervisor must not load complete Session history")
+
+    monkeypatch.setattr(runtime.store, "load_session", reject_full_history)
+    supervisor = RuntimeSupervisor(runtime)
+    subscription = supervisor.subscribe(session.session_id, max_buffer=2)
+
+    notification = await subscription.get()
+    assert notification.kind == "diagnostic"
+    assert notification.diagnostic is not None
+    assert notification.diagnostic.code == "runtime_subscription_lagged"
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_host_event_projection_is_typed_and_redacts_payload_secrets(tmp_path) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    session = runtime.sessions.create(title="Typed events").session
+    runtime.store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_typed",
+            event_type="model_text_delta",
+            payload={"text": "hello", "api_key": "event-secret"},
+        )
+    )
+    supervisor = RuntimeSupervisor(runtime)
+    subscription = supervisor.subscribe(session.session_id)
+
+    notification = await subscription.get()
+    assert notification.event is not None
+    assert notification.event.category == "text"
+    assert notification.event.text == "hello"
+    assert notification.event.data["api_key"] == "***"
+    assert "event-secret" not in notification.model_dump_json()
+    subscription.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_task_exception_becomes_diagnostic_and_does_not_break_worker(
     monkeypatch,
     tmp_path,
@@ -401,10 +459,10 @@ async def test_wait_shutdown_timeout_leaves_durable_run_recoverable_for_restart(
 
     await supervisor.shutdown(ShutdownPolicy(mode="wait", timeout_seconds=0.01))
 
-    durable = runtime.store.load_session(handle.session_id, recover=False)
+    durable = runtime.store.load_session(handle.session_id)
     active = next(run for run in durable.runs if run.status == "running")
     assert supervisor.status(handle).status == "recoverable"
-    recovered = runtime.store.load_session(handle.session_id, recover=True)
+    recovered = runtime.session_recovery.recover(handle.session_id)
     assert recovered.runs[0].status == "recoverable"
     assert active.run_id is not None
 
@@ -438,6 +496,6 @@ async def test_abort_shutdown_persists_abort_for_running_and_queued_jobs(tmp_pat
 
     assert supervisor.status(running).status == "aborted"
     assert supervisor.status(queued).status == "aborted"
-    durable = runtime.store.load_session(running.session_id, recover=False)
+    durable = runtime.store.load_session(running.session_id)
     assert durable.runs[0].status == "aborted"
     assert provider.closed is True

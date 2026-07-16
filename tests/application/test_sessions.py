@@ -24,7 +24,7 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
 
     created = sessions.create(title="  First   task  ")
     renamed = sessions.rename(created.session.session_id, "User title")
-    reloaded = store.load_session(created.session.session_id, recover=False).session
+    reloaded = store.load_session(created.session.session_id).session
 
     assert created.session.root_session_id == created.session.session_id
     assert created.session.title == "First task"
@@ -62,6 +62,44 @@ def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) ->
     assert page.messages[0].text_content == "message 1"
     assert page.messages[-1].text_content == "message 25"
     assert page.next_cursor is not None
+
+
+def test_open_session_returns_bounded_detail_without_loading_history(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store, sessions = _service(tmp_path)
+    session = SessionRecord(title="Bounded detail")
+    run = RunRecord(session_id=session.session_id, status="completed")
+    session = session.model_copy(update={"last_run_id": run.run_id})
+    store.create_session_snapshot(
+        session,
+        [
+            MessageRecord.text(
+                session_id=session.session_id,
+                role="user",
+                text="history",
+                sequence=1,
+            )
+        ],
+    )
+    store.save_run(run)
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="run_completed",
+        )
+    )
+
+    def reject_full_history(*_args, **_kwargs):
+        raise AssertionError("open must not load complete Session history")
+
+    monkeypatch.setattr(store, "load_session", reject_full_history)
+    detail = sessions.open(session.session_id, recover=False)
+
+    assert detail.session.session_id == session.session_id
+    assert detail.recent_run == run
 
 
 @pytest.mark.asyncio
@@ -105,15 +143,13 @@ def test_session_mutation_succeeds_with_visible_diagnostic_when_index_refresh_fa
     store, sessions = _service(tmp_path)
     monkeypatch.setattr(
         store,
-        "try_update_index",
+        "refresh_catalog",
         lambda _session_id: "index disk unavailable",
     )
 
     result = sessions.create(title="Canonical first")
 
-    assert store.load_session(result.session.session_id, recover=False).session.title == (
-        "Canonical first"
-    )
+    assert store.load_session(result.session.session_id).session.title == ("Canonical first")
     assert result.diagnostics[0].code == "session_index_refresh_failed"
     assert result.diagnostics[0].recoverable is True
 
@@ -149,7 +185,7 @@ def test_session_update_uses_incremental_index_path(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(store._catalog, "scan", reject_full_scan)
     sessions.rename(first.session_id, "First renamed")
 
-    by_id = {entry.session_id: entry for entry in store.load_index().sessions}
+    by_id = {entry.session_id: entry for entry in store.read_catalog().sessions}
     assert by_id[first.session_id].title == "First renamed"
     assert by_id[second.session_id].title == "Second"
 
@@ -168,7 +204,7 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert [entry.session_id for entry in result.entries] == [first.session_id]
     assert result.entries[0].root_session_id == first.session_id
     assert result.entries[0].health == "ok"
-    assert store.load_index().data_layout_version == DATA_LAYOUT_VERSION
+    assert store.read_catalog().data_layout_version == DATA_LAYOUT_VERSION
 
 
 def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) -> None:
@@ -188,11 +224,11 @@ def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) ->
     ).model_copy(update={"reasoning_content": "private-reasoning-needle"})
     store.append_message(first)
     store.append_message(second)
-    canonical = store.load_session(session.session_id, recover=False).session
+    canonical = store.load_session(session.session_id).session
     store.save_session(
         canonical.model_copy(update={"message_count": 2, "last_message_id": second.message_id})
     )
-    store.rebuild_index()
+    store.rebuild_catalog()
 
     historical = sessions.catalog(SessionCatalogQuery(text="historical-needle"))
     reasoning = sessions.catalog(SessionCatalogQuery(text="private-reasoning-needle"))
@@ -209,7 +245,7 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     corrupt_dir = store.sessions_dir / "ses_corrupt"
     corrupt_dir.mkdir()
     (corrupt_dir / "session.json").write_text("{broken", encoding="utf-8")
-    store.rebuild_index()
+    store.rebuild_catalog()
 
     result = sessions.catalog()
 
@@ -246,14 +282,14 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
     )
     for message in (user, assistant, result):
         store.append_message(message)
-    canonical = store.load_session(source.session_id, recover=False).session
+    canonical = store.load_session(source.session_id).session
     store.save_session(
         canonical.model_copy(update={"message_count": 3, "last_message_id": result.message_id})
     )
 
     branch = sessions.branch(source.session_id, assistant.message_id)
-    branch_snapshot = store.load_session(branch.session.session_id, recover=False)
-    source_snapshot = store.load_session(source.session_id, recover=False)
+    branch_snapshot = store.load_session(branch.session.session_id)
+    source_snapshot = store.load_session(source.session_id)
 
     assert branch.session.parent_session_id == source.session_id
     assert branch.session.root_session_id == source.session_id
@@ -324,7 +360,7 @@ def test_branch_reads_durable_history_from_an_active_source(tmp_path, status) ->
     branch = sessions.branch(source.session_id, message.message_id)
 
     assert branch.session.parent_session_id == source.session_id
-    assert store.load_session(source.session_id, recover=False).session.status == status
+    assert store.load_session(source.session_id).session.status == status
 
 
 def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
@@ -340,7 +376,7 @@ def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
         sequence=1,
     )
     store.append_message(message)
-    before = store.load_session(source.session_id, recover=False).model_dump()
+    before = store.load_session(source.session_id).model_dump()
     original = store._write_json_atomic
 
     def fail_resource_index(path, value) -> None:
@@ -353,7 +389,7 @@ def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
     with pytest.raises(PersistenceError, match="injected branch publish failure"):
         sessions.branch(source.session_id, message.message_id)
 
-    assert store.load_session(source.session_id, recover=False).model_dump() == before
+    assert store.load_session(source.session_id).model_dump() == before
     assert list(store.sessions_dir.glob("*.staging")) == []
     assert [path for path in store.sessions_dir.glob("*/session.json")] == [
         store.sessions_dir / source.session_id / "session.json"
@@ -376,8 +412,8 @@ def test_repeated_branch_requests_create_distinct_lineage_preserving_sessions(tm
 
     assert first.session.session_id != second.session.session_id
     assert first.session.forked_from_message_id == second.session.forked_from_message_id
-    assert store.load_session(first.session.session_id, recover=False).messages[0].message_id != (
-        store.load_session(second.session.session_id, recover=False).messages[0].message_id
+    assert store.load_session(first.session.session_id).messages[0].message_id != (
+        store.load_session(second.session.session_id).messages[0].message_id
     )
 
 

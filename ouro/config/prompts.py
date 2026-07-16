@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.errors import ConfigError
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 
@@ -42,6 +42,7 @@ class PromptConfigManager:
             return snapshot.system_prompt
         return DEFAULT_SYSTEM_PROMPT
 
+    @atomic_config_update
     def set_system_prompt(self, prompt: str) -> PromptConfigSnapshot:
         raw = self.load_raw()
         next_raw = deepcopy(raw)
@@ -53,6 +54,7 @@ class PromptConfigManager:
         self._write_raw(next_raw)
         return self.snapshot()
 
+    @atomic_config_update
     def clear_system_prompt(self) -> PromptConfigSnapshot:
         raw = self.load_raw()
         next_raw = deepcopy(raw)

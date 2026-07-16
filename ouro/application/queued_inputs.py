@@ -7,7 +7,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.state import SessionRecord
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore, session_mutation
+from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
 # The existing durable key remains authoritative so upgrades do not require an
 # eager metadata migration. Items now carry their own delivery mode.
@@ -32,7 +32,7 @@ class QueuedInputQueue:
     eligible items always retain their enqueue order.
     """
 
-    def __init__(self, store: SessionStore) -> None:
+    def __init__(self, store: SessionRepository) -> None:
         self.store = store
 
     def enqueue(
@@ -50,7 +50,7 @@ class QueuedInputQueue:
             title=title,
             resource_refs=resource_refs,
         )
-        with session_mutation(self.store, snapshot.session.session_id):
+        with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
             metadata = dict(latest.metadata)
             queue = self._raw_queue(metadata)
@@ -92,7 +92,7 @@ class QueuedInputQueue:
     def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
         """Remove an item only after its user message is durably appended."""
 
-        with session_mutation(self.store, snapshot.session.session_id):
+        with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
             metadata = dict(latest.metadata)
             queue = self._raw_queue(metadata)
@@ -104,7 +104,7 @@ class QueuedInputQueue:
                     return
 
     def _remove_invalid(self, session_id: str) -> None:
-        with session_mutation(self.store, session_id):
+        with self.store.session_mutation(session_id):
             latest = self.store.load_session_record(session_id)
             metadata = dict(latest.metadata)
             queue = [

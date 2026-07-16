@@ -3,41 +3,64 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from inspect import isawaitable
+from inspect import isawaitable, iscoroutinefunction
 from typing import Any
 
+from ouro.application.event_models import validate_runtime_event_payload
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookFailure, HookRegistry
-from ouro.sessions import SessionStore, append_ordered_event
+from ouro.core.redaction import redact_text
+from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
 
 
-@dataclass(frozen=True)
-class _EventSinkFailure:
-    error_type: str
-    error_message: str
+@dataclass
+class _SinkObserver:
+    callback: RuntimeEventSink
+    queue: asyncio.Queue[EventRecord | None]
+    task: asyncio.Task[None]
+    enabled: bool = True
 
 
 class RuntimeEventRecorder:
-    """Persist runtime events and convert hook failures into diagnostic events."""
+    """Persist canonical events, then fan them out through bounded observers.
+
+    Persistence is the only required part of ``emit``. Host sinks and ``on_event``
+    hooks are observational: each runs outside the durable critical path with a
+    bounded queue and timeout, so one UI or plugin cannot stall another Session.
+    """
 
     def __init__(
         self,
         *,
-        store: SessionStore,
+        store: SessionRepository,
         hooks: HookRegistry,
         event_sink: RuntimeEventSink | None = None,
+        observer_queue_size: int = 256,
+        sink_timeout_seconds: float = 1.0,
     ) -> None:
+        if observer_queue_size <= 0:
+            raise ValueError("observer_queue_size must be positive")
+        if sink_timeout_seconds <= 0:
+            raise ValueError("sink_timeout_seconds must be positive")
         self.store = store
         self.hooks = hooks
-        self._dispatch_lock = asyncio.Lock()
-        self._event_sinks: list[RuntimeEventSink] = []
+        self._observer_queue_size = observer_queue_size
+        self._sink_timeout_seconds = sink_timeout_seconds
+        self._sink_callbacks: list[RuntimeEventSink] = []
+        self._sink_observers: list[_SinkObserver] = []
+        self._hook_queue: asyncio.Queue[EventRecord | None] | None = None
+        self._hook_task: asyncio.Task[None] | None = None
+        self._diagnostic_tasks: set[asyncio.Task[None]] = set()
+        self._closed = False
         if event_sink is not None:
             self.add_event_sink(event_sink)
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
-        self._event_sinks.append(event_sink)
+        if self._closed:
+            raise RuntimeError("event recorder is closed")
+        self._sink_callbacks.append(event_sink)
 
     async def emit(
         self,
@@ -49,6 +72,7 @@ class RuntimeEventRecorder:
         event_type: str,
         payload: dict[str, Any],
     ) -> int:
+        validate_runtime_event_payload(event_type, payload)
         event = EventRecord(
             session_id=session_id,
             run_id=run_id,
@@ -57,30 +81,10 @@ class RuntimeEventRecorder:
             sequence=sequence + 1,
             payload=payload,
         )
-        async with self._dispatch_lock:
-            event = append_ordered_event(self.store, event)
-            next_sequence = event.sequence
-            emitted.append(event)
-            sink_failures = await self._notify_event_sinks(event)
-            next_sequence = self._record_event_sink_failures(
-                emitted,
-                next_sequence,
-                event=event,
-                failures=sink_failures,
-            )
-            hook_result = await self.hooks.dispatch(
-                HookContext(
-                    hook_name="on_event",
-                    session_id=session_id,
-                    run_id=run_id,
-                    data={"event": event.model_dump(mode="json")},
-                )
-            )
-            return await self._record_hook_failures(
-                emitted,
-                next_sequence,
-                hook_result.failures,
-            )
+        event = await self._append_ordered_event(event)
+        emitted.append(event)
+        self._publish(event, notify_hooks=True)
+        return event.sequence
 
     async def record_hook_failures(
         self,
@@ -88,76 +92,240 @@ class RuntimeEventRecorder:
         sequence: int,
         failures: Sequence[HookFailure],
     ) -> int:
-        async with self._dispatch_lock:
-            return await self._record_hook_failures(emitted, sequence, failures)
-
-    async def _record_hook_failures(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        failures: Sequence[HookFailure],
-    ) -> int:
         for failure in failures:
-            event = EventRecord(
-                session_id=failure.session_id or "unknown",
-                run_id=failure.run_id or "unknown",
-                event_type="plugin_hook_failed",
-                sequence=sequence + 1,
-                payload=failure.model_dump(mode="json"),
+            event = await self._append_ordered_event(
+                EventRecord(
+                    session_id=failure.session_id or "unknown",
+                    run_id=failure.run_id or "unknown",
+                    event_type="plugin_hook_failed",
+                    sequence=sequence + 1,
+                    payload=failure.model_dump(mode="json"),
+                )
             )
-            event = append_ordered_event(self.store, event)
             sequence = event.sequence
             emitted.append(event)
-            sink_failures = await self._notify_event_sinks(event)
-            sequence = self._record_event_sink_failures(
-                emitted,
-                sequence,
-                event=event,
-                failures=sink_failures,
-            )
+            self._publish(event, notify_hooks=False)
         return sequence
 
-    async def _notify_event_sinks(self, event: EventRecord) -> list[_EventSinkFailure]:
-        failures: list[_EventSinkFailure] = []
-        healthy_sinks: list[RuntimeEventSink] = []
-        for event_sink in self._event_sinks:
+    async def drain(self) -> None:
+        """Wait until all observations and generated diagnostics have settled."""
+
+        self._ensure_observers_started()
+        await self._join_observer_queues()
+        while self._diagnostic_tasks:
+            tasks = tuple(self._diagnostic_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            await self._join_observer_queues()
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        await self.drain()
+        tasks: list[asyncio.Task[None]] = []
+        if self._hook_queue is not None and self._hook_task is not None:
+            self._hook_queue.put_nowait(None)
+            tasks.append(self._hook_task)
+        for observer in self._sink_observers:
+            if not observer.task.done():
+                observer.queue.put_nowait(None)
+                tasks.append(observer.task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _append_ordered_event(self, event: EventRecord) -> EventRecord:
+        return await asyncio.to_thread(self.store.append_ordered_event, event)
+
+    def _publish(self, event: EventRecord, *, notify_hooks: bool) -> None:
+        if self._closed:
+            return
+        self._ensure_observers_started()
+        for observer in self._sink_observers:
+            if not observer.enabled:
+                continue
             try:
-                maybe_awaitable = event_sink(event)
-                if isawaitable(maybe_awaitable):
-                    await maybe_awaitable
-            except Exception as exc:  # noqa: BLE001 - host callbacks are an isolation boundary.
-                failures.append(
-                    _EventSinkFailure(
+                observer.queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._disable_sink(
+                    observer,
+                    event=event,
+                    error_type="ObserverQueueFull",
+                    error_message=(
+                        f"event sink exceeded its {self._observer_queue_size}-event backlog"
+                    ),
+                )
+        if notify_hooks and self._hook_queue is not None:
+            try:
+                self._hook_queue.put_nowait(event)
+            except asyncio.QueueFull:
+                self._schedule_diagnostic(
+                    event,
+                    event_type="event_observer_overflow",
+                    payload={
+                        "observer": "plugin_hooks",
+                        "source_event_type": event.event_type,
+                        "queue_size": self._observer_queue_size,
+                    },
+                )
+
+    def _ensure_observers_started(self) -> None:
+        if self._hook_queue is None:
+            self._hook_queue = asyncio.Queue(maxsize=self._observer_queue_size)
+            self._hook_task = asyncio.create_task(
+                self._run_hook_observer(self._hook_queue),
+                name="ouro-event-hooks",
+            )
+        while len(self._sink_observers) < len(self._sink_callbacks):
+            callback = self._sink_callbacks[len(self._sink_observers)]
+            queue: asyncio.Queue[EventRecord | None] = asyncio.Queue(
+                maxsize=self._observer_queue_size
+            )
+            task = asyncio.create_task(
+                self._run_sink_observer(callback, queue),
+                name=f"ouro-event-sink-{len(self._sink_observers)}",
+            )
+            self._sink_observers.append(_SinkObserver(callback=callback, queue=queue, task=task))
+
+    async def _run_sink_observer(
+        self,
+        callback: RuntimeEventSink,
+        queue: asyncio.Queue[EventRecord | None],
+    ) -> None:
+        observer = next(item for item in self._sink_observers if item.callback is callback)
+        while True:
+            event = await queue.get()
+            try:
+                if event is None:
+                    return
+                if not observer.enabled:
+                    continue
+                try:
+                    await asyncio.wait_for(
+                        _invoke_sink(callback, event),
+                        timeout=self._sink_timeout_seconds,
+                    )
+                except TimeoutError:
+                    self._disable_sink(
+                        observer,
+                        event=event,
+                        error_type="TimeoutError",
+                        error_message=(
+                            f"event sink timed out after {self._sink_timeout_seconds:g} seconds"
+                        ),
+                    )
+                except Exception as exc:  # noqa: BLE001 - host callback isolation boundary.
+                    self._disable_sink(
+                        observer,
+                        event=event,
                         error_type=type(exc).__name__,
-                        error_message=str(exc),
+                        error_message=redact_text(str(exc)),
+                    )
+            finally:
+                queue.task_done()
+
+    async def _run_hook_observer(
+        self,
+        queue: asyncio.Queue[EventRecord | None],
+    ) -> None:
+        while True:
+            event = await queue.get()
+            try:
+                if event is None:
+                    return
+                result = await self.hooks.dispatch(
+                    HookContext(
+                        hook_name="on_event",
+                        session_id=event.session_id,
+                        run_id=event.run_id,
+                        data={"event": event.model_dump(mode="json")},
                     )
                 )
-            else:
-                healthy_sinks.append(event_sink)
-        self._event_sinks = healthy_sinks
-        return failures
+                for failure in result.failures:
+                    diagnostic = await self._append_ordered_event(
+                        EventRecord(
+                            session_id=failure.session_id or event.session_id,
+                            run_id=failure.run_id or event.run_id,
+                            event_type="plugin_hook_failed",
+                            payload=failure.model_dump(mode="json"),
+                        )
+                    )
+                    self._publish(diagnostic, notify_hooks=False)
+            finally:
+                queue.task_done()
 
-    def _record_event_sink_failures(
+    def _disable_sink(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
+        observer: _SinkObserver,
         *,
         event: EventRecord,
-        failures: Sequence[_EventSinkFailure],
-    ) -> int:
-        for failure in failures:
-            diagnostic = EventRecord(
-                session_id=event.session_id,
-                run_id=event.run_id,
-                event_type="event_sink_failed",
-                sequence=sequence + 1,
-                payload={
-                    "source_event_type": event.event_type,
-                    "error_type": failure.error_type,
-                    "error_message": failure.error_message,
-                },
+        error_type: str,
+        error_message: str,
+    ) -> None:
+        if not observer.enabled:
+            return
+        observer.enabled = False
+        while True:
+            try:
+                queued = observer.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                observer.queue.task_done()
+                if queued is None:
+                    break
+        self._schedule_diagnostic(
+            event,
+            event_type="event_sink_failed",
+            payload={
+                "source_event_type": event.event_type,
+                "error_type": error_type,
+                "error_message": error_message,
+            },
+        )
+
+    def _schedule_diagnostic(
+        self,
+        source: EventRecord,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        task = asyncio.create_task(
+            self._persist_observer_diagnostic(source, event_type=event_type, payload=payload),
+            name=f"ouro-{event_type}",
+        )
+        self._diagnostic_tasks.add(task)
+        task.add_done_callback(self._diagnostic_tasks.discard)
+
+    async def _persist_observer_diagnostic(
+        self,
+        source: EventRecord,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> None:
+        diagnostic = await self._append_ordered_event(
+            EventRecord(
+                session_id=source.session_id,
+                run_id=source.run_id,
+                event_type=event_type,
+                payload=payload,
             )
-            diagnostic = append_ordered_event(self.store, diagnostic)
-            sequence = diagnostic.sequence
-            emitted.append(diagnostic)
-        return sequence
+        )
+        self._publish(diagnostic, notify_hooks=False)
+
+    async def _join_observer_queues(self) -> None:
+        joins = [observer.queue.join() for observer in self._sink_observers]
+        if self._hook_queue is not None:
+            joins.append(self._hook_queue.join())
+        if joins:
+            await asyncio.gather(*joins)
+
+
+async def _invoke_sink(callback: RuntimeEventSink, event: EventRecord) -> None:
+    if iscoroutinefunction(callback):
+        await callback(event)
+        return
+    result = await asyncio.to_thread(callback, event)
+    if isawaitable(result):
+        await result

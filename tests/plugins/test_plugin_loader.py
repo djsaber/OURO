@@ -8,10 +8,12 @@ from ouro.core.compaction import CompactionArtifact, CompactionStrategyRegistry
 from ouro.core.hooks import HookContext, HookRegistration, HookRegistry, HookResult
 from ouro.plugins import (
     PluginCommand,
+    PluginCommandError,
     PluginCommandRegistry,
     PluginContextProvider,
     PluginContributions,
     PluginLoader,
+    PluginPermissions,
 )
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
@@ -29,6 +31,7 @@ def test_plugin_loader_discovers_manifest_and_isolates_bad_metadata(tmp_path) ->
                 "version": "0.1.0",
                 "source_type": "official",
                 "capabilities": ["tools", "runtime_hooks"],
+                "runtime_hooks": [{"hook_name": "after_context_build"}],
             }
         ),
         encoding="utf-8",
@@ -43,6 +46,7 @@ def test_plugin_loader_discovers_manifest_and_isolates_bad_metadata(tmp_path) ->
     assert plugins[1].manifest is not None
     assert plugins[1].manifest.plugin_id == "official.echo"
     assert plugins[1].enabled is True
+    assert plugins[1].source == "third_party"
 
 
 @pytest.mark.asyncio
@@ -57,11 +61,16 @@ async def test_plugin_contributions_register_tools_and_hooks(tmp_path) -> None:
                 "version": "0.1.0",
                 "source_type": "official",
                 "capabilities": ["tools", "runtime_hooks"],
+                "runtime_hooks": [{"hook_name": "after_context_build"}],
             }
         ),
         encoding="utf-8",
     )
-    loader = PluginLoader(tmp_path, enabled_plugin_ids={"official.echo"})
+    loader = PluginLoader(
+        tmp_path,
+        enabled_plugin_ids={"official.echo"},
+        trusted_source="official",
+    )
     plugin = loader.discover()[0]
     tool_registry = ToolRegistry()
     hook_registry = HookRegistry()
@@ -121,7 +130,11 @@ async def test_plugin_contributions_register_commands_and_context_providers(tmp_
         ),
         encoding="utf-8",
     )
-    loader = PluginLoader(tmp_path, enabled_plugin_ids={"official.assistant"})
+    loader = PluginLoader(
+        tmp_path,
+        enabled_plugin_ids={"official.assistant"},
+        trusted_source="official",
+    )
     plugin = loader.discover()[0]
     tool_registry = ToolRegistry()
     hook_registry = HookRegistry()
@@ -132,9 +145,9 @@ async def test_plugin_contributions_register_commands_and_context_providers(tmp_
         PluginContributions(
             commands=[
                 PluginCommand(
-                    name="/hello",
+                    name="hello",
                     description="Say hello.",
-                    handler=lambda argument, _context: f"hello {argument}",
+                    handler=lambda request: f"hello {request.argument}",
                 )
             ],
             context_providers=[
@@ -149,13 +162,13 @@ async def test_plugin_contributions_register_commands_and_context_providers(tmp_
         command_registry=command_registry,
     )
 
-    command_output = await command_registry.execute("/hello", "OURO")
+    command_output = await command_registry.execute("official.assistant:hello", "OURO")
     dispatch = await hook_registry.dispatch(HookContext(hook_name="after_context_build"))
 
     assert result.errors == []
-    assert result.registered_commands == ["/hello"]
+    assert result.registered_commands == ["official.assistant:hello"]
     assert result.registered_context_providers == ["profile"]
-    assert command_output == "hello OURO"
+    assert command_output.output == "hello OURO"
     assert dispatch.results[0].added_context == ["remember user preference"]
 
 
@@ -263,3 +276,138 @@ def test_plugin_cannot_shadow_reserved_builtin_compaction_strategy(tmp_path) -> 
     assert result.errors == [
         "plugin compaction strategy cannot use reserved id: builtin.llm_summary"
     ]
+
+
+def test_manifest_cannot_self_promote_tool_to_official_or_auto_execute(tmp_path) -> None:
+    plugin_dir = tmp_path / "untrusted"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": "example.untrusted",
+                "name": "Untrusted",
+                "version": "1.0.0",
+                "source_type": "official",
+                "capabilities": ["tools"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    loader = PluginLoader(tmp_path, enabled_plugin_ids={"example.untrusted"})
+    registry = ToolRegistry()
+
+    result = loader.register_contributions(
+        loader.discover()[0],
+        PluginContributions(
+            tools=[
+                Tool(
+                    definition=ToolDefinition(name="Untrusted", description="Untrusted."),
+                    handler=lambda _invocation: ToolResult(
+                        tool_call_id="call",
+                        tool_name="Untrusted",
+                    ),
+                )
+            ]
+        ),
+        tool_registry=registry,
+        hook_registry=HookRegistry(),
+    )
+
+    assert result.errors == []
+    definition = registry.definitions()[0]
+    assert definition.source == "third_party_plugin"
+    assert definition.permission_mode == "approval"
+
+
+def test_plugin_permissions_require_explicit_origin_grant(tmp_path) -> None:
+    plugin_dir = tmp_path / "network"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": "example.network",
+                "name": "Network",
+                "version": "1.0.0",
+                "permissions": {"network": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    unauthorized = PluginLoader(
+        tmp_path,
+        enabled_plugin_ids={"example.network"},
+    ).discover()[0]
+    authorized = PluginLoader(
+        tmp_path,
+        enabled_plugin_ids={"example.network"},
+        permission_grants={
+            "example.network": PluginPermissions(network=True),
+        },
+    ).discover()[0]
+
+    assert unauthorized.status == "needs_authorization"
+    assert unauthorized.enabled is False
+    assert unauthorized.error == "plugin permissions require authorization: network"
+    assert authorized.status == "enabled"
+    assert authorized.enabled is True
+
+
+def test_plugin_contribution_requires_declared_capability(tmp_path) -> None:
+    plugin_dir = tmp_path / "minimal"
+    plugin_dir.mkdir()
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "plugin_id": "example.minimal",
+                "name": "Minimal",
+                "version": "1.0.0",
+            }
+        ),
+        encoding="utf-8",
+    )
+    registry = ToolRegistry()
+    loader = PluginLoader(tmp_path, enabled_plugin_ids={"example.minimal"})
+
+    result = loader.register_contributions(
+        loader.discover()[0],
+        PluginContributions(
+            tools=[
+                Tool(
+                    definition=ToolDefinition(name="Hidden", description="Hidden."),
+                    handler=lambda _invocation: ToolResult(
+                        tool_call_id="call",
+                        tool_name="Hidden",
+                    ),
+                )
+            ]
+        ),
+        tool_registry=registry,
+        hook_registry=HookRegistry(),
+    )
+
+    assert result.errors == ["plugin contribution requires undeclared capability: tools"]
+    assert registry.definitions() == []
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_boundary_is_namespaced_timed_and_redacted() -> None:
+    registry = PluginCommandRegistry()
+
+    async def failing_command(_request):
+        raise RuntimeError("token=command-secret")
+
+    registry.register(
+        PluginCommand(
+            name="fail",
+            plugin_id="example.commands",
+            handler=failing_command,
+            timeout_seconds=0.1,
+        )
+    )
+
+    with pytest.raises(PluginCommandError) as raised:
+        await registry.execute("example.commands:fail")
+
+    assert "command-secret" not in str(raised.value)
+    assert "token=***" in str(raised.value)

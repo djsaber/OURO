@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from contextlib import AbstractContextManager, nullcontext
-from pathlib import Path
+from contextlib import AbstractContextManager
 from typing import Protocol
 
 from pydantic import Field
@@ -44,11 +43,13 @@ class SessionLock(Protocol):
     def release(self) -> None: ...
 
 
-class SessionStore(Protocol):
-    root: Path
-    sessions_dir: Path
+class SessionRepository(Protocol):
+    """Canonical Session persistence required by application behavior.
 
-    def initialize(self) -> None: ...
+    Deployment paths, initialization and disposable catalog maintenance are
+    deliberately excluded. Implementations must provide real mutation and
+    ordered-event guarantees; silently degrading either guarantee is unsafe.
+    """
 
     def create_session(self, session: SessionRecord) -> None: ...
 
@@ -67,19 +68,19 @@ class SessionStore(Protocol):
 
     def append_event(self, event: EventRecord) -> None: ...
 
+    def append_ordered_event(self, event: EventRecord) -> EventRecord: ...
+
     def save_run(self, run: RunRecord) -> None: ...
 
     def append_compaction(self, compaction: CompactionRecord) -> None: ...
 
     def activate_compaction(self, session_id: str, compaction_id: str) -> SessionRecord: ...
 
-    def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot: ...
+    def load_session(self, session_id: str) -> SessionSnapshot: ...
 
     def load_runtime_session(
         self,
         session_id: str,
-        *,
-        recover: bool = True,
     ) -> RuntimeSessionSnapshot: ...
 
     def load_session_record(self, session_id: str) -> SessionRecord: ...
@@ -105,46 +106,51 @@ class SessionStore(Protocol):
         run_id: str | None = None,
     ) -> tuple[list[EventRecord], int | None]: ...
 
+    def load_events_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[EventRecord], bool]: ...
+
     def load_run(self, session_id: str, run_id: str) -> RunRecord: ...
 
     def list_sessions(self) -> list[SessionRecord]: ...
 
-    def scan_index(self) -> SessionIndex: ...
+    def load_resource_references(self, session_id: str) -> list[SessionResourceReference]: ...
 
-    def rebuild_index(self) -> SessionIndex: ...
-
-    def try_rebuild_index(self) -> str | None: ...
-
-    def try_update_index(
+    def attach_resource_reference(
         self,
         session_id: str,
-        snapshot: RuntimeSessionSnapshot | None = None,
-    ) -> str | None: ...
+        reference: SessionResourceReference,
+    ) -> None: ...
 
-    def load_index(self) -> SessionIndex: ...
+    def remove_resource_reference(self, session_id: str, resource_id: str) -> None: ...
+
+    def is_resource_referenced(self, resource_id: str) -> bool: ...
+
+    def session_mutation(
+        self,
+        session_id: str,
+    ) -> AbstractContextManager[object, None]: ...
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionLock | None: ...
 
     def is_session_locked(self, session_id: str) -> bool: ...
 
 
-def session_mutation(
-    store: SessionStore,
-    session_id: str,
-) -> AbstractContextManager[object, None]:
-    """Use the optional short mutation boundary without breaking existing stores."""
+class SessionCatalogStore(Protocol):
+    """Disposable catalog projection maintained outside canonical state."""
 
-    mutation = getattr(store, "session_mutation", None)
-    if callable(mutation):
-        return mutation(session_id)
-    return nullcontext()
+    def read_catalog(self) -> SessionIndex: ...
+
+    def refresh_catalog(
+        self,
+        session_id: str,
+        snapshot: RuntimeSessionSnapshot | None = None,
+    ) -> str | None: ...
 
 
-def append_ordered_event(store: SessionStore, event: EventRecord) -> EventRecord:
-    """Use store-owned sequence allocation when the persistence backend supports it."""
-
-    append = getattr(store, "append_ordered_event", None)
-    if callable(append):
-        return append(event)
-    store.append_event(event)
-    return event
+class SessionStore(SessionRepository, SessionCatalogStore, Protocol):
+    """Complete in-process store composed from canonical and catalog ports."""

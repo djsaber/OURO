@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
@@ -80,6 +80,7 @@ class SkillConfigManager:
     def load_raw(self) -> dict[str, Any]:
         return self._file.read()
 
+    @atomic_config_update
     def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillConfigSnapshot:
         raw = self.load_raw()
         skills = self._skills_section(raw)
@@ -94,9 +95,11 @@ class SkillConfigManager:
         self._write_skills(raw, skills)
         return self.snapshot()
 
+    @atomic_config_update
     def record_install(self, name: str, record: ManagedSkillRecord) -> SkillConfigSnapshot:
         return self.record_installs({name: record})
 
+    @atomic_config_update
     def record_installs(
         self,
         records: Mapping[str, ManagedSkillRecord],
@@ -117,6 +120,7 @@ class SkillConfigManager:
         self._write_skills(raw, skills)
         return self.snapshot()
 
+    @atomic_config_update
     def forget_install(self, name: str) -> SkillConfigSnapshot:
         raw = self.load_raw()
         skills = self._skills_section(raw)

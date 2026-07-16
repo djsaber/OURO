@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from ouro.config.credentials import CredentialRef
 from ouro.config.endpoints import ProviderEndpointConfig
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.config.provider_codec import (
     provider_config_from_mapping,
     provider_config_to_raw,
@@ -132,6 +132,7 @@ class ProviderConfigManager:
             )
         return merge_runtime_options(base_options, runtime_options)
 
+    @atomic_config_update
     def create_provider(
         self,
         provider_id: str,
@@ -175,6 +176,7 @@ class ProviderConfigManager:
         self._store_provider(raw, configured=configured, provider=provider, make_default=False)
         return provider
 
+    @atomic_config_update
     def update_provider(
         self,
         provider_id: str,
@@ -224,6 +226,7 @@ class ProviderConfigManager:
         )
         return provider
 
+    @atomic_config_update
     def replace_provider(
         self,
         provider_id: str,
@@ -265,6 +268,7 @@ class ProviderConfigManager:
         self._store_provider(raw, configured=configured, provider=provider, make_default=False)
         return provider
 
+    @atomic_config_update
     def create_from_template(
         self,
         template: ProviderTemplate,
@@ -297,6 +301,7 @@ class ProviderConfigManager:
             make_default=make_default,
         )
 
+    @atomic_config_update
     def update_from_template(
         self,
         template: ProviderTemplate,
@@ -329,6 +334,7 @@ class ProviderConfigManager:
             make_default=make_default,
         )
 
+    @atomic_config_update
     def replace_from_template(
         self,
         template: ProviderTemplate,
@@ -495,6 +501,7 @@ class ProviderConfigManager:
         )
         return provider
 
+    @atomic_config_update
     def upsert_endpoint(
         self,
         provider_id: str,
@@ -598,6 +605,7 @@ class ProviderConfigManager:
         )
         return updated
 
+    @atomic_config_update
     def set_default_provider(self, provider_id: str) -> ProviderConfig:
         provider = self.get_provider(provider_id)
         if provider is None:
@@ -616,6 +624,7 @@ class ProviderConfigManager:
         )
         return provider
 
+    @atomic_config_update
     def set_default_endpoint(
         self,
         provider_id: str,
@@ -637,6 +646,7 @@ class ProviderConfigManager:
         )
         return endpoint
 
+    @atomic_config_update
     def remove_provider(self, provider_id: str) -> None:
         raw = self.load_raw()
         configured = self._configured_providers(raw)
@@ -655,6 +665,7 @@ class ProviderConfigManager:
             default_provider_id=default_provider_id,
         )
 
+    @atomic_config_update
     def remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:
         raw = self.load_raw()
         configured = self._configured_providers(raw)

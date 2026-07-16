@@ -10,7 +10,7 @@ from ouro.application.supervisor_models import (
     SupervisorRunStatus,
 )
 from ouro.core.events import EventRecord
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallStatus
 from ouro.sessions.base import SessionSnapshot
 
@@ -72,6 +72,42 @@ def project_runtime_activity(
     for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
         if event.run_id == run.run_id:
             activity = reduce_runtime_activity(activity, event)
+    activity = _overlay_run(activity, run)
+    if status_override is not None and status_override != activity.status:
+        activity = activity.model_copy(
+            update={
+                "status": status_override,
+                "activity": runtime_activity_for_status(status_override),
+            }
+        )
+    return activity
+
+
+def project_runtime_activity_state(
+    session: SessionRecord,
+    run: RunRecord | None,
+    *,
+    sequence: int,
+    status_override: SupervisorRunStatus | None = None,
+) -> RuntimeActivitySnapshot:
+    """Project bounded current activity without replaying historical events."""
+
+    if run is None:
+        status = status_override or "idle"
+        return RuntimeActivitySnapshot(
+            session_id=session.session_id,
+            status=status,
+            activity=runtime_activity_for_status(status),
+            sequence=sequence,
+        )
+    activity = RuntimeActivitySnapshot(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        status=run.status,
+        activity=runtime_activity_for_status(run.status),
+        sequence=sequence,
+        updated_at=run.ended_at or run.started_at,
+    )
     activity = _overlay_run(activity, run)
     if status_override is not None and status_override != activity.status:
         activity = activity.model_copy(

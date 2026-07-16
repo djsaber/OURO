@@ -14,6 +14,7 @@ from ouro.application.configuration_models import (
     LoadedSkillView,
     ManagedSkillResultView,
     ManagedSkillView,
+    MCPServerConfigView,
     ProviderEndpointCatalogView,
     ProviderEndpointView,
     ProviderTemplateView,
@@ -31,6 +32,7 @@ from ouro.config import (
     endpoint_config_to_public_dict,
 )
 from ouro.core.errors import CredentialError
+from ouro.mcp import MCPServerConfig, mcp_config_to_public_dict
 from ouro.skills import LoadedSkill, SkillDiagnostic, SkillManagementResult, SkillMetadata
 
 
@@ -44,6 +46,12 @@ def configuration_change(
         action=action,
         effective_from=effective_from,
     )
+
+
+def mcp_server_view(config: MCPServerConfig) -> MCPServerConfigView:
+    public = mcp_config_to_public_dict(config)
+    public.pop("metadata", None)
+    return MCPServerConfigView.model_validate(public)
 
 
 def provider_view(provider: ProviderConfig, *, is_default: bool) -> ProviderView:

@@ -1,5 +1,6 @@
 import pytest
 
+from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import utc_now
 from ouro.core.errors import MigrationRequiredError, PersistenceError
@@ -62,7 +63,7 @@ def test_runtime_snapshot_never_reads_replay_event_journal(monkeypatch, tmp_path
 
     monkeypatch.setattr(store, "_read_jsonl", record_read)
 
-    snapshot = store.load_runtime_session(session.session_id, recover=False)
+    snapshot = store.load_runtime_session(session.session_id)
 
     assert snapshot.messages[0].text_content == "hello"
     assert "events.jsonl" not in read_paths
@@ -221,7 +222,7 @@ def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
 
     repaired = LocalSessionStore(tmp_path)
     repaired.initialize()
-    index = repaired.load_index()
+    index = repaired.read_catalog()
 
     assert index.sessions[0].session_id == session.session_id
 
@@ -243,7 +244,7 @@ def test_index_initialization_failure_does_not_block_canonical_session_open(
     reopened = LocalSessionStore(tmp_path)
 
     reopened.initialize()
-    snapshot = reopened.load_session(session.session_id, recover=False)
+    snapshot = reopened.load_session(session.session_id)
 
     assert snapshot.session.title == "Canonical remains available"
     assert reopened._index_dirty_path.exists()
@@ -257,7 +258,7 @@ def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:
     store.create_session(session)
     store.save_run(run)
 
-    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
+    recovered = SessionRecoveryService(LocalSessionStore(tmp_path)).recover(session.session_id)
 
     assert recovered.session.status == "idle"
     assert recovered.session.metadata["recovered_incomplete_runs"] is True
@@ -311,7 +312,7 @@ def test_recovery_aligns_session_with_durable_waiting_run(tmp_path) -> None:
     store.create_session(session)
     store.save_run(run)
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert recovered.session.status == "waiting_approval"
     assert recovered.session.active_run_id == run.run_id
@@ -332,7 +333,7 @@ def test_recovery_turns_invalid_waiting_state_into_recoverable_run(tmp_path) -> 
     store.create_session(session)
     store.save_run(run)
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert recovered.session.status == "idle"
     assert recovered.session.active_run_id is None
@@ -358,7 +359,7 @@ def test_recovery_clears_terminal_run_from_active_session_projection(tmp_path) -
     store.create_session(session)
     store.save_run(run)
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert recovered.session.status == "idle"
     assert recovered.session.active_run_id is None
@@ -375,7 +376,7 @@ def test_recovery_clears_missing_active_run_reference(tmp_path) -> None:
     )
     store.create_session(session)
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert recovered.session.status == "idle"
     assert recovered.session.active_run_id is None
@@ -392,7 +393,7 @@ def test_recovery_rejects_ambiguous_multiple_active_runs(tmp_path) -> None:
     assert lock is not None
     try:
         with pytest.raises(PersistenceError, match="multiple active runs"):
-            store.load_session(session.session_id)
+            SessionRecoveryService(store).recover(session.session_id)
     finally:
         lock.release()
 
@@ -419,7 +420,7 @@ def test_recovery_marks_in_flight_tool_outcome_unknown(tmp_path) -> None:
     store.create_session(session)
     store.save_run(run)
 
-    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
+    recovered = SessionRecoveryService(LocalSessionStore(tmp_path)).recover(session.session_id)
 
     recovered_batch = recovered.runs[0].active_tool_batch
     assert recovered.runs[0].status == "recoverable"
@@ -504,7 +505,7 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         )
     )
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert [message.text_content for message in recovered.messages] == [
         "use tool",
@@ -564,7 +565,7 @@ def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) ->
         )
     )
 
-    recovered = store.load_session(session.session_id)
+    recovered = SessionRecoveryService(store).recover(session.session_id)
 
     assert [message.message_id for message in recovered.messages] == [
         user.message_id,
@@ -582,7 +583,7 @@ def test_local_file_store_lock_prevents_active_run_recovery(tmp_path) -> None:
     lock = store.acquire_session_lock(session.session_id, run.run_id)
 
     try:
-        snapshot = store.load_session(session.session_id)
+        snapshot = SessionRecoveryService(store).recover(session.session_id)
     finally:
         assert lock is not None
         lock.release()
@@ -604,7 +605,7 @@ def test_released_lock_file_does_not_block_interrupted_run_recovery(tmp_path) ->
     assert lock is not None
     lock.release()
 
-    recovered = LocalSessionStore(tmp_path).load_session(session.session_id)
+    recovered = SessionRecoveryService(LocalSessionStore(tmp_path)).recover(session.session_id)
 
     assert recovered.runs[0].status == "recoverable"
 

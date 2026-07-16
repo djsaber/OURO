@@ -7,6 +7,7 @@ import pytest
 from ouro.application.configuration import ConfigurationFacade
 from ouro.config import openai_effort_reasoning
 from ouro.core.errors import ConfigError
+from ouro.mcp import MCPServerConfigUpdate
 
 
 def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
@@ -21,6 +22,32 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     assert overview.queued_inputs.consumption_mode == "one_by_one"
     assert overview.run_budget.max_model_rounds is None
     assert overview.compaction.model.has_dedicated_endpoint is False
+    assert overview.mcp.servers == []
+
+
+def test_mcp_configuration_is_exposed_only_through_redacted_application_views(
+    tmp_path,
+) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    catalog = facade.save_mcp_server(
+        "remote",
+        MCPServerConfigUpdate(
+            name="Remote",
+            transport="http",
+            url="https://mcp.example.test/service?token=url-secret",
+            headers={"Authorization": "Bearer header-secret"},
+            credential_refs={"Authorization": "inline:credential-secret"},
+        ),
+    )
+
+    payload = catalog.model_dump_json()
+    server = facade.mcp_server("remote")
+    assert "url-secret" not in payload
+    assert "header-secret" not in payload
+    assert "credential-secret" not in payload
+    assert server.url == "https://mcp.example.test/service"
+    assert server.headers == {"Authorization": "***"}
+    assert server.credential_refs == {"Authorization": "inline:***"}
 
 
 def test_provider_commands_return_safe_views_and_explicit_effect_scope(

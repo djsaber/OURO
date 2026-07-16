@@ -59,7 +59,6 @@ from ouro.config.run_budget import (
     RunBudgetConfigManager,
     run_budget_to_public_dict,
 )
-from ouro.config.service import ConfigService
 from ouro.config.tool_execution import (
     ToolExecutionConfig,
     ToolExecutionConfigManager,
@@ -67,7 +66,6 @@ from ouro.config.tool_execution import (
 )
 
 __all__ = [
-    "ConfigService",
     "CompactionConfig",
     "CompactionConfigManager",
     "CompactionModelConfig",

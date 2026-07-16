@@ -38,7 +38,7 @@ def test_run_cli_persists_session_approval_mode(tmp_path, capsys) -> None:
     assert code == 0
     assert payload["approval_mode"] == "auto"
     store = LocalSessionStore(tmp_path)
-    session = store.load_session(payload["session_id"], recover=False).session
+    session = store.load_session(payload["session_id"]).session
     assert session.approval_mode == "auto"
 
 
@@ -110,5 +110,5 @@ async def test_interactive_command_sets_mode_before_first_session(tmp_path) -> N
     assert code == 0
     assert target.read_text(encoding="utf-8") == "written"
     assert "Approval mode: auto" in outputs
-    session = store.load_index().sessions[0]
+    session = store.read_catalog().sessions[0]
     assert session.approval_mode == "auto"

@@ -103,9 +103,21 @@ class CompactionStrategyRegistry:
         self._strategies: dict[str, CompactionStrategy] = {}
 
     def register(self, strategy: CompactionStrategy) -> None:
-        if strategy.strategy_id in self._strategies:
-            raise ValueError(f"compaction strategy already registered: {strategy.strategy_id}")
-        self._strategies[strategy.strategy_id] = strategy
+        self.replace((), (strategy,))
+
+    def replace(
+        self,
+        previous_ids: Sequence[str],
+        strategies: Sequence[CompactionStrategy],
+    ) -> None:
+        updated = dict(self._strategies)
+        for strategy_id in previous_ids:
+            updated.pop(strategy_id, None)
+        for strategy in strategies:
+            if strategy.strategy_id in updated:
+                raise ValueError(f"compaction strategy already registered: {strategy.strategy_id}")
+            updated[strategy.strategy_id] = strategy
+        self._strategies = updated
 
     def get(self, strategy_id: str) -> CompactionStrategy:
         try:

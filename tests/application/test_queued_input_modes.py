@@ -118,7 +118,7 @@ async def test_steering_inputs_are_consumed_at_turn_boundaries_in_fifo_order(
     provider.release_first.set()
     await asyncio.wait_for(first_task, timeout=2)
 
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     assert len(provider.contexts) == expected_calls
     assert len(snapshot.runs) == expected_run_count
     assert [_user_texts(context) for context in provider.contexts] == expected_contexts
@@ -150,7 +150,7 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
     provider.release_first.set()
     await asyncio.wait_for(first_task, timeout=2)
 
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     assert len(provider.contexts) == expected_calls
     assert len(snapshot.runs) == expected_run_count
     assert _user_texts(provider.contexts[-1]) == last_context_users
@@ -277,7 +277,7 @@ async def test_delivery_modes_keep_independent_boundaries_without_losing_queue_o
     provider.release_first.set()
     await asyncio.wait_for(first_task, timeout=2)
 
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     assert [_user_texts(context) for context in provider.contexts] == [
         ["initial"],
         ["initial", "steer"],

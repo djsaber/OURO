@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.errors import PersistenceError
-from ouro.sessions.locks import FileMutationLock
+from ouro.local_locks import FileMutationLock
 
 
 class LocalUsageLedger:

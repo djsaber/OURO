@@ -6,30 +6,25 @@ import re
 import shutil
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import TypeVar
 
 from pydantic import ValidationError
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
-from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.errors import MigrationRequiredError, PersistenceError, ResourceNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
-from ouro.core.state import (
-    ACTIVE_RUN_STATUSES,
-    RunRecord,
-    SessionRecord,
-    session_status_for_run,
-)
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.local_locks import is_lock_held
 from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.local_io import write_json_atomic, write_model_atomic
-from ouro.sessions.locks import SessionMutationLock, SessionRunLock, is_lock_held
+from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 
-_INCOMPLETE_RUN_STATUSES = {"queued", "running"}
 _STREAM_DELTA_EVENT_TYPES = {
     "model_text_delta",
     "model_reasoning_delta",
@@ -235,15 +230,12 @@ class LocalSessionStore:
                 }
             )
             self.save_session(updated)
-        self.try_update_index(session_id)
+        self.refresh_catalog(session_id)
         return updated
 
-    def load_session(self, session_id: str, *, recover: bool = True) -> SessionSnapshot:
+    def load_session(self, session_id: str) -> SessionSnapshot:
         with self.session_mutation(session_id):
-            runtime, projection_changed = self._load_runtime_session(
-                session_id,
-                recover=recover,
-            )
+            runtime = self._load_runtime_session(session_id)
             session_dir = self._session_dir(session_id)
             try:
                 events = [
@@ -256,31 +248,13 @@ class LocalSessionStore:
                 **runtime.model_dump(),
                 events=events,
             )
-        if projection_changed:
-            self.try_update_index(session_id)
         return snapshot
 
-    def load_runtime_session(
-        self,
-        session_id: str,
-        *,
-        recover: bool = True,
-    ) -> RuntimeSessionSnapshot:
+    def load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
         with self.session_mutation(session_id):
-            snapshot, projection_changed = self._load_runtime_session(
-                session_id,
-                recover=recover,
-            )
-        if projection_changed:
-            self.try_update_index(session_id)
-        return snapshot
+            return self._load_runtime_session(session_id)
 
-    def _load_runtime_session(
-        self,
-        session_id: str,
-        *,
-        recover: bool,
-    ) -> tuple[RuntimeSessionSnapshot, bool]:
+    def _load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
         session_dir = self._session_dir(session_id)
         try:
             session = self.load_session_record(session_id)
@@ -298,23 +272,6 @@ class LocalSessionStore:
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
         runs.sort(key=_run_sort_key)
-        projection_changed = False
-        if recover:
-            events = (
-                [
-                    EventRecord.model_validate_json(line)
-                    for line in self._read_jsonl(session_dir / "events.jsonl")
-                ]
-                if any(run.status in _INCOMPLETE_RUN_STATUSES for run in runs)
-                and not self.is_session_locked(session_id)
-                else []
-            )
-            session, messages, events, runs, projection_changed = self._recover_incomplete_runs(
-                session,
-                messages,
-                events,
-                runs,
-            )
         snapshot = RuntimeSessionSnapshot(
             session=session,
             messages=messages,
@@ -325,7 +282,7 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"session {session_id} references missing compaction {session.active_compaction_id}"
             )
-        return snapshot, projection_changed
+        return snapshot
 
     def load_active_compaction(self, session_id: str) -> CompactionRecord | None:
         with self.session_mutation(session_id):
@@ -401,6 +358,31 @@ class LocalSessionStore:
                 run_id=run_id,
             )
 
+    def load_events_after(
+        self,
+        session_id: str,
+        *,
+        after_sequence: int = 0,
+        limit: int = 100,
+    ) -> tuple[list[EventRecord], bool]:
+        after_sequence, limit = _validated_page_args(after_sequence, limit)
+        path = self._require_session_dir(session_id) / "events.jsonl"
+        records: list[EventRecord] = []
+        try:
+            with self.session_mutation(session_id), path.open("rb") as file:
+                for raw in file:
+                    if not raw.strip():
+                        continue
+                    event = EventRecord.model_validate_json(raw)
+                    if event.sequence <= after_sequence:
+                        continue
+                    records.append(event)
+                    if len(records) > limit:
+                        return records[:limit], True
+        except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not read events after sequence: {exc}") from exc
+        return records, False
+
     def load_run(self, session_id: str, run_id: str) -> RunRecord:
         with self.session_mutation(session_id):
             validated_run_id = _validated_record_id(run_id, kind="run")
@@ -425,23 +407,77 @@ class LocalSessionStore:
                 ) from exc
         return records
 
-    def scan_index(self) -> SessionIndex:
+    def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
+        path = self._resource_reference_path(session_id)
+        try:
+            return SessionResourceReferences.model_validate_json(path.read_text("utf-8")).resources
+        except FileNotFoundError:
+            raise
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not load resource references for session {session_id}: {exc}"
+            ) from exc
+
+    def attach_resource_reference(
+        self,
+        session_id: str,
+        reference: SessionResourceReference,
+    ) -> None:
+        with self.session_mutation(session_id):
+            references = self.load_resource_references(session_id)
+            if any(item.resource_id == reference.resource_id for item in references):
+                return
+            references.append(reference)
+            self._write_model_atomic(
+                self._resource_reference_path(session_id),
+                SessionResourceReferences(resources=references),
+            )
+
+    def remove_resource_reference(self, session_id: str, resource_id: str) -> None:
+        with self.session_mutation(session_id):
+            references = self.load_resource_references(session_id)
+            if not any(item.resource_id == resource_id for item in references):
+                raise ResourceNotFoundError(
+                    f"resource {resource_id} is not attached to session {session_id}"
+                )
+            self._write_model_atomic(
+                self._resource_reference_path(session_id),
+                SessionResourceReferences(
+                    resources=[item for item in references if item.resource_id != resource_id]
+                ),
+            )
+
+    def is_resource_referenced(self, resource_id: str) -> bool:
+        for path in self.sessions_dir.glob("*/resources/index.json"):
+            try:
+                references = SessionResourceReferences.model_validate_json(
+                    path.read_text("utf-8")
+                ).resources
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load session resource references {path}: {exc}"
+                ) from exc
+            if any(reference.resource_id == resource_id for reference in references):
+                return True
+        return False
+
+    def scan_catalog(self) -> SessionIndex:
         return self._catalog.scan()
 
-    def rebuild_index(self) -> SessionIndex:
+    def rebuild_catalog(self) -> SessionIndex:
         return self._catalog.rebuild()
 
-    def try_rebuild_index(self) -> str | None:
+    def try_rebuild_catalog(self) -> str | None:
         return self._catalog.try_rebuild()
 
-    def try_update_index(
+    def refresh_catalog(
         self,
         session_id: str,
         snapshot: RuntimeSessionSnapshot | None = None,
     ) -> str | None:
         return self._catalog.try_update(session_id, snapshot=snapshot)
 
-    def load_index(self) -> SessionIndex:
+    def read_catalog(self) -> SessionIndex:
         return self._catalog.load()
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionRunLock | None:
@@ -467,265 +503,11 @@ class LocalSessionStore:
                 f"could not inspect session lock for {session_id}: {exc}"
             ) from exc
 
-    def _recover_incomplete_runs(
-        self,
-        session: SessionRecord,
-        messages: list[MessageRecord],
-        events: list[EventRecord],
-        runs: list[RunRecord],
-    ) -> tuple[
-        SessionRecord,
-        list[MessageRecord],
-        list[EventRecord],
-        list[RunRecord],
-        bool,
-    ]:
-        run_is_live = self.is_session_locked(session.session_id)
-        recovered_runs: list[RunRecord] = []
-        recovered_incomplete = False
-        for run in runs:
-            interaction_error = _interaction_state_error(run)
-            if not run_is_live and (
-                run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None
-            ):
-                metadata = dict(run.metadata)
-                metadata.pop("checkpoint", None)
-                partial_message = (
-                    self._append_recovered_partial_message(
-                        session=session,
-                        run=run,
-                        messages=messages,
-                        events=events,
-                    )
-                    if run.status in _INCOMPLETE_RUN_STATUSES
-                    else None
-                )
-                if partial_message is not None:
-                    metadata["recovered_partial_assistant_message_id"] = partial_message.message_id
-                metadata["recovered_from_status"] = run.status
-                if interaction_error is not None:
-                    metadata["recovery_reason"] = "invalid_interaction_state"
-                active_batch = run.active_tool_batch
-                if active_batch is not None and (
-                    interaction_error is not None
-                    or active_batch.phase in {"executing", "committing_results"}
-                ):
-                    recovered_calls = [
-                        call.model_copy(update={"status": "unknown_outcome"})
-                        if call.status == "running"
-                        else call
-                        for call in active_batch.calls
-                    ]
-                    active_batch = active_batch.model_copy(
-                        update={
-                            "phase": "recoverable",
-                            "calls": recovered_calls,
-                            "updated_at": utc_now(),
-                        }
-                    )
-                recovered = run.model_copy(
-                    update={
-                        "status": "recoverable",
-                        "ended_at": utc_now(),
-                        "error": interaction_error or "Run was interrupted before completion.",
-                        "abort_requested": False,
-                        "active_tool_batch": active_batch,
-                        "metadata": metadata,
-                    }
-                )
-                self.save_run(recovered)
-                events.append(
-                    self._append_recovery_event(
-                        session_id=session.session_id,
-                        run_id=recovered.run_id,
-                        previous_status=run.status,
-                        reason=(
-                            "invalid_interaction_state"
-                            if interaction_error is not None
-                            else "process_restarted"
-                        ),
-                    )
-                )
-                recovered_runs.append(recovered)
-                recovered_incomplete = True
-            else:
-                recovered_runs.append(run)
-
-        reconciled_session, projection_changed = self._reconcile_session_projection(
-            session,
-            messages,
-            recovered_runs,
-        )
-        if recovered_incomplete or projection_changed:
-            metadata = dict(session.metadata)
-            if recovered_incomplete:
-                metadata["recovered_incomplete_runs"] = True
-            if projection_changed:
-                metadata["session_state_reconciled"] = True
-            session = reconciled_session.model_copy(
-                update={
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "metadata": metadata,
-                }
-            )
-            self.save_session(session)
-
-        return (
-            session,
-            messages,
-            events,
-            recovered_runs,
-            recovered_incomplete or projection_changed,
-        )
-
-    def _reconcile_session_projection(
-        self,
-        session: SessionRecord,
-        messages: list[MessageRecord],
-        runs: list[RunRecord],
-    ) -> tuple[SessionRecord, bool]:
-        active_runs = [run for run in runs if run.status in ACTIVE_RUN_STATUSES]
-        if len(active_runs) > 1:
-            active_ids = ", ".join(run.run_id for run in active_runs)
-            raise PersistenceError(
-                f"session {session.session_id} has multiple active runs: {active_ids}"
-            )
-
-        latest_run = runs[-1] if runs else None
-        active_run = active_runs[0] if active_runs else None
-        if active_run is not None and active_run is not latest_run:
-            raise PersistenceError(
-                f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
-            )
-        if active_run is not None:
-            expected_status = session_status_for_run(active_run.status)
-            expected_active_run_id = active_run.run_id
-        else:
-            expected_status = (
-                "failed"
-                if latest_run and latest_run.status == "failed" and latest_run.kind == "agent"
-                else "idle"
-            )
-            expected_active_run_id = None
-
-        expected_last_run_id = latest_run.run_id if latest_run is not None else None
-        expected_last_message_id = messages[-1].message_id if messages else None
-        expected_message_count = len(messages)
-        changes: dict[str, object] = {}
-        if session.status != expected_status:
-            changes["status"] = expected_status
-        if session.active_run_id != expected_active_run_id:
-            changes["active_run_id"] = expected_active_run_id
-        if session.last_run_id != expected_last_run_id:
-            changes["last_run_id"] = expected_last_run_id
-        if session.last_message_id != expected_last_message_id:
-            changes["last_message_id"] = expected_last_message_id
-        if session.message_count != expected_message_count:
-            changes["message_count"] = expected_message_count
-        if not changes:
-            return session, False
-        return session.model_copy(update=changes), True
-
-    def _append_recovered_partial_message(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        events: list[EventRecord],
-    ) -> MessageRecord | None:
-        run_events = sorted(
-            (event for event in events if event.run_id == run.run_id),
-            key=lambda event: (event.sequence, event.created_at, event.event_id),
-        )
-        start_indexes = [
-            index
-            for index, event in enumerate(run_events)
-            if event.event_type == "model_request_started"
-        ]
-        if not start_indexes:
-            return None
-        start_index = start_indexes[-1]
-        start_event = run_events[start_index]
-        turn_id = start_event.payload.get("turn_id")
-        streamed_events = run_events[start_index + 1 :]
-        if any(
-            event.event_type
-            in {
-                "tool_call_requested",
-                "approval_requested",
-                "ask_user_requested",
-                "tool_call_completed",
-            }
-            for event in streamed_events
-        ):
-            return None
-        durable_run_messages = [message for message in messages if message.run_id == run.run_id]
-        if durable_run_messages and (
-            durable_run_messages[-1].role in {"assistant", "tool_result"}
-            and durable_run_messages[-1].created_at >= start_event.created_at
-        ):
-            return None
-
-        text = "".join(
-            value
-            for event in streamed_events
-            if event.event_type == "model_text_delta"
-            and isinstance((value := event.payload.get("text")), str)
-        )
-        reasoning = "".join(
-            value
-            for event in streamed_events
-            if event.event_type == "model_reasoning_delta"
-            and isinstance((value := event.payload.get("reasoning_content")), str)
-        )
-        if not text and not reasoning:
-            return None
-        metadata: dict[str, Any] = {
-            "incomplete": True,
-            "recovered_from_event_journal": True,
-            "run_id": run.run_id,
-        }
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="assistant",
-            text=text,
-            sequence=len(messages) + 1,
-            turn_id=turn_id if isinstance(turn_id, str) else None,
-        ).model_copy(
-            update={
-                "metadata": metadata,
-                "reasoning_content": reasoning,
-            }
-        )
-        self.append_message(message)
-        messages.append(message)
-        return message
-
-    def _append_recovery_event(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        previous_status: str,
-        reason: str,
-    ) -> EventRecord:
-        event = EventRecord(
-            session_id=session_id,
-            run_id=run_id,
-            event_type="run_status_changed",
-            payload={
-                "from_status": previous_status,
-                "to_status": "recoverable",
-                "reason": reason,
-            },
-        )
-        return self.append_ordered_event(event)
-
     def _session_dir(self, session_id: str) -> Path:
         return self.sessions_dir / _validated_record_id(session_id, kind="session")
+
+    def _resource_reference_path(self, session_id: str) -> Path:
+        return self._require_session_dir(session_id) / "resources" / "index.json"
 
     def _require_session_dir(self, session_id: str) -> Path:
         session_dir = self._session_dir(session_id)
@@ -751,7 +533,7 @@ class LocalSessionStore:
             )
 
     def _load_snapshot_for_index(self, session_id: str) -> RuntimeSessionSnapshot:
-        return self.load_runtime_session(session_id, recover=False)
+        return self.load_runtime_session(session_id)
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):
@@ -871,21 +653,6 @@ class LocalSessionStore:
             return records, position if position < size else None
         except (OSError, UnicodeDecodeError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not read journal page from {path}: {exc}") from exc
-
-
-def _interaction_state_error(run: RunRecord) -> str | None:
-    if run.status == "waiting_approval":
-        batch = run.active_tool_batch
-        if batch is None or not batch.pending_approvals:
-            return "Run was waiting for approval without a pending approval."
-        approval_ids = {approval.approval_id for approval in batch.pending_approvals}
-        if run.pending_approval_id not in approval_ids:
-            return "Run pending approval does not match its active tool batch."
-    if run.status == "waiting_user":
-        batch = run.active_tool_batch
-        if batch is None or not any(call.status == "waiting_user" for call in batch.calls):
-            return "Run was waiting for user input without a waiting tool call."
-    return None
 
 
 def _run_sort_key(run: RunRecord) -> tuple[str, str]:

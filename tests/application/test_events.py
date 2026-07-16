@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -40,7 +41,8 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
         event_type="run_started",
         payload={"trigger": "user"},
     )
-    snapshot = store.load_session(session.session_id, recover=False)
+    await recorder.close()
+    snapshot = store.load_session(session.session_id)
 
     assert sequence == 1
     assert emitted[0].event_type == "run_started"
@@ -66,7 +68,8 @@ async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
     )
     emitted: list[EventRecord] = []
     sequence = await recorder.record_hook_failures(emitted, 3, [failure])
-    snapshot = store.load_session(session.session_id, recover=False)
+    await recorder.close()
+    snapshot = store.load_session(session.session_id)
 
     assert sequence == 4
     assert emitted[0].event_type == "plugin_hook_failed"
@@ -104,15 +107,16 @@ async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tm
         event_type="run_started",
         payload={},
     )
-    snapshot = store.load_session(session.session_id, recover=False)
+    await recorder.close()
+    snapshot = store.load_session(session.session_id)
 
-    assert sequence == 2
-    assert [event.event_type for event in emitted] == ["run_started", "plugin_hook_failed"]
+    assert sequence == 1
+    assert [event.event_type for event in emitted] == ["run_started"]
     assert [event.event_type for event in snapshot.events] == [
         "run_started",
         "plugin_hook_failed",
     ]
-    assert emitted[1].payload["hook_name"] == "on_event"
+    assert snapshot.events[1].payload["hook_name"] == "on_event"
 
 
 @pytest.mark.asyncio
@@ -161,10 +165,130 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
     )
     release_sink.set()
     first_sequence = await first_emit
+    await first.close()
+    await second.close()
 
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     assert [event.sequence for event in snapshot.events] == [1, 2]
     assert first_events[0].sequence == 1
     assert second_events[0].sequence == 2
     assert first_sequence == 1
     assert second_sequence == 2
+
+
+@pytest.mark.asyncio
+async def test_slow_file_persistence_does_not_block_another_session(tmp_path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingStore(LocalSessionStore):
+        blocked_session_id = ""
+
+        def append_ordered_event(self, event: EventRecord) -> EventRecord:
+            if event.session_id == self.blocked_session_id:
+                entered.set()
+                assert release.wait(timeout=2)
+            return super().append_ordered_event(event)
+
+    store = BlockingStore(tmp_path)
+    store.initialize()
+    blocked = SessionRecord(title="Blocked")
+    independent = SessionRecord(title="Independent")
+    store.create_session(blocked)
+    store.create_session(independent)
+    store.blocked_session_id = blocked.session_id
+    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+
+    blocked_emit = asyncio.create_task(
+        recorder.emit(
+            [],
+            0,
+            session_id=blocked.session_id,
+            run_id="run_blocked",
+            event_type="run_started",
+            payload={},
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+    independent_sequence = await asyncio.wait_for(
+        recorder.emit(
+            [],
+            0,
+            session_id=independent.session_id,
+            run_id="run_independent",
+            event_type="run_started",
+            payload={},
+        ),
+        timeout=0.5,
+    )
+    release.set()
+    await blocked_emit
+    await recorder.close()
+
+    assert independent_sequence == 1
+
+
+@pytest.mark.asyncio
+async def test_observational_hook_timeout_cannot_block_durable_event(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Hook timeout")
+    store.create_session(session)
+    hooks = HookRegistry(observational_timeout_seconds=0.02)
+
+    async def never_returns(context: HookContext) -> HookResult:
+        del context
+        await asyncio.Event().wait()
+        return HookResult()
+
+    hooks.register(
+        HookRegistration(
+            plugin_id="hung-observer",
+            hook_name="on_event",
+            handler=never_returns,
+        )
+    )
+    recorder = RuntimeEventRecorder(store=store, hooks=hooks)
+
+    sequence = await asyncio.wait_for(
+        recorder.emit(
+            [],
+            0,
+            session_id=session.session_id,
+            run_id="run_1",
+            event_type="run_started",
+            payload={},
+        ),
+        timeout=0.5,
+    )
+    await recorder.close()
+
+    assert sequence == 1
+    snapshot = store.load_session(session.session_id)
+    assert [event.event_type for event in snapshot.events] == [
+        "run_started",
+        "plugin_hook_failed",
+    ]
+    assert snapshot.events[1].payload["error_type"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Invalid event")
+    store.create_session(session)
+    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+
+    with pytest.raises(ValueError, match="requires string payload field text"):
+        await recorder.emit(
+            [],
+            0,
+            session_id=session.session_id,
+            run_id="run_1",
+            event_type="model_text_delta",
+            payload={},
+        )
+
+    await recorder.close()
+    assert store.load_session(session.session_id).events == []

@@ -6,9 +6,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
+from ouro.core.redaction import public_url
 from ouro.core.tools import PermissionMode
 from ouro.mcp.models import MCPServerConfig, MCPTransport
 
@@ -61,6 +62,7 @@ class MCPConfigStore:
     def get(self, server_id: str) -> MCPServerConfig | None:
         return self._servers_from_raw(self._file.read()).get(server_id)
 
+    @atomic_config_update
     def update(
         self,
         server_id: str,
@@ -97,6 +99,7 @@ class MCPConfigStore:
         self._write(raw, servers)
         return config
 
+    @atomic_config_update
     def upsert(self, config: MCPServerConfig) -> MCPServerConfig:
         raw = self._file.read()
         servers = self._servers_from_raw(raw)
@@ -104,6 +107,7 @@ class MCPConfigStore:
         self._write(raw, servers)
         return config
 
+    @atomic_config_update
     def remove(self, server_id: str) -> MCPServerConfig:
         raw = self._file.read()
         servers = self._servers_from_raw(raw)
@@ -173,8 +177,10 @@ def mcp_config_to_public_dict(config: MCPServerConfig) -> dict[str, Any]:
         target: _public_credential_reference(reference)
         for target, reference in config.credential_refs.items()
     }
-    public["env"] = dict(config.env)
-    public["headers"] = dict(config.headers)
+    public["args"] = ["***" for _ in config.args]
+    public["env"] = {name: "***" for name in config.env}
+    public["headers"] = {name: "***" for name in config.headers}
+    public["url"] = public_url(config.url) if config.url is not None else None
     return public
 
 

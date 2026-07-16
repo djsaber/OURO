@@ -55,7 +55,7 @@ async def test_third_party_hook_failure_is_isolated_for_run() -> None:
     def failing_handler(context: HookContext) -> HookResult:
         nonlocal calls
         calls += 1
-        raise RuntimeError("boom")
+        raise RuntimeError("token=hook-secret")
 
     registry.register(
         HookRegistration(
@@ -74,6 +74,7 @@ async def test_third_party_hook_failure_is_isolated_for_run() -> None:
     after_finish = await registry.dispatch(context)
 
     assert len(first.failures) == 1
+    assert first.failures[0].message == "token=***"
     assert second.failures == []
     assert len(after_finish.failures) == 1
     assert calls == 2

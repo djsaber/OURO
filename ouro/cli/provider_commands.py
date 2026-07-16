@@ -31,7 +31,8 @@ async def check_provider_connection(
             home,
             provider_options=options,
         )
-        result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
+        async with runtime:
+            result = await runtime.adapter.provider.check_connection(runtime.adapter.model)
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
         return error_exit_code(exc)

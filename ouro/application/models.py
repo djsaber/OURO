@@ -36,6 +36,8 @@ class RuntimeAdapterCatalog(Protocol):
 
     def adapter_for(self, selector: str) -> RuntimeAdapter: ...
 
+    async def close(self) -> None: ...
+
 
 class FixedRuntimeAdapterCatalog:
     """Expose one injected adapter through the same route contract as configured models."""
@@ -61,7 +63,7 @@ class FixedRuntimeAdapterCatalog:
         return self._adapter
 
     async def close(self) -> None:
-        await _close_adapters((self._adapter,))
+        await close_runtime_adapters((self._adapter,))
 
 
 class ConfiguredModelCatalog:
@@ -147,7 +149,7 @@ class ConfiguredModelCatalog:
         return adapter
 
     async def close(self) -> None:
-        await _close_adapters(
+        await close_runtime_adapters(
             (
                 self._default_adapter,
                 *(adapter for _, adapter in self._configured_adapters.values()),
@@ -175,7 +177,7 @@ def _available_model(model: ModelMetadata) -> AvailableModel:
     )
 
 
-async def _close_adapters(adapters: tuple[RuntimeAdapter, ...]) -> None:
+async def close_runtime_adapters(adapters: tuple[RuntimeAdapter, ...]) -> None:
     seen: set[int] = set()
     errors: list[Exception] = []
     for adapter in adapters:

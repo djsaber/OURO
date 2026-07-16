@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import Field, ValidationError
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.core.tool_batches import ToolExecutionMode
@@ -39,6 +39,7 @@ class ToolExecutionConfigManager:
         except ValidationError as exc:
             raise ConfigError(f"invalid tool_execution config: {exc}") from exc
 
+    @atomic_config_update
     def update(
         self,
         *,

@@ -129,7 +129,7 @@ async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
     captured = capsys.readouterr()
     assert code == 0
     assert "MCP approval resumed." in captured.out
-    snapshot = resumed_runtime.store.load_session(waiting.session.session_id, recover=False)
+    snapshot = resumed_runtime.store.load_session(waiting.session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.tool_name == "echo__echo"

@@ -11,6 +11,10 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
+from ouro.providers.http_transport import (
+    HttpxProviderHTTPTransport,
+    ProviderHTTPTransport,
+)
 from ouro.providers.openai_codec import (
     _content_to_text,
     _error_from_response,
@@ -22,10 +26,6 @@ from ouro.providers.openai_codec import (
     _tool_to_openai,
     _usage_from_response,
     _usage_from_response_or_none,
-)
-from ouro.providers.openai_transport import (
-    HttpxOpenAICompatibleTransport,
-    OpenAICompatibleTransport,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.retrying import stream_with_retries
@@ -42,7 +42,7 @@ class OpenAICompatibleProvider:
         provider_id: str | None = None,
         endpoint: str = "/chat/completions",
         timeout: float = 60.0,
-        transport: OpenAICompatibleTransport | None = None,
+        transport: ProviderHTTPTransport | None = None,
         default_headers: Mapping[str, str] | None = None,
         request_options: Mapping[str, Any] | None = None,
         reasoning_encoder: ReasoningPayloadEncoder | None = None,
@@ -53,7 +53,7 @@ class OpenAICompatibleProvider:
         self.endpoint = endpoint if endpoint.startswith("/") else f"/{endpoint}"
         self.api_key = api_key
         self.timeout = timeout
-        self.transport = transport or HttpxOpenAICompatibleTransport()
+        self.transport = transport or HttpxProviderHTTPTransport()
         self.default_headers = dict(default_headers or {})
         self.request_options = dict(request_options or {})
         self.reasoning_encoder = reasoning_encoder or ReasoningPayloadEncoder(None)

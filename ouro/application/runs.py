@@ -23,7 +23,7 @@ from ouro.core.state import (
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore, session_mutation
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 
 
 class RunLifecycle:
@@ -55,7 +55,7 @@ class RunLifecycle:
     ) -> tuple[SessionRecord, RunRecord]:
         """Persist the shared session/run transition into an active run."""
 
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             existing = maybe_active_run(snapshot.runs)
             if existing is not None and existing.run_id != run.run_id:
@@ -78,7 +78,7 @@ class RunLifecycle:
             # safely reconstruct the Session projection from this record.
             self.store.save_run(active_run)
             self.store.save_session(active_session)
-        self.store.try_update_index(
+        self.store.refresh_catalog(
             active_session.session_id,
             snapshot=snapshot.model_copy(
                 update={
@@ -250,7 +250,7 @@ class RunLifecycle:
     ) -> RunRecord:
         """Persist provider usage to both the global ledger and owning Run."""
 
-        with session_mutation(self.store, run.session_id):
+        with self.store.session_mutation(run.session_id):
             latest = self.store.load_run(run.session_id, run.run_id)
             if self.usage_service is not None:
                 entry = self.usage_service.record_provider_usage(
@@ -302,7 +302,7 @@ class RunLifecycle:
         )
 
     def save_waiting_state(self, *, session: SessionRecord, run: RunRecord) -> SessionRecord:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             self._require_active(latest_run)
@@ -325,7 +325,7 @@ class RunLifecycle:
             )
             self.store.save_run(updated_run)
             self.store.save_session(updated_session)
-        self.store.try_update_index(updated_session.session_id)
+        self.store.refresh_catalog(updated_session.session_id)
         return updated_session
 
     def save_batch_state(
@@ -337,7 +337,7 @@ class RunLifecycle:
         status: RunStatus,
         phase: RunPhase,
     ) -> tuple[SessionRecord, RunRecord]:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             self._require_active(latest_run)
@@ -363,7 +363,7 @@ class RunLifecycle:
             self.store.save_run(updated_run)
             self.store.save_session(updated_session)
         if status in {"waiting_approval", "waiting_user"}:
-            self.store.try_update_index(updated_session.session_id)
+            self.store.refresh_catalog(updated_session.session_id)
         return updated_session, updated_run
 
     def save_aborted_batch(
@@ -375,7 +375,7 @@ class RunLifecycle:
     ) -> RunRecord:
         """Attach final audit outcomes without reopening an aborted Run."""
 
-        with session_mutation(self.store, session_id):
+        with self.store.session_mutation(session_id):
             latest_run = self.store.load_run(session_id, run_id)
             if latest_run.status != "aborted":
                 return latest_run
@@ -400,7 +400,7 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
                 return RunResult(
@@ -454,7 +454,7 @@ class RunLifecycle:
             )
             self.store.save_run(completed_run)
             self.store.save_session(completed_session)
-        self.store.try_update_index(completed_session.session_id)
+        self.store.refresh_catalog(completed_session.session_id)
         await self.events.emit(
             emitted,
             sequence,
@@ -485,7 +485,7 @@ class RunLifecycle:
         turn_id: str | None = None,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
@@ -541,7 +541,7 @@ class RunLifecycle:
             )
             self.store.save_run(failed_run)
             self.store.save_session(failed_session)
-        self.store.try_update_index(failed_session.session_id)
+        self.store.refresh_catalog(failed_session.session_id)
         await self.events.emit(
             emitted,
             sequence,
@@ -570,7 +570,7 @@ class RunLifecycle:
         final_text: str,
         tool_results: list[ToolResult],
     ) -> RunResult:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
@@ -607,7 +607,7 @@ class RunLifecycle:
             )
             self.store.save_run(paused_run)
             self.store.save_session(paused_session)
-        self.store.try_update_index(paused_session.session_id)
+        self.store.refresh_catalog(paused_session.session_id)
         await self.events.emit(
             emitted,
             sequence,
@@ -636,7 +636,7 @@ class RunLifecycle:
         message: MessageRecord,
         allow_interrupted: bool = False,
     ) -> None:
-        with session_mutation(self.store, session.session_id):
+        with self.store.session_mutation(session.session_id):
             latest_run = self.store.load_run(session.session_id, run.run_id)
             if not allow_interrupted or latest_run.status not in {"aborted", "recoverable"}:
                 self._require_active(latest_run)
@@ -713,7 +713,6 @@ class RunLifecycle:
             cache = {}
             for message in self.store.load_runtime_session(
                 session_id,
-                recover=False,
             ).messages:
                 if message.run_id != run_id:
                     continue

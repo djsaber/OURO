@@ -52,7 +52,9 @@ async def handle_command(
     if command == "/approval-mode":
         return _approval_mode_command(runtime, session_id, approval_mode, argument)
     if command == "/config":
-        return CommandResult(session_id=session_id, output=f"OURO_HOME={runtime.store.root}")
+        home = runtime.environment.home
+        output = f"OURO_HOME={home}" if home is not None else "OURO_HOME is unavailable."
+        return CommandResult(session_id=session_id, output=output)
     if command == "/export":
         return _export_session(runtime, session_id)
     if command == "/abort":
@@ -210,25 +212,30 @@ def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
 def _export_session(runtime: RuntimeService, session_id: str | None) -> CommandResult:
     if session_id is None:
         return CommandResult(session_id=None, output="No active session.")
-    return CommandResult(
-        session_id=session_id,
-        output=str(runtime.store.sessions_dir / session_id),
-    )
+    location = runtime.environment.session_location(session_id)
+    if location is None:
+        return CommandResult(
+            session_id=session_id,
+            output="This Session backend has no directly accessible data directory.",
+        )
+    return CommandResult(session_id=session_id, output=str(location))
 
 
 def _session_history(runtime: RuntimeService, session_id: str | None) -> CommandResult:
     if session_id is None:
         return CommandResult(session_id=None, output="No active session.")
     try:
-        snapshot = runtime.sessions.open(session_id)
+        page = runtime.sessions.message_page(session_id, limit=100)
     except PersistenceError:
         return CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
-    if not snapshot.messages:
+    if not page.messages:
         return CommandResult(session_id=session_id, output="No messages in this session.")
     lines = ["History:"]
-    for message in snapshot.messages:
+    for message in page.messages:
         text = message.text_content.replace("\n", " ")
         lines.append(f"[{message.role}] {text[:120]}")
+    if page.next_cursor is not None:
+        lines.append("History truncated to the first 100 messages.")
     return CommandResult(session_id=session_id, output="\n".join(lines))
 
 
@@ -236,20 +243,28 @@ def _session_events(runtime: RuntimeService, session_id: str | None) -> CommandR
     if session_id is None:
         return CommandResult(session_id=None, output="No active session.")
     try:
-        snapshot = runtime.sessions.open(session_id)
+        page = runtime.sessions.event_page(session_id, limit=100)
     except PersistenceError:
         return CommandResult(session_id=session_id, output=f"Session not found: {session_id}")
-    if not snapshot.events:
+    if not page.events:
         return CommandResult(session_id=session_id, output="No events in this session.")
     lines = ["Events:"]
-    for event in snapshot.events:
+    for event in page.events:
         lines.append(f"[{event.event_type}] run={event.run_id} seq={event.sequence}")
+    if page.next_cursor is not None:
+        lines.append("Events truncated to the first 100 records.")
     return CommandResult(session_id=session_id, output="\n".join(lines))
 
 
 def _available_skills(runtime: RuntimeService, session_id: str | None) -> CommandResult:
+    home = runtime.environment.home
+    if home is None:
+        return CommandResult(
+            session_id=session_id,
+            output="Skill discovery is unavailable without a deployment home.",
+        )
     try:
-        catalog = discover_available_skills(home=runtime.store.root)
+        catalog = discover_available_skills(home=home)
     except Exception as exc:  # noqa: BLE001
         return CommandResult(session_id=session_id, output=f"Could not list skills: {exc}")
     if not catalog:

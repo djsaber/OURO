@@ -252,7 +252,7 @@ async def test_async_tool_exception_returns_error_result() -> None:
     registry = ToolRegistry()
 
     async def failing_handler(invocation: ToolInvocation) -> ToolResult:
-        raise RuntimeError("async handler failure")
+        raise RuntimeError("async handler failure token=tool-secret")
 
     registry.register(
         Tool(
@@ -270,6 +270,8 @@ async def test_async_tool_exception_returns_error_result() -> None:
     assert outcome.result is not None
     assert outcome.result.is_error is True
     assert "async handler failure" in outcome.result.content
+    assert "tool-secret" not in outcome.result.content
+    assert outcome.result.structured.get("error_message") == ("async handler failure token=***")
     assert outcome.result.structured.get("error_type") == "RuntimeError"
 
 

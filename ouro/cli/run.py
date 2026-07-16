@@ -7,26 +7,19 @@ from typing import Any
 
 from ouro.application.events import RuntimeEventSink
 from ouro.application.queued_inputs import QueuedInputMode
-from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
-from ouro.application.runtime_configuration import (
-    RuntimeConfigurationResolver,
-    RuntimeProviderOptions,
-)
-from ouro.application.usage import UsageService
-from ouro.billing import LocalUsageLedger
+from ouro.application.runtime_configuration import RuntimeProviderOptions
 from ouro.cli.errors import error_exit_code
-from ouro.config import CompactionConfig
-from ouro.core.adapter import RuntimeAdapter
 from ouro.core.approvals import SessionApprovalMode
-from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
+from ouro.local_application import (
+    LocalApplication,
+    SessionBackend,
+    build_local_mcp_runtime,
+    build_local_runtime,
+)
 from ouro.mcp import MCPRuntimeResource
-from ouro.providers import build_runtime_adapter
-from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
-from ouro.tools import ToolRegistry, builtin_tools
 
 _DIM_ITALIC = "\x1b[2;3m"
 _RESET = "\x1b[0m"
@@ -38,75 +31,25 @@ def build_default_runtime(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     event_sink: RuntimeEventSink | None = None,
+    session_backend: SessionBackend = "files",
 ) -> RuntimeService:
-    store = LocalSessionStore(home)
-    store.initialize()
-    resource_store = LocalResourceStore(store.root)
-    resource_store.initialize()
-    resources = ResourceService(store=resource_store, sessions=store)
-    usage_ledger = LocalUsageLedger(store.root)
-    usage_ledger.initialize()
-    usage_service = UsageService(usage_ledger)
-    registry = ToolRegistry()
-    for tool in builtin_tools():
-        registry.register(tool)
-    configuration = RuntimeConfigurationResolver(store.root)
-    resolved = configuration.snapshot(
+    return build_local_runtime(
+        home,
         provider_options=provider_options,
         system_prompt=system_prompt,
-    )
-    adapter = build_runtime_adapter(resolved.provider_options)
-    model_catalog = configuration.model_catalog(
-        adapter,
-        adapter_builder=build_runtime_adapter,
-    )
-    context_builder = ContextBuilder(skill_instructions=resolved.skills_prompt)
-    compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
-        configuration,
-        resolved.compaction,
-    )
-    return RuntimeService(
-        store=store,
-        adapter=adapter,
-        model_catalog=model_catalog,
-        tools=registry,
-        context_builder=context_builder,
-        system_prompt=resolved.system_prompt,
         event_sink=event_sink,
-        permission_overrides=resolved.permission_overrides,
-        tool_execution_config=resolved.tool_execution,
-        run_budget=resolved.run_budget,
-        compaction_config=resolved.compaction,
-        compaction_adapter=compaction_adapter,
-        compaction_adapter_error=compaction_adapter_error,
-        queued_input_config=resolved.queued_inputs,
-        resources=resources,
-        usage_service=usage_service,
-        default_workspace=Path.cwd(),
+        session_backend=session_backend,
     )
 
 
-def build_default_mcp_runtime(runtime: RuntimeService) -> MCPRuntimeResource:
+def build_default_mcp_runtime(
+    runtime: RuntimeService,
+    *,
+    home: str | Path | None = None,
+) -> MCPRuntimeResource:
     """Load configured MCP servers into the registry used by this runtime."""
 
-    return MCPRuntimeResource.from_config(runtime.store.root, runtime.tools)
-
-
-def _configured_compaction_adapter(
-    configuration: RuntimeConfigurationResolver,
-    config: CompactionConfig,
-) -> tuple[RuntimeAdapter | None, str | None]:
-    if not config.model.has_dedicated_endpoint:
-        return None, None
-    try:
-        options = configuration.compaction_provider_options(config)
-        assert options is not None
-        return build_runtime_adapter(options), None
-    except Exception as exc:  # noqa: BLE001 - optional route must degrade to the runtime route.
-        return (
-            None,
-            f"configured endpoint unavailable: {type(exc).__name__}: {exc}",
-        )
+    return build_local_mcp_runtime(runtime, home=home)
 
 
 async def run_print(
@@ -127,8 +70,8 @@ async def run_print(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        async with build_default_mcp_runtime(runtime) as mcp:
-            _print_mcp_startup_failures(mcp)
+        async with LocalApplication.from_runtime(runtime, home=home) as application:
+            _print_mcp_startup_failures(application.mcp)
             result = await runtime.run(
                 prompt,
                 session_id=session_id,
@@ -168,8 +111,8 @@ async def run_json(
             provider_options=provider_options,
             system_prompt=system_prompt,
         )
-        async with build_default_mcp_runtime(runtime) as mcp:
-            _print_mcp_startup_failures(mcp)
+        async with LocalApplication.from_runtime(runtime, home=home) as application:
+            _print_mcp_startup_failures(application.mcp)
             result = await runtime.run(
                 prompt,
                 session_id=session_id,

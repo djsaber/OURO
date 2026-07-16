@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -8,6 +9,7 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.redaction import redact_text
 
 HookName = Literal[
     "before_run",
@@ -58,6 +60,7 @@ class HookRegistration:
     source: PluginSource = "third_party"
     priority: int = 100
     enabled: bool = True
+    timeout_seconds: float | None = None
 
 
 @dataclass
@@ -74,12 +77,27 @@ _SOURCE_ORDER: dict[PluginSource, int] = {
 
 
 class HookRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        semantic_timeout_seconds: float = 10.0,
+        observational_timeout_seconds: float = 1.0,
+    ) -> None:
+        if semantic_timeout_seconds <= 0 or observational_timeout_seconds <= 0:
+            raise ValueError("hook timeouts must be positive")
         self._registrations: list[HookRegistration] = []
         self._disabled_for_run: set[tuple[str | None, str, HookName]] = set()
+        self._semantic_timeout_seconds = semantic_timeout_seconds
+        self._observational_timeout_seconds = observational_timeout_seconds
 
     def register(self, registration: HookRegistration) -> None:
-        self._registrations.append(registration)
+        self.register_many((registration,))
+
+    def register_many(self, registrations: tuple[HookRegistration, ...]) -> None:
+        for registration in registrations:
+            if registration.timeout_seconds is not None and registration.timeout_seconds <= 0:
+                raise ValueError("hook timeout must be positive")
+        self._registrations.extend(registrations)
 
     def registered(self, hook_name: HookName | None = None) -> list[HookRegistration]:
         registrations = self._registrations
@@ -104,11 +122,29 @@ class HookRegistry:
             if disabled_key in self._disabled_for_run:
                 continue
             try:
-                raw_result = registration.handler(context)
+                timeout = registration.timeout_seconds or self._default_timeout(
+                    registration.hook_name
+                )
+                raw_result = await asyncio.wait_for(
+                    asyncio.to_thread(registration.handler, context),
+                    timeout=timeout,
+                )
                 if inspect.isawaitable(raw_result):
-                    raw_result = await raw_result
+                    raw_result = await asyncio.wait_for(raw_result, timeout=timeout)
                 if raw_result is not None:
                     dispatch_result.results.append(raw_result)
+            except TimeoutError:
+                failure = HookFailure(
+                    plugin_id=registration.plugin_id,
+                    hook_name=registration.hook_name,
+                    session_id=context.session_id,
+                    run_id=context.run_id,
+                    error_type="TimeoutError",
+                    message=f"hook timed out after {timeout:g} seconds",
+                )
+                dispatch_result.failures.append(failure)
+                if registration.source != "official":
+                    self._disabled_for_run.add(disabled_key)
             except Exception as exc:  # noqa: BLE001 - hook isolation boundary
                 failure = HookFailure(
                     plugin_id=registration.plugin_id,
@@ -116,9 +152,14 @@ class HookRegistry:
                     session_id=context.session_id,
                     run_id=context.run_id,
                     error_type=type(exc).__name__,
-                    message=str(exc),
+                    message=redact_text(str(exc)),
                 )
                 dispatch_result.failures.append(failure)
                 if registration.source != "official":
                     self._disabled_for_run.add(disabled_key)
         return dispatch_result
+
+    def _default_timeout(self, hook_name: HookName) -> float:
+        if hook_name == "on_event":
+            return self._observational_timeout_seconds
+        return self._semantic_timeout_seconds

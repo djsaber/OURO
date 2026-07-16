@@ -29,6 +29,9 @@ EventType = Literal[
     "tool_call_completed",
     "ask_user_requested",
     "ask_user_resolved",
+    "follow_up_input_queued",
+    "steering_input_queued",
+    "queued_input_consumed",
     "run_retry_scheduled",
     "compaction_started",
     "compaction_progress",
@@ -42,6 +45,8 @@ EventType = Literal[
     "recovery_tool_result_committed",
     "persistence_warning",
     "plugin_hook_failed",
+    "event_sink_failed",
+    "event_observer_overflow",
     "diagnostic",
 ]
 

@@ -7,7 +7,7 @@ from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallStatus
 from ouro.core.tools import ToolResult
-from ouro.sessions import RuntimeSessionSnapshot, SessionStore
+from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
 
 class RunRecoveryService:
@@ -16,7 +16,7 @@ class RunRecoveryService:
     def __init__(
         self,
         *,
-        store: SessionStore,
+        store: SessionRepository,
         runs: RunLifecycle,
         events: RuntimeEventRecorder,
     ) -> None:
@@ -96,10 +96,7 @@ class RunRecoveryService:
 
         if not changed:
             return snapshot
-        return self.store.load_runtime_session(
-            snapshot.session.session_id,
-            recover=False,
-        )
+        return self.store.load_runtime_session(snapshot.session.session_id)
 
     @staticmethod
     def _recovery_result(

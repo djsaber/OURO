@@ -2,16 +2,18 @@
 
 from ouro.sessions.base import (
     RuntimeSessionSnapshot,
+    SessionCatalogStore,
     SessionLock,
+    SessionRepository,
     SessionSnapshot,
     SessionStore,
-    append_ordered_event,
-    session_mutation,
 )
 from ouro.sessions.index import SessionIndex, SessionIndexEntry
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_files import LocalSessionStore
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
+from ouro.sessions.migration import SQLiteImportReport, import_sessions_to_sqlite
+from ouro.sessions.sqlite import SQLiteSessionStore
 
 __all__ = [
     "LocalSessionStore",
@@ -20,11 +22,14 @@ __all__ = [
     "SessionRunLock",
     "SessionMutationLock",
     "SessionLock",
+    "SessionCatalogStore",
     "SessionIndex",
     "SessionIndexEntry",
+    "SessionRepository",
     "RuntimeSessionSnapshot",
     "SessionSnapshot",
     "SessionStore",
-    "append_ordered_event",
-    "session_mutation",
+    "SQLiteSessionStore",
+    "SQLiteImportReport",
+    "import_sessions_to_sqlite",
 ]

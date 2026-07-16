@@ -15,6 +15,7 @@ from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
 
+from ouro.core.redaction import redact_text
 from ouro.mcp.client import (
     CredentialResolver,
     MCPDiagnosticHandler,
@@ -273,7 +274,7 @@ def _translate_sdk_error(exc: Exception, *, operation: str) -> Exception:
     if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
         return MCPTimeoutError(f"MCP {operation} timed out")
     if isinstance(exc, McpError):
-        message = str(exc)
+        message = redact_text(str(exc))
         lowered = message.lower()
         if "timed out" in lowered or "timeout" in lowered:
             return MCPTimeoutError(f"MCP {operation} timed out")
@@ -281,8 +282,8 @@ def _translate_sdk_error(exc: Exception, *, operation: str) -> Exception:
             return MCPDisconnectedError(f"MCP {operation} failed: connection closed")
         return MCPProtocolError(f"MCP {operation} failed: {message}")
     if isinstance(exc, (httpx.RequestError, OSError)):
-        return MCPConnectionError(f"MCP {operation} failed: {exc}")
-    return MCPConnectionError(f"MCP {operation} failed: {exc}")
+        return MCPConnectionError(f"MCP {operation} failed: {redact_text(str(exc))}")
+    return MCPConnectionError(f"MCP {operation} failed: {redact_text(str(exc))}")
 
 
 def _safe_text(value: object) -> str:

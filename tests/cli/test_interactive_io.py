@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ouro.cli.interactive_io import InteractiveOutput
-from ouro.cli.terminal_status import TerminalStatusLine, TerminalStatusRegion
+from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
@@ -330,7 +330,7 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
 
     assert outputs == [
         "✓ Read · completed\n",
-        "◐ Waiting · preparing next model turn · 0.0s\n",
+        f"{SPINNER_THEMES['model_wait'].frames[0]} Waiting · preparing next model turn · 0.0s\n",
     ]
     assert output.active_tool_calls == {}
 
@@ -388,7 +388,7 @@ async def test_interactive_output_tracks_parallel_tool_execution() -> None:
     assert outputs == [
         "✓ Read · completed\n",
         "✗ Write · failed\n",
-        "◐ Waiting · preparing next model turn · 0.0s\n",
+        f"{SPINNER_THEMES['model_wait'].frames[0]} Waiting · preparing next model turn · 0.0s\n",
     ]
     assert output.active_tool_calls == {}
 

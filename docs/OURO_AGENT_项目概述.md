@@ -37,7 +37,9 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - 删除到本地回收站；
 - 进程锁、损坏索引重建和中断运行恢复；
 - active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付；
-- 消息和事件按稳定 byte cursor 增量读取，长历史不要求 Host 全量加载。
+- 消息和事件按稳定 cursor 增量读取，事件订阅也支持 after-sequence 追赶，长历史不要求 Host 全量加载；
+- 后端中立 SessionRepository 下的本地可读文件与 SQLite 两种实现，以及原子、验证、失败回滚的
+  文件到 SQLite 导入。
 
 ### 模型与上下文
 
@@ -79,12 +81,15 @@ MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy S
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
-Hook 和插件 contribution registry 已具备代码边界；完整的插件分发、信任管理和 entrypoint 生命周期尚未完成。
+Hook 和插件 contribution registry 已具备来源、capability、permission、超时、失败隔离与原子注册边界；
+manifest 不能把第三方来源自升为 official，未授权贡献不会生效。插件仍是用户信任的同进程代码，不是沙箱。
+完整的插件安装/升级、来源证明、权限确认 UI 和 entrypoint 生命周期尚未完成。
 
 ### 资源与后台运行
 
 ResourceService 把本地附件导入为内容寻址的不可变资源。消息只保存 resource id；相同内容去重，Session
-分支原子复制引用关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
+引用只由 SessionRepository 持有，因而文件/SQLite Session 都能与本地 BlobStore 组合。分支原子复制引用
+关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
 原始绝对路径。用户可把已导入资源附加到一次 Run：Runtime 在提交前验证归属与完整性，只在请求内将受支持
 的 UTF-8 文本或 vision 图片投影给模型；canonical message 仍只保存引用。PDF 等格式在没有专用 adapter 时
 明确拒绝。
@@ -93,6 +98,10 @@ RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并�
 可读取细粒度 activity，区分模型准备、等待响应、各类增量流、工具预检/执行/结果提交、人工交互和压缩。
 Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不同的显式协议。重启后的事实仍来自
 SessionStore，而不是内存 registry。
+
+Host 事件由 `RuntimeEventView` 提供稳定类别和常用字段；原始扩展数据统一脱敏。慢 Host sink 与观察型 Hook
+在独立有界 worker 中运行，不能阻塞 durable event 或其他 Session。`LocalApplication` 为 CLI 和未来 TUI/
+Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关闭。
 
 ### 运行界面
 
@@ -146,18 +155,20 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 - 所有路径写入受 `OURO_HOME` 或工作区约束；内置工具统一使用 execution context 校验路径和权限。
 - 凭据通过环境变量引用或显式本地配置进入 Provider，不写入事件和公开输出。
 - 外部工具结果可能包含不可信内容，只作为数据回灌模型，不改变系统权限。
-- 插件是同进程可信扩展，当前不提供安全沙箱。
+- 插件是同进程可信扩展，permission 是贡献授权门，不宣称为 Python 进程内安全沙箱。
 - 删除会话先发布到回收站；canonical 写入与可重建索引分离。
+- 配置 command 在跨进程锁内完成完整 read-validate-write；公共 DTO、事件和第三方错误统一脱敏。
 
 ## 未来设计范围
 
 以下能力属于明确的未来方向，当前实现不应假装已经提供：
 
-- Desktop Host：复用现有 application/configuration facade 的会话导航、运行视图、diff、审批和设置界面。
+- TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
+- Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
 - 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
-- 可替换持久化后端：在本地文件规模成为实际瓶颈后评估 SQLite 等实现。
+- SQLite 产品化：后端选择、迁移 UI、备份恢复、版本升级和真实规模性能基准。
 
 未来能力必须复用现有 core/application 契约，不能让 Desktop、插件或协议对象直接接管运行状态。
 

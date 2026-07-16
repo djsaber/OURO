@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pydantic import Field, field_validator, model_validator
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
@@ -71,6 +71,7 @@ class CompactionConfigManager:
         except ValueError as exc:
             raise ConfigError(f"invalid compaction config: {exc}") from exc
 
+    @atomic_config_update
     def save(self, config: CompactionConfig) -> CompactionConfig:
         try:
             validated = CompactionConfig.model_validate(config.model_dump())
@@ -81,9 +82,11 @@ class CompactionConfigManager:
         self.file.write(raw)
         return validated
 
+    @atomic_config_update
     def set_model(self, model: CompactionModelConfig) -> CompactionConfig:
         return self.save(self.snapshot().model_copy(update={"model": model}))
 
+    @atomic_config_update
     def update_model(
         self,
         *,

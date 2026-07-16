@@ -6,6 +6,7 @@ from typing import Any, cast
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.cli.interactive import run_interactive
 from ouro.cli.main import main
 from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json, run_print
@@ -52,6 +53,7 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
         ),
         tools=registry,
         default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
 
 
@@ -145,7 +147,7 @@ async def test_run_print_composes_configured_mcp_tool_and_closes_it(
     assert captured.out.strip() == "MCP completed."
     assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
     session = runtime.store.list_sessions()[0]
-    snapshot = runtime.store.load_session(session.session_id, recover=False)
+    snapshot = runtime.store.load_session(session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.tool_name == "echo__echo"
@@ -592,7 +594,7 @@ async def test_interactive_open_waiting_session_drains_follow_up_after_rejection
         input_func=lambda _prompt: next(inputs),
         output_func=outputs.append,
     )
-    snapshot = runtime.store.load_session(waiting.session.session_id, recover=False)
+    snapshot = runtime.store.load_session(waiting.session.session_id)
 
     assert code == 0
     assert not target.exists()
@@ -922,7 +924,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
             ModelMetadata(model_id="capture", provider_id="capture"),
         )
 
-    monkeypatch.setattr("ouro.cli.run.build_runtime_adapter", fake_adapter)
+    monkeypatch.setattr("ouro.local_application.build_runtime_adapter", fake_adapter)
     runtime = build_default_runtime(home)
 
     assert runtime.hooks.registered("after_context_build") == []

@@ -33,8 +33,8 @@ def test_mcp_cli_set_list_show_and_remove(tmp_path, capsys) -> None:
     assert set_code == 0
     saved = json.loads(capsys.readouterr().out)["server"]
     assert saved["server_id"] == "local"
-    assert saved["args"] == ["server.py"]
-    assert saved["env"] == {"MODE": "test"}
+    assert saved["args"] == ["***"]
+    assert saved["env"] == {"MODE": "***"}
     assert saved["auto_start"] is True
 
     assert main(["mcp", "list", "--home", str(tmp_path), "--json"]) == 0
@@ -93,7 +93,7 @@ def test_mcp_cli_replaces_and_clears_collections(tmp_path, capsys) -> None:
     )
     server = json.loads(capsys.readouterr().out)["server"]
     assert server["args"] == []
-    assert server["env"] == {"SECOND": "2"}
+    assert server["env"] == {"SECOND": "***"}
 
     assert (
         main(

@@ -4,12 +4,10 @@ import json
 import sys
 from pathlib import Path
 
-from ouro.application.facade import ApplicationFacade
 from ouro.application.resources import ResourceService
 from ouro.cli.errors import error_exit_code
 from ouro.core.errors import OuroError
-from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
+from ouro.local_application import build_local_session_services
 
 
 def import_resource(
@@ -21,7 +19,7 @@ def import_resource(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _facade(home).import_resource(
+        result = _resources(home).import_resource(
             session_id,
             source_path,
             media_type=media_type,
@@ -49,7 +47,7 @@ def list_resources(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _facade(home).list_resources(session_id)
+        result = _resources(home).list_resources(session_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -82,7 +80,7 @@ def show_resource(
     json_mode: bool = False,
 ) -> int:
     try:
-        resource = _facade(home).show_resource(session_id, resource_id)
+        resource = _resources(home).show_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -118,7 +116,7 @@ def export_resource(
     json_mode: bool = False,
 ) -> int:
     try:
-        result = _facade(home).export_resource(
+        result = _resources(home).export_resource(
             session_id,
             resource_id,
             output,
@@ -156,7 +154,7 @@ def remove_resource(
             print(json.dumps({"status": "cancelled"}) if json_mode else "Cancelled.")
             return 0
     try:
-        result = _facade(home).remove_resource(session_id, resource_id)
+        result = _resources(home).remove_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -166,13 +164,8 @@ def remove_resource(
     return 0
 
 
-def _facade(home: str | Path | None) -> ApplicationFacade:
-    sessions = LocalSessionStore(home)
-    sessions.initialize()
-    resource_store = LocalResourceStore(sessions.root)
-    resource_store.initialize()
-    resources = ResourceService(store=resource_store, sessions=sessions)
-    return ApplicationFacade.with_resources(sessions, resources)
+def _resources(home: str | Path | None) -> ResourceService:
+    return build_local_session_services(home).resources
 
 
 def _error(exc: Exception, *, json_mode: bool) -> int:

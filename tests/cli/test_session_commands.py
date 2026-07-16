@@ -130,7 +130,7 @@ def test_session_branch_and_replay_commands_use_application_facade(tmp_path, cap
 
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    source = store.load_session(session_id, recover=False)
+    source = store.load_session(session_id)
     branch_point = source.messages[-1].message_id
 
     branch_code = main(

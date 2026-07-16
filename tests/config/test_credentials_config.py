@@ -3,7 +3,6 @@ import json
 import pytest
 
 from ouro.config import (
-    ConfigService,
     CredentialRef,
     CredentialResolver,
     PromptConfigManager,
@@ -67,17 +66,6 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
         "seed": 7,
     }
     assert public["reasoning"]["profile"]["variants"]["enabled"]["thinking"]["password"] == "***"
-
-
-def test_config_service_precedence() -> None:
-    service = ConfigService(
-        {"model": {"name": "runtime"}},
-        {"model": {"temperature": 0.2}},
-        {"model": {"name": "default", "temperature": 1.0}},
-    )
-
-    assert service.get("model.name") == "runtime"
-    assert service.get("model.temperature") == 0.2
 
 
 def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:

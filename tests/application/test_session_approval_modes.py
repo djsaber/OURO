@@ -61,7 +61,7 @@ async def test_auto_mode_executes_protected_tools_and_persists_on_session(tmp_pa
     assert result.run.status == "completed"
     assert result.session.approval_mode == "auto"
     assert target.read_text(encoding="utf-8") == "automatic"
-    persisted = runtime.store.load_session(result.session.session_id, recover=False).session
+    persisted = runtime.store.load_session(result.session.session_id).session
     assert persisted.approval_mode == "auto"
 
 
@@ -166,5 +166,5 @@ def test_branch_inherits_session_approval_mode(tmp_path) -> None:
     branch = sessions.branch(source.session_id, message.message_id)
 
     assert branch.session.approval_mode == "auto"
-    persisted = store.load_session(branch.session.session_id, recover=False).session
+    persisted = store.load_session(branch.session.session_id).session
     assert persisted.approval_mode == "auto"

@@ -7,10 +7,11 @@ from dataclasses import dataclass, field
 from typing import Final, Protocol
 
 from ouro.application.dto import Diagnostic
+from ouro.application.event_models import project_runtime_event
 from ouro.application.runs import maybe_active_run
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_activity import (
-    project_runtime_activity,
+    project_runtime_activity_state,
     queued_runtime_activity,
     reduce_runtime_activity,
     runtime_activity_changed,
@@ -103,16 +104,24 @@ class RuntimeSubscription(AsyncIterator[RuntimeNotification]):
         except asyncio.QueueFull:
             with suppress(asyncio.QueueEmpty):
                 self._queue.get_nowait()
-            diagnostic = Diagnostic(
-                code="runtime_subscription_lagged",
-                severity="warning",
-                component="runtime.supervisor",
-                message="subscriber buffer overflowed; one or more events were skipped",
-                session_id=self.session_id,
-                recoverable=True,
-                suggested_action="Reload durable events from the SessionStore.",
-            )
-            self._queue.put_nowait(RuntimeNotification(kind="diagnostic", diagnostic=diagnostic))
+            self._offer_lagged()
+
+    def _offer_lagged(self) -> None:
+        if self._closed:
+            return
+        with suppress(asyncio.QueueEmpty):
+            while True:
+                self._queue.get_nowait()
+        diagnostic = Diagnostic(
+            code="runtime_subscription_lagged",
+            severity="warning",
+            component="runtime.supervisor",
+            message="subscriber buffer overflowed; one or more events were skipped",
+            session_id=self.session_id,
+            recoverable=True,
+            suggested_action="Reload durable events with the paged Session API.",
+        )
+        self._queue.put_nowait(RuntimeNotification(kind="diagnostic", diagnostic=diagnostic))
 
     def _offer_closed(self) -> None:
         try:
@@ -168,7 +177,7 @@ class RuntimeSupervisor:
                 self._started_resources.append(resource)
             recovered: list[RuntimeStatusSnapshot] = []
             for session in self.store.list_sessions():
-                snapshot = self.store.load_runtime_session(session.session_id, recover=True)
+                snapshot = self.runtime.session_recovery.recover_runtime(session.session_id)
                 for run in snapshot.runs:
                     if run.status == "recoverable":
                         recovered.append(
@@ -215,7 +224,7 @@ class RuntimeSupervisor:
                 raise SessionNotFoundError(f"session not found: {session_id}") from exc
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        durable = self.store.load_runtime_session(session_id, recover=False)
+        durable = self.store.load_runtime_session(session_id)
         if maybe_active_run(durable.runs) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
@@ -251,7 +260,7 @@ class RuntimeSupervisor:
         if max_buffer <= 0:
             raise ValueError("max_buffer must be positive")
         try:
-            snapshot = self.store.load_session(session_id, recover=False)
+            self.store.load_session_record(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
         activity = self._activities.get(session_id)
@@ -262,7 +271,7 @@ class RuntimeSupervisor:
                 if active_job is not None
                 else None
             )
-            activity = project_runtime_activity(snapshot, status_override=status_override)
+            activity = self._load_activity(session_id, status_override=status_override)
             self._activities[session_id] = activity
         subscription = RuntimeSubscription(
             self,
@@ -272,9 +281,18 @@ class RuntimeSupervisor:
             initial_activity=activity if include_activity else None,
         )
         self._subscriptions.setdefault(session_id, set()).add(subscription)
-        for event in sorted(snapshot.events, key=lambda item: (item.sequence, item.event_id)):
-            if event.sequence > after_sequence:
-                subscription._offer(RuntimeNotification(kind="event", event=event))
+        events, truncated = self.store.load_events_after(
+            session_id,
+            after_sequence=after_sequence,
+            limit=max_buffer,
+        )
+        if truncated:
+            subscription._offer_lagged()
+        else:
+            for event in events:
+                subscription._offer(
+                    RuntimeNotification(kind="event", event=project_runtime_event(event))
+                )
         return subscription
 
     def unsubscribe(self, subscription: RuntimeSubscription) -> None:
@@ -301,10 +319,7 @@ class RuntimeSupervisor:
         if active is not None:
             return self._snapshots[active.handle.handle_id]
         try:
-            durable_snapshot = self.store.load_runtime_session(
-                handle_or_session,
-                recover=False,
-            )
+            durable_snapshot = self.store.load_runtime_session(handle_or_session)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {handle_or_session}") from exc
         run = maybe_active_run(durable_snapshot.runs)
@@ -336,14 +351,13 @@ class RuntimeSupervisor:
         ):
             return cached
         try:
-            durable = self.store.load_session(session_id, recover=False)
+            activity = self._load_activity(
+                session_id,
+                run_id=requested_status.run_id,
+                status_override=requested_status.status,
+            )
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
-        activity = project_runtime_activity(
-            durable,
-            run_id=requested_status.run_id,
-            status_override=requested_status.status,
-        )
         if not is_handle_lookup and requested_status.run_id == activity.run_id:
             self._activities[session_id] = activity
         return activity
@@ -537,7 +551,7 @@ class RuntimeSupervisor:
             finally:
                 self._queue.task_done()
 
-    def _on_event(self, event: EventRecord) -> None:
+    async def _on_event(self, event: EventRecord) -> None:
         job = self._jobs_by_session.get(event.session_id)
         if job is not None and not job.done.is_set():
             current = self._snapshots[job.handle.handle_id]
@@ -550,13 +564,12 @@ class RuntimeSupervisor:
                 }
             )
         subscriptions = tuple(self._subscriptions.get(event.session_id, ()))
-        notification = RuntimeNotification(kind="event", event=event)
+        notification = RuntimeNotification(kind="event", event=project_runtime_event(event))
         for subscription in subscriptions:
             subscription._offer(notification)
         previous_activity = self._activities.get(event.session_id)
         if previous_activity is None:
-            durable = self.store.load_session(event.session_id, recover=False)
-            current_activity = project_runtime_activity(durable)
+            current_activity = self._load_activity(event.session_id)
         else:
             current_activity = reduce_runtime_activity(previous_activity, event)
         self._activities[event.session_id] = current_activity
@@ -571,6 +584,27 @@ class RuntimeSupervisor:
             for subscription in subscriptions:
                 if subscription.include_activity:
                     subscription._offer(activity_notification)
+
+    def _load_activity(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None = None,
+        status_override: SupervisorRunStatus | None = None,
+    ) -> RuntimeActivitySnapshot:
+        session = self.store.load_session_record(session_id)
+        selected_run_id = run_id or session.active_run_id or session.last_run_id
+        run = (
+            self.store.load_run(session_id, selected_run_id)
+            if selected_run_id is not None
+            else None
+        )
+        return project_runtime_activity_state(
+            session,
+            run,
+            sequence=self.store.latest_event_sequence(session_id),
+            status_override=status_override,
+        )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:
         if isinstance(handle_or_session, RunHandle):
@@ -632,10 +666,7 @@ class RuntimeSupervisor:
 
     def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            durable = self.store.load_runtime_session(
-                job.handle.session_id,
-                recover=False,
-            )
+            durable = self.store.load_runtime_session(job.handle.session_id)
             active = maybe_active_run(durable.runs)
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None

@@ -8,7 +8,7 @@ from typing import Any
 
 from pydantic import Field, ValidationError
 
-from ouro.config.file import JsonConfigFile
+from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.core.tools import PermissionMode
@@ -43,6 +43,7 @@ class PermissionConfigManager:
             config_path=self.config_path,
         )
 
+    @atomic_config_update
     def set_tool_mode(self, tool_name: str, mode: PermissionMode) -> PermissionConfigSnapshot:
         if mode not in ("auto", "approval", "deny"):
             raise ConfigError(f"invalid permission mode: {mode}")
@@ -55,6 +56,7 @@ class PermissionConfigManager:
         self._write_raw(next_raw)
         return self.snapshot()
 
+    @atomic_config_update
     def clear_tool_mode(self, tool_name: str) -> PermissionConfigSnapshot:
         raw = self.load_raw()
         config = _permission_config_from_raw(raw)

@@ -9,6 +9,9 @@ from ouro.application.configuration_models import (
     ConfigurationChange,
     ConfigurationOverview,
     LoadedSkillView,
+    MCPConfigCatalogView,
+    MCPConnectionCheckView,
+    MCPServerConfigView,
     PermissionConfigView,
     ProviderCatalogView,
     ProviderEndpointCatalogView,
@@ -34,12 +37,14 @@ from ouro.application.configuration_views import (
     endpoint_view,
     loaded_skill_view,
     managed_skill_view,
+    mcp_server_view,
     provider_template_view,
     provider_view,
     skill_diagnostic_view,
     skill_management_view,
     skill_view,
 )
+from ouro.application.dto import Diagnostic
 from ouro.config import (
     BUILTIN_FAUX_PROVIDER_ID,
     INTEGRATED_PROVIDER_TYPES,
@@ -63,8 +68,14 @@ from ouro.config.skills import SkillInstallScope
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
+from ouro.core.redaction import redact_text
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
+from ouro.mcp import (
+    MCPConfigStore,
+    MCPServerConfigUpdate,
+    check_mcp_server_connection,
+)
 from ouro.prompts import render_agent_skills_prompt
 from ouro.skills import (
     SkillLoader,
@@ -85,6 +96,7 @@ class ConfigurationFacade:
         self.queued_inputs = QueuedInputConfigManager(root)
         self.run_budget = RunBudgetConfigManager(root)
         self.compaction = CompactionConfigManager(root)
+        self.mcp = MCPConfigStore(root)
         self.skills = SkillManager(root)
         self._skill_policy = self.skills.config
         self.root = self.providers.root
@@ -101,6 +113,73 @@ class ConfigurationFacade:
             run_budget=self.run_budget_config(),
             compaction=self.compaction_config(),
             skills=self.skill_policy(),
+            mcp=self.mcp_catalog(),
+        )
+
+    def mcp_catalog(
+        self,
+        *,
+        change: ConfigurationChange | None = None,
+    ) -> MCPConfigCatalogView:
+        snapshot = self.mcp.snapshot()
+        return MCPConfigCatalogView(
+            config_path=str(snapshot.config_path),
+            servers=[mcp_server_view(config) for config in snapshot.servers],
+            change=change,
+        )
+
+    def mcp_server(self, server_id: str) -> MCPServerConfigView:
+        config = self.mcp.get(server_id)
+        if config is None:
+            raise ConfigError(f"MCP server not found: {server_id}")
+        return mcp_server_view(config)
+
+    def save_mcp_server(
+        self,
+        server_id: str,
+        update: MCPServerConfigUpdate,
+    ) -> MCPConfigCatalogView:
+        self.mcp.update(server_id, update)
+        return self.mcp_catalog(change=configuration_change("mcp", "updated", "next_runtime"))
+
+    def remove_mcp_server(self, server_id: str) -> MCPConfigCatalogView:
+        self.mcp.remove(server_id)
+        return self.mcp_catalog(change=configuration_change("mcp", "removed", "next_runtime"))
+
+    async def check_mcp_server(self, server_id: str) -> MCPConnectionCheckView:
+        config = self.mcp.get(server_id)
+        if config is None:
+            raise ConfigError(f"MCP server not found: {server_id}")
+        result = await check_mcp_server_connection(config)
+        return MCPConnectionCheckView(
+            ok=result.ok,
+            status=result.status,
+            server=mcp_server_view(config),
+            server_info=(
+                result.server_info.model_dump(mode="json")
+                if result.server_info is not None
+                else None
+            ),
+            tool_names=result.tool_names,
+            error=redact_text(result.error) if result.error is not None else None,
+            diagnostics=tuple(
+                Diagnostic(
+                    code="mcp_connection_diagnostic",
+                    severity=(
+                        "error"
+                        if item.level == "error"
+                        else "warning"
+                        if item.level == "warning"
+                        else "info"
+                    ),
+                    component="mcp.connection",
+                    message=redact_text(item.message),
+                    server_id=item.server_id,
+                    occurred_at=item.created_at,
+                    recoverable=True,
+                )
+                for item in result.diagnostics
+            ),
         )
 
     def provider_catalog(

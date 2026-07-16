@@ -6,8 +6,8 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
+from ouro.application.event_models import RuntimeEventView
 from ouro.core.base import new_id, utc_now
-from ouro.core.events import EventRecord
 from ouro.core.state import RunPhase
 from ouro.core.tool_batches import ToolBatchPhase, ToolCallStatus
 
@@ -91,7 +91,7 @@ class ShutdownPolicy(ApplicationDTO):
 
 class RuntimeNotification(ApplicationDTO):
     kind: Literal["event", "activity", "diagnostic"]
-    event: EventRecord | None = None
+    event: RuntimeEventView | None = None
     activity: RuntimeActivitySnapshot | None = None
     diagnostic: Diagnostic | None = None
 

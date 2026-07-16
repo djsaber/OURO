@@ -224,7 +224,7 @@ async def _wait_for_active_session(store: LocalSessionStore):
 
 async def _wait_for_event(store: LocalSessionStore, session_id: str, event_type: str) -> None:
     for _ in range(100):
-        snapshot = store.load_session(session_id, recover=False)
+        snapshot = store.load_session(session_id)
         if any(event.event_type == event_type for event in snapshot.events):
             return
         await asyncio.sleep(0.01)
@@ -293,7 +293,7 @@ async def test_runtime_projects_resource_content_but_persists_only_reference(tmp
         session_id=session.session_id,
         resource_refs=[resource.resource_id],
     )
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
 
     assert result.run.status == "completed"
     assert "projected attachment" in provider.messages[0].text_content
@@ -328,7 +328,7 @@ async def test_runtime_validates_resource_before_starting_run_or_message(tmp_pat
             resource_refs=["res_" + "0" * 64],
         )
 
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     assert snapshot.messages == []
     assert snapshot.runs == []
 
@@ -369,7 +369,7 @@ async def test_runtime_persists_text_run(tmp_path) -> None:
 @pytest.mark.asyncio
 async def test_runtime_hot_path_does_not_load_complete_replay_snapshot(tmp_path) -> None:
     class RuntimeOnlyStore(LocalSessionStore):
-        def load_session(self, session_id: str, *, recover: bool = True):
+        def load_session(self, session_id: str):
             raise AssertionError("runtime hot path loaded replay events")
 
     store = RuntimeOnlyStore(tmp_path)
@@ -393,9 +393,9 @@ async def test_existing_session_loads_message_history_once_before_provider_strea
     class CountingStore(LocalSessionStore):
         runtime_snapshot_loads = 0
 
-        def load_runtime_session(self, session_id: str, *, recover: bool = True):
+        def load_runtime_session(self, session_id: str):
             self.runtime_snapshot_loads += 1
-            return super().load_runtime_session(session_id, recover=recover)
+            return super().load_runtime_session(session_id)
 
     class LoadObservingProvider(CapturingProvider):
         loads_at_stream_start: int | None = None
@@ -447,7 +447,7 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
     session = await _wait_for_active_session(store)
     await asyncio.wait_for(provider.waiting_after_first_delta.wait(), timeout=1)
 
-    streaming_snapshot = store.load_session(session.session_id, recover=False)
+    streaming_snapshot = store.load_session(session.session_id)
     delta_events = [
         event for event in streaming_snapshot.events if event.event_type == "model_tool_call_delta"
     ]
@@ -456,7 +456,7 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
 
     provider.release.set()
     result = await asyncio.wait_for(run_task, timeout=1)
-    completed_snapshot = store.load_session(session.session_id, recover=False)
+    completed_snapshot = store.load_session(session.session_id)
     completed_delta_events = [
         event for event in completed_snapshot.events if event.event_type == "model_tool_call_delta"
     ]
@@ -499,7 +499,7 @@ async def test_runtime_rejects_incomplete_streamed_tool_arguments_before_batch_c
     )
 
     result = await runtime.run("Write a file")
-    snapshot = store.load_session(result.session.session_id, recover=False)
+    snapshot = store.load_session(result.session.session_id)
 
     assert result.run.status == "failed"
     assert "tool call arguments are not valid JSON" in (result.run.error or "")
@@ -543,12 +543,12 @@ async def test_runtime_pauses_at_configured_soft_round_budget(tmp_path) -> None:
     )
 
     result = await runtime.run("Read once")
-    snapshot = store.load_session(result.session.session_id, recover=False)
+    snapshot = store.load_session(result.session.session_id)
 
     assert result.run.status == "paused"
     assert result.session.status == "idle"
     assert result.run.metadata["pause"]["reason"] == "model_rounds"
-    assert store.load_index().sessions[0].status == "paused"
+    assert store.read_catalog().sessions[0].status == "paused"
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
@@ -586,7 +586,7 @@ async def test_runtime_persists_partial_assistant_when_provider_stream_raises(
     assert snapshot.session.message_count == 2
     assert snapshot.session.last_message_id == snapshot.messages[-1].message_id
     assert snapshot.events[-1].event_type == "run_failed"
-    index = store.load_index()
+    index = store.read_catalog()
     assert index.sessions[0].status == "failed"
 
 
@@ -689,7 +689,7 @@ async def test_runtime_reconciles_interrupted_tool_exchange_before_next_run(tmp_
     )
 
     result = await runtime.run("Continue safely", session_id=session.session_id)
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
 
     assert result.run.status == "completed"
     recovered_result = snapshot.messages[1]
@@ -764,7 +764,7 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
     )
 
     await runtime.run("Continue", session_id=session.session_id)
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
     recovered_run = next(run for run in snapshot.runs if run.run_id == interrupted.run_id)
 
     assert snapshot.messages[1].text_content == "checkpointed content"
@@ -922,7 +922,7 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
     assert result.session.status == "waiting_approval"
     assert not target.exists()
     assert "approval_requested" in [event.event_type for event in snapshot.events]
-    index = store.load_index()
+    index = store.read_catalog()
     assert index.sessions[0].status == "waiting_approval"
 
 
@@ -982,7 +982,7 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
     await asyncio.wait_for(provider.first_started.wait(), timeout=1)
 
     queued = await runtime.run("Second prompt", session_id=session.session_id)
-    queued_snapshot = store.load_session(session.session_id, recover=False)
+    queued_snapshot = store.load_session(session.session_id)
     provider.release_first.set()
     first = await asyncio.wait_for(first_task, timeout=2)
     snapshot = store.load_session(session.session_id)
@@ -1018,12 +1018,12 @@ async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_messa
         tools=_tools(),
     )
     session = runtime.sessions.create(title="Crash window").session
-    queued_session, _ = runtime.follow_ups.enqueue(
-        snapshot=store.load_session(session.session_id, recover=False),
+    queued_session, _, _ = runtime.queued_inputs.enqueue(
+        snapshot=store.load_session(session.session_id),
         prompt="Queued prompt",
         title=None,
     )
-    queued = runtime.follow_ups.peek(store.load_session(queued_session.session_id, recover=False))
+    queued = runtime.queued_inputs.peek(store.load_session(queued_session.session_id))
     assert queued is not None
     store.append_message(
         MessageRecord.text(
@@ -1035,7 +1035,7 @@ async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_messa
     )
 
     result = await runtime.run("Continue", session_id=session.session_id)
-    snapshot = store.load_session(session.session_id, recover=False)
+    snapshot = store.load_session(session.session_id)
 
     assert result.run.status == "completed"
     assert provider.calls == 1
@@ -1223,7 +1223,7 @@ async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
         default_workspace=tmp_path,
     )
     pending = await runtime.run("Write once")
-    stale = store.load_session(pending.session.session_id, recover=False)
+    stale = store.load_session(pending.session.session_id)
     await runtime.approve_tool(
         session_id=pending.session.session_id,
         run_id=pending.run.run_id,
@@ -1232,12 +1232,12 @@ async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
     original_load = store.load_session
     load_count = 0
 
-    def stale_then_current(session_id, *, recover=True):
+    def stale_then_current(session_id):
         nonlocal load_count
         load_count += 1
         if load_count == 1:
             return stale
-        return original_load(session_id, recover=recover)
+        return original_load(session_id)
 
     monkeypatch.setattr(store, "load_session", stale_then_current)
     with pytest.raises(ValueError, match="not waiting for approval: completed"):
@@ -1247,7 +1247,7 @@ async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
             approved=True,
         )
 
-    current = original_load(pending.session.session_id, recover=False)
+    current = original_load(pending.session.session_id)
     assert target.read_text(encoding="utf-8") == "once"
     assert len([message for message in current.messages if message.role == "tool_result"]) == 1
     assert len([event for event in current.events if event.event_type == "tool_call_started"]) == 1
@@ -1402,7 +1402,7 @@ async def test_runtime_recovery_materializes_partial_output_from_event_journal(t
     with pytest.raises(asyncio.CancelledError):
         await run_task
 
-    recovered = store.load_session(session.session_id)
+    recovered = runtime.session_recovery.recover(session.session_id)
 
     assert recovered.runs[0].status == "recoverable"
     assert recovered.session.status == "idle"
@@ -1453,10 +1453,10 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
         run_writes += 1
         original_save_run(run)
 
-    def count_aggregate_load(session_id, *, recover=True):
+    def count_aggregate_load(session_id):
         nonlocal aggregate_loads
         aggregate_loads += 1
-        return original_load_session(session_id, recover=recover)
+        return original_load_session(session_id)
 
     monkeypatch.setattr(store, "save_session", count_session_write)
     monkeypatch.setattr(store, "save_run", count_run_write)
@@ -1506,7 +1506,7 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
         )
     )
     for _ in range(100):
-        snapshot = store.load_session(pending.session.session_id, recover=False)
+        snapshot = store.load_session(pending.session.session_id)
         if "tool_call_started" in [event.event_type for event in snapshot.events]:
             break
         await asyncio.sleep(0.01)
@@ -1758,7 +1758,7 @@ async def test_runtime_drains_follow_up_after_rejected_approval_releases_run_loc
         run_id=waiting.run.run_id,
         approved=False,
     )
-    snapshot = store.load_session(waiting.session.session_id, recover=False)
+    snapshot = store.load_session(waiting.session.session_id)
 
     assert queued.run.status == "waiting_approval"
     assert resumed.run.status == "completed"
@@ -1814,7 +1814,7 @@ async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_
         run_id=waiting.run.run_id,
         answer="notes.md",
     )
-    snapshot = store.load_session(waiting.session.session_id, recover=False)
+    snapshot = store.load_session(waiting.session.session_id)
 
     assert queued.run.status == "waiting_user"
     assert resumed.run.status == "completed"
@@ -1963,7 +1963,7 @@ async def test_runtime_recovers_when_session_projection_fails_after_run_start(tm
     session = store.list_sessions()[0]
     assert store.is_session_locked(session.session_id) is False
     store.fail_active_projection = False
-    recovered = store.load_session(session.session_id)
+    recovered = runtime.session_recovery.recover(session.session_id)
     assert recovered.session.status == "idle"
     assert recovered.session.active_run_id is None
     assert recovered.runs[0].status == "recoverable"

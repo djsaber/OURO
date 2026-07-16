@@ -8,23 +8,24 @@
 ## 分层与依赖方向
 
 ```text
-CLI / future hosts
+CLI / TUI / Desktop hosts
         |
         v
 application orchestration
-   |        |          |
-   v        v          v
- core    config    session/tool ports
-   ^                     ^
-   |                     |
-provider adapters    local implementations
+   |        |             |
+   v        v             v
+ core    config    session/resource/tool ports
+   ^                        ^
+   |                        |
+provider adapters    file / SQLite / local implementations
 ```
 
 - `ouro.core` 定义稳定领域记录、Provider/Tool 契约、上下文构建、取消信号和单次 active run 的状态机。
   它只能依赖 `ouro.core`。
 - `ouro.application` 编排用例、状态转换和持久化事务。它可以依赖 core、配置契约和基础设施端口，
   不能依赖 CLI 或具体 provider 实现。
-- `ouro.cli` 是组合根和界面适配器，只负责解析、装配、调用 application 和格式化输出。
+- `ouro.local_application` 是本地部署组合根，统一拥有 Runtime、MCP 和关闭生命周期；`ouro.cli` 只是界面
+  适配器，负责解析、调用 application service 和格式化输出。
 - `ouro.providers`、`ouro.sessions`、`ouro.tools` 是外部能力的具体适配与实现。
 - `ouro.config`、`ouro.skills`、`ouro.plugins`、`ouro.mcp` 维护各自契约与策略，不反向依赖
   application 或 CLI。
@@ -38,8 +39,8 @@ provider adapters    local implementations
 | `core` | 领域记录、协议、纯规则、inner loop | 文件、网络、CLI、具体厂商 SDK |
 | `application` | 会话与运行用例、事务编排、Host DTO | 参数解析、终端渲染、HTTP 细节 |
 | `config` | 集中配置模型、校验、持久化和运行参数合并 | 模型请求和 UI 查询用例 |
-| `sessions` | SessionStore port、本地文件后端、索引和 OS 锁 | 会话命令与 Host DTO |
-| `resources` | ResourceStore port、不可变 blob、Session 引用和资源索引 | Host DTO 与运行调度 |
+| `sessions` | 后端中立 SessionRepository/Catalog port、文件与 SQLite 后端、Session 资源引用 | 会话命令与 Host DTO |
+| `resources` | ResourceStore port、不可变 blob 与 blob 元数据 | Session 引用、Host DTO 与运行调度 |
 | `providers` | Provider 实现、transport、codec、adapter factory | 会话模型选择和运行状态 |
 | `tools` | 工具注册、schema 校验、权限执行和批调度 | 模型轮次状态机 |
 | `skills` | 标准 Skills 发现、解析、内容加载和安装管理 | 提示词运行编排 |
@@ -49,10 +50,11 @@ provider adapters    local implementations
 ## 核心运行链
 
 ```text
-CLI / Host
-  -> MCPRuntimeResource.from_config(root, runtime.tools)
-    -> start auto-start servers + atomic ToolRegistry projection
-  -> RuntimeService
+CLI / TUI / Desktop Host
+  -> LocalApplication async lifecycle
+    -> MCPRuntimeResource.from_config(home, runtime.tools)
+      -> start auto-start servers + atomic ToolRegistry projection
+    -> RuntimeService
     -> session lock + recovery
     -> RunLifecycle.start
     -> InnerAgentLoop
@@ -63,10 +65,9 @@ CLI / Host
     -> queued input drain
 ```
 
-默认 CLI 在进入 Run 前启动 MCP resource：单次 `run` 持有到结果完成，Interactive 持有到输入循环退出，
-`approve` 在恢复 durable 工具批次前重新连接。三条路径都在 `finally`/async context 中关闭资源。其他 Host
-通过 RuntimeSupervisor 的 `RuntimeManagedResource` 注入同一个 `MCPRuntimeResource`，不得只构建
-RuntimeService 后绕过扩展资源装配。
+默认 CLI 的单次 Run、Interactive 和审批恢复均通过 `LocalApplication` 启动并关闭 Runtime/MCP；Runtime
+自身又关闭模型 adapter、事件 worker 和专用压缩 adapter。TUI/Desktop 必须复用同一 async lifecycle，
+不得从 Session adapter 路径推导部署配置，也不得只构建 RuntimeService 后绕过扩展资源装配。
 
 `RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和排队输入
 串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
@@ -82,6 +83,10 @@ events 的 `SessionSnapshot` 只服务查询、回放、导出和活动投影重
 Host 可直接消费的细粒度活动状态；它不是第二套状态机，并可从 Session 事件重建。订阅可选择接收活动变化，
 且在创建时取得同一边界的 initial activity。每个订阅使用有界队列，慢 Host 不反向阻塞 Run；发生 lag 后
 Host 通过 activity 快照和 durable event cursor 重新同步。
+
+`RuntimeEventRecorder` 先在线程外持久化事件，再把 Host sink 与观察型 Hook 投递到彼此独立的有界 worker；
+慢观察者不会持有跨 Session 全局锁，也不会回滚 durable event。每个 sink/hook 都有超时和脱敏诊断，关闭
+生命周期会 drain 已接收事件。Host 收到的是类型化 `RuntimeEventView`，不需要重复解释任意 payload。
 
 排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
 model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此
@@ -164,7 +169,8 @@ Provider `done` 时立即记账，因此即使后续摘要格式校验失败或�
 
 ## 本地持久化
 
-默认 `LocalSessionStore` 在 `OURO_HOME` 下保存可读文件：
+`SessionRepository` 是 canonical 后端契约，`SessionCatalogStore` 是可丢弃查询投影契约；二者都不暴露
+Path、初始化、文件索引或 ORM。默认 `LocalSessionStore` 在 `OURO_HOME` 下保存可读文件：
 
 ```text
 OURO_HOME/
@@ -192,25 +198,33 @@ OURO_HOME/
   trash/sessions/
 ```
 
+`SQLiteSessionStore` 是同一契约的第二实现，默认数据库位置为 `OURO_HOME/sessions.sqlite3`。它使用标准
+`sqlite3`、WAL、外键和显式事务，事件 after-sequence 查询由索引支持；表结构只存在于 adapter 内。
+`LocalApplication.build(..., session_backend="sqlite")` 可选择该实现。`import_sessions_to_sqlite` 在一个目标
+事务中复制、逐 Session 验证并在失败时整体回滚；文件后端继续作为可读实现和导出来源。
+
 `session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
 `billing/usage.jsonl` 是独立的全局 canonical 账本，不随 Session 归档或进入回收站而删除。
 messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后
 已有 cursor 仍可继续使用。
 
-Provider text/reasoning delta 只追加到 `events.jsonl`，由下一个非 delta 事件执行组提交；状态边界事件仍同步落盘。
-快照只在消息提交和生命周期状态转换时写入。
-崩溃恢复从 durable messages、run 状态和最后模型轮次事件重建未完成输出，不重放结果未知的外部副作用。
+Provider text/reasoning delta 只追加到文件后端的 `events.jsonl`，由下一个非 delta 事件执行组提交；状态边界
+事件仍同步落盘。快照只在消息提交和生命周期状态转换时写入。SQLite 在同一语义契约下使用数据库事务。
+所有 Store 读取均无副作用；`SessionRecoveryService` 是显式 application command，从 durable messages、run
+状态和最后模型轮次事件重建未完成输出，不重放结果未知的外部副作用。
 
 `layout.json` 的 `data_layout_version` 标识整套本地数据契约。遇到不兼容版本时初始化必须抛出
 `MigrationRequiredError`，不能在加载过程中猜测字段或隐式改写数据。
 
 每个 session 同时只允许一个 active run。`RunRecord` 是执行状态事实，`SessionRecord.status` 与
-`active_run_id` 是可恢复的查询投影；加载恢复会校准悬空引用、跨文件写入中断和不可继续的人机等待状态。
+`active_run_id` 是可恢复的查询投影；显式恢复命令会校准悬空引用、跨存储写入中断和不可继续的人机等待状态。
 长生命周期 session OS lock 表示 active run 的进程所有权；独立的短生命周期 mutation lock 只覆盖
 单次 canonical 读改写、JSONL 追加和事件序号分配，两者不能互相替代。锁文件仅用于诊断。
 
-全局 resource record/blob 与 Session 引用关系是 canonical 数据；`resources/index.json` 是可重建投影。
+全局 resource record/blob 是 ResourceStore 的 canonical 数据；Session 到 resource 的引用只由
+SessionRepository 拥有，文件实现保存 Session 子记录，SQLite 实现保存引用表。Resource adapter 不读取或
+推断 Session adapter 的目录/表结构。`resources/index.json` 只是 blob 元数据的可重建投影。
 资源导入先 staging 并计算 SHA-256，再原子发布。分支的消息与资源引用在同一 Session staging 目录发布，
 避免先出现带悬空 resource id 的分支。分支读取、资源引用校验和目标发布持有源 Session mutation lock，
 因此源会话删除或资源移除必须在线性化点之后执行，垃圾回收不会删除正在复制的最后一份可达内容。
@@ -234,8 +248,9 @@ Provider 配置同时持久化实例 `provider_id`、产品配置 `provider_type
 缺失协议或猜测另一种格式。凭据通过 `CredentialRef` 进入 provider factory，业务代码不直接读取环境变量。
 Endpoint 的 `reasoning.capability/profile` 是同一权威配置的一部分；profile 与 `request_options` 的字段所有权
 冲突、协议无法保存的 continuation 以及运行时不支持的 effort 均在 HTTP 前失败。
-CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区；Facade 只暴露凭据
-configured/missing 状态，并报告配置变更的生效范围。具体 manager 留在 application 组合边界之后。
+CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区，包括 MCP；Facade
+只暴露凭据 configured/missing 状态，并报告配置变更的生效范围。所有 JSON 配置 command 在同一跨进程
+文件锁内完成 read-validate-write，避免 CLI/TUI/Desktop 并发修改不同 section 时丢失更新。
 
 ## CLI 契约
 
@@ -257,8 +272,10 @@ CLI 命令使用资源层级表达职责：
 - `run --resource` 将已导入资源附加到本次输入；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
-命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入 `ApplicationFacade` 或对应 application service。
-MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置和完整校验由 `MCPConfigStore` 负责。
+命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入完整、内聚的 application service
+（SessionService、ResourceService、UsageService、RuntimeService、ConfigurationFacade）；不再提供运行期才
+暴露“缺少某项能力”的大转发 façade。MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置、
+完整校验和脱敏公共视图都由 `ConfigurationFacade` 编排。
 Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
 `mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；
@@ -273,8 +290,13 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 ## 扩展边界
 
-- Hook 失败由 `RuntimeEventRecorder` 隔离并转为事件，不允许破坏 durable run。
-- 插件只能通过注册表贡献工具、Hook、命令、上下文 provider 或压缩策略。
+- Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
+  observational hook 使用不同超时上限。
+- 插件只能通过注册表贡献工具、Hook、Host-neutral command、上下文 provider 或压缩策略。manifest 的
+  `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
+  未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
+- 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
+  Desktop 可映射为 action，但 core 不定义 UI extension DSL。
 - `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
   协调 owner，避免跨任务退出 AnyIO 取消域。
@@ -290,6 +312,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 - 第二种 Supervisor 后端或跨进程调度出现后，再拆分当前进程内调度实现；
 - Desktop 配置界面直接扩展现有 `ConfigurationFacade` 用例，不另建 UI 专用 manager；
+- TUI 与 Desktop 直接消费 application DTO、`RuntimeEventView`、activity snapshot 和增量 cursor，不解析后端；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
 - 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
 - 第二种 MCP SDK 或自定义 transport 出现后，再抽取 SDK 之外的 transport provider 层；当前 client port 已足以

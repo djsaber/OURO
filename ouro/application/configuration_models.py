@@ -21,9 +21,20 @@ ConfigurationSection = Literal[
     "run_budget",
     "compaction",
     "skills",
+    "mcp",
 ]
 ConfigurationEffectiveFrom = Literal["next_request", "next_runtime"]
 CredentialState = Literal["not_required", "configured", "missing"]
+MCPConnectionStatus = Literal[
+    "configured",
+    "starting",
+    "connected",
+    "reconnecting",
+    "failed",
+    "stopping",
+    "stopped",
+    "disabled",
+]
 
 
 class ConfigurationChange(ApplicationDTO):
@@ -174,6 +185,44 @@ class CompactionConfigView(ApplicationDTO):
     change: ConfigurationChange | None = None
 
 
+class MCPServerConfigView(ApplicationDTO):
+    server_id: str
+    name: str
+    transport: Literal["stdio", "http", "sse"]
+    command: str | None = None
+    args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
+    inherit_env: list[str] = Field(default_factory=list)
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str] = Field(default_factory=dict)
+    credential_refs: dict[str, str] = Field(default_factory=dict)
+    enabled: bool
+    auto_start: bool
+    auto_reconnect: bool
+    max_reconnect_attempts: int
+    reconnect_backoff_seconds: float
+    timeout_seconds: float
+    health_check_interval_seconds: float
+    permission_mode: PermissionMode
+
+
+class MCPConfigCatalogView(ApplicationDTO):
+    config_path: str
+    servers: list[MCPServerConfigView] = Field(default_factory=list)
+    change: ConfigurationChange | None = None
+
+
+class MCPConnectionCheckView(ApplicationDTO):
+    ok: bool
+    status: MCPConnectionStatus
+    server: MCPServerConfigView
+    server_info: dict[str, Any] | None = None
+    tool_names: tuple[str, ...] = ()
+    error: str | None = None
+    diagnostics: tuple[Diagnostic, ...] = ()
+
+
 class ManagedSkillView(ApplicationDTO):
     name: str
     source: str
@@ -278,3 +327,4 @@ class ConfigurationOverview(ApplicationDTO):
     run_budget: RunBudgetConfigView
     compaction: CompactionConfigView
     skills: SkillPolicyView
+    mcp: MCPConfigCatalogView

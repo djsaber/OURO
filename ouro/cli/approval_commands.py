@@ -5,9 +5,10 @@ import sys
 from pathlib import Path
 
 from ouro.cli.errors import error_exit_code
-from ouro.cli.run import build_default_mcp_runtime, build_default_runtime
+from ouro.cli.run import build_default_runtime
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
+from ouro.local_application import LocalApplication
 
 
 async def approve_tool_command(
@@ -20,7 +21,7 @@ async def approve_tool_command(
 ) -> int:
     try:
         runtime = build_default_runtime(home)
-        async with build_default_mcp_runtime(runtime):
+        async with LocalApplication.from_runtime(runtime, home=home):
             result = await runtime.approve_tool(
                 session_id=session_id,
                 run_id=run_id,
@@ -45,12 +46,13 @@ async def reject_tool_command(
 ) -> int:
     try:
         runtime = build_default_runtime(home)
-        result = await runtime.approve_tool(
-            session_id=session_id,
-            run_id=run_id,
-            approved=False,
-            reason=reason,
-        )
+        async with runtime:
+            result = await runtime.approve_tool(
+                session_id=session_id,
+                run_id=run_id,
+                approved=False,
+                reason=reason,
+            )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
         _print_error(ouro_exc, json_mode=json_mode)
@@ -69,11 +71,12 @@ async def abort_run_command(
 ) -> int:
     try:
         runtime = build_default_runtime(home)
-        result = await runtime.abort_run(
-            session_id=session_id,
-            run_id=run_id,
-            reason=reason,
-        )
+        async with runtime:
+            result = await runtime.abort_run(
+                session_id=session_id,
+                run_id=run_id,
+                reason=reason,
+            )
     except (OuroError, ValueError, RuntimeError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
         _print_error(ouro_exc, json_mode=json_mode)
