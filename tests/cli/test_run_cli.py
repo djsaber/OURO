@@ -87,8 +87,14 @@ async def test_run_print_reports_failed_runtime_result(
     monkeypatch,
     capsys,
 ) -> None:
-    def fake_runtime(home=None, *, provider_options=None, system_prompt=None):
-        del provider_options, system_prompt
+    def fake_runtime(
+        home=None,
+        *,
+        provider_options=None,
+        system_prompt=None,
+        session_backend=None,
+    ):
+        del provider_options, system_prompt, session_backend
         return _runtime(home or tmp_path, [[ProviderStreamEvent(type="done")]])
 
     monkeypatch.setattr("ouro.cli.run.build_default_runtime", fake_runtime)
@@ -678,7 +684,8 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
 def test_main_without_subcommand_enters_interactive(monkeypatch, tmp_path) -> None:
     calls = []
 
-    async def fake_interactive(*, home, system_prompt):
+    async def fake_interactive(*, home, system_prompt, session_backend=None):
+        assert session_backend is None
         calls.append((home, system_prompt))
         return 0
 
@@ -1770,7 +1777,15 @@ def test_run_print_mode_shows_reasoning_deltas_in_dim_italics(
         ],
     )
 
-    def fake_runtime(home=None, *, provider_options=None, system_prompt=None, event_sink=None):
+    def fake_runtime(
+        home=None,
+        *,
+        provider_options=None,
+        system_prompt=None,
+        event_sink=None,
+        session_backend=None,
+    ):
+        del session_backend
         if event_sink is not None:
             runtime.add_event_sink(event_sink)
         return runtime

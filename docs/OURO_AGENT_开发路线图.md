@@ -78,9 +78,9 @@ SQLite adapter、类型化 Host 事件、LocalApplication 生命周期和插件 
 ### SQLite 产品化
 
 文件与 SQLite 已通过同一 SessionStore contract；SQLite 使用 adapter 内部事务和索引，文件到 SQLite 的
-导入 API 会验证并整体回滚。进入用户可选阶段前仍需：
+导入 API 会验证并整体回滚。CLI Host 已支持命令参数与环境变量选择后端，且不会隐式迁移。产品化仍需：
 
-- 提供明确的 CLI/Desktop 后端选择和迁移预检/进度/备份体验；
+- 提供 Desktop 后端选择，以及 CLI/Desktop 迁移预检、进度和备份体验；
 - 在真实长会话数据上建立查询、写入、WAL 维护和恢复基准；
 - 定义版本升级、备份恢复和损坏诊断流程；
 - 保留文件后端作为可读实现和显式导出来源。

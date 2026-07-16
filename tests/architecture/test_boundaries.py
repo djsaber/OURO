@@ -129,6 +129,27 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
         assert not any(module.startswith(forbidden) for module in modules)
 
 
+def test_session_backend_selection_is_owned_by_deployment_composition() -> None:
+    deployment = ast.parse((PROJECT_ROOT / "ouro" / "deployment.py").read_text(encoding="utf-8"))
+    assert not any(
+        module.startswith(("ouro.application", "ouro.cli", "ouro.sessions"))
+        for module in _imported_modules(deployment)
+    )
+
+    forbidden = ("ouro.sessions", "ouro.resources")
+    for filename in (
+        "approval_commands.py",
+        "interactive.py",
+        "main.py",
+        "resource_commands.py",
+        "run.py",
+        "session_commands.py",
+    ):
+        path = PROJECT_ROOT / "ouro" / "cli" / filename
+        modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert not any(module.startswith(forbidden) for module in modules)
+
+
 def _imported_modules(tree: ast.AST) -> list[str]:
     modules: list[str] = []
     for node in ast.walk(tree):

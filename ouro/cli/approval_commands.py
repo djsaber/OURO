@@ -8,6 +8,7 @@ from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
+from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 
 
@@ -18,9 +19,10 @@ async def approve_tool_command(
     run_id: str | None = None,
     arguments_override: dict[str, object] | None = None,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home)
+        runtime = build_default_runtime(home, session_backend=session_backend)
         async with LocalApplication.from_runtime(runtime, home=home):
             result = await runtime.approve_tool(
                 session_id=session_id,
@@ -43,9 +45,10 @@ async def reject_tool_command(
     run_id: str | None = None,
     reason: str = "User rejected",
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home)
+        runtime = build_default_runtime(home, session_backend=session_backend)
         async with runtime:
             result = await runtime.approve_tool(
                 session_id=session_id,
@@ -68,9 +71,10 @@ async def abort_run_command(
     run_id: str | None = None,
     reason: str = "User aborted",
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        runtime = build_default_runtime(home)
+        runtime = build_default_runtime(home, session_backend=session_backend)
         async with runtime:
             result = await runtime.abort_run(
                 session_id=session_id,

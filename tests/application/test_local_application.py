@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
+from ouro.core.errors import ConfigError
+from ouro.deployment import resolve_session_backend
 from ouro.local_application import LocalApplication, build_local_services
 from ouro.sessions import SQLiteSessionStore
 
@@ -26,3 +30,27 @@ def test_local_services_expose_complete_host_facets_with_sqlite(tmp_path) -> Non
     assert services.resources.list_resources(created.session.session_id).resources == ()
     assert services.usage.list_entries().entries == ()
     assert services.configuration.overview().mcp.servers == []
+
+
+def test_environment_selects_backend_and_explicit_value_has_precedence(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OURO_SESSION_BACKEND", "sqlite")
+    sqlite_services = build_local_services(tmp_path)
+    sqlite_session = sqlite_services.sessions.create(title="SQLite").session
+
+    file_services = build_local_services(tmp_path, session_backend="files")
+
+    assert (tmp_path / "sessions.sqlite3").is_file()
+    assert sqlite_services.sessions.open(sqlite_session.session_id).session.title == "SQLite"
+    assert file_services.sessions.catalog().entries == ()
+
+
+def test_invalid_environment_backend_fails_at_composition_boundary(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("OURO_SESSION_BACKEND", "remote")
+
+    with pytest.raises(ConfigError, match="OURO_SESSION_BACKEND"):
+        resolve_session_backend()

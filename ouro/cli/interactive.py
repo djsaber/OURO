@@ -17,6 +17,7 @@ from ouro.cli.run import (
 )
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
+from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 
 _CYAN = "\x1b[36m"
@@ -29,6 +30,7 @@ async def run_interactive(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     approval_mode: SessionApprovalMode = "inherit",
+    session_backend: SessionBackend | None = None,
     runtime: RuntimeService | None = None,
     input_func: InputFunc = input,
     output_func: OutputFunc = print,
@@ -43,6 +45,7 @@ async def run_interactive(
                 provider_options=provider_options,
                 system_prompt=system_prompt,
                 event_sink=output.handle_event,
+                session_backend=session_backend,
             )
             owned_application = LocalApplication.from_runtime(runtime, home=home)
             await output.start_mcp_connection(owned_application.mcp.startup_configs)

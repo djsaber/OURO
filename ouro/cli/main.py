@@ -94,6 +94,7 @@ from ouro.cli.usage_commands import (
 )
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
+from ouro.deployment import SessionBackend
 from ouro.mcp import MCPServerConfigUpdate
 
 
@@ -143,9 +144,16 @@ def _dispatch(args: argparse.Namespace) -> int:
                 home=args.home,
                 system_prompt=args.system_prompt,
                 approval_mode=args.interactive_approval_mode,
+                session_backend=args.session_backend,
             )
         )
-    return asyncio.run(run_interactive(home=args.home, system_prompt=args.system_prompt))
+    return asyncio.run(
+        run_interactive(
+            home=args.home,
+            system_prompt=args.system_prompt,
+            session_backend=args.session_backend,
+        )
+    )
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -167,6 +175,7 @@ def _run_command(args: argparse.Namespace) -> int:
             queue_mode=args.queue_mode,
             approval_mode=args.approval_mode,
             resource_refs=args.resource_ids,
+            session_backend=_selected_session_backend(args, scoped="run_session_backend"),
         )
     )
 
@@ -174,6 +183,7 @@ def _run_command(args: argparse.Namespace) -> int:
 def _session_command(args: argparse.Namespace) -> int:
     home = args.home
     command = args.session_command
+    session_backend = _selected_session_backend(args)
     if command == "list":
         return list_sessions(
             home=home,
@@ -186,17 +196,30 @@ def _session_command(args: argparse.Namespace) -> int:
             model=args.model,
             tags=args.tags,
             sort=args.sort,
+            session_backend=session_backend,
         )
     if command == "show":
-        return show_session(args.session_id, home=home, json_mode=args.json)
+        return show_session(
+            args.session_id,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
     if command == "rename":
-        return rename_session(args.session_id, args.title, home=home, json_mode=args.json)
+        return rename_session(
+            args.session_id,
+            args.title,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
     if command == "approval-mode":
         return set_session_approval_mode(
             args.session_id,
             args.mode,
             home=home,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command in {"archive", "unarchive"}:
         return archive_session(
@@ -204,6 +227,7 @@ def _session_command(args: argparse.Namespace) -> int:
             archived=command == "archive",
             home=home,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command in {"pin", "unpin"}:
         return pin_session(
@@ -211,6 +235,7 @@ def _session_command(args: argparse.Namespace) -> int:
             pinned=command == "pin",
             home=home,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "branch":
         return branch_session(
@@ -218,6 +243,7 @@ def _session_command(args: argparse.Namespace) -> int:
             args.message_id,
             home=home,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "replay":
         return replay_session(
@@ -225,15 +251,23 @@ def _session_command(args: argparse.Namespace) -> int:
             home=home,
             run_id=args.run_id,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "remove":
-        return remove_session(args.session_id, home=home, force=args.force, json_mode=args.json)
+        return remove_session(
+            args.session_id,
+            home=home,
+            force=args.force,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
     if command == "export":
         return export_session(
             args.session_id,
             home=home,
             output_path=args.output,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "messages":
         return list_session_messages(
@@ -242,6 +276,7 @@ def _session_command(args: argparse.Namespace) -> int:
             cursor=args.cursor,
             limit=args.limit,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "events":
         return list_session_events(
@@ -251,6 +286,7 @@ def _session_command(args: argparse.Namespace) -> int:
             cursor=args.cursor,
             limit=args.limit,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if command == "compact":
         return asyncio.run(
@@ -258,6 +294,7 @@ def _session_command(args: argparse.Namespace) -> int:
                 args.session_id,
                 home=home,
                 json_mode=args.json,
+                session_backend=session_backend,
             )
         )
     raise AssertionError(f"unknown session command: {command}")
@@ -265,6 +302,7 @@ def _session_command(args: argparse.Namespace) -> int:
 
 def _approval_command(args: argparse.Namespace) -> int:
     home = args.home
+    session_backend = _selected_session_backend(args)
     if args.command == "approve":
         return asyncio.run(
             approve_tool_command(
@@ -273,6 +311,7 @@ def _approval_command(args: argparse.Namespace) -> int:
                 run_id=args.run_id,
                 arguments_override=args.modify,
                 json_mode=args.json,
+                session_backend=session_backend,
             )
         )
     if args.command == "reject":
@@ -283,6 +322,7 @@ def _approval_command(args: argparse.Namespace) -> int:
                 run_id=args.run_id,
                 reason=args.reason,
                 json_mode=args.json,
+                session_backend=session_backend,
             )
         )
     if args.command == "abort":
@@ -293,12 +333,14 @@ def _approval_command(args: argparse.Namespace) -> int:
                 run_id=args.run_id,
                 reason=args.reason,
                 json_mode=args.json,
+                session_backend=session_backend,
             )
         )
     raise AssertionError(f"unknown approval command: {args.command}")
 
 
 def _resource_command(args: argparse.Namespace) -> int:
+    session_backend = _selected_session_backend(args)
     if args.resource_command == "import":
         return import_resource(
             args.session_id,
@@ -306,15 +348,22 @@ def _resource_command(args: argparse.Namespace) -> int:
             home=args.home,
             media_type=args.media_type,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if args.resource_command == "list":
-        return list_resources(args.session_id, home=args.home, json_mode=args.json)
+        return list_resources(
+            args.session_id,
+            home=args.home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
     if args.resource_command == "show":
         return show_resource(
             args.session_id,
             args.resource_id,
             home=args.home,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if args.resource_command == "export":
         return export_resource(
@@ -324,6 +373,7 @@ def _resource_command(args: argparse.Namespace) -> int:
             home=args.home,
             force=args.force,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     if args.resource_command == "remove":
         return remove_resource(
@@ -332,8 +382,17 @@ def _resource_command(args: argparse.Namespace) -> int:
             home=args.home,
             force=args.force,
             json_mode=args.json,
+            session_backend=session_backend,
         )
     raise AssertionError(f"unknown resource command: {args.resource_command}")
+
+
+def _selected_session_backend(
+    args: argparse.Namespace,
+    *,
+    scoped: str = "command_session_backend",
+) -> SessionBackend | None:
+    return getattr(args, scoped, None) or getattr(args, "session_backend", None)
 
 
 def _config_command(args: argparse.Namespace) -> int:

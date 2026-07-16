@@ -39,7 +39,9 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付；
 - 消息和事件按稳定 cursor 增量读取，事件订阅也支持 after-sequence 追赶，长历史不要求 Host 全量加载；
 - 后端中立 SessionRepository 下的本地可读文件与 SQLite 两种实现，以及原子、验证、失败回滚的
-  文件到 SQLite 导入。
+  文件到 SQLite 导入；
+- CLI Host 可通过 `--session-backend files|sqlite` 或 `OURO_SESSION_BACKEND` 选择后端；选择只决定当前数据集，
+  不触发隐式迁移。
 
 ### 模型与上下文
 
@@ -168,7 +170,7 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 - 完整插件系统：安装来源、信任声明、权限确认、entrypoint 加载、升级与隔离诊断。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
-- SQLite 产品化：后端选择、迁移 UI、备份恢复、版本升级和真实规模性能基准。
+- SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。
 
 未来能力必须复用现有 core/application 契约，不能让 Desktop、插件或协议对象直接接管运行状态。
 

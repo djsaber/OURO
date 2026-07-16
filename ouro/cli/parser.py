@@ -12,6 +12,7 @@ from ouro.config.reasoning import (
     reasoning_preset,
 )
 from ouro.core.approvals import SESSION_APPROVAL_MODES
+from ouro.deployment import SESSION_BACKENDS
 
 
 class OuroArgumentParser(argparse.ArgumentParser):
@@ -20,6 +21,20 @@ class OuroArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         kwargs.setdefault("formatter_class", argparse.RawDescriptionHelpFormatter)
         super().__init__(*args, **kwargs)
+
+
+def _add_session_backend_arg(
+    parser: argparse.ArgumentParser,
+    *,
+    dest: str = "command_session_backend",
+) -> None:
+    parser.add_argument(
+        "--session-backend",
+        choices=SESSION_BACKENDS,
+        dest=dest,
+        default=None,
+        help="Session storage backend (default: OURO_SESSION_BACKEND or files)",
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
 Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     )
     parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for interactive mode")
+    _add_session_backend_arg(parser, dest="session_backend")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
     parser.add_argument(
         "--approval-mode",
@@ -157,17 +173,20 @@ def _add_resource_parser(subparsers: argparse._SubParsersAction) -> None:
     import_parser.add_argument("path", help="Source file")
     import_parser.add_argument("--media-type", help="Override detected media type")
     import_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(import_parser)
     import_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     list_parser = resource_subparsers.add_parser("list", help="List Session resources")
     list_parser.add_argument("session_id", help="Session id")
     list_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(list_parser)
     list_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     show_parser = resource_subparsers.add_parser("show", help="Show resource metadata")
     show_parser.add_argument("session_id", help="Session id")
     show_parser.add_argument("resource_id", help="Resource id")
     show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(show_parser)
     show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     export_parser = resource_subparsers.add_parser("export", help="Export resource content")
@@ -176,6 +195,7 @@ def _add_resource_parser(subparsers: argparse._SubParsersAction) -> None:
     export_parser.add_argument("output", help="Destination file")
     export_parser.add_argument("--force", action="store_true", help="Replace destination")
     export_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(export_parser)
     export_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = resource_subparsers.add_parser("remove", help="Remove a Session reference")
@@ -183,6 +203,7 @@ def _add_resource_parser(subparsers: argparse._SubParsersAction) -> None:
     remove_parser.add_argument("resource_id", help="Resource id")
     remove_parser.add_argument("--force", action="store_true", help="Skip confirmation")
     remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(remove_parser)
     remove_parser.add_argument("--json", action="store_true", help="Print JSON")
 
 
@@ -208,6 +229,7 @@ them exactly; unsupported requests fail before an HTTP request is sent.""",
     mode.add_argument("--print", dest="print_mode", action="store_true", help="Print final text")
     mode.add_argument("--json", dest="json_mode", action="store_true", help="Print JSON result")
     run_parser.add_argument("--home", dest="run_home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(run_parser, dest="run_session_backend")
     run_parser.add_argument("--session", dest="session_id", help="Continue an existing session")
     run_parser.add_argument(
         "--resource",
@@ -252,6 +274,7 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
 
     list_parser = session_subparsers.add_parser("list", help="List sessions")
     list_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(list_parser)
     list_parser.add_argument("--json", action="store_true", help="Print JSON")
     list_parser.add_argument("--search", help="Search title, preview, workspace, model, and tags")
     list_parser.add_argument(
@@ -294,12 +317,14 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     show_parser = session_subparsers.add_parser("show", help="Show session details")
     show_parser.add_argument("session_id", help="Session id")
     show_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(show_parser)
     show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     rename_parser = session_subparsers.add_parser("rename", help="Rename a session")
     rename_parser.add_argument("session_id", help="Session id")
     rename_parser.add_argument("title", help="New title")
     rename_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(rename_parser)
     rename_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     approval_mode_parser = session_subparsers.add_parser(
@@ -313,6 +338,7 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Session approval mode",
     )
     approval_mode_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(approval_mode_parser)
     approval_mode_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     for command, help_text in (
@@ -324,29 +350,34 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
         state_parser = session_subparsers.add_parser(command, help=help_text)
         state_parser.add_argument("session_id", help="Session id")
         state_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+        _add_session_backend_arg(state_parser)
         state_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     branch_parser = session_subparsers.add_parser("branch", help="Branch at a message boundary")
     branch_parser.add_argument("session_id", help="Source session id")
     branch_parser.add_argument("message_id", help="Canonical source message id")
     branch_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(branch_parser)
     branch_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     replay_parser = session_subparsers.add_parser("replay", help="Project persisted events")
     replay_parser.add_argument("session_id", help="Session id")
     replay_parser.add_argument("--run", dest="run_id", help="Filter by run id")
     replay_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(replay_parser)
     replay_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = session_subparsers.add_parser("remove", help="Remove a session")
     remove_parser.add_argument("session_id", help="Session id")
     remove_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(remove_parser)
     remove_parser.add_argument("--force", action="store_true", help="Skip confirmation")
     remove_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     export_parser = session_subparsers.add_parser("export", help="Export session data")
     export_parser.add_argument("session_id", help="Session id")
     export_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(export_parser)
     export_parser.add_argument(
         "--output",
         help="Write export to a file instead of stdout",
@@ -356,7 +387,8 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     messages_parser = session_subparsers.add_parser("messages", help="Show session messages")
     messages_parser.add_argument("session_id", help="Session id")
     messages_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    messages_parser.add_argument("--cursor", type=int, default=0, help="JSONL byte cursor")
+    _add_session_backend_arg(messages_parser)
+    messages_parser.add_argument("--cursor", type=int, default=0, help="Opaque page cursor")
     messages_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
     messages_parser.add_argument("--json", action="store_true", help="Print JSON")
 
@@ -364,7 +396,8 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     events_parser.add_argument("session_id", help="Session id")
     events_parser.add_argument("--run", dest="run_id", help="Filter by run id")
     events_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    events_parser.add_argument("--cursor", type=int, default=0, help="JSONL byte cursor")
+    _add_session_backend_arg(events_parser)
+    events_parser.add_argument("--cursor", type=int, default=0, help="Opaque page cursor")
     events_parser.add_argument("--limit", type=int, default=100, help="Page size (1-1000)")
     events_parser.add_argument("--json", action="store_true", help="Print JSON")
 
@@ -374,6 +407,7 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     compact_parser.add_argument("session_id", help="Session id")
     compact_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(compact_parser)
     compact_parser.add_argument("--json", action="store_true", help="Print JSON")
 
 
@@ -390,6 +424,7 @@ def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
         help="Modified tool arguments as a JSON object",
     )
     approve_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(approve_parser)
     approve_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     reject_parser = subparsers.add_parser(
@@ -400,6 +435,7 @@ def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
     reject_parser.add_argument("--run", dest="run_id", help="Run id (default: active run)")
     reject_parser.add_argument("--reason", default="User rejected", help="Rejection reason")
     reject_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(reject_parser)
     reject_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     abort_parser = subparsers.add_parser(
@@ -410,6 +446,7 @@ def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
     abort_parser.add_argument("--run", dest="run_id", help="Run id (default: active run)")
     abort_parser.add_argument("--reason", default="User aborted", help="Abort reason")
     abort_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(abort_parser)
     abort_parser.add_argument("--json", action="store_true", help="Print JSON")
 
 

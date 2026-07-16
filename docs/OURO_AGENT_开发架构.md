@@ -200,8 +200,13 @@ OURO_HOME/
 
 `SQLiteSessionStore` 是同一契约的第二实现，默认数据库位置为 `OURO_HOME/sessions.sqlite3`。它使用标准
 `sqlite3`、WAL、外键和显式事务，事件 after-sequence 查询由索引支持；表结构只存在于 adapter 内。
-`LocalApplication.build(..., session_backend="sqlite")` 可选择该实现。`import_sessions_to_sqlite` 在一个目标
-事务中复制、逐 Session 验证并在失败时整体回滚；文件后端继续作为可读实现和导出来源。
+`LocalApplication.build(..., session_backend="sqlite")` 可选择该实现。Host 的选择规则集中在
+`ouro.deployment.resolve_session_backend`：显式参数优先于 `OURO_SESSION_BACKEND`，默认使用 `files`。CLI 的
+交互、run、session、resource 与审批入口都接受 `--session-backend files|sqlite`，命令层只透传选择值，不包含
+后端分支或存储实现。该部署参数不写入 `config.json`，避免在尚未选定存储时反向依赖存储内配置。
+
+选择后端不等于迁移数据；文件和 SQLite 数据集保持隔离。`import_sessions_to_sqlite` 在一个目标事务中复制、
+逐 Session 验证并在失败时整体回滚；文件后端继续作为可读实现和导出来源。
 
 `session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。

@@ -13,9 +13,9 @@ from ouro.cli.errors import error_exit_code
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
+from ouro.deployment import SessionBackend
 from ouro.local_application import (
     LocalApplication,
-    SessionBackend,
     build_local_mcp_runtime,
     build_local_runtime,
 )
@@ -31,7 +31,7 @@ def build_default_runtime(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     event_sink: RuntimeEventSink | None = None,
-    session_backend: SessionBackend = "files",
+    session_backend: SessionBackend | None = None,
 ) -> RuntimeService:
     return build_local_runtime(
         home,
@@ -63,12 +63,14 @@ async def run_print(
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
     resource_refs: list[str] | None = None,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
             home,
             provider_options=provider_options,
             system_prompt=system_prompt,
+            session_backend=session_backend,
         )
         async with LocalApplication.from_runtime(runtime, home=home) as application:
             _print_mcp_startup_failures(application.mcp)
@@ -104,12 +106,14 @@ async def run_json(
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
     resource_refs: list[str] | None = None,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
         runtime = build_default_runtime(
             home,
             provider_options=provider_options,
             system_prompt=system_prompt,
+            session_backend=session_backend,
         )
         async with LocalApplication.from_runtime(runtime, home=home) as application:
             _print_mcp_startup_failures(application.mcp)

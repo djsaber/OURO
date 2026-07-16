@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.events import RuntimeEventSink
@@ -21,13 +20,12 @@ from ouro.config import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
 from ouro.core.errors import OuroError
+from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
-
-SessionBackend = Literal["files", "sqlite"]
 
 
 @dataclass(frozen=True)
@@ -66,7 +64,7 @@ class LocalApplication:
         provider_options: RuntimeProviderOptions | None = None,
         system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
-        session_backend: SessionBackend = "files",
+        session_backend: SessionBackend | None = None,
     ) -> LocalApplication:
         runtime = build_local_runtime(
             home,
@@ -129,7 +127,7 @@ def build_local_runtime(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     event_sink: RuntimeEventSink | None = None,
-    session_backend: SessionBackend = "files",
+    session_backend: SessionBackend | None = None,
 ) -> RuntimeService:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
@@ -181,7 +179,7 @@ def build_local_runtime(
 def build_local_services(
     home: str | Path | None = None,
     *,
-    session_backend: SessionBackend = "files",
+    session_backend: SessionBackend | None = None,
 ) -> LocalServices:
     """Build complete local query/command facets without a model Runtime."""
 
@@ -198,18 +196,17 @@ def build_local_services(
 def build_local_session_services(
     home: str | Path | None = None,
     *,
-    session_backend: SessionBackend = "files",
+    session_backend: SessionBackend | None = None,
 ) -> LocalSessionServices:
     """Build Session and Resource facets that share one Session repository."""
 
     root = resolve_local_home(home)
+    selected_backend = resolve_session_backend(session_backend)
     store: SessionStore
-    if session_backend == "files":
+    if selected_backend == "files":
         store = LocalSessionStore(root)
-    elif session_backend == "sqlite":
-        store = SQLiteSessionStore(root / "sessions.sqlite3")
     else:
-        raise ValueError(f"unsupported Session backend: {session_backend}")
+        store = SQLiteSessionStore(root / "sessions.sqlite3")
     store.initialize()
 
     resource_store = LocalResourceStore(root)

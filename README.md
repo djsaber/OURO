@@ -54,9 +54,16 @@ uv run ouro run --json --home ./.ouro-dev --approval-mode approval "review first
 
 # 继续会话
 uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
+
+# 选择 SQLite Session 后端
+uv run ouro run --json --home ./.ouro-dev --session-backend sqlite "hello"
+uv run ouro session list --home ./.ouro-dev --session-backend sqlite
 ```
 
 未指定 `--home` 时，OURO 使用 `OURO_HOME`；两者都未设置时使用 `~/.ouro`。
+Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设置当前 Host 的默认值；命令行
+`--session-backend files|sqlite` 优先于环境变量。交互、run、session、resource 和审批命令使用同一选择结果。
+切换后端不会隐式迁移数据，文件和 SQLite 是两个独立数据集；迁移必须通过显式、可验证、可回滚的导入流程完成。
 
 ## Provider 与 Endpoint
 

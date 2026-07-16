@@ -7,6 +7,7 @@ from pathlib import Path
 from ouro.application.resources import ResourceService
 from ouro.cli.errors import error_exit_code
 from ouro.core.errors import OuroError
+from ouro.deployment import SessionBackend
 from ouro.local_application import build_local_session_services
 
 
@@ -17,9 +18,10 @@ def import_resource(
     home: str | Path | None = None,
     media_type: str | None = None,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        result = _resources(home).import_resource(
+        result = _resources(home, session_backend).import_resource(
             session_id,
             source_path,
             media_type=media_type,
@@ -45,9 +47,10 @@ def list_resources(
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        result = _resources(home).list_resources(session_id)
+        result = _resources(home, session_backend).list_resources(session_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -78,9 +81,10 @@ def show_resource(
     *,
     home: str | Path | None = None,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        resource = _resources(home).show_resource(session_id, resource_id)
+        resource = _resources(home, session_backend).show_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -114,9 +118,10 @@ def export_resource(
     home: str | Path | None = None,
     force: bool = False,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     try:
-        result = _resources(home).export_resource(
+        result = _resources(home, session_backend).export_resource(
             session_id,
             resource_id,
             output,
@@ -147,6 +152,7 @@ def remove_resource(
     home: str | Path | None = None,
     force: bool = False,
     json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
 ) -> int:
     if not force:
         confirm = input(f"Remove resource {resource_id} from session {session_id}? [y/N] ")
@@ -154,7 +160,7 @@ def remove_resource(
             print(json.dumps({"status": "cancelled"}) if json_mode else "Cancelled.")
             return 0
     try:
-        result = _resources(home).remove_resource(session_id, resource_id)
+        result = _resources(home, session_backend).remove_resource(session_id, resource_id)
     except (OuroError, OSError, ValueError) as exc:
         return _error(exc, json_mode=json_mode)
     if json_mode:
@@ -164,8 +170,11 @@ def remove_resource(
     return 0
 
 
-def _resources(home: str | Path | None) -> ResourceService:
-    return build_local_session_services(home).resources
+def _resources(
+    home: str | Path | None,
+    session_backend: SessionBackend | None,
+) -> ResourceService:
+    return build_local_session_services(home, session_backend=session_backend).resources
 
 
 def _error(exc: Exception, *, json_mode: bool) -> int:
