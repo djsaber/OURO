@@ -22,12 +22,16 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
 - 完整插件系统：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
   declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
-  side-by-side 更新/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI。
+  side-by-side 更新/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
+  通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
+  Host-owned 工具执行上下文与限制性 tool policy 实现 plan mode、危险命令确认和受保护路径等通用扩展。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见
 [Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的目标设计见
-[插件系统规格](dev/specs/plugin-system.md)。
+[插件系统规格](dev/specs/plugin-system.md)，总体扩展架构与 Pi 对照见
+[插件系统扩展性架构与 Pi 对照](docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，`/goal` 映射见
+[插件系统扩展性与目标模式设计](docs/OURO_插件系统扩展性与目标模式设计_2026-07-17.md)。
 
 ## 开发环境
 
@@ -101,6 +105,13 @@ uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 `plugin import-report` 输出逐项兼容结论，OURO 不透明执行未知社区 Hook 或安装脚本。
 仍被可恢复 Run 引用的 plugin generation 不允许普通重启、禁用、选版或活动配置替换；重复 `enable` 不会
 隐式重建 generation。
+
+Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
+唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回
+类型化会话输入；输入以 `system_synthetic` 和完整 generation provenance 持久化，不会冒充用户。Run
+continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
+插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
+`tool_policies` 可把工具提升为审批或拒绝，但不能批准、改写参数或降低 Host 权限，失败时默认拒绝。
 
 ## Provider 与 Endpoint
 

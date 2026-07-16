@@ -1,6 +1,6 @@
 # OURO 插件系统目标规格
 
-状态：首个稳定面已实现（2026-07-16），长期目标尚未全部实现；准确边界见第 24 节
+状态：首个稳定面、Run continuation 与工具策略控制面已实现（2026-07-17），长期目标尚未全部实现；准确边界见第 24 节
 
 本文定义 OURO 插件系统的包、来源、信任、授权、运行时、贡献、生命周期、兼容和恢复契约。schema v1、
 安装/存储、entrypoint、基础 worker、授权、generation、应用 facade 与 CLI 已实现。本文前半部分保留目标
@@ -15,7 +15,7 @@
 OURO 插件系统应同时满足：
 
 - **插件原生**：插件是 application 装配的一等资源，不是 CLI 启动脚本或 prompt 拼接约定；
-- **深度扩展**：稳定扩展工具、Hook、命令、上下文、压缩、Skills、MCP 和受监督后台服务；
+- **深度扩展**：稳定扩展工具、工具策略、Hook、命令、上下文、压缩、Skills、MCP、Run continuation 和受监督后台服务；
 - **本地优先**：安装记录、授权、配置、代码缓存、数据和诊断可在本地审计、导出和删除；
 - **Host 中立**：插件不直接依赖 CLI/TUI/Desktop，Host 只映射类型化 command、configuration 和 event DTO；
 - **durable-safe**：升级、禁用和崩溃不能破坏 Run 事务、工具恢复、事件顺序和持久化 lineage；
@@ -52,6 +52,10 @@ OURO 插件系统应同时满足：
 12. pending tool call、approval 和恢复记录必须能验证插件 id、版本、digest、generation 与工具 contract hash。
 13. 所有后台 task、进程、MCP 连接、订阅和 listener 都由一个可关闭的 plugin owner 管理。
 14. Host 只使用 application DTO/facade；CLI/TUI/Desktop 不直接操作插件目录、registry 或 import adapter。
+15. 插件只能返回类型化会话输入或 continuation decision；只有 application 层可以持久化消息、排队或创建 Run。
+16. 插件输入必须保留 generation provenance，并保存为 synthetic context，不能冒充用户消息。
+17. 工具策略只能把 `auto` 提升为 `approval` 或拒绝调用；不能批准、降低 Host 权限、修改参数或覆盖 builtin。
+18. 工具策略必须对审批后修改的最终参数重新评估；超时、异常或非法返回按拒绝处理并持久化诊断。
 
 ## 4. 四层模型
 
@@ -205,7 +209,10 @@ calendar-plugin/
       {"id": "today", "description": "Show today's schedule."}
     ],
     "hooks": [
-      {"id": "daily_context", "event": "context.enrich", "priority": 100}
+      {"id": "daily_context", "event": "after_context_build", "priority": 100}
+    ],
+    "tool_policies": [
+      {"id": "protected_paths", "priority": 10, "timeout_seconds": 5}
     ],
     "skills": [
       {"id": "calendar", "path": "./skills/calendar"}
@@ -268,7 +275,8 @@ Python factory 在 OURO 进程中运行，提供最深扩展能力和最低调�
 
 ### 7.3 `worker`
 
-Worker 通过版本化双向 JSON-RPC/stdio 协议贡献工具、Hook、命令和 Host service 调用：
+Worker 通过版本化 JSON-RPC/stdio 协议贡献工具、工具策略、Hook、命令、压缩和 continuation policy；command 可在响应中
+返回类型化会话输入描述，但 worker 不能发起任意反向 Host service 调用：
 
 - 长期目标是每个 digest 拥有独立依赖环境；Python 只安装带 hash 的预构建 wheel，拒绝 sdist/build script；
 - stdout 专用于协议，stderr 进入限流、脱敏 diagnostic；
@@ -283,7 +291,7 @@ Worker 提供崩溃和依赖隔离，**不自动提供 OS 权限隔离**。未�
 当前协议方法：
 
 - `initialize`、`contributions.prepare`、`lifecycle.start`、`lifecycle.stop`、`shutdown`；
-- `tool.call`、`hook.call`、`command.call`、`compaction.call`；
+- `tool.call`、`tool_policy.call`、`hook.call`、`command.call`、`compaction.call`、`continuation.call`；
 - `cancel`、`ping`、`diagnostic.emit`。
 
 反向 `host.resources.*`、`host.sessions.*`、`host.models.invoke`、`host.credentials.resolve` 是后续协议扩展，
@@ -312,6 +320,11 @@ class PluginInstance(Protocol):
 - `start` 只能通过 context task group/supervisor 启动长期资源；
 - `stop` 必须幂等，适用于正常禁用、启动失败回滚、升级、崩溃恢复和 Host shutdown；
 - Host 最终仍强制取消逾期 task/worker，不能无限等待插件自行关闭。
+
+工具 handler 保持兼容的一参数形式 `handler(call)`，也可使用 `handler(call, context)`。第二个参数是
+Host-owned、request-scoped 的 `ToolExecutionContext`，只提供当前 workspace、`workspace_only`、协作式取消、
+受约束路径解析和可取消 sleep。插件不得缓存该 context 到调用结束之后。worker 工具在 `ToolCall` 中得到相同
+workspace 字段；Host 取消请求时通过 worker `cancel` 通知中止对应 RPC，而不是把内部 `AbortSignal` 暴露到协议。
 
 ### 8.2 PluginContext
 
@@ -351,6 +364,11 @@ Context 只暴露按授权裁剪的稳定 service ports：
 - `skills`；
 - `mcp_servers`；
 - `background_services`，但只作为受监督生命周期资源，不获得新的 core 状态写入口。
+- `continuation_policies`，在 Agent Run 终态后返回类型化 continuation decision，由 application 层解释。
+- `tool_policies`，在工具 preflight 返回 `ignore/require_approval/deny`，只能收紧 Host 权限。
+
+Command 可在同时获得 `sessions.write` 与 `background.run` 权限后返回类型化 `SessionInput`。这不是把
+RuntimeService 暴露给插件；锁、消息角色、来源、排队和新 Run 仍完全由 application 层拥有。
 
 当前 placeholder 中的 `model_providers`、`ui_extensions` 不得继续假装为已支持 capability。Provider factory
 只有在 `RuntimeAdapterFactory`、配置 schema、credential 和 close contract 成为稳定 Plugin API 后才能作为
@@ -390,7 +408,41 @@ Tool、Hook、command、compaction 和后续 registry 必须支持 `replace_owne
 保存一组松散名称。当前 `PluginLoader` 的逐类部分成功仅作为 legacy bridge；完整 activation 默认 all-or-none。
 只有 manifest 显式标为 `optional` 的 contribution group 可以失败后进入 `degraded`，并必须出现在状态和 DTO。
 
+### 9.4 Run continuation policy
+
+会改变后续执行的决定不得复用普通 `after_run` Hook。`ContinuationPolicyContribution` 接收只读
+`RunOutcome`，返回 `ignore/continue/complete/pause/fail`。`continue` 必须包含非空 prompt 和明确的
+`follow_up`/`steer` mode。
+
+每个 Agent Run 在启动前冻结 policy 的 plugin/version/digest/generation/contract hash，并持久化稳定的
+`decision_id` 与 `queue_id`。终态后 application 在释放旧 Run lock、释放 generation lease 之前执行 policy，
+以稳定 queue id 幂等入队，再持久化 resolution。
+
+聚合规则为 fail-closed：零个非 ignore 决策结束；一个决策执行；多个决策、超时、异常或冻结 policy 不可用
+时暂停。priority 只决定调用与诊断顺序，不决定多个控制器中的静默胜者。用户已排队的输入或更新的 active Run
+优先于旧 Run 的自动脚手架。
+
+### 9.5 Tool policy
+
+`ToolPolicyContribution` 接收不可变 `ToolPolicyCall`：session/run/tool call identity、工具名、最终候选参数、
+工具来源和 workspace；返回 `ignore/require_approval/deny`。它是语义 guard，不是通用可变 Hook：
+
+- 多个策略按 `priority/plugin_id/policy_id/owner` 稳定排序，结果取最严格值，`deny` 立即短路；
+- `require_approval` 只能把原本可自动执行的调用提升为审批，不能降低已有 `deny/approval`；
+- `deny` 在任何 session approval mode 下都不可由用户审批覆盖；
+- 策略不能改写参数、批准自身工具或绕过 `ToolExecutor`；
+- 用户在审批时修改参数，Host 必须在实际执行前以最终参数再次评估；
+- 超时、异常、非法返回均 fail-closed 为 `deny`，错误统一脱敏；
+- 生效策略 identity、generation、reason 与 failure 进入 invocation/event provenance。
+
+`before_tool_call` 继续作为观察型 Hook，避免一个宽泛的 `HookResult` 同时承担诊断、参数变换、审批与拒绝，
+从而产生不可组合的 load-order 语义。需要安全阻断的插件必须声明 `tool_policies` capability。
+
 ## 10. Hook 协议
+
+当前 Plugin API 只暴露已经接入实际 dispatch 的观察/富化 Hook：`after_context_build`、`before_tool_call`、
+`after_tool_call`、`on_event` 和 `after_run`。其他目标事件必须在有真实 producer、typed output 和失败语义后
+再扩展 API，不能只增加 Literal/manifest 字段。
 
 ### 10.1 类型分类
 
@@ -401,7 +453,7 @@ Tool、Hook、command、compaction 和后续 registry 必须支持 `replace_owne
 | observational | durable event、after run、diagnostic | 独立并发/有界队列，结果不修改语义 | fail-open |
 | enrich | context enrichment、model metadata | 确定顺序，追加有来源的 typed fragment | 隔离失败项 |
 | transform | 受控 request patch | 确定顺序，校验每个 typed patch | 拒绝无效 patch |
-| guard | tool/permission preflight | 只能 deny 或 escalate，不能放宽 | fail-closed 或回到用户审批 |
+| guard | 独立 tool policy contribution | 只能 deny 或 escalate，不能放宽 | fail-closed |
 | lifecycle | run start/stop、plugin start/stop | 确定顺序、幂等 | 按事件定义 |
 
 ### 10.2 排序
@@ -414,8 +466,8 @@ Tool、Hook、command、compaction 和后续 registry 必须支持 `replace_owne
 
 ### 10.3 安全单调性
 
-- guard Hook 可以拒绝、缩小 scope 或把 `auto` 提升为 `approval`；
-- guard Hook 不能把 `deny`/`approval` 降为 `auto`；
+- tool policy 可以拒绝或把 `auto` 提升为 `approval`；
+- tool policy 不能把 `deny`/`approval` 降为 `auto`；
 - 插件不能批准由自己贡献的工具；
 - transform Hook 不能修改 session/run/tool identity、approval id、durable sequence 或 provenance；
 - context fragment 保留 plugin id、generation、trust class 和 token estimate；
@@ -858,6 +910,7 @@ Supervisor shutdown 期间按 owner/依赖顺序关闭。
 - manifest 自报 official/verified 无效；
 - permission/capability/runtime/source 扩大使授权失效；
 - third-party tool 不能自动执行，Hook 不能提升权限；
+- tool policy 只能收紧，失败时拒绝，审批修改参数后仍会重新评估；
 - credential/config/exception/worker stderr 全链路脱敏。
 
 ### Contribution 与生命周期
@@ -892,7 +945,7 @@ Supervisor shutdown 期间按 owner/依赖顺序关闭。
 
 ## 24. 当前实现边界与设计调整
 
-截至 2026-07-16：M1、M2、M3 已完成；M4 完成 generation snapshot、lease、精确恢复校验和失败回滚，
+截至 2026-07-17：M1、M2、M3 已完成；M4 完成 generation snapshot、lease、精确恢复校验和失败回滚，
 不含 data migration；M5 完成基础 worker、Skills/MCP 和 compatibility report，不含独立环境、自动重启、
 熔断、反向 Host service 与通用 feature negotiation；M6 只完成已安装 digest 的依赖图，不含 catalog、签名、
 publisher policy 和自动第三方依赖求解。
@@ -936,7 +989,22 @@ publisher trust root。它们只有在真实需求和完整不变量可以一起
 14. **秘密按解析出的真实值全链路脱敏。** manifest slot 同时约束 SDK、worker 和 MCP；in-process logger 的格式化
     参数、structured diagnostic、启动异常和后台 task 异常，以及 worker stderr/JSON-RPC error 都使用动态精确值
     脱敏，不能只依赖 `token=` 等字符串模式。
+15. **Run continuation 是 application 控制面。** `after_run` 保持观察型；语义续跑使用独立 policy registry、
+    durable checkpoint 和稳定 queue id。插件不取得 RuntimeService/SessionStore，策略冲突或失败会暂停而非猜测。
+16. **插件输入不能冒充用户。** command 与 continuation 产生的输入保存为 `system_synthetic`，携带 plugin、
+    contribution、generation、caused-by Run 和 decision provenance；后续 Run 使用 `origin=plugin`。
+17. **Host slash alias 不改变 identity。** builtin 命令优先，`/<plugin_id>:<name>` 精确匹配，只有唯一 local name
+    才能使用 `/<name>`；歧义必须列出 canonical choices。Interactive 对插件启动的输入使用受控后台任务，允许
+    执行中继续提交 command、follow-up 或 steer，并在退出时先中止再 drain。
+18. **语义 guard 独立于观察 Hook。** `before_tool_call` 不承担可变参数或权限结果；`tool_policies` 使用限制性
+    决策、稳定组合、fail-closed 与 owner transaction。它可以实现 plan mode、危险命令确认、受保护路径、合规
+    规则和环境限制，但不能批准或重写工具调用。
+19. **插件工具共享 Host 执行语义。** in-process 工具可选接收 request-scoped `ToolExecutionContext`；worker
+    取得等价 workspace 字段并沿 JSON-RPC cancel 链路协作式取消。路径约束和最终执行仍由 `ToolExecutor` 持有，
+    用户修改审批参数后会以最终参数重跑工具策略。
 
 对应实现集中在 `ouro/plugins/`、`ouro/sdk/plugins/v1.py`、`ouro/application/plugins.py`、
-`ouro/cli/plugin_commands.py` 与 `LocalApplication`；legacy `PluginLoader` 仅作为一个兼容周期的无自动 import
+`ouro/application/run_continuations.py`、`ouro/core/tool_policies.py`、`ouro/application/tool_calls.py`、
+`ouro/cli/plugin_commands.py`、`ouro/cli/interactive.py` 与
+`LocalApplication`；legacy `PluginLoader` 仅作为一个兼容周期的无自动 import
 桥接层，新原生插件必须走 installer/runtime generation 路径。

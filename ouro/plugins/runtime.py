@@ -207,10 +207,7 @@ class PluginRuntimeResource:
                 if installed is None:
                     return "invalid"
                 status = self.project_status(record)
-                if (
-                    status == "failed"
-                    and self._failed.get(plugin_id) == installed.package_digest
-                ):
+                if status == "failed" and self._failed.get(plugin_id) == installed.package_digest:
                     self._failed.pop(plugin_id, None)
                     status = self.project_status(record)
                 if status not in {"ready", "active"}:

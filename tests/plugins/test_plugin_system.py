@@ -9,12 +9,19 @@ import pytest
 
 from ouro.application.plugins import PluginService
 from ouro.core.compaction import CompactionStrategyRegistry
-from ouro.core.hooks import HookContext, HookRegistry
+from ouro.core.continuations import RunContinuationRegistry
+from ouro.core.hooks import HookContext, HookRegistry, RunOutcome
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import build_local_plugin_service, resolve_plugin_credential
 from ouro.plugins.compatibility import inspect_community_package
-from ouro.plugins.contributions import ContributionCoordinator, PluginContributions
+from ouro.plugins.contributions import (
+    ContributionCoordinator,
+    ContributionOwner,
+    PluginContributions,
+    PreparedContributionSet,
+)
 from ouro.plugins.dependencies import PluginDependencyError, resolve_plugin_dependencies
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PluginPackageError, validate_plugin_package
@@ -22,7 +29,7 @@ from ouro.plugins.registry import PluginCommand, PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import LocalSessionStore
-from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from ouro.tools import Tool, ToolDefinition, ToolExecutionContext, ToolRegistry, ToolResult
 
 
 def _write_native_plugin(
@@ -63,6 +70,8 @@ def _runtime(home: Path):
     hooks = HookRegistry()
     commands = PluginCommandRegistry()
     compaction = CompactionStrategyRegistry()
+    continuations = RunContinuationRegistry()
+    tool_policies = ToolPolicyRegistry()
     runtime = PluginRuntimeResource(
         PluginPackageStore(home),
         ContributionCoordinator(
@@ -70,6 +79,8 @@ def _runtime(home: Path):
             hooks=hooks,
             commands=commands,
             compaction=compaction,
+            continuations=continuations,
+            tool_policies=tool_policies,
         ),
     )
     return runtime, tools, hooks, commands, compaction
@@ -417,6 +428,37 @@ def test_contribution_commit_rolls_back_every_registry_on_late_conflict(tmp_path
     assert [item.command_id for item in commands.list()] == ["dev.ouro.echo:go"]
 
 
+def test_failed_owner_replacement_restores_previous_lease_ownership() -> None:
+    tools = ToolRegistry()
+    coordinator = ContributionCoordinator(tools=tools, hooks=HookRegistry())
+    previous_owner = ContributionOwner("dev.ouro.echo", "digest-1", "generation-1")
+    previous_lease = coordinator.commit(
+        PreparedContributionSet(
+            owner=previous_owner,
+            tools=(
+                Tool(
+                    definition=ToolDefinition(name="echo__run", description="Run."),
+                    handler=lambda invocation: ToolResult(
+                        tool_call_id=invocation.tool_call_id,
+                        tool_name=invocation.tool_name,
+                    ),
+                ),
+            ),
+        )
+    )
+
+    replacement = PreparedContributionSet(
+        owner=ContributionOwner("dev.ouro.echo", "digest-2", "generation-2"),
+        commands=(PluginCommand(name="go", handler=lambda _request: "go"),),
+    )
+    with pytest.raises(ValueError, match="command registry is unavailable"):
+        coordinator.commit(replacement, replace_owner=previous_owner)
+
+    assert tools.names() == ["echo__run"]
+    previous_lease.close()
+    assert tools.names() == []
+
+
 def test_same_version_different_content_is_side_by_side_and_diagnostic(tmp_path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"
@@ -533,7 +575,8 @@ for line in sys.stdin:
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {'parameters_schema': {'type': 'object'}}}}
     elif method == 'tool.call':
-        result = {'content': request['params']['call']['arguments'].get('value', '')}
+        call = request['params']['call']
+        result = {'content': call['arguments'].get('value', '') + '|' + str(call['workspace'])}
     if 'id' in request:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
     if method == 'shutdown':
@@ -555,10 +598,103 @@ for line in sys.stdin:
             run_id="run_1",
             tool_name="worker__echo",
             arguments={"value": "worker-ok"},
+        ),
+        context=ToolExecutionContext(workspace=tmp_path, workspace_only=True),
+    )
+    assert result.content == f"worker-ok|{tmp_path}"
+    await service.disable("dev.ouro.worker")
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) -> None:
+    source = tmp_path / "worker-continuation"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.worker_goal",
+        runtime={
+            "kind": "worker",
+            "command": ["{python}", "./worker.py"],
+            "protocol": "1.0",
+        },
+        contributes={
+            "commands": [{"id": "goal", "description": "Start a goal."}],
+            "continuation_policies": [{"id": "goal"}],
+            "tool_policies": [{"id": "guard"}],
+        },
+        extra={
+            "permissions": [
+                {"id": "sessions.write", "reason": "Write goal input."},
+                {"id": "background.run", "reason": "Continue the goal."},
+            ]
+        },
+    )
+    (source / "worker.py").write_text(
+        """import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    result = {}
+    if method == 'initialize':
+        result = {'protocol_version': '1.0'}
+    elif method == 'contributions.prepare':
+        result = {
+            'commands': ['goal'],
+            'continuation_policies': ['goal'],
+            'tool_policies': ['guard'],
+        }
+    elif method == 'command.call':
+        argument = request['params']['call']['argument']
+        result = {
+            'output': 'started',
+            'session_inputs': [{'prompt': 'Goal: ' + argument, 'mode': 'follow_up'}],
+        }
+    elif method == 'continuation.call':
+        result = {'action': 'continue', 'prompt': 'Continue goal', 'state_revision': 3}
+    elif method == 'tool_policy.call':
+        result = {'action': 'deny', 'reason': 'worker guard denied the call'}
+    if 'id' in request:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if method == 'shutdown':
+        break
+""",
+        encoding="utf-8",
+    )
+    runtime, _, _, commands, _ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime, commands=commands)
+    service.install(source)
+    service.authorize("dev.ouro.worker_goal")
+    service.trust_code("dev.ouro.worker_goal")
+
+    assert (await service.enable("dev.ouro.worker_goal")).status == "active"
+    command = await service.execute_command("dev.ouro.worker_goal:goal", "ship")
+    assert command.session_inputs[0].prompt == "Goal: ship"
+    policy = runtime.coordinator.continuations.registered()[0]
+    decision = await policy.handler(
+        RunOutcome(
+            session_id="ses_worker",
+            run_id="run_worker",
+            status="completed",
+            origin="user",
         )
     )
-    assert result.content == "worker-ok"
-    await service.disable("dev.ouro.worker")
+    assert decision.action == "continue"
+    assert decision.prompt == "Continue goal"
+    assert decision.state_revision == 3
+    tool_policy = runtime.coordinator.tool_policies.registered()[0]
+    tool_decision = await tool_policy.handler(
+        ToolPolicyCall(
+            session_id="ses_worker",
+            run_id="run_worker",
+            tool_call_id="call_worker",
+            tool_name="Bash",
+            arguments={"command": "unsafe"},
+        )
+    )
+    assert tool_decision.action == "deny"
+    assert tool_decision.reason == "worker guard denied the call"
+    await service.disable("dev.ouro.worker_goal")
     await runtime.close()
 
 
@@ -730,8 +866,7 @@ def create_plugin(context): return Plugin(context)
 
     assert (await service.enable("dev.ouro.inprocess_credentials")).status == "failed"
     assert all(
-        "opaque-inprocess-secret-value" not in record.getMessage()
-        for record in caplog.records
+        "opaque-inprocess-secret-value" not in record.getMessage() for record in caplog.records
     )
     assert all(
         "opaque-inprocess-secret-value" not in item.message
@@ -768,8 +903,7 @@ async def test_broken_desired_plugin_does_not_block_unrelated_startup(tmp_path) 
     with runtime.snapshot() as snapshot:
         assert [item.plugin_id for item in snapshot.generations] == ["dev.ouro.good"]
     assert any(
-        item.plugin_id == "dev.ouro.broken"
-        and item.code == "plugin_dependency_resolution_failed"
+        item.plugin_id == "dev.ouro.broken" and item.code == "plugin_dependency_resolution_failed"
         for item in runtime.diagnostics()
     )
     await runtime.close()

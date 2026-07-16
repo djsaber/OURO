@@ -22,10 +22,7 @@ def portable_relative_path(
     if any(part in {"", ".", ".."} for part in normalized.split("/")):
         raise ValueError("path must be normalized and relative")
     relative = PurePosixPath(normalized)
-    if (
-        not relative.parts
-        or relative.is_absolute()
-    ):
+    if not relative.parts or relative.is_absolute():
         raise ValueError("path must be normalized and relative")
     for part in relative.parts:
         if (

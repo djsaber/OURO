@@ -193,7 +193,12 @@ class PluginSourceMaterializer:
 
     def __enter__(self) -> MaterializedPluginSource:
         self._temporary = tempfile.TemporaryDirectory(prefix="ouro-plugin-")
-        return self.provider.materialize(Path(self._temporary.name))
+        try:
+            return self.provider.materialize(Path(self._temporary.name))
+        except BaseException:
+            self._temporary.cleanup()
+            self._temporary = None
+            raise
 
     def __exit__(self, *_: object) -> None:
         if self._temporary is not None:

@@ -31,6 +31,44 @@ SessionTitleSource = Literal["fallback", "generated", "user"]
 RunPhase = Literal[
     "model_streaming", "tool_preflight", "human_interaction", "tool_execution", "result_commit"
 ]
+RunContinuationState = Literal["pending", "resolved"]
+
+
+class RunOutcome(OuroModel):
+    """Bounded terminal Run projection shared by extension control surfaces."""
+
+    session_id: str
+    run_id: str
+    status: RunStatus
+    origin: RunOrigin
+    final_text: str = ""
+    error: str | None = None
+    usage: dict[str, int | float] = Field(default_factory=dict)
+
+
+class RunContinuationControllerRef(OuroModel):
+    plugin_id: str
+    policy_id: str
+    version: str
+    package_digest: str
+    generation_id: str
+    contract_hash: str
+
+    @property
+    def canonical_id(self) -> str:
+        return f"{self.plugin_id}/continuation_policies/{self.policy_id}"
+
+
+class RunContinuationCheckpoint(OuroModel):
+    decision_id: str = Field(default_factory=lambda: new_id("decision"))
+    queue_id: str = Field(default_factory=lambda: new_id("queued"))
+    state: RunContinuationState = "pending"
+    controllers: list[RunContinuationControllerRef] = Field(default_factory=list)
+    action: Literal["continue", "complete", "pause", "fail"] | None = None
+    selected_controller_id: str | None = None
+    reason: str | None = None
+    state_revision: int | None = None
+    resolved_at: datetime | None = None
 
 
 def session_status_for_run(status: RunStatus) -> SessionStatus:
@@ -100,4 +138,5 @@ class RunRecord(OuroModel):
     error: str | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     usage_entry_ids: list[str] = Field(default_factory=list)
+    continuation: RunContinuationCheckpoint | None = None
     metadata: Metadata = MetadataField

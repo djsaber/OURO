@@ -83,9 +83,21 @@ MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy S
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
-Hook 和插件 contribution registry 已具备来源、capability、permission、超时、失败隔离与原子注册边界；
-manifest 不能把第三方来源自升为 official，未授权贡献不会生效。插件仍是用户信任的同进程代码，不是沙箱。
-完整的插件安装/升级、来源证明、权限确认 UI 和 entrypoint 生命周期尚未完成。
+插件系统已提供严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability grant、
+declarative/Python in-process/stdio worker runtime、原子 owner contribution、generation-safe Run、依赖解析、
+更新/回滚、Skills/MCP/background service 和兼容报告。in-process 是用户明确授予的同进程代码信任；worker
+提供进程与协议隔离，但不是 OS sandbox。
+
+插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
+授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
+持久化 generation-frozen checkpoint、处理冲突并用稳定 queue id 幂等入队。插件输入保存为带来源归因的
+`system_synthetic`，不冒充用户。Interactive 支持 canonical/唯一短别名 slash command，并在插件启动的执行链
+运行时继续接收修改、引导、follow-up、steer、暂停或中止输入。
+
+插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
+受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
+用户在审批中修改参数后会以最终参数重新评估。完整 Pi 对照与未来扩展判定规则见
+[插件系统扩展性架构与 Pi 对照](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
 
 ### 资源与后台运行
 
@@ -121,7 +133,8 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 
 ### Run
 
-一次可恢复执行。Run 保存来源、状态、当前阶段、模型、usage、待处理人工交互和活动工具批次。
+一次可恢复执行。Run 保存来源、状态、当前阶段、模型、usage、待处理人工交互、活动工具批次，以及可选的
+generation-frozen continuation checkpoint。
 
 ### Provider usage ledger
 
@@ -137,7 +150,8 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 
 会话的 canonical 对话记录。工具请求使用 `tool_calls`，工具结果关联使用 `tool_result`；两者不隐藏在
 metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具续接状态使用路由绑定的
-`provider_continuation`。
+`provider_continuation`。插件产生的会话输入使用 `system_synthetic` 与 provenance metadata，只有用户输入使用
+`user` role。
 
 ### Event
 
@@ -157,7 +171,8 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 - 所有路径写入受 `OURO_HOME` 或工作区约束；内置工具统一使用 execution context 校验路径和权限。
 - 凭据通过环境变量引用或显式本地配置进入 Provider，不写入事件和公开输出。
 - 外部工具结果可能包含不可信内容，只作为数据回灌模型，不改变系统权限。
-- 插件是同进程可信扩展，permission 是贡献授权门，不宣称为 Python 进程内安全沙箱。
+- in-process 插件是同进程可信扩展；worker 是协议隔离。permission 是 Host-service 授权门，两者都不宣称
+  OS 安全沙箱。
 - 删除会话先发布到回收站；canonical 写入与可重建索引分离。
 - 配置 command 在跨进程锁内完成完整 read-validate-write；公共 DTO、事件和第三方错误统一脱敏。
 
@@ -167,8 +182,8 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 
 - TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
 - Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
-- 完整插件系统：按[目标规格](../dev/specs/plugin-system.md)实现来源、授权、双运行时、durable generation、
-  社区兼容、升级与回滚。
+- 插件生态深化：catalog、签名/publisher trust root、worker OS sandbox/独立依赖环境，以及在出现多个真实
+  消费者后再评估 session-scoped KV/CAS。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。

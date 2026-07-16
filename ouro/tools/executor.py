@@ -6,6 +6,7 @@ from ouro.core.approvals import ApprovalRecord, SessionApprovalMode
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.redaction import redact_text
+from ouro.core.tool_policies import ToolPolicyMode
 from ouro.core.tools import PermissionMode
 from ouro.tools.base import (
     ToolExecutionAborted,
@@ -36,12 +37,16 @@ class ToolExecutor:
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        policy_mode: ToolPolicyMode | None = None,
+        policy_reason: str | None = None,
     ) -> ToolExecutionOutcome:
         prepared = self.preflight(
             invocation,
             approved=approved,
             arguments_override=arguments_override,
             approval_mode=approval_mode,
+            policy_mode=policy_mode,
+            policy_reason=policy_reason,
         )
         if prepared.status != "ready":
             return prepared
@@ -55,6 +60,8 @@ class ToolExecutor:
         approved: bool = False,
         arguments_override: dict[str, object] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        policy_mode: ToolPolicyMode | None = None,
+        policy_reason: str | None = None,
     ) -> ToolExecutionOutcome:
         try:
             tool = self.registry.get(invocation.tool_name)
@@ -69,6 +76,10 @@ class ToolExecutor:
         )
         if effective_mode != "deny" and approval_mode != "inherit":
             effective_mode = approval_mode
+        if policy_mode == "deny":
+            effective_mode = "deny"
+        elif policy_mode == "approval" and effective_mode == "auto":
+            effective_mode = "approval"
         invocation = invocation.model_copy(
             update={
                 "source": tool.definition.source,
@@ -86,10 +97,13 @@ class ToolExecutor:
                 error_message=argument_error,
             )
         if invocation.permission_mode == "deny":
+            reason = policy_reason or (
+                f"tool is disabled by permission policy: {invocation.tool_name}"
+            )
             return _error_outcome(
                 invocation,
                 error_type="ToolPermissionDenied",
-                error_message=f"tool is disabled by permission policy: {invocation.tool_name}",
+                error_message=reason,
             )
         if tool.definition.name == "AskUser":
             question = str(invocation.arguments.get("question", ""))

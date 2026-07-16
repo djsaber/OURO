@@ -5,6 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.session_controls import AttributedSessionInput
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
 from ouro.plugins.models import PluginDiagnostic, PluginScope
 
@@ -83,6 +84,7 @@ class PluginCommandExecutionView(OuroModel):
     command_id: str
     output: str = ""
     data: dict[str, object] = Field(default_factory=dict)
+    session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
 
 
 class CompatibilityItemView(OuroModel):

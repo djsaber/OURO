@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from ouro.application.runtime import RuntimeService
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
 from ouro.skills import discover_available_skills
+
+if TYPE_CHECKING:
+    from ouro.application.plugins import PluginService
+    from ouro.core.session_controls import AttributedSessionInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -17,6 +21,7 @@ class CommandResult:
     should_exit: bool = False
     approval_mode: SessionApprovalMode | None = None
     initial_model: str | None = None
+    session_inputs: tuple[AttributedSessionInput, ...] = ()
 
 
 async def handle_command(
@@ -25,13 +30,14 @@ async def handle_command(
     session_id: str | None,
     approval_mode: SessionApprovalMode = "inherit",
     initial_model: str | None = None,
+    plugins: PluginService | None = None,
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
     argument = argument.strip()
 
     if command == "/help":
-        return CommandResult(session_id=session_id, output=_help_text())
+        return CommandResult(session_id=session_id, output=_help_text(plugins))
     if command == "/exit":
         return CommandResult(session_id=session_id, should_exit=True)
     if command == "/new":
@@ -67,33 +73,84 @@ async def handle_command(
         return _session_events(runtime, session_id)
     if command == "/skills":
         return _available_skills(runtime, session_id)
+    plugin_result = await _plugin_command(
+        plugins,
+        command.removeprefix("/"),
+        argument,
+        session_id=session_id,
+        workspace=runtime.default_workspace,
+    )
+    if plugin_result is not None:
+        return plugin_result
     return CommandResult(session_id=session_id, output=f"Unknown command: {command}")
 
 
-def _help_text() -> str:
-    return "\n".join(
-        [
-            "Commands:",
-            "/help - Show commands.",
-            "/new - Start a new session.",
-            "/sessions - List local sessions.",
-            "/open <session_id> - Continue a session.",
-            "/models - List configured model endpoints.",
-            "/model - Show the active or next-session model.",
-            "/model <provider/endpoint> - Select the active or next-session model.",
-            "/approval-mode - Show the current session approval mode.",
-            "/approval-mode <inherit|auto|approval> - Set the session approval mode.",
-            "/config - Show active local config path.",
-            "/export - Show active session data path.",
-            "/history - Show current session messages.",
-            "/events - Show current session events.",
-            "/skills - List available skills.",
-            "/follow <prompt> - Queue at the next run boundary (default).",
-            "/steer <prompt> - Queue at the next model-turn boundary.",
-            "/abort - Abort the active request when supported.",
-            "/compact - Summarize older context for the active session.",
-            "/exit - Quit.",
-        ]
+def _help_text(plugins: PluginService | None = None) -> str:
+    lines = [
+        "Commands:",
+        "/help - Show commands.",
+        "/new - Start a new session.",
+        "/sessions - List local sessions.",
+        "/open <session_id> - Continue a session.",
+        "/models - List configured model endpoints.",
+        "/model - Show the active or next-session model.",
+        "/model <provider/endpoint> - Select the active or next-session model.",
+        "/approval-mode - Show the current session approval mode.",
+        "/approval-mode <inherit|auto|approval> - Set the session approval mode.",
+        "/config - Show active local config path.",
+        "/export - Show active session data path.",
+        "/history - Show current session messages.",
+        "/events - Show current session events.",
+        "/skills - List available skills.",
+        "/follow <prompt> - Queue at the next run boundary (default).",
+        "/steer <prompt> - Queue at the next model-turn boundary.",
+        "/abort - Abort the active request when supported.",
+        "/compact - Summarize older context for the active session.",
+        "/exit - Quit.",
+    ]
+    if plugins is not None:
+        commands = plugins.list_commands()
+        if commands:
+            lines.append("Plugin commands:")
+            for item in commands:
+                description = f" - {item.description}" if item.description else ""
+                lines.append(f"/{item.command_id}{description}")
+    return "\n".join(lines)
+
+
+async def _plugin_command(
+    plugins: PluginService | None,
+    selector: str,
+    argument: str,
+    *,
+    session_id: str | None,
+    workspace: str | None,
+) -> CommandResult | None:
+    if plugins is None:
+        return None
+    commands = plugins.list_commands()
+    if ":" in selector:
+        matches = [item for item in commands if item.command_id == selector]
+    else:
+        matches = [item for item in commands if item.name == selector]
+    if not matches:
+        return None
+    if len(matches) > 1:
+        choices = ", ".join(f"/{item.command_id}" for item in matches)
+        return CommandResult(
+            session_id=session_id,
+            output=f"Ambiguous plugin command /{selector}; use one of: {choices}",
+        )
+    executed = await plugins.execute_command(
+        matches[0].command_id,
+        argument,
+        session_id=session_id,
+        workspace=workspace,
+    )
+    return CommandResult(
+        session_id=session_id,
+        output=executed.output,
+        session_inputs=tuple(executed.session_inputs),
     )
 
 

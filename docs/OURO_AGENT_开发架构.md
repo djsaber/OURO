@@ -297,12 +297,23 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 - Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
   observational hook 使用不同超时上限。
-- 插件只能通过 owner-aware transaction 贡献工具、Hook、Host-neutral command、上下文 provider、压缩策略、
-  Skills、MCP 或受监督后台服务。manifest 的
+- 插件只能通过 owner-aware transaction 贡献工具、限制性 tool policy、Hook、Host-neutral command、上下文
+  provider、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
   未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
-  Desktop 可映射为 action，但 core 不定义 UI extension DSL。
+  Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
+  `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。
+- 插件不得取得 `RuntimeService` 或 `SessionStore`。获得 `sessions.write` 与 `background.run` 后，command 可以
+  返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
+  `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
+  durable checkpoint；普通 `after_run` Hook 仍是 fail-open observer。
+- 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace 路径与协作式取消语义；
+  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call` 分离，
+  只能把 `auto` 提升为审批或拒绝，失败时拒绝，且审批修改后的最终参数必须重新评估。
+- 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
+  `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
+  superseded；目标插件在下一 Run 重新评估。
 - 插件系统将 package、install/provenance、authorization 和 runtime generation 分层；规范与实现取舍见
   [插件系统规格](../dev/specs/plugin-system.md)。新 Run 获取不可变 extension snapshot，更新不得让同一 Run
   混用两个插件版本；同进程插件为 full trust，worker 不宣称 OS 沙箱。
@@ -314,7 +325,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 启用依赖图只使用显式选择的已安装 digest；切换已启用 digest 会在 state 原子提交前重新验证完整依赖锁定图，
   active dependent 存在时不能禁用依赖项。Host 启动按 desired root 隔离依赖失败，无关插件继续启动。不同 digest
   共用 plugin data，只有最后一个安装被移除时才允许 purge；候选 generation 启动失败会恢复旧选择和旧 generation。
-- `ContributionCoordinator` 在短临界区内跨 Tool、Hook、command 与 compaction registry 原子发布 owner set；
+- `ContributionCoordinator` 在短临界区内跨 Tool、tool policy、Hook、command、compaction 与 continuation registry 原子发布 owner set；
   import、worker/MCP 启动和插件回调均不在 registry 锁内执行。
 - 由于当前模型上下文和工具注册表仍是进程级共享资源，任何插件目录变更使用全局 catalog barrier：先阻止新
   Run 获取 snapshot，再等待已有 Run 释放。该策略比同进程并行双 generation 更保守，但能从底层保证一个

@@ -14,7 +14,12 @@ from ouro.core.compaction import (
     CompactionStrategy,
     CompactionStrategyRegistry,
 )
+from ouro.core.continuations import (
+    ContinuationPolicyRegistration,
+    RunContinuationRegistry,
+)
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
+from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import InstalledPlugin, PluginGenerationRecord
 from ouro.plugins.registry import (
@@ -43,6 +48,8 @@ class PluginContributions:
     context_providers: list[PluginContextProvider] = field(default_factory=list)
     compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
     background_services: list[BackgroundService] = field(default_factory=list)
+    continuation_policies: list[ContinuationPolicyRegistration] = field(default_factory=list)
+    tool_policies: list[ToolPolicyRegistration] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -64,6 +71,8 @@ class PreparedContributionSet:
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
+    continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     contract_hashes: dict[str, str] = field(default_factory=dict)
 
 
@@ -119,11 +128,15 @@ class ContributionCoordinator:
         hooks: HookRegistry,
         commands: PluginCommandRegistry | None = None,
         compaction: CompactionStrategyRegistry | None = None,
+        continuations: RunContinuationRegistry | None = None,
+        tool_policies: ToolPolicyRegistry | None = None,
     ) -> None:
         self.tools = tools
         self.hooks = hooks
         self.commands = commands
         self.compaction = compaction
+        self.continuations = continuations
+        self.tool_policies = tool_policies
         self._lock = threading.RLock()
         self._owners: set[str] = set()
 
@@ -147,7 +160,12 @@ class ContributionCoordinator:
             *self._prepare_tools(manifest, owner, source, contributions.tools),
             *self._prepare_discovered_tools(manifest, owner, discovered_tools),
         )
-        commands = self._prepare_commands(manifest, source, contributions.commands)
+        commands = self._prepare_commands(
+            manifest,
+            owner,
+            source,
+            contributions.commands,
+        )
         hooks = self._prepare_hooks(manifest, owner, source, contributions.hooks)
         context_hooks = self._prepare_context_providers(
             manifest,
@@ -160,6 +178,16 @@ class ContributionCoordinator:
             contributions.compaction_strategies,
         )
         self._validate_background_services(manifest, contributions.background_services)
+        continuation_policies = self._prepare_continuation_policies(
+            manifest,
+            owner,
+            contributions.continuation_policies,
+        )
+        tool_policies = self._prepare_tool_policies(
+            manifest,
+            owner,
+            contributions.tool_policies,
+        )
         hooks = (*hooks, *context_hooks, *static_hooks)
         hashes = _contract_hashes(
             manifest,
@@ -167,6 +195,8 @@ class ContributionCoordinator:
             hooks=hooks,
             commands=commands,
             compaction=compaction,
+            continuation_policies=continuation_policies,
+            tool_policies=tool_policies,
         )
         return PreparedContributionSet(
             owner=owner,
@@ -175,6 +205,8 @@ class ContributionCoordinator:
             commands=commands,
             compaction_strategies=compaction,
             background_services=tuple(contributions.background_services),
+            continuation_policies=continuation_policies,
+            tool_policies=tool_policies,
             contract_hashes=hashes,
         )
 
@@ -186,11 +218,14 @@ class ContributionCoordinator:
     ) -> ContributionLease:
         owner = prepared.owner.key
         with self._lock:
+            owners_snapshot = self._owners.copy()
             snapshots = (
                 self.tools.snapshot(),
                 self.hooks.snapshot(),
                 self.commands.snapshot() if self.commands is not None else None,
                 self.compaction.snapshot() if self.compaction is not None else None,
+                self.continuations.snapshot() if self.continuations is not None else None,
+                self.tool_policies.snapshot() if self.tool_policies is not None else None,
             )
             try:
                 if replace_owner is not None:
@@ -201,6 +236,10 @@ class ContributionCoordinator:
                         self.commands.unregister_owner(previous)
                     if self.compaction is not None:
                         self.compaction.unregister_owner(previous)
+                    if self.continuations is not None:
+                        self.continuations.unregister_owner(previous)
+                    if self.tool_policies is not None:
+                        self.tool_policies.unregister_owner(previous)
                     self._owners.discard(previous)
                 self.tools.replace_owner(owner, prepared.tools)
                 self.hooks.replace_owner(owner, prepared.hooks)
@@ -214,6 +253,16 @@ class ContributionCoordinator:
                             "plugin compaction registry is unavailable"
                         )
                     self.compaction.replace_owner(owner, prepared.compaction_strategies)
+                if prepared.continuation_policies:
+                    if self.continuations is None:
+                        raise ContributionValidationError(
+                            "run continuation registry is unavailable"
+                        )
+                    self.continuations.replace_owner(owner, prepared.continuation_policies)
+                if prepared.tool_policies:
+                    if self.tool_policies is None:
+                        raise ContributionValidationError("tool policy registry is unavailable")
+                    self.tool_policies.replace_owner(owner, prepared.tool_policies)
                 self._owners.add(owner)
             except Exception:
                 self.tools.restore(snapshots[0])
@@ -222,6 +271,11 @@ class ContributionCoordinator:
                     self.commands.restore(snapshots[2])
                 if self.compaction is not None and snapshots[3] is not None:
                     self.compaction.restore(snapshots[3])
+                if self.continuations is not None and snapshots[4] is not None:
+                    self.continuations.restore(snapshots[4])
+                if self.tool_policies is not None and snapshots[5] is not None:
+                    self.tool_policies.restore(snapshots[5])
+                self._owners = owners_snapshot
                 raise
         return ContributionLease(self, prepared.owner)
 
@@ -236,6 +290,10 @@ class ContributionCoordinator:
                 self.commands.unregister_owner(key)
             if self.compaction is not None:
                 self.compaction.unregister_owner(key)
+            if self.continuations is not None:
+                self.continuations.unregister_owner(key)
+            if self.tool_policies is not None:
+                self.tool_policies.unregister_owner(key)
             self._owners.discard(key)
 
     @staticmethod
@@ -291,6 +349,7 @@ class ContributionCoordinator:
     @staticmethod
     def _prepare_commands(
         manifest: PluginManifest,
+        owner: ContributionOwner,
         source: PluginSource,
         commands: list[PluginCommand],
     ) -> tuple[PluginCommand, ...]:
@@ -301,11 +360,15 @@ class ContributionCoordinator:
         )
         _validate_declared_set("command", declarations, actual)
         return tuple(
-            bind_plugin_command(
-                command,
-                plugin_id=manifest.plugin_id,
-                source=source,
-                maximum_timeout_seconds=5.0,
+            replace(
+                bind_plugin_command(
+                    command,
+                    plugin_id=manifest.plugin_id,
+                    source=source,
+                    maximum_timeout_seconds=5.0,
+                ),
+                generation_id=owner.generation_id,
+                allow_session_inputs=_allows_session_inputs(manifest),
             )
             for command in actual.values()
         )
@@ -460,6 +523,58 @@ class ContributionCoordinator:
         )
         _validate_declared_set("background service", declarations, actual)
 
+    @staticmethod
+    def _prepare_continuation_policies(
+        manifest: PluginManifest,
+        owner: ContributionOwner,
+        policies: list[ContinuationPolicyRegistration],
+    ) -> tuple[ContinuationPolicyRegistration, ...]:
+        declarations = {item.id: item for item in manifest.contributes.continuation_policies}
+        actual = _unique_contribution_map(
+            "continuation policy",
+            ((policy.policy_id, policy) for policy in policies),
+        )
+        _validate_declared_set("continuation policy", declarations, actual)
+        if actual and not _allows_session_inputs(manifest):
+            raise ContributionValidationError(
+                "continuation policies require sessions.write and background.run permissions"
+            )
+        return tuple(
+            replace(
+                policy,
+                plugin_id=manifest.plugin_id,
+                priority=declarations[policy.policy_id].priority,
+                timeout_seconds=declarations[policy.policy_id].timeout_seconds,
+                owner=owner.key,
+                generation_id=owner.generation_id,
+            )
+            for policy in actual.values()
+        )
+
+    @staticmethod
+    def _prepare_tool_policies(
+        manifest: PluginManifest,
+        owner: ContributionOwner,
+        policies: list[ToolPolicyRegistration],
+    ) -> tuple[ToolPolicyRegistration, ...]:
+        declarations = {item.id: item for item in manifest.contributes.tool_policies}
+        actual = _unique_contribution_map(
+            "tool policy",
+            ((policy.policy_id, policy) for policy in policies),
+        )
+        _validate_declared_set("tool policy", declarations, actual)
+        return tuple(
+            replace(
+                policy,
+                plugin_id=manifest.plugin_id,
+                priority=declarations[policy.policy_id].priority,
+                timeout_seconds=declarations[policy.policy_id].timeout_seconds,
+                owner=owner.key,
+                generation_id=owner.generation_id,
+            )
+            for policy in actual.values()
+        )
+
 
 def _unique_contribution_map[ContributionT](
     kind: str,
@@ -471,6 +586,11 @@ def _unique_contribution_map[ContributionT](
             raise ContributionValidationError(f"duplicate {kind} contribution: {identity}")
         indexed[identity] = value
     return indexed
+
+
+def _allows_session_inputs(manifest: PluginManifest) -> bool:
+    permissions = {request.id for request in manifest.permissions}
+    return {"sessions.write", "background.run"}.issubset(permissions)
 
 
 def _validate_declared_set(
@@ -501,6 +621,8 @@ def _contract_hashes(
     hooks: tuple[HookRegistration, ...],
     commands: tuple[PluginCommand, ...],
     compaction: tuple[CompactionStrategy, ...],
+    continuation_policies: tuple[ContinuationPolicyRegistration, ...],
+    tool_policies: tuple[ToolPolicyRegistration, ...],
 ) -> dict[str, str]:
     contracts: dict[str, object] = {}
     for tool in tools:
@@ -530,6 +652,17 @@ def _contract_hashes(
         local_id = strategy.strategy_id.removeprefix(f"{manifest.plugin_id}.")
         contracts[f"{manifest.plugin_id}/compaction_strategies/{local_id}"] = {
             "version": strategy.version,
+        }
+    for continuation_policy in continuation_policies:
+        contracts[f"{manifest.plugin_id}/continuation_policies/{continuation_policy.policy_id}"] = {
+            "priority": continuation_policy.priority,
+            "timeout_seconds": continuation_policy.timeout_seconds,
+        }
+    for tool_policy in tool_policies:
+        contracts[f"{manifest.plugin_id}/tool_policies/{tool_policy.policy_id}"] = {
+            "priority": tool_policy.priority,
+            "timeout_seconds": tool_policy.timeout_seconds,
+            "restriction_only": True,
         }
     for skill in manifest.contributes.skills:
         contracts[f"{manifest.plugin_id}/skills/{skill.id}"] = {"path": skill.path}

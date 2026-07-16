@@ -5,18 +5,25 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 PermissionMode = Literal["auto", "approval", "deny"]
+SessionInputMode = Literal["follow_up", "steer"]
+RunStatus = Literal[
+    "queued",
+    "running",
+    "waiting_user",
+    "waiting_approval",
+    "completed",
+    "aborted",
+    "failed",
+    "paused",
+    "recoverable",
+]
+RunOrigin = Literal["user", "follow_up", "replay", "plugin"]
 HookEvent = Literal[
-    "before_run",
     "after_run",
-    "before_context_build",
     "after_context_build",
-    "before_model_call",
-    "after_model_response",
     "before_tool_call",
     "after_tool_call",
-    "on_approval_requested",
     "on_event",
-    "on_error",
 ]
 StopReason = Literal["disable", "restart", "upgrade", "shutdown", "startup_failed"]
 
@@ -84,6 +91,34 @@ class PluginContext:
     permissions: frozenset[str] = frozenset()
 
 
+class ToolExecutionContext(Protocol):
+    """Host-owned, request-scoped services available to an in-process tool.
+
+    Worker tools receive the same workspace fields in ``ToolCall`` and are
+    cancelled through the worker protocol's ``cancel`` notification.
+    """
+
+    @property
+    def workspace(self) -> str | None: ...
+
+    @property
+    def workspace_only(self) -> bool: ...
+
+    @property
+    def is_aborted(self) -> bool: ...
+
+    @property
+    def abort_reason(self) -> str: ...
+
+    def raise_if_aborted(self) -> None: ...
+
+    async def sleep(self, seconds: float) -> None: ...
+
+    def resolve_path(self, path: str) -> str: ...
+
+    def resolve_working_directory(self, cwd: str | None = None) -> str | None: ...
+
+
 @dataclass(frozen=True)
 class ToolCall:
     tool_call_id: str
@@ -91,6 +126,8 @@ class ToolCall:
     run_id: str
     tool_name: str
     arguments: Mapping[str, object]
+    workspace: str | None = None
+    workspace_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -101,7 +138,20 @@ class ToolOutput:
     is_error: bool = False
 
 
-ToolHandler = Callable[[ToolCall], ToolOutput | str | Awaitable[ToolOutput | str]]
+ToolHandlerResult = ToolOutput | str | Awaitable[ToolOutput | str]
+ToolHandler = (
+    Callable[[ToolCall], ToolHandlerResult]
+    | Callable[[ToolCall, ToolExecutionContext], ToolHandlerResult]
+)
+
+
+@dataclass(frozen=True)
+class SessionInput:
+    """Request a synthetic, provenance-bearing input through the Host runtime."""
+
+    prompt: str
+    mode: SessionInputMode = "follow_up"
+    title: str | None = None
 
 
 @dataclass(frozen=True)
@@ -115,12 +165,58 @@ class ToolContribution:
     permission_mode: PermissionMode = "approval"
 
 
+ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
+
+
+@dataclass(frozen=True)
+class ToolPolicyCall:
+    session_id: str
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    arguments: Mapping[str, object] = field(default_factory=dict)
+    source: str = "builtin"
+    workspace: str | None = None
+
+
+@dataclass(frozen=True)
+class ToolPolicyDecision:
+    action: ToolPolicyAction = "ignore"
+    reason: str | None = None
+
+
+ToolPolicyHandler = Callable[
+    [ToolPolicyCall],
+    ToolPolicyDecision | Awaitable[ToolPolicyDecision],
+]
+
+
+@dataclass(frozen=True)
+class ToolPolicyContribution:
+    id: str
+    handler: ToolPolicyHandler
+    priority: int = 100
+    timeout_seconds: float = 5.0
+
+
+@dataclass(frozen=True)
+class RunOutcome:
+    session_id: str
+    run_id: str
+    status: RunStatus
+    origin: RunOrigin
+    final_text: str = ""
+    error: str | None = None
+    usage: Mapping[str, int | float] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class HookCall:
     event: HookEvent
     session_id: str | None = None
     run_id: str | None = None
     data: Mapping[str, object] = field(default_factory=dict)
+    run_outcome: RunOutcome | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +249,7 @@ class CommandCall:
 class CommandOutput:
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
+    session_inputs: tuple[SessionInput, ...] = ()
 
 
 CommandHandler = Callable[
@@ -162,6 +259,32 @@ CommandHandler = Callable[
     | Mapping[str, object]
     | Awaitable[CommandOutput | str | Mapping[str, object]],
 ]
+
+ContinuationAction = Literal["ignore", "continue", "complete", "pause", "fail"]
+
+
+@dataclass(frozen=True)
+class ContinuationDecision:
+    action: ContinuationAction = "ignore"
+    prompt: str | None = None
+    mode: SessionInputMode = "follow_up"
+    title: str | None = None
+    reason: str | None = None
+    state_revision: int | None = None
+
+
+ContinuationHandler = Callable[
+    [RunOutcome],
+    ContinuationDecision | Awaitable[ContinuationDecision],
+]
+
+
+@dataclass(frozen=True)
+class ContinuationPolicyContribution:
+    id: str
+    handler: ContinuationHandler
+    priority: int = 100
+    timeout_seconds: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -222,6 +345,8 @@ class ContributionSet:
     context_providers: list[ContextContribution] = field(default_factory=list)
     compaction_strategies: list[CompactionContribution] = field(default_factory=list)
     background_services: list[BackgroundServiceContribution] = field(default_factory=list)
+    continuation_policies: list[ContinuationPolicyContribution] = field(default_factory=list)
+    tool_policies: list[ToolPolicyContribution] = field(default_factory=list)
 
 
 class PluginInstance(Protocol):
@@ -243,6 +368,9 @@ __all__ = [
     "CompactionCall",
     "CompactionContribution",
     "CompactionOutput",
+    "ContinuationAction",
+    "ContinuationDecision",
+    "ContinuationPolicyContribution",
     "ContextContribution",
     "ContributionSet",
     "DiagnosticEmitter",
@@ -258,8 +386,18 @@ __all__ = [
     "PluginLogger",
     "PluginProvenanceSummary",
     "PluginTaskGroup",
+    "RunOutcome",
+    "RunOrigin",
+    "RunStatus",
+    "SessionInput",
+    "SessionInputMode",
     "StopReason",
     "ToolCall",
     "ToolContribution",
+    "ToolExecutionContext",
     "ToolOutput",
+    "ToolPolicyAction",
+    "ToolPolicyCall",
+    "ToolPolicyContribution",
+    "ToolPolicyDecision",
 ]

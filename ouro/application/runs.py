@@ -120,6 +120,27 @@ class RunLifecycle:
         self._append_message(session=session, run=run, message=message)
         return message
 
+    def append_synthetic_input(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        prompt: str,
+        sequence: int,
+        metadata: dict[str, Any],
+    ) -> MessageRecord:
+        """Persist extension-produced context without impersonating the user."""
+
+        message = MessageRecord.text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            role="system_synthetic",
+            text=prompt,
+            sequence=sequence,
+        ).model_copy(update={"metadata": dict(metadata)})
+        self._append_message(session=session, run=run, message=message)
+        return message
+
     def append_assistant_tool_batch_message(
         self,
         *,

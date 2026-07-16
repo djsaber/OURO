@@ -14,8 +14,18 @@ from types import MappingProxyType, ModuleType
 from uuid import uuid4
 
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
+from ouro.core.continuations import (
+    ContinuationDecision,
+    ContinuationPolicyRegistration,
+)
 from ouro.core.hooks import HookContext, HookRegistration, HookResult
 from ouro.core.redaction import SensitiveValueRedactor
+from ouro.core.session_controls import SessionInputRequest
+from ouro.core.tool_policies import (
+    ToolPolicyCall,
+    ToolPolicyDecision,
+    ToolPolicyRegistration,
+)
 from ouro.plugins.contributions import PluginContributions
 from ouro.plugins.models import InstalledPlugin, PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.paths import portable_relative_path
@@ -26,7 +36,7 @@ from ouro.plugins.registry import (
     PluginContextProvider,
 )
 from ouro.sdk.plugins import v1 as sdk
-from ouro.tools import Tool, ToolDefinition, ToolInvocation, ToolResult
+from ouro.tools import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
 
 
 class ScopedPluginDataStore:
@@ -302,19 +312,31 @@ def adapt_sdk_contributions(contributions: sdk.ContributionSet) -> PluginContrib
         background_services=[
             _SDKBackgroundService(item) for item in contributions.background_services
         ],
+        continuation_policies=[
+            _adapt_continuation_policy(item) for item in contributions.continuation_policies
+        ],
+        tool_policies=[_adapt_tool_policy(item) for item in contributions.tool_policies],
     )
 
 
 def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
-    async def handler(invocation: ToolInvocation) -> ToolResult:
-        raw = contribution.handler(
-            sdk.ToolCall(
-                tool_call_id=invocation.tool_call_id,
-                session_id=invocation.session_id,
-                run_id=invocation.run_id,
-                tool_name=invocation.tool_name,
-                arguments=MappingProxyType(dict(invocation.arguments)),
-            )
+    async def handler(
+        invocation: ToolInvocation,
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        call = sdk.ToolCall(
+            tool_call_id=invocation.tool_call_id,
+            session_id=invocation.session_id,
+            run_id=invocation.run_id,
+            tool_name=invocation.tool_name,
+            arguments=MappingProxyType(dict(invocation.arguments)),
+            workspace=str(context.workspace) if context.workspace is not None else None,
+            workspace_only=context.workspace_only,
+        )
+        raw = _invoke_sdk_tool_handler(
+            contribution.handler,
+            call,
+            _SDKToolExecutionContext(context),
         )
         if inspect.isawaitable(raw):
             raw = await raw
@@ -342,6 +364,65 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
     )
 
 
+class _SDKToolExecutionContext:
+    def __init__(self, context: ToolExecutionContext) -> None:
+        self._context = context
+
+    @property
+    def workspace(self) -> str | None:
+        value = self._context.workspace
+        return str(value) if value is not None else None
+
+    @property
+    def workspace_only(self) -> bool:
+        return self._context.workspace_only
+
+    @property
+    def is_aborted(self) -> bool:
+        return self._context.is_aborted
+
+    @property
+    def abort_reason(self) -> str:
+        return self._context.abort_reason
+
+    def raise_if_aborted(self) -> None:
+        self._context.raise_if_aborted()
+
+    async def sleep(self, seconds: float) -> None:
+        await self._context.sleep(seconds)
+
+    def resolve_path(self, path: str) -> str:
+        return str(self._context.resolve_path(path))
+
+    def resolve_working_directory(self, cwd: str | None = None) -> str | None:
+        resolved = self._context.resolve_working_directory(cwd)
+        return str(resolved) if resolved is not None else None
+
+
+def _invoke_sdk_tool_handler(
+    handler,
+    call: sdk.ToolCall,
+    context: sdk.ToolExecutionContext,
+):
+    try:
+        parameters = tuple(inspect.signature(handler).parameters.values())
+    except (TypeError, ValueError):
+        return handler(call)
+    if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
+        return handler(call, context=context)
+    if any(parameter.name == "context" for parameter in parameters):
+        return handler(call, context=context)
+    positional = [
+        parameter
+        for parameter in parameters
+        if parameter.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) >= 2:
+        return handler(call, context)
+    return handler(call)
+
+
 def _adapt_hook(contribution: sdk.HookContribution) -> HookRegistration:
     async def handler(context: HookContext) -> HookResult:
         raw = contribution.handler(
@@ -350,6 +431,19 @@ def _adapt_hook(contribution: sdk.HookContribution) -> HookRegistration:
                 session_id=context.session_id,
                 run_id=context.run_id,
                 data=MappingProxyType(dict(context.data)),
+                run_outcome=(
+                    sdk.RunOutcome(
+                        session_id=context.run_outcome.session_id,
+                        run_id=context.run_outcome.run_id,
+                        status=context.run_outcome.status,
+                        origin=context.run_outcome.origin,
+                        final_text=context.run_outcome.final_text,
+                        error=context.run_outcome.error,
+                        usage=MappingProxyType(dict(context.run_outcome.usage)),
+                    )
+                    if context.run_outcome is not None
+                    else None
+                ),
             )
         )
         if inspect.isawaitable(raw):
@@ -390,6 +484,10 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                 command_id=request.command_id,
                 output=raw.output,
                 data=dict(raw.data),
+                session_inputs=[
+                    SessionInputRequest(prompt=item.prompt, mode=item.mode, title=item.title)
+                    for item in raw.session_inputs
+                ],
             )
         return PluginCommandResult(command_id=request.command_id, data=dict(raw))
 
@@ -458,6 +556,72 @@ class _SDKBackgroundService:
         result = self._stop()
         if inspect.isawaitable(result):
             await result
+
+
+def _adapt_continuation_policy(
+    contribution: sdk.ContinuationPolicyContribution,
+) -> ContinuationPolicyRegistration:
+    async def handler(outcome) -> ContinuationDecision:
+        sdk_outcome = sdk.RunOutcome(
+            session_id=outcome.session_id,
+            run_id=outcome.run_id,
+            status=outcome.status,
+            origin=outcome.origin,
+            final_text=outcome.final_text,
+            error=outcome.error,
+            usage=MappingProxyType(dict(outcome.usage)),
+        )
+        raw = contribution.handler(sdk_outcome)
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if not isinstance(raw, sdk.ContinuationDecision):
+            raise TypeError("continuation policy must return ContinuationDecision")
+        return ContinuationDecision(
+            action=raw.action,
+            prompt=raw.prompt,
+            mode=raw.mode,
+            title=raw.title,
+            reason=raw.reason,
+            state_revision=raw.state_revision,
+        )
+
+    return ContinuationPolicyRegistration(
+        plugin_id="",
+        policy_id=contribution.id,
+        handler=handler,
+        priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+    )
+
+
+def _adapt_tool_policy(
+    contribution: sdk.ToolPolicyContribution,
+) -> ToolPolicyRegistration:
+    async def handler(call: ToolPolicyCall) -> ToolPolicyDecision:
+        raw = contribution.handler(
+            sdk.ToolPolicyCall(
+                session_id=call.session_id,
+                run_id=call.run_id,
+                tool_call_id=call.tool_call_id,
+                tool_name=call.tool_name,
+                arguments=MappingProxyType(dict(call.arguments)),
+                source=call.source,
+                workspace=call.workspace,
+            )
+        )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if not isinstance(raw, sdk.ToolPolicyDecision):
+            raise TypeError("tool policy must return ToolPolicyDecision")
+        return ToolPolicyDecision(action=raw.action, reason=raw.reason)
+
+    return ToolPolicyRegistration(
+        plugin_id="",
+        policy_id=contribution.id,
+        handler=handler,
+        priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+    )
 
 
 def _module_belongs_to(module: ModuleType, package_root: Path) -> bool:

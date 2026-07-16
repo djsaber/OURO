@@ -19,6 +19,8 @@ PluginCapability = Literal[
     "skills",
     "mcp_servers",
     "background_services",
+    "continuation_policies",
+    "tool_policies",
 ]
 PluginRuntimeKind = Literal["declarative", "python-inprocess", "worker"]
 PluginStatus = Literal[
@@ -159,6 +161,30 @@ class HookContributionSpec(OuroModel):
         return _validate_local_id(value)
 
 
+class ContinuationPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    optional: bool = False
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
+
+
+class ToolPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    optional: bool = False
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
+
+
 class NamedContributionSpec(OuroModel):
     id: str
     optional: bool = False
@@ -183,6 +209,8 @@ class PluginContributes(OuroModel):
     skills: list[PathContributionSpec] = Field(default_factory=list)
     mcp_servers: list[PathContributionSpec] = Field(default_factory=list)
     background_services: list[NamedContributionSpec] = Field(default_factory=list)
+    continuation_policies: list[ContinuationPolicyContributionSpec] = Field(default_factory=list)
+    tool_policies: list[ToolPolicyContributionSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_unique_ids(self) -> PluginContributes:
@@ -205,6 +233,8 @@ class PluginContributes(OuroModel):
             "skills": list(self.skills),
             "mcp_servers": list(self.mcp_servers),
             "background_services": list(self.background_services),
+            "continuation_policies": list(self.continuation_policies),
+            "tool_policies": list(self.tool_policies),
         }
 
     def capabilities(self) -> set[PluginCapability]:

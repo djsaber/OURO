@@ -23,8 +23,10 @@ from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
+from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import OuroError
 from ouro.core.hooks import HookRegistry
+from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
 from ouro.plugins.contributions import ContributionCoordinator
@@ -113,6 +115,8 @@ class LocalApplication:
             tools=runtime.tools,
             hooks=runtime.hooks,
             compaction=runtime.compaction_strategies,
+            continuations=runtime.continuations,
+            tool_policies=runtime.tool_policies,
             session_store=runtime.store,
         )
         runtime.attach_extension_catalog(plugin_runtime)
@@ -190,6 +194,8 @@ async def open_local_plugins(
         tools=ToolRegistry(),
         hooks=HookRegistry(),
         compaction=CompactionStrategyRegistry(),
+        continuations=RunContinuationRegistry(),
+        tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
     )
     await runtime.start()
@@ -350,6 +356,8 @@ def _build_local_plugin_runtime(
     tools: ToolRegistry,
     hooks: HookRegistry,
     compaction: CompactionStrategyRegistry,
+    continuations: RunContinuationRegistry,
+    tool_policies: ToolPolicyRegistry,
     session_store: SessionStore | None,
 ) -> tuple[PluginRuntimeResource, PluginCommandRegistry, PluginService]:
     store = PluginPackageStore(home)
@@ -362,6 +370,8 @@ def _build_local_plugin_runtime(
             hooks=hooks,
             commands=commands,
             compaction=compaction,
+            continuations=continuations,
+            tool_policies=tool_policies,
         ),
         credential_resolver=resolve_plugin_credential,
     )

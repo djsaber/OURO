@@ -20,6 +20,7 @@ from ouro.core.tool_batches import (
     ToolCallBatchRecord,
     ToolExecutionMode,
 )
+from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
 from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocation, ToolResult
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 
@@ -42,6 +43,7 @@ class ToolCallCoordinator:
         execution_config: ToolExecutionConfig,
         default_workspace: str | None,
         is_aborted: Callable[[str, str], bool],
+        tool_policies: ToolPolicyRegistry | None = None,
     ) -> None:
         self.executor = executor
         self.batch_executor = ToolBatchExecutor(executor)
@@ -52,6 +54,7 @@ class ToolCallCoordinator:
         self.execution_config = execution_config
         self.default_workspace = default_workspace
         self.is_aborted = is_aborted
+        self.tool_policies = tool_policies or ToolPolicyRegistry()
 
     async def handle_batch(
         self,
@@ -189,6 +192,48 @@ class ToolCallCoordinator:
         message_sequence: int,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
+        final_calls: list[ToolBatchCall] = []
+        for call in batch.calls:
+            if (
+                call.status != "ready"
+                or call.invocation is None
+                or call.approval is None
+                or call.approval.status != "modified"
+            ):
+                final_calls.append(call)
+                continue
+            invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
+                emitted,
+                sequence,
+                session=session,
+                run=run,
+                invocation=call.invocation,
+                phase="approval_modification",
+            )
+            prepared = self.executor.preflight(
+                invocation,
+                approved=True,
+                policy_mode=policy_mode,
+                policy_reason=policy_reason,
+            )
+            final_calls.append(
+                call.model_copy(
+                    update={
+                        "status": (
+                            "ready"
+                            if prepared.status == "ready"
+                            else (
+                                "failed"
+                                if prepared.result is not None and prepared.result.is_error
+                                else "completed"
+                            )
+                        ),
+                        "invocation": prepared.invocation,
+                        "result": prepared.result,
+                    }
+                )
+            )
+        batch = batch.model_copy(update={"calls": final_calls, "updated_at": utc_now()})
         ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
         batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
         self.runs.save_batch_state(
@@ -583,11 +628,13 @@ class ToolCallCoordinator:
         abort_signal: AbortSignal,
     ) -> tuple[ToolBatchCall, int]:
         try:
-            metadata = self.registry.get(request.name).definition.metadata
+            definition = self.registry.get(request.name).definition
+            metadata = definition.metadata
         except KeyError:
             # Preserve the executor's typed unknown-tool outcome.  Plugin
             # identity is enrichment for known tools, not a new lookup failure
             # path that bypasses model recovery.
+            definition = None
             metadata = {}
         invocation = ToolInvocation(
             session_id=session.session_id,
@@ -595,6 +642,7 @@ class ToolCallCoordinator:
             turn_id=turn_id,
             tool_call_id=request.id,
             tool_name=request.name,
+            source=definition.source if definition is not None else "builtin",
             arguments=request.arguments,
             plugin_id=_optional_text(metadata.get("plugin_id")),
             plugin_version=_optional_text(metadata.get("plugin_version")),
@@ -643,7 +691,20 @@ class ToolCallCoordinator:
                 request=request, status="aborted", invocation=invocation, result=result
             ), sequence
 
-        outcome = self.executor.preflight(invocation, approval_mode=session.approval_mode)
+        invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
+            emitted,
+            sequence,
+            session=session,
+            run=run,
+            invocation=invocation,
+            phase="preflight",
+        )
+        outcome = self.executor.preflight(
+            invocation,
+            approval_mode=session.approval_mode,
+            policy_mode=policy_mode,
+            policy_reason=policy_reason,
+        )
         if outcome.status == "approval_required":
             assert outcome.approval is not None
             sequence = await self.events.emit(
@@ -696,6 +757,59 @@ class ToolCallCoordinator:
             invocation=outcome.invocation,
             result=outcome.result,
         ), sequence
+
+    async def _evaluate_tool_policies(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        invocation: ToolInvocation,
+        phase: str,
+    ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
+        policy = await self.tool_policies.evaluate(
+            ToolPolicyCall(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                arguments=dict(invocation.arguments),
+                source=invocation.source,
+                workspace=session.workspace or self.default_workspace,
+            )
+        )
+        policy_ids = [
+            f"{item.plugin_id}/tool_policies/{item.policy_id}" for item in policy.decisions
+        ]
+        if policy.failures:
+            policy_ids.extend(
+                f"{item.plugin_id}/tool_policies/{item.policy_id}" for item in policy.failures
+            )
+        if policy.mode is not None or policy.failures:
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="tool_policy_evaluated",
+                payload={
+                    "tool_call_id": invocation.tool_call_id,
+                    "tool_name": invocation.tool_name,
+                    "phase": phase,
+                    "mode": policy.mode,
+                    "reason": policy.reason,
+                    "policy_ids": list(dict.fromkeys(policy_ids)),
+                    "failures": [failure.model_dump(mode="json") for failure in policy.failures],
+                },
+            )
+        invocation = invocation.model_copy(
+            update={
+                "tool_policy_ids": list(dict.fromkeys([*invocation.tool_policy_ids, *policy_ids])),
+                "tool_policy_reason": policy.reason or invocation.tool_policy_reason,
+            }
+        )
+        return invocation, policy.mode, policy.reason, sequence
 
     def _effective_mode(self, calls: list[ToolCallRequest]) -> ToolExecutionMode:
         if self.execution_config.mode == "sequential":

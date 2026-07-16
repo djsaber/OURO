@@ -18,6 +18,7 @@ from ouro.application.models import (
 )
 from ouro.application.queued_inputs import QueuedInput, QueuedInputMode, QueuedInputQueue
 from ouro.application.recovery import RunRecoveryService
+from ouro.application.run_continuations import RunContinuationService
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
@@ -40,15 +41,25 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
+from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import CompactionError, ConfigError, ResourceAttachmentError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookRegistry
+from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.state import RunRecord, RunStatus, SessionRecord
+from ouro.core.session_controls import AttributedSessionInput
+from ouro.core.state import (
+    RunContinuationCheckpoint,
+    RunContinuationControllerRef,
+    RunOutcome,
+    RunRecord,
+    RunStatus,
+    SessionRecord,
+)
 from ouro.core.tool_batches import ToolCallBatchRecord
+from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.tools import PermissionMode
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore
@@ -78,6 +89,8 @@ class RuntimeService:
         compaction_strategies: CompactionStrategyRegistry | None = None,
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
+        continuations: RunContinuationRegistry | None = None,
+        tool_policies: ToolPolicyRegistry | None = None,
         queued_input_config: QueuedInputConfig | None = None,
         resources: ResourceService | None = None,
         usage_service: UsageService | None = None,
@@ -105,6 +118,13 @@ class RuntimeService:
         )
         self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
         self.hooks = hooks or HookRegistry()
+        self.continuations = continuations or RunContinuationRegistry()
+        self.tool_policies = tool_policies or ToolPolicyRegistry()
+        self.run_continuations = RunContinuationService(
+            store=store,
+            registry=self.continuations,
+            queue=self.queued_inputs,
+        )
         self.event_recorder = RuntimeEventRecorder(
             store=store,
             hooks=self.hooks,
@@ -132,6 +152,7 @@ class RuntimeService:
             execution_config=tool_execution_config or ToolExecutionConfig(),
             default_workspace=self.default_workspace,
             is_aborted=self._is_run_aborted,
+            tool_policies=self.tool_policies,
         )
         self.context_builder = context_builder or ContextBuilder()
         self.run_budget = run_budget or RunBudgetPolicy()
@@ -234,6 +255,30 @@ class RuntimeService:
         self.models.adapter_for(model.key)
         return model
 
+    def create_session(
+        self,
+        *,
+        title: str,
+        initial_model: str | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
+    ) -> SessionRecord:
+        """Create an idle Session before a Host starts asynchronous input work."""
+
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        selected_model = (
+            self.resolve_model(initial_model)
+            if initial_model is not None
+            else self.models.default_model()
+        )
+        created = self.sessions.create(
+            title=title,
+            current_model=selected_model.key,
+            approval_mode=approval_mode,
+            workspace=self.default_workspace,
+        )
+        return self.store.load_session_record(created.session.session_id)
+
     def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
         """Persist an idle session's model route without changing other sessions."""
 
@@ -241,25 +286,26 @@ class RuntimeService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            snapshot = self.store.load_runtime_session(session_id)
-            if maybe_active_run(snapshot.runs) is not None:
-                raise SessionBusyError(f"session already has an active run: {session_id}")
-            normalized = selector.strip()
-            model = next(
-                (item for item in self.models.list_models() if item.key == normalized),
-                None,
-            )
-            if model is None:
-                raise ConfigError(f"model not found: {selector}")
-            self.models.adapter_for(model.key)
-            session = snapshot.session.model_copy(
-                update={
-                    "current_model": model.key,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
-            )
-            self.store.save_session(session)
+            with self.store.session_mutation(session_id):
+                snapshot = self.store.load_runtime_session(session_id)
+                if maybe_active_run(snapshot.runs) is not None:
+                    raise SessionBusyError(f"session already has an active run: {session_id}")
+                normalized = selector.strip()
+                model = next(
+                    (item for item in self.models.list_models() if item.key == normalized),
+                    None,
+                )
+                if model is None:
+                    raise ConfigError(f"model not found: {selector}")
+                self.models.adapter_for(model.key)
+                session = snapshot.session.model_copy(
+                    update={
+                        "current_model": model.key,
+                        "updated_at": utc_now(),
+                        "last_activity_at": utc_now(),
+                    }
+                )
+                self.store.save_session(session)
             self.store.refresh_catalog(session.session_id)
             return session
         finally:
@@ -281,18 +327,20 @@ class RuntimeService:
         *,
         snapshot: RuntimeSessionSnapshot | None = None,
     ) -> tuple[SessionRecord, RuntimeAdapter]:
-        selection = self.models.resolve(session.current_model or self.models.default_model().key)
-        adapter = self.models.adapter_for(selection.key)
-        if session.current_model == selection.key:
-            return session, adapter
-        session = session.model_copy(
-            update={
-                "current_model": selection.key,
-                "updated_at": utc_now(),
-                "last_activity_at": utc_now(),
-            }
-        )
-        self.store.save_session(session)
+        with self.store.session_mutation(session.session_id):
+            latest = self.store.load_session_record(session.session_id)
+            selection = self.models.resolve(latest.current_model or self.models.default_model().key)
+            adapter = self.models.adapter_for(selection.key)
+            if latest.current_model == selection.key:
+                return latest, adapter
+            session = latest.model_copy(
+                update={
+                    "current_model": selection.key,
+                    "updated_at": utc_now(),
+                    "last_activity_at": utc_now(),
+                }
+            )
+            self.store.save_session(session)
         self.store.refresh_catalog(
             session.session_id,
             snapshot=(
@@ -318,6 +366,7 @@ class RuntimeService:
         resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
+        _input_attribution: AttributedSessionInput | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -330,18 +379,11 @@ class RuntimeService:
                 "and pass its session with session_id"
             )
         if session_id is None:
-            selected_model = (
-                self.resolve_model(initial_model)
-                if initial_model is not None
-                else self.models.default_model()
-            )
-            created = self.sessions.create(
+            session = self.create_session(
                 title=title or _title_from_prompt(prompt),
-                current_model=selected_model.key,
+                initial_model=initial_model,
                 approval_mode=approval_mode or "inherit",
-                workspace=self.default_workspace,
             )
-            session = self.store.load_session_record(created.session.session_id)
             snapshot = RuntimeSessionSnapshot(session=session)
         else:
             snapshot = self._load_runtime_snapshot(
@@ -364,14 +406,45 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attribution=_input_attribution,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         emitted: list[EventRecord] = []
 
+        queued_origin = bool(
+            _queued_inputs and any(item.source == "plugin" for item in _queued_inputs)
+        )
         run = RunRecord(
             session_id=session.session_id,
             status="running",
-            origin="follow_up" if _queued_inputs else "user",
+            origin=(
+                "plugin"
+                if _input_attribution is not None or queued_origin
+                else ("follow_up" if _queued_inputs else "user")
+            ),
+            parent_run_id=(
+                next(
+                    (
+                        item.caused_by_run_id
+                        for item in (_queued_inputs or [])
+                        if item.caused_by_run_id is not None
+                    ),
+                    None,
+                )
+            ),
+            initiator_id=(
+                _input_attribution.plugin_id
+                if _input_attribution is not None
+                else next(
+                    (
+                        item.continuation_decision_id or item.plugin_id
+                        for item in (_queued_inputs or [])
+                        if item.source == "plugin"
+                    ),
+                    None,
+                )
+            ),
+            trigger="plugin" if _input_attribution is not None or queued_origin else "user",
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
@@ -391,6 +464,7 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attribution=_input_attribution,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
             raise SessionBusyError(f"session is already locked: {session.session_id}")
@@ -419,6 +493,7 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    attribution=_input_attribution,
                 )
                 return RunResult(
                     session=queued_session,
@@ -426,15 +501,17 @@ class RuntimeService:
                     events=queued_events,
                 )
             if approval_mode is not None and approval_mode != session.approval_mode:
-                now = utc_now()
-                session = session.model_copy(
-                    update={
-                        "approval_mode": approval_mode,
-                        "updated_at": now,
-                        "last_activity_at": now,
-                    }
-                )
-                self.store.save_session(session)
+                with self.store.session_mutation(session.session_id):
+                    latest_session_record = self.store.load_session_record(session.session_id)
+                    now = utc_now()
+                    session = latest_session_record.model_copy(
+                        update={
+                            "approval_mode": approval_mode,
+                            "updated_at": now,
+                            "last_activity_at": now,
+                        }
+                    )
+                    self.store.save_session(session)
                 locked_snapshot = locked_snapshot.model_copy(update={"session": session})
                 self.store.refresh_catalog(
                     session.session_id,
@@ -451,6 +528,18 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    source="plugin" if _input_attribution is not None else "user",
+                    plugin_id=(
+                        _input_attribution.plugin_id if _input_attribution is not None else None
+                    ),
+                    contribution_id=(
+                        _input_attribution.contribution_id
+                        if _input_attribution is not None
+                        else None
+                    ),
+                    generation_id=(
+                        _input_attribution.generation_id if _input_attribution is not None else None
+                    ),
                 )
             ]
             for pending_input in pending_inputs:
@@ -474,28 +563,20 @@ class RuntimeService:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 event_type="run_started",
-                payload={"trigger": "user"},
+                payload={"trigger": run.trigger, "origin": run.origin},
             )
 
-            user_messages: list[MessageRecord] = []
+            input_messages: list[MessageRecord] = []
             for queued_input in pending_inputs:
                 is_queued = _queued_inputs is not None
-                user_message = self.run_lifecycle.append_user_message(
+                input_message = self._append_session_input(
                     session=session,
                     run=run,
-                    prompt=queued_input.prompt,
-                    sequence=len(existing_messages) + len(user_messages) + 1,
-                    resource_refs=queued_input.resource_refs,
-                    metadata=(
-                        {
-                            "queued_input_id": queued_input.queue_id,
-                            "queued_input_mode": queued_input.mode,
-                        }
-                        if is_queued
-                        else None
-                    ),
+                    item=queued_input,
+                    sequence=len(existing_messages) + len(input_messages) + 1,
+                    is_queued=is_queued,
                 )
-                user_messages.append(user_message)
+                input_messages.append(input_message)
                 if is_queued:
                     latest = self.store.load_runtime_session(session.session_id)
                     self.queued_inputs.acknowledge(latest, queued_input.queue_id)
@@ -504,10 +585,17 @@ class RuntimeService:
                     sequence,
                     session_id=session.session_id,
                     run_id=run.run_id,
-                    event_type="user_message_added",
+                    event_type=(
+                        "plugin_message_added"
+                        if queued_input.source == "plugin"
+                        else "user_message_added"
+                    ),
                     payload={
-                        "message_id": user_message.message_id,
+                        "message_id": input_message.message_id,
                         "queued_input_id": queued_input.queue_id if is_queued else None,
+                        "source": queued_input.source,
+                        "plugin_id": queued_input.plugin_id,
+                        "contribution_id": queued_input.contribution_id,
                         "resource_refs": list(queued_input.resource_refs),
                     },
                 )
@@ -516,7 +604,7 @@ class RuntimeService:
             result = await self._continue_model_loop(
                 session=session,
                 run=run,
-                messages=[*existing_messages, *user_messages],
+                messages=[*existing_messages, *input_messages],
                 sequence=sequence,
                 emitted=emitted,
                 abort_signal=abort_signal,
@@ -529,10 +617,10 @@ class RuntimeService:
                 self._release_extension_snapshot(run.run_id)
             self._release_session_run_lock(run_lock)
         assert result is not None
-        self._finish_run_hooks(result.run)
-        if _drain_queued_inputs and result.run.status == "completed":
-            await self._drain_queued_input_queue(result.session.session_id)
-        return result
+        return await self._finalize_run_boundary(
+            result,
+            drain_queued_inputs=_drain_queued_inputs,
+        )
 
     async def _continue_model_loop(
         self,
@@ -677,7 +765,17 @@ class RuntimeService:
         finally:
             self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
-            self._finish_run_hooks(terminal_run)
+            if terminal_run.status in ACTIVE_RUN_STATUSES:
+                self._finish_run_hooks(terminal_run)
+            else:
+                await self._finalize_run_boundary(
+                    RunResult(
+                        session=self.store.load_session_record(session_id),
+                        run=terminal_run,
+                        events=emitted,
+                    ),
+                    drain_queued_inputs=False,
+                )
             self._release_extension_snapshot(run.run_id)
 
     async def abort_run(
@@ -694,6 +792,7 @@ class RuntimeService:
 
         emitted: list[EventRecord] = []
         signal = self._abort_signals.get(run.run_id)
+        has_active_owner = signal is not None
         if signal is not None:
             signal.abort(reason)
         with self.store.session_mutation(session_id):
@@ -733,8 +832,26 @@ class RuntimeService:
             event_type="run_aborted",
             payload={"reason": reason},
         )
-        self._finish_run_hooks(run)
-        return RunResult(session=session, run=run, events=emitted)
+        result = RunResult(session=session, run=run, events=emitted)
+        if has_active_owner:
+            return result
+        return await self._finalize_run_boundary(result, drain_queued_inputs=False)
+
+    async def submit_plugin_input(
+        self,
+        session_input: AttributedSessionInput,
+        *,
+        session_id: str | None,
+    ) -> RunResult:
+        """Submit an attributed extension input through the canonical Run boundary."""
+
+        return await self.run(
+            session_input.prompt,
+            session_id=session_id,
+            title=session_input.title,
+            queue_mode=session_input.mode,
+            _input_attribution=session_input,
+        )
 
     async def _queue_input(
         self,
@@ -745,6 +862,7 @@ class RuntimeService:
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
+        attribution: AttributedSessionInput | None = None,
     ) -> tuple[SessionRecord, list[EventRecord]]:
         session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
@@ -752,6 +870,11 @@ class RuntimeService:
             title=title,
             mode=mode,
             resource_refs=resource_refs,
+            source="plugin" if attribution is not None else "user",
+            plugin_id=attribution.plugin_id if attribution is not None else None,
+            contribution_id=(attribution.contribution_id if attribution is not None else None),
+            generation_id=attribution.generation_id if attribution is not None else None,
+            caused_by_run_id=active_run.run_id if attribution is not None else None,
         )
         emitted: list[EventRecord] = []
         sequence = await self.event_recorder.emit(
@@ -769,6 +892,9 @@ class RuntimeService:
                 "mode": queued_input.mode,
                 "queue_size": queue_size,
                 "resource_refs": list(queued_input.resource_refs),
+                "source": queued_input.source,
+                "plugin_id": queued_input.plugin_id,
+                "contribution_id": queued_input.contribution_id,
             },
         )
         del sequence
@@ -857,18 +983,14 @@ class RuntimeService:
                 ):
                     appended.append(durable)
                 continue
-            user_message = self.run_lifecycle.append_user_message(
+            input_message = self._append_session_input(
                 session=session,
                 run=run,
-                prompt=item.prompt,
+                item=item,
                 sequence=len(messages) + len(appended) + 1,
-                resource_refs=item.resource_refs,
-                metadata={
-                    "queued_input_id": item.queue_id,
-                    "queued_input_mode": item.mode,
-                },
+                is_queued=True,
             )
-            appended.append(user_message)
+            appended.append(input_message)
             latest = self.store.load_runtime_session(session.session_id)
             self.queued_inputs.acknowledge(latest, item.queue_id)
             sequence = await self.event_recorder.emit(
@@ -881,9 +1003,58 @@ class RuntimeService:
                     "queue_id": item.queue_id,
                     "mode": item.mode,
                     "turn_id": turn_id,
+                    "source": item.source,
+                    "plugin_id": item.plugin_id,
+                    "contribution_id": item.contribution_id,
                 },
             )
         return TurnBoundaryInputResult(sequence=sequence, messages=appended)
+
+    def _append_session_input(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        item: QueuedInput,
+        sequence: int,
+        is_queued: bool,
+    ) -> MessageRecord:
+        metadata: dict[str, object] = {
+            "session_input_source": item.source,
+            "session_input_mode": item.mode,
+        }
+        if is_queued:
+            metadata["queued_input_id"] = item.queue_id
+            metadata["queued_input_mode"] = item.mode
+        if item.source == "plugin":
+            if item.resource_refs:
+                raise ResourceAttachmentError(
+                    "extension-produced session inputs cannot attach user resources"
+                )
+            metadata.update(
+                {
+                    "plugin_id": item.plugin_id,
+                    "contribution_id": item.contribution_id,
+                    "generation_id": item.generation_id,
+                    "caused_by_run_id": item.caused_by_run_id,
+                    "continuation_decision_id": item.continuation_decision_id,
+                }
+            )
+            return self.run_lifecycle.append_synthetic_input(
+                session=session,
+                run=run,
+                prompt=item.prompt,
+                sequence=sequence,
+                metadata=metadata,
+            )
+        return self.run_lifecycle.append_user_message(
+            session=session,
+            run=run,
+            prompt=item.prompt,
+            sequence=sequence,
+            resource_refs=item.resource_refs,
+            metadata=metadata,
+        )
 
     def _validate_model_resource_refs(
         self,
@@ -1016,9 +1187,7 @@ class RuntimeService:
             self._release_session_run_lock(run_lock)
         # Queue draining starts a new Run and therefore must occur outside the
         # completed interaction's non-reentrant Session run lock.
-        if result.run.status == "completed":
-            await self._drain_queued_input_queue(result.session.session_id)
-        return result
+        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
 
     async def answer_user(
         self,
@@ -1092,9 +1261,7 @@ class RuntimeService:
             self._release_session_run_lock(run_lock)
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
-        if result.run.status == "completed":
-            await self._drain_queued_input_queue(result.session.session_id)
-        return result
+        return await self._finalize_run_boundary(result, drain_queued_inputs=True)
 
     async def _continue_resolved_batch(
         self,
@@ -1157,7 +1324,6 @@ class RuntimeService:
                     final_text="",
                     tool_results=[],
                 )
-                self._finish_run_hooks(failed.run)
                 return failed
             latest = self._load_runtime_snapshot(session.session_id, recover=True)
             session = latest.session
@@ -1170,7 +1336,6 @@ class RuntimeService:
                 tool_results=handling.results,
             )
             if abort_result is not None:
-                self._finish_run_hooks(abort_result.run)
                 return abort_result
             boundary = await self._consume_turn_boundary_inputs(
                 emitted,
@@ -1202,7 +1367,6 @@ class RuntimeService:
             )
         finally:
             self._release_abort_signal(run.run_id, active_signal)
-        self._finish_run_hooks(resumed.run)
         return resumed
 
     def _is_run_aborted(self, session_id: str, run_id: str) -> bool:
@@ -1254,6 +1418,80 @@ class RuntimeService:
         if self._abort_signals.get(run_id) is signal:
             self._abort_signals.pop(run_id, None)
 
+    async def _finalize_run_boundary(
+        self,
+        result: RunResult,
+        *,
+        drain_queued_inputs: bool,
+    ) -> RunResult:
+        run = result.run
+        if run.status not in ACTIVE_RUN_STATUSES:
+            try:
+                settlement = await self.run_continuations.settle(
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    final_text=result.final_text,
+                )
+                run = settlement.run
+                if settlement.settled and run.continuation is not None:
+                    await self.event_recorder.emit(
+                        result.events,
+                        self.store.latest_event_sequence(run.session_id),
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                        event_type="run_continuation_resolved",
+                        payload={
+                            "decision_id": run.continuation.decision_id,
+                            "action": run.continuation.action,
+                            "controller_id": run.continuation.selected_controller_id,
+                            "reason": run.continuation.reason,
+                            "queued": settlement.queued,
+                            "failure_count": len(settlement.failures),
+                            "failures": [
+                                failure.model_dump(mode="json") for failure in settlement.failures
+                            ],
+                            "diagnostics": list(settlement.diagnostics),
+                        },
+                    )
+                outcome = RunOutcome(
+                    session_id=run.session_id,
+                    run_id=run.run_id,
+                    status=run.status,
+                    origin=run.origin,
+                    final_text=result.final_text,
+                    error=run.error,
+                    usage=dict(run.usage),
+                )
+                dispatch = await self.hooks.dispatch(
+                    HookContext(
+                        hook_name="after_run",
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                        data={"outcome": outcome.model_dump(mode="json")},
+                        run_outcome=outcome,
+                    )
+                )
+                if dispatch.failures:
+                    await self.event_recorder.record_hook_failures(
+                        result.events,
+                        self.store.latest_event_sequence(run.session_id),
+                        dispatch.failures,
+                    )
+            finally:
+                self._finish_run_hooks(run)
+        else:
+            self._finish_run_hooks(run)
+
+        updated = result.model_copy(
+            update={
+                "run": run,
+                "session": self.store.load_session_record(run.session_id),
+            }
+        )
+        if drain_queued_inputs and run.status == "completed":
+            await self._drain_queued_input_queue(run.session_id)
+        return updated
+
     def _finish_run_hooks(self, run: RunRecord) -> None:
         self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
@@ -1277,7 +1515,39 @@ class RuntimeService:
             generation.model_dump(mode="json", exclude_none=True)
             for generation in snapshot.generations
         ]
-        return run.model_copy(update={"metadata": metadata})
+        update: dict[str, object] = {"metadata": metadata}
+        if run.kind == "agent":
+            generations = {
+                generation.generation_id: generation for generation in snapshot.generations
+            }
+            controllers: list[RunContinuationControllerRef] = []
+            for registration in self.continuations.registered():
+                generation_id = registration.generation_id
+                generation = generations.get(generation_id or "")
+                if generation is None or generation.plugin_id != registration.plugin_id:
+                    raise RuntimeError(
+                        "continuation policy is not owned by the active extension generation: "
+                        f"{registration.plugin_id}:{registration.policy_id}"
+                    )
+                canonical_id = (
+                    f"{registration.plugin_id}/continuation_policies/{registration.policy_id}"
+                )
+                contract_hash = snapshot.contract_hash(canonical_id)
+                if contract_hash is None:
+                    raise RuntimeError(f"continuation policy contract is missing: {canonical_id}")
+                controllers.append(
+                    RunContinuationControllerRef(
+                        plugin_id=registration.plugin_id,
+                        policy_id=registration.policy_id,
+                        version=generation.version,
+                        package_digest=generation.package_digest,
+                        generation_id=generation.generation_id,
+                        contract_hash=contract_hash,
+                    )
+                )
+            if controllers:
+                update["continuation"] = RunContinuationCheckpoint(controllers=controllers)
+        return run.model_copy(update=update)
 
     def _ensure_extension_snapshot(self, run: RunRecord) -> None:
         if self._extension_catalog is None or run.run_id in self._extension_snapshots:

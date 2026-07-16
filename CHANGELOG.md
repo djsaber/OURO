@@ -10,6 +10,12 @@ This project records user-visible and framework-contract changes in this file.
   package storage, separate code-trust and capability grants, declarative/in-process/worker
   runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
   durable Run metadata, dependency resolution, compatibility reports, application DTOs, and CLI.
+- Typed plugin Run continuation policies with generation-frozen durable checkpoints, deterministic
+  conflict/failure pausing, idempotent follow-up queueing, provenance-bearing synthetic inputs,
+  permission-gated command input requests, and canonical/unique-alias Interactive slash routing.
+- Host-owned plugin tool execution context with workspace/path/cancellation services, plus
+  owner-atomic restrictive tool policies for approval escalation and denial across in-process and
+  worker runtimes. Policy failures are fail-closed and modified approval arguments are rechecked.
 - Global provider-response usage ledger for agent and compaction requests, with date/route/session
   filters, grouped token and partial-cost summaries, audited corrections, selective resets, and CLI.
 - Typed application configuration facade shared by CLI hosts.
@@ -35,6 +41,10 @@ This project records user-visible and framework-contract changes in this file.
 - Plugin digest selection now validates the enabled dependency graph atomically; active
   dependencies cannot be disabled out from under dependants, shared data can only be purged with
   the final installed digest, and Host shutdown drains Runtime generation leases before owners.
+- Interactive keeps accepting plugin commands, follow-ups, and steering while a plugin-started Run
+  chain is active; plugin inputs retain their producer identity and never impersonate user messages.
+- The public plugin Hook event set now contains only events with real runtime dispatch; `after_run`
+  is observational, while semantic post-Run control uses the dedicated continuation policy API.
 - Interactive terminal rendering now uses semantic status adapters: MCP startup and context
   compaction own one replaceable line, while each tool call owns one keyed row that is updated in
   place from argument generation through completion. Tool arguments are visible only while approval
@@ -60,6 +70,8 @@ This project records user-visible and framework-contract changes in this file.
   selection when the new Session is created.
 - Release the Session run lock before draining follow-up inputs after approval or AskUser
   continuation, and keep Interactive alive when a typed continuation error occurs.
+- Preserve concurrent Session metadata changes when selecting models or applying Session mutations
+  by rereading and saving inside the repository mutation boundary.
 
 ## 0.1.0
 

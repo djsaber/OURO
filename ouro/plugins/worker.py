@@ -243,8 +243,7 @@ class WorkerPluginInstance:
             cwd=package_root,
             diagnostic=diagnostic,
             environment={
-                credential_environment[slot]: value
-                for slot, value in self.credentials.items()
+                credential_environment[slot]: value for slot, value in self.credentials.items()
             },
             redaction_values=tuple(self.credentials.values()),
         )
@@ -272,6 +271,9 @@ class WorkerPluginInstance:
                     "context",
                     "compaction",
                     "background_services",
+                    "session_inputs",
+                    "continuation_policies",
+                    "tool_policies",
                 ],
                 "limits": {"max_message_bytes": self.client.max_message_bytes},
             },
@@ -347,6 +349,22 @@ class WorkerPluginInstance:
                 for item in self.manifest.contributes.background_services
                 if item.id in available.get("background_services", set())
             ],
+            continuation_policies=[
+                sdk.ContinuationPolicyContribution(
+                    id=item.id,
+                    handler=self._continuation_handler(item.id),
+                )
+                for item in self.manifest.contributes.continuation_policies
+                if item.id in available.get("continuation_policies", set())
+            ],
+            tool_policies=[
+                sdk.ToolPolicyContribution(
+                    id=item.id,
+                    handler=self._tool_policy_handler(item.id),
+                )
+                for item in self.manifest.contributes.tool_policies
+                if item.id in available.get("tool_policies", set())
+            ],
         )
 
     async def start(self) -> None:
@@ -372,6 +390,8 @@ class WorkerPluginInstance:
                         "run_id": call.run_id,
                         "tool_name": call.tool_name,
                         "arguments": dict(call.arguments),
+                        "workspace": call.workspace,
+                        "workspace_only": call.workspace_only,
                     },
                 },
             )
@@ -396,6 +416,19 @@ class WorkerPluginInstance:
                         "session_id": call.session_id,
                         "run_id": call.run_id,
                         "data": dict(call.data),
+                        "run_outcome": (
+                            {
+                                "session_id": call.run_outcome.session_id,
+                                "run_id": call.run_outcome.run_id,
+                                "status": call.run_outcome.status,
+                                "origin": call.run_outcome.origin,
+                                "final_text": call.run_outcome.final_text,
+                                "error": call.run_outcome.error,
+                                "usage": dict(call.run_outcome.usage),
+                            }
+                            if call.run_outcome is not None
+                            else None
+                        ),
                     },
                 },
             )
@@ -418,6 +451,19 @@ class WorkerPluginInstance:
                         "session_id": call.session_id,
                         "run_id": call.run_id,
                         "data": dict(call.data),
+                        "run_outcome": (
+                            {
+                                "session_id": call.run_outcome.session_id,
+                                "run_id": call.run_outcome.run_id,
+                                "status": call.run_outcome.status,
+                                "origin": call.run_outcome.origin,
+                                "final_text": call.run_outcome.final_text,
+                                "error": call.run_outcome.error,
+                                "usage": dict(call.run_outcome.usage),
+                            }
+                            if call.run_outcome is not None
+                            else None
+                        ),
                     },
                 },
             )
@@ -447,6 +493,7 @@ class WorkerPluginInstance:
             return sdk.CommandOutput(
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
+                session_inputs=_worker_session_inputs(result),
             )
 
         return handler
@@ -474,6 +521,72 @@ class WorkerPluginInstance:
                 if isinstance(value, (int, float))
             }
             return sdk.CompactionOutput(summary=str(result.get("summary", "")), usage=usage)
+
+        return handler
+
+    def _continuation_handler(self, identity: str):
+        async def handler(call: sdk.RunOutcome) -> sdk.ContinuationDecision:
+            raw = await self.client.request(
+                "continuation.call",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "session_id": call.session_id,
+                        "run_id": call.run_id,
+                        "status": call.status,
+                        "origin": call.origin,
+                        "final_text": call.final_text,
+                        "error": call.error,
+                        "usage": dict(call.usage),
+                    },
+                },
+            )
+            result = _object_result(raw, "continuation.call")
+            action = result.get("action", "ignore")
+            if action not in {"ignore", "continue", "complete", "pause", "fail"}:
+                raise WorkerProtocolError(f"worker continuation action is invalid: {action}")
+            mode = result.get("mode", "follow_up")
+            if mode not in {"follow_up", "steer"}:
+                raise WorkerProtocolError(f"worker continuation mode is invalid: {mode}")
+            revision = result.get("state_revision")
+            if revision is not None and not isinstance(revision, int):
+                raise WorkerProtocolError("worker continuation state_revision must be an integer")
+            return sdk.ContinuationDecision(
+                action=action,
+                prompt=(str(result["prompt"]) if result.get("prompt") is not None else None),
+                mode=mode,
+                title=(str(result["title"]) if result.get("title") is not None else None),
+                reason=(str(result["reason"]) if result.get("reason") is not None else None),
+                state_revision=revision,
+            )
+
+        return handler
+
+    def _tool_policy_handler(self, identity: str):
+        async def handler(call: sdk.ToolPolicyCall) -> sdk.ToolPolicyDecision:
+            raw = await self.client.request(
+                "tool_policy.call",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "session_id": call.session_id,
+                        "run_id": call.run_id,
+                        "tool_call_id": call.tool_call_id,
+                        "tool_name": call.tool_name,
+                        "arguments": dict(call.arguments),
+                        "source": call.source,
+                        "workspace": call.workspace,
+                    },
+                },
+            )
+            result = _object_result(raw, "tool_policy.call")
+            action = result.get("action", "ignore")
+            if action not in {"ignore", "require_approval", "deny"}:
+                raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
+            reason = result.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                raise WorkerProtocolError("worker tool policy reason must be a string")
+            return sdk.ToolPolicyDecision(action=action, reason=reason)
 
         return handler
 
@@ -554,6 +667,27 @@ def _object_value(raw: object) -> dict[str, object]:
     if not isinstance(raw, dict):
         return {}
     return {str(key): value for key, value in raw.items()}
+
+
+def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
+    values = raw.get("session_inputs", [])
+    if not isinstance(values, list):
+        raise WorkerProtocolError("worker session_inputs result must be a list")
+    inputs: list[sdk.SessionInput] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise WorkerProtocolError("worker session input must be an object")
+        prompt = value.get("prompt")
+        mode = value.get("mode", "follow_up")
+        title = value.get("title")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise WorkerProtocolError("worker session input prompt must not be empty")
+        if mode not in {"follow_up", "steer"}:
+            raise WorkerProtocolError(f"worker session input mode is invalid: {mode}")
+        if title is not None and not isinstance(title, str):
+            raise WorkerProtocolError("worker session input title must be a string")
+        inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title))
+    return tuple(inputs)
 
 
 async def _noop_background_lifecycle() -> None:

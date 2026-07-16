@@ -7,6 +7,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CORE_DIR = PROJECT_ROOT / "ouro" / "core"
 CONFIG_DIR = PROJECT_ROOT / "ouro" / "config"
 APPLICATION_DIR = PROJECT_ROOT / "ouro" / "application"
+SDK_DIR = PROJECT_ROOT / "ouro" / "sdk"
 ALLOWED_CORE_PREFIX = "ouro.core"
 LOWER_LAYER_DIRS = (
     "billing",
@@ -36,6 +37,24 @@ def test_core_does_not_import_outer_layers() -> None:
 def test_core_does_not_expose_application_service_shims() -> None:
     assert not (CORE_DIR / "runtime.py").exists()
     assert not (CORE_DIR / "session.py").exists()
+
+
+def test_plugin_sdk_is_standalone_from_ouro_internals() -> None:
+    violations: list[str] = []
+    for path in sorted(SDK_DIR.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for module in _imported_modules(tree):
+            if module.startswith("ouro."):
+                violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
+
+    assert violations == []
+
+
+def test_semantic_policy_modules_do_not_depend_on_observational_hooks() -> None:
+    for filename in ("continuations.py", "tool_policies.py"):
+        path = CORE_DIR / filename
+        modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
+        assert "ouro.core.hooks" not in modules
 
 
 def test_model_catalog_is_owned_by_application_not_core_or_providers() -> None:
@@ -130,9 +149,7 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
 
 
 def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
-    application_plugins = ast.parse(
-        (APPLICATION_DIR / "plugins.py").read_text(encoding="utf-8")
-    )
+    application_plugins = ast.parse((APPLICATION_DIR / "plugins.py").read_text(encoding="utf-8"))
     application_imports = _imported_modules(application_plugins)
     assert "ouro.local_application" not in application_imports
 
@@ -142,8 +159,7 @@ def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
     cli_imports = _imported_modules(cli_plugins)
     assert "ouro.local_application" in cli_imports
     assert not any(
-        module.startswith(("ouro.plugins.store", "ouro.plugins.runtime"))
-        for module in cli_imports
+        module.startswith(("ouro.plugins.store", "ouro.plugins.runtime")) for module in cli_imports
     )
 
 

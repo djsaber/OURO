@@ -14,23 +14,9 @@
 ## 近期：连接与扩展
 
 个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）、后端中立 SessionRepository、
-SQLite adapter、类型化 Host 事件、LocalApplication 生命周期和插件 contribution 安全边界已完成并转入当前规格。
-
-### 完整插件生命周期
-
-目标：按[插件系统目标规格](../dev/specs/plugin-system.md)提供可审计的插件发现、加载、启停和升级。
-
-范围：
-
-- 安装器/包管理器与 entrypoint 生命周期；
-- 来源证明、用户信任确认和权限变更 UI；
-- contribution 冲突、排序和失败隔离；
-- 安装、升级、回滚和诊断。
-- Run 级不可变 generation、pending tool 精确恢复和 community compatibility report。
-
-现有 manifest loader 已禁止来源自升、校验 capability/permission、限制 Hook/command 超时并原子注册贡献；
-剩余工作不应重新实现这些底层规则。完成条件：安装、升级、禁用和权限撤销都能撤回贡献，插件不能绕过
-工具权限、持久化事务、脱敏或 Hook 失败边界。
+SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及完整插件生命周期、Run continuation、
+工具执行上下文和限制性 tool policy 控制面已完成并转入当前规格。插件后续只在真实需求出现时增加 catalog/签名信任根、worker 独立依赖环境、
+OS sandbox 或通用 session-scoped KV/CAS；不得以 placeholder schema 提前宣称这些能力。
 
 ### TUI Host
 

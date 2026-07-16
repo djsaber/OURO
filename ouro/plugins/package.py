@@ -210,10 +210,7 @@ def validate_manifest_compatibility(manifest: PluginManifest) -> None:
             "plugin API is incompatible: "
             f"requires {manifest.engines.plugin_api}, host is {PLUGIN_API_VERSION}"
         )
-    if (
-        manifest.runtime.kind == "worker"
-        and manifest.runtime.protocol != WORKER_PROTOCOL_VERSION
-    ):
+    if manifest.runtime.kind == "worker" and manifest.runtime.protocol != WORKER_PROTOCOL_VERSION:
         raise PluginPackageError(
             "plugin worker protocol is incompatible: "
             f"requires {manifest.runtime.protocol}, host is {WORKER_PROTOCOL_VERSION}"

@@ -372,16 +372,17 @@ class SessionService:
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
-            current = self._load_snapshot(session_id, recover=False).session
-            now = utc_now()
-            updated = current.model_copy(
-                update={
-                    **changes,
-                    "updated_at": now,
-                    "last_activity_at": now,
-                }
-            )
-            self._store.save_session(updated)
+            with self._store.session_mutation(session_id):
+                current = self._load_snapshot(session_id, recover=False).session
+                now = utc_now()
+                updated = current.model_copy(
+                    update={
+                        **changes,
+                        "updated_at": now,
+                        "last_activity_at": now,
+                    }
+                )
+                self._store.save_session(updated)
         finally:
             lock.release()
         return SessionMutationResult(

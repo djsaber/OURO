@@ -213,6 +213,7 @@ class PluginService:
             command_id=result.command_id,
             output=result.output,
             data=dict(result.data),
+            session_inputs=list(result.attributed_session_inputs),
         )
 
     def dependencies(
@@ -410,6 +411,7 @@ class PluginService:
             assert self.runtime is not None
             status = await self.runtime.restart(plugin_id)
             if status != "active":
+
                 def restore(state: PluginStateDocument) -> PluginStateDocument:
                     activation = state.plugins[plugin_id].activation
                     current = activation.configuration_for(installed.package_digest)
@@ -430,8 +432,7 @@ class PluginService:
                         "generation could not be restored"
                     )
                 raise RuntimeError(
-                    "plugin configuration activation failed; the previous generation "
-                    "was restored"
+                    "plugin configuration activation failed; the previous generation was restored"
                 )
         return self._action("configure", plugin_id, installed.package_digest)
 

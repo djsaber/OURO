@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import inspect
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
@@ -9,20 +7,16 @@ from typing import Any, Literal
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.redaction import redact_text
+from ouro.core.state import RunOutcome
 
 HookName = Literal[
-    "before_run",
     "after_run",
-    "before_context_build",
     "after_context_build",
-    "before_model_call",
-    "after_model_response",
     "before_tool_call",
     "after_tool_call",
-    "on_approval_requested",
     "on_event",
-    "on_error",
 ]
 
 PluginSource = Literal["official", "third_party", "ai_generated"]
@@ -33,6 +27,7 @@ class HookContext(OuroModel):
     session_id: str | None = None
     run_id: str | None = None
     data: dict[str, Any] = Field(default_factory=dict)
+    run_outcome: RunOutcome | None = None
 
 
 class HookResult(OuroModel):
@@ -175,13 +170,14 @@ class HookRegistry:
                 timeout = registration.timeout_seconds or self._default_timeout(
                     registration.hook_name
                 )
-                raw_result = await asyncio.wait_for(
-                    asyncio.to_thread(registration.handler, context),
-                    timeout=timeout,
+                raw_result = await invoke_bounded_callback(
+                    registration.handler,
+                    context,
+                    timeout_seconds=timeout,
                 )
-                if inspect.isawaitable(raw_result):
-                    raw_result = await asyncio.wait_for(raw_result, timeout=timeout)
                 if raw_result is not None:
+                    if not isinstance(raw_result, HookResult):
+                        raise TypeError("hook handler must return HookResult or None")
                     dispatch_result.results.append(raw_result)
             except TimeoutError:
                 failure = HookFailure(

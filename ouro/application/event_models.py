@@ -79,12 +79,14 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
         "model_text_delta": "text",
         "model_reasoning_delta": "reasoning_content",
         "tool_call_requested": "tool_call_id",
+        "tool_policy_evaluated": "tool_call_id",
         "tool_call_started": "tool_call_id",
         "tool_call_completed": "tool_call_id",
         "run_status_changed": "to_status",
         "follow_up_input_queued": "queue_id",
         "steering_input_queued": "queue_id",
         "queued_input_consumed": "queue_id",
+        "run_continuation_resolved": "decision_id",
     }
     field = required.get(event_type)
     if field is not None and not isinstance(payload.get(field), str):
@@ -110,6 +112,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
     if event_type in {
         "session_loaded",
         "user_message_added",
+        "plugin_message_added",
         "model_request_started",
         "model_message_completed",
         "recovery_tool_result_committed",

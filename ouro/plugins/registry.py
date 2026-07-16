@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
 import re
 from collections.abc import Awaitable, Callable, Mapping
@@ -10,8 +9,11 @@ from typing import Any
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.errors import OuroError
 from ouro.core.hooks import HookContext, HookResult, PluginSource
 from ouro.core.redaction import redact_text
+from ouro.core.session_controls import AttributedSessionInput, SessionInputRequest
 
 _COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 
@@ -27,9 +29,11 @@ class PluginCommandResult(OuroModel):
     command_id: str
     output: str = ""
     data: dict[str, Any] = Field(default_factory=dict)
+    session_inputs: list[SessionInputRequest] = Field(default_factory=list)
+    attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
 
 
-class PluginCommandError(RuntimeError):
+class PluginCommandError(OuroError):
     pass
 
 
@@ -55,6 +59,8 @@ class PluginCommand:
     source: PluginSource = "third_party"
     timeout_seconds: float = 5.0
     owner: str | None = None
+    generation_id: str | None = None
+    allow_session_inputs: bool = False
 
     @property
     def command_id(self) -> str:
@@ -151,18 +157,11 @@ class PluginCommandRegistry:
             workspace=workspace,
         )
         try:
-            if inspect.iscoroutinefunction(command.handler):
-                raw = await asyncio.wait_for(
-                    command.handler(request),
-                    timeout=command.timeout_seconds,
-                )
-            else:
-                raw = await asyncio.wait_for(
-                    asyncio.to_thread(command.handler, request),
-                    timeout=command.timeout_seconds,
-                )
-                if inspect.isawaitable(raw):
-                    raw = await asyncio.wait_for(raw, timeout=command.timeout_seconds)
+            raw = await invoke_bounded_callback(
+                command.handler,
+                request,
+                timeout_seconds=command.timeout_seconds,
+            )
         except TimeoutError as exc:
             raise PluginCommandError(
                 f"plugin command timed out after {command.timeout_seconds:g} seconds: {command_id}"
@@ -172,12 +171,39 @@ class PluginCommandRegistry:
                 f"plugin command failed ({type(exc).__name__}): {redact_text(str(exc))}"
             ) from exc
         if isinstance(raw, PluginCommandResult):
-            if raw.command_id != command_id:
-                return raw.model_copy(update={"command_id": command_id})
-            return raw
-        if isinstance(raw, str):
-            return PluginCommandResult(command_id=command_id, output=raw)
-        return PluginCommandResult(command_id=command_id, data=dict(raw))
+            result = (
+                raw.model_copy(update={"command_id": command_id})
+                if raw.command_id != command_id
+                else raw
+            )
+        elif isinstance(raw, str):
+            result = PluginCommandResult(command_id=command_id, output=raw)
+        else:
+            result = PluginCommandResult(command_id=command_id, data=dict(raw))
+        if result.session_inputs and not command.allow_session_inputs:
+            raise PluginCommandError(
+                "plugin command requires sessions.write and background.run permissions: "
+                f"{command_id}"
+            )
+        if not result.session_inputs:
+            return result
+        if command.generation_id is None:
+            raise PluginCommandError(f"plugin command has no active generation: {command_id}")
+        return result.model_copy(
+            update={
+                "attributed_session_inputs": [
+                    AttributedSessionInput(
+                        prompt=item.prompt,
+                        mode=item.mode,
+                        title=item.title,
+                        plugin_id=command.plugin_id,
+                        contribution_id=command.name,
+                        generation_id=command.generation_id,
+                    )
+                    for item in result.session_inputs
+                ]
+            }
+        )
 
 
 def context_provider_hook(provider: PluginContextProvider):
