@@ -64,6 +64,7 @@ class ToolInvocation(OuroModel):
     package_digest: str | None = None
     generation_id: str | None = None
     contract_hash: str | None = None
+    execution_contract_hash: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
 

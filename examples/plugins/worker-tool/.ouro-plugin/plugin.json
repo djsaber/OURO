@@ -1,0 +1,35 @@
+{
+  "schema_version": 2,
+  "plugin_id": "dev.ouro.examples.worker_tool",
+  "name": "Worker Tool Example",
+  "version": "0.1.0",
+  "description": "Contributes a Tool through the strict stdio worker protocol.",
+  "namespace": "worker_tool",
+  "engines": {
+    "ouro": ">=0.1.0,<0.2.0",
+    "plugin_api": "^1.0.0"
+  },
+  "runtime": {
+    "kind": "worker",
+    "command": [
+      "{python}",
+      "./worker.py"
+    ],
+    "protocol": "1.0"
+  },
+  "contributes": {
+    "tools": [
+      {
+        "id": "echo",
+        "exposed_name": "worker_example__echo",
+        "description": "Echo a value through the worker process.",
+        "permission_mode": "approval"
+      }
+    ]
+  },
+  "permissions": [],
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

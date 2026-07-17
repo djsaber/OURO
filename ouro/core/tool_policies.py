@@ -102,12 +102,21 @@ class ToolPolicyRegistry:
 
     def __init__(self) -> None:
         self._registrations: list[ToolPolicyRegistration] = []
+        self._frozen = False
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("tool policy registry structure is frozen")
 
     def replace_owner(
         self,
         owner: str,
         registrations: tuple[ToolPolicyRegistration, ...],
     ) -> None:
+        self._require_mutable()
         identities = [(item.plugin_id, item.policy_id) for item in registrations]
         if len(identities) != len(set(identities)):
             raise ValueError("replacement contains duplicate tool policy identities")
@@ -126,6 +135,7 @@ class ToolPolicyRegistry:
         return list(self._registrations)
 
     def restore(self, snapshot: list[ToolPolicyRegistration]) -> None:
+        self._require_mutable()
         self._registrations = list(snapshot)
 
     def registered(self) -> list[ToolPolicyRegistration]:

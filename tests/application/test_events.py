@@ -51,6 +51,53 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_event_observer_retains_hook_registry_resolved_at_publish_time(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Catalog-bound events")
+    store.create_session(session)
+    first_hooks = HookRegistry()
+    second_hooks = HookRegistry()
+    seen: list[str] = []
+    releases: list[str] = []
+    first_hooks.register(
+        HookRegistration(
+            plugin_id="first",
+            hook_name="on_event",
+            handler=lambda _context: seen.append("first"),
+        )
+    )
+    second_hooks.register(
+        HookRegistration(
+            plugin_id="second",
+            hook_name="on_event",
+            handler=lambda _context: seen.append("second"),
+        )
+    )
+    active_hooks = first_hooks
+    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+
+    def resolve(_run_id: str | None):
+        retained = active_hooks
+        return retained, lambda: releases.append("released")
+
+    recorder.set_hook_registry_resolver(resolve)
+    await recorder.emit(
+        [],
+        0,
+        session_id=session.session_id,
+        run_id="run_catalog",
+        event_type="run_started",
+        payload={"trigger": "user"},
+    )
+    active_hooks = second_hooks
+    await recorder.close()
+
+    assert seen == ["first"]
+    assert releases == ["released"]
+
+
+@pytest.mark.asyncio
 async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

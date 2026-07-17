@@ -85,13 +85,22 @@ class HookRegistry:
             raise ValueError("hook timeouts must be positive")
         self._registrations: list[HookRegistration] = []
         self._disabled_for_run: set[tuple[str | None, str, HookName, str]] = set()
+        self._frozen = False
         self._semantic_timeout_seconds = semantic_timeout_seconds
         self._observational_timeout_seconds = observational_timeout_seconds
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("hook registry structure is frozen")
 
     def register(self, registration: HookRegistration) -> None:
         self.register_many((registration,))
 
     def register_many(self, registrations: tuple[HookRegistration, ...]) -> None:
+        self._require_mutable()
         for registration in registrations:
             if registration.timeout_seconds is not None and registration.timeout_seconds <= 0:
                 raise ValueError("hook timeout must be positive")
@@ -102,6 +111,7 @@ class HookRegistry:
         owner: str,
         registrations: tuple[HookRegistration, ...],
     ) -> None:
+        self._require_mutable()
         for registration in registrations:
             if registration.timeout_seconds is not None and registration.timeout_seconds <= 0:
                 raise ValueError("hook timeout must be positive")
@@ -129,6 +139,7 @@ class HookRegistry:
             set[tuple[str | None, str, HookName, str]],
         ],
     ) -> None:
+        self._require_mutable()
         self._registrations = list(snapshot[0])
         self._disabled_for_run = set(snapshot[1])
 

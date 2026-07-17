@@ -53,6 +53,7 @@ class RunContinuationControllerRef(OuroModel):
     package_digest: str
     generation_id: str
     contract_hash: str
+    execution_contract_hash: str
 
     @property
     def canonical_id(self) -> str:

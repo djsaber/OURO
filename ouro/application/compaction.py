@@ -355,9 +355,13 @@ class ContextPreparationService:
         model_round: int,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
+        hooks: HookRegistry | None = None,
+        strategies: CompactionStrategyRegistry | None = None,
+        skill_instructions: str = "",
     ) -> tuple[ContextView, int]:
         active_adapter = adapter or self.adapter
-        hook_result = await self.hooks.dispatch(
+        active_hooks = hooks or self.hooks
+        hook_result = await active_hooks.dispatch(
             HookContext(
                 hook_name="after_context_build",
                 session_id=session.session_id,
@@ -380,6 +384,7 @@ class ContextPreparationService:
             tools=tools,
             added_context=added_context,
             budget=budget,
+            skill_instructions=skill_instructions,
         )
 
         trigger_tokens = int(budget * self.config.policy.trigger_ratio)
@@ -399,6 +404,8 @@ class ContextPreparationService:
                     abort_signal=abort_signal,
                     estimated_tokens_before=estimated,
                     adapter=active_adapter,
+                    strategies=strategies,
+                    skill_instructions=skill_instructions,
                 )
             except CompactionError as exc:
                 sequence = self.store.latest_event_sequence(session.session_id)
@@ -436,6 +443,7 @@ class ContextPreparationService:
                 tools=tools,
                 added_context=added_context,
                 budget=budget,
+                skill_instructions=skill_instructions,
             )
 
         if view.context_metadata["over_budget"]:
@@ -467,6 +475,8 @@ class ContextPreparationService:
         abort_signal: AbortSignal,
         estimated_tokens_before: int | None = None,
         adapter: RuntimeAdapter | None = None,
+        strategies: CompactionStrategyRegistry | None = None,
+        skill_instructions: str = "",
     ) -> CompactionExecution:
         active_adapter = adapter or self.adapter
         budget = self._input_budget(active_adapter)
@@ -478,6 +488,7 @@ class ContextPreparationService:
             tools=tools,
             added_context=added_context or [],
             budget=budget,
+            skill_instructions=skill_instructions,
         )
         before_tokens = (
             estimated_tokens_before
@@ -550,7 +561,11 @@ class ContextPreparationService:
             summary_output_tokens=summary_output_tokens,
         )
         try:
-            strategy, artifact = await self._execute_strategy(request, signal=abort_signal)
+            strategy, artifact = await self._execute_strategy(
+                request,
+                signal=abort_signal,
+                strategies=strategies,
+            )
             summary = artifact.summary.strip()
             if not summary:
                 raise CompactionError("compaction strategy returned an empty summary")
@@ -581,6 +596,7 @@ class ContextPreparationService:
                 tools=tools,
                 added_context=added_context or [],
                 budget=budget,
+                skill_instructions=skill_instructions,
             )
             after_tokens = int(final_view.context_metadata["estimated_input_tokens"])
             if final_view.context_metadata["over_budget"]:
@@ -636,14 +652,16 @@ class ContextPreparationService:
         request: CompactionRequest,
         *,
         signal: AbortSignal,
+        strategies: CompactionStrategyRegistry | None = None,
     ) -> tuple[CompactionStrategy, CompactionArtifact]:
+        active_strategies = strategies or self.strategies
         strategy_ids = [self.config.strategy_id]
         if self.config.fallback_strategy_id:
             strategy_ids.append(self.config.fallback_strategy_id)
         failures: list[Exception] = []
         for strategy_id in strategy_ids:
             try:
-                strategy = self.strategies.get(strategy_id)
+                strategy = active_strategies.get(strategy_id)
                 active_request = request.model_copy(update={"strategy_id": strategy_id})
                 artifact = await strategy.compact(active_request, signal=signal)
                 return strategy, artifact
@@ -663,12 +681,14 @@ class ContextPreparationService:
         tools: list[ToolDefinition],
         added_context: list[str],
         budget: int,
+        skill_instructions: str = "",
     ) -> ContextView:
         return self.context_builder.build(
             messages=messages,
             tools=tools,
             system_prompt=self.system_prompt,
             added_context=added_context,
+            additional_skill_instructions=skill_instructions,
             input_token_budget=budget,
         )
 

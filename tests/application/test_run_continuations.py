@@ -84,7 +84,7 @@ def _write_goal_plugin(source) -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "plugin_id": "dev.ouro.goal",
                 "name": "Goal",
                 "version": "1.0.0",
@@ -445,6 +445,39 @@ async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_continuation_matches_rebuilt_generation_by_execution_contract(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    controller = _controller("dev.ouro.goal", "goal", "gen_before_restart")
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller]),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "goal-after-restart",
+        (_policy("dev.ouro.goal", "gen_after_restart", "continue after restart"),),
+    )
+    queue = QueuedInputQueue(store)
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=queue,
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    queued = queue.eligible(store.load_runtime_session(session.session_id))
+    assert settlement.queued is True
+    assert len(queued) == 1
+    assert queued[0].generation_id == "gen_after_restart"
+    assert queued[0].execution_contract_hash == controller.execution_contract_hash
+
+
+@pytest.mark.asyncio
 async def test_queued_user_input_supersedes_stale_automatic_continuation(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -550,6 +583,7 @@ def _controller(
         package_digest=f"digest-{plugin_id}",
         generation_id=generation_id,
         contract_hash=f"contract-{plugin_id}",
+        execution_contract_hash=f"execution-{plugin_id}",
     )
 
 
@@ -569,4 +603,6 @@ def _policy(
         handler=decide,
         priority=priority,
         generation_id=generation_id,
+        execution_contract_hash=f"execution-{plugin_id}",
+        contract_hash=f"contract-{plugin_id}",
     )

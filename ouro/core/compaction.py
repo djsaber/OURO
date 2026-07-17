@@ -102,6 +102,14 @@ class CompactionStrategyRegistry:
     def __init__(self) -> None:
         self._strategies: dict[str, CompactionStrategy] = {}
         self._owners: dict[str, str] = {}
+        self._frozen = False
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("compaction registry structure is frozen")
 
     def register(self, strategy: CompactionStrategy) -> None:
         self.replace((), (strategy,))
@@ -111,6 +119,7 @@ class CompactionStrategyRegistry:
         previous_ids: Sequence[str],
         strategies: Sequence[CompactionStrategy],
     ) -> None:
+        self._require_mutable()
         updated = dict(self._strategies)
         owners = dict(self._owners)
         for strategy_id in previous_ids:
@@ -128,6 +137,7 @@ class CompactionStrategyRegistry:
         owner: str,
         strategies: Sequence[CompactionStrategy],
     ) -> None:
+        self._require_mutable()
         retained = {
             identity: strategy
             for identity, strategy in self._strategies.items()
@@ -161,6 +171,7 @@ class CompactionStrategyRegistry:
         self,
         snapshot: tuple[dict[str, CompactionStrategy], dict[str, str]],
     ) -> None:
+        self._require_mutable()
         self._strategies, self._owners = dict(snapshot[0]), dict(snapshot[1])
 
     def get(self, strategy_id: str) -> CompactionStrategy:

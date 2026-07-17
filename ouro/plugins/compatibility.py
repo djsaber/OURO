@@ -17,6 +17,7 @@ class CompatibilityItem(OuroModel):
     identity: str
     outcome: CompatibilityOutcome
     reason: str = ""
+    ouro_target: str | None = None
 
 
 class CompatibilityReport(OuroModel):
@@ -45,6 +46,7 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
                     kind=kind,
                     identity=item.id,
                     outcome="supported",
+                    ouro_target=f"contributes.{kind}[id={item.id}]",
                 )
                 for kind, values in manifest.contributes.by_kind().items()
                 for item in values
@@ -64,6 +66,10 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
                 identity=str(skill.relative_to(root).parent.as_posix()),
                 outcome="supported",
                 reason="Agent Skill resources are portable.",
+                ouro_target=(
+                    "Declare contributes.skills with this SKILL.md path; "
+                    "OURO validates and injects it through the Run Skill Catalog."
+                ),
             )
         )
     if skill_paths:
@@ -86,6 +92,12 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
                         "Transport and approval policy must be converted to OURO configuration."
                         if outcome == "converted"
                         else "MCP descriptor is not an object."
+                    ),
+                    ouro_target=(
+                        "Declare contributes.mcp_servers with a package-relative descriptor; "
+                        "declare process.spawn or network.outbound explicitly."
+                        if outcome == "converted"
+                        else None
                     ),
                 )
             )
@@ -124,6 +136,7 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
                         identity=str(identity),
                         outcome="ignored",
                         reason="This host-specific executable surface is not portable to OURO.",
+                        ouro_target=None,
                     )
                 )
 
@@ -134,6 +147,10 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
                 identity=source_format,
                 outcome="incompatible",
                 reason="In-process JavaScript APIs require a worker or MCP port.",
+                ouro_target=(
+                    "Port executable behavior to an OURO stdio worker or MCP server; "
+                    "do not execute the source host runtime directly."
+                ),
             )
         )
 

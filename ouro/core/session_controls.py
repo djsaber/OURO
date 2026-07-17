@@ -34,6 +34,7 @@ class AttributedSessionInput(SessionInputRequest):
     plugin_id: str
     contribution_id: str
     generation_id: str
+    execution_contract_hash: str
 
 
 __all__ = [

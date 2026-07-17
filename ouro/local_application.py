@@ -30,13 +30,19 @@ from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
 from ouro.plugins.contributions import ContributionCoordinator
+from ouro.plugins.dependencies import BuiltinPluginContract
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
 from ouro.providers import build_runtime_adapter
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
+from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry, builtin_tools
+
+# Builtin plugins are application components, not installable package records.
+# Core tools remain core facilities until they are deliberately modeled as plugins.
+LOCAL_BUILTIN_PLUGIN_CONTRACTS: dict[str, BuiltinPluginContract] = {}
 
 
 @dataclass(frozen=True)
@@ -68,13 +74,11 @@ class LocalApplication:
         mcp: MCPRuntimeResource,
         *,
         plugin_runtime: PluginRuntimeResource | None = None,
-        plugin_commands: PluginCommandRegistry | None = None,
         plugins: PluginService | None = None,
     ) -> None:
         self.runtime = runtime
         self.mcp = mcp
         self.plugin_runtime = plugin_runtime
-        self.plugin_commands = plugin_commands or PluginCommandRegistry()
         self.plugins = plugins
         self._started = False
         self._closed = False
@@ -110,13 +114,14 @@ class LocalApplication:
             configured_home = resolve_local_home(home)
         if configured_home is None:
             raise OuroError("runtime has no configured deployment home")
-        plugin_runtime, commands, plugins = _build_local_plugin_runtime(
+        plugin_runtime, plugins = _build_local_plugin_runtime(
             configured_home,
             tools=runtime.tools,
             hooks=runtime.hooks,
             compaction=runtime.compaction_strategies,
             continuations=runtime.continuations,
             tool_policies=runtime.tool_policies,
+            skills=runtime.skills,
             session_store=runtime.store,
         )
         runtime.attach_extension_catalog(plugin_runtime)
@@ -124,7 +129,6 @@ class LocalApplication:
             runtime,
             build_local_mcp_runtime(runtime, home=home),
             plugin_runtime=plugin_runtime,
-            plugin_commands=commands,
             plugins=plugins,
         )
 
@@ -141,9 +145,9 @@ class LocalApplication:
         if self._started:
             return
         try:
+            await self.mcp.start()
             if self.plugin_runtime is not None:
                 await self.plugin_runtime.start()
-            await self.mcp.start()
         except BaseException:
             with suppress(Exception):
                 await self.mcp.close()
@@ -168,15 +172,15 @@ class LocalApplication:
             await self.runtime.close()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
-        try:
-            await self.mcp.close()
-        except Exception as exc:  # noqa: BLE001 - close every owned resource.
-            errors.append(exc)
         if self.plugin_runtime is not None:
             try:
                 await self.plugin_runtime.close()
             except Exception as exc:  # noqa: BLE001 - close every owned resource.
                 errors.append(exc)
+        try:
+            await self.mcp.close()
+        except Exception as exc:  # noqa: BLE001 - close every owned resource.
+            errors.append(exc)
         if errors:
             raise ExceptionGroup("local application shutdown failed", errors)
 
@@ -189,7 +193,7 @@ async def open_local_plugins(
 ) -> AsyncIterator[PluginService]:
     root = resolve_local_home(home)
     session_services = build_local_session_services(root, session_backend=session_backend)
-    runtime, _, service = _build_local_plugin_runtime(
+    runtime, service = _build_local_plugin_runtime(
         root,
         tools=ToolRegistry(),
         hooks=HookRegistry(),
@@ -232,7 +236,7 @@ def build_local_runtime(
         adapter,
         adapter_builder=build_runtime_adapter,
     )
-    context_builder = ContextBuilder(skill_instructions=resolved.skills_prompt)
+    context_builder = ContextBuilder()
     compaction_adapter, compaction_adapter_error = _configured_compaction_adapter(
         configuration,
         resolved.compaction,
@@ -252,6 +256,7 @@ def build_local_runtime(
         compaction_adapter=compaction_adapter,
         compaction_adapter_error=compaction_adapter_error,
         queued_input_config=resolved.queued_inputs,
+        skills=resolved.skills,
         resources=session_services.resources,
         usage_service=usage,
         default_workspace=Path.cwd(),
@@ -322,7 +327,11 @@ def build_local_plugin_service(
 
     store = PluginPackageStore(resolve_local_home(home))
     store.initialize()
-    return PluginService(store, session_store=session_store)
+    return PluginService(
+        store,
+        session_store=session_store,
+        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
+    )
 
 
 def build_local_mcp_runtime(
@@ -358,8 +367,9 @@ def _build_local_plugin_runtime(
     compaction: CompactionStrategyRegistry,
     continuations: RunContinuationRegistry,
     tool_policies: ToolPolicyRegistry,
+    skills: tuple[SkillMetadata, ...] = (),
     session_store: SessionStore | None,
-) -> tuple[PluginRuntimeResource, PluginCommandRegistry, PluginService]:
+) -> tuple[PluginRuntimeResource, PluginService]:
     store = PluginPackageStore(home)
     store.initialize()
     commands = PluginCommandRegistry()
@@ -374,14 +384,16 @@ def _build_local_plugin_runtime(
             tool_policies=tool_policies,
         ),
         credential_resolver=resolve_plugin_credential,
+        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
+        base_skills=skills,
     )
     service = PluginService(
         store,
         runtime=runtime,
-        commands=commands,
         session_store=session_store,
+        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
     )
-    return runtime, commands, service
+    return runtime, service
 
 
 def _configured_compaction_adapter(

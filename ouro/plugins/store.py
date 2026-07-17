@@ -21,6 +21,10 @@ class PluginStoreError(RuntimeError):
     pass
 
 
+class PluginStateConflictError(PluginStoreError):
+    pass
+
+
 class PluginPackageStore:
     """Immutable package bytes, mutable state, data and audit with separate lifecycles."""
 
@@ -106,6 +110,25 @@ class PluginPackageStore:
             self._write_state_unlocked(updated)
             return updated
 
+    def commit_candidate_state(
+        self,
+        expected: PluginStateDocument,
+        candidate: PluginStateDocument,
+    ) -> PluginStateDocument:
+        """Commit a fully validated candidate only if its source state is unchanged."""
+
+        self.initialize()
+        with FileMutationLock(self.lock_root / "state-mutations.lock"):
+            current = self.read_state()
+            if current != expected:
+                raise PluginStateConflictError(
+                    "plugin state changed while an activation candidate was building"
+                )
+            committed = PluginStateDocument.model_validate(candidate.model_dump(mode="python"))
+            if committed != current:
+                self._write_state_unlocked(committed)
+            return committed
+
     def append_audit(self, event: PluginAuditEvent) -> None:
         self.initialize()
         try:
@@ -161,6 +184,7 @@ class PluginPackageStore:
 
     def _write_state_unlocked(self, state: PluginStateDocument) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        state = PluginStateDocument.model_validate(state.model_dump(mode="python"))
         temporary: Path | None = None
         try:
             with NamedTemporaryFile(

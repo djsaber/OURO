@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -61,13 +61,15 @@ from ouro.core.state import (
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.tools import PermissionMode
-from ouro.prompts import DEFAULT_SYSTEM_PROMPT
+from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore
+from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
-    from ouro.plugins.runtime import ExtensionCatalogSnapshot, PluginRuntimeResource
+    from ouro.plugins.catalog import ExtensionCatalogLease
+    from ouro.plugins.runtime import PluginRuntimeResource
 
 
 class RuntimeService:
@@ -92,6 +94,7 @@ class RuntimeService:
         continuations: RunContinuationRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
         queued_input_config: QueuedInputConfig | None = None,
+        skills: tuple[SkillMetadata, ...] = (),
         resources: ResourceService | None = None,
         usage_service: UsageService | None = None,
         default_workspace: str | Path | None = None,
@@ -111,20 +114,17 @@ class RuntimeService:
         self._owned_auxiliary_adapters = owned_auxiliary_adapters
         self._closed = False
         self.tools = tools
+        self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
         self.default_workspace = (
             str(Path(default_workspace).expanduser().resolve())
             if default_workspace is not None
             else None
         )
-        self.tool_executor = ToolExecutor(tools, permission_overrides=permission_overrides)
+        self._permission_overrides = dict(permission_overrides or {})
+        self._tool_execution_config = tool_execution_config or ToolExecutionConfig()
         self.hooks = hooks or HookRegistry()
         self.continuations = continuations or RunContinuationRegistry()
         self.tool_policies = tool_policies or ToolPolicyRegistry()
-        self.run_continuations = RunContinuationService(
-            store=store,
-            registry=self.continuations,
-            queue=self.queued_inputs,
-        )
         self.event_recorder = RuntimeEventRecorder(
             store=store,
             hooks=self.hooks,
@@ -142,17 +142,6 @@ class RuntimeService:
             store=store,
             runs=self.run_lifecycle,
             events=self.event_recorder,
-        )
-        self.tool_calls = ToolCallCoordinator(
-            executor=self.tool_executor,
-            registry=tools,
-            hooks=self.hooks,
-            events=self.event_recorder,
-            runs=self.run_lifecycle,
-            execution_config=tool_execution_config or ToolExecutionConfig(),
-            default_workspace=self.default_workspace,
-            is_aborted=self._is_run_aborted,
-            tool_policies=self.tool_policies,
         )
         self.context_builder = context_builder or ContextBuilder()
         self.run_budget = run_budget or RunBudgetPolicy()
@@ -196,12 +185,69 @@ class RuntimeService:
         )
         self._abort_signals: dict[str, AbortSignal] = {}
         self._extension_catalog: PluginRuntimeResource | None = None
-        self._extension_snapshots: dict[str, ExtensionCatalogSnapshot] = {}
+        self._extension_snapshots: dict[str, ExtensionCatalogLease] = {}
 
     def attach_extension_catalog(self, catalog: PluginRuntimeResource) -> None:
         if self._extension_catalog is not None and self._extension_catalog is not catalog:
             raise RuntimeError("runtime already has an extension catalog")
         self._extension_catalog = catalog
+        self.event_recorder.set_hook_registry_resolver(self._event_hooks_for_run)
+
+    def _event_hooks_for_run(
+        self,
+        run_id: str | None,
+    ) -> tuple[HookRegistry, Callable[[], None]]:
+        if run_id is None:
+            return self.hooks, lambda: None
+        snapshot = self._extension_snapshots.get(run_id)
+        if snapshot is None:
+            return self.hooks, lambda: None
+        retained = snapshot.fork()
+        return retained.hooks, retained.close
+
+    def _tools_for_run(self, run_id: str) -> ToolRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.tools if snapshot is not None else self.tools
+
+    def _hooks_for_run(self, run_id: str) -> HookRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.hooks if snapshot is not None else self.hooks
+
+    def _skills_for_run(self, run_id: str) -> tuple[SkillMetadata, ...]:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.skills if snapshot is not None else self.skills
+
+    def _skill_instructions_for_run(self, run_id: str) -> str:
+        return render_agent_skills_prompt(self._skills_for_run(run_id))
+
+    def _compaction_for_run(self, run_id: str) -> CompactionStrategyRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.compaction if snapshot is not None else self.compaction_strategies
+
+    def _continuations_for_run(self, run_id: str) -> RunContinuationRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.continuations if snapshot is not None else self.continuations
+
+    def _tool_policies_for_run(self, run_id: str) -> ToolPolicyRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.tool_policies if snapshot is not None else self.tool_policies
+
+    def _tool_calls_for_run(self, run_id: str) -> ToolCallCoordinator:
+        tools = self._tools_for_run(run_id)
+        return ToolCallCoordinator(
+            executor=ToolExecutor(
+                tools,
+                permission_overrides=self._permission_overrides,
+            ),
+            registry=tools,
+            hooks=self._hooks_for_run(run_id),
+            events=self.event_recorder,
+            runs=self.run_lifecycle,
+            execution_config=self._tool_execution_config,
+            default_workspace=self.default_workspace,
+            is_aborted=self._is_run_aborted,
+            tool_policies=self._tool_policies_for_run(run_id),
+        )
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
@@ -540,6 +586,11 @@ class RuntimeService:
                     generation_id=(
                         _input_attribution.generation_id if _input_attribution is not None else None
                     ),
+                    execution_contract_hash=(
+                        _input_attribution.execution_contract_hash
+                        if _input_attribution is not None
+                        else None
+                    ),
                 )
             ]
             for pending_input in pending_inputs:
@@ -635,15 +686,25 @@ class RuntimeService:
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter,
     ) -> RunResult:
+        tools = self._tools_for_run(run.run_id)
+        hooks = self._hooks_for_run(run.run_id)
+        compaction = self._compaction_for_run(run.run_id)
+        tool_calls = self._tool_calls_for_run(run.run_id)
         loop = InnerAgentLoop(
             adapter=adapter,
-            tools=self.tools,
+            tools=tools,
             run_budget=self.run_budget,
             ports=InnerLoopPorts(
-                prepare_context=partial(self.context_preparation.prepare, adapter=adapter),
+                prepare_context=partial(
+                    self.context_preparation.prepare,
+                    adapter=adapter,
+                    hooks=hooks,
+                    strategies=compaction,
+                    skill_instructions=self._skill_instructions_for_run(run.run_id),
+                ),
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
-                handle_tool_batch=self.tool_calls.handle_batch,
+                handle_tool_batch=tool_calls.handle_batch,
                 record_usage=self.run_lifecycle.record_usage,
                 aborted_result=self._aborted_result,
                 save_waiting_state=self.run_lifecycle.save_waiting_state,
@@ -714,12 +775,14 @@ class RuntimeService:
                     session=active_session,
                     run=run,
                     messages=snapshot.messages,
-                    tools=self.tools.definitions(),
+                    tools=self._tools_for_run(run.run_id).definitions(),
                     added_context=[],
                     trigger="manual",
                     force=True,
                     abort_signal=abort_signal,
                     adapter=active_adapter,
+                    strategies=self._compaction_for_run(run.run_id),
+                    skill_instructions=self._skill_instructions_for_run(run.run_id),
                 )
             except Exception as exc:
                 failed = await self.run_lifecycle.fail(
@@ -874,6 +937,9 @@ class RuntimeService:
             plugin_id=attribution.plugin_id if attribution is not None else None,
             contribution_id=(attribution.contribution_id if attribution is not None else None),
             generation_id=attribution.generation_id if attribution is not None else None,
+            execution_contract_hash=(
+                attribution.execution_contract_hash if attribution is not None else None
+            ),
             caused_by_run_id=active_run.run_id if attribution is not None else None,
         )
         emitted: list[EventRecord] = []
@@ -1036,6 +1102,7 @@ class RuntimeService:
                     "plugin_id": item.plugin_id,
                     "contribution_id": item.contribution_id,
                     "generation_id": item.generation_id,
+                    "execution_contract_hash": item.execution_contract_hash,
                     "caused_by_run_id": item.caused_by_run_id,
                     "continuation_decision_id": item.continuation_decision_id,
                 }
@@ -1145,7 +1212,8 @@ class RuntimeService:
             resolved_approval_id = approval_id or run.pending_approval_id
             if resolved_approval_id is None:
                 raise ValueError("run has no pending approval")
-            batch = self.tool_calls.resolve_approval(
+            await self._ensure_extension_snapshot(run)
+            batch = self._tool_calls_for_run(run.run_id).resolve_approval(
                 batch,
                 approval_id=resolved_approval_id,
                 approved=approved,
@@ -1225,7 +1293,8 @@ class RuntimeService:
             )
             if waiting_call is None:
                 raise ValueError("run has no tool call waiting for user input")
-            batch = self.tool_calls.resolve_user_answer(
+            await self._ensure_extension_snapshot(run)
+            batch = self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
@@ -1273,7 +1342,7 @@ class RuntimeService:
         emitted: list[EventRecord],
         sequence: int,
     ) -> RunResult:
-        self._ensure_extension_snapshot(run)
+        await self._ensure_extension_snapshot(run)
         pending_approvals = batch.pending_approvals
         waiting_user = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if pending_approvals or waiting_user is not None:
@@ -1303,7 +1372,7 @@ class RuntimeService:
         active_signal = self._activate_abort_signal(session.session_id, run.run_id)
         try:
             try:
-                handling = await self.tool_calls.execute_batch(
+                handling = await self._tool_calls_for_run(run.run_id).execute_batch(
                     emitted,
                     sequence,
                     session=session,
@@ -1427,7 +1496,12 @@ class RuntimeService:
         run = result.run
         if run.status not in ACTIVE_RUN_STATUSES:
             try:
-                settlement = await self.run_continuations.settle(
+                continuation_service = RunContinuationService(
+                    store=self.store,
+                    registry=self._continuations_for_run(run.run_id),
+                    queue=self.queued_inputs,
+                )
+                settlement = await continuation_service.settle(
                     session_id=run.session_id,
                     run_id=run.run_id,
                     final_text=result.final_text,
@@ -1462,7 +1536,7 @@ class RuntimeService:
                     error=run.error,
                     usage=dict(run.usage),
                 )
-                dispatch = await self.hooks.dispatch(
+                dispatch = await self._hooks_for_run(run.run_id).dispatch(
                     HookContext(
                         hook_name="after_run",
                         session_id=run.session_id,
@@ -1495,7 +1569,7 @@ class RuntimeService:
     def _finish_run_hooks(self, run: RunRecord) -> None:
         self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
-            self.hooks.finish_run(run.run_id)
+            self._hooks_for_run(run.run_id).finish_run(run.run_id)
             snapshot = self._extension_snapshots.pop(run.run_id, None)
             if snapshot is not None:
                 snapshot.close()
@@ -1511,6 +1585,7 @@ class RuntimeService:
         snapshot = self._extension_catalog.snapshot()
         self._extension_snapshots[run.run_id] = snapshot
         metadata = dict(run.metadata)
+        metadata["extension_catalog_id"] = snapshot.catalog_id
         metadata["extension_generations"] = [
             generation.model_dump(mode="json", exclude_none=True)
             for generation in snapshot.generations
@@ -1521,7 +1596,7 @@ class RuntimeService:
                 generation.generation_id: generation for generation in snapshot.generations
             }
             controllers: list[RunContinuationControllerRef] = []
-            for registration in self.continuations.registered():
+            for registration in snapshot.continuations.registered():
                 generation_id = registration.generation_id
                 generation = generations.get(generation_id or "")
                 if generation is None or generation.plugin_id != registration.plugin_id:
@@ -1535,6 +1610,14 @@ class RuntimeService:
                 contract_hash = snapshot.contract_hash(canonical_id)
                 if contract_hash is None:
                     raise RuntimeError(f"continuation policy contract is missing: {canonical_id}")
+                if (
+                    registration.execution_contract_hash != generation.execution_contract_hash
+                    or registration.contract_hash != contract_hash
+                ):
+                    raise RuntimeError(
+                        f"continuation policy execution contract is inconsistent: {canonical_id}"
+                    )
+                assert generation.execution_contract_hash is not None
                 controllers.append(
                     RunContinuationControllerRef(
                         plugin_id=registration.plugin_id,
@@ -1543,19 +1626,25 @@ class RuntimeService:
                         package_digest=generation.package_digest,
                         generation_id=generation.generation_id,
                         contract_hash=contract_hash,
+                        execution_contract_hash=generation.execution_contract_hash,
                     )
                 )
             if controllers:
                 update["continuation"] = RunContinuationCheckpoint(controllers=controllers)
         return run.model_copy(update=update)
 
-    def _ensure_extension_snapshot(self, run: RunRecord) -> None:
+    async def _ensure_extension_snapshot(self, run: RunRecord) -> None:
         if self._extension_catalog is None or run.run_id in self._extension_snapshots:
             return
         raw = run.metadata.get("extension_generations", [])
         if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
             raise ValueError("run has invalid extension generation metadata")
-        self._extension_snapshots[run.run_id] = self._extension_catalog.snapshot_for(raw)
+        raw_catalog_id = run.metadata.get("extension_catalog_id")
+        catalog_id = raw_catalog_id if isinstance(raw_catalog_id, str) else None
+        self._extension_snapshots[run.run_id] = await self._extension_catalog.snapshot_for(
+            raw,
+            catalog_id=catalog_id,
+        )
 
 
 def _title_from_prompt(prompt: str) -> str:

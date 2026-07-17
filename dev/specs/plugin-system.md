@@ -1,6 +1,6 @@
 # OURO 插件系统目标规格
 
-状态：目标
+状态：已实现（B1-B8）
 
 本文定义 OURO 插件系统下一阶段必须满足的规范性契约。当前实现与目标的差异见
 [插件系统架构审查](../../docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，实施顺序见
@@ -178,7 +178,7 @@ calendar-plugin/
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "plugin_id": "dev.ouro.calendar",
   "name": "Calendar",
   "version": "1.0.0",
@@ -269,9 +269,15 @@ Python factory 在 OURO 进程中运行，是 full-trust runtime：
 - permission 只约束 Host service，不能限制直接 Python/OS 调用；
 - entrypoint 使用 plugin-owned 顶层 namespace；
 - top-level module 冲突时拒绝 activation；
+- Manifest `namespace=<name>` 对应唯一 canonical Python 顶层名：若 `<name>` 已以 `_plugin` 结尾则直接使用，
+  否则使用 `<name>_plugin`；entrypoint 的首段必须与之相同；
+- Host 不把 canonical 名写入 `sys.modules`，而是把每个 generation 加载到
+  `_ouro_plugin_<generation_id>` 私有 module tree，使同一插件的新旧代可并存并可按 owner 完整卸载；
+- bundled dependency 必须位于 plugin-owned package 内并使用相对 import；需要主环境之外第三方依赖的插件使用
+  worker，不增加每插件 venv 或通用 import virtualization；
 - 插件不能向 OURO 主环境动态安装依赖；
 - `prepare` 不启动长期资源、不修改全局 registry；
-- 候选 `start` 只建立可并存资源，不执行自主外部工作或修改共享 plugin data；
+- 候选 `start` 只建立可并存资源；通过 Host data API 的写入先进入 generation-local staging，发布成功后才提交；
 - 自主长期任务必须声明为 Background Service，不能用普通 supervised task 绕过 service gate；
 - `start/stop` 使用 generation owner，stop 幂等且有 deadline。
 
@@ -310,7 +316,7 @@ Context 只暴露稳定、必要的能力：
 
 - identity、provenance 摘要和 generation；
 - 只读 configuration；
-- plugin-private data view；候选发布前只读，active generation 才能取得写入口；
+- plugin-private data view；候选读取共享数据，但写入/删除进入隔离 staging，active 发布后才提交到共享 data；
 - credential slot resolver；
 - supervised tasks；
 - redacted logger 和 diagnostics；
@@ -380,6 +386,11 @@ Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规�
 Tools、Commands、Hooks、Context、Compaction、Skills、MCP tool projection、Continuation 和 Tool Policy 是
 snapshot-bound；Background Service 是 activation-singleton。
 
+当前实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
+optional、contract、resource 与 projection facet；facet 保留各类型独立语义，Catalog、Coordinator、worker 与
+generation resource 主流程只遍历清单，不维护第二份 capability 分支。该清单没有注册 API，用户插件不能追加类型。
+Skill/MCP resource facet 只为成功加载/连接的资源生成 contract；可选资源失败只产生 degraded observed state。
+
 ### 9.4 ExtensionCatalog
 
 Catalog 是不可变对象，包含 builtin 和 active user generation 的 snapshot-bound 贡献目录及 owner metadata。
@@ -390,6 +401,12 @@ Background Service 由 activation owner 管理，不是 Catalog callback。Catal
 3. 不执行插件代码或外部 I/O；
 4. 成功后原子替换 current catalog pointer；
 5. 为旧 catalog 保留独立 lease，直到使用它的 Run 结束。
+
+基础 user/workspace Skill 与 Plugin Skill 是同一 Catalog 中的 `SkillMetadata`。Skill 名称全局唯一；与 Host baseline
+或其他 active user generation 冲突时，候选 Catalog 整体失败，不存在加载顺序覆盖。每个插件 Skill 声明必须恰好
+解析一个 `SKILL.md`，且 frontmatter `name` 等于 contribution id。完整 Skill 正文仍按需要从 Catalog 固定的
+immutable package path 读取，不能重新发现 current plugin state。Catalog 对外返回防御性副本，消费者不能修改
+共享 Skill metadata。
 
 ## 10. Hook、Policy 与 Continuation
 
@@ -472,7 +489,8 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - 配置先校验并创建候选 revision，再构建候选 generation；
 - 候选失败时 current selection、active revision 和 catalog 不变；
 - 插件只能读取自身 configuration；
-- candidate generation 的 Host data API 只读；Catalog 发布前不得迁移或破坏性修改共享 data。
+- candidate generation 的 Host data API 不直接修改共享 data：写入/删除暂存于候选视图，候选失败时整体丢弃；
+- `python-inprocess` 是 full trust，直接绕过 Host data API 的 Python/OS 写入不属于该事务保证，也不伪装成沙箱能力。
 
 被 active generation 或 durable execution contract 引用的 configuration revision 不得删除。未引用候选 revision
 可以由 GC 清理。
@@ -542,9 +560,10 @@ read persistent activation or mutation candidate
   -> ensure dependencies active
   -> compute affected active dependant closure
   -> build candidate generation set in topological order
-  -> prepare/start/health-check behind closed service gates
+  -> prepare/start candidate resources; keep autonomous services stopped
   -> build candidate catalog
-  -> atomically commit current catalog and service-gate ownership
+  -> compare-and-commit persistent state; open generation gates and atomically swap current catalog
+  -> stop old autonomous services, then start new services in topological order
   -> commit observed active
   -> retire previous generation set in reverse topological order
 ```
@@ -556,9 +575,10 @@ read persistent activation or mutation candidate
 - 保存有界、脱敏 diagnostic；
 - 不影响无关插件和 builtin。
 
-Activation plan 必须在稳定顺序下锁定受影响 plugin id。候选 Background Service 可以初始化到 ready，但在 Catalog
-发布前不得越过 service gate；提交时旧 gate 与新 gate 的所有权只能有一个打开。旧 generation 可继续服务旧 Run，
-但其自主后台任务不得继续运行。
+当前单进程 Host 使用一个 runtime mutation lock 串行化候选提交，不建立容易死锁的 per-plugin 多锁图；插件代码、
+I/O 和 start/stop 均不进入 catalog pointer lock。Background Service 的声明与 owner 在候选期完成准备，但实际
+`start` 延迟到发布后，并严格等待旧代 `stop` 完成，因此同一 plugin id 不会同时运行两份声明式自主服务。旧
+generation 可继续服务旧 Run，但不再持有 activation-singleton Background Service。
 
 Disable：
 
@@ -627,7 +647,8 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 - Claude/Codex 包可以检查 Skills、MCP 和不可移植资源并输出 CompatibilityReport；
 - Pi/OpenCode 可提取 Skills/MCP，或把 executable capability 移植到 OURO SDK/worker；
 - 不透明执行未知 Hook、LSP、theme、app 或 JS runtime；
-- compatibility command 只能报告或显式生成目标文件，不能把“发现”宣称为完整兼容。
+- compatibility command 对每项输出 `supported`、`converted`、`ignored` 或 `incompatible`，并在可迁移时给出明确
+  `ouro_target`；命令只能报告或显式生成目标文件，不能把“发现”宣称为完整兼容。
 
 当前不建设 Marketplace、签名和自动依赖安装。
 
@@ -635,15 +656,23 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 
 `PluginService` 提供类型化用例：
 
-- validate、install、list、show、diagnostics、dependencies；
+- scaffold、validate、install、list、show、diagnostics、dependencies；
 - configure、authorize、revoke、trust-code；
 - enable、disable、restart、check；
-- update、select、rollback、remove、gc、purge-data；
+- update、reload、select、rollback、remove、gc、purge-data；
 - list/execute plugin command；
 - compatibility report。
 
 CLI/TUI/Desktop 只映射这些用例。Plugin command canonical name 为 `<plugin_id>:<command>`；builtin command
 优先，只有 local name 唯一时 Host 才能提供短别名。
+
+`scaffold` 只生成一个经完整 package validation 的最小 user plugin，并以临时目录 + rename 原子发布，绝不覆盖已有
+目录。`reload` 是显式本地开发用例：先按 immutable digest 并排安装，再检查候选配置、能力授权和 exact-digest code
+trust；只有候选就绪才通过既有 candidate activation 原子选版，失败时旧 selection/Catalog 不变。
+
+Git source 必须在 checkout 前读取 tree metadata 并执行 portable path、文件数、单文件与总大小限制；使用 shallow、
+blob-filtered fetch，指定 subdirectory 时使用 sparse checkout，并禁用 LFS 自动 smudge。无论来源为何，最终 package
+仍经过同一静态验证边界。
 
 ## 19. Diagnostics、Concurrency 与 Resource Ownership
 
@@ -670,6 +699,7 @@ ouro/plugins/
   manifest.py        # package schema
   models.py          # install/activation/generation/catalog records
   sources.py         # source adapters
+  scaffold.py        # minimal validated user-plugin scaffold
   package.py         # static package validation
   store.py           # immutable code and mutable state/data
   authorization.py   # trust, permission and grant evaluation
@@ -721,8 +751,8 @@ ouro/application/plugins.py
 - worker timeout 和 task cancellation 都发送 cancel；
 - worker exit 撤销调用入口并投影 failed；
 - background task 失败投影 degraded；
-- 新旧 Catalog 并存时每个 plugin id 只有一个 Background Service gate 打开；
-- candidate start 不执行自主副作用或修改共享 plugin data；
+- 新旧 Catalog 并存时每个 plugin id 最多运行一份声明式 Background Service；
+- candidate start 的 Host data 写入被隔离暂存，失败候选不修改共享 plugin data；
 - optional MCP 失败 degraded，required MCP 失败不发布候选。
 
 ### Skills、MCP 与深层扩展
@@ -732,11 +762,24 @@ ouro/application/plugins.py
 - contribution adapter 统一执行 declaration、contract、projection 和 cleanup；
 - Continuation、Tool Policy、Command synthetic input 继续满足既有来源和组合规则。
 
+B6 实现注记：Plugin Skill 已不再转换为 `after_context_build` Hook；`RuntimeService` 每轮从该 Run 的
+`ExtensionCatalogLease.skills` 生成 Skill 提示词。Plugin MCP 只为 connected server 生成 contract，required 失败
+中止候选，optional 失败产生 degraded；发现工具结构冻结在 Catalog，连接由 generation owner 在 retire 时关闭。
+
 ### Durable recovery
 
 - 相同 execution contract 可跨进程重建；
 - 配置、依赖或 contract 改变时稳定拒绝；
 - pending tool/approval 不调用同名不同 contract contribution。
+
+### 开发体验与社区资源
+
+- scaffold 成功后 package 可直接 validate，失败不留下公开半成品，且不覆盖用户目录；
+- active 插件 reload 未满足授权/信任时只保留候选，旧 Catalog 继续服务；候选就绪后原子切换；
+- Git source 在 blob checkout 前拒绝超限或不可移植 tree，subdirectory 不物化范围外文件；
+- declarative、in-process、worker 三类示例均通过真实 install/authorize/enable 生命周期；
+- compatibility report 的四种 outcome、目标描述与不执行未知代码边界可验证；
+- 开发指南明确 builtin/user、full-trust、request context、Catalog、owner 和 durable contract。
 
 ### 架构与质量
 

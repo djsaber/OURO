@@ -17,10 +17,16 @@
 SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及插件首版管理闭环、Run continuation、工具执行
 上下文和限制性 tool policy 控制面已经完成。
 
-插件系统下一阶段不是叠加更多 manifest 字段，而是按[连接与扩展计划](../dev/plans/connectivity-extensions.md)收敛
-底层模型：删除 workspace/managed 等插件 scope，只保留 builtin/user；以不可变 `ExtensionCatalog` 和候选 generation
-原子切换替代全局 barrier；补齐依赖健康传播、observed state、内部 contribution adapter、worker 取消/退出、Plugin
-Skills/MCP 生命周期和稳定执行契约。当前开发阶段直接升级契约并拒绝旧格式，不为历史兼容保留双路径。
+插件系统已完成 B1-B8 八个里程碑：删除 workspace/managed 等插件 scope，只保留 builtin/user；Manifest/state
+直接升级并拒绝旧格式；配置改为 immutable revision；权限集合封闭；插件 MCP 随启用启动；Runtime 改为持有
+不可变 `ExtensionCatalogLease`，旧/新 Run 可并存，插件不再修改 Host 全局 registry，也不存在全局 Catalog barrier。
+enable/configure/select/restart 已统一为“构建候选 generation closure 与 Catalog、expected-state 提交、pointer swap、
+旧代独立 drain”，Background Service 串行转交；builtin/user dependency lock、blocked 恢复和统一 observed state 也已
+落地。十种 Manifest capability 现由封闭 `ContributionTypeAdapter` 清单统一绑定 SDK/worker、准备、契约、资源与
+Catalog 投影。Worker 严格协议/进程树关闭、in-process 代际私有 module、统一 Run-local Skill Catalog 与 Plugin MCP
+生命周期均已收口。稳定执行契约现可跨进程重建 waiting/recoverable Run，并在插件更新后从保留的旧 digest、配置和
+依赖构建非当前 Catalog。最小 scaffold、显式本地 reload、checkout 前 Git tree 边界、四类社区兼容报告、三种 runtime
+可运行示例和[插件开发指南](OURO_插件开发指南.md)也已落地。后续只由真实插件需求驱动新增扩展点，不预建平台能力。
 
 Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 都不是
 当前目标；只有真实插件提出不可由现有边界满足的需求时才重新评估。

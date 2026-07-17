@@ -1,0 +1,631 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import inspect
+import json
+import threading
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field, replace
+from types import MappingProxyType
+from typing import Any, Protocol
+
+from ouro.core.base import new_id
+from ouro.core.compaction import (
+    CompactionArtifact,
+    CompactionRequest,
+    CompactionStrategy,
+    CompactionStrategyRegistry,
+)
+from ouro.core.continuations import (
+    ContinuationDecision,
+    ContinuationPolicyRegistration,
+    RunContinuationRegistry,
+)
+from ouro.core.hooks import HookContext, HookName, HookRegistration, HookRegistry
+from ouro.core.state import RunOutcome
+from ouro.core.tool_policies import (
+    ToolPolicyCall,
+    ToolPolicyDecision,
+    ToolPolicyRegistration,
+    ToolPolicyRegistry,
+)
+from ouro.plugins.adapters import CatalogProjectionTargets, project_prepared_contributions
+from ouro.plugins.contributions import PreparedContributionSet
+from ouro.plugins.models import PluginClass, PluginGenerationRecord
+from ouro.plugins.registry import (
+    PluginCommand,
+    PluginCommandRegistry,
+    PluginCommandRequest,
+    PluginCommandResult,
+)
+from ouro.skills import SkillMetadata
+from ouro.tools import Tool, ToolExecutionContext, ToolRegistry, ToolResult
+
+
+class PluginGenerationUnavailableError(RuntimeError):
+    """Raised when a callback targets a generation whose invocation gate is closed."""
+
+
+class GenerationGate:
+    """Process-local admission gate shared by every callback in one generation."""
+
+    def __init__(self, generation_id: str, *, initially_open: bool = True) -> None:
+        self.generation_id = generation_id
+        self._open = initially_open
+        self._in_flight = 0
+        self._lock = threading.Lock()
+        self._drained = asyncio.Event()
+        self._drained.set()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._open
+
+    @property
+    def in_flight(self) -> int:
+        with self._lock:
+            return self._in_flight
+
+    def close(self) -> None:
+        with self._lock:
+            self._open = False
+            if self._in_flight == 0:
+                self._drained.set()
+
+    def open(self) -> None:
+        with self._lock:
+            if self._open:
+                return
+            self._open = True
+
+    async def wait_drained(self) -> None:
+        await self._drained.wait()
+
+    @asynccontextmanager
+    async def invocation(self):
+        with self._lock:
+            if not self._open:
+                raise PluginGenerationUnavailableError(
+                    f"plugin generation is unavailable: {self.generation_id}"
+                )
+            self._in_flight += 1
+            self._drained.clear()
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+                if self._in_flight == 0:
+                    self._drained.set()
+
+
+class GenerationLease(Protocol):
+    @property
+    def record(self) -> PluginGenerationRecord: ...
+
+    def close(self) -> None: ...
+
+
+class CatalogGeneration(Protocol):
+    record: PluginGenerationRecord
+    contributions: PreparedContributionSet
+    gate: GenerationGate
+
+    def acquire(self) -> GenerationLease: ...
+
+
+@dataclass(frozen=True)
+class ContributionOwnerRecord:
+    canonical_identity: str
+    owner_id: str
+    plugin_class: PluginClass | None
+    plugin_id: str | None
+    package_digest: str | None
+    generation_id: str | None
+    contract_hash: str
+
+
+@dataclass(frozen=True)
+class ExtensionCatalogBase:
+    tools: tuple[dict[str, Tool], dict[str, str]]
+    hooks: tuple[list[HookRegistration], set[tuple[str | None, str, HookName, str]]]
+    commands: dict[str, PluginCommand]
+    compaction: tuple[dict[str, CompactionStrategy], dict[str, str]]
+    continuations: list[ContinuationPolicyRegistration]
+    tool_policies: list[ToolPolicyRegistration]
+    skills: tuple[SkillMetadata, ...]
+
+    @classmethod
+    def capture(
+        cls,
+        *,
+        tools: ToolRegistry,
+        hooks: HookRegistry,
+        commands: PluginCommandRegistry | None,
+        compaction: CompactionStrategyRegistry | None,
+        continuations: RunContinuationRegistry | None,
+        tool_policies: ToolPolicyRegistry | None,
+        skills: Sequence[SkillMetadata] = (),
+    ) -> ExtensionCatalogBase:
+        captured_skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        skill_names = [skill.name for skill in captured_skills]
+        if len(skill_names) != len(set(skill_names)):
+            raise ValueError("Host baseline contains duplicate skill names")
+        return cls(
+            tools=tools.snapshot(),
+            hooks=hooks.snapshot(),
+            commands=commands.snapshot() if commands is not None else {},
+            compaction=(compaction or CompactionStrategyRegistry()).snapshot(),
+            continuations=(continuations or RunContinuationRegistry()).snapshot(),
+            tool_policies=(tool_policies or ToolPolicyRegistry()).snapshot(),
+            skills=captured_skills,
+        )
+
+
+class ExtensionCatalog:
+    """Immutable contribution directory built without mutating its Host baseline."""
+
+    def __init__(
+        self,
+        *,
+        generations: Sequence[CatalogGeneration],
+        tools: ToolRegistry,
+        hooks: HookRegistry,
+        commands: PluginCommandRegistry,
+        compaction: CompactionStrategyRegistry,
+        continuations: RunContinuationRegistry,
+        tool_policies: ToolPolicyRegistry,
+        skills: Sequence[SkillMetadata],
+        owners: Mapping[str, ContributionOwnerRecord],
+    ) -> None:
+        self.catalog_id = new_id("cat")
+        self._generation_sources = tuple(generations)
+        self.generations = tuple(
+            source.record.model_copy(deep=True) for source in self._generation_sources
+        )
+        self.tools = tools
+        self.hooks = hooks
+        self.commands = commands
+        self.compaction = compaction
+        self.continuations = continuations
+        self.tool_policies = tool_policies
+        self._skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        self.owners = MappingProxyType(dict(owners))
+        self._lease_count = 0
+        self._lock = threading.Lock()
+
+    @property
+    def lease_count(self) -> int:
+        with self._lock:
+            return self._lease_count
+
+    @property
+    def skills(self) -> tuple[SkillMetadata, ...]:
+        return tuple(skill.model_copy(deep=True) for skill in self._skills)
+
+    def acquire(
+        self,
+        *,
+        on_close: Callable[[ExtensionCatalog], None] | None = None,
+    ) -> ExtensionCatalogLease:
+        leases: list[GenerationLease] = []
+        try:
+            for source in self._generation_sources:
+                leases.append(source.acquire())
+        except Exception:
+            for lease in reversed(leases):
+                lease.close()
+            raise
+        with self._lock:
+            self._lease_count += 1
+        return ExtensionCatalogLease(self, tuple(leases), on_close=on_close)
+
+    def contract_hash(self, canonical_identity: str) -> str | None:
+        owner = self.owners.get(canonical_identity)
+        return owner.contract_hash if owner is not None else None
+
+    def matches(self, expected_generations: Sequence[Mapping[str, object]]) -> bool:
+        expected = {str(item.get("plugin_id", "")): item for item in expected_generations}
+        if "" in expected or len(expected) != len(expected_generations):
+            return False
+        actual = {generation.plugin_id: generation for generation in self.generations}
+        if set(expected) != set(actual):
+            return False
+        return all(
+            generation_matches_execution_contract(generation, expected[plugin_id])
+            for plugin_id, generation in actual.items()
+        )
+
+    def _release(self) -> None:
+        with self._lock:
+            if self._lease_count:
+                self._lease_count -= 1
+
+
+class ExtensionCatalogLease:
+    """One consumer's lease on an immutable Extension Catalog."""
+
+    def __init__(
+        self,
+        catalog: ExtensionCatalog,
+        generation_leases: tuple[GenerationLease, ...],
+        *,
+        on_close: Callable[[ExtensionCatalog], None] | None = None,
+    ) -> None:
+        self.catalog = catalog
+        self._generation_leases = generation_leases
+        self._on_close = on_close
+        self._closed = False
+
+    @property
+    def catalog_id(self) -> str:
+        return self.catalog.catalog_id
+
+    @property
+    def generations(self) -> tuple[PluginGenerationRecord, ...]:
+        return self.catalog.generations
+
+    @property
+    def tools(self) -> ToolRegistry:
+        return self.catalog.tools
+
+    @property
+    def hooks(self) -> HookRegistry:
+        return self.catalog.hooks
+
+    @property
+    def commands(self) -> PluginCommandRegistry:
+        return self.catalog.commands
+
+    @property
+    def compaction(self) -> CompactionStrategyRegistry:
+        return self.catalog.compaction
+
+    @property
+    def continuations(self) -> RunContinuationRegistry:
+        return self.catalog.continuations
+
+    @property
+    def tool_policies(self) -> ToolPolicyRegistry:
+        return self.catalog.tool_policies
+
+    @property
+    def skills(self) -> tuple[SkillMetadata, ...]:
+        return self.catalog.skills
+
+    def contract_hash(self, canonical_identity: str) -> str | None:
+        return self.catalog.contract_hash(canonical_identity)
+
+    def fork(self) -> ExtensionCatalogLease:
+        if self._closed:
+            raise RuntimeError("extension catalog lease is closed")
+        return self.catalog.acquire(on_close=self._on_close)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for lease in reversed(self._generation_leases):
+            lease.close()
+        self.catalog._release()
+        if self._on_close is not None:
+            self._on_close(self.catalog)
+
+    def __enter__(self) -> ExtensionCatalogLease:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+def build_extension_catalog(
+    base: ExtensionCatalogBase,
+    generations: Sequence[CatalogGeneration],
+) -> ExtensionCatalog:
+    tools = ToolRegistry()
+    tools.restore(base.tools)
+    hooks = HookRegistry()
+    hooks.restore(base.hooks)
+    commands = PluginCommandRegistry()
+    commands.restore(base.commands)
+    compaction = CompactionStrategyRegistry()
+    compaction.restore(base.compaction)
+    continuations = RunContinuationRegistry()
+    continuations.restore(base.continuations)
+    tool_policies = ToolPolicyRegistry()
+    tool_policies.restore(base.tool_policies)
+    skills = {skill.name: skill.model_copy(deep=True) for skill in base.skills}
+    owners = _base_owner_records(base)
+    targets = CatalogProjectionTargets(
+        tools=tools,
+        hooks=hooks,
+        commands=commands,
+        compaction=compaction,
+        continuations=continuations,
+        tool_policies=tool_policies,
+        skills=skills,
+    )
+
+    for source in sorted(generations, key=lambda item: item.record.plugin_id):
+        prepared = bind_generation_gate(source.contributions, source.gate)
+        owner = prepared.owner.key
+        project_prepared_contributions(targets, owner=owner, prepared=prepared)
+        for identity, contract_hash in prepared.contract_hashes.items():
+            if identity in owners:
+                conflict = owners[identity]
+                raise ValueError(
+                    "catalog contribution identity conflict: "
+                    f"{identity} ({conflict.owner_id}, {prepared.owner.key})"
+                )
+            owners[identity] = ContributionOwnerRecord(
+                canonical_identity=identity,
+                owner_id=prepared.owner.key,
+                plugin_class="user",
+                plugin_id=source.record.plugin_id,
+                package_digest=source.record.package_digest,
+                generation_id=source.record.generation_id,
+                contract_hash=contract_hash,
+            )
+    tools.freeze()
+    hooks.freeze()
+    commands.freeze()
+    compaction.freeze()
+    continuations.freeze()
+    tool_policies.freeze()
+    return ExtensionCatalog(
+        generations=generations,
+        tools=tools,
+        hooks=hooks,
+        commands=commands,
+        compaction=compaction,
+        continuations=continuations,
+        tool_policies=tool_policies,
+        skills=tuple(skills[name] for name in sorted(skills)),
+        owners=owners,
+    )
+
+
+def bind_generation_gate(
+    prepared: PreparedContributionSet,
+    gate: GenerationGate,
+) -> PreparedContributionSet:
+    return replace(
+        prepared,
+        tools=tuple(_gated_tool(item, gate) for item in prepared.tools),
+        hooks=tuple(_gated_hook(item, gate) for item in prepared.hooks),
+        commands=tuple(_gated_command(item, gate) for item in prepared.commands),
+        compaction_strategies=tuple(
+            _GatedCompactionStrategy(item, gate) for item in prepared.compaction_strategies
+        ),
+        continuation_policies=tuple(
+            _gated_continuation(item, gate) for item in prepared.continuation_policies
+        ),
+        tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
+    )
+
+
+def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
+    async def invoke(
+        invocation,
+        *,
+        context: ToolExecutionContext | None = None,
+        signal=None,
+    ) -> ToolResult:
+        async with gate.invocation():
+            return await tool.execute(invocation, context=context, signal=signal)
+
+    return Tool(definition=tool.definition, handler=invoke)
+
+
+def _gated_hook(
+    registration: HookRegistration,
+    gate: GenerationGate,
+) -> HookRegistration:
+    async def invoke(context: HookContext):
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, context)
+
+    return replace(registration, handler=invoke)
+
+
+def _gated_command(
+    command: PluginCommand,
+    gate: GenerationGate,
+) -> PluginCommand:
+    async def invoke(
+        request: PluginCommandRequest,
+    ) -> PluginCommandResult | str | Mapping[str, Any]:
+        async with gate.invocation():
+            return await _invoke_callback(command.handler, request)
+
+    return replace(command, handler=invoke)
+
+
+@dataclass
+class _GatedCompactionStrategy:
+    delegate: CompactionStrategy
+    gate: GenerationGate
+    strategy_id: str = field(init=False)
+    version: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.strategy_id = self.delegate.strategy_id
+        self.version = self.delegate.version
+
+    async def compact(
+        self,
+        request: CompactionRequest,
+        *,
+        signal=None,
+    ) -> CompactionArtifact:
+        async with self.gate.invocation():
+            return await self.delegate.compact(request, signal=signal)
+
+
+def _gated_continuation(
+    registration: ContinuationPolicyRegistration,
+    gate: GenerationGate,
+) -> ContinuationPolicyRegistration:
+    async def invoke(outcome: RunOutcome) -> ContinuationDecision:
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, outcome)
+
+    return replace(registration, handler=invoke)
+
+
+def _gated_tool_policy(
+    registration: ToolPolicyRegistration,
+    gate: GenerationGate,
+) -> ToolPolicyRegistration:
+    async def invoke(call: ToolPolicyCall) -> ToolPolicyDecision:
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, call)
+
+    return replace(registration, handler=invoke)
+
+
+async def _invoke_callback(handler: Callable[[Any], Any], argument: Any) -> Any:
+    if inspect.iscoroutinefunction(handler):
+        return await handler(argument)
+    result = await asyncio.to_thread(handler, argument)
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def _base_owner_records(
+    base: ExtensionCatalogBase,
+) -> dict[str, ContributionOwnerRecord]:
+    records: dict[str, ContributionOwnerRecord] = {}
+    for name, tool in base.tools[0].items():
+        identity = f"ouro.host/tools/{name}"
+        records[identity] = _host_owner(
+            identity,
+            _hash(tool.definition.model_dump(mode="json", exclude={"metadata"})),
+        )
+    for index, hook_registration in enumerate(base.hooks[0]):
+        local_id = hook_registration.hook_id or f"anonymous-{index}"
+        identity = (
+            "ouro.host/hooks/"
+            f"{hook_registration.plugin_id}:{hook_registration.hook_name}:{local_id}"
+        )
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "hook_name": hook_registration.hook_name,
+                    "source": hook_registration.source,
+                    "priority": hook_registration.priority,
+                    "enabled": hook_registration.enabled,
+                    "timeout_seconds": hook_registration.timeout_seconds,
+                }
+            ),
+        )
+    for identity, command in base.commands.items():
+        canonical = f"ouro.host/commands/{identity}"
+        records[canonical] = _host_owner(
+            canonical,
+            _hash({"description": command.description}),
+        )
+    for strategy_id, strategy in base.compaction[0].items():
+        identity = f"ouro.host/compaction_strategies/{strategy_id}"
+        records[identity] = _host_owner(identity, _hash({"version": strategy.version}))
+    for continuation_registration in base.continuations:
+        identity = (
+            "ouro.host/continuation_policies/"
+            f"{continuation_registration.plugin_id}:{continuation_registration.policy_id}"
+        )
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "priority": continuation_registration.priority,
+                    "timeout_seconds": continuation_registration.timeout_seconds,
+                }
+            ),
+        )
+    for tool_policy_registration in base.tool_policies:
+        identity = (
+            "ouro.host/tool_policies/"
+            f"{tool_policy_registration.plugin_id}:{tool_policy_registration.policy_id}"
+        )
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "priority": tool_policy_registration.priority,
+                    "timeout_seconds": tool_policy_registration.timeout_seconds,
+                }
+            ),
+        )
+    for skill in base.skills:
+        identity = f"ouro.host/skills/{skill.name}"
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "name": skill.name,
+                    "description": skill.description,
+                    "source": skill.source,
+                    "location": skill.location,
+                }
+            ),
+        )
+    return records
+
+
+def generation_matches_execution_contract(
+    generation: PluginGenerationRecord,
+    expected: Mapping[str, object],
+) -> bool:
+    """Match durable facts while leaving process-local generation identity diagnostic-only."""
+
+    return (
+        generation.execution_contract_hash is not None
+        and generation.execution_contract_hash == expected.get("execution_contract_hash")
+        and generation.version == expected.get("version")
+        and generation.package_digest == expected.get("package_digest")
+        and generation.runtime_kind == expected.get("runtime_kind")
+        and generation.configuration_revision_id == expected.get("configuration_revision_id")
+        and generation.dependency_lock_fingerprint == expected.get("dependency_lock_fingerprint")
+        and generation.plugin_api_version == expected.get("plugin_api_version")
+        and generation.worker_protocol_version == expected.get("worker_protocol_version")
+        and generation.contract_hashes == expected.get("contract_hashes")
+    )
+
+
+def _host_owner(identity: str, contract_hash: str) -> ContributionOwnerRecord:
+    return ContributionOwnerRecord(
+        canonical_identity=identity,
+        owner_id="ouro.host",
+        plugin_class="builtin",
+        plugin_id="ouro.host",
+        package_digest=None,
+        generation_id=None,
+        contract_hash=contract_hash,
+    )
+
+
+def _hash(value: object) -> str:
+    encoded = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+__all__ = [
+    "ContributionOwnerRecord",
+    "ExtensionCatalog",
+    "ExtensionCatalogBase",
+    "ExtensionCatalogLease",
+    "GenerationGate",
+    "PluginGenerationUnavailableError",
+    "build_extension_catalog",
+    "generation_matches_execution_contract",
+]

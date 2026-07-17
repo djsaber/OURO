@@ -4,9 +4,12 @@ import asyncio
 import hashlib
 import json
 import os
+import signal
+import subprocess
 import sys
 from collections.abc import Callable, Mapping
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -46,6 +49,17 @@ class JsonRpcWorkerClient:
         self._request_id = 0
         self._write_lock = asyncio.Lock()
         self._closed = False
+
+    @property
+    def is_healthy(self) -> bool:
+        process = self.process
+        return (
+            not self._closed
+            and process is not None
+            and process.returncode is None
+            and self._reader_task is not None
+            and not self._reader_task.done()
+        )
 
     async def start(self) -> None:
         if self.process is not None:
@@ -100,6 +114,10 @@ class JsonRpcWorkerClient:
             with suppress(Exception):
                 await self.notify("cancel", {"id": request_id})
             raise
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await asyncio.shield(self.notify("cancel", {"id": request_id}))
+            raise
         finally:
             self._pending.pop(request_id, None)
 
@@ -114,16 +132,14 @@ class JsonRpcWorkerClient:
         process = self.process
         if process is None:
             return
-        if process.returncode is None:
+        if os.name == "nt":
+            await _terminate_process_tree(process, timeout=timeout)
+        elif process.returncode is None:
             with suppress(Exception):
                 await self.request("shutdown", timeout=min(timeout, 2.0))
-        if process.stdin is not None:
-            process.stdin.close()
-        try:
-            await asyncio.wait_for(process.wait(), timeout=timeout)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+            if process.stdin is not None:
+                process.stdin.close()
+            await _terminate_process_tree(process, timeout=timeout)
         for task in (self._reader_task, self._stderr_task):
             if task is not None:
                 task.cancel()
@@ -152,7 +168,15 @@ class JsonRpcWorkerClient:
         process = self.process
         assert process is not None and process.stdout is not None
         try:
-            while line := await process.stdout.readline():
+            while True:
+                try:
+                    line = await process.stdout.readline()
+                except ValueError as exc:
+                    raise WorkerProtocolError(
+                        "plugin worker response exceeds message limit"
+                    ) from exc
+                if not line:
+                    break
                 if len(line) > self.max_message_bytes:
                     raise WorkerProtocolError("plugin worker response exceeds message limit")
                 try:
@@ -164,12 +188,22 @@ class JsonRpcWorkerClient:
                 if message.get("jsonrpc") != "2.0":
                     raise WorkerProtocolError("plugin worker response has invalid JSON-RPC version")
                 request_id = message.get("id")
-                if isinstance(request_id, int):
+                if type(request_id) is int:
+                    has_result = "result" in message
+                    has_error = "error" in message
+                    if has_result == has_error:
+                        raise WorkerProtocolError(
+                            "plugin worker response must contain exactly one of result or error"
+                        )
                     future = self._pending.get(request_id)
                     if future is None or future.done():
                         continue
                     error = message.get("error")
-                    if error is not None:
+                    if has_error:
+                        if not isinstance(error, dict):
+                            raise WorkerProtocolError(
+                                "plugin worker response error must be an object"
+                            )
                         future.set_exception(
                             WorkerProtocolError(
                                 "plugin worker request failed: " + self._redact(str(error))
@@ -180,12 +214,17 @@ class JsonRpcWorkerClient:
                     continue
                 if message.get("method") == "diagnostic.emit":
                     params = message.get("params", {})
-                    if isinstance(params, dict):
-                        self.diagnostic(
-                            str(params.get("code", "worker_diagnostic")),
-                            self._redact(str(params.get("message", ""))),
+                    if not isinstance(params, dict):
+                        raise WorkerProtocolError(
+                            "plugin worker diagnostic params must be an object"
                         )
-            if self._pending:
+                    self._emit_diagnostic(
+                        str(params.get("code", "worker_diagnostic")),
+                        str(params.get("message", "")),
+                    )
+                    continue
+                raise WorkerProtocolError("plugin worker wrote an unknown message to stdout")
+            if not self._closed:
                 code = process.returncode
                 raise WorkerProtocolError(
                     f"plugin worker stdout closed unexpectedly (exit code {code})"
@@ -194,6 +233,8 @@ class JsonRpcWorkerClient:
             raise
         except Exception as exc:  # noqa: BLE001 - fail all outstanding RPC calls.
             error = WorkerProtocolError(self._redact(str(exc)))
+            if not self._closed:
+                self._emit_diagnostic("worker_exit", str(error))
             for future in self._pending.values():
                 if not future.done():
                     future.set_exception(error)
@@ -202,17 +243,26 @@ class JsonRpcWorkerClient:
         process = self.process
         assert process is not None and process.stderr is not None
         emitted = 0
-        while line := await process.stderr.readline():
+        while chunk := await process.stderr.read(4096):
             if emitted >= 100:
                 continue
             emitted += 1
-            self.diagnostic(
+            self._emit_diagnostic(
                 "worker_stderr",
-                self._redact(line[:4096].decode("utf-8", errors="replace").rstrip()),
+                chunk.decode("utf-8", errors="replace").rstrip(),
             )
 
     def _redact(self, value: str) -> str:
         return self.redactor.redact(value)
+
+    def report_invalid_result(self, error: WorkerProtocolError) -> None:
+        self._emit_diagnostic("worker_invalid_result", str(error))
+
+    def _emit_diagnostic(self, code: str, message: str) -> None:
+        bounded_code = _bounded_text(code, limit=128, fallback="worker_diagnostic")
+        bounded_message = _bounded_text(self._redact(message), limit=4096)
+        with suppress(Exception):
+            self.diagnostic(bounded_code, bounded_message)
 
 
 class WorkerPluginInstance:
@@ -250,7 +300,14 @@ class WorkerPluginInstance:
         self.credential_environment = credential_environment
         self._initialized = False
 
+    @property
+    def is_healthy(self) -> bool:
+        return self._initialized and self.client.is_healthy
+
     async def prepare(self) -> sdk.ContributionSet:
+        from ouro.plugins.contribution_types import contribution_type_adapters
+
+        contribution_types = contribution_type_adapters()
         self.data_directory.mkdir(parents=True, exist_ok=True)
         await self.client.start()
         initialization = await self.client.request(
@@ -265,20 +322,17 @@ class WorkerPluginInstance:
                 "data_directory": str(self.data_directory),
                 "credential_environment": self.credential_environment,
                 "features": [
-                    "tools",
-                    "hooks",
-                    "commands",
-                    "context",
-                    "compaction",
-                    "background_services",
+                    *(
+                        contribution_type.kind
+                        for contribution_type in contribution_types
+                        if contribution_type.worker is not None
+                    ),
                     "session_inputs",
-                    "continuation_policies",
-                    "tool_policies",
                 ],
                 "limits": {"max_message_bytes": self.client.max_message_bytes},
             },
         )
-        result = _object_result(initialization, "initialize")
+        result = self._result(initialization, "initialize")
         negotiated = str(result.get("protocol_version", ""))
         if negotiated != self.manifest.runtime.protocol:
             raise WorkerProtocolError(
@@ -287,85 +341,20 @@ class WorkerPluginInstance:
             )
         self._initialized = True
         raw = await self.client.request("contributions.prepare")
+        raw = self._result(raw, "contributions.prepare")
         available = _worker_contribution_ids(raw)
         _validate_worker_declarations(self.manifest, available)
-        return sdk.ContributionSet(
-            tools=[
-                sdk.ToolContribution(
-                    id=item.id,
-                    exposed_name=item.exposed_name,
-                    description=item.description,
-                    permission_mode=item.permission_mode,
-                    parameters_schema=_worker_schema(raw, "tools", item.id, "parameters_schema"),
-                    result_schema=_worker_schema(raw, "tools", item.id, "result_schema"),
-                    handler=self._tool_handler(item.id),
-                )
-                for item in self.manifest.contributes.tools
-                if item.id in available.get("tools", set())
-            ],
-            hooks=[
-                sdk.HookContribution(
-                    id=item.id,
-                    event=item.event,
-                    priority=item.priority,
-                    timeout_seconds=item.timeout_seconds,
-                    handler=self._hook_handler(item.id),
-                )
-                for item in self.manifest.contributes.hooks
-                if item.id in available.get("hooks", set())
-            ],
-            commands=[
-                sdk.CommandContribution(
-                    id=item.id,
-                    description=item.description,
-                    handler=self._command_handler(item.id),
-                )
-                for item in self.manifest.contributes.commands
-                if item.id in available.get("commands", set())
-            ],
-            context_providers=[
-                sdk.ContextContribution(
-                    id=item.id,
-                    handler=self._context_handler(item.id),
-                )
-                for item in self.manifest.contributes.context_providers
-                if item.id in available.get("context_providers", set())
-            ],
-            compaction_strategies=[
-                sdk.CompactionContribution(
-                    id=item.id,
-                    version="1",
-                    handler=self._compaction_handler(item.id),
-                )
-                for item in self.manifest.contributes.compaction_strategies
-                if item.id in available.get("compaction_strategies", set())
-            ],
-            background_services=[
-                sdk.BackgroundServiceContribution(
-                    id=item.id,
-                    start=_noop_background_lifecycle,
-                    stop=_noop_background_lifecycle,
-                )
-                for item in self.manifest.contributes.background_services
-                if item.id in available.get("background_services", set())
-            ],
-            continuation_policies=[
-                sdk.ContinuationPolicyContribution(
-                    id=item.id,
-                    handler=self._continuation_handler(item.id),
-                )
-                for item in self.manifest.contributes.continuation_policies
-                if item.id in available.get("continuation_policies", set())
-            ],
-            tool_policies=[
-                sdk.ToolPolicyContribution(
-                    id=item.id,
-                    handler=self._tool_policy_handler(item.id),
-                )
-                for item in self.manifest.contributes.tool_policies
-                if item.id in available.get("tool_policies", set())
-            ],
-        )
+        contributions = sdk.ContributionSet()
+        for contribution_type in contribution_types:
+            adapter = contribution_type.worker
+            if adapter is None:
+                continue
+            setattr(
+                contributions,
+                adapter.attribute,
+                adapter.prepare(self, raw, available),
+            )
+        return contributions
 
     async def start(self) -> None:
         if self._initialized:
@@ -377,6 +366,15 @@ class WorkerPluginInstance:
             with suppress(Exception):
                 await self.client.request("lifecycle.stop", {"reason": reason}, timeout=2.0)
         await self.client.close()
+
+    def _result(self, raw: object, method: str) -> dict[str, Any]:
+        try:
+            result = _object_result(raw, method)
+            _validate_worker_result(method, result)
+            return result
+        except WorkerProtocolError as exc:
+            self.client.report_invalid_result(exc)
+            raise
 
     def _tool_handler(self, identity: str):
         async def handler(call: sdk.ToolCall) -> sdk.ToolOutput:
@@ -395,7 +393,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "tool.call")
+            result = self._result(raw, "tool.call")
             return sdk.ToolOutput(
                 content=str(result.get("content", "")),
                 structured=_object_value(result.get("structured", {})),
@@ -432,7 +430,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "hook.call")
+            result = self._result(raw, "hook.call")
             return sdk.HookOutput(
                 added_context=tuple(str(item) for item in result.get("added_context", [])),
                 diagnostics=tuple(str(item) for item in result.get("diagnostics", [])),
@@ -467,7 +465,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "hook.call")
+            result = self._result(raw, "hook.call")
             return sdk.HookOutput(
                 added_context=tuple(str(item) for item in result.get("added_context", [])),
                 diagnostics=tuple(str(item) for item in result.get("diagnostics", [])),
@@ -489,7 +487,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "command.call")
+            result = self._result(raw, "command.call")
             return sdk.CommandOutput(
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
@@ -514,7 +512,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "compaction.call")
+            result = self._result(raw, "compaction.call")
             usage = {
                 str(key): value
                 for key, value in _object_value(result.get("usage", {})).items()
@@ -541,7 +539,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "continuation.call")
+            result = self._result(raw, "continuation.call")
             action = result.get("action", "ignore")
             if action not in {"ignore", "continue", "complete", "pause", "fail"}:
                 raise WorkerProtocolError(f"worker continuation action is invalid: {action}")
@@ -579,7 +577,7 @@ class WorkerPluginInstance:
                     },
                 },
             )
-            result = _object_result(raw, "tool_policy.call")
+            result = self._result(raw, "tool_policy.call")
             action = result.get("action", "ignore")
             if action not in {"ignore", "require_approval", "deny"}:
                 raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
@@ -589,6 +587,243 @@ class WorkerPluginInstance:
             return sdk.ToolPolicyDecision(action=action, reason=reason)
 
         return handler
+
+
+WorkerContributionBuilder = Callable[
+    [WorkerPluginInstance, object, dict[str, set[str]]],
+    list[Any],
+]
+
+
+@dataclass(frozen=True)
+class WorkerContributionAdapter:
+    kind: str
+    attribute: str
+    build: WorkerContributionBuilder
+
+    def prepare(
+        self,
+        instance: WorkerPluginInstance,
+        raw: object,
+        available: dict[str, set[str]],
+    ) -> list[Any]:
+        return self.build(instance, raw, available)
+
+
+def _worker_tools(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    return [
+        sdk.ToolContribution(
+            id=item.id,
+            exposed_name=item.exposed_name,
+            description=item.description,
+            permission_mode=item.permission_mode,
+            parameters_schema=_worker_schema(raw, "tools", item.id, "parameters_schema"),
+            result_schema=_worker_schema(raw, "tools", item.id, "result_schema"),
+            handler=instance._tool_handler(item.id),
+        )
+        for item in instance.manifest.contributes.tools
+        if item.id in available.get("tools", set())
+    ]
+
+
+def _worker_hooks(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.HookContribution(
+            id=item.id,
+            event=item.event,
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            handler=instance._hook_handler(item.id),
+        )
+        for item in instance.manifest.contributes.hooks
+        if item.id in available.get("hooks", set())
+    ]
+
+
+def _worker_commands(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.CommandContribution(
+            id=item.id,
+            description=item.description,
+            handler=instance._command_handler(item.id),
+        )
+        for item in instance.manifest.contributes.commands
+        if item.id in available.get("commands", set())
+    ]
+
+
+def _worker_context_providers(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.ContextContribution(
+            id=item.id,
+            handler=instance._context_handler(item.id),
+        )
+        for item in instance.manifest.contributes.context_providers
+        if item.id in available.get("context_providers", set())
+    ]
+
+
+def _worker_compaction_strategies(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.CompactionContribution(
+            id=item.id,
+            version="1",
+            handler=instance._compaction_handler(item.id),
+        )
+        for item in instance.manifest.contributes.compaction_strategies
+        if item.id in available.get("compaction_strategies", set())
+    ]
+
+
+def _worker_background_services(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.BackgroundServiceContribution(
+            id=item.id,
+            start=_noop_background_lifecycle,
+            stop=_noop_background_lifecycle,
+        )
+        for item in instance.manifest.contributes.background_services
+        if item.id in available.get("background_services", set())
+    ]
+
+
+def _worker_continuation_policies(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.ContinuationPolicyContribution(
+            id=item.id,
+            handler=instance._continuation_handler(item.id),
+        )
+        for item in instance.manifest.contributes.continuation_policies
+        if item.id in available.get("continuation_policies", set())
+    ]
+
+
+def _worker_tool_policies(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.ToolPolicyContribution(
+            id=item.id,
+            handler=instance._tool_policy_handler(item.id),
+        )
+        for item in instance.manifest.contributes.tool_policies
+        if item.id in available.get("tool_policies", set())
+    ]
+
+
+TOOL_WORKER_ADAPTER = WorkerContributionAdapter("tools", "tools", _worker_tools)
+HOOK_WORKER_ADAPTER = WorkerContributionAdapter("hooks", "hooks", _worker_hooks)
+COMMAND_WORKER_ADAPTER = WorkerContributionAdapter(
+    "commands",
+    "commands",
+    _worker_commands,
+)
+CONTEXT_WORKER_ADAPTER = WorkerContributionAdapter(
+    "context_providers",
+    "context_providers",
+    _worker_context_providers,
+)
+COMPACTION_WORKER_ADAPTER = WorkerContributionAdapter(
+    "compaction_strategies",
+    "compaction_strategies",
+    _worker_compaction_strategies,
+)
+BACKGROUND_SERVICE_WORKER_ADAPTER = WorkerContributionAdapter(
+    "background_services",
+    "background_services",
+    _worker_background_services,
+)
+CONTINUATION_WORKER_ADAPTER = WorkerContributionAdapter(
+    "continuation_policies",
+    "continuation_policies",
+    _worker_continuation_policies,
+)
+TOOL_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
+    "tool_policies",
+    "tool_policies",
+    _worker_tool_policies,
+)
+
+
+async def _terminate_process_tree(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float,
+) -> None:
+    if os.name == "nt":
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=min(timeout, 2.0))
+        except (OSError, TimeoutError):
+            pass
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        return
+
+    with suppress(ProcessLookupError):
+        os.kill(-process.pid, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(process.wait(), timeout=timeout)
+    except TimeoutError:
+        with suppress(ProcessLookupError):
+            os.kill(-process.pid, 9)
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+
+
+def _bounded_text(value: str, *, limit: int, fallback: str = "") -> str:
+    normalized = value.strip() or fallback
+    if len(normalized) <= limit:
+        return normalized
+    return normalized[: limit - 1] + "…"
 
 
 def _resolve_worker_command(command: list[str], package_root: Path) -> list[str]:
@@ -632,9 +867,22 @@ def _validate_worker_declarations(
     manifest: PluginManifest,
     available: dict[str, set[str]],
 ) -> None:
-    for kind, declarations in manifest.contributes.by_kind().items():
-        if kind in {"skills", "mcp_servers"}:
+    from ouro.plugins.contribution_types import contribution_type_adapters
+
+    declarations_by_kind = manifest.contributes.by_kind()
+    worker_kinds = {
+        contribution_type.kind
+        for contribution_type in contribution_type_adapters()
+        if contribution_type.worker is not None
+    }
+    unknown = set(available) - worker_kinds
+    if unknown:
+        raise WorkerProtocolError(f"worker returned unknown contribution types: {sorted(unknown)}")
+    for contribution_type in contribution_type_adapters():
+        if contribution_type.worker is None:
             continue
+        kind = contribution_type.kind
+        declarations = declarations_by_kind[kind]
         actual = available.get(kind, set())
         declared = {item.id for item in declarations}
         extra = actual - declared
@@ -661,6 +909,97 @@ def _object_result(raw: object, method: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise WorkerProtocolError(f"worker {method} result must be an object")
     return raw
+
+
+def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
+    if method == "initialize":
+        if not isinstance(result.get("protocol_version"), str):
+            raise WorkerProtocolError("worker initialize protocol_version must be a string")
+        return
+    if method == "contributions.prepare":
+        for kind, values in result.items():
+            if isinstance(values, list):
+                if any(not isinstance(item, str) for item in values):
+                    raise WorkerProtocolError(f"worker {kind} contribution ids must be strings")
+                continue
+            if not isinstance(values, dict) or any(
+                not isinstance(identity, str) or not isinstance(descriptor, dict)
+                for identity, descriptor in values.items()
+            ):
+                raise WorkerProtocolError(
+                    f"worker {kind} contributions must be string ids or descriptor objects"
+                )
+            if kind == "tools":
+                for descriptor in values.values():
+                    for field in ("parameters_schema", "result_schema"):
+                        value = descriptor.get(field, {})
+                        if not isinstance(value, dict):
+                            raise WorkerProtocolError(f"worker tool {field} must be an object")
+        return
+    if method == "tool.call":
+        _require_optional_type(result, "content", str, method)
+        _require_optional_type(result, "structured", dict, method)
+        _require_string_list(result, "resource_refs", method)
+        _require_optional_type(result, "is_error", bool, method)
+        return
+    if method == "hook.call":
+        _require_string_list(result, "added_context", method)
+        _require_string_list(result, "diagnostics", method)
+        return
+    if method == "command.call":
+        _require_optional_type(result, "output", str, method)
+        _require_optional_type(result, "data", dict, method)
+        _worker_session_inputs(result)
+        return
+    if method == "compaction.call":
+        _require_optional_type(result, "summary", str, method)
+        usage = result.get("usage", {})
+        if not isinstance(usage, dict) or any(
+            isinstance(value, bool) or not isinstance(value, (int, float))
+            for value in usage.values()
+        ):
+            raise WorkerProtocolError("worker compaction.call usage must be numeric")
+        return
+    if method == "continuation.call":
+        action = result.get("action", "ignore")
+        if action not in {"ignore", "continue", "complete", "pause", "fail"}:
+            raise WorkerProtocolError(f"worker continuation action is invalid: {action}")
+        mode = result.get("mode", "follow_up")
+        if mode not in {"follow_up", "steer"}:
+            raise WorkerProtocolError(f"worker continuation mode is invalid: {mode}")
+        _require_optional_type(result, "prompt", str, method, allow_none=True)
+        _require_optional_type(result, "title", str, method, allow_none=True)
+        _require_optional_type(result, "reason", str, method, allow_none=True)
+        _require_optional_type(result, "state_revision", int, method, allow_none=True)
+        return
+    if method == "tool_policy.call":
+        action = result.get("action", "ignore")
+        if action not in {"ignore", "require_approval", "deny"}:
+            raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
+        _require_optional_type(result, "reason", str, method, allow_none=True)
+
+
+def _require_optional_type(
+    result: dict[str, Any],
+    field: str,
+    expected: type[object],
+    method: str,
+    *,
+    allow_none: bool = False,
+) -> None:
+    if field not in result:
+        return
+    value = result[field]
+    if allow_none and value is None:
+        return
+    if not isinstance(value, expected) or (expected is int and isinstance(value, bool)):
+        raise WorkerProtocolError(f"worker {method} {field} must be {expected.__name__}")
+
+
+def _require_string_list(result: dict[str, Any], field: str, method: str) -> None:
+    value = result.get(field, [])
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise WorkerProtocolError(f"worker {method} {field} must be a string array")
 
 
 def _object_value(raw: object) -> dict[str, object]:

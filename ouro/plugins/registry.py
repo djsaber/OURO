@@ -60,6 +60,7 @@ class PluginCommand:
     timeout_seconds: float = 5.0
     owner: str | None = None
     generation_id: str | None = None
+    execution_contract_hash: str | None = None
     allow_session_inputs: bool = False
 
     @property
@@ -79,11 +80,20 @@ class PluginCommandRegistry:
 
     def __init__(self) -> None:
         self._commands: dict[str, PluginCommand] = {}
+        self._frozen = False
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("plugin command registry structure is frozen")
 
     def register(self, command: PluginCommand) -> None:
         self.register_many((command,))
 
     def register_many(self, commands: tuple[PluginCommand, ...]) -> None:
+        self._require_mutable()
         updated = dict(self._commands)
         for command in commands:
             if not command.plugin_id:
@@ -100,6 +110,7 @@ class PluginCommandRegistry:
         self._commands = updated
 
     def replace_owner(self, owner: str, commands: tuple[PluginCommand, ...]) -> None:
+        self._require_mutable()
         updated = {
             identity: command
             for identity, command in self._commands.items()
@@ -130,6 +141,7 @@ class PluginCommandRegistry:
         return dict(self._commands)
 
     def restore(self, snapshot: dict[str, PluginCommand]) -> None:
+        self._require_mutable()
         self._commands = dict(snapshot)
 
     def get(self, command_id: str) -> PluginCommand:
@@ -187,8 +199,10 @@ class PluginCommandRegistry:
             )
         if not result.session_inputs:
             return result
-        if command.generation_id is None:
-            raise PluginCommandError(f"plugin command has no active generation: {command_id}")
+        if command.generation_id is None or command.execution_contract_hash is None:
+            raise PluginCommandError(
+                f"plugin command has no active execution contract: {command_id}"
+            )
         return result.model_copy(
             update={
                 "attributed_session_inputs": [
@@ -199,6 +213,7 @@ class PluginCommandRegistry:
                         plugin_id=command.plugin_id,
                         contribution_id=command.name,
                         generation_id=command.generation_id,
+                        execution_contract_hash=command.execution_contract_hash,
                     )
                     for item in result.session_inputs
                 ]

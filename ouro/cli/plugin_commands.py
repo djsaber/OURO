@@ -32,6 +32,16 @@ def _run_plugin_command(args) -> int:
     command = args.plugin_command
     home = resolve_local_home(args.home)
     service = build_local_plugin_service(home)
+    if command == "scaffold":
+        return _emit(
+            service.scaffold(
+                args.destination,
+                plugin_id=args.plugin_id,
+                name=args.name,
+                namespace=args.namespace,
+            ),
+            json_mode=args.json,
+        )
     if command == "validate":
         validation = service.validate(args.source, ref=args.ref, subdirectory=args.subdirectory)
         return _emit(validation, json_mode=args.json)
@@ -48,7 +58,6 @@ def _run_plugin_command(args) -> int:
             args.source,
             ref=args.ref,
             subdirectory=args.subdirectory,
-            scope=args.scope,
             request_id=args.request_id,
             preview=args.preview,
         )
@@ -122,6 +131,20 @@ def _run_plugin_command(args) -> int:
                 args.source,
                 ref=args.ref,
                 subdirectory=args.subdirectory,
+                request_id=args.request_id,
+                json_mode=args.json,
+            )
+        )
+    if command == "reload":
+        return asyncio.run(
+            _reload_command(
+                home,
+                args.plugin_id,
+                args.source,
+                ref=args.ref,
+                subdirectory=args.subdirectory,
+                authorize=args.authorize,
+                trust_code=args.trust_code,
                 request_id=args.request_id,
                 json_mode=args.json,
             )
@@ -273,6 +296,31 @@ async def _rollback_command(
 ) -> int:
     async with _plugin_session(home, quiet=json_mode) as service:
         result = await service.rollback(plugin_id, digest)
+    return _emit(result, json_mode=json_mode)
+
+
+async def _reload_command(
+    home: Path,
+    plugin_id: str,
+    source: str | Path,
+    *,
+    ref: str | None,
+    subdirectory: str | None,
+    authorize: bool,
+    trust_code: bool,
+    request_id: str | None,
+    json_mode: bool,
+) -> int:
+    async with _plugin_session(home, quiet=json_mode) as service:
+        result = await service.reload(
+            plugin_id,
+            source,
+            ref=ref,
+            subdirectory=subdirectory,
+            authorize=authorize,
+            trust_code=trust_code,
+            request_id=request_id,
+        )
     return _emit(result, json_mode=json_mode)
 
 

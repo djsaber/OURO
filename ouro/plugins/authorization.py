@@ -7,13 +7,12 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.manifest import PluginManifest, PluginStatus
 from ouro.plugins.models import (
     CapabilityGrant,
     CodeTrustGrant,
     InstalledPlugin,
     PluginActivationState,
-    PluginScope,
 )
 from ouro.plugins.package import resolve_manifest_path
 
@@ -52,13 +51,10 @@ def permission_request_fingerprint(manifest: PluginManifest) -> str:
 
 def create_capability_grant(
     installed: InstalledPlugin,
-    *,
-    scope: PluginScope,
 ) -> CapabilityGrant:
     manifest = installed.manifest
     return CapabilityGrant(
         plugin_id=installed.plugin_id,
-        scope=scope,
         permission_fingerprint=permission_fingerprint(manifest),
         contribution_fingerprint=contribution_fingerprint(manifest),
         runtime_kind=manifest.runtime.kind,
@@ -67,12 +63,9 @@ def create_capability_grant(
 
 def create_code_trust_grant(
     installed: InstalledPlugin,
-    *,
-    scope: PluginScope,
 ) -> CodeTrustGrant:
     return CodeTrustGrant(
         plugin_id=installed.plugin_id,
-        scope=scope,
         package_digest=installed.package_digest,
         runtime_kind=installed.manifest.runtime.kind,
     )
@@ -86,7 +79,6 @@ def capability_grant_is_valid(
         return not _requires_capability_grant(installed.manifest)
     return any(
         grant.plugin_id == installed.plugin_id
-        and grant.scope == activation.scope
         and grant.permission_fingerprint == permission_fingerprint(installed.manifest)
         and grant.contribution_fingerprint == contribution_fingerprint(installed.manifest)
         and grant.runtime_kind == installed.manifest.runtime.kind
@@ -103,7 +95,6 @@ def code_trust_is_valid(
     for grant in activation.code_trust_grants:
         if (
             grant.plugin_id == installed.plugin_id
-            and grant.scope == activation.scope
             and grant.runtime_kind == installed.manifest.runtime.kind
             and grant.package_digest == installed.package_digest
         ):
@@ -111,10 +102,24 @@ def code_trust_is_valid(
     return False
 
 
+def plugin_install_readiness(
+    installed: InstalledPlugin,
+    activation: PluginActivationState,
+    package_root: Path,
+) -> PluginStatus:
+    """Project readiness for one installed digest without activation intent."""
+
+    if configuration_errors(installed, activation, package_root):
+        return "needs_configuration"
+    if not code_trust_is_valid(installed, activation):
+        return "needs_code_trust"
+    if not capability_grant_is_valid(installed, activation):
+        return "needs_authorization"
+    return "ready"
+
+
 def requires_code_trust(manifest: PluginManifest) -> bool:
-    if manifest.runtime.kind != "declarative":
-        return True
-    return any(item.auto_start for item in manifest.contributes.mcp_servers)
+    return manifest.runtime.kind != "declarative"
 
 
 def configuration_errors(
@@ -126,7 +131,12 @@ def configuration_errors(
     if binding_errors:
         return binding_errors
     specification = installed.manifest.configuration
+    configuration = activation.configuration_for(installed.package_digest)
+    if configuration is None:
+        return ["plugin has no configuration revision for the selected package"]
     if specification is None:
+        if configuration.schema_version is not None or configuration.values:
+            return ["plugin without a configuration schema requires an empty configuration"]
         return []
     schema_path = resolve_manifest_path(
         package_root,
@@ -138,7 +148,6 @@ def configuration_errors(
         validator = Draft202012Validator(raw)
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
         return [f"invalid plugin configuration schema: {type(exc).__name__}"]
-    configuration = activation.configuration_for(installed.package_digest)
     if configuration.schema_version != specification.version:
         return ["plugin configuration schema version does not match the selected package"]
     return [error.message for error in validator.iter_errors(configuration.values)]
@@ -158,6 +167,8 @@ def _credential_binding_errors(
     activation: PluginActivationState,
 ) -> list[str]:
     configuration = activation.configuration_for(installed.package_digest)
+    if configuration is None:
+        return ["plugin has no configuration revision for the selected package"]
     declared = declared_credential_slots(installed.manifest)
     errors: list[str] = []
     for slot, reference in configuration.credential_refs.items():

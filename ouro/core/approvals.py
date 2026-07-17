@@ -18,6 +18,7 @@ class ApprovalRecord(OuroModel):
     session_id: str
     run_id: str
     tool_call_id: str
+    execution_contract_hash: str | None = None
     status: ApprovalStatus = "requested"
     requested_at: datetime = Field(default_factory=utc_now)
     resolved_at: datetime | None = None

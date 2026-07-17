@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Mapping
 from pathlib import Path
 
 from ouro.application.plugin_models import (
@@ -12,6 +13,7 @@ from ouro.application.plugin_models import (
     PluginDetail,
     PluginInstallView,
     PluginProvenanceView,
+    PluginScaffoldView,
     PluginSummary,
     PluginValidationView,
 )
@@ -22,9 +24,15 @@ from ouro.plugins.authorization import (
     configuration_errors,
     create_capability_grant,
     create_code_trust_grant,
+    plugin_install_readiness,
 )
 from ouro.plugins.compatibility import inspect_community_package
-from ouro.plugins.dependencies import active_dependents, resolve_plugin_dependencies
+from ouro.plugins.dependencies import (
+    BuiltinPluginContract,
+    active_dependents,
+    desired_dependant_closure,
+    resolve_plugin_dependencies,
+)
 from ouro.plugins.installer import PluginInstaller
 from ouro.plugins.manifest import PluginStatus
 from ouro.plugins.models import (
@@ -32,12 +40,12 @@ from ouro.plugins.models import (
     PluginAuditEvent,
     PluginDiagnostic,
     PluginRecord,
-    PluginScope,
     PluginStateDocument,
+    create_configuration_revision,
 )
 from ouro.plugins.package import PluginPackageError
-from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
+from ouro.plugins.scaffold import create_plugin_scaffold
 from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import SessionStore
 
@@ -54,13 +62,18 @@ class PluginService:
         store: PluginPackageStore,
         *,
         runtime: PluginRuntimeResource | None = None,
-        commands: PluginCommandRegistry | None = None,
         session_store: SessionStore | None = None,
+        builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
     ) -> None:
         self.store = store
-        self.installer = PluginInstaller(store)
+        self.builtin_contracts = dict(builtin_contracts or {})
+        if runtime is not None and runtime.builtin_contracts != self.builtin_contracts:
+            raise ValueError("plugin service and runtime builtin contracts must match")
+        self.installer = PluginInstaller(
+            store,
+            builtin_plugin_ids=self.builtin_contracts.keys(),
+        )
         self.runtime = runtime
-        self.commands = commands
         self.session_store = session_store
 
     def validate(
@@ -99,13 +112,38 @@ class PluginService:
             total_bytes=package.total_bytes,
         )
 
+    def scaffold(
+        self,
+        destination: str | Path,
+        *,
+        plugin_id: str,
+        name: str,
+        namespace: str | None = None,
+    ) -> PluginScaffoldView:
+        result = create_plugin_scaffold(
+            destination,
+            plugin_id=plugin_id,
+            name=name,
+            namespace=namespace,
+        )
+        manifest = result.package.manifest
+        return PluginScaffoldView(
+            root=str(result.root),
+            plugin_id=manifest.plugin_id,
+            name=manifest.name,
+            version=manifest.version,
+            namespace=manifest.namespace,
+            runtime_kind=manifest.runtime.kind,
+            package_digest=result.package.package_digest,
+            files=list(result.files),
+        )
+
     def install(
         self,
         source: str | Path,
         *,
         ref: str | None = None,
         subdirectory: str | None = None,
-        scope: PluginScope = "user",
         request_id: str | None = None,
         preview: bool = False,
     ) -> PluginActionResult | PluginValidationView:
@@ -115,7 +153,6 @@ class PluginService:
             source,
             ref=ref,
             subdirectory=subdirectory,
-            scope=scope,
             request_id=request_id,
         )
         return PluginActionResult(
@@ -174,16 +211,19 @@ class PluginService:
         return self.runtime.diagnostics(plugin_id) if self.runtime is not None else []
 
     def list_commands(self) -> builtins.list[PluginCommandView]:
-        registry = self._require_commands()
-        return [
-            PluginCommandView(
-                command_id=item.command_id,
-                plugin_id=item.plugin_id,
-                name=item.name,
-                description=item.description,
-            )
-            for item in registry.list()
-        ]
+        snapshot = self._require_runtime().snapshot()
+        try:
+            return [
+                PluginCommandView(
+                    command_id=item.command_id,
+                    plugin_id=item.plugin_id,
+                    name=item.name,
+                    description=item.description,
+                )
+                for item in snapshot.commands.list()
+            ]
+        finally:
+            snapshot.close()
 
     async def execute_command(
         self,
@@ -193,14 +233,10 @@ class PluginService:
         session_id: str | None = None,
         workspace: str | None = None,
     ) -> PluginCommandExecutionView:
-        registry = self._require_commands()
-        command = registry.get(command_id)
         runtime = self._require_runtime()
         snapshot = runtime.snapshot()
         try:
-            if not any(item.plugin_id == command.plugin_id for item in snapshot.generations):
-                raise RuntimeError(f"plugin command owner is not active: {command.plugin_id}")
-            result = await registry.execute(
+            result = await snapshot.commands.execute(
                 command_id,
                 argument,
                 session_id=session_id,
@@ -227,18 +263,26 @@ class PluginService:
 
     def import_compatibility(self, source: str | Path) -> CompatibilityReportView:
         report = inspect_community_package(source)
+        outcome_counts = {
+            outcome: sum(item.outcome == outcome for item in report.items)
+            for outcome in ("supported", "converted", "ignored", "incompatible")
+        }
         return CompatibilityReportView(
             source_format=report.source_format,
             source_version=report.source_version,
+            detected_resources=report.detected_resources,
             items=[
                 CompatibilityItemView(
                     kind=item.kind,
                     identity=item.identity,
                     outcome=item.outcome,
                     reason=item.reason,
+                    ouro_target=item.ouro_target,
                 )
                 for item in report.items
             ],
+            outcome_counts=outcome_counts,
+            lost_semantics=report.lost_semantics,
             security_differences=report.security_differences,
             required_permissions=report.required_permissions,
             suggested_target=report.suggested_target,
@@ -254,7 +298,7 @@ class PluginService:
     ) -> PluginActionResult:
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
-        grant = create_capability_grant(installed, scope=record.activation.scope)
+        grant = create_capability_grant(installed)
         if preview:
             return PluginActionResult(
                 action="authorize",
@@ -273,7 +317,6 @@ class PluginService:
                     item.permission_fingerprint == grant.permission_fingerprint
                     and item.contribution_fingerprint == grant.contribution_fingerprint
                     and item.runtime_kind == grant.runtime_kind
-                    and item.scope == grant.scope
                 )
             ]
             activation.capability_grants.append(grant)
@@ -293,7 +336,7 @@ class PluginService:
     ) -> PluginActionResult:
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
-        grant = create_code_trust_grant(installed, scope=record.activation.scope)
+        grant = create_code_trust_grant(installed)
         if preview:
             return PluginActionResult(
                 action="trust_code",
@@ -320,22 +363,31 @@ class PluginService:
         code_trust: bool = False,
         request_id: str | None = None,
     ) -> PluginActionResult:
-        record = self._record(plugin_id)
+        expected = self.store.read_state()
+        record = _state_plugin_record(expected, plugin_id)
         installed = _require_selected(record)
-        if self.runtime is not None and self.runtime.status(plugin_id) == "active":
-            # Security revocation removes registry projections before waiting
-            # for in-flight generation leases to drain.
-            await self.runtime.suspend(plugin_id, revoke=True)
-
-        def update(state: PluginStateDocument) -> PluginStateDocument:
-            activation = state.plugins[plugin_id].activation
-            if code_trust:
-                activation.code_trust_grants = []
-            else:
-                activation.capability_grants = []
-            return state
-
-        self.store.mutate_state(update)
+        candidate = expected.model_copy(deep=True)
+        activation = candidate.plugins[plugin_id].activation
+        if code_trust:
+            activation.code_trust_grants = []
+        else:
+            activation.capability_grants = []
+        if self.runtime is not None and self.runtime.status(plugin_id) in {
+            "active",
+            "degraded",
+        }:
+            affected = desired_dependant_closure(candidate, {plugin_id})
+            await self.runtime.apply_candidate_state(
+                expected=expected,
+                candidate=candidate,
+                roots={plugin_id},
+                reason="revoke",
+                cascade_dependants=False,
+                remove_ids=affected,
+                close_gate_ids=affected,
+            )
+        else:
+            self.store.commit_candidate_state(expected, candidate)
         self._audit("revoke_code_trust" if code_trust else "revoke", installed, request_id)
         return self._action("revoke", plugin_id, installed.package_digest)
 
@@ -349,25 +401,32 @@ class PluginService:
         request_id: str | None = None,
         preview: bool = False,
     ) -> PluginActionResult:
-        record = self._record(plugin_id)
+        expected = self.store.read_state()
+        record = _state_plugin_record(expected, plugin_id)
         installed = _select_install(record, package_digest)
-        previous_configuration = record.activation.configuration_for(
-            installed.package_digest
-        ).model_copy(deep=True)
-        candidate = record.activation.model_copy(deep=True)
-        configuration = candidate.configuration_for(installed.package_digest).model_copy(deep=True)
-        configuration.values = dict(values)
-        if installed.manifest.configuration is not None:
-            configuration.schema_version = installed.manifest.configuration.version
-        if credential_refs is not None:
-            if any(not reference.startswith("env:") for reference in credential_refs.values()):
-                raise ValueError("plugin credential bindings must use env: references")
-            configuration.credential_refs = dict(credential_refs)
-        candidate.configurations[installed.package_digest] = configuration
-        candidate.configuration = configuration
+        previous_configuration = record.activation.configuration_for(installed.package_digest)
+        if previous_configuration is None:
+            raise PluginPackageError("plugin has no configuration revision for this digest")
+        candidate_activation = record.activation.model_copy(deep=True)
+        next_credential_refs = (
+            previous_configuration.credential_refs if credential_refs is None else credential_refs
+        )
+        if any(not reference.startswith("env:") for reference in next_credential_refs.values()):
+            raise ValueError("plugin credential bindings must use env: references")
+        specification = installed.manifest.configuration
+        configuration = create_configuration_revision(
+            values=values,
+            credential_refs=dict(next_credential_refs),
+            schema_version=specification.version if specification is not None else None,
+        )
+        candidate_activation.set_configuration(
+            installed.package_digest,
+            configuration,
+            activate=candidate_activation.selected_digest == installed.package_digest,
+        )
         errors = configuration_errors(
             installed,
-            candidate,
+            candidate_activation,
             self.store.package_path(plugin_id, installed.package_digest),
         )
         if errors:
@@ -380,59 +439,24 @@ class PluginService:
                 changed=False,
                 package_digest=installed.package_digest,
             )
-        was_active = (
+        rebuild_active = (
             record.activation.selected_digest == installed.package_digest
             and self.runtime is not None
-            and self.runtime.status(plugin_id) == "active"
+            and self.runtime.status(plugin_id) in {"active", "degraded"}
         )
-        if was_active:
-            self._reject_durable_references(
-                plugin_id,
-                installed.package_digest,
-                action="reconfigure",
-            )
-
-        def update(state: PluginStateDocument) -> PluginStateDocument:
-            activation = state.plugins[plugin_id].activation
-            current = activation.configuration_for(installed.package_digest)
-            if current != previous_configuration:
-                raise ValueError(
-                    "plugin configuration conflict: configuration changed concurrently"
-                )
-            activation.configurations[installed.package_digest] = configuration
-            if activation.selected_digest == installed.package_digest:
-                activation.configuration = configuration
-            return state
-
-        self.store.mutate_state(update)
-        self._audit("configure", installed, request_id)
-        if was_active:
+        candidate = expected.model_copy(deep=True)
+        candidate.plugins[plugin_id].activation = candidate_activation
+        if rebuild_active:
             assert self.runtime is not None
-            status = await self.runtime.restart(plugin_id)
-            if status != "active":
-
-                def restore(state: PluginStateDocument) -> PluginStateDocument:
-                    activation = state.plugins[plugin_id].activation
-                    current = activation.configuration_for(installed.package_digest)
-                    if current != configuration:
-                        raise ValueError(
-                            "plugin configuration changed while restoring failed activation"
-                        )
-                    activation.configurations[installed.package_digest] = previous_configuration
-                    if activation.selected_digest == installed.package_digest:
-                        activation.configuration = previous_configuration
-                    return state
-
-                self.store.mutate_state(restore)
-                restored = await self.runtime.activate(plugin_id)
-                if restored != "active":
-                    raise RuntimeError(
-                        "plugin configuration activation failed and the previous "
-                        "generation could not be restored"
-                    )
-                raise RuntimeError(
-                    "plugin configuration activation failed; the previous generation was restored"
-                )
+            await self.runtime.apply_candidate_state(
+                expected=expected,
+                candidate=candidate,
+                roots={plugin_id},
+                reason="configure",
+            )
+        else:
+            self.store.commit_candidate_state(expected, candidate)
+        self._audit("configure", installed, request_id)
         return self._action("configure", plugin_id, installed.package_digest)
 
     async def select(
@@ -442,17 +466,11 @@ class PluginService:
         *,
         expected_digest: str | None = None,
     ) -> PluginActionResult:
-        record = self._record(plugin_id)
+        expected = self.store.read_state()
+        record = _state_plugin_record(expected, plugin_id)
         installed = _select_install(record, package_digest)
         previous_digest = record.activation.selected_digest
         changed = record.activation.selected_digest != package_digest
-        was_active = self.runtime is not None and self.runtime.status(plugin_id) == "active"
-        if changed and previous_digest is not None:
-            self._reject_durable_references(
-                plugin_id,
-                previous_digest,
-                action="replace",
-            )
         if record.activation.desired_enabled and self.runtime is None:
             raise RuntimeError(
                 "cannot change the selected digest of an enabled plugin without its runtime"
@@ -466,51 +484,36 @@ class PluginService:
             if not capability_grant_is_valid(installed, record.activation):
                 raise PermissionError("selected plugin digest needs capability authorization")
 
-        def update(state: PluginStateDocument) -> PluginStateDocument:
-            activation = state.plugins[plugin_id].activation
-            expected = expected_digest if expected_digest is not None else previous_digest
-            if activation.selected_digest != expected:
-                raise ValueError(
-                    f"plugin selection conflict: expected {expected}, "
-                    f"found {activation.selected_digest}"
-                )
-            activation.selected_digest = package_digest
-            activation.configuration = activation.configuration_for(package_digest)
-            if activation.desired_enabled:
-                # Selection is the lockfile mutation boundary.  Validate the
-                # complete desired graph before committing bytes that could
-                # invalidate an already active dependant.
-                resolve_plugin_dependencies(state)
-            return state
-
-        self.store.mutate_state(update)
-        if was_active and changed:
+        selected_expected = expected_digest if expected_digest is not None else previous_digest
+        if previous_digest != selected_expected:
+            raise ValueError(
+                f"plugin selection conflict: expected {selected_expected}, found {previous_digest}"
+            )
+        if not changed:
+            return self._action("select", plugin_id, installed.package_digest)
+        candidate = expected.model_copy(deep=True)
+        activation = candidate.plugins[plugin_id].activation
+        activation.selected_digest = package_digest
+        configuration = activation.configuration_for(package_digest)
+        if configuration is None:
+            raise ValueError("selected plugin digest has no configuration revision")
+        activation.active_configuration_revision_id = configuration.revision_id
+        if activation.desired_enabled:
+            affected = desired_dependant_closure(candidate, {plugin_id})
+            resolve_plugin_dependencies(
+                candidate,
+                roots=affected,
+                builtin_contracts=self.builtin_contracts,
+            )
             assert self.runtime is not None
-            status = await self.runtime.activate(plugin_id)
-            if status != "active":
-                assert previous_digest is not None
-
-                def restore(state: PluginStateDocument) -> PluginStateDocument:
-                    activation = state.plugins[plugin_id].activation
-                    if activation.selected_digest != package_digest:
-                        raise ValueError(
-                            "plugin selection changed while restoring a failed generation"
-                        )
-                    activation.selected_digest = previous_digest
-                    activation.configuration = activation.configuration_for(previous_digest)
-                    resolve_plugin_dependencies(state)
-                    return state
-
-                self.store.mutate_state(restore)
-                restored = await self.runtime.activate(plugin_id)
-                if restored != "active":
-                    raise RuntimeError(
-                        "plugin generation activation failed and the previous generation "
-                        "could not be restored"
-                    )
-                raise RuntimeError(
-                    "plugin generation activation failed; the previous generation was restored"
-                )
+            await self.runtime.apply_candidate_state(
+                expected=expected,
+                candidate=candidate,
+                roots={plugin_id},
+                reason="select",
+            )
+        else:
+            self.store.commit_candidate_state(expected, candidate)
         return self._action("select", plugin_id, installed.package_digest)
 
     async def enable(self, plugin_id: str) -> PluginActionResult:
@@ -520,26 +523,11 @@ class PluginService:
 
     async def disable(self, plugin_id: str) -> PluginActionResult:
         runtime = self._require_runtime()
-        record = self._record(plugin_id)
-        installed = _require_selected(record)
-        if runtime.status(plugin_id) == "active":
-            self._reject_durable_references(
-                plugin_id,
-                installed.package_digest,
-                action="disable",
-            )
         status = await runtime.disable(plugin_id)
         return PluginActionResult(action="disable", plugin_id=plugin_id, status=status)
 
     async def restart(self, plugin_id: str) -> PluginActionResult:
         runtime = self._require_runtime()
-        installed = _require_selected(self._record(plugin_id))
-        if runtime.status(plugin_id) == "active":
-            self._reject_durable_references(
-                plugin_id,
-                installed.package_digest,
-                action="restart",
-            )
         status = await runtime.restart(plugin_id)
         return PluginActionResult(action="restart", plugin_id=plugin_id, status=status)
 
@@ -552,12 +540,11 @@ class PluginService:
         subdirectory: str | None = None,
         request_id: str | None = None,
     ) -> PluginActionResult:
-        current = _require_selected(self._record(plugin_id))
+        _require_selected(self._record(plugin_id))
         result = self.installer.install(
             source,
             ref=ref,
             subdirectory=subdirectory,
-            scope=current.provenance.scope,
             request_id=request_id,
             expected_plugin_id=plugin_id,
         )
@@ -567,6 +554,81 @@ class PluginService:
             status=self._status(self._record(plugin_id)),
             package_digest=result.installed.package_digest,
             diagnostics=list(result.diagnostics),
+        )
+
+    async def reload(
+        self,
+        plugin_id: str,
+        source: str | Path,
+        *,
+        ref: str | None = None,
+        subdirectory: str | None = None,
+        authorize: bool = False,
+        trust_code: bool = False,
+        request_id: str | None = None,
+    ) -> PluginActionResult:
+        """Install local development bytes and atomically select them when ready."""
+
+        before = self._record(plugin_id)
+        previous_digest = before.activation.selected_digest
+        desired_enabled = before.activation.desired_enabled
+        installed_result = self.installer.install(
+            source,
+            ref=ref,
+            subdirectory=subdirectory,
+            request_id=request_id,
+            expected_plugin_id=plugin_id,
+        )
+        installed = installed_result.installed
+        if authorize:
+            self.authorize(
+                plugin_id,
+                package_digest=installed.package_digest,
+                request_id=request_id,
+            )
+        if trust_code:
+            self.trust_code(
+                plugin_id,
+                package_digest=installed.package_digest,
+                request_id=request_id,
+            )
+        record = self._record(plugin_id)
+        candidate_status = self._install_readiness(record, installed)
+        if desired_enabled and candidate_status != "ready":
+            return PluginActionResult(
+                action="reload",
+                plugin_id=plugin_id,
+                status=candidate_status,
+                changed=not installed_result.already_installed,
+                package_digest=installed.package_digest,
+                diagnostics=[
+                    PluginDiagnostic(
+                        code="plugin_reload_candidate_not_ready",
+                        phase="reload",
+                        severity="warning",
+                        message=f"plugin reload candidate is {candidate_status}",
+                        plugin_id=plugin_id,
+                        version=installed.version,
+                        package_digest=installed.package_digest,
+                        suggested_action=(
+                            "Configure or explicitly grant the candidate, then reload again."
+                        ),
+                    )
+                ],
+            )
+        selected = await self.select(plugin_id, installed.package_digest)
+        if desired_enabled and previous_digest == installed.package_digest:
+            selected = await self.restart(plugin_id)
+        return PluginActionResult(
+            action="reload",
+            plugin_id=plugin_id,
+            status=selected.status,
+            changed=(
+                not installed_result.already_installed
+                or previous_digest != installed.package_digest
+            ),
+            package_digest=installed.package_digest,
+            diagnostics=list(installed_result.diagnostics),
         )
 
     async def rollback(self, plugin_id: str, package_digest: str) -> PluginActionResult:
@@ -685,7 +747,7 @@ class PluginService:
             status=self._status(record),
             runtime_kind=installed.manifest.runtime.kind,
             desired_enabled=record.activation.desired_enabled,
-            scope=record.activation.scope,
+            plugin_class="user",
         )
 
     def _status(self, record: PluginRecord) -> PluginStatus:
@@ -697,13 +759,15 @@ class PluginService:
         if not record.activation.desired_enabled:
             return "disabled"
         package_root = self.store.package_path(record.plugin_id, installed.package_digest)
-        if configuration_errors(installed, record.activation, package_root):
-            return "needs_configuration"
-        if not code_trust_is_valid(installed, record.activation):
-            return "needs_code_trust"
-        if not capability_grant_is_valid(installed, record.activation):
-            return "needs_authorization"
-        return "ready"
+        return plugin_install_readiness(installed, record.activation, package_root)
+
+    def _install_readiness(
+        self,
+        record: PluginRecord,
+        installed: InstalledPlugin,
+    ) -> PluginStatus:
+        package_root = self.store.package_path(record.plugin_id, installed.package_digest)
+        return plugin_install_readiness(installed, record.activation, package_root)
 
     def _record(self, plugin_id: str) -> PluginRecord:
         try:
@@ -719,7 +783,7 @@ class PluginService:
             version=installed.version,
             package_digest=installed.package_digest,
             runtime_kind=installed.manifest.runtime.kind,
-            scope=provenance.scope,
+            plugin_class="user",
             selected=record.activation.selected_digest == installed.package_digest,
             provenance=PluginProvenanceView(
                 source_kind=provenance.source_kind,
@@ -756,11 +820,6 @@ class PluginService:
             raise RuntimeError("plugin runtime lifecycle is unavailable")
         return self.runtime
 
-    def _require_commands(self) -> PluginCommandRegistry:
-        if self.commands is None:
-            raise RuntimeError("plugin command registry is unavailable")
-        return self.commands
-
     def _durable_references(
         self,
         plugin_id: str,
@@ -770,7 +829,7 @@ class PluginService:
             return []
         references: builtins.list[str] = []
         for session in self.session_store.list_sessions():
-            # Only Run records carry generation references; Session journals
+            # Only Run records carry execution-contract references; Session journals
             # are never read here.
             for run in self.session_store.load_runs(session.session_id):
                 if run.status not in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES:
@@ -797,7 +856,7 @@ class PluginService:
         references = self._durable_references(plugin_id, package_digest)
         if references:
             raise ValueError(
-                f"cannot {action} plugin generation retained by active durable runs: "
+                f"cannot {action} plugin contract retained by active durable runs: "
                 + ", ".join(references)
             )
 
@@ -807,6 +866,13 @@ def _require_selected(record: PluginRecord) -> InstalledPlugin:
     if installed is None:
         raise ValueError(f"plugin has no selected install: {record.plugin_id}")
     return installed
+
+
+def _state_plugin_record(state: PluginStateDocument, plugin_id: str) -> PluginRecord:
+    try:
+        return state.plugins[plugin_id]
+    except KeyError as exc:
+        raise KeyError(f"plugin is not installed: {plugin_id}") from exc
 
 
 def _select_install(record: PluginRecord, digest: str | None) -> InstalledPlugin:

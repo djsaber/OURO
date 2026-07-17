@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import importlib.util
 import inspect
 import logging
 import os
 import shutil
 import sys
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
+from typing import Any
 from uuid import uuid4
 
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
@@ -40,13 +42,54 @@ from ouro.tools import Tool, ToolDefinition, ToolExecutionContext, ToolInvocatio
 
 
 class ScopedPluginDataStore:
-    def __init__(self, root: Path) -> None:
+    """Private data view whose candidate writes stay staged until publication."""
+
+    def __init__(self, root: Path, *, staged: bool = False) -> None:
         self.root = root
+        self._staged = staged
+        self._changes: dict[str, bytes | None] = {}
 
     def read_bytes(self, relative_path: str) -> bytes:
+        key = portable_relative_path(relative_path).as_posix()
+        if key in self._changes:
+            value = self._changes[key]
+            if value is None:
+                raise FileNotFoundError(relative_path)
+            return value
         return self._path(relative_path).read_bytes()
 
     def write_bytes(self, relative_path: str, value: bytes) -> None:
+        if self._staged:
+            key = portable_relative_path(relative_path).as_posix()
+            self._changes[key] = bytes(value)
+            return
+        self._write(relative_path, value)
+
+    def delete(self, relative_path: str) -> None:
+        if self._staged:
+            key = portable_relative_path(relative_path).as_posix()
+            self._changes[key] = None
+            return
+        path = self._path(relative_path)
+        if path.exists():
+            path.unlink()
+
+    def activate(self) -> None:
+        if not self._staged:
+            return
+        changes = dict(self._changes)
+        self._changes.clear()
+        self._staged = False
+        for relative_path, value in changes.items():
+            if value is None:
+                self.delete(relative_path)
+            else:
+                self._write(relative_path, value)
+
+    def discard(self) -> None:
+        self._changes.clear()
+
+    def _write(self, relative_path: str, value: bytes) -> None:
         path = self._path(relative_path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -59,11 +102,6 @@ class ScopedPluginDataStore:
         finally:
             if temporary.exists():
                 temporary.unlink()
-
-    def delete(self, relative_path: str) -> None:
-        path = self._path(relative_path)
-        if path.exists():
-            path.unlink()
 
     def _path(self, value: str) -> Path:
         relative = portable_relative_path(value)
@@ -98,10 +136,18 @@ class BoundCredentialResolver:
 
 
 class OwnedTaskGroup:
-    def __init__(self, on_failure: Callable[[Exception], None] | None = None) -> None:
+    def __init__(
+        self,
+        on_failure: Callable[[Exception], None] | None = None,
+        *,
+        active: bool = True,
+    ) -> None:
         self._tasks: set[asyncio.Task[object]] = set()
         self._closed = False
         self._on_failure = on_failure
+        self._activated = asyncio.Event()
+        if active:
+            self._activated.set()
 
     def start(self, coroutine: Awaitable[object], *, name: str | None = None) -> None:
         if self._closed:
@@ -110,11 +156,17 @@ class OwnedTaskGroup:
             raise RuntimeError("plugin task group is closed")
 
         async def run() -> object:
+            await self._activated.wait()
             return await coroutine
 
         task: asyncio.Task[object] = asyncio.create_task(run(), name=name)
         self._tasks.add(task)
         task.add_done_callback(self._task_finished)
+
+    def activate(self) -> None:
+        if self._closed:
+            raise RuntimeError("plugin task group is closed")
+        self._activated.set()
 
     def _task_finished(self, task: asyncio.Task[object]) -> None:
         self._tasks.discard(task)
@@ -226,19 +278,34 @@ class LoadedPluginModule:
 def load_plugin_factory(
     package_root: Path,
     entrypoint: str,
+    *,
+    module_namespace: str,
+    generation_id: str,
 ) -> tuple[Callable[[sdk.PluginContext], object], LoadedPluginModule]:
     module_name, _, factory_name = entrypoint.partition(":")
     top_level = module_name.partition(".")[0]
+    if top_level != module_namespace:
+        raise RuntimeError(
+            "plugin entrypoint escaped its owned top-level module: "
+            f"{top_level} != {module_namespace}"
+        )
     existing = sys.modules.get(top_level)
-    if existing is not None and not _module_belongs_to(existing, package_root):
+    if existing is not None:
         raise RuntimeError(f"plugin top-level module conflicts with loaded module: {top_level}")
+    private_namespace = f"_ouro_plugin_{generation_id}"
+    if private_namespace in sys.modules:
+        raise RuntimeError(f"plugin generation module is already loaded: {generation_id}")
     before = set(sys.modules)
-    sys.path.insert(0, str(package_root))
     previous_bytecode_setting = sys.dont_write_bytecode
     sys.dont_write_bytecode = True
     try:
         try:
-            module = importlib.import_module(module_name)
+            module = _load_private_plugin_module(
+                package_root,
+                module_name=module_name,
+                module_namespace=module_namespace,
+                private_namespace=private_namespace,
+            )
             if not _module_belongs_to(module, package_root):
                 raise RuntimeError(f"plugin entrypoint resolved outside package: {entrypoint}")
             factory = getattr(module, factory_name, None)
@@ -252,15 +319,56 @@ def load_plugin_factory(
             raise
     finally:
         sys.dont_write_bytecode = previous_bytecode_setting
-        with suppress(ValueError):
-            sys.path.remove(str(package_root))
     imported = {
         name
-        for name in set(sys.modules) - before | {module_name}
+        for name in set(sys.modules) - before
         if (loaded := sys.modules.get(name)) is not None
         and _module_belongs_to(loaded, package_root)
     }
     return factory, LoadedPluginModule(module, package_root, imported)
+
+
+def _load_private_plugin_module(
+    package_root: Path,
+    *,
+    module_name: str,
+    module_namespace: str,
+    private_namespace: str,
+) -> ModuleType:
+    package_directory = package_root / module_namespace
+    package_init = package_directory / "__init__.py"
+    module_file = package_root / f"{module_namespace}.py"
+    suffix = module_name.removeprefix(module_namespace)
+    if package_init.is_file():
+        spec = importlib.util.spec_from_file_location(
+            private_namespace,
+            package_init,
+            submodule_search_locations=[str(package_directory)],
+        )
+        root = _execute_private_module(spec, private_namespace)
+        if not suffix:
+            return root
+        return importlib.import_module(private_namespace + suffix)
+    if suffix:
+        raise RuntimeError("single-file plugin entrypoint cannot name a child module")
+    spec = importlib.util.spec_from_file_location(private_namespace, module_file)
+    return _execute_private_module(spec, private_namespace)
+
+
+def _execute_private_module(
+    spec: importlib.machinery.ModuleSpec | None,
+    module_name: str,
+) -> ModuleType:
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"plugin module cannot be loaded: {module_name}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(module_name, None)
+        raise
+    return module
 
 
 def build_plugin_context(
@@ -274,6 +382,7 @@ def build_plugin_context(
     tasks: OwnedTaskGroup,
     diagnostics: list[PluginDiagnostic],
     redactor: SensitiveValueRedactor,
+    data_store: ScopedPluginDataStore | None = None,
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
         identity=sdk.PluginIdentity(
@@ -287,7 +396,7 @@ def build_plugin_context(
             public_source=installed.provenance.public_source,
         ),
         configuration=MappingProxyType(dict(configuration)),
-        data=ScopedPluginDataStore(data_root / installed.plugin_id),
+        data=data_store or ScopedPluginDataStore(data_root / installed.plugin_id),
         credentials=BoundCredentialResolver(
             credential_bindings,
             credential_resolver,
@@ -301,22 +410,22 @@ def build_plugin_context(
 
 
 def adapt_sdk_contributions(contributions: sdk.ContributionSet) -> PluginContributions:
-    return PluginContributions(
-        tools=[_adapt_tool(item) for item in contributions.tools],
-        hooks=[_adapt_hook(item) for item in contributions.hooks],
-        commands=[_adapt_command(item) for item in contributions.commands],
-        context_providers=[_adapt_context(item) for item in contributions.context_providers],
-        compaction_strategies=[
-            _SDKCompactionStrategy(item) for item in contributions.compaction_strategies
-        ],
-        background_services=[
-            _SDKBackgroundService(item) for item in contributions.background_services
-        ],
-        continuation_policies=[
-            _adapt_continuation_policy(item) for item in contributions.continuation_policies
-        ],
-        tool_policies=[_adapt_tool_policy(item) for item in contributions.tool_policies],
-    )
+    from ouro.plugins.contribution_types import contribution_type_adapters
+
+    adapted = PluginContributions()
+    for contribution_type in contribution_type_adapters():
+        adapter = contribution_type.sdk
+        if adapter is None:
+            continue
+        source = getattr(contributions, adapter.attribute)
+        setattr(adapted, adapter.attribute, [adapter.adapt(item) for item in source])
+    return adapted
+
+
+@dataclass(frozen=True)
+class SDKContributionAdapter:
+    attribute: str
+    adapt: Callable[[Any], Any]
 
 
 def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
@@ -622,6 +731,25 @@ def _adapt_tool_policy(
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
     )
+
+
+TOOL_SDK_ADAPTER = SDKContributionAdapter("tools", _adapt_tool)
+HOOK_SDK_ADAPTER = SDKContributionAdapter("hooks", _adapt_hook)
+COMMAND_SDK_ADAPTER = SDKContributionAdapter("commands", _adapt_command)
+CONTEXT_SDK_ADAPTER = SDKContributionAdapter("context_providers", _adapt_context)
+COMPACTION_SDK_ADAPTER = SDKContributionAdapter(
+    "compaction_strategies",
+    _SDKCompactionStrategy,
+)
+BACKGROUND_SERVICE_SDK_ADAPTER = SDKContributionAdapter(
+    "background_services",
+    _SDKBackgroundService,
+)
+CONTINUATION_SDK_ADAPTER = SDKContributionAdapter(
+    "continuation_policies",
+    _adapt_continuation_policy,
+)
+TOOL_POLICY_SDK_ADAPTER = SDKContributionAdapter("tool_policies", _adapt_tool_policy)
 
 
 def _module_belongs_to(module: ModuleType, package_root: Path) -> bool:

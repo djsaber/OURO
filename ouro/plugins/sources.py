@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import tarfile
@@ -140,13 +141,47 @@ class GitPluginSource:
     url: str
     ref: str | None = None
     subdirectory: str | None = None
+    limits: PackageLimits = PackageLimits()
 
     def materialize(self, destination: Path) -> MaterializedPluginSource:
         repository = destination / "repository"
-        _run_git(["clone", "--no-checkout", "--", self.url, str(repository)])
+        _run_git(["init", str(repository)])
+        _run_git(["-C", str(repository), "remote", "add", "origin", self.url])
         requested_ref = self.ref or "HEAD"
-        _run_git(["-C", str(repository), "checkout", "--detach", requested_ref])
-        commit = _run_git(["-C", str(repository), "rev-parse", "HEAD"]).strip()
+        _run_git(
+            [
+                "-C",
+                str(repository),
+                "-c",
+                "protocol.version=2",
+                "fetch",
+                "--depth=1",
+                "--filter=blob:none",
+                "--no-tags",
+                "origin",
+                requested_ref,
+            ]
+        )
+        commit = _run_git(["-C", str(repository), "rev-parse", "FETCH_HEAD"]).strip()
+        _validate_git_tree(
+            repository,
+            commit,
+            subdirectory=self.subdirectory,
+            limits=self.limits,
+        )
+        if self.subdirectory:
+            _run_git(["-C", str(repository), "sparse-checkout", "init", "--no-cone"])
+            _run_git(
+                [
+                    "-C",
+                    str(repository),
+                    "sparse-checkout",
+                    "set",
+                    "--no-cone",
+                    self.subdirectory,
+                ]
+            )
+        _run_git(["-C", str(repository), "checkout", "--detach", commit])
         source_root = repository
         if self.subdirectory:
             relative = _safe_archive_path(self.subdirectory)
@@ -236,8 +271,51 @@ def _run_git(arguments: list[str]) -> str:
             check=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="strict",
             timeout=120,
+            env={**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_TERMINAL_PROMPT": "0"},
         )
-    except (FileNotFoundError, subprocess.SubprocessError) as exc:
+    except (FileNotFoundError, subprocess.SubprocessError, UnicodeError) as exc:
         raise PluginPackageError(f"Git source resolution failed: {type(exc).__name__}") from exc
     return completed.stdout
+
+
+def _validate_git_tree(
+    repository: Path,
+    commit: str,
+    *,
+    subdirectory: str | None,
+    limits: PackageLimits,
+) -> None:
+    arguments = ["-C", str(repository), "ls-tree", "-r", "-l", "-z", commit]
+    if subdirectory:
+        relative = _safe_archive_path(subdirectory)
+        arguments.extend(["--", relative.as_posix()])
+    raw = _run_git(arguments)
+    entries = [entry for entry in raw.split("\0") if entry]
+    if not entries:
+        raise PluginPackageError("Git plugin source contains no files")
+    if len(entries) > limits.max_files:
+        raise PluginPackageError("Git plugin source exceeds file count limit")
+    total = 0
+    for entry in entries:
+        metadata, separator, path = entry.partition("\t")
+        if not separator:
+            raise PluginPackageError("Git source tree returned an invalid entry")
+        _safe_archive_path(path)
+        parts = metadata.split()
+        if len(parts) != 4 or parts[1] != "blob":
+            raise PluginPackageError(f"Git source contains an unsupported entry: {path}")
+        mode, _kind, _object_id, size_text = parts
+        if mode == "120000":
+            raise PluginPackageError(f"Git source contains a symlink: {path}")
+        try:
+            size = int(size_text)
+        except ValueError as exc:
+            raise PluginPackageError(f"Git source has an unknown file size: {path}") from exc
+        if size > limits.max_file_bytes:
+            raise PluginPackageError(f"Git source file exceeds size limit: {path}")
+        total += size
+        if total > limits.max_total_bytes:
+            raise PluginPackageError("Git plugin source exceeds total size limit")

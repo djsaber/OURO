@@ -10,6 +10,14 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._owners: dict[str, str] = {}
+        self._frozen = False
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("tool registry structure is frozen")
 
     def register(self, tool: Tool) -> None:
         self.replace((), (tool,))
@@ -17,6 +25,7 @@ class ToolRegistry:
     def replace(self, previous_names: Iterable[str], tools: Iterable[Tool]) -> None:
         """Atomically replace a contribution set after validating every tool."""
 
+        self._require_mutable()
         previous = set(previous_names)
         additions = list(tools)
         addition_names = [tool.definition.name for tool in additions]
@@ -41,6 +50,7 @@ class ToolRegistry:
     def replace_owner(self, owner: str, tools: Iterable[Tool]) -> None:
         """Atomically replace every tool owned by one extension generation."""
 
+        self._require_mutable()
         additions = list(tools)
         names = [tool.definition.name for tool in additions]
         if len(names) != len(set(names)):
@@ -70,6 +80,7 @@ class ToolRegistry:
         return dict(self._tools), dict(self._owners)
 
     def restore(self, snapshot: tuple[dict[str, Tool], dict[str, str]]) -> None:
+        self._require_mutable()
         self._tools, self._owners = dict(snapshot[0]), dict(snapshot[1])
 
     def unregister(self, names: Iterable[str]) -> None:

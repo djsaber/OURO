@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-import threading
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
-from typing import Protocol
+from typing import Any, Protocol
 
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
@@ -20,6 +19,10 @@ from ouro.core.continuations import (
 )
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
+from ouro.plugins.contracts import (
+    ContributionContractContext,
+    build_contribution_contract_hashes,
+)
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import InstalledPlugin, PluginGenerationRecord
 from ouro.plugins.registry import (
@@ -29,6 +32,7 @@ from ouro.plugins.registry import (
     bind_plugin_command,
     context_provider_hook,
 )
+from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolRegistry
 
 
@@ -71,13 +75,116 @@ class PreparedContributionSet:
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
+    skills: tuple[SkillMetadata, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     contract_hashes: dict[str, str] = field(default_factory=dict)
+    degraded_reasons: tuple[str, ...] = ()
 
 
 class ContributionValidationError(ValueError):
     pass
+
+
+def bind_execution_contract(
+    prepared: PreparedContributionSet,
+    execution_contract_hash: str,
+) -> PreparedContributionSet:
+    """Attach one stable generation contract to every durable contribution surface."""
+
+    if len(execution_contract_hash) != 64:
+        raise ValueError("execution contract hash must be a SHA-256 digest")
+    plugin_id = prepared.owner.plugin_id
+    tools = tuple(
+        Tool(
+            definition=tool.definition.model_copy(
+                update={
+                    "metadata": {
+                        **tool.definition.metadata,
+                        "execution_contract_hash": execution_contract_hash,
+                    }
+                }
+            ),
+            handler=tool.handler,
+        )
+        for tool in prepared.tools
+    )
+    commands = tuple(
+        replace(command, execution_contract_hash=execution_contract_hash)
+        for command in prepared.commands
+    )
+    continuation_policies = tuple(
+        replace(
+            policy,
+            execution_contract_hash=execution_contract_hash,
+            contract_hash=prepared.contract_hashes[
+                f"{plugin_id}/continuation_policies/{policy.policy_id}"
+            ],
+        )
+        for policy in prepared.continuation_policies
+    )
+    skills = tuple(
+        skill.model_copy(
+            update={
+                "extensions": {
+                    **skill.extensions,
+                    "ouro": {
+                        **dict(skill.extensions.get("ouro", {})),
+                        "execution_contract_hash": execution_contract_hash,
+                    },
+                }
+            }
+        )
+        for skill in prepared.skills
+    )
+    return replace(
+        prepared,
+        tools=tools,
+        commands=commands,
+        continuation_policies=continuation_policies,
+        skills=skills,
+    )
+
+
+@dataclass(frozen=True)
+class _PreparationContext:
+    installed: InstalledPlugin
+    generation: PluginGenerationRecord
+    contributions: PluginContributions
+    owner: ContributionOwner
+    source: PluginSource
+    resource_skills: tuple[SkillMetadata, ...]
+    discovered_tools: tuple[Tool, ...]
+
+
+@dataclass
+class _PreparedBuilder:
+    tools: tuple[Tool, ...] = ()
+    hooks: tuple[HookRegistration, ...] = ()
+    commands: tuple[PluginCommand, ...] = ()
+    compaction_strategies: tuple[CompactionStrategy, ...] = ()
+    background_services: tuple[BackgroundService, ...] = ()
+    skills: tuple[SkillMetadata, ...] = ()
+    continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    tool_policies: tuple[ToolPolicyRegistration, ...] = ()
+
+
+class ContributionPreparationAdapter(Protocol):
+    @property
+    def kind(self) -> str: ...
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None: ...
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]: ...
 
 
 @dataclass
@@ -95,31 +202,8 @@ class _BoundCompactionStrategy:
         return await self.delegate.compact(request, signal=signal)
 
 
-class ContributionLease:
-    def __init__(self, coordinator: ContributionCoordinator, owner: ContributionOwner) -> None:
-        self._coordinator = coordinator
-        self.owner = owner
-        self._closed = False
-
-    @property
-    def closed(self) -> bool:
-        return self._closed
-
-    def close(self) -> None:
-        if self._closed:
-            return
-        self._closed = True
-        self._coordinator.unregister(self.owner)
-
-    def __enter__(self) -> ContributionLease:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
-
-
 class ContributionCoordinator:
-    """Validate and atomically publish one generation across extension registries."""
+    """Validate one generation against stable Host contribution contracts."""
 
     def __init__(
         self,
@@ -137,8 +221,6 @@ class ContributionCoordinator:
         self.compaction = compaction
         self.continuations = continuations
         self.tool_policies = tool_policies
-        self._lock = threading.RLock()
-        self._owners: set[str] = set()
 
     def prepare(
         self,
@@ -146,8 +228,9 @@ class ContributionCoordinator:
         generation: PluginGenerationRecord,
         contributions: PluginContributions,
         *,
-        static_hooks: tuple[HookRegistration, ...] = (),
+        resource_skills: tuple[SkillMetadata, ...] = (),
         discovered_tools: tuple[Tool, ...] = (),
+        resource_contracts: Mapping[str, object] | None = None,
     ) -> PreparedContributionSet:
         manifest = installed.manifest
         owner = ContributionOwner(
@@ -156,145 +239,56 @@ class ContributionCoordinator:
             generation_id=generation.generation_id,
         )
         source: PluginSource = "third_party"
-        tools = (
-            *self._prepare_tools(manifest, owner, source, contributions.tools),
-            *self._prepare_discovered_tools(manifest, owner, discovered_tools),
+        context = _PreparationContext(
+            installed=installed,
+            generation=generation,
+            contributions=contributions,
+            owner=owner,
+            source=source,
+            resource_skills=resource_skills,
+            discovered_tools=discovered_tools,
         )
-        commands = self._prepare_commands(
-            manifest,
-            owner,
-            source,
-            contributions.commands,
+        from ouro.plugins.contribution_types import contribution_type_adapters
+
+        adapters = contribution_type_adapters()
+        builder = _PreparedBuilder()
+        for adapter in adapters:
+            if adapter.preparation is not None:
+                adapter.preparation.prepare(self, context, builder)
+        hashes = build_contribution_contract_hashes(
+            ContributionContractContext(
+                manifest=manifest,
+                tools=builder.tools,
+                hooks=builder.hooks,
+                commands=builder.commands,
+                compaction=builder.compaction_strategies,
+                background_services=builder.background_services,
+                continuation_policies=builder.continuation_policies,
+                tool_policies=builder.tool_policies,
+                resource_contracts=dict(resource_contracts or {}),
+            )
         )
-        hooks = self._prepare_hooks(manifest, owner, source, contributions.hooks)
-        context_hooks = self._prepare_context_providers(
-            manifest,
-            owner,
-            source,
-            contributions.context_providers,
-        )
-        compaction = self._prepare_compaction(
-            manifest,
-            contributions.compaction_strategies,
-        )
-        self._validate_background_services(manifest, contributions.background_services)
-        continuation_policies = self._prepare_continuation_policies(
-            manifest,
-            owner,
-            contributions.continuation_policies,
-        )
-        tool_policies = self._prepare_tool_policies(
-            manifest,
-            owner,
-            contributions.tool_policies,
-        )
-        hooks = (*hooks, *context_hooks, *static_hooks)
-        hashes = _contract_hashes(
-            manifest,
-            tools=tools,
-            hooks=hooks,
-            commands=commands,
-            compaction=compaction,
-            continuation_policies=continuation_policies,
-            tool_policies=tool_policies,
+        degraded_reasons = tuple(
+            sorted(
+                reason
+                for adapter in adapters
+                if adapter.preparation is not None
+                for reason in adapter.preparation.missing_optional(context, builder)
+            )
         )
         return PreparedContributionSet(
             owner=owner,
-            tools=tools,
-            hooks=hooks,
-            commands=commands,
-            compaction_strategies=compaction,
-            background_services=tuple(contributions.background_services),
-            continuation_policies=continuation_policies,
-            tool_policies=tool_policies,
+            tools=builder.tools,
+            hooks=builder.hooks,
+            commands=builder.commands,
+            compaction_strategies=builder.compaction_strategies,
+            background_services=builder.background_services,
+            skills=builder.skills,
+            continuation_policies=builder.continuation_policies,
+            tool_policies=builder.tool_policies,
             contract_hashes=hashes,
+            degraded_reasons=degraded_reasons,
         )
-
-    def commit(
-        self,
-        prepared: PreparedContributionSet,
-        *,
-        replace_owner: ContributionOwner | None = None,
-    ) -> ContributionLease:
-        owner = prepared.owner.key
-        with self._lock:
-            owners_snapshot = self._owners.copy()
-            snapshots = (
-                self.tools.snapshot(),
-                self.hooks.snapshot(),
-                self.commands.snapshot() if self.commands is not None else None,
-                self.compaction.snapshot() if self.compaction is not None else None,
-                self.continuations.snapshot() if self.continuations is not None else None,
-                self.tool_policies.snapshot() if self.tool_policies is not None else None,
-            )
-            try:
-                if replace_owner is not None:
-                    previous = replace_owner.key
-                    self.tools.unregister_owner(previous)
-                    self.hooks.unregister_owner(previous)
-                    if self.commands is not None:
-                        self.commands.unregister_owner(previous)
-                    if self.compaction is not None:
-                        self.compaction.unregister_owner(previous)
-                    if self.continuations is not None:
-                        self.continuations.unregister_owner(previous)
-                    if self.tool_policies is not None:
-                        self.tool_policies.unregister_owner(previous)
-                    self._owners.discard(previous)
-                self.tools.replace_owner(owner, prepared.tools)
-                self.hooks.replace_owner(owner, prepared.hooks)
-                if prepared.commands:
-                    if self.commands is None:
-                        raise ContributionValidationError("plugin command registry is unavailable")
-                    self.commands.replace_owner(owner, prepared.commands)
-                if prepared.compaction_strategies:
-                    if self.compaction is None:
-                        raise ContributionValidationError(
-                            "plugin compaction registry is unavailable"
-                        )
-                    self.compaction.replace_owner(owner, prepared.compaction_strategies)
-                if prepared.continuation_policies:
-                    if self.continuations is None:
-                        raise ContributionValidationError(
-                            "run continuation registry is unavailable"
-                        )
-                    self.continuations.replace_owner(owner, prepared.continuation_policies)
-                if prepared.tool_policies:
-                    if self.tool_policies is None:
-                        raise ContributionValidationError("tool policy registry is unavailable")
-                    self.tool_policies.replace_owner(owner, prepared.tool_policies)
-                self._owners.add(owner)
-            except Exception:
-                self.tools.restore(snapshots[0])
-                self.hooks.restore(snapshots[1])
-                if self.commands is not None and snapshots[2] is not None:
-                    self.commands.restore(snapshots[2])
-                if self.compaction is not None and snapshots[3] is not None:
-                    self.compaction.restore(snapshots[3])
-                if self.continuations is not None and snapshots[4] is not None:
-                    self.continuations.restore(snapshots[4])
-                if self.tool_policies is not None and snapshots[5] is not None:
-                    self.tool_policies.restore(snapshots[5])
-                self._owners = owners_snapshot
-                raise
-        return ContributionLease(self, prepared.owner)
-
-    def unregister(self, owner: ContributionOwner) -> None:
-        key = owner.key
-        with self._lock:
-            if key not in self._owners:
-                return
-            self.tools.unregister_owner(key)
-            self.hooks.unregister_owner(key)
-            if self.commands is not None:
-                self.commands.unregister_owner(key)
-            if self.compaction is not None:
-                self.compaction.unregister_owner(key)
-            if self.continuations is not None:
-                self.continuations.unregister_owner(key)
-            if self.tool_policies is not None:
-                self.tool_policies.unregister_owner(key)
-            self._owners.discard(key)
 
     @staticmethod
     def _prepare_tools(
@@ -576,6 +570,315 @@ class ContributionCoordinator:
         )
 
 
+@dataclass(frozen=True)
+class _ToolPreparationAdapter:
+    kind: str = "tools"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.tools = coordinator._prepare_tools(
+            context.installed.manifest,
+            context.owner,
+            context.source,
+            context.contributions.tools,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        del builder
+        return _missing_optional(
+            "tools",
+            context.installed.manifest.contributes.tools,
+            {tool.definition.name for tool in context.contributions.tools},
+            exposed_name=True,
+        )
+
+
+@dataclass(frozen=True)
+class _HookPreparationAdapter:
+    kind: str = "hooks"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.hooks = (
+            *builder.hooks,
+            *coordinator._prepare_hooks(
+                context.installed.manifest,
+                context.owner,
+                context.source,
+                context.contributions.hooks,
+            ),
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "hooks",
+            context.installed.manifest.contributes.hooks,
+            {
+                hook.hook_id
+                for hook in builder.hooks
+                if not hook.hook_id.startswith(("context:", "skill:"))
+            },
+        )
+
+
+@dataclass(frozen=True)
+class _ContextPreparationAdapter:
+    kind: str = "context_providers"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        context_hooks = coordinator._prepare_context_providers(
+            context.installed.manifest,
+            context.owner,
+            context.source,
+            context.contributions.context_providers,
+        )
+        builder.hooks = (*builder.hooks, *context_hooks)
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "context_providers",
+            context.installed.manifest.contributes.context_providers,
+            {
+                hook.hook_id.removeprefix("context:")
+                for hook in builder.hooks
+                if hook.hook_id.startswith("context:")
+            },
+        )
+
+
+@dataclass(frozen=True)
+class _CommandPreparationAdapter:
+    kind: str = "commands"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.commands = coordinator._prepare_commands(
+            context.installed.manifest,
+            context.owner,
+            context.source,
+            context.contributions.commands,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "commands",
+            context.installed.manifest.contributes.commands,
+            {command.name for command in builder.commands},
+        )
+
+
+@dataclass(frozen=True)
+class _CompactionPreparationAdapter:
+    kind: str = "compaction_strategies"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.compaction_strategies = coordinator._prepare_compaction(
+            context.installed.manifest,
+            context.contributions.compaction_strategies,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "compaction_strategies",
+            context.installed.manifest.contributes.compaction_strategies,
+            {
+                strategy.strategy_id.removeprefix(f"{context.installed.plugin_id}.")
+                for strategy in builder.compaction_strategies
+            },
+        )
+
+
+@dataclass(frozen=True)
+class _SkillPreparationAdapter:
+    kind: str = "skills"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        del coordinator
+        builder.skills = context.resource_skills
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "skills",
+            context.installed.manifest.contributes.skills,
+            {skill.name for skill in builder.skills},
+        )
+
+
+@dataclass(frozen=True)
+class _MCPPreparationAdapter:
+    kind: str = "mcp_servers"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.tools = (
+            *builder.tools,
+            *coordinator._prepare_discovered_tools(
+                context.installed.manifest,
+                context.owner,
+                context.discovered_tools,
+            ),
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        del context, builder
+        return ()
+
+
+@dataclass(frozen=True)
+class _BackgroundServicePreparationAdapter:
+    kind: str = "background_services"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        coordinator._validate_background_services(
+            context.installed.manifest,
+            context.contributions.background_services,
+        )
+        builder.background_services = tuple(context.contributions.background_services)
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "background_services",
+            context.installed.manifest.contributes.background_services,
+            {service.service_id for service in builder.background_services},
+        )
+
+
+@dataclass(frozen=True)
+class _ContinuationPreparationAdapter:
+    kind: str = "continuation_policies"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.continuation_policies = coordinator._prepare_continuation_policies(
+            context.installed.manifest,
+            context.owner,
+            context.contributions.continuation_policies,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "continuation_policies",
+            context.installed.manifest.contributes.continuation_policies,
+            {policy.policy_id for policy in builder.continuation_policies},
+        )
+
+
+@dataclass(frozen=True)
+class _ToolPolicyPreparationAdapter:
+    kind: str = "tool_policies"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.tool_policies = coordinator._prepare_tool_policies(
+            context.installed.manifest,
+            context.owner,
+            context.contributions.tool_policies,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "tool_policies",
+            context.installed.manifest.contributes.tool_policies,
+            {policy.policy_id for policy in builder.tool_policies},
+        )
+
+
+TOOL_PREPARATION_ADAPTER = _ToolPreparationAdapter()
+HOOK_PREPARATION_ADAPTER = _HookPreparationAdapter()
+COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
+CONTEXT_PREPARATION_ADAPTER = _ContextPreparationAdapter()
+COMPACTION_PREPARATION_ADAPTER = _CompactionPreparationAdapter()
+SKILL_PREPARATION_ADAPTER = _SkillPreparationAdapter()
+MCP_PREPARATION_ADAPTER = _MCPPreparationAdapter()
+BACKGROUND_SERVICE_PREPARATION_ADAPTER = _BackgroundServicePreparationAdapter()
+CONTINUATION_PREPARATION_ADAPTER = _ContinuationPreparationAdapter()
+TOOL_POLICY_PREPARATION_ADAPTER = _ToolPolicyPreparationAdapter()
+
+
 def _unique_contribution_map[ContributionT](
     kind: str,
     values: Iterable[tuple[str, ContributionT]],
@@ -614,64 +917,25 @@ def _validate_declared_set(
         )
 
 
-def _contract_hashes(
-    manifest: PluginManifest,
+def _missing_optional(
+    kind: str,
+    declarations: Iterable[Any],
+    actual: set[str],
     *,
-    tools: tuple[Tool, ...],
-    hooks: tuple[HookRegistration, ...],
-    commands: tuple[PluginCommand, ...],
-    compaction: tuple[CompactionStrategy, ...],
-    continuation_policies: tuple[ContinuationPolicyRegistration, ...],
-    tool_policies: tuple[ToolPolicyRegistration, ...],
-) -> dict[str, str]:
-    contracts: dict[str, object] = {}
-    for tool in tools:
-        local_id = str(tool.definition.metadata["contribution_id"])
-        contracts[f"{manifest.plugin_id}/tools/{local_id}"] = tool.definition.model_dump(
-            mode="json",
-            exclude={"metadata"},
+    exposed_name: bool = False,
+) -> tuple[str, ...]:
+    return tuple(
+        f"{kind}/{declaration.id}"
+        for declaration in declarations
+        if declaration.optional
+        and str(
+            getattr(
+                declaration,
+                "exposed_name" if exposed_name else "id",
+            )
         )
-    for hook in hooks:
-        if hook.hook_id.startswith("skill:"):
-            continue
-        if hook.hook_id.startswith("context:"):
-            kind = "context_providers"
-            local_id = hook.hook_id.removeprefix("context:")
-        else:
-            kind = "hooks"
-            local_id = hook.hook_id
-        contracts[f"{manifest.plugin_id}/{kind}/{local_id}"] = {
-            "event": hook.hook_name,
-            "priority": hook.priority,
-        }
-    for command in commands:
-        contracts[f"{manifest.plugin_id}/commands/{command.name}"] = {
-            "description": command.description,
-        }
-    for strategy in compaction:
-        local_id = strategy.strategy_id.removeprefix(f"{manifest.plugin_id}.")
-        contracts[f"{manifest.plugin_id}/compaction_strategies/{local_id}"] = {
-            "version": strategy.version,
-        }
-    for continuation_policy in continuation_policies:
-        contracts[f"{manifest.plugin_id}/continuation_policies/{continuation_policy.policy_id}"] = {
-            "priority": continuation_policy.priority,
-            "timeout_seconds": continuation_policy.timeout_seconds,
-        }
-    for tool_policy in tool_policies:
-        contracts[f"{manifest.plugin_id}/tool_policies/{tool_policy.policy_id}"] = {
-            "priority": tool_policy.priority,
-            "timeout_seconds": tool_policy.timeout_seconds,
-            "restriction_only": True,
-        }
-    for skill in manifest.contributes.skills:
-        contracts[f"{manifest.plugin_id}/skills/{skill.id}"] = {"path": skill.path}
-    for server in manifest.contributes.mcp_servers:
-        contracts[f"{manifest.plugin_id}/mcp_servers/{server.id}"] = {
-            "path": server.path,
-            "auto_start": server.auto_start,
-        }
-    return {identity: _hash(value) for identity, value in contracts.items()}
+        not in actual
+    )
 
 
 def _hash(value: object) -> str:

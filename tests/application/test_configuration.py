@@ -176,8 +176,8 @@ def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     ]
     assert facade.provider_template("anthropic").provider_type == "anthropic"
     assert facade.provider_template("anthropic").protocol == "anthropic-messages"
-    assert facade.provider_template("kimi").default_endpoint == "kimi-k2.7-code"
-    assert facade.provider_template("kimi").endpoint_count == 3
+    assert facade.provider_template("kimi").default_endpoint == "kimi-k3"
+    assert facade.provider_template("kimi").endpoint_count == 4
 
     configured = facade.add_provider("gemini", provider_type="gemini", make_default=True)
     provider = next(item for item in configured.providers if item.provider_id == "gemini")

@@ -7,7 +7,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInput
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
-from ouro.plugins.models import PluginDiagnostic, PluginScope
+from ouro.plugins.models import PluginClass, PluginDiagnostic
 
 
 class PluginProvenanceView(OuroModel):
@@ -22,7 +22,7 @@ class PluginInstallView(OuroModel):
     version: str
     package_digest: str
     runtime_kind: PluginRuntimeKind
-    scope: PluginScope
+    plugin_class: PluginClass
     selected: bool = False
     provenance: PluginProvenanceView
 
@@ -35,7 +35,7 @@ class PluginSummary(OuroModel):
     status: PluginStatus
     runtime_kind: PluginRuntimeKind
     desired_enabled: bool
-    scope: PluginScope
+    plugin_class: PluginClass
 
 
 class PluginDetail(PluginSummary):
@@ -60,6 +60,17 @@ class PluginValidationView(OuroModel):
     file_count: int = 0
     total_bytes: int = 0
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
+
+
+class PluginScaffoldView(OuroModel):
+    root: str
+    plugin_id: str
+    name: str
+    version: str
+    namespace: str
+    runtime_kind: PluginRuntimeKind
+    package_digest: str
+    files: list[str] = Field(default_factory=list)
 
 
 class PluginActionResult(OuroModel):
@@ -90,12 +101,16 @@ class CompatibilityItemView(OuroModel):
     identity: str
     outcome: Literal["supported", "converted", "ignored", "incompatible"]
     reason: str = ""
+    ouro_target: str | None = None
 
 
 class CompatibilityReportView(OuroModel):
     source_format: str
     source_version: str | None = None
+    detected_resources: list[str] = Field(default_factory=list)
     items: list[CompatibilityItemView] = Field(default_factory=list)
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+    lost_semantics: list[str] = Field(default_factory=list)
     security_differences: list[str] = Field(default_factory=list)
     required_permissions: list[str] = Field(default_factory=list)
     suggested_target: str = "native"

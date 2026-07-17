@@ -297,7 +297,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 - Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
   observational hook 使用不同超时上限。
-- 插件只能通过 owner-aware transaction 贡献工具、限制性 tool policy、Hook、Host-neutral command、上下文
+- 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、Hook、Host-neutral command、上下文
   provider、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
   未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
@@ -315,41 +315,67 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
   superseded；目标插件在下一 Run 重新评估。
 - 插件是 OURO 系统级扩展模块，来源只分 `builtin` 与 `user`。workspace/project 只作为一次请求的执行上下文，
-  不提供项目插件、scope overlay 或按项目安装的插件运行时；当前实现中仍存在的通用 `scope` 字段属于待删除的
-  过渡模型，不能据此扩展第三类插件来源。
+  不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 均不再
+  携带 activation scope。
 - 插件系统将 package、install/provenance、authorization 和 runtime generation 分层。当前代码已经形成首版
-  管理与运行闭环；[插件系统规格](../dev/specs/plugin-system.md)描述下一阶段目标契约，现状差距以
+  管理与运行闭环；[插件系统规格](../dev/specs/plugin-system.md)描述权威目标与剩余契约，现状差距以
   [插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)为准。同进程插件为 full trust，worker
   提供进程与协议边界，但不宣称 OS 沙箱。
 - `PluginPackageStore` 分离 immutable code、mutable state 与 plugin data；installer 从真实 local/Git/archive
   来源生成 provenance。安装阶段只校验包、路径、schema、MCP 描述符和兼容范围，不 import 或启动插件代码；
   激活前重新验证存储树和 digest，避免被修改的“不可变”包进入执行边界。
-- code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先撤销 registry
-  projection，再等待 generation lease 关闭。配置按 digest 保存，候选版本不会覆盖当前 generation 的配置。
-- 启用依赖图只使用显式选择的已安装 digest；切换已启用 digest 会在 state 提交前重新验证依赖锁定图，active
-  dependent 存在时不能禁用依赖项。不同 digest 共用 plugin data，只有最后一个安装被移除时才允许 purge。当前
-  application facade 会补偿部分 select/config 启动失败，但旧 generation 已先停止，不能把该补偿视为运行时原子切换。
-- `ContributionCoordinator` 在短临界区内跨 Tool、tool policy、Hook、command、compaction 与 continuation registry 原子发布 owner set；
-  import、worker/MCP 启动和插件回调均不在 registry 锁内执行。
-- 当前实现对任何插件目录变更使用全局 catalog barrier：先阻止新 Run 获取 snapshot，再等待所有已有 Run 释放，
-  然后停止旧 generation。它能避免同一 Run 混用版本，但会把单插件更新、重启或配置变更放大为全局停顿，是
-  已确认的过渡约束。目标使用不可变 `ExtensionCatalog`、per-generation gate 与候选先启动/原子指针切换；旧
-  snapshot 按引用自然 drain，不再由无关 Run 阻塞插件变更。
-- `LocalApplication` shutdown 先关闭 Runtime 并释放其 generation snapshot，再关闭 MCP 与插件 owner；插件
+- code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先关闭 generation
+  gate 并发布不含受影响 generation closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
+  reference 的内容寻址 immutable revision，selected digest 通过 active revision id 引用；配置/选版与候选 Catalog
+  在同一成功边界提交，失败不再依靠补偿恢复。
+- 启用依赖图只使用显式选择的已安装 digest；digest/configuration 改变会按拓扑重建传递 desired dependant closure，
+  active dependent 存在时不能禁用依赖项。不同 digest 共用 plugin data，候选 Host API 写入先进入隔离 staging，
+  发布成功才提交；只有最后一个安装被移除时才允许 purge。
+- `ContributionCoordinator` 只负责把 generation contribution 校验、归一化为 owner set；`ExtensionCatalog` builder
+  从稳定 Host baseline 与 active generation set 构建结构冻结的 Tool、tool policy、Hook、command、compaction 与
+  continuation registry。候选失败不会改写 baseline 或 current Catalog。
+- `ouro.plugins.contribution_types` 是 Host-owned 封闭清单，把每种 Manifest capability 的 SDK、worker、prepare、
+  optional、contract、resource 与 Catalog projection facet 绑定在同一记录。主流程遍历清单且不接受用户动态注册；
+  Skill/MCP 是 generation-owned resource facet，只有准备成功的资源进入 contract。Background Service 唯一属于
+  `activation-singleton`，其 projection 明确为空；其他 contribution 属于 Run `snapshot-bound`。
+- Skill metadata 也是 Catalog 的 snapshot-bound 目录：Runtime 装配时发现的 user/workspace Skill 作为 Host baseline，
+  Plugin Skill 作为 generation resource 加入同一名称空间。候选按名称拒绝冲突；每轮上下文从 Run lease 生成提示词，
+  不通过 Hook 二次注入。disable 只改变新 Catalog，旧 lease 保留不可变包内的 `SKILL.md` 路径。
+- Python in-process 的 canonical owned module 为 `<namespace>_plugin`（已带后缀时保持不变）；激活检查 canonical
+  冲突，实际加载键为 `_ouro_plugin_<generation_id>`。插件内依赖必须放在 owned package 并使用相对 import；关闭
+  generation 时删除其完整私有 module tree。需要独立第三方环境时使用 worker。
+- Runtime 在 Run 创建时取得 `ExtensionCatalogLease`，并把同一 Catalog 贯穿 context、model tool list、tool
+  execution、Hook、compaction、continuation 和异步 `on_event`。current pointer 仅在短同步临界区交换；旧 Catalog
+  由自身 lease 自然 drain，插件 import、worker/MCP 启停、回调和 I/O 均不在 pointer lock 内。
+- 插件生命周期 mutation 由单一 runtime lock 串行化；候选 generation set、required MCP 与 Catalog 全部成功后，
+  Store 以 expected state 比较提交，并在无 `await` 的发布段打开新 gate、交换 pointer。Background Service 不进入
+  Run Catalog，发布后按“旧代停止、新代启动”串行转交。
+- Catalog registry 的结构在构建后冻结；运行期只允许 Hook 的 per-Run isolation 状态变化。builtin/Host 与 user
+  contribution 都有 canonical identity、owner 和 contract hash；插件激活不会修改进程级 Host registry。
+- `LocalApplication` shutdown 先关闭 Runtime 并释放其 generation snapshot，再关闭插件 owner 与全局 MCP；插件
   runtime 等待 lease drain 到 deadline，逾期记录诊断后继续清理，避免资源 owner 先于消费者失效。
 - 本地 store、credential resolver、registry 和 runtime 的具体装配只属于 `ouro.local_application`；
   `ouro.application.plugins.PluginService` 保持 Host-neutral，不提供隐藏的本地构造入口。
-- 当前 pending tool invocation 保存 generation identity，并要求完整 catalog 精确匹配；随机 generation id 在进程
-  重启后不能稳定重建。目标改以 package digest、有效配置、依赖锁、Plugin API 和 contribution contract 共同计算
-  `execution_contract_hash`；恢复只复用契约等价实现，绝不按同名工具猜测替代。
-- 当前仍被 queued/running/waiting/paused/recoverable Run 引用的 generation 会阻止普通 restart、disable、digest
-  selection 或活动配置更新。目标把限制缩小到被引用 generation 自身：disable/revoke 关闭 gate 后拒绝新调用，
-  已持有 snapshot 的 Run 按明确策略 drain 或失败，不再冻结整个 catalog。
+- pending Tool/Approval、Continuation 和 Run Catalog 持久化 `execution_contract_hash`；摘要覆盖 package digest、有效
+  配置修订、传递依赖锁、Plugin API/worker protocol 和 contribution contract。恢复忽略随机 `generation_id`，但会
+  复核所有稳定事实与 ToolExecutor 契约，绝不按同名工具猜测替代。
+- 插件更新后，若 durable Run 的旧 digest、配置修订和依赖仍保留，runtime 可重建一个非 current generation 与精确
+  Catalog；该 Catalog 只由恢复 Run 持有，不修改 selected/desired state，不启动 activation-singleton Background
+  Service，lease 释放后按 owner 回收。缺包、禁用或重建 contract 不一致时恢复显式失败；durable reference 释放前
+  application facade 阻止移除旧 digest。
+- `PluginService.scaffold/reload` 是 Host-neutral 开发用例：scaffold 原子发布经验证的最小 user package；reload 先
+  并排安装 immutable candidate，只有配置、能力授权与 exact-digest code trust 完整时才复用 candidate activation
+  切换 current。CLI 只负责参数与 DTO 映射。
+- Git source 在 checkout 前以 tree metadata 校验 portable path、文件数和字节上限；shallow/blob-filtered fetch、
+  subdirectory sparse checkout 和禁用 LFS smudge 共同避免先物化范围外内容。所有 source 最终仍进入统一 package
+  validation。社区 compatibility inspection 只读资源并输出四类 outcome 与显式 OURO target，不执行未知代码。
 - `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
   协调 owner，避免跨任务退出 AnyIO 取消域。
 - MCP 工具以 `<server_id>__<remote_name>` 形成稳定 identity，通过 ToolRegistry 原子替换 projection，并继续
   经过 OURO schema、权限、批次和恢复边界。
+- Plugin MCP 由 generation resource owner 启停：required 连接失败中止候选，optional 失败投影 degraded；只有
+  connected server 生成 contract，已发现 Tool 冻结进 Catalog，server 的后续变化只在下一 generation 可见。
 - `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；shutdown 关闭 session、HTTP
   client、stdio 管道和子进程。
 - 外部 Agent Skills frontmatter 在 skills parser 边界校验，核心运行只接收类型化 `SkillMetadata` 和指令文本。

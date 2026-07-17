@@ -37,11 +37,16 @@ class ContextBuilder:
         tools: list[ToolDefinition],
         system_prompt: str = "",
         added_context: list[str] | None = None,
+        additional_skill_instructions: str = "",
         input_token_budget: int | None = None,
     ) -> ContextView:
         if input_token_budget is not None and input_token_budget < 1:
             raise ValueError("input_token_budget must be at least 1")
-        composed_prompt = _compose_system_prompt(system_prompt, self.skill_instructions)
+        skill_instructions = _compose_skill_instructions(
+            self.skill_instructions,
+            additional_skill_instructions,
+        )
+        composed_prompt = _compose_system_prompt(system_prompt, skill_instructions)
         context_fragments = [text for text in (added_context or []) if text]
         context_messages = [
             MessageRecord.text(
@@ -65,7 +70,7 @@ class ContextBuilder:
             system_prompt=composed_prompt,
             tool_definitions=tools,
             context_metadata={
-                "skills_injected": bool(self.skill_instructions),
+                "skills_injected": bool(skill_instructions),
                 "estimated_fixed_tokens": fixed_tokens,
                 "estimated_input_tokens": estimated_tokens,
                 "input_token_budget": input_token_budget,
@@ -74,6 +79,11 @@ class ContextBuilder:
                 ),
             },
         )
+
+
+def _compose_skill_instructions(base: str, additional: str) -> str:
+    values = tuple(value.strip() for value in (base, additional) if value.strip())
+    return "\n\n".join(values)
 
 
 def _compose_system_prompt(system_prompt: str, skill_instructions: str) -> str:

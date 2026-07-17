@@ -13,6 +13,7 @@ from ouro.core.redaction import redact_text
 from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
+HookRegistryResolver = Callable[[str | None], tuple[HookRegistry, Callable[[], None]]]
 
 
 @dataclass
@@ -21,6 +22,13 @@ class _SinkObserver:
     queue: asyncio.Queue[EventRecord | None]
     task: asyncio.Task[None]
     enabled: bool = True
+
+
+@dataclass(frozen=True)
+class _HookObservation:
+    event: EventRecord
+    hooks: HookRegistry
+    release: Callable[[], None]
 
 
 class RuntimeEventRecorder:
@@ -50,7 +58,8 @@ class RuntimeEventRecorder:
         self._sink_timeout_seconds = sink_timeout_seconds
         self._sink_callbacks: list[RuntimeEventSink] = []
         self._sink_observers: list[_SinkObserver] = []
-        self._hook_queue: asyncio.Queue[EventRecord | None] | None = None
+        self._hook_registry_resolver: HookRegistryResolver | None = None
+        self._hook_queue: asyncio.Queue[_HookObservation | None] | None = None
         self._hook_task: asyncio.Task[None] | None = None
         self._diagnostic_tasks: set[asyncio.Task[None]] = set()
         self._closed = False
@@ -61,6 +70,13 @@ class RuntimeEventRecorder:
         if self._closed:
             raise RuntimeError("event recorder is closed")
         self._sink_callbacks.append(event_sink)
+
+    def set_hook_registry_resolver(self, resolver: HookRegistryResolver) -> None:
+        """Resolve and retain the immutable Hook view for each observed event."""
+
+        if self._closed:
+            raise RuntimeError("event recorder is closed")
+        self._hook_registry_resolver = resolver
 
     async def emit(
         self,
@@ -155,9 +171,11 @@ class RuntimeEventRecorder:
                     ),
                 )
         if notify_hooks and self._hook_queue is not None:
+            observation = self._hook_observation(event)
             try:
-                self._hook_queue.put_nowait(event)
+                self._hook_queue.put_nowait(observation)
             except asyncio.QueueFull:
+                observation.release()
                 self._schedule_diagnostic(
                     event,
                     event_type="event_observer_overflow",
@@ -225,14 +243,15 @@ class RuntimeEventRecorder:
 
     async def _run_hook_observer(
         self,
-        queue: asyncio.Queue[EventRecord | None],
+        queue: asyncio.Queue[_HookObservation | None],
     ) -> None:
         while True:
-            event = await queue.get()
+            observation = await queue.get()
             try:
-                if event is None:
+                if observation is None:
                     return
-                result = await self.hooks.dispatch(
+                event = observation.event
+                result = await observation.hooks.dispatch(
                     HookContext(
                         hook_name="on_event",
                         session_id=event.session_id,
@@ -251,7 +270,15 @@ class RuntimeEventRecorder:
                     )
                     self._publish(diagnostic, notify_hooks=False)
             finally:
+                if observation is not None:
+                    observation.release()
                 queue.task_done()
+
+    def _hook_observation(self, event: EventRecord) -> _HookObservation:
+        if self._hook_registry_resolver is None:
+            return _HookObservation(event=event, hooks=self.hooks, release=lambda: None)
+        hooks, release = self._hook_registry_resolver(event.run_id)
+        return _HookObservation(event=event, hooks=hooks, release=release)
 
     def _disable_sink(
         self,

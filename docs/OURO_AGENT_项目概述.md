@@ -84,10 +84,11 @@ MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy S
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
 插件系统已提供首版完整闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
-grant、declarative/Python in-process/stdio worker runtime、原子 owner contribution、generation snapshot、依赖解析、
-更新/回滚、Skills/MCP/background service 和兼容报告。插件是 OURO 系统级模块，正式来源只分 builtin 与 user；
-workspace/project 只影响一次执行的上下文，不存在项目插件；当前开发版的 workspace scope 过渡字段将在目标模型
-收敛时删除。in-process 是用户明确授予的同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
+grant、declarative/Python in-process/stdio worker runtime、不可变 owner Catalog、generation lease、依赖解析、
+更新/回滚、Skills/MCP/background service、最小 scaffold/开发 reload、四类兼容报告和三类可运行示例。插件是 OURO
+系统级模块，正式来源只分 builtin 与 user；
+workspace/project 只影响一次执行的上下文，不存在项目插件；workspace plugin scope 已从持久化模型、CLI 和 DTO
+删除。in-process 是用户明确授予的同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
@@ -97,9 +98,14 @@ workspace/project 只影响一次执行的上下文，不存在项目插件；�
 
 插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
-用户在审批中修改参数后会以最终参数重新评估。当前 generation-safe 实现依赖全局 catalog barrier，候选启动也还
-不是运行时原子切换；下一阶段将改为不可变 catalog、per-generation gate、依赖健康协调和稳定执行契约。完整审查
-与取舍见[插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
+用户在审批中修改参数后会以最终参数重新评估。Runtime 现已为每个 Run 固定不可变 Extension Catalog，贯穿模型
+工具列表、执行、Hook、上下文、压缩、continuation 与 policy；current pointer 切换不改变旧 Run，插件 contribution
+也不再写入 Host 全局 registry。每代 callback 经过 process-local gate，disable/revoke 后不能开始新调用。候选
+activation 已统一 enable/configure/select/restart：失败不提交 state/Catalog，依赖变化重建传递 closure；候选数据写入
+隔离暂存，后台服务按旧停新启串行转交。依赖 observed state、封闭 contribution adapter 清单、严格 Worker 协议、
+代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期也已落地。下一阶段需完成稳定执行
+契约。完整审查与
+取舍见[插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
 
 ### 资源与后台运行
 
@@ -184,8 +190,8 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 
 - TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
 - Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
-- 插件底层架构收敛：builtin/user 单一来源模型、不可变 `ExtensionCatalog`、候选 generation 原子切换、依赖
-  reconciler、内部 contribution adapter、worker/Skills/MCP 生命周期和稳定执行契约。Marketplace、签名、publisher
+- 插件后续能力：底层架构、最小 scaffold/reload、三类示例、社区导入报告和开发文档已经完成；只有真实 user plugin
+  证明现有 extension point 无法表达 Agent、provider、resource 或 UI 能力时才扩展。Marketplace、签名、publisher
   policy、OS sandbox、项目插件与历史兼容层不在当前范围。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。

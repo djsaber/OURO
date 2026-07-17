@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Set
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -7,11 +8,12 @@ from ouro.plugins.models import (
     InstalledPlugin,
     PluginActivationState,
     PluginAuditEvent,
+    PluginConfigurationRevision,
     PluginDiagnostic,
     PluginProvenance,
     PluginRecord,
-    PluginScope,
     PluginStateDocument,
+    create_configuration_revision,
 )
 from ouro.plugins.package import PackageLimits, validate_plugin_package
 from ouro.plugins.sources import PluginSourceMaterializer, source_provider
@@ -33,9 +35,11 @@ class PluginInstaller:
         store: PluginPackageStore,
         *,
         limits: PackageLimits | None = None,
+        builtin_plugin_ids: Set[str] = frozenset(),
     ) -> None:
         self.store = store
         self.limits = limits or PackageLimits()
+        self.builtin_plugin_ids = frozenset(builtin_plugin_ids)
 
     def validate(
         self,
@@ -54,13 +58,16 @@ class PluginInstaller:
         *,
         ref: str | None = None,
         subdirectory: str | None = None,
-        scope: PluginScope = "user",
         request_id: str | None = None,
         expected_plugin_id: str | None = None,
     ) -> PluginInstallResult:
         provider = source_provider(source, ref=ref, subdirectory=subdirectory)
         with PluginSourceMaterializer(provider) as materialized:
             package = validate_plugin_package(materialized.root, limits=self.limits)
+            if package.manifest.plugin_id in self.builtin_plugin_ids:
+                raise ValueError(
+                    f"user plugin cannot replace builtin identity: {package.manifest.plugin_id}"
+                )
             if expected_plugin_id is not None and package.manifest.plugin_id != expected_plugin_id:
                 raise ValueError(
                     f"plugin identity changed from {expected_plugin_id} "
@@ -73,7 +80,6 @@ class PluginInstaller:
                 public_source=materialized.public_source,
                 resolved_reference=materialized.resolved_reference,
                 package_digest=package.package_digest,
-                scope=scope,
             )
             installed = InstalledPlugin(
                 plugin_id=package.manifest.plugin_id,
@@ -114,15 +120,20 @@ class PluginInstaller:
             if record.activation.desired_enabled and record.activation.selected_digest == digest:
                 raise ValueError(f"plugin must be disabled before removal: {plugin_id}")
             record.installs = [item for item in record.installs if item.package_digest != digest]
-            record.activation.configurations.pop(digest, None)
+            record.activation.remove_configuration_for(digest)
             if record.activation.selected_digest == digest:
                 record.activation.selected_digest = (
                     record.installs[-1].package_digest if record.installs else None
                 )
                 if record.activation.selected_digest is not None:
-                    record.activation.configuration = record.activation.configuration_for(
+                    revision = record.activation.configuration_for(
                         record.activation.selected_digest
                     )
+                    if revision is None:
+                        raise ValueError("selected plugin digest has no configuration revision")
+                    record.activation.active_configuration_revision_id = revision.revision_id
+                else:
+                    record.activation.active_configuration_revision_id = None
                 record.activation.capability_grants = []
             record.activation.code_trust_grants = [
                 grant
@@ -163,12 +174,16 @@ class PluginInstaller:
             nonlocal already_installed
             record = state.plugins.get(installed.plugin_id)
             if record is None:
+                configuration = _initial_configuration_revision(installed)
+                activation = PluginActivationState(selected_digest=installed.package_digest)
+                activation.set_configuration(
+                    installed.package_digest,
+                    configuration,
+                    activate=True,
+                )
                 record = PluginRecord(
                     plugin_id=installed.plugin_id,
-                    activation=PluginActivationState(
-                        scope=installed.provenance.scope,
-                        selected_digest=installed.package_digest,
-                    ),
+                    activation=activation,
                 )
                 state.plugins[installed.plugin_id] = record
             existing = next(
@@ -202,8 +217,15 @@ class PluginInstaller:
                     )
                 )
             record.installs.append(installed)
+            configuration = _initial_configuration_revision(installed)
+            record.activation.set_configuration(
+                installed.package_digest,
+                configuration,
+                activate=record.activation.selected_digest == installed.package_digest,
+            )
             if record.activation.selected_digest is None:
                 record.activation.selected_digest = installed.package_digest
+                record.activation.active_configuration_revision_id = configuration.revision_id
             return state
 
         self.store.mutate_state(add)
@@ -212,3 +234,10 @@ class PluginInstaller:
             diagnostics=tuple(diagnostics),
             already_installed=already_installed,
         )
+
+
+def _initial_configuration_revision(installed: InstalledPlugin) -> PluginConfigurationRevision:
+    specification = installed.manifest.configuration
+    return create_configuration_revision(
+        schema_version=specification.version if specification is not None else None,
+    )

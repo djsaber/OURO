@@ -88,6 +88,13 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     plugin = subparsers.add_parser("plugin", help="Manage OURO plugins")
     commands = plugin.add_subparsers(dest="plugin_command", required=True)
 
+    scaffold = commands.add_parser("scaffold", help="Create a minimal local user plugin")
+    scaffold.add_argument("destination")
+    scaffold.add_argument("--plugin-id", required=True)
+    scaffold.add_argument("--name", required=True)
+    scaffold.add_argument("--namespace")
+    _add_plugin_output(scaffold)
+
     validate = commands.add_parser("validate", help="Validate a plugin package without installing")
     validate.add_argument("source")
     _add_plugin_source_args(validate)
@@ -115,7 +122,6 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     install = commands.add_parser("install", help="Install immutable plugin bytes")
     install.add_argument("source")
     _add_plugin_source_args(install)
-    install.add_argument("--scope", choices=("user", "workspace"), default="user")
     _add_plugin_mutation_args(install)
 
     for name in ("authorize", "trust-code"):
@@ -154,6 +160,26 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_plugin_source_args(update)
     _add_plugin_request_id(update)
     _add_plugin_output(update)
+
+    reload_parser = commands.add_parser(
+        "reload",
+        help="Validate, install, and atomically select local development bytes",
+    )
+    reload_parser.add_argument("plugin_id")
+    reload_parser.add_argument("source")
+    reload_parser.add_argument(
+        "--authorize",
+        action="store_true",
+        help="Explicitly grant the candidate's declared capabilities",
+    )
+    reload_parser.add_argument(
+        "--trust-code",
+        action="store_true",
+        help="Explicitly trust the candidate's exact executable digest",
+    )
+    _add_plugin_source_args(reload_parser)
+    _add_plugin_request_id(reload_parser)
+    _add_plugin_output(reload_parser)
 
     rollback = commands.add_parser("rollback", help="Select and activate an installed digest")
     rollback.add_argument("plugin_id")

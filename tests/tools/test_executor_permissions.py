@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.tools import ToolInvocation, builtin_tools
+from ouro.tools import Tool, ToolDefinition, ToolInvocation, builtin_tools
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
 
@@ -150,3 +150,40 @@ def test_extension_policy_deny_cannot_be_lowered_by_session_mode() -> None:
     assert outcome.result is not None
     assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
     assert "path is protected" in outcome.result.content
+
+
+def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
+    async def execute(_invocation):
+        return "unused"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="example__run",
+                description="Run the example plugin.",
+                metadata={
+                    "plugin_id": "dev.ouro.example",
+                    "package_digest": "a" * 64,
+                    "contract_hash": "b" * 64,
+                    "execution_contract_hash": "c" * 64,
+                },
+            ),
+            handler=execute,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="example__run",
+        plugin_id="dev.ouro.example",
+        package_digest="a" * 64,
+        contract_hash="b" * 64,
+        execution_contract_hash="d" * 64,
+    )
+
+    outcome = ToolExecutor(registry).preflight(invocation)
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"

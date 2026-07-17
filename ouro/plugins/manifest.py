@@ -23,6 +23,15 @@ PluginCapability = Literal[
     "tool_policies",
 ]
 PluginRuntimeKind = Literal["declarative", "python-inprocess", "worker"]
+PLUGIN_PERMISSION_IDS = frozenset(
+    {
+        "background.run",
+        "credentials.use",
+        "network.outbound",
+        "process.spawn",
+        "sessions.write",
+    }
+)
 PluginStatus = Literal[
     "invalid",
     "incompatible",
@@ -34,6 +43,7 @@ PluginStatus = Literal[
     "starting",
     "active",
     "degraded",
+    "blocked",
     "stopping",
     "failed",
 ]
@@ -58,6 +68,8 @@ class PermissionRequest(OuroModel):
         parts = normalized.split(".")
         if len(parts) < 2 or any(_IDENTIFIER.fullmatch(part) is None for part in parts):
             raise ValueError("permission id must be a dotted stable identifier")
+        if normalized not in PLUGIN_PERMISSION_IDS:
+            raise ValueError(f"unknown plugin permission id: {normalized}")
         return normalized
 
     @field_validator("scopes")
@@ -182,7 +194,6 @@ class NamedContributionSpec(OuroModel):
 
 class PathContributionSpec(NamedContributionSpec):
     path: str
-    auto_start: bool = False
 
 
 class PluginContributes(OuroModel):
@@ -234,7 +245,6 @@ class PluginConfigurationSpec(OuroModel):
 class PluginDependencySpec(OuroModel):
     plugin_id: str
     version: str
-    optional_feature: str | None = None
 
     @field_validator("plugin_id")
     @classmethod
@@ -252,7 +262,7 @@ class PluginDependencies(OuroModel):
 
 
 class PluginManifest(OuroModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     plugin_id: str
     name: str = Field(min_length=1, max_length=120)
     version: str
@@ -295,6 +305,14 @@ class PluginManifest(OuroModel):
             raise ValueError("duplicate plugin dependency id")
         if self.plugin_id in dependencies:
             raise ValueError("plugin cannot depend on itself")
+        if self.runtime.kind == "python-inprocess":
+            assert self.runtime.entrypoint is not None
+            top_level = self.runtime.entrypoint.partition(":")[0].partition(".")[0]
+            expected = plugin_module_namespace(self.namespace)
+            if top_level != expected:
+                raise ValueError(
+                    f"python entrypoint must use the plugin-owned top-level module {expected!r}"
+                )
         return self
 
 
@@ -303,6 +321,10 @@ def validate_plugin_id(value: str) -> str:
     if _PLUGIN_ID.fullmatch(normalized) is None:
         raise ValueError("plugin_id must be a reverse-domain-style identifier")
     return normalized
+
+
+def plugin_module_namespace(namespace: str) -> str:
+    return namespace if namespace.endswith("_plugin") else f"{namespace}_plugin"
 
 
 def _validate_local_id(value: str) -> str:

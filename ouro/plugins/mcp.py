@@ -35,15 +35,11 @@ class PluginMCPResource:
             resolve_credential=self._resolve_plugin_credential,
         )
         self._configured: list[tuple[PathContributionSpec, MCPServerConfig]] = []
-
-    @property
-    def required(self) -> bool:
-        return any(item.auto_start for item in self.manifest.contributes.mcp_servers)
+        self.degraded_reasons: list[str] = []
+        self.active_server_ids: list[str] = []
 
     async def start(self) -> tuple[Tool, ...]:
         for declaration in self.manifest.contributes.mcp_servers:
-            if not declaration.auto_start:
-                continue
             config = load_plugin_mcp_config(
                 self.manifest,
                 declaration,
@@ -54,9 +50,15 @@ class PluginMCPResource:
 
         for declaration, config in self._configured:
             record = await self.manager.start(config.server_id)
-            if record.status != "connected" and not declaration.optional:
+            if record.status != "connected":
                 detail = record.error or record.status
-                raise RuntimeError(f"plugin MCP server failed to start: {declaration.id}: {detail}")
+                if not declaration.optional:
+                    raise RuntimeError(
+                        f"plugin MCP server failed to start: {declaration.id}: {detail}"
+                    )
+                self.degraded_reasons.append(f"mcp_servers/{declaration.id}: {detail}")
+                continue
+            self.active_server_ids.append(declaration.id)
         return tuple(self.registry.get(name) for name in self.registry.names())
 
     async def close(self) -> None:

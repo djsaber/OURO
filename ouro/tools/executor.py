@@ -71,6 +71,13 @@ class ToolExecutor:
                 error_type="UnknownTool",
                 error_message=f"unknown tool: {invocation.tool_name}",
             )
+        contract_error = _tool_contract_error(invocation, tool.definition.metadata)
+        if contract_error is not None:
+            return _error_outcome(
+                invocation,
+                error_type="ToolExecutionContractMismatch",
+                error_message=contract_error,
+            )
         effective_mode = self.permission_overrides.get(
             tool.definition.name, tool.definition.permission_mode
         )
@@ -125,6 +132,7 @@ class ToolExecutor:
                 session_id=invocation.session_id,
                 run_id=invocation.run_id,
                 tool_call_id=invocation.tool_call_id,
+                execution_contract_hash=invocation.execution_contract_hash,
             )
             invocation = invocation.model_copy(update={"approval_id": approval.approval_id})
             return ToolExecutionOutcome(
@@ -226,3 +234,22 @@ def _error_outcome(
         ended_at=utc_now(),
     )
     return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+
+def _tool_contract_error(
+    invocation: ToolInvocation,
+    metadata: Mapping[str, object],
+) -> str | None:
+    expected = {
+        "plugin_id": invocation.plugin_id,
+        "package_digest": invocation.package_digest,
+        "contract_hash": invocation.contract_hash,
+        "execution_contract_hash": invocation.execution_contract_hash,
+    }
+    if not any(value is not None for value in expected.values()):
+        return None
+    for field, expected_value in expected.items():
+        actual = metadata.get(field)
+        if expected_value is None or actual != expected_value:
+            return f"persisted {field} does not match the active tool contract"
+    return None

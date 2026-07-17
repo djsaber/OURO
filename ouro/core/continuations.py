@@ -50,6 +50,8 @@ class ContinuationPolicyRegistration:
     timeout_seconds: float = 10.0
     owner: str | None = None
     generation_id: str | None = None
+    execution_contract_hash: str | None = None
+    contract_hash: str | None = None
 
 
 class ContinuationFailure(OuroModel):
@@ -65,6 +67,8 @@ class AttributedContinuationDecision(OuroModel):
     plugin_id: str
     policy_id: str
     generation_id: str | None = None
+    execution_contract_hash: str | None = None
+    contract_hash: str | None = None
     decision: ContinuationDecision
 
 
@@ -79,12 +83,21 @@ class RunContinuationRegistry:
 
     def __init__(self) -> None:
         self._registrations: list[ContinuationPolicyRegistration] = []
+        self._frozen = False
+
+    def freeze(self) -> None:
+        self._frozen = True
+
+    def _require_mutable(self) -> None:
+        if self._frozen:
+            raise RuntimeError("continuation registry structure is frozen")
 
     def replace_owner(
         self,
         owner: str,
         registrations: tuple[ContinuationPolicyRegistration, ...],
     ) -> None:
+        self._require_mutable()
         identities = [(item.plugin_id, item.policy_id) for item in registrations]
         if len(identities) != len(set(identities)):
             raise ValueError("replacement contains duplicate continuation policy identities")
@@ -103,6 +116,7 @@ class RunContinuationRegistry:
         return list(self._registrations)
 
     def restore(self, snapshot: list[ContinuationPolicyRegistration]) -> None:
+        self._require_mutable()
         self._registrations = list(snapshot)
 
     def registered(self) -> list[ContinuationPolicyRegistration]:
@@ -115,7 +129,7 @@ class RunContinuationRegistry:
         self,
         outcome: RunOutcome,
         *,
-        controller_ids: set[tuple[str, str, str]] | None = None,
+        controller_ids: set[tuple[str, str, str, str]] | None = None,
     ) -> ContinuationEvaluation:
         evaluation = ContinuationEvaluation()
         registrations = self.registered()
@@ -123,12 +137,15 @@ class RunContinuationRegistry:
             (
                 registration.plugin_id,
                 registration.policy_id,
-                registration.generation_id or "",
+                registration.execution_contract_hash or "",
+                registration.contract_hash or "",
             )
             for registration in registrations
         }
         if controller_ids is not None:
-            for plugin_id, policy_id, generation_id in sorted(controller_ids - available_ids):
+            for plugin_id, policy_id, execution_hash, contract_hash in sorted(
+                controller_ids - available_ids
+            ):
                 evaluation.failures.append(
                     ContinuationFailure(
                         plugin_id=plugin_id,
@@ -137,8 +154,8 @@ class RunContinuationRegistry:
                         run_id=outcome.run_id,
                         error_type="ContinuationPolicyUnavailable",
                         message=(
-                            "required continuation policy generation is unavailable: "
-                            f"{generation_id}"
+                            "required continuation policy execution contract is unavailable: "
+                            f"{execution_hash}:{contract_hash}"
                         ),
                     )
                 )
@@ -146,7 +163,8 @@ class RunContinuationRegistry:
             identity = (
                 registration.plugin_id,
                 registration.policy_id,
-                registration.generation_id or "",
+                registration.execution_contract_hash or "",
+                registration.contract_hash or "",
             )
             if controller_ids is not None and identity not in controller_ids:
                 continue
@@ -164,6 +182,8 @@ class RunContinuationRegistry:
                             plugin_id=registration.plugin_id,
                             policy_id=registration.policy_id,
                             generation_id=registration.generation_id,
+                            execution_contract_hash=registration.execution_contract_hash,
+                            contract_hash=registration.contract_hash,
                             decision=raw,
                         )
                     )

@@ -29,13 +29,17 @@ class QueuedInput(OuroModel):
     plugin_id: str | None = None
     contribution_id: str | None = None
     generation_id: str | None = None
+    execution_contract_hash: str | None = None
     caused_by_run_id: str | None = None
     continuation_decision_id: str | None = None
 
     @model_validator(mode="after")
     def validate_source(self) -> QueuedInput:
         if self.source == "plugin" and (
-            not self.plugin_id or not self.contribution_id or not self.generation_id
+            not self.plugin_id
+            or not self.contribution_id
+            or not self.generation_id
+            or not self.execution_contract_hash
         ):
             raise ValueError("plugin queued input requires complete extension attribution")
         if self.source == "user" and any(
@@ -44,6 +48,7 @@ class QueuedInput(OuroModel):
                 self.plugin_id,
                 self.contribution_id,
                 self.generation_id,
+                self.execution_contract_hash,
                 self.continuation_decision_id,
             )
         ):
@@ -74,6 +79,7 @@ class QueuedInputQueue:
         plugin_id: str | None = None,
         contribution_id: str | None = None,
         generation_id: str | None = None,
+        execution_contract_hash: str | None = None,
         caused_by_run_id: str | None = None,
         continuation_decision_id: str | None = None,
     ) -> tuple[SessionRecord, QueuedInput, int]:
@@ -87,6 +93,7 @@ class QueuedInputQueue:
             plugin_id=plugin_id,
             contribution_id=contribution_id,
             generation_id=generation_id,
+            execution_contract_hash=execution_contract_hash,
             caused_by_run_id=caused_by_run_id,
             continuation_decision_id=continuation_decision_id,
         )
@@ -190,7 +197,12 @@ class QueuedInputQueue:
             return None
         if raw_source == "plugin" and not all(
             isinstance(item.get(field), str) and bool(item.get(field))
-            for field in ("plugin_id", "contribution_id", "generation_id")
+            for field in (
+                "plugin_id",
+                "contribution_id",
+                "generation_id",
+                "execution_contract_hash",
+            )
         ):
             return None
         raw_resource_refs = item.get("resource_refs", ())
@@ -215,6 +227,11 @@ class QueuedInputQueue:
             ),
             generation_id=(
                 item.get("generation_id") if isinstance(item.get("generation_id"), str) else None
+            ),
+            execution_contract_hash=(
+                item.get("execution_contract_hash")
+                if isinstance(item.get("execution_contract_hash"), str)
+                else None
             ),
             caused_by_run_id=(
                 item.get("caused_by_run_id")

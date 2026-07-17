@@ -31,7 +31,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 [Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的目标设计见
 [插件系统规格](dev/specs/plugin-system.md)，总体扩展架构与 Pi 对照见
 [插件系统扩展性架构与 Pi 对照](docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，`/goal` 映射见
-[插件系统扩展性与目标模式设计](docs/OURO_插件系统扩展性与目标模式设计_2026-07-17.md)。
+[插件系统扩展性与目标模式设计](docs/OURO_插件系统扩展性与目标模式设计_2026-07-17.md)，插件作者从
+[插件开发指南](docs/OURO_插件开发指南.md)与[可运行示例](examples/plugins/README.md)开始。
 
 ## 开发环境
 
@@ -75,11 +76,12 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 ## 插件
 
 原生插件使用 `.ouro-plugin/plugin.json`。产品模型把插件定义为系统级扩展，只分 builtin 与 user，不存在
-workspace/project 插件；当前开发版残留的 workspace scope 是待删除的过渡字段。安装只做静态校验和不可变发布，
+workspace/project 插件；插件安装、state、grant、CLI 和 DTO 已删除 workspace scope。安装只做静态校验和不可变发布，
 不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。第三方工具即使
 声明 `auto` 也会降级为审批。
 
 ```bash
+uv run ouro plugin scaffold ./my-plugin --plugin-id dev.example.plugin --name "Example plugin"
 uv run ouro plugin validate ./my-plugin --home ./.ouro-dev
 uv run ouro plugin install ./my-plugin --home ./.ouro-dev
 uv run ouro plugin authorize dev.example.plugin --home ./.ouro-dev
@@ -95,6 +97,7 @@ uv run ouro plugin update dev.example.plugin ./new-version --home ./.ouro-dev
 uv run ouro plugin authorize dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
 uv run ouro plugin trust-code dev.example.plugin --digest <candidate_digest> --home ./.ouro-dev
 uv run ouro plugin select dev.example.plugin <candidate_digest> --home ./.ouro-dev
+uv run ouro plugin reload dev.example.plugin ./my-plugin --authorize --trust-code --home ./.ouro-dev
 uv run ouro plugin rollback dev.example.plugin <package_digest> --home ./.ouro-dev
 uv run ouro plugin disable dev.example.plugin --home ./.ouro-dev
 uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
@@ -103,15 +106,34 @@ uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 `python-inprocess` 是用户明确授予的同进程完整代码信任；`worker` 提供进程和协议隔离，但不等于 OS 安全
 沙箱。`update` 只并排安装候选 digest，不隐式切换运行版本；候选版本须单独授权、配置并通过 `select` 发布。
 插件配置中的凭据只接受 manifest `credentials.use` 声明槽位对应的 `env:VARIABLE` 引用；worker 只得到临时
-环境变量名，秘密值不进入初始化 JSON。Claude/Codex/Pi/OpenCode 等社区包先通过
-`plugin import-report` 输出逐项兼容结论，OURO 不透明执行未知社区 Hook 或安装脚本。
-当前实现中，仍被可恢复 Run 引用的 plugin generation 不允许普通重启、禁用、选版或活动配置替换；重复
-`enable` 不会隐式重建 generation。该全局 barrier 模型是已知过渡架构，目标规格将以不可变 catalog、候选
-generation 原子切换和稳定执行契约替代，不能据当前行为推导长期兼容承诺。
+环境变量名，秘密值不进入初始化 JSON。`reload` 先并排安装本地候选，只有候选就绪才原子切换；缺少显式授权时旧
+Catalog 保持不变。Git source 在 checkout 前按 tree 校验路径、文件数和大小，subdirectory 使用 sparse checkout，
+不会先完整检出再校验。Claude/Codex/Pi/OpenCode 等社区包先通过 `plugin import-report` 输出 `supported`、
+`converted`、`ignored`、`incompatible` 逐项结论和明确 OURO target，不透明执行未知社区 Hook 或安装脚本。
+每个 Run 启动时取得一个结构冻结的 `ExtensionCatalogLease`；工具列表、工具执行、Hook、上下文、压缩、
+continuation 与 tool policy 在该 Run 内只读取同一 Catalog。插件变更构建候选 Catalog 后只短暂切换 current
+pointer，不再修改 Host 全局 registry，也不再等待无关 Run；旧 Run 与新 Run 可以同时使用不同 generation。
+configure/select/restart 会先完整构建受影响依赖闭包与候选 Catalog，再以 expected-state 比较提交并切换 pointer；
+失败不改变 current selection、active configuration revision 或旧 generation。disable/revoke 会关闭 generation gate，
+因此旧 Catalog 保留结构但不能发起新的插件回调。进程内旧 Run 由 Catalog lease 保留，不再阻断生命周期命令；
+跨进程恢复按稳定 `execution_contract_hash` 匹配 package、配置修订、依赖锁、API/protocol 和 contribution contract，
+不匹配随机 `generation_id`。插件已更新但旧 digest 与修订仍完整时，会构建只服务 durable Run 的非当前 Catalog，
+不改变 current selection 或 Background Service 单例；缺包或契约不一致时明确失败。重复 `enable` 不会隐式重建
+generation。
+
+Host 支持的十种 contribution 由封闭 `ContributionTypeAdapter` 清单统一接入 SDK/worker、候选准备、contract 和
+Catalog；插件不能动态注册新扩展点。Skill/MCP 是 generation-owned 资源，Background Service 是
+`activation-singleton`，其余可调用贡献均冻结在 Run Catalog 中。
+
+Plugin Skill 与启动 Runtime 时发现的 user/workspace Skill 进入同一 Run Catalog，按名称拒绝覆盖；每个声明必须
+恰好解析一个同名 `SKILL.md`。模型提示词从 Run lease 生成，因此禁用只影响新 Run，旧 lease 仍固定到不可变包。
+Plugin MCP 启用即连接：required 失败不发布候选，optional 失败进入 degraded，只有 connected server 产生 contract，
+工具结构冻结到该代 Catalog。Python in-process 的 canonical owned module 是 `<namespace>_plugin`，每代实际加载到
+`_ouro_plugin_<generation_id>`；bundled dependency 必须位于该 package 并使用相对 import，独立依赖环境使用 worker。
 
 Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
 唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回
-类型化会话输入；输入以 `system_synthetic` 和完整 generation provenance 持久化，不会冒充用户。Run
+类型化会话输入；输入以 `system_synthetic` 和完整 execution-contract provenance 持久化，不会冒充用户。Run
 continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
 插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
 `tool_policies` 可把工具提升为审批或拒绝，但不能批准、改写参数或降低 Host 权限，失败时默认拒绝。

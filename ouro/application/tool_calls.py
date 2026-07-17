@@ -649,6 +649,7 @@ class ToolCallCoordinator:
             package_digest=_optional_text(metadata.get("package_digest")),
             generation_id=_optional_text(metadata.get("generation_id")),
             contract_hash=_optional_text(metadata.get("contract_hash")),
+            execution_contract_hash=_optional_text(metadata.get("execution_contract_hash")),
         )
         sequence = await self.events.emit(
             emitted,

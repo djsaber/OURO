@@ -82,7 +82,12 @@ class RunContinuationService:
             usage=dict(run.usage),
         )
         controller_ids = {
-            (controller.plugin_id, controller.policy_id, controller.generation_id)
+            (
+                controller.plugin_id,
+                controller.policy_id,
+                controller.execution_contract_hash,
+                controller.contract_hash,
+            )
             for controller in checkpoint.controllers
         }
         evaluation = await self.registry.evaluate(
@@ -144,6 +149,7 @@ class RunContinuationService:
             plugin_id=attributed.plugin_id,
             policy_id=attributed.policy_id,
             generation_id=attributed.generation_id,
+            execution_contract_hash=attributed.execution_contract_hash,
             prompt=decision.prompt,
             mode=decision.mode,
             title=decision.title,
@@ -165,19 +171,20 @@ class RunContinuationService:
         plugin_id: str,
         policy_id: str,
         generation_id: str | None,
+        execution_contract_hash: str | None,
         prompt: str,
         mode: SessionInputMode,
         title: str | None,
         reason: str | None,
         state_revision: int | None,
     ) -> tuple[bool, RunRecord, str | None]:
-        if generation_id is None:
+        if generation_id is None or execution_contract_hash is None:
             resolved = self._resolve(
                 run,
                 action="pause",
-                reason="continuation_generation_missing",
+                reason="continuation_execution_contract_missing",
             )
-            return False, resolved, "continuation policy had no generation attribution"
+            return False, resolved, "continuation policy had no execution contract attribution"
 
         with self.store.session_mutation(run.session_id):
             snapshot = self.store.load_runtime_session(run.session_id)
@@ -249,6 +256,7 @@ class RunContinuationService:
                 plugin_id=plugin_id,
                 contribution_id=policy_id,
                 generation_id=generation_id,
+                execution_contract_hash=execution_contract_hash,
                 caused_by_run_id=run.run_id,
                 continuation_decision_id=checkpoint.decision_id,
             )

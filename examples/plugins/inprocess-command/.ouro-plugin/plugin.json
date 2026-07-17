@@ -1,0 +1,29 @@
+{
+  "schema_version": 2,
+  "plugin_id": "dev.ouro.examples.inprocess_command",
+  "name": "In-process Command Example",
+  "version": "0.1.0",
+  "description": "Contributes a trusted Python command.",
+  "namespace": "inprocess_command",
+  "engines": {
+    "ouro": ">=0.1.0,<0.2.0",
+    "plugin_api": "^1.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "inprocess_command_plugin:create_plugin"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "id": "hello",
+        "description": "Return a greeting."
+      }
+    ]
+  },
+  "permissions": [],
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

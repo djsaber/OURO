@@ -20,8 +20,7 @@ from ouro.config import (
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.tools import PermissionMode
-from ouro.prompts import render_agent_skills_prompt
-from ouro.skills import discover_available_skills
+from ouro.skills import SkillMetadata, discover_skill_catalog
 
 RuntimeProviderOptions = ProviderRuntimeOptions
 
@@ -35,7 +34,7 @@ class RuntimeConfigurationSnapshot:
     tool_execution: ToolExecutionConfig
     run_budget: RunBudgetPolicy
     queued_inputs: QueuedInputConfig
-    skills_prompt: str
+    skills: tuple[SkillMetadata, ...]
 
 
 class RuntimeConfigurationResolver:
@@ -57,6 +56,7 @@ class RuntimeConfigurationResolver:
         provider_options: ProviderRuntimeOptions | None = None,
         system_prompt: str | None = None,
     ) -> RuntimeConfigurationSnapshot:
+        skill_catalog = discover_skill_catalog(home=self.root)
         return RuntimeConfigurationSnapshot(
             provider_options=self._providers.resolve_runtime_options(
                 provider_options or ProviderRuntimeOptions()
@@ -67,7 +67,7 @@ class RuntimeConfigurationResolver:
             tool_execution=self._tool_execution.snapshot(),
             run_budget=self._run_budget.snapshot(),
             queued_inputs=self._queued_inputs.snapshot(),
-            skills_prompt=render_agent_skills_prompt(discover_available_skills(home=self.root)),
+            skills=tuple(skill.model_copy(deep=True) for skill in skill_catalog.skills),
         )
 
     def model_catalog(
