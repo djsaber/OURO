@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 
@@ -90,6 +91,38 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     )
     assert [event.event_type for event in first_after_zero] == ["run_started"]
     assert has_more is True
+
+
+def test_session_store_loads_runs_without_reading_journals(session_store: SessionStore) -> None:
+    session = SessionRecord(title="Runs")
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="hello",
+        sequence=1,
+    )
+    session_store.create_session_snapshot(session, [message])
+    run = RunRecord(session_id=session.session_id, status="completed")
+    session_store.save_run(run)
+
+    # Run queries read run records only; a broken message journal must not matter.
+    if isinstance(session_store, LocalSessionStore):
+        journal = session_store.sessions_dir / session.session_id / "messages.jsonl"
+        journal.write_text("{not json\n", encoding="utf-8")
+    else:
+        connection = sqlite3.connect(session_store.database)
+        try:
+            connection.execute(
+                "UPDATE messages SET payload = '{not json' WHERE session_id = ?",
+                (session.session_id,),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    assert session_store.load_runs(session.session_id) == [run]
+    with pytest.raises(FileNotFoundError):
+        session_store.load_runs("ses_missing")
 
 
 def test_session_store_resource_reference_ownership(session_store: SessionStore) -> None:

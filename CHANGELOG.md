@@ -66,6 +66,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Check plugin durable-generation references from Run records only, via a dedicated
+  `load_runs` store port, instead of loading complete Session snapshots; plugin lifecycle
+  operations no longer read (or fail on) unrelated Session journals.
 - Allow Interactive `/model provider/endpoint` before the first prompt and atomically persist that
   selection when the new Session is created.
 - Release the Session run lock before draining follow-up inputs after approval or AskUser

@@ -415,6 +415,11 @@ class SQLiteSessionStore:
                 raise FileNotFoundError(run_id)
             return self._validate_model(RunRecord, row[0], f"run {run_id}")
 
+    def load_runs(self, session_id: str) -> list[RunRecord]:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            return self._load_runs(connection, session_id)
+
     def list_sessions(self) -> list[SessionRecord]:
         with self._read_connection() as connection:
             return self._load_models(

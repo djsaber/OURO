@@ -772,8 +772,9 @@ class PluginService:
             return []
         references: builtins.list[str] = []
         for session in self.session_store.list_sessions():
-            snapshot = self.session_store.load_runtime_session(session.session_id)
-            for run in snapshot.runs:
+            # Only Run records carry generation references; Session journals
+            # are never read here.
+            for run in self.session_store.load_runs(session.session_id):
                 if run.status not in _PLUGIN_GENERATION_RETAINING_RUN_STATUSES:
                     continue
                 generations = run.metadata.get("extension_generations", [])

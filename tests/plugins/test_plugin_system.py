@@ -1201,6 +1201,31 @@ async def test_durable_generation_references_block_replacement_and_enable_is_ide
 
 
 @pytest.mark.asyncio
+async def test_remove_scans_runs_without_loading_session_journals(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_native_plugin(source)
+    home = tmp_path / "home"
+    sessions = LocalSessionStore(home)
+    sessions.initialize()
+    runtime, *_ = _runtime(home)
+    service = PluginService(runtime.store, runtime=runtime, session_store=sessions)
+    service.install(source)
+
+    session = SessionRecord(title="Broken journal")
+    sessions.create_session(session)
+    # Durable-reference checks read Run records only; a broken message journal
+    # in an unrelated Session must not block plugin lifecycle operations.
+    journal = sessions.sessions_dir / session.session_id / "messages.jsonl"
+    journal.write_text("{not json\n", encoding="utf-8")
+
+    result = await service.remove("dev.ouro.echo")
+
+    assert result.status == "disabled"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_shared_data_survives_nonfinal_digest_removal(tmp_path) -> None:
     first_source = tmp_path / "first"
     second_source = tmp_path / "second"

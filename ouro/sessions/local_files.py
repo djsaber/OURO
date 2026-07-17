@@ -254,6 +254,22 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             return self._load_runtime_session(session_id)
 
+    def load_runs(self, session_id: str) -> list[RunRecord]:
+        with self.session_mutation(session_id):
+            return self._load_runs(session_id)
+
+    def _load_runs(self, session_id: str) -> list[RunRecord]:
+        session_dir = self._require_session_dir(session_id)
+        try:
+            runs = [
+                RunRecord.model_validate_json(path.read_text("utf-8"))
+                for path in sorted((session_dir / "runs").glob("*.json"))
+            ]
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not load runs for session {session_id}: {exc}") from exc
+        runs.sort(key=_run_sort_key)
+        return runs
+
     def _load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
         session_dir = self._session_dir(session_id)
         try:
@@ -262,16 +278,12 @@ class LocalSessionStore:
                 MessageRecord.model_validate_json(line)
                 for line in self._read_jsonl(session_dir / "messages.jsonl")
             ]
-            runs = [
-                RunRecord.model_validate_json(path.read_text("utf-8"))
-                for path in sorted((session_dir / "runs").glob("*.json"))
-            ]
             compactions = self._load_compactions(session_dir)
         except FileNotFoundError:
             raise
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load session {session_id}: {exc}") from exc
-        runs.sort(key=_run_sort_key)
+        runs = self._load_runs(session_id)
         snapshot = RuntimeSessionSnapshot(
             session=session,
             messages=messages,
