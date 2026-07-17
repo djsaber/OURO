@@ -615,7 +615,6 @@ class PluginRuntimeResource:
         active = self._active.get(record.plugin_id)
         if active is not None:
             if isinstance(active.instance, WorkerPluginInstance) and not active.instance.is_healthy:
-                active.record.status = "failed"
                 active.gate.close()
                 self._schedule_generation_failure(active)
             return active.record.status
@@ -1123,6 +1122,7 @@ class PluginRuntimeResource:
                     reason="failure",
                 )
             except Exception as exc:  # noqa: BLE001 - gate is already fail-closed.
+                generation.record.status = "failed"
                 self._diagnostics.append(
                     PluginDiagnostic(
                         code="plugin_failure_reconciliation_failed",
@@ -1355,8 +1355,7 @@ class PluginRuntimeResource:
                             generation_id=generation.generation_id,
                         )
                     )
-                    if code == "worker_exit" and generation.status != "failed":
-                        generation.status = "failed"
+                    if code == "worker_exit":
                         generation_gate.close()
                         active = self._active.get(installed.plugin_id)
                         if (

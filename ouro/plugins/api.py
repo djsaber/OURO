@@ -164,7 +164,12 @@ class OwnedTaskGroup:
 
         async def run() -> object:
             await self._activated.wait()
-            return await coroutine
+            try:
+                return await coroutine
+            except Exception as exc:
+                if self._on_failure is not None:
+                    self._on_failure(exc)
+                raise
 
         task: asyncio.Task[object] = asyncio.create_task(run(), name=name)
         self._tasks.add(task)
@@ -179,9 +184,7 @@ class OwnedTaskGroup:
         self._tasks.discard(task)
         if task.cancelled():
             return
-        exception = task.exception()
-        if isinstance(exception, Exception) and self._on_failure is not None:
-            self._on_failure(exception)
+        task.exception()
 
     async def close(self, *, timeout: float = 5.0) -> None:
         if self._closed:
