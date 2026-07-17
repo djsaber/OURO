@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
 from ouro.application.resources import ResourceService
@@ -80,8 +81,13 @@ class LocalApplication:
         self.mcp = mcp
         self.plugin_runtime = plugin_runtime
         self.plugins = plugins
+        self._startup_report = ApplicationStartupReport()
         self._started = False
         self._closed = False
+
+    @property
+    def startup_report(self) -> ApplicationStartupReport:
+        return self._startup_report
 
     @classmethod
     def build(
@@ -158,7 +164,27 @@ class LocalApplication:
                 await self.runtime.close()
             self._closed = True
             raise
+        self._startup_report = self._collect_startup_report()
         self._started = True
+
+    def _collect_startup_report(self) -> ApplicationStartupReport:
+        diagnostics = list(self.plugins.startup_diagnostics() if self.plugins is not None else ())
+        diagnostics.extend(
+            Diagnostic(
+                code="mcp_startup_failed",
+                severity="error",
+                component="mcp",
+                message=(
+                    f"MCP server {record.config.server_id} failed to start: "
+                    f"{record.error or 'unknown error'}"
+                ),
+                server_id=record.config.server_id,
+                recoverable=True,
+                suggested_action="Check the MCP server configuration and retry.",
+            )
+            for record in self.mcp.startup_failures
+        )
+        return ApplicationStartupReport(diagnostics=tuple(diagnostics))
 
     async def close(self) -> None:
         if self._closed:

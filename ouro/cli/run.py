@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ouro.application.dto import ApplicationStartupReport
 from ouro.application.events import RuntimeEventSink
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
@@ -73,7 +74,7 @@ async def run_print(
             session_backend=session_backend,
         )
         async with LocalApplication.from_runtime(runtime, home=home) as application:
-            _print_mcp_startup_failures(application.mcp)
+            _print_startup_diagnostics(application.startup_report)
             result = await runtime.run(
                 prompt,
                 session_id=session_id,
@@ -108,6 +109,7 @@ async def run_json(
     resource_refs: list[str] | None = None,
     session_backend: SessionBackend | None = None,
 ) -> int:
+    startup_report = ApplicationStartupReport()
     try:
         runtime = build_default_runtime(
             home,
@@ -116,7 +118,7 @@ async def run_json(
             session_backend=session_backend,
         )
         async with LocalApplication.from_runtime(runtime, home=home) as application:
-            _print_mcp_startup_failures(application.mcp)
+            startup_report = application.startup_report
             result = await runtime.run(
                 prompt,
                 session_id=session_id,
@@ -148,6 +150,10 @@ async def run_json(
                 "error": result.run.error,
                 "usage": result.run.usage,
                 "events": [event.model_dump(mode="json") for event in result.events],
+                "startup_diagnostics": [
+                    item.model_dump(mode="json", exclude_none=True)
+                    for item in startup_report.diagnostics
+                ],
             },
             ensure_ascii=False,
         )
@@ -167,13 +173,11 @@ def _run_exit_code(result: RunResult) -> int:
     return 1
 
 
-def _print_mcp_startup_failures(resource: MCPRuntimeResource) -> None:
-    for record in resource.startup_failures:
-        print(
-            f"Warning: MCP server {record.config.server_id} failed to start: "
-            f"{record.error or 'unknown error'}",
-            file=sys.stderr,
-        )
+def _print_startup_diagnostics(report: ApplicationStartupReport) -> None:
+    for diagnostic in report.diagnostics:
+        print(f"Warning: {diagnostic.message}", file=sys.stderr)
+        if diagnostic.suggested_action:
+            print(f"  Action: {diagnostic.suggested_action}", file=sys.stderr)
 
 
 def _print_run_events(events: list[Any]) -> None:

@@ -507,6 +507,12 @@ OURO_HOME/plugins/
 ```
 
 - store 不可变；data 跨 user plugin 版本保留；
+- state.json 内容违反当前契约（旧 schema、非法编码、截断或损坏）时不得阻断 Host 启动：boot 路径将其隔离
+  重命名（不删除）并以空注册表降级启动，记录 diagnostic 与 audit；临时读取、权限、锁和其他 I/O 错误不得被
+  误判为内容损坏或触发隔离；
+- `LocalApplication` 将插件与 MCP 启动降级投影为 Host-neutral `ApplicationStartupReport`；Interactive、普通 run、
+  JSON 和未来 Host 必须显式呈现或编码该结果，不得静默运行于缺失的系统扩展之上；mutation 路径仍严格拒绝
+  非当前状态，并通过类型化 persistence error 返回，不得在无法解析的注册表上增量写入；
 - remove 默认保留 data；purge 必须显式；
 - 当前不提供公共 data migration/rollback compatibility 协议；数据格式改变必须显式 disable 后由插件处理，或由
   用户 purge/reinitialize；

@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from ouro.application.dto import ApplicationStartupReport
 from ouro.cli.terminal_status import (
     SpinnerSemantic,
     StatusTone,
@@ -140,6 +141,23 @@ class InteractiveOutput:
                 80,
             )
             self._write(f"  {symbol} {identity} · {_truncate(_single_line(details), 140)}\n")
+
+    async def report_plugin_startup(self, report: ApplicationStartupReport) -> None:
+        """Surface plugin startup degradation before the first prompt."""
+
+        startup = [item for item in report.diagnostics if item.component == "plugins"]
+        if not startup:
+            return
+        await self.status_line.clear()
+        summary = f"Plugins · {len(startup)} startup issue(s)"
+        rendered_summary = f"{_DIM}{summary}{_RESET}" if self.status_line.animated else summary
+        self._write(f"{rendered_summary}\n")
+        for item in startup:
+            symbol = self._status_symbol("error")
+            identity = _truncate(_single_line(item.plugin_id or "plugin-state"), 80)
+            self._write(f"  {symbol} {identity} · {_truncate(_single_line(item.message), 140)}\n")
+            if item.suggested_action:
+                self._write(f"    → {_truncate(_single_line(item.suggested_action), 140)}\n")
 
     async def close(self) -> None:
         await self.status_line.clear()

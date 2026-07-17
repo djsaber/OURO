@@ -80,6 +80,46 @@ def test_run_json_mode_outputs_machine_readable_result(tmp_path, capsys) -> None
     assert payload["usage"]["input_tokens"] == 1
     assert payload["usage"]["output_tokens"] == 4
     assert [event["event_type"] for event in payload["events"]][-1] == "run_completed"
+    assert payload["startup_diagnostics"] == []
+
+
+def test_run_print_surfaces_plugin_state_recovery_before_running(tmp_path, capsys) -> None:
+    plugin_root = tmp_path / "plugins"
+    plugin_root.mkdir()
+    (plugin_root / "state.json").write_text(
+        json.dumps({"schema_version": 1, "plugins": {}}),
+        encoding="utf-8",
+    )
+
+    code = main(["run", "--print", "--home", str(tmp_path), "hello"])
+
+    captured = capsys.readouterr()
+    assert code == 0
+    assert captured.out.strip() == "Hello from OURO."
+    assert "Warning: plugin state was unreadable and has been quarantined" in captured.err
+    assert "Action: Inspect" in captured.err
+    assert not (plugin_root / "state.json").exists()
+    assert len(list(plugin_root.glob("state.invalid-*.json"))) == 1
+
+
+def test_run_json_includes_plugin_state_recovery_diagnostic(tmp_path, capsys) -> None:
+    plugin_root = tmp_path / "plugins"
+    plugin_root.mkdir()
+    (plugin_root / "state.json").write_text(
+        json.dumps({"schema_version": 1, "plugins": {}}),
+        encoding="utf-8",
+    )
+
+    code = main(["run", "--json", "--home", str(tmp_path), "hello"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert code == 0
+    assert captured.err == ""
+    assert payload["status"] == "completed"
+    assert payload["startup_diagnostics"][0]["code"] == "plugin_state_reset"
+    assert payload["startup_diagnostics"][0]["component"] == "plugins"
+    assert payload["startup_diagnostics"][0]["recoverable"] is True
 
 
 async def test_run_print_reports_failed_runtime_result(

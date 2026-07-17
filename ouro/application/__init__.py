@@ -7,6 +7,7 @@ from ouro.application.configuration_models import (
     MCPConnectionCheckView,
     MCPServerConfigView,
 )
+from ouro.application.dto import ApplicationStartupReport
 from ouro.application.event_models import RuntimeEventView
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.resources import ResourceService
@@ -54,6 +55,7 @@ from ouro.application.usage_models import (
 from ouro.core.results import RunResult
 
 __all__ = [
+    "ApplicationStartupReport",
     "ConfigurationFacade",
     "ConfigurationOverview",
     "MCPConfigCatalogView",

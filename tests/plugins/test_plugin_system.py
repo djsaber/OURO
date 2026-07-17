@@ -41,11 +41,16 @@ from ouro.plugins.dependencies import (
 )
 from ouro.plugins.manifest import PluginContributes, PluginManifest
 from ouro.plugins.mcp import PluginMCPResource
-from ouro.plugins.models import PluginGenerationRecord
+from ouro.plugins.models import PluginGenerationRecord, PluginStateDocument
 from ouro.plugins.package import PluginPackageError, validate_plugin_package
 from ouro.plugins.registry import PluginCommand, PluginCommandError, PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
-from ouro.plugins.store import PluginPackageStore, PluginStoreError
+from ouro.plugins.store import (
+    PluginPackageStore,
+    PluginStateFormatError,
+    PluginStoreError,
+    PluginStoreIOError,
+)
 from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
@@ -270,6 +275,60 @@ def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tm
         encoding="utf-8",
     )
     with pytest.raises(PluginStoreError, match="invalid plugin state"):
+        store.read_state()
+
+
+def test_boot_recovery_quarantines_unreadable_state_instead_of_raising(tmp_path) -> None:
+    store = PluginPackageStore(tmp_path / "home")
+    store.initialize()
+    original = json.dumps({"schema_version": 1, "plugins": {}})
+    store.state_path.write_text(original, encoding="utf-8")
+
+    recovery = store.recover_state()
+
+    assert recovery.state == PluginStateDocument()
+    assert recovery.error is not None
+    assert recovery.quarantine_path is not None
+    assert recovery.quarantine_path.read_text(encoding="utf-8") == original
+    # Recovery heals the document: strict reads see an empty registry again.
+    assert not store.state_path.exists()
+    assert store.read_state() == PluginStateDocument()
+
+
+def test_boot_recovery_passes_through_a_readable_state(tmp_path) -> None:
+    store = PluginPackageStore(tmp_path / "home")
+    store.initialize()
+
+    recovery = store.recover_state()
+
+    assert recovery.state == PluginStateDocument()
+    assert recovery.error is None
+    assert recovery.quarantine_path is None
+
+
+def test_boot_recovery_does_not_quarantine_io_failures(tmp_path, monkeypatch) -> None:
+    store = PluginPackageStore(tmp_path / "home")
+    store.initialize()
+    store.state_path.write_text(PluginStateDocument().model_dump_json(), encoding="utf-8")
+
+    def fail_read(*_args, **_kwargs):
+        raise PermissionError("state is temporarily unavailable")
+
+    monkeypatch.setattr(Path, "read_text", fail_read)
+
+    with pytest.raises(PluginStoreIOError, match="could not read plugin state"):
+        store.recover_state()
+
+    assert store.state_path.exists()
+    assert not list(store.root.glob("state.invalid-*.json"))
+
+
+def test_state_format_error_remains_a_typed_persistence_failure(tmp_path) -> None:
+    store = PluginPackageStore(tmp_path / "home")
+    store.initialize()
+    store.state_path.write_text('{"schema_version": 1, "plugins": {}}', encoding="utf-8")
+
+    with pytest.raises(PluginStateFormatError, match="invalid plugin state"):
         store.read_state()
 
 
@@ -1817,6 +1876,53 @@ def create_plugin(context): return Plugin(context)
         "opaque-inprocess-secret-value" not in item.message
         for item in service.diagnostics("dev.ouro.inprocess_credentials")
     )
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_plugin_state_degrades_startup_to_empty_catalog(tmp_path) -> None:
+    runtime, *_ = _runtime(tmp_path / "home")
+    runtime.store.initialize()
+    runtime.store.state_path.write_text(
+        json.dumps({"schema_version": 1, "plugins": {}}),
+        encoding="utf-8",
+    )
+
+    await runtime.start()
+
+    with runtime.snapshot() as snapshot:
+        assert list(snapshot.generations) == []
+    diagnostic = next(item for item in runtime.diagnostics() if item.code == "plugin_state_reset")
+    assert diagnostic.phase == "startup"
+    assert any(event.action == "state_reset" for event in runtime.store.audit_events())
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_plugin_runtime_can_retry_after_transient_state_io_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime, *_ = _runtime(tmp_path / "home")
+    original_recover = runtime.store.recover_state
+    attempts = 0
+
+    def recover_state():
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PluginStoreIOError("plugin state is temporarily unavailable")
+        return original_recover()
+
+    monkeypatch.setattr(runtime.store, "recover_state", recover_state)
+
+    with pytest.raises(PluginStoreIOError, match="temporarily unavailable"):
+        await runtime.start()
+    await runtime.start()
+
+    assert attempts == 2
+    with runtime.snapshot() as snapshot:
+        assert list(snapshot.generations) == []
     await runtime.close()
 
 

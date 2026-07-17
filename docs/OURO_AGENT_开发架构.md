@@ -324,6 +324,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - `PluginPackageStore` 分离 immutable code、mutable state 与 plugin data；installer 从真实 local/Git/archive
   来源生成 provenance。安装阶段只校验包、路径、schema、MCP 描述符和兼容范围，不 import 或启动插件代码；
   激活前重新验证存储树和 digest，避免被修改的“不可变”包进入执行边界。
+- plugin state 内容不满足当前 schema/编码契约时，启动读取在 mutation lock 内隔离原文件并以空 Catalog 降级；
+  文件系统 I/O 错误保持为类型化 persistence failure，不能触发隔离。`LocalApplication.startup_report` 将插件与 MCP
+  启动诊断统一投影给 Host，普通输出、JSON、Interactive、TUI 与 Desktop 不得静默忽略系统扩展降级。
 - code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先关闭 generation
   gate 并发布不含受影响 generation closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
   reference 的内容寻址 immutable revision，selected digest 通过 active revision id 引用；配置/选版与候选 Catalog

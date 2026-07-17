@@ -4,10 +4,13 @@ import json
 import os
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
+from ouro.core.base import utc_now
+from ouro.core.errors import PersistenceError
 from ouro.local_locks import FileMutationLock
 from ouro.plugins.models import PluginAuditEvent, PluginStateDocument
 from ouro.plugins.package import (
@@ -17,12 +20,29 @@ from ouro.plugins.package import (
 )
 
 
-class PluginStoreError(RuntimeError):
+class PluginStoreError(PersistenceError):
     pass
 
 
 class PluginStateConflictError(PluginStoreError):
     pass
+
+
+class PluginStateFormatError(PluginStoreError):
+    """The state bytes are readable but violate the current state contract."""
+
+
+class PluginStoreIOError(PluginStoreError):
+    """The plugin store could not complete a filesystem operation."""
+
+
+@dataclass(frozen=True)
+class PluginStateRecovery:
+    """Boot-time read of plugin state, including any quarantine that produced it."""
+
+    state: PluginStateDocument
+    quarantine_path: Path | None = None
+    error: str | None = None
 
 
 class PluginPackageStore:
@@ -94,10 +114,39 @@ class PluginPackageStore:
         if not self.state_path.exists():
             return PluginStateDocument()
         try:
-            raw = json.loads(self.state_path.read_text(encoding="utf-8"))
+            content = self.state_path.read_text(encoding="utf-8")
+        except UnicodeError as exc:
+            raise PluginStateFormatError(f"invalid plugin state encoding: {exc}") from exc
+        except OSError as exc:
+            raise PluginStoreIOError(f"could not read plugin state: {exc}") from exc
+        try:
+            raw = json.loads(content)
             return PluginStateDocument.model_validate(raw)
-        except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
-            raise PluginStoreError(f"invalid plugin state: {exc}") from exc
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise PluginStateFormatError(f"invalid plugin state: {exc}") from exc
+
+    def recover_state(self) -> PluginStateRecovery:
+        """Read plugin state for Host boot, quarantining an unreadable document.
+
+        The plugin subsystem is optional to the Host: an unreadable state
+        document (old schema, truncated write, corruption) must degrade the
+        subsystem to an empty registry instead of failing the boot.  The
+        rejected file is renamed, never deleted, so the event stays auditable
+        and recorded grants remain inspectable.  Mutation paths keep using
+        ``read_state`` and stay strict: they must never build on top of a
+        registry they could not parse.
+        """
+
+        self.initialize()
+        with FileMutationLock(self.lock_root / "state-mutations.lock"):
+            try:
+                return PluginStateRecovery(state=self.read_state())
+            except PluginStateFormatError as exc:
+                return PluginStateRecovery(
+                    state=PluginStateDocument(),
+                    quarantine_path=self._quarantine_state_document(),
+                    error=str(exc),
+                )
 
     def mutate_state(
         self,
@@ -181,6 +230,15 @@ class PluginPackageStore:
 
     def plugin_lock(self, plugin_id: str) -> FileMutationLock:
         return FileMutationLock(self.lock_root / f"{plugin_id}.lock")
+
+    def _quarantine_state_document(self) -> Path:
+        stamp = f"{utc_now():%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+        target = self.state_path.with_name(f"{self.state_path.stem}.invalid-{stamp}.json")
+        try:
+            self.state_path.rename(target)
+        except OSError as exc:
+            raise PluginStoreIOError(f"could not quarantine invalid plugin state: {exc}") from exc
+        return target
 
     def _write_state_unlocked(self, state: PluginStateDocument) -> None:
         self.state_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.cli.interactive_io import InteractiveOutput
 from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
@@ -504,3 +505,35 @@ async def test_interactive_output_summarizes_mcp_connection_records() -> None:
     assert "MCP · 1 connected · 1 failed · 2 tool(s)" in rendered
     assert "● Docs [docs] · stdio · 2 tool(s)" in rendered
     assert "● Broken [broken] · failed · process exited" in rendered
+
+
+async def test_interactive_output_surfaces_plugin_startup_diagnostics() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+
+    await output.report_plugin_startup(
+        ApplicationStartupReport(
+            diagnostics=(
+                Diagnostic(
+                    code="plugin_state_reset",
+                    severity="error",
+                    component="plugins",
+                    message="plugin state was unreadable and has been quarantined",
+                    suggested_action="Inspect state.invalid-1.json and reinstall any plugin.",
+                ),
+                Diagnostic(
+                    code="mcp_startup_failed",
+                    severity="error",
+                    component="mcp",
+                    message="unrelated MCP startup diagnostic",
+                    server_id="docs",
+                ),
+            )
+        )
+    )
+
+    rendered = "".join(outputs)
+    assert "Plugins · 1 startup issue(s)" in rendered
+    assert "● plugin-state · plugin state was unreadable and has been quarantined" in rendered
+    assert "→ Inspect state.invalid-1.json and reinstall any plugin." in rendered
+    assert "unrelated MCP startup diagnostic" not in rendered

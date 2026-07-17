@@ -135,6 +135,22 @@ def test_plugin_cli_has_no_workspace_install_scope(tmp_path) -> None:
         )
 
 
+def test_plugin_cli_strict_state_error_is_typed_and_does_not_quarantine(tmp_path, capsys) -> None:
+    plugin_root = tmp_path / "home" / "plugins"
+    plugin_root.mkdir(parents=True)
+    state = plugin_root / "state.json"
+    state.write_text(json.dumps({"schema_version": 1, "plugins": {}}), encoding="utf-8")
+
+    code = main(["plugin", "list", "--home", str(tmp_path / "home"), "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert code == 7
+    assert payload["status"] == "failed"
+    assert payload["error_type"] == "PluginStateFormatError"
+    assert state.exists()
+    assert not list(plugin_root.glob("state.invalid-*.json"))
+
+
 def test_plugin_cli_reports_validation_and_compatibility(tmp_path, capsys) -> None:
     invalid = tmp_path / "invalid"
     invalid.mkdir()

@@ -178,9 +178,33 @@ class PluginRuntimeResource:
             raise RuntimeError("plugin runtime is closed")
         if self._started:
             return
-        self._started = True
         self._ensure_catalog()
-        state = self.store.read_state()
+        recovery = self.store.recover_state()
+        self._started = True
+        if recovery.quarantine_path is not None:
+            self._diagnostics.append(
+                PluginDiagnostic(
+                    code="plugin_state_reset",
+                    phase="startup",
+                    message=(
+                        "plugin state was unreadable and has been quarantined: "
+                        f"{redact_text(recovery.error or 'unknown error')}"
+                    ),
+                    suggested_action=(
+                        f"Inspect {recovery.quarantine_path} and reinstall any plugin "
+                        "that should be active."
+                    ),
+                )
+            )
+            self.store.append_audit(
+                PluginAuditEvent(
+                    action="state_reset",
+                    detail=(
+                        f"unreadable plugin state quarantined to {recovery.quarantine_path.name}"
+                    ),
+                )
+            )
+        state = recovery.state
         desired_roots = sorted(
             plugin_id
             for plugin_id, record in state.plugins.items()

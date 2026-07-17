@@ -4,6 +4,7 @@ import builtins
 from collections.abc import Mapping
 from pathlib import Path
 
+from ouro.application.dto import Diagnostic
 from ouro.application.plugin_models import (
     CompatibilityItemView,
     CompatibilityReportView,
@@ -209,6 +210,36 @@ class PluginService:
 
     def diagnostics(self, plugin_id: str | None = None) -> builtins.list[PluginDiagnostic]:
         return self.runtime.diagnostics(plugin_id) if self.runtime is not None else []
+
+    def startup_diagnostics(self) -> tuple[Diagnostic, ...]:
+        """Project plugin startup failures into the Host-neutral diagnostic contract."""
+
+        return tuple(
+            Diagnostic(
+                code=item.code,
+                severity=item.severity,
+                component="plugins",
+                message=item.message,
+                plugin_id=item.plugin_id,
+                occurred_at=item.created_at,
+                recoverable=item.retryable or item.code == "plugin_state_reset",
+                suggested_action=item.suggested_action,
+                metadata={
+                    key: value
+                    for key, value in (
+                        ("phase", item.phase),
+                        ("version", item.version),
+                        ("package_digest", item.package_digest),
+                        ("generation_id", item.generation_id),
+                        ("contribution_id", item.contribution_id),
+                        ("correlation_id", item.correlation_id),
+                    )
+                    if value is not None
+                },
+            )
+            for item in self.diagnostics()
+            if item.phase == "startup"
+        )
 
     def list_commands(self) -> builtins.list[PluginCommandView]:
         snapshot = self._require_runtime().snapshot()

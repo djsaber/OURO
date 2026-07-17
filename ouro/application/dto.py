@@ -30,3 +30,9 @@ class Diagnostic(ApplicationDTO):
     recoverable: bool = False
     suggested_action: str | None = None
     metadata: Metadata = MetadataField
+
+
+class ApplicationStartupReport(ApplicationDTO):
+    """Host-neutral diagnostics produced while application resources start."""
+
+    diagnostics: tuple[Diagnostic, ...] = ()
