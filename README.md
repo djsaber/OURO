@@ -20,9 +20,9 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
-- 完整插件系统：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
+- 插件首版管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
   declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
-  side-by-side 更新/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
+  候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
   通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
   Host-owned 工具执行上下文与限制性 tool policy 实现 plan mode、危险命令确认和受保护路径等通用扩展。
 
@@ -74,8 +74,10 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 ## 插件
 
-原生插件使用 `.ouro-plugin/plugin.json`。安装只做静态校验和不可变发布，不 import entrypoint、启动 worker
-或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。第三方工具即使声明 `auto` 也会降级为审批。
+原生插件使用 `.ouro-plugin/plugin.json`。产品模型把插件定义为系统级扩展，只分 builtin 与 user，不存在
+workspace/project 插件；当前开发版残留的 workspace scope 是待删除的过渡字段。安装只做静态校验和不可变发布，
+不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。第三方工具即使
+声明 `auto` 也会降级为审批。
 
 ```bash
 uv run ouro plugin validate ./my-plugin --home ./.ouro-dev
@@ -103,8 +105,9 @@ uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 插件配置中的凭据只接受 manifest `credentials.use` 声明槽位对应的 `env:VARIABLE` 引用；worker 只得到临时
 环境变量名，秘密值不进入初始化 JSON。Claude/Codex/Pi/OpenCode 等社区包先通过
 `plugin import-report` 输出逐项兼容结论，OURO 不透明执行未知社区 Hook 或安装脚本。
-仍被可恢复 Run 引用的 plugin generation 不允许普通重启、禁用、选版或活动配置替换；重复 `enable` 不会
-隐式重建 generation。
+当前实现中，仍被可恢复 Run 引用的 plugin generation 不允许普通重启、禁用、选版或活动配置替换；重复
+`enable` 不会隐式重建 generation。该全局 barrier 模型是已知过渡架构，目标规格将以不可变 catalog、候选
+generation 原子切换和稳定执行契约替代，不能据当前行为推导长期兼容承诺。
 
 Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
 唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回

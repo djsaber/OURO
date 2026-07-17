@@ -12,7 +12,8 @@
 
 完整契约见[插件系统目标规格](plugin-system.md)。本平台规格只保留以下总体约束：插件生命周期不得改变
 core 依赖方向和 durable Run 语义；同进程插件明确标注 full trust，worker 只承诺崩溃/依赖隔离而不冒充
-OS 沙箱；任意 Host 都通过 application facade/DTO 管理插件。
+OS 沙箱；插件只有 composition root 提供的 builtin 与 `OURO_HOME` 中的 user 两类，不存在 project/workspace
+插件；任意 Host 都通过 application facade/DTO 管理插件。
 
 ## Desktop Host
 

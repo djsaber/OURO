@@ -14,9 +14,16 @@
 ## 近期：连接与扩展
 
 个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）、后端中立 SessionRepository、
-SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及完整插件生命周期、Run continuation、
-工具执行上下文和限制性 tool policy 控制面已完成并转入当前规格。插件后续只在真实需求出现时增加 catalog/签名信任根、worker 独立依赖环境、
-OS sandbox 或通用 session-scoped KV/CAS；不得以 placeholder schema 提前宣称这些能力。
+SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及插件首版管理闭环、Run continuation、工具执行
+上下文和限制性 tool policy 控制面已经完成。
+
+插件系统下一阶段不是叠加更多 manifest 字段，而是按[连接与扩展计划](../dev/plans/connectivity-extensions.md)收敛
+底层模型：删除 workspace/managed 等插件 scope，只保留 builtin/user；以不可变 `ExtensionCatalog` 和候选 generation
+原子切换替代全局 barrier；补齐依赖健康传播、observed state、内部 contribution adapter、worker 取消/退出、Plugin
+Skills/MCP 生命周期和稳定执行契约。当前开发阶段直接升级契约并拒绝旧格式，不为历史兼容保留双路径。
+
+Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 都不是
+当前目标；只有真实插件提出不可由现有边界满足的需求时才重新评估。
 
 ### TUI Host
 

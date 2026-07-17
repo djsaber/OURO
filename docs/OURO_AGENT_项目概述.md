@@ -83,10 +83,11 @@ MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy S
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
-插件系统已提供严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability grant、
-declarative/Python in-process/stdio worker runtime、原子 owner contribution、generation-safe Run、依赖解析、
-更新/回滚、Skills/MCP/background service 和兼容报告。in-process 是用户明确授予的同进程代码信任；worker
-提供进程与协议隔离，但不是 OS sandbox。
+插件系统已提供首版完整闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
+grant、declarative/Python in-process/stdio worker runtime、原子 owner contribution、generation snapshot、依赖解析、
+更新/回滚、Skills/MCP/background service 和兼容报告。插件是 OURO 系统级模块，正式来源只分 builtin 与 user；
+workspace/project 只影响一次执行的上下文，不存在项目插件；当前开发版的 workspace scope 过渡字段将在目标模型
+收敛时删除。in-process 是用户明确授予的同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
@@ -96,8 +97,9 @@ declarative/Python in-process/stdio worker runtime、原子 owner contribution�
 
 插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
-用户在审批中修改参数后会以最终参数重新评估。完整 Pi 对照与未来扩展判定规则见
-[插件系统扩展性架构与 Pi 对照](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
+用户在审批中修改参数后会以最终参数重新评估。当前 generation-safe 实现依赖全局 catalog barrier，候选启动也还
+不是运行时原子切换；下一阶段将改为不可变 catalog、per-generation gate、依赖健康协调和稳定执行契约。完整审查
+与取舍见[插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
 
 ### 资源与后台运行
 
@@ -182,8 +184,9 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 
 - TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
 - Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
-- 插件生态深化：catalog、签名/publisher trust root、worker OS sandbox/独立依赖环境，以及在出现多个真实
-  消费者后再评估 session-scoped KV/CAS。
+- 插件底层架构收敛：builtin/user 单一来源模型、不可变 `ExtensionCatalog`、候选 generation 原子切换、依赖
+  reconciler、内部 contribution adapter、worker/Skills/MCP 生命周期和稳定执行契约。Marketplace、签名、publisher
+  policy、OS sandbox、项目插件与历史兼容层不在当前范围。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
 - 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。
