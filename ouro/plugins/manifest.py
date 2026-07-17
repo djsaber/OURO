@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.hooks import HookName, PluginSource
+from ouro.core.hooks import HookName
 from ouro.core.tools import PermissionMode
 from ouro.plugins.semver import SemVer, validate_version_range
 
@@ -44,21 +44,6 @@ _PLUGIN_ID = re.compile(
     re.IGNORECASE,
 )
 _EXPOSED_TOOL = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,127}\Z")
-
-
-class PluginPermissions(OuroModel):
-    """Legacy permission grant used only by the 0.1 loader bridge."""
-
-    read_write: bool = False
-    network: bool = False
-
-    def missing_from(self, grant: PluginPermissions) -> list[str]:
-        missing: list[str] = []
-        if self.read_write and not grant.read_write:
-            missing.append("read_write")
-        if self.network and not grant.network:
-            missing.append("network")
-        return missing
 
 
 class PermissionRequest(OuroModel):
@@ -311,39 +296,6 @@ class PluginManifest(OuroModel):
         if self.plugin_id in dependencies:
             raise ValueError("plugin cannot depend on itself")
         return self
-
-
-class PluginHookSpec(OuroModel):
-    """Legacy 0.1 hook declaration."""
-
-    hook_name: HookName
-    priority: int = 100
-    permissions_required: list[Literal["read_write", "network"]] = Field(default_factory=list)
-    timeout_seconds: float | None = Field(default=None, gt=0, le=30)
-
-
-class LegacyPluginManifest(OuroModel):
-    schema_version: int = 1
-    plugin_id: str
-    name: str
-    version: str
-    source_type: PluginSource = "third_party"
-    entrypoint: str | None = None
-    description: str = ""
-    capabilities: list[str] = Field(default_factory=list)
-    permissions: PluginPermissions = Field(default_factory=PluginPermissions)
-    config_schema: dict[str, Any] = Field(default_factory=dict)
-    commands: list[dict[str, Any]] = Field(default_factory=list)
-    tools: list[dict[str, Any]] = Field(default_factory=list)
-    mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
-    skills: list[dict[str, Any]] = Field(default_factory=list)
-    runtime_hooks: list[PluginHookSpec] = Field(default_factory=list)
-    metadata: Metadata = MetadataField
-
-    @field_validator("plugin_id")
-    @classmethod
-    def _validate_plugin_id(cls, value: str) -> str:
-        return validate_plugin_id(value)
 
 
 def validate_plugin_id(value: str) -> str:

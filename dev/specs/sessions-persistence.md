@@ -61,13 +61,14 @@ Canonical 数据包括：
 
 ## SessionStore 契约
 
-端口覆盖：初始化、创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、加载、索引、
-回收站发布以及 session lock。新的后端必须保持这些行为语义，而不只是复制方法签名。
+端口覆盖：创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、加载、索引、回收站发布以及
+session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，而不只是复制方法签名。
 
 运行热路径使用不含 events 的 `RuntimeSessionSnapshot`；`SessionSnapshot` 是包含完整事件历史的查询与回放
 视图。application 只有在检查、导出、回放或重建活动投影时才能请求完整快照，普通 Run、工具恢复、上下文
 准备和队列消费不得为了 Session 状态或 event sequence 加载完整事件日志。event sequence 由 Store 通过独立
-轻量端口提供。
+轻量端口提供。只需要 Run 元数据的检查（如插件 durable generation 引用扫描）使用独立的 Run 记录只读端口，
+不为此加载消息或事件日志。
 
 ## 锁与并发
 

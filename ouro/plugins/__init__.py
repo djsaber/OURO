@@ -1,7 +1,7 @@
 """Plugin discovery and registration boundaries."""
 
-from ouro.plugins.loader import DiscoveredPlugin, PluginContributions, PluginLoader
-from ouro.plugins.manifest import PluginCapability, PluginManifest, PluginPermissions
+from ouro.plugins.contributions import PluginContributions
+from ouro.plugins.manifest import PluginCapability, PluginManifest
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandError,
@@ -12,7 +12,6 @@ from ouro.plugins.registry import (
 )
 
 __all__ = [
-    "DiscoveredPlugin",
     "PluginCommand",
     "PluginCommandError",
     "PluginCommandRequest",
@@ -21,7 +20,5 @@ __all__ = [
     "PluginCapability",
     "PluginContributions",
     "PluginContextProvider",
-    "PluginLoader",
     "PluginManifest",
-    "PluginPermissions",
 ]

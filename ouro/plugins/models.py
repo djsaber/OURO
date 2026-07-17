@@ -31,7 +31,6 @@ class InstalledPlugin(OuroModel):
     manifest: PluginManifest
     provenance: PluginProvenance
     installed_at: datetime = Field(default_factory=utc_now)
-    legacy: bool = False
 
 
 class CapabilityGrant(OuroModel):

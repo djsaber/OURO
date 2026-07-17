@@ -1,6 +1,6 @@
 # Skills 与扩展规格
 
-状态：当前（Skills、Hook、注册边界）；目标能力见末节
+状态：当前
 
 ## Agent Skills
 
@@ -55,15 +55,14 @@ AI-generated，然后按 priority/plugin id。
 
 ## 插件注册边界
 
-当前 `PluginLoader`：
+原生插件的包、安装、授权、运行时和贡献事务由[插件系统规格](plugin-system.md)定义。本规格保留共享
+registry 的共同扩展边界：
 
-- 发现和校验 `plugin.json`；
-- 根据显式 enablement 决定状态；
-- 注册外部提供的 tools、hooks、commands、context providers 和 compaction strategies；
-- 隔离单项 contribution 失败；
-- 禁止插件使用 `builtin.*` 压缩策略 id。
-
-当前不自动 import manifest entrypoint，不执行安装、授权或升级。
+- 插件贡献经 owner-aware registry 原子发布与撤销（`replace_owner`/`unregister_owner`），单项冲突导致整组
+  不发布；
+- 插件不得使用 `builtin.*` 压缩策略 id；
+- entrypoint 只在授权后由 generation runtime 加载，注册边界本身不 import 插件代码；
+- 目标实现不得重新建立一套绕过现有 ToolExecutor、Hook failure 和 durable Run 的平行执行路径。
 
 ## MCP 框架边界
 
@@ -73,9 +72,8 @@ MCP 已从注册占位边界演进为真实客户端。当前 transport、配置
 ## 目标扩展能力
 
 完整插件的包、来源信任、权限确认、entrypoint/worker 生命周期、贡献事务、durable generation、兼容、
-更新与回滚由[插件系统目标规格](plugin-system.md)定义。本规格继续作为当前 Skills、Hook 和 contribution
-注册边界的事实来源；目标实现不得重新建立一套绕过现有 ToolExecutor、Hook failure 和 durable Run 的
-平行执行路径。
+更新与回滚由[插件系统规格](plugin-system.md)定义。本规格继续作为当前 Skills、Hook 和 contribution
+注册边界的事实来源。
 
 ## 验收证据
 
@@ -83,5 +81,5 @@ MCP 已从注册占位边界演进为真实客户端。当前 transport、配置
 - `tests/skills/test_skill_manager.py`
 - `tests/cli/test_skill_management_cli.py`
 - `tests/core/test_hooks.py`
-- `tests/plugins/test_plugin_loader.py`
+- `tests/plugins/test_plugin_system.py`
 - `tests/mcp/test_manager.py`

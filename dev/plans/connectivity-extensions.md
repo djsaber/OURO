@@ -11,7 +11,7 @@
 
 - Application 配置门面能够管理扩展配置和 credential refs。
 - RuntimeSupervisor 为长生命周期 server、订阅和关闭提供进程所有权。
-- ToolExecutor、HookRegistry 和 PluginLoader 当前测试保持绿色。
+- ToolExecutor、HookRegistry 和插件系统当前测试保持绿色。
 
 ## 工作流 A：MCP transport
 
@@ -64,7 +64,7 @@
 
 ### B1. 包、来源与不可变 Store
 
-- [ ] 新增 `.ouro-plugin/plugin.json` schema v1 和 root `plugin.json` legacy parser；安全字段拒绝 unknown。
+- [ ] 新增 `.ouro-plugin/plugin.json` schema v1；安全字段拒绝 unknown。
 - [ ] 严格校验 plugin id、SemVer、OURO/Plugin API range、entrypoint、相对路径、文件类型和 capability。
 - [ ] 实现 local/Git/archive source provider；ref 固定为 commit，来源记录由 installer 生成且不可自报。
 - [ ] materialize 受文件数、单文件/总大小、压缩比限制；拒绝 symlink、reparse、越界路径和安装脚本。

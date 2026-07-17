@@ -81,7 +81,6 @@ class PluginInstaller:
                 package_digest=package.package_digest,
                 manifest=package.manifest,
                 provenance=provenance,
-                legacy=package.legacy,
             )
             result = self._record_install(installed)
         self.store.append_audit(

@@ -108,7 +108,7 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列，每
 符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
 
 队列项具备唯一 id；只有用户消息已经持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，
-必须只确认队列而不重复追加消息。旧 follow-up 队列项没有模式字段时按 `follow_up` 解释。
+必须只确认队列而不重复追加消息。缺少必需字段的队列项按无效项移除，不按旧格式补全。
 
 审批和 AskUser 恢复属于原 Run 的同一锁事务。恢复后即使 Run 已 completed，也不能在该锁的作用域内递归
 启动 follow-up；后续 Run 必须等恢复入口释放非重入 session run lock 后再取得新的锁。

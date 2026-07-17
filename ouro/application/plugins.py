@@ -95,7 +95,6 @@ class PluginService:
             version=package.manifest.version,
             package_digest=package.package_digest,
             runtime_kind=package.manifest.runtime.kind,
-            legacy=package.legacy,
             file_count=package.file_count,
             total_bytes=package.total_bytes,
         )
@@ -722,7 +721,6 @@ class PluginService:
             runtime_kind=installed.manifest.runtime.kind,
             scope=provenance.scope,
             selected=record.activation.selected_digest == installed.package_digest,
-            legacy=installed.legacy,
             provenance=PluginProvenanceView(
                 source_kind=provenance.source_kind,
                 public_source=provenance.public_source,

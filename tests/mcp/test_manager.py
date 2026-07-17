@@ -312,7 +312,7 @@ async def test_invalid_discovered_schema_fails_without_partial_registration() ->
     assert registry.names() == []
 
 
-def test_explicit_adapter_registration_preserves_legacy_custom_clients() -> None:
+def test_register_tools_marks_tools_with_server_id() -> None:
     manager = MCPManager()
     manager.configure(_config())
     registry = ToolRegistry()

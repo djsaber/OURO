@@ -33,6 +33,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Removed the legacy 0.1 plugin bridge: root-level `plugin.json` packages are no longer accepted, the
+  `PluginLoader`/`LegacyPluginManifest` compatibility layer and the `legacy` flags on install records and
+  application DTOs are gone, and queued Session inputs with missing fields are dropped as invalid instead of
+  being completed from older shapes.
 - Plugin startup now isolates broken desired roots, verifies immutable package bytes before every
   execution, validates credential slots end to end, negotiates the worker protocol without sending
   secrets in JSON-RPC, restores the previous generation after failed activation/configuration, and

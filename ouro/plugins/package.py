@@ -11,20 +11,7 @@ from typing import Any
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
-from ouro.plugins.manifest import (
-    CommandContributionSpec,
-    HookContributionSpec,
-    LegacyPluginManifest,
-    NamedContributionSpec,
-    PathContributionSpec,
-    PermissionRequest,
-    PluginContributes,
-    PluginDependencies,
-    PluginEngines,
-    PluginManifest,
-    PluginRuntimeSpec,
-    ToolContributionSpec,
-)
+from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
@@ -32,7 +19,6 @@ OURO_VERSION = "0.1.0"
 PLUGIN_API_VERSION = "1.0.0"
 WORKER_PROTOCOL_VERSION = "1.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"
-LEGACY_MANIFEST = Path("plugin.json")
 
 _REJECTED_PARTS = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache"}
 
@@ -55,11 +41,6 @@ class ValidatedPluginPackage:
     package_digest: str
     file_count: int
     total_bytes: int
-    legacy_manifest: LegacyPluginManifest | None = None
-
-    @property
-    def legacy(self) -> bool:
-        return self.legacy_manifest is not None
 
 
 def validate_plugin_package(
@@ -71,7 +52,7 @@ def validate_plugin_package(
     package_root = Path(root).expanduser().resolve()
     if not package_root.is_dir():
         raise PluginPackageError(f"plugin package is not a directory: {package_root}")
-    manifest, legacy = load_plugin_manifest(package_root)
+    manifest = load_plugin_manifest(package_root)
     file_count, total_bytes = validate_package_tree(package_root, limits=limits)
     validate_manifest_paths(package_root, manifest)
     if manifest.contributes.mcp_servers:
@@ -88,116 +69,14 @@ def validate_plugin_package(
         package_digest=compute_tree_digest(package_root),
         file_count=file_count,
         total_bytes=total_bytes,
-        legacy_manifest=legacy,
     )
 
 
-def load_plugin_manifest(
-    root: str | Path,
-) -> tuple[PluginManifest, LegacyPluginManifest | None]:
-    package_root = Path(root)
-    native_path = package_root / NATIVE_MANIFEST
-    legacy_path = package_root / LEGACY_MANIFEST
-    if native_path.is_file() and legacy_path.is_file():
-        native_raw = _read_json_object(native_path)
-        legacy_raw = _read_json_object(legacy_path)
-        if native_raw != legacy_raw:
-            raise PluginPackageError("native and legacy plugin manifests conflict")
-        return PluginManifest.model_validate(native_raw), None
-    if native_path.is_file():
-        return PluginManifest.model_validate(_read_json_object(native_path)), None
-    if legacy_path.is_file():
-        legacy = LegacyPluginManifest.model_validate(_read_json_object(legacy_path))
-        return convert_legacy_manifest(legacy), legacy
-    raise PluginPackageError("plugin package has no .ouro-plugin/plugin.json or legacy plugin.json")
-
-
-def convert_legacy_manifest(legacy: LegacyPluginManifest) -> PluginManifest:
-    supported = {
-        "tools",
-        "commands",
-        "context_providers",
-        "skills",
-        "runtime_hooks",
-        "mcp_servers",
-        "compaction_strategies",
-    }
-    unsupported = sorted(set(legacy.capabilities) - supported)
-    if unsupported:
-        raise PluginPackageError(
-            "legacy manifest declares unsupported capabilities: " + ", ".join(unsupported)
-        )
-
-    namespace = legacy.plugin_id.rsplit(".", 1)[-1].replace("-", "_")
-    tools = [_legacy_tool(item, namespace=namespace) for item in legacy.tools]
-    commands = [_legacy_command(item) for item in legacy.commands]
-    hooks = [
-        HookContributionSpec(
-            id=f"{spec.hook_name}_{index}",
-            event=spec.hook_name,
-            priority=spec.priority,
-            timeout_seconds=spec.timeout_seconds,
-        )
-        for index, spec in enumerate(legacy.runtime_hooks, start=1)
-    ]
-    context_providers = (
-        [NamedContributionSpec(id="legacy_context")]
-        if "context_providers" in legacy.capabilities
-        else []
-    )
-    compaction_strategies = (
-        [NamedContributionSpec(id="legacy_compaction")]
-        if "compaction_strategies" in legacy.capabilities
-        else []
-    )
-    permissions: list[PermissionRequest] = []
-    if legacy.permissions.read_write:
-        permissions.append(
-            PermissionRequest(
-                id="filesystem.write",
-                scopes=["**/*"],
-                reason="Converted from legacy read_write permission.",
-            )
-        )
-    if legacy.permissions.network:
-        permissions.append(
-            PermissionRequest(
-                id="network.outbound",
-                scopes=["*"],
-                reason="Converted from legacy network permission.",
-            )
-        )
-    return PluginManifest(
-        plugin_id=legacy.plugin_id,
-        name=legacy.name,
-        version=legacy.version,
-        description=legacy.description,
-        namespace=namespace,
-        engines=PluginEngines(ouro=">=0.1.0,<0.2.0", plugin_api="^1.0.0"),
-        runtime=PluginRuntimeSpec(
-            kind="python-inprocess" if legacy.entrypoint else "declarative",
-            entrypoint=legacy.entrypoint,
-        ),
-        contributes=PluginContributes(
-            tools=tools,
-            commands=commands,
-            hooks=hooks,
-            context_providers=context_providers,
-            compaction_strategies=compaction_strategies,
-            skills=[_legacy_path(item, kind="skill") for item in legacy.skills],
-            mcp_servers=[_legacy_path(item, kind="mcp") for item in legacy.mcp_servers],
-        ),
-        permissions=permissions,
-        dependencies=PluginDependencies(),
-        metadata={
-            **legacy.metadata,
-            "legacy": {
-                "declared_source_type": legacy.source_type,
-                "capabilities": legacy.capabilities,
-                "config_schema": legacy.config_schema,
-            },
-        },
-    )
+def load_plugin_manifest(root: str | Path) -> PluginManifest:
+    native_path = Path(root) / NATIVE_MANIFEST
+    if not native_path.is_file():
+        raise PluginPackageError(f"plugin package has no manifest: {native_path}")
+    return PluginManifest.model_validate(_read_json_object(native_path))
 
 
 def validate_manifest_compatibility(manifest: PluginManifest) -> None:
@@ -374,34 +253,3 @@ def _read_json_object(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise PluginPackageError(f"plugin manifest must be an object: {path}")
     return raw
-
-
-def _legacy_tool(item: dict[str, Any], *, namespace: str) -> ToolContributionSpec:
-    identity = str(item.get("id") or item.get("name") or "tool").lower()
-    exposed = str(item.get("exposed_name") or f"{namespace}__{identity}")
-    return ToolContributionSpec(
-        id=identity,
-        exposed_name=exposed,
-        description=str(item.get("description") or identity),
-        permission_mode=item.get("permission_mode", "approval"),
-    )
-
-
-def _legacy_command(item: dict[str, Any]) -> CommandContributionSpec:
-    identity = str(item.get("id") or item.get("name") or "command").lower()
-    return CommandContributionSpec(
-        id=identity,
-        description=str(item.get("description") or identity),
-    )
-
-
-def _legacy_path(item: dict[str, Any], *, kind: str) -> PathContributionSpec:
-    identity = str(item.get("id") or item.get("name") or kind).lower()
-    path = item.get("path")
-    if not isinstance(path, str):
-        raise PluginPackageError(f"legacy {kind} contribution requires path")
-    return PathContributionSpec(
-        id=identity,
-        path=path,
-        auto_start=bool(item.get("auto_start", False)),
-    )

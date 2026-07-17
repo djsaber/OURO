@@ -25,7 +25,7 @@ from ouro.plugins.contributions import (
 from ouro.plugins.dependencies import PluginDependencyError, resolve_plugin_dependencies
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PluginPackageError, validate_plugin_package
-from ouro.plugins.registry import PluginCommand, PluginCommandRegistry
+from ouro.plugins.registry import PluginCommand, PluginCommandError, PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import LocalSessionStore
@@ -1349,3 +1349,26 @@ def test_native_manifest_model_rejects_unknown_security_fields() -> None:
                 "verified": True,
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_boundary_is_namespaced_timed_and_redacted() -> None:
+    registry = PluginCommandRegistry()
+
+    async def failing_command(_request):
+        raise RuntimeError("token=command-secret")
+
+    registry.register(
+        PluginCommand(
+            name="fail",
+            plugin_id="example.commands",
+            handler=failing_command,
+            timeout_seconds=0.1,
+        )
+    )
+
+    with pytest.raises(PluginCommandError) as raised:
+        await registry.execute("example.commands:fail")
+
+    assert "command-secret" not in str(raised.value)
+    assert "token=***" in str(raised.value)

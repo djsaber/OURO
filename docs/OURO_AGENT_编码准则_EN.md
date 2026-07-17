@@ -72,7 +72,7 @@ The purpose of these guidelines is not to reduce the amount of code an Agent wri
 - Data persistence must have clear boundaries. Do not let ORM details pollute business rules, nor let database schema dictate the entire domain model.
 - Database operations must have clear transactional boundaries. Do not allow half a business process to succeed while the other half fails, leaving the system in an inexplicable state.
 - Important state changes must consider idempotency. Task retries, repeated API requests, and duplicate message consumption should not easily cause duplicate writes or dirty state.
-- When modifying database schemas, API responses, configuration fields, message formats, file formats, or persisted data, consider old data, old callers, migrations, compatibility, and rollback paths.
+- When modifying database schemas, API responses, configuration fields, message formats, file formats, or persisted data, reject old formats strictly with diagnosable errors by default instead of carrying compatibility shims for historical shapes; design migration, old-caller, and rollback paths only when compatibility is an explicit decision.
 - Migrations, scripts, and one-off tasks must be held to production-code standards. They can destroy data too.
 
 ## 9. Security, Concurrency, and Performance

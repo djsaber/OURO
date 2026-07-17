@@ -35,7 +35,7 @@ def inspect_community_package(source: str | Path) -> CompatibilityReport:
     if not root.is_dir():
         raise ValueError(f"compatibility source must be a directory: {root}")
     if (root / NATIVE_MANIFEST).is_file():
-        manifest, _ = load_plugin_manifest(root)
+        manifest = load_plugin_manifest(root)
         return CompatibilityReport(
             source_format="ouro",
             source_version=str(manifest.schema_version),

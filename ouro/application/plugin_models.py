@@ -24,7 +24,6 @@ class PluginInstallView(OuroModel):
     runtime_kind: PluginRuntimeKind
     scope: PluginScope
     selected: bool = False
-    legacy: bool = False
     provenance: PluginProvenanceView
 
 
@@ -58,7 +57,6 @@ class PluginValidationView(OuroModel):
     version: str | None = None
     package_digest: str | None = None
     runtime_kind: PluginRuntimeKind | None = None
-    legacy: bool = False
     file_count: int = 0
     total_bytes: int = 0
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)

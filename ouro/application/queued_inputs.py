@@ -10,8 +10,8 @@ from ouro.core.session_controls import SessionInputMode
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
-# The existing durable key remains authoritative so upgrades do not require an
-# eager metadata migration. Items now carry their own delivery mode.
+# Durable metadata key for the FIFO input queue. Items with missing or invalid
+# fields are dropped as invalid; older shapes are not completed.
 QUEUED_INPUTS_KEY = "follow_up_queue"
 
 QueuedInputMode = SessionInputMode
@@ -182,10 +182,10 @@ class QueuedInputQueue:
         if not isinstance(prompt, str) or not prompt:
             return None
         title = item.get("title")
-        raw_mode = item.get("mode", "follow_up")
+        raw_mode = item.get("mode")
         if raw_mode not in {"follow_up", "steer"}:
             return None
-        raw_source = item.get("source", "user")
+        raw_source = item.get("source")
         if raw_source not in {"user", "plugin"}:
             return None
         if raw_source == "plugin" and not all(

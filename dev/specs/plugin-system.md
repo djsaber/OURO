@@ -1,10 +1,10 @@
 # OURO 插件系统目标规格
 
-状态：首个稳定面、Run continuation 与工具策略控制面已实现（2026-07-17），长期目标尚未全部实现；准确边界见第 24 节
+状态：首个稳定面、Run continuation 与工具策略控制面已实现，长期目标尚未全部实现；准确边界见第 22 节
 
 本文定义 OURO 插件系统的包、来源、信任、授权、运行时、贡献、生命周期、兼容和恢复契约。schema v1、
 安装/存储、entrypoint、基础 worker、授权、generation、应用 facade 与 CLI 已实现。本文前半部分保留目标
-架构与长期约束，不等于每一项均已交付；当前能力、部分实现与明确延期项在第 24 节逐项列出，不以空接口
+架构与长期约束，不等于每一项均已交付；当前能力、部分实现与明确延期项在第 22 节逐项列出，不以空接口
 或预留字段表示支持。
 
 外部项目事实与设计经验见
@@ -164,8 +164,8 @@ calendar-plugin/
   assets/
 ```
 
-当前根目录 `plugin.json` 作为 legacy schema 读取一个兼容周期，但新安装器不得生成该布局。原生 manifest
-存在时优先；同时存在且内容冲突时安装失败，不能猜测。
+只识别 `.ouro-plugin/plugin.json`；包根的其他文件（含历史布局的裸 `plugin.json`）只是普通包内容，
+不构成 manifest。
 
 路径字段必须：
 
@@ -405,7 +405,7 @@ namespace 冲突、exposed tool name 冲突或 canonical id 冲突使整个必�
 6. 返回 `ContributionLease`，关闭 lease 即按 owner 撤销所有 contribution。
 
 Tool、Hook、command、compaction 和后续 registry 必须支持 `replace_owner`/`unregister_owner`，不能依赖调用方
-保存一组松散名称。当前 `PluginLoader` 的逐类部分成功仅作为 legacy bridge；完整 activation 默认 all-or-none。
+保存一组松散名称。完整 activation 默认 all-or-none。
 只有 manifest 显式标为 `optional` 的 contribution group 可以失败后进入 `degraded`，并必须出现在状态和 DTO。
 
 ### 9.4 Run continuation policy
@@ -828,71 +828,7 @@ core <- typed tools/hooks/context records only; never imports plugin package/run
 `LocalApplication` 拥有 PluginRuntimeResource，并与 MCP 一起在 runtime 开始接受 Run 前启动，在 runtime 和
 Supervisor shutdown 期间按 owner/依赖顺序关闭。
 
-## 21. 现有实现迁移
-
-1. 保留当前 `PluginLoader.register_contributions` 测试作为安全基线，不立即自动 import。
-2. 收缩 `PluginManifest`：移除安全无效的 `source_type` 决策作用，拒绝尚未支持的 placeholder capabilities。
-3. 新增 schema v1 `.ouro-plugin/plugin.json`；root `plugin.json` 通过显式 legacy parser 转换。
-4. 将 `PluginPermissions(read_write, network)` 迁移为结构化 permission request/grant；legacy 值只转换为保守
-   broad request，不自动授权。
-   legacy `ai_generated` 只保留为 creation metadata，按 unverified code 处理，不参与排序或放宽权限。
-5. 为 Tool/Hook/command/compaction registry 增加 owner 和原子 replace/unregister；在 application 层增加
-   `ContributionCoordinator`。
-6. 用 `NativePluginAdapter` 将现有 `PluginContributions` 接入 `prepare -> validate -> commit`，删除逐类隐式
-   部分发布。
-7. `LocalApplication` 增加 plugin owner，但默认没有授权的第三方插件时行为与当前完全一致。
-8. 增加 run-level `ExtensionCatalogSnapshot` 和 durable contribution identity，再开放 update/rollback。
-9. 完成 in-process 生命周期后实现 worker protocol；两者共享 manifest、授权、contribution 和 DTO。
-10. 最后接入 community importer、依赖 resolver 和 catalog source；这些不能阻塞本地目录/Git 的基础闭环。
-
-迁移期间不得把 legacy manifest 的 `source_type=official` 转为 trusted provenance，也不得因当前测试使用该字段
-而保留自报信任行为。
-
-## 22. 分阶段路线图
-
-### M1：包与审计，不执行代码
-
-- schema v1、legacy parser、path/digest/compat validation；
-- local/Git/archive source、immutable store、provenance；
-- list/show/validate/install/remove、DTO 和 CLI；
-- 未授权安装始终 disabled；
-- 安装中断、并发和 orphan GC 测试。
-
-### M2：授权与 owned contributions
-
-- structured permissions、code trust、配置/credential refs；
-- owner-aware registries、ContributionCoordinator、原子撤销；
-- manifest/contribution 对账和 namespace 冲突；
-- capability 扩大和 digest 变化重新授权测试。
-
-### M3：In-process lifecycle
-
-- stable SDK、NativePluginAdapter、PluginContext；
-- instantiate/prepare/start/stop、LocalApplication ownership；
-- background task/connection cleanup、failure isolation；
-- enable/disable/restart/check 完整闭环。
-
-### M4：Durable generation 与更新
-
-- Run extension snapshot、generation lease、pending tool identity；
-- side-by-side update、drain、rollback、data/config migration；
-- crash recovery 和 exact digest 缺失行为。
-
-### M5：Worker 与跨语言兼容
-
-- worker protocol、独立环境、supervision、cancel/restart；
-- Agent Skills/MCP 和 Claude/Codex import report；
-- Pi/OpenCode porting report；
-- worker 与 in-process 的行为 contract suite。
-
-### M6：依赖与 Catalog
-
-- plugin dependency resolver/lock graph；
-- catalog source、publisher/signature policy；
-- orphan dependency/cache GC；
-- 组织 policy 只在出现真实多设备/分发需求时进入。
-
-## 23. 验收矩阵
+## 21. 验收矩阵
 
 完整插件系统至少由以下证据证明：
 
@@ -943,12 +879,7 @@ Supervisor shutdown 期间按 owner/依赖顺序关闭。
 - stdout JSON 模式无插件日志污染；
 - 全量 pytest、ruff、mypy、compileall、coverage 和 dependency tests 通过。
 
-## 24. 当前实现边界与设计调整
-
-截至 2026-07-17：M1、M2、M3 已完成；M4 完成 generation snapshot、lease、精确恢复校验和失败回滚，
-不含 data migration；M5 完成基础 worker、Skills/MCP 和 compatibility report，不含独立环境、自动重启、
-熔断、反向 Host service 与通用 feature negotiation；M6 只完成已安装 digest 的依赖图，不含 catalog、签名、
-publisher policy 和自动第三方依赖求解。
+## 22. 当前实现边界与设计调整
 
 下列能力明确不属于当前已实现面：通用 mutation dry-run、request-id 幂等账本、data migration、worker 独立
 依赖环境与 restart supervisor、OS sandbox、worker 反向 Host service、catalog/marketplace、签名验证和
@@ -1006,5 +937,4 @@ publisher trust root。它们只有在真实需求和完整不变量可以一起
 对应实现集中在 `ouro/plugins/`、`ouro/sdk/plugins/v1.py`、`ouro/application/plugins.py`、
 `ouro/application/run_continuations.py`、`ouro/core/tool_policies.py`、`ouro/application/tool_calls.py`、
 `ouro/cli/plugin_commands.py`、`ouro/cli/interactive.py` 与
-`LocalApplication`；legacy `PluginLoader` 仅作为一个兼容周期的无自动 import
-桥接层，新原生插件必须走 installer/runtime generation 路径。
+`LocalApplication`；新原生插件必须走 installer/runtime generation 路径。
