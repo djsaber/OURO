@@ -27,8 +27,8 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
         "mistral",
     }
     kimi = next(item for item in payload["templates"] if item["template_id"] == "kimi")
-    assert kimi["default_endpoint"] == "kimi-k2.7-code"
-    assert kimi["endpoint_count"] == 3
+    assert kimi["default_endpoint"] == "kimi-k3"
+    assert kimi["endpoint_count"] == 4
 
 
 def test_provider_add_integrated_type_persists_complete_default_route(

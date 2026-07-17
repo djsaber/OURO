@@ -121,6 +121,20 @@ _KIMI_ALWAYS_ON_REASONING = mapped_reasoning(
     continuation="text",
     variants={"enabled": {}},
 )
+# Kimi K3 always reasons; the only reasoning control is the top-level
+# reasoning_effort field, which currently accepts just "max".
+_KIMI_K3_REASONING = mapped_reasoning(
+    name="kimi-k3-reasoning-effort",
+    activation="always_on",
+    supported_efforts=("max",),
+    default=ReasoningRequest(mode="enabled", effort="max"),
+    output="text",
+    continuation="text",
+    variants={
+        "enabled": {"reasoning_effort": "max"},
+        "max": {"reasoning_effort": "max"},
+    },
+)
 _GLM_REASONING = toggle_reasoning(
     name="glm-thinking-toggle",
     enabled={"thinking": {"type": "enabled", "clear_thinking": False}},
@@ -422,15 +436,26 @@ _PROVIDER_TEMPLATES = (
     ProviderTemplate(
         template_id="kimi",
         display_name="Moonshot AI Kimi",
-        description="Kimi's OpenAI-compatible API with current multimodal Agent models.",
+        description="Kimi's OpenAI-compatible API with the K3 flagship and K2 Agent models.",
         provider_id="kimi",
         provider_type="kimi",
         protocol="openai-chat-completions",
         credential_env="MOONSHOT_API_KEY",
         base_url="https://api.moonshot.ai/v1",
         api_path="/chat/completions",
-        default_endpoint="kimi-k2.7-code",
+        default_endpoint="kimi-k3",
         endpoints=(
+            ProviderEndpointConfig(
+                endpoint_id="kimi-k3",
+                model_id="kimi-k3",
+                context_window=1_048_576,
+                max_output_tokens=32_768,
+                supports_tools=True,
+                supports_vision=True,
+                supports_streaming=True,
+                supports_structured_output=True,
+                reasoning=_KIMI_K3_REASONING,
+            ),
             ProviderEndpointConfig(
                 endpoint_id="kimi-k2.7-code",
                 model_id="kimi-k2.7-code",
@@ -465,8 +490,8 @@ _PROVIDER_TEMPLATES = (
                 reasoning=_KIMI_REASONING,
             ),
         ),
-        documentation_url="https://platform.kimi.ai/docs/guide/kimi-k2-7-code-quickstart",
-        verified_on=_VERIFIED_ON,
+        documentation_url="https://platform.kimi.com/docs/guide/use-thinking-effort",
+        verified_on="2026-07-17",
     ),
     ProviderTemplate(
         template_id="glm",

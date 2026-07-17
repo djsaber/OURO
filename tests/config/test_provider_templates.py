@@ -23,8 +23,8 @@ _EXPECTED_ENDPOINTS = {
     "deepseek": ("deepseek-v4-pro", {"deepseek-v4-pro", "deepseek-v4-flash"}),
     "qwen": ("qwen3.7-plus", {"qwen3.7-plus", "qwen3.7-max", "qwen3.6-flash"}),
     "kimi": (
-        "kimi-k2.7-code",
-        {"kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"},
+        "kimi-k3",
+        {"kimi-k3", "kimi-k2.7-code", "kimi-k2.7-code-highspeed", "kimi-k2.6"},
     ),
     "glm": ("glm-5.2", {"glm-5.2", "glm-5-turbo", "glm-5v-turbo"}),
     "openrouter": ("auto", {"auto", "free"}),
@@ -33,6 +33,9 @@ _EXPECTED_ENDPOINTS = {
         {"mistral-medium-3-5", "mistral-small-2603", "mistral-large-2512"},
     ),
 }
+
+# Templates re-verified against provider docs after the shared review date.
+_EXPECTED_VERIFIED_ON = {"kimi": "2026-07-17"}
 
 
 def _template(**updates: object) -> ProviderTemplate:
@@ -66,7 +69,8 @@ def test_builtin_provider_templates_expose_reviewed_endpoint_sets() -> None:
         assert template.provider_type == template_id
         assert template.protocol in {"openai-chat-completions", "anthropic-messages"}
         assert {endpoint.endpoint_id for endpoint in template.endpoints} == endpoint_ids
-        assert template.verified_on == "2026-07-14"
+        expected_verified_on = _EXPECTED_VERIFIED_ON.get(template_id, "2026-07-14")
+        assert template.verified_on == expected_verified_on
 
 
 def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
@@ -113,6 +117,11 @@ def test_builtin_reasoning_profiles_preserve_model_specific_semantics() -> None:
     kimi = templates["kimi"]
     assert kimi.endpoint("kimi-k2.7-code").reasoning.capability.activation == "always_on"
     assert kimi.endpoint("kimi-k2.6").reasoning.capability.activation == "toggle"
+    k3_reasoning = kimi.endpoint("kimi-k3").reasoning
+    assert k3_reasoning.capability.activation == "always_on"
+    assert k3_reasoning.capability.supported_efforts == ("max",)
+    assert k3_reasoning.profile is not None
+    assert k3_reasoning.profile.variants["enabled"] == {"reasoning_effort": "max"}
 
     glm = templates["glm"].endpoint().reasoning
     assert glm.profile is not None
