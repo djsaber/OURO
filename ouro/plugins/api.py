@@ -38,7 +38,14 @@ from ouro.plugins.registry import (
     PluginContextProvider,
 )
 from ouro.sdk.plugins import v1 as sdk
-from ouro.tools import Tool, ToolDefinition, ToolExecutionContext, ToolInvocation, ToolResult
+from ouro.tools import (
+    Tool,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolInputRequest,
+    ToolInvocation,
+    ToolResult,
+)
 
 
 class ScopedPluginDataStore:
@@ -432,7 +439,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
     async def handler(
         invocation: ToolInvocation,
         context: ToolExecutionContext,
-    ) -> ToolResult:
+    ) -> ToolResult | ToolInputRequest:
         call = sdk.ToolCall(
             tool_call_id=invocation.tool_call_id,
             session_id=invocation.session_id,
@@ -451,6 +458,8 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             raw = await raw
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
+        if isinstance(raw, sdk.ToolInputRequest):
+            return ToolInputRequest(data=raw.data)
         return ToolResult(
             tool_call_id=invocation.tool_call_id,
             tool_name=invocation.tool_name,

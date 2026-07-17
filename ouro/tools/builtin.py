@@ -7,6 +7,7 @@ from ouro.tools.base import (
     Tool,
     ToolDefinition,
     ToolExecutionContext,
+    ToolInputRequest,
     ToolInvocation,
     ToolResult,
 )
@@ -87,11 +88,13 @@ def builtin_tools() -> list[Tool]:
                 description="Ask the user for missing information.",
                 parameters_schema={
                     "type": "object",
-                    "properties": {"question": {"type": "string", "minLength": 1}},
+                    "properties": {"question": {}},
                     "required": ["question"],
                     "additionalProperties": False,
                 },
                 permission_mode="auto",
+                execution_mode="sequential",
+                kind="user_input",
             ),
             handler=_ask_user,
         ),
@@ -229,12 +232,5 @@ async def _bash(
     )
 
 
-def _ask_user(invocation: ToolInvocation) -> ToolResult:
-    question = _text_arg(invocation, "question")
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        content=question,
-        structured={"question": question},
-        ended_at=utc_now(),
-    )
+def _ask_user(invocation: ToolInvocation) -> ToolInputRequest:
+    return ToolInputRequest(data=invocation.arguments["question"])

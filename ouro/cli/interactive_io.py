@@ -4,6 +4,8 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from pydantic import JsonValue
+
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
 from ouro.core.results import RunResult
@@ -148,7 +150,7 @@ async def _resolve_user_question(
     return await runtime.answer_user(
         session_id=result.session.session_id,
         run_id=result.run.run_id,
-        answer=answer,
+        answer=_decode_user_answer(answer),
     )
 
 
@@ -186,11 +188,13 @@ def _pending_question(result: RunResult) -> str:
     if batch is not None:
         waiting = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if waiting is not None:
+            if waiting.input_request is not None:
+                return _format_user_input_request(waiting.input_request.data)
             if waiting.result is not None and waiting.result.content:
                 return waiting.result.content
             question = waiting.request.arguments.get("question")
-            if isinstance(question, str) and question:
-                return question
+            if question is not None:
+                return _format_user_input_request(question)
     raw_question = result.run.metadata.get("pending_question")
     if isinstance(raw_question, str) and raw_question:
         return raw_question
@@ -198,6 +202,19 @@ def _pending_question(result: RunResult) -> str:
     if isinstance(arguments, dict) and isinstance(arguments.get("question"), str):
         return arguments["question"]
     return "Please provide the requested information."
+
+
+def _format_user_input_request(data: object) -> str:
+    if isinstance(data, str):
+        return data
+    return json.dumps(data, ensure_ascii=False, indent=2)
+
+
+def _decode_user_answer(answer: str) -> JsonValue:
+    try:
+        return json.loads(answer)
+    except json.JSONDecodeError:
+        return answer
 
 
 def _input_optional(input_func: InputFunc, output_func: OutputFunc, prompt: str) -> str:

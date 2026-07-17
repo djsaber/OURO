@@ -9,6 +9,7 @@ from ouro.tools import (
     ToolDefinition,
     ToolExecutionContext,
     ToolExecutor,
+    ToolInputRequest,
     ToolInvocation,
     ToolRegistry,
     ToolResult,
@@ -201,11 +202,40 @@ async def test_ask_user_returns_waiting_state() -> None:
             run_id="run_1",
             tool_name="AskUser",
             arguments={"question": "Which file?"},
-        )
+        ),
+        approval_mode="approval",
     )
 
     assert outcome.status == "waiting_user"
     assert outcome.question == "Which file?"
+
+
+@pytest.mark.asyncio
+async def test_any_tool_can_request_structured_user_input() -> None:
+    request = {
+        "type": "cards",
+        "items": [
+            {"id": "fast", "title": "Fast plan", "tags": ["cheap", "reversible"]},
+            {"id": "safe", "title": "Safe plan", "tags": ["reviewed"]},
+        ],
+        "multiple": True,
+    }
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="ConfirmPlan", description="Confirm a plan."),
+            handler=lambda _invocation: ToolInputRequest(data=request),
+        )
+    )
+
+    outcome = await ToolExecutor(registry).execute(
+        ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="ConfirmPlan")
+    )
+
+    assert outcome.status == "waiting_user"
+    assert outcome.result is None
+    assert outcome.input_request is not None
+    assert outcome.input_request.data == request
 
 
 @pytest.mark.asyncio

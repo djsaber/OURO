@@ -5,6 +5,8 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import JsonValue
+
 from ouro.application.compaction import (
     ContextPreparationService,
     LLMSummaryCompactionStrategy,
@@ -1262,7 +1264,7 @@ class RuntimeService:
         *,
         session_id: str,
         run_id: str,
-        answer: str,
+        answer: JsonValue,
     ) -> RunResult:
         snapshot = self._load_runtime_snapshot(session_id, recover=True)
         session = snapshot.session
@@ -1406,6 +1408,13 @@ class RuntimeService:
             )
             if abort_result is not None:
                 return abort_result
+            if handling.status == "waiting_user":
+                return RunResult(
+                    session=session,
+                    run=run,
+                    events=emitted,
+                    tool_results=handling.results,
+                )
             boundary = await self._consume_turn_boundary_inputs(
                 emitted,
                 handling.sequence,

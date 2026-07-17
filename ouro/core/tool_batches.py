@@ -8,7 +8,7 @@ from pydantic import Field
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.messages import MessageRecord
-from ouro.core.tools import ToolCallRequest, ToolInvocation, ToolResult
+from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation, ToolResult
 
 ToolExecutionMode = Literal["sequential", "parallel"]
 ToolBatchPhase = Literal[
@@ -41,6 +41,7 @@ class ToolBatchCall(OuroModel):
     status: ToolCallStatus = "planned"
     invocation: ToolInvocation | None = None
     approval: ApprovalRecord | None = None
+    input_request: ToolInputRequest | None = None
     result: ToolResult | None = None
     result_message_id: str | None = None
     metadata: Metadata = MetadataField
@@ -76,5 +77,13 @@ class ToolBatchHandlingResult(OuroModel):
     batch: ToolCallBatchRecord
     messages: list[MessageRecord] = Field(default_factory=list)
     results: list[ToolResult] = Field(default_factory=list)
-    question: str | None = None
+    input_request: ToolInputRequest | None = None
     sequence: int = 0
+
+    @property
+    def question(self) -> str | None:
+        """Return the legacy text question when the request happens to be text."""
+
+        if self.input_request is None or not isinstance(self.input_request.data, str):
+            return None
+        return self.input_request.data

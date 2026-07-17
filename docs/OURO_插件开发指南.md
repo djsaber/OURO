@@ -103,6 +103,23 @@ Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspa
 Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 synthetic input、队列和持久化。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
+Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的
+任意 JSON 值；Host 可据此构建单选、多选、表单或卡片界面。Run 会进入 `waiting_user`，Host 调用
+`answer_user` 后，回答以该次 tool call 的结果返回模型。此协议收集数据，不表示批准或拒绝工具执行。
+
+```python
+from ouro.sdk.plugins.v1 import ToolInputRequest
+
+async def confirm_plan(call):
+    return ToolInputRequest(
+        data={
+            "type": "plan_confirmation",
+            "plan": call.arguments["plan"],
+            "choices": ["accept", "revise"],
+        }
+    )
+```
+
 ## 5. Catalog、owner 与 durable contract
 
 一个 Run 只读取一个不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
@@ -146,6 +163,9 @@ worker 从 stdin 逐行读取 JSON-RPC 2.0 request，只向 stdout 写协议 JSO
 
 stdout 污染、未知消息、过大响应、声明不一致和错误 result shape 都会使协议调用失败。完整最小实现见
 [`examples/plugins/worker-tool`](../examples/plugins/worker-tool)。
+
+worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
+`structured`、`resource_refs` 或 `is_error` 同时出现。
 
 ## 8. 社区资源导入前审查
 

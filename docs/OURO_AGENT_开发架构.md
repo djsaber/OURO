@@ -92,7 +92,7 @@ Host 通过 activity 快照和 durable event cursor 重新同步。
 model turn 完整提交后进入同一 Run 的下一次模型请求。工具请求与结果是不可拆分的 turn 边界，因此
 steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode` 配置决定；`one_by_one` 每个边界
 只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。审批或
-AskUser 恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
+用户输入请求恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
@@ -104,8 +104,9 @@ AskUser 恢复完成后，application 必须先释放原 Run 的 session run loc
 会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto` 或 `approval`。
 `ToolCallCoordinator` 在工具预检时把会话模式交给 `ToolExecutor`；优先级为会话显式模式、工具权限配置、
 工具定义默认值。`inherit` 不覆盖工具策略。最终有效值写入 durable `ToolInvocation`，因此批准恢复不依赖
-当前进程的配置快照。工具权限配置的 `deny` 是硬拒绝，不能被会话 `auto` 覆盖。`AskUser` 属于用户交互
-协议，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
+当前进程的配置快照。工具权限配置的 `deny` 是硬拒绝，不能被会话 `auto` 覆盖。工具 handler 可以返回
+`ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
+`AskUser` 只是该协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
 workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制不等同于操作系统沙箱。
 
 ## 模型路由与 Provider 边界

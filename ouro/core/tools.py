@@ -3,13 +3,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolExecutionPreference = Literal["inherit", "sequential"]
+ToolKind = Literal["standard", "user_input"]
 ToolSource = Literal[
     "builtin",
     "official_plugin",
@@ -30,6 +31,7 @@ class ToolDefinition(OuroModel):
     result_schema: dict[str, Any] = Field(default_factory=dict)
     can_abort: bool = True
     execution_mode: ToolExecutionPreference = "inherit"
+    kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
 
 
@@ -82,9 +84,23 @@ class ToolResult(OuroModel):
     metadata: Metadata = MetadataField
 
 
+class ToolInputRequest(OuroModel):
+    """Opaque JSON data that a tool asks its host to present to the user."""
+
+    data: JsonValue
+
+
 class ToolExecutionOutcome(OuroModel):
     status: ToolOutcomeStatus
     invocation: ToolInvocation
     result: ToolResult | None = None
     approval: ApprovalRecord | None = None
-    question: str | None = None
+    input_request: ToolInputRequest | None = None
+
+    @property
+    def question(self) -> str | None:
+        """Return the legacy text question when the request happens to be text."""
+
+        if self.input_request is None or not isinstance(self.input_request.data, str):
+            return None
+        return self.input_request.data

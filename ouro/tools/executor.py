@@ -12,6 +12,7 @@ from ouro.tools.base import (
     ToolExecutionAborted,
     ToolExecutionContext,
     ToolExecutionOutcome,
+    ToolInputRequest,
     ToolInvocation,
     ToolResult,
 )
@@ -112,22 +113,11 @@ class ToolExecutor:
                 error_type="ToolPermissionDenied",
                 error_message=reason,
             )
-        if tool.definition.name == "AskUser":
-            question = str(invocation.arguments.get("question", ""))
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                content=question,
-                structured={"question": question},
-                ended_at=utc_now(),
-            )
-            return ToolExecutionOutcome(
-                status="waiting_user",
-                invocation=invocation,
-                result=result,
-                question=question,
-            )
-        if invocation.permission_mode == "approval" and not approved:
+        if (
+            invocation.permission_mode == "approval"
+            and tool.definition.kind != "user_input"
+            and not approved
+        ):
             approval = ApprovalRecord(
                 session_id=invocation.session_id,
                 run_id=invocation.run_id,
@@ -160,7 +150,7 @@ class ToolExecutor:
         context = context or ToolExecutionContext(signal=signal)
         try:
             context.raise_if_aborted()
-            result = await tool.execute(invocation, context=context)
+            execution_result = await tool.execute(invocation, context=context)
         except ToolExecutionAborted as exc:
             result = ToolResult(
                 tool_call_id=invocation.tool_call_id,
@@ -191,6 +181,13 @@ class ToolExecutor:
                 ended_at=utc_now(),
             )
             return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        if isinstance(execution_result, ToolInputRequest):
+            return ToolExecutionOutcome(
+                status="waiting_user",
+                invocation=invocation,
+                input_request=execution_result,
+            )
+        result = execution_result
         content, truncated = context.limit_output(result.content)
         if truncated:
             result = result.model_copy(

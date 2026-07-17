@@ -41,12 +41,17 @@ class ToolBatchExecutor:
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 outcomes.append(outcome)
+                if outcome.status == "waiting_user":
+                    break
             return outcomes
 
         semaphore = asyncio.Semaphore(max_concurrency)
+        interaction_requested = asyncio.Event()
 
-        async def run(invocation: ToolInvocation) -> ToolExecutionOutcome:
+        async def run(invocation: ToolInvocation) -> ToolExecutionOutcome | None:
             async with semaphore:
+                if interaction_requested.is_set():
+                    return None
                 if signal is None or not signal.is_aborted():
                     if on_start is not None:
                         await on_start(invocation)
@@ -55,6 +60,8 @@ class ToolBatchExecutor:
                     signal=signal,
                     context=context,
                 )
+                if outcome.status == "waiting_user":
+                    interaction_requested.set()
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 return outcome

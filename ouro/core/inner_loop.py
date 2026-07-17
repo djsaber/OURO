@@ -723,9 +723,6 @@ class InnerAgentLoop:
         if handling.status == "completed":
             return None
 
-        metadata = dict(state.run.metadata)
-        if handling.question:
-            metadata["pending_question"] = handling.question
         pending_approvals = handling.batch.pending_approvals
         state.run = state.run.model_copy(
             update={
@@ -735,7 +732,6 @@ class InnerAgentLoop:
                 "pending_approval_id": pending_approvals[0].approval_id
                 if pending_approvals
                 else None,
-                "metadata": metadata,
             }
         )
         state.session = state.session.model_copy(

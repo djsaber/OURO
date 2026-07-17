@@ -41,7 +41,7 @@ from ouro.plugins.registry import (
     PluginCommandResult,
 )
 from ouro.skills import SkillMetadata
-from ouro.tools import Tool, ToolExecutionContext, ToolRegistry, ToolResult
+from ouro.tools import Tool, ToolExecutionContext, ToolInputRequest, ToolRegistry, ToolResult
 
 
 class PluginGenerationUnavailableError(RuntimeError):
@@ -413,7 +413,7 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
         *,
         context: ToolExecutionContext | None = None,
         signal=None,
-    ) -> ToolResult:
+    ) -> ToolResult | ToolInputRequest:
         async with gate.invocation():
             return await tool.execute(invocation, context=context, signal=signal)
 

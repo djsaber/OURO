@@ -18,6 +18,7 @@ from ouro.core.tools import (
     PermissionMode,
     ToolDefinition,
     ToolExecutionOutcome,
+    ToolInputRequest,
     ToolInvocation,
     ToolOutcomeStatus,
     ToolResult,
@@ -32,6 +33,7 @@ __all__ = [
     "ToolExecutionContext",
     "ToolPolicyError",
     "ToolExecutionOutcome",
+    "ToolInputRequest",
     "ToolInvocation",
     "ToolOutcomeStatus",
     "ToolProcessResult",
@@ -217,7 +219,8 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
         process.kill()
 
 
-ToolHandler = Callable[..., ToolResult | Awaitable[ToolResult]]
+ToolExecutionResult = ToolResult | ToolInputRequest
+ToolHandler = Callable[..., ToolExecutionResult | Awaitable[ToolExecutionResult]]
 
 
 class Tool(OuroModel):
@@ -230,7 +233,7 @@ class Tool(OuroModel):
         *,
         context: ToolExecutionContext | None = None,
         signal: AbortSignal | None = None,
-    ) -> ToolResult:
+    ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
         raw_result = _call_handler(self.handler, invocation, context)
         if isinstance(raw_result, Awaitable):
@@ -242,7 +245,7 @@ def _call_handler(
     handler: ToolHandler,
     invocation: ToolInvocation,
     context: ToolExecutionContext,
-) -> ToolResult | Awaitable[ToolResult]:
+) -> ToolExecutionResult | Awaitable[ToolExecutionResult]:
     try:
         parameters = tuple(signature(handler).parameters.values())
     except (TypeError, ValueError):

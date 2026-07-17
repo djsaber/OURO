@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 PermissionMode = Literal["auto", "approval", "deny"]
+type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
 RunStatus = Literal[
     "queued",
@@ -138,7 +139,19 @@ class ToolOutput:
     is_error: bool = False
 
 
-ToolHandlerResult = ToolOutput | str | Awaitable[ToolOutput | str]
+@dataclass(frozen=True)
+class ToolInputRequest:
+    """Suspend the current Run and let the host collect an opaque JSON answer."""
+
+    data: JsonValue
+
+
+ToolHandlerResult = (
+    ToolOutput
+    | ToolInputRequest
+    | str
+    | Awaitable[ToolOutput | ToolInputRequest | str]
+)
 ToolHandler = (
     Callable[[ToolCall], ToolHandlerResult]
     | Callable[[ToolCall, ToolExecutionContext], ToolHandlerResult]
@@ -377,6 +390,7 @@ __all__ = [
     "HookCall",
     "HookContribution",
     "HookOutput",
+    "JsonValue",
     "PluginContext",
     "PluginCredentialResolver",
     "PluginDataStore",
@@ -395,6 +409,7 @@ __all__ = [
     "ToolCall",
     "ToolContribution",
     "ToolExecutionContext",
+    "ToolInputRequest",
     "ToolOutput",
     "ToolPolicyAction",
     "ToolPolicyCall",

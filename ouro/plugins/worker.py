@@ -328,6 +328,7 @@ class WorkerPluginInstance:
                         if contribution_type.worker is not None
                     ),
                     "session_inputs",
+                    "tool_input_requests",
                 ],
                 "limits": {"max_message_bytes": self.client.max_message_bytes},
             },
@@ -377,7 +378,7 @@ class WorkerPluginInstance:
             raise
 
     def _tool_handler(self, identity: str):
-        async def handler(call: sdk.ToolCall) -> sdk.ToolOutput:
+        async def handler(call: sdk.ToolCall) -> sdk.ToolOutput | sdk.ToolInputRequest:
             raw = await self.client.request(
                 "tool.call",
                 {
@@ -394,6 +395,8 @@ class WorkerPluginInstance:
                 },
             )
             result = self._result(raw, "tool.call")
+            if "input_request" in result:
+                return sdk.ToolInputRequest(data=result["input_request"])
             return sdk.ToolOutput(
                 content=str(result.get("content", "")),
                 structured=_object_value(result.get("structured", {})),
@@ -937,6 +940,13 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
                             raise WorkerProtocolError(f"worker tool {field} must be an object")
         return
     if method == "tool.call":
+        if "input_request" in result:
+            output_fields = {"content", "structured", "resource_refs", "is_error"}
+            if output_fields.intersection(result):
+                raise WorkerProtocolError(
+                    "worker tool.call cannot return input_request together with tool output"
+                )
+            return
         _require_optional_type(result, "content", str, method)
         _require_optional_type(result, "structured", dict, method)
         _require_string_list(result, "resource_refs", method)

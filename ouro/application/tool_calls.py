@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
+
+from pydantic import JsonValue, TypeAdapter
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.runs import RunLifecycle
@@ -23,6 +26,8 @@ from ouro.core.tool_batches import (
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
 from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocation, ToolResult
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
+
+_JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 
 def _optional_text(value: object) -> str | None:
@@ -156,9 +161,7 @@ class ToolCallCoordinator:
                 status=status,
                 batch=batch,
                 messages=[assistant_message],
-                question=waiting_user.result.content
-                if waiting_user is not None and waiting_user.result is not None
-                else None,
+                input_request=waiting_user.input_request if waiting_user is not None else None,
                 sequence=sequence,
             )
 
@@ -283,12 +286,16 @@ class ToolCallCoordinator:
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": calls, "updated_at": utc_now()}
                 )
+                waiting_user = next(
+                    (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
+                    None,
+                )
                 self.runs.save_batch_state(
                     session=session,
                     run=run,
                     batch=checkpoint_batch,
-                    status="running",
-                    phase="tool_execution",
+                    status="waiting_user" if waiting_user is not None else "running",
+                    phase="human_interaction" if waiting_user is not None else "tool_execution",
                 )
                 sequence = await self.events.emit(
                     emitted,
@@ -316,29 +323,60 @@ class ToolCallCoordinator:
                         continue
                     result = outcome.result
                     status = (
-                        "aborted"
+                        "waiting_user"
+                        if outcome.status == "waiting_user"
+                        else "aborted"
                         if outcome.status == "aborted"
                         else "failed"
                         if result is not None and result.is_error
                         else "completed"
                     )
-                    completed_call = item.model_copy(update={"status": status, "result": result})
+                    completed_call = item.model_copy(
+                        update={
+                            "status": status,
+                            "input_request": outcome.input_request,
+                            "result": result,
+                        }
+                    )
                     checkpoint_calls.append(completed_call)
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": checkpoint_calls, "updated_at": utc_now()}
                 )
                 try:
+                    waiting_user = next(
+                        (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
+                        None,
+                    )
                     self.runs.save_batch_state(
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
-                        status="running",
-                        phase="tool_execution",
+                        status="waiting_user" if waiting_user is not None else "running",
+                        phase=(
+                            "human_interaction" if waiting_user is not None else "tool_execution"
+                        ),
                     )
                 except SessionBusyError:
                     if not abort_signal.is_aborted():
                         raise
-                if completed_call is not None and completed_call.result is not None:
+                if completed_call is not None and completed_call.input_request is not None:
+                    sequence = await self.events.emit(
+                        emitted,
+                        sequence,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="ask_user_requested",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_call_id": completed_call.request.id,
+                            "tool_name": completed_call.request.name,
+                            "request": completed_call.input_request.data,
+                            "question": completed_call.input_request.data,
+                            "source_index": completed_call.request.source_index,
+                        },
+                    )
+                elif completed_call is not None and completed_call.result is not None:
                     result = completed_call.result
                     sequence = await self.events.emit(
                         emitted,
@@ -372,6 +410,40 @@ class ToolCallCoordinator:
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )
+        waiting_user = next(
+            (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
+            None,
+        )
+        if waiting_user is not None:
+            waiting_batch = checkpoint_batch.model_copy(
+                update={"phase": "awaiting_interaction", "updated_at": utc_now()}
+            )
+            self.runs.save_batch_state(
+                session=session,
+                run=run,
+                batch=waiting_batch,
+                status="waiting_user",
+                phase="human_interaction",
+            )
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="run_status_changed",
+                payload={
+                    "to_status": "waiting_user",
+                    "status": "waiting_user",
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                },
+            )
+            return ToolBatchHandlingResult(
+                status="waiting_user",
+                batch=waiting_batch,
+                input_request=waiting_user.input_request,
+                sequence=sequence,
+            )
         batch = checkpoint_batch.model_copy(
             update={
                 "phase": "committing_results",
@@ -555,8 +627,9 @@ class ToolCallCoordinator:
         batch: ToolCallBatchRecord,
         *,
         tool_call_id: str,
-        answer: str,
+        answer: object,
     ) -> ToolCallBatchRecord:
+        answer = _JSON_VALUE_ADAPTER.validate_python(answer)
         resolved_calls: list[ToolBatchCall] = []
         found = False
         for call in batch.calls:
@@ -570,10 +643,11 @@ class ToolCallCoordinator:
                 call.model_copy(
                     update={
                         "status": "completed",
+                        "input_request": None,
                         "result": ToolResult(
                             tool_call_id=call.request.id,
                             tool_name=call.request.name,
-                            content=answer,
+                            content=_tool_input_result_content(answer),
                             structured={"answer": answer},
                             ended_at=utc_now(),
                         ),
@@ -739,14 +813,20 @@ class ToolCallCoordinator:
                     "batch_id": batch_id,
                     "turn_id": turn_id,
                     "tool_call_id": request.id,
-                    "question": outcome.question,
+                    "tool_name": request.name,
+                    "request": outcome.input_request.data
+                    if outcome.input_request is not None
+                    else None,
+                    "question": outcome.input_request.data
+                    if outcome.input_request is not None
+                    else None,
                 },
             )
             return ToolBatchCall(
                 request=request,
                 status="waiting_user",
                 invocation=outcome.invocation,
-                result=outcome.result,
+                input_request=outcome.input_request,
             ), sequence
         if outcome.status == "ready":
             return ToolBatchCall(
@@ -823,3 +903,9 @@ class ToolCallCoordinator:
             if definition.execution_mode == "sequential":
                 return "sequential"
         return "parallel"
+
+
+def _tool_input_result_content(answer: object) -> str:
+    if isinstance(answer, str):
+        return answer
+    return json.dumps(answer, ensure_ascii=False, separators=(",", ":"))

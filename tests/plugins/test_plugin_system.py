@@ -54,7 +54,14 @@ from ouro.plugins.store import (
 from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
-from ouro.tools import Tool, ToolDefinition, ToolExecutionContext, ToolRegistry, ToolResult
+from ouro.tools import (
+    Tool,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolInputRequest,
+    ToolRegistry,
+    ToolResult,
+)
 
 MCP_SERVER_SCRIPT = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
 
@@ -1466,6 +1473,68 @@ for line in sys.stdin:
         )
     assert result.content == f"worker-ok|{tmp_path}"
     await service.disable("dev.ouro.worker")
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_worker_tool_can_return_structured_input_request(tmp_path) -> None:
+    source = tmp_path / "worker-input"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.worker_input",
+        runtime={
+            "kind": "worker",
+            "command": ["{python}", "./worker.py"],
+            "protocol": "1.0",
+        },
+        contributes={
+            "tools": [
+                {
+                    "id": "confirm",
+                    "exposed_name": "worker__confirm",
+                    "description": "Request plan confirmation.",
+                }
+            ]
+        },
+    )
+    (source / "worker.py").write_text(
+        """import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    result = {}
+    if method == 'initialize':
+        result = {'protocol_version': '1.0'}
+    elif method == 'contributions.prepare':
+        result = {'tools': {'confirm': {}}}
+    elif method == 'tool.call':
+        result = {'input_request': {'type': 'choice', 'options': ['yes', 'no']}}
+    if 'id' in request:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if method == 'shutdown': break
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.worker_input")
+    service.trust_code("dev.ouro.worker_input")
+    assert (await service.enable("dev.ouro.worker_input")).status == "active"
+
+    with runtime.snapshot() as snapshot:
+        result = await snapshot.tools.get("worker__confirm").execute(
+            ToolInvocation(
+                session_id="ses_worker",
+                run_id="run_worker",
+                tool_name="worker__confirm",
+            )
+        )
+
+    assert isinstance(result, ToolInputRequest)
+    assert result.data == {"type": "choice", "options": ["yes", "no"]}
+    await service.disable("dev.ouro.worker_input")
     await runtime.close()
 
 
