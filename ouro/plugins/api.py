@@ -16,6 +16,12 @@ from typing import Any
 from uuid import uuid4
 
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
+from ouro.core.context_providers import (
+    ContextFragment,
+    ContextProviderCall,
+    ContextProviderRegistration,
+    ContextProviderResult,
+)
 from ouro.core.continuations import (
     ContinuationDecision,
     ContinuationPolicyRegistration,
@@ -28,6 +34,11 @@ from ouro.core.tool_policies import (
     ToolPolicyDecision,
     ToolPolicyRegistration,
 )
+from ouro.core.turn_policies import (
+    TurnCompletionCandidate,
+    TurnPolicyDecision,
+    TurnPolicyRegistration,
+)
 from ouro.plugins.contributions import PluginContributions
 from ouro.plugins.models import InstalledPlugin, PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.paths import portable_relative_path
@@ -35,7 +46,6 @@ from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRequest,
     PluginCommandResult,
-    PluginContextProvider,
 )
 from ouro.sdk.plugins import v1 as sdk
 from ouro.tools import (
@@ -472,6 +482,46 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             is_error=raw.is_error,
         )
 
+    async def resume_handler(
+        invocation: ToolInvocation,
+        answer: sdk.JsonValue,
+        *,
+        request: ToolInputRequest,
+        context: ToolExecutionContext,
+    ) -> ToolResult | ToolInputRequest:
+        if contribution.resume_handler is None:
+            raise RuntimeError(f"tool does not support resume: {contribution.exposed_name}")
+        call = sdk.ToolResumeCall(
+            tool_call_id=invocation.tool_call_id,
+            session_id=invocation.session_id,
+            run_id=invocation.run_id,
+            tool_name=invocation.tool_name,
+            arguments=MappingProxyType(dict(invocation.arguments)),
+            request=request.data,
+            answer=answer,
+            workspace=str(context.workspace) if context.workspace is not None else None,
+            workspace_only=context.workspace_only,
+        )
+        raw = _invoke_sdk_tool_handler(
+            contribution.resume_handler,
+            call,
+            _SDKToolExecutionContext(context),
+        )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if isinstance(raw, str):
+            raw = sdk.ToolOutput(content=raw)
+        if isinstance(raw, sdk.ToolInputRequest):
+            return ToolInputRequest(data=raw.data)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content=raw.content,
+            structured=dict(raw.structured),
+            resource_refs=list(raw.resource_refs),
+            is_error=raw.is_error,
+        )
+
     return Tool(
         definition=ToolDefinition(
             name=contribution.exposed_name,
@@ -480,9 +530,13 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             result_schema=dict(contribution.result_schema),
             permission_mode=contribution.permission_mode,
             permission_control=contribution.permission_control,
+            effect=contribution.effect,
+            batch_behavior=contribution.batch_behavior,
+            resumable=contribution.resume_handler is not None,
             metadata={"sdk_contribution_id": contribution.id},
         ),
         handler=handler,
+        resume_handler=resume_handler if contribution.resume_handler is not None else None,
     )
 
 
@@ -523,7 +577,7 @@ class _SDKToolExecutionContext:
 
 def _invoke_sdk_tool_handler(
     handler,
-    call: sdk.ToolCall,
+    call: sdk.ToolCall | sdk.ToolResumeCall,
     context: sdk.ToolExecutionContext,
 ):
     try:
@@ -573,7 +627,6 @@ def _adapt_hook(contribution: sdk.HookContribution) -> HookRegistration:
         if raw is None:
             return HookResult()
         return HookResult(
-            added_context=list(raw.added_context),
             diagnostics=list(raw.diagnostics),
         )
 
@@ -621,19 +674,35 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
     )
 
 
-def _adapt_context(contribution: sdk.ContextContribution) -> PluginContextProvider:
-    hook = _adapt_hook(
-        sdk.HookContribution(
-            id=contribution.id,
-            event="after_context_build",
-            handler=contribution.handler,
-            priority=contribution.priority,
+def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegistration:
+    async def handler(call: ContextProviderCall) -> ContextProviderResult:
+        raw = contribution.handler(
+            sdk.ContextCall(
+                session_id=call.session_id,
+                run_id=call.run_id,
+                message_count=call.message_count,
+                model_round=call.model_round,
+            )
         )
-    )
-    return PluginContextProvider(
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if isinstance(raw, sdk.ContextOutput):
+            values = raw.fragments
+        elif isinstance(raw, str):
+            values = (raw,)
+        else:
+            values = raw
+        return ContextProviderResult(
+            fragments=[ContextFragment(text=value) for value in values if value]
+        )
+
+    return ContextProviderRegistration(
+        plugin_id="",
         provider_id=contribution.id,
-        handler=hook.handler,
+        handler=handler,
         priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+        failure_mode=contribution.failure_mode,
     )
 
 
@@ -726,8 +795,13 @@ def _adapt_tool_policy(
                 run_id=call.run_id,
                 tool_call_id=call.tool_call_id,
                 tool_name=call.tool_name,
+                canonical_tool_id=call.canonical_tool_id,
+                owner_id=call.owner_id,
                 arguments=MappingProxyType(dict(call.arguments)),
                 source=call.source,
+                effect=call.effect,
+                batch_behavior=call.batch_behavior,
+                permission_control=call.permission_control,
                 workspace=call.workspace,
             )
         )
@@ -738,6 +812,34 @@ def _adapt_tool_policy(
         return ToolPolicyDecision(action=raw.action, reason=raw.reason)
 
     return ToolPolicyRegistration(
+        plugin_id="",
+        policy_id=contribution.id,
+        handler=handler,
+        priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+    )
+
+
+def _adapt_turn_policy(
+    contribution: sdk.TurnPolicyContribution,
+) -> TurnPolicyRegistration:
+    async def handler(candidate: TurnCompletionCandidate) -> TurnPolicyDecision:
+        raw = contribution.handler(
+            sdk.TurnCompletionCall(
+                session_id=candidate.session_id,
+                run_id=candidate.run_id,
+                turn_id=candidate.turn_id,
+                assistant_text=candidate.assistant_text,
+                assistant_reasoning=candidate.assistant_reasoning,
+            )
+        )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if not isinstance(raw, sdk.TurnPolicyDecision):
+            raise TypeError("turn policy must return TurnPolicyDecision")
+        return TurnPolicyDecision(action=raw.action, feedback=raw.feedback)
+
+    return TurnPolicyRegistration(
         plugin_id="",
         policy_id=contribution.id,
         handler=handler,
@@ -763,6 +865,7 @@ CONTINUATION_SDK_ADAPTER = SDKContributionAdapter(
     _adapt_continuation_policy,
 )
 TOOL_POLICY_SDK_ADAPTER = SDKContributionAdapter("tool_policies", _adapt_tool_policy)
+TURN_POLICY_SDK_ADAPTER = SDKContributionAdapter("turn_policies", _adapt_turn_policy)
 
 
 def _module_belongs_to(module: ModuleType, package_root: Path) -> bool:

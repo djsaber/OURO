@@ -155,7 +155,7 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_tool_controlled_tool_bypasses_host_permission_pipeline(tmp_path) -> None:
+async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy(tmp_path) -> None:
     home = tmp_path / "home"
     store = LocalSessionStore(home)
     store.initialize()
@@ -230,11 +230,11 @@ async def test_tool_controlled_tool_bypasses_host_permission_pipeline(tmp_path) 
     result = await runtime.run("control the harness", approval_mode="deny")
 
     assert result.run.status == "completed"
-    assert result.tool_results[0].content == "harness controlled"
-    assert result.tool_results[0].is_error is False
-    assert evaluated == []
+    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
+    assert result.tool_results[0].is_error is True
+    assert evaluated == ["ControlHarness"]
     events = store.load_session(result.session.session_id).events
-    assert all(event.event_type != "tool_policy_evaluated" for event in events)
+    assert any(event.event_type == "tool_policy_evaluated" for event in events)
     await runtime.close()
 
 
@@ -286,11 +286,18 @@ async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> 
     old_catalog_id = old.run.metadata["extension_catalog_id"]
 
     assert await application.plugin_runtime.restart("dev.ouro.catalog") == "active"
+    old_command = await application.plugins.execute_command(
+        "dev.ouro.catalog:generation",
+        session_id=old.session.session_id,
+    )
+    current_command = await application.plugins.execute_command("dev.ouro.catalog:generation")
     new = await runtime.run("use the new catalog")
     assert new.run.status == "waiting_approval"
     new_generation = new.run.metadata["extension_generations"][0]["generation_id"]
     assert new_generation != old_generation
     assert new.run.metadata["extension_catalog_id"] != old_catalog_id
+    assert old_command.output == old_generation
+    assert current_command.output == new_generation
 
     old_completed = await runtime.approve_tool(
         session_id=old.session.session_id,
@@ -411,6 +418,93 @@ async def test_waiting_approval_rebuilds_same_execution_contract_after_restart(t
         if message.role == "tool_result"
     )
     assert tool_result.text_content == rebuilt_generation.generation_id
+    await second_application.close()
+
+
+@pytest.mark.asyncio
+async def test_resumable_plugin_tool_rebuilds_original_execution_contract_after_restart(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    source = tmp_path / "resumable-plugin"
+    _write_resumable_plugin(source)
+
+    first_store = LocalSessionStore(home)
+    first_store.initialize()
+    first_runtime = RuntimeService(
+        store=first_store,
+        adapter=RuntimeAdapter(
+            FauxProvider(event_batches=[_tool_call_batch("call_resume", "resume__workflow")]),
+            ModelMetadata(model_id="resume", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    first_application = LocalApplication.from_runtime(first_runtime, home=home)
+    assert first_application.plugins is not None
+    first_application.plugins.install(source)
+    first_application.plugins.authorize("dev.ouro.resume")
+    first_application.plugins.trust_code("dev.ouro.resume")
+    await first_application.start()
+    assert (await first_application.plugins.enable("dev.ouro.resume")).status == "active"
+
+    waiting = await first_runtime.run("start the workflow")
+    persisted_generation = waiting.run.metadata["extension_generations"][0]
+    persisted_batch = waiting.run.active_tool_batch
+    assert waiting.run.status == "waiting_user"
+    assert persisted_batch is not None
+    persisted_call = persisted_batch.calls[0]
+    assert persisted_call.invocation is not None
+    assert persisted_call.input_request is not None
+    assert (
+        persisted_call.input_request.data["generation_id"] == persisted_generation["generation_id"]
+    )
+    assert (
+        persisted_call.invocation.execution_contract_hash
+        == persisted_generation["execution_contract_hash"]
+    )
+    await first_application.close()
+
+    second_store = LocalSessionStore(home)
+    second_store.initialize()
+    second_runtime = RuntimeService(
+        store=second_store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(type="text_delta", text="resumed"),
+                        ProviderStreamEvent(type="done"),
+                    ]
+                ]
+            ),
+            ModelMetadata(model_id="resume", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    second_application = LocalApplication.from_runtime(second_runtime, home=home)
+    await second_application.start()
+    assert second_application.plugin_runtime is not None
+    with second_application.plugin_runtime.snapshot() as rebuilt:
+        rebuilt_generation = rebuilt.generations[0]
+    assert rebuilt_generation.generation_id != persisted_generation["generation_id"]
+    assert (
+        rebuilt_generation.execution_contract_hash
+        == persisted_generation["execution_contract_hash"]
+    )
+
+    completed = await second_runtime.answer_user(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        answer={"choice": "accept"},
+    )
+
+    assert completed.run.status == "completed"
+    assert completed.tool_results[0].structured == {
+        "answer": {"choice": "accept"},
+        "generation_id": rebuilt_generation.generation_id,
+    }
     await second_application.close()
 
 
@@ -788,11 +882,92 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
                     "entrypoint": "catalog_plugin:create_plugin",
                 },
                 "contributes": {
+                    "commands": [
+                        {
+                            "id": "generation",
+                            "description": "Return the owning generation.",
+                        }
+                    ],
                     "tools": [
                         {
                             "id": "generation",
                             "exposed_name": "catalog__generation",
                             "description": "Return the owning generation.",
+                        }
+                    ],
+                },
+                "permissions": [],
+                "dependencies": {"plugins": []},
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "catalog_plugin.py").write_text(
+        """from ouro.sdk.plugins.v1 import (
+    CommandContribution,
+    CommandOutput,
+    ContributionSet,
+    ToolContribution,
+    ToolOutput,
+)
+
+class Plugin:
+    def __init__(self, context):
+        self.generation_id = context.identity.generation_id
+
+    async def prepare(self):
+        async def generation(call):
+            return ToolOutput(content=self.generation_id)
+        async def generation_command(call):
+            return CommandOutput(output=self.generation_id)
+        return ContributionSet(
+            tools=[ToolContribution(
+                id='generation', exposed_name='catalog__generation',
+                description='Return the owning generation.', handler=generation,
+            )],
+            commands=[CommandContribution(
+                id='generation', description='Return the owning generation.',
+                handler=generation_command,
+            )],
+        )
+
+    async def start(self): pass
+    async def stop(self, reason, deadline): pass
+
+def create_plugin(context):
+    return Plugin(context)
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_resumable_plugin(source) -> None:
+    manifest_dir = source / ".ouro-plugin"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "plugin_id": "dev.ouro.resume",
+                "name": "Resume",
+                "version": "1.0.0",
+                "namespace": "resume",
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "runtime": {
+                    "kind": "python-inprocess",
+                    "entrypoint": "resume_plugin:create_plugin",
+                },
+                "contributes": {
+                    "tools": [
+                        {
+                            "id": "workflow",
+                            "exposed_name": "resume__workflow",
+                            "description": "Resume an interactive workflow.",
+                            "permission_mode": "auto",
+                            "effect": "state_changing",
+                            "batch_behavior": "exclusive",
+                            "resumable": True,
                         }
                     ]
                 },
@@ -803,19 +978,37 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
         ),
         encoding="utf-8",
     )
-    (source / "catalog_plugin.py").write_text(
-        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution, ToolOutput
+    (source / "resume_plugin.py").write_text(
+        """from ouro.sdk.plugins.v1 import (
+    ContributionSet,
+    ToolContribution,
+    ToolInputRequest,
+    ToolOutput,
+)
 
 class Plugin:
     def __init__(self, context):
         self.generation_id = context.identity.generation_id
 
     async def prepare(self):
-        async def generation(call):
-            return ToolOutput(content=self.generation_id)
+        async def begin(call):
+            return ToolInputRequest(data={
+                'type': 'confirmation',
+                'generation_id': self.generation_id,
+            })
+        async def resume(call):
+            return ToolOutput(
+                content='resumed',
+                structured={
+                    'answer': call.answer,
+                    'generation_id': self.generation_id,
+                },
+            )
         return ContributionSet(tools=[ToolContribution(
-            id='generation', exposed_name='catalog__generation',
-            description='Return the owning generation.', handler=generation,
+            id='workflow', exposed_name='resume__workflow',
+            description='Resume an interactive workflow.', permission_mode='auto',
+            effect='state_changing', batch_behavior='exclusive',
+            handler=begin, resume_handler=resume,
         )])
 
     async def start(self): pass

@@ -13,12 +13,17 @@ from ouro.core.compaction import (
     CompactionStrategy,
     CompactionStrategyRegistry,
 )
+from ouro.core.context_providers import (
+    ContextProviderRegistration,
+    ContextProviderRegistry,
+)
 from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
+from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
 from ouro.plugins.contracts import (
     ContributionContractContext,
     build_contribution_contract_hashes,
@@ -28,9 +33,7 @@ from ouro.plugins.models import InstalledPlugin, PluginGenerationRecord
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRegistry,
-    PluginContextProvider,
     bind_plugin_command,
-    context_provider_hook,
 )
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolRegistry
@@ -49,10 +52,11 @@ class PluginContributions:
     tools: list[Tool] = field(default_factory=list)
     hooks: list[HookRegistration] = field(default_factory=list)
     commands: list[PluginCommand] = field(default_factory=list)
-    context_providers: list[PluginContextProvider] = field(default_factory=list)
+    context_providers: list[ContextProviderRegistration] = field(default_factory=list)
     compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
     background_services: list[BackgroundService] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyRegistration] = field(default_factory=list)
+    turn_policies: list[TurnPolicyRegistration] = field(default_factory=list)
     tool_policies: list[ToolPolicyRegistration] = field(default_factory=list)
 
 
@@ -72,11 +76,13 @@ class PreparedContributionSet:
     owner: ContributionOwner
     tools: tuple[Tool, ...] = ()
     hooks: tuple[HookRegistration, ...] = ()
+    context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     contract_hashes: dict[str, str] = field(default_factory=dict)
     degraded_reasons: tuple[str, ...] = ()
@@ -106,6 +112,7 @@ def bind_execution_contract(
                 }
             ),
             handler=tool.handler,
+            resume_handler=tool.resume_handler,
         )
         for tool in prepared.tools
     )
@@ -161,11 +168,13 @@ class _PreparationContext:
 class _PreparedBuilder:
     tools: tuple[Tool, ...] = ()
     hooks: tuple[HookRegistration, ...] = ()
+    context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
 
 
@@ -210,16 +219,20 @@ class ContributionCoordinator:
         *,
         tools: ToolRegistry,
         hooks: HookRegistry,
+        context_providers: ContextProviderRegistry | None = None,
         commands: PluginCommandRegistry | None = None,
         compaction: CompactionStrategyRegistry | None = None,
         continuations: RunContinuationRegistry | None = None,
+        turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
     ) -> None:
         self.tools = tools
         self.hooks = hooks
+        self.context_providers = context_providers or ContextProviderRegistry()
         self.commands = commands
         self.compaction = compaction
         self.continuations = continuations
+        self.turn_policies = turn_policies
         self.tool_policies = tool_policies
 
     def prepare(
@@ -260,10 +273,12 @@ class ContributionCoordinator:
                 manifest=manifest,
                 tools=builder.tools,
                 hooks=builder.hooks,
+                context_providers=builder.context_providers,
                 commands=builder.commands,
                 compaction=builder.compaction_strategies,
                 background_services=builder.background_services,
                 continuation_policies=builder.continuation_policies,
+                turn_policies=builder.turn_policies,
                 tool_policies=builder.tool_policies,
                 resource_contracts=dict(resource_contracts or {}),
             )
@@ -280,11 +295,13 @@ class ContributionCoordinator:
             owner=owner,
             tools=builder.tools,
             hooks=builder.hooks,
+            context_providers=builder.context_providers,
             commands=builder.commands,
             compaction_strategies=builder.compaction_strategies,
             background_services=builder.background_services,
             skills=builder.skills,
             continuation_policies=builder.continuation_policies,
+            turn_policies=builder.turn_policies,
             tool_policies=builder.tool_policies,
             contract_hashes=hashes,
             degraded_reasons=degraded_reasons,
@@ -315,10 +332,12 @@ class ContributionCoordinator:
             if sdk_identity is not None and (
                 tool.definition.permission_mode != declaration.permission_mode
                 or tool.definition.permission_control != declaration.permission_control
+                or tool.definition.effect != declaration.effect
+                or tool.definition.batch_behavior != declaration.batch_behavior
+                or tool.definition.resumable != declaration.resumable
             ):
                 raise ContributionValidationError(
-                    "tool permission contract does not match manifest: "
-                    f"{declaration.exposed_name}"
+                    f"tool permission contract does not match manifest: {declaration.exposed_name}"
                 )
             definition = tool.definition.model_copy(
                 update={
@@ -327,6 +346,9 @@ class ContributionCoordinator:
                     "source": ("official_plugin" if source == "official" else "third_party_plugin"),
                     "permission_mode": declaration.permission_mode,
                     "permission_control": declaration.permission_control,
+                    "effect": declaration.effect,
+                    "batch_behavior": declaration.batch_behavior,
+                    "resumable": declaration.resumable,
                 }
             )
             contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))
@@ -343,7 +365,13 @@ class ContributionCoordinator:
                     }
                 }
             )
-            prepared.append(Tool(definition=definition, handler=tool.handler))
+            prepared.append(
+                Tool(
+                    definition=definition,
+                    handler=tool.handler,
+                    resume_handler=tool.resume_handler,
+                )
+            )
         return tuple(prepared)
 
     @staticmethod
@@ -402,7 +430,13 @@ class ContributionCoordinator:
                     },
                 }
             )
-            prepared.append(Tool(definition=definition, handler=tool.handler))
+            prepared.append(
+                Tool(
+                    definition=definition,
+                    handler=tool.handler,
+                    resume_handler=tool.resume_handler,
+                )
+            )
         return tuple(prepared)
 
     @staticmethod
@@ -456,9 +490,8 @@ class ContributionCoordinator:
     def _prepare_context_providers(
         manifest: PluginManifest,
         owner: ContributionOwner,
-        source: PluginSource,
-        providers: list[PluginContextProvider],
-    ) -> tuple[HookRegistration, ...]:
+        providers: list[ContextProviderRegistration],
+    ) -> tuple[ContextProviderRegistration, ...]:
         declarations = {item.id: item for item in manifest.contributes.context_providers}
         actual = _unique_contribution_map(
             "context provider",
@@ -466,14 +499,12 @@ class ContributionCoordinator:
         )
         _validate_declared_set("context provider", declarations, actual)
         return tuple(
-            HookRegistration(
+            replace(
+                provider,
                 plugin_id=manifest.plugin_id,
-                hook_name="after_context_build",
-                handler=context_provider_hook(provider),
-                source=source,
-                priority=provider.priority,
-                timeout_seconds=10.0,
-                hook_id=f"context:{provider.provider_id}",
+                priority=declarations[provider.provider_id].priority,
+                timeout_seconds=declarations[provider.provider_id].timeout_seconds,
+                failure_mode=declarations[provider.provider_id].failure_mode,
                 owner=owner.key,
                 generation_id=owner.generation_id,
             )
@@ -575,6 +606,30 @@ class ContributionCoordinator:
             for policy in actual.values()
         )
 
+    @staticmethod
+    def _prepare_turn_policies(
+        manifest: PluginManifest,
+        owner: ContributionOwner,
+        policies: list[TurnPolicyRegistration],
+    ) -> tuple[TurnPolicyRegistration, ...]:
+        declarations = {item.id: item for item in manifest.contributes.turn_policies}
+        actual = _unique_contribution_map(
+            "turn policy",
+            ((policy.policy_id, policy) for policy in policies),
+        )
+        _validate_declared_set("turn policy", declarations, actual)
+        return tuple(
+            replace(
+                policy,
+                plugin_id=manifest.plugin_id,
+                priority=declarations[policy.policy_id].priority,
+                timeout_seconds=declarations[policy.policy_id].timeout_seconds,
+                owner=owner.key,
+                generation_id=owner.generation_id,
+            )
+            for policy in actual.values()
+        )
+
 
 @dataclass(frozen=True)
 class _ToolPreparationAdapter:
@@ -635,11 +690,7 @@ class _HookPreparationAdapter:
         return _missing_optional(
             "hooks",
             context.installed.manifest.contributes.hooks,
-            {
-                hook.hook_id
-                for hook in builder.hooks
-                if not hook.hook_id.startswith(("context:", "skill:"))
-            },
+            {hook.hook_id for hook in builder.hooks if not hook.hook_id.startswith("skill:")},
         )
 
 
@@ -653,13 +704,11 @@ class _ContextPreparationAdapter:
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        context_hooks = coordinator._prepare_context_providers(
+        builder.context_providers = coordinator._prepare_context_providers(
             context.installed.manifest,
             context.owner,
-            context.source,
             context.contributions.context_providers,
         )
-        builder.hooks = (*builder.hooks, *context_hooks)
 
     def missing_optional(
         self,
@@ -669,11 +718,7 @@ class _ContextPreparationAdapter:
         return _missing_optional(
             "context_providers",
             context.installed.manifest.contributes.context_providers,
-            {
-                hook.hook_id.removeprefix("context:")
-                for hook in builder.hooks
-                if hook.hook_id.startswith("context:")
-            },
+            {provider.provider_id for provider in builder.context_providers},
         )
 
 
@@ -873,6 +918,34 @@ class _ToolPolicyPreparationAdapter:
         )
 
 
+@dataclass(frozen=True)
+class _TurnPolicyPreparationAdapter:
+    kind: str = "turn_policies"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.turn_policies = coordinator._prepare_turn_policies(
+            context.installed.manifest,
+            context.owner,
+            context.contributions.turn_policies,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "turn_policies",
+            context.installed.manifest.contributes.turn_policies,
+            {policy.policy_id for policy in builder.turn_policies},
+        )
+
+
 TOOL_PREPARATION_ADAPTER = _ToolPreparationAdapter()
 HOOK_PREPARATION_ADAPTER = _HookPreparationAdapter()
 COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
@@ -883,6 +956,7 @@ MCP_PREPARATION_ADAPTER = _MCPPreparationAdapter()
 BACKGROUND_SERVICE_PREPARATION_ADAPTER = _BackgroundServicePreparationAdapter()
 CONTINUATION_PREPARATION_ADAPTER = _ContinuationPreparationAdapter()
 TOOL_POLICY_PREPARATION_ADAPTER = _ToolPolicyPreparationAdapter()
+TURN_POLICY_PREPARATION_ADAPTER = _TurnPolicyPreparationAdapter()
 
 
 def _unique_contribution_map[ContributionT](

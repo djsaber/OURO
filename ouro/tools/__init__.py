@@ -3,7 +3,9 @@
 from ouro.tools.base import (
     PermissionMode,
     Tool,
+    ToolBatchBehavior,
     ToolDefinition,
+    ToolEffect,
     ToolExecutionAborted,
     ToolExecutionContext,
     ToolExecutionOutcome,
@@ -22,7 +24,9 @@ from ouro.tools.registry import ToolRegistry
 __all__ = [
     "PermissionMode",
     "Tool",
+    "ToolBatchBehavior",
     "ToolDefinition",
+    "ToolEffect",
     "ToolExecutionAborted",
     "ToolExecutionContext",
     "ToolExecutionOutcome",

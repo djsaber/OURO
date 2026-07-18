@@ -1171,6 +1171,15 @@ def _add_mcp_parser(subparsers: argparse._SubParsersAction) -> None:
     set_parser.add_argument("--timeout", type=float, metavar="SECONDS")
     set_parser.add_argument("--health-check-interval", type=float, metavar="SECONDS")
     set_parser.add_argument("--permission-mode", choices=("auto", "approval", "deny"))
+    _add_replaceable_option(
+        set_parser,
+        "tool-effect",
+        "tool_effects",
+        clear_option="tool-effects",
+        value_type=_tool_effect_override,
+        metavar="TOOL=EFFECT",
+        help_text="tool effect override (read_only, state_changing, or unknown)",
+    )
     set_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     remove_parser = mcp_subparsers.add_parser("remove", help="Remove an MCP server")
@@ -1470,3 +1479,12 @@ def _key_value(value: str) -> tuple[str, str]:
     if not separator or not key:
         raise argparse.ArgumentTypeError("expected NAME=VALUE")
     return key, item
+
+
+def _tool_effect_override(value: str) -> tuple[str, str]:
+    tool_name, effect = _key_value(value)
+    if effect not in {"read_only", "state_changing", "unknown"}:
+        raise argparse.ArgumentTypeError(
+            "tool effect must be read_only, state_changing, or unknown"
+        )
+    return tool_name, effect

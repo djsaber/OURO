@@ -184,6 +184,33 @@ class TurnBoundaryInputResult:
     messages: list[MessageRecord] = field(default_factory=list)
 
 
+class TurnCompletionPolicyEvaluator(Protocol):
+    async def __call__(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        assistant_text: str,
+        assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
+        turn_id: str,
+    ) -> TurnCompletionPolicyResult: ...
+
+
+@dataclass(frozen=True)
+class TurnCompletionPolicyResult:
+    sequence: int
+    messages: list[MessageRecord] = field(default_factory=list)
+    blocked_reason: str | None = None
+
+    @property
+    def should_continue(self) -> bool:
+        return bool(self.messages) and self.blocked_reason is None
+
+
 @dataclass(frozen=True)
 class InnerLoopPorts:
     prepare_context: ContextPreparer
@@ -197,6 +224,7 @@ class InnerLoopPorts:
     fail_run: RunFailer
     pause_run: RunPauser
     consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
+    evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
 
 
 @dataclass
@@ -372,6 +400,40 @@ class InnerAgentLoop:
             ):
                 state.final_parts.clear()
                 continue
+            if self.ports.evaluate_turn_completion is not None:
+                try:
+                    completion = await self.ports.evaluate_turn_completion(
+                        state.emitted,
+                        state.sequence,
+                        session=state.session,
+                        run=state.run,
+                        messages=state.messages,
+                        assistant_text="".join(round_state.parts),
+                        assistant_reasoning="".join(round_state.reasoning_parts),
+                        assistant_continuation=round_state.continuation,
+                        turn_id=round_state.turn_id,
+                    )
+                except Exception as exc:  # noqa: BLE001 - application port boundary.
+                    return await self._fail(
+                        state,
+                        f"turn policy evaluation failed: {exc}",
+                    )
+                state.sequence = completion.sequence
+                if completion.blocked_reason is not None:
+                    return await self.ports.pause_run(
+                        state.emitted,
+                        state.sequence,
+                        session=state.session,
+                        run=state.run,
+                        reason="turn_policy_blocked",
+                        next_model_round=model_round + 1,
+                        final_text=state.final_text(),
+                        tool_results=state.tool_results,
+                    )
+                if completion.should_continue:
+                    state.messages.extend(completion.messages)
+                    state.final_parts.clear()
+                    continue
             return await self.ports.complete_run(
                 state.emitted,
                 state.sequence,

@@ -8,8 +8,13 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.sessions import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
+from ouro.core.context_providers import (
+    ContextFragment,
+    ContextProviderRegistration,
+    ContextProviderRegistry,
+    ContextProviderResult,
+)
 from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
-from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import (
     ModelMetadata,
@@ -23,6 +28,11 @@ from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
+from ouro.core.turn_policies import (
+    TurnPolicyDecision,
+    TurnPolicyRegistration,
+    TurnPolicyRegistry,
+)
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
@@ -777,7 +787,7 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
+async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = FauxProvider(
@@ -798,20 +808,24 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
             yield event
 
     provider.stream = recording_stream  # type: ignore[method-assign]
-    hooks = HookRegistry()
-    hooks.register(
-        HookRegistration(
-            plugin_id="ctx",
-            hook_name="after_context_build",
-            source="official",
-            handler=lambda context: HookResult(added_context=["extra context"]),
-        )
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="ctx",
+                provider_id="extra",
+                handler=lambda _call: ContextProviderResult(
+                    fragments=[ContextFragment(text="extra context")]
+                ),
+            ),
+        ),
     )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(provider, ModelMetadata(model_id="faux", provider_id="faux")),
         tools=_tools(),
-        hooks=hooks,
+        context_providers=context_providers,
     )
 
     await runtime.run("Use context")
@@ -822,7 +836,7 @@ async def test_runtime_hook_adds_context_to_provider(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_path) -> None:
+async def test_runtime_merges_context_builder_skills_before_provider_context(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CapturingProvider()
@@ -836,14 +850,18 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
         ]
     )
     context_builder = ContextBuilder(skill_instructions=skills_prompt)
-    hooks = HookRegistry()
-    hooks.register(
-        HookRegistration(
-            plugin_id="ctx",
-            hook_name="after_context_build",
-            source="official",
-            handler=lambda context: HookResult(added_context=["plugin context"]),
-        )
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="ctx",
+                provider_id="plugin",
+                handler=lambda _call: ContextProviderResult(
+                    fragments=[ContextFragment(text="plugin context")]
+                ),
+            ),
+        ),
     )
     runtime = RuntimeService(
         store=store,
@@ -852,7 +870,7 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
             ModelMetadata(model_id="capture", provider_id="capture"),
         ),
         tools=_tools(),
-        hooks=hooks,
+        context_providers=context_providers,
         context_builder=context_builder,
     )
 
@@ -865,6 +883,159 @@ async def test_runtime_merges_context_builder_skills_before_hook_context(tmp_pat
         message.text_content for message in provider.messages if message.role == "system_synthetic"
     ]
     assert synthetic_messages == ["plugin context"]
+
+
+@pytest.mark.asyncio
+async def test_required_context_provider_failure_pauses_before_model_request(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    context_providers = ContextProviderRegistry()
+
+    def fail(_call):
+        raise RuntimeError("required state unavailable")
+
+    context_providers.replace_owner(
+        "required",
+        (
+            ContextProviderRegistration(
+                plugin_id="dev.ouro.required",
+                provider_id="state",
+                handler=fail,
+                failure_mode="block",
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+        context_providers=context_providers,
+    )
+
+    result = await runtime.run("Use required context")
+    events = store.load_session(result.session.session_id).events
+
+    assert result.run.status == "paused"
+    assert result.run.metadata["pause"]["reason"] == "context_blocked"
+    assert provider.messages == []
+    assert any(event.event_type == "context_provider_failed" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_turn_policy_continues_inside_same_run_before_completion(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = FauxProvider(
+        event_batches=[
+            [
+                ProviderStreamEvent(type="text_delta", text="candidate"),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="final"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    evaluations = 0
+
+    def completion_policy(_candidate):
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations == 1:
+            return TurnPolicyDecision(
+                action="continue",
+                feedback="Use a tool or provide a complete delivery.",
+            )
+        return TurnPolicyDecision()
+
+    turn_policies = TurnPolicyRegistry()
+    turn_policies.replace_owner(
+        "policy",
+        (
+            TurnPolicyRegistration(
+                plugin_id="dev.ouro.workflow",
+                policy_id="completion",
+                handler=completion_policy,
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        turn_policies=turn_policies,
+    )
+
+    result = await runtime.run("finish the workflow")
+    snapshot = store.load_session(result.session.session_id)
+
+    assert result.run.status == "completed"
+    assert result.final_text == "final"
+    assert evaluations == 2
+    assert [message.role for message in snapshot.messages] == [
+        "user",
+        "assistant",
+        "system_synthetic",
+        "assistant",
+    ]
+    assert snapshot.messages[1].text_content == "candidate"
+    assert snapshot.messages[2].metadata["session_input_source"] == "turn_policy"
+    assert any(event.event_type == "turn_policy_continued" for event in snapshot.events)
+
+
+@pytest.mark.asyncio
+async def test_turn_policy_failure_pauses_instead_of_silently_completing(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    turn_policies = TurnPolicyRegistry()
+
+    def fail(_candidate):
+        raise RuntimeError("token=policy-secret")
+
+    turn_policies.replace_owner(
+        "policy",
+        (
+            TurnPolicyRegistration(
+                plugin_id="dev.ouro.workflow",
+                policy_id="completion",
+                handler=fail,
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent(type="text_delta", text="candidate"),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        turn_policies=turn_policies,
+    )
+
+    result = await runtime.run("finish")
+    snapshot = store.load_session(result.session.session_id)
+
+    assert result.run.status == "paused"
+    assert result.run.metadata["pause"] == {
+        "kind": "turn_policy",
+        "reason": "turn_policy_blocked",
+        "next_model_round": 2,
+    }
+    failure = next(event for event in snapshot.events if event.event_type == "turn_policy_failed")
+    assert failure.payload["message"] == "token=***"
 
 
 @pytest.mark.asyncio

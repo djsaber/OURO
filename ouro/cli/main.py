@@ -560,6 +560,7 @@ def _mcp_config_update(args: argparse.Namespace) -> MCPServerConfigUpdate:
         ("env", "env", {}),
         ("headers", "headers", {}),
         ("credentials", "credential_refs", {}),
+        ("tool_effects", "tool_effect_overrides", {}),
     ):
         supplied = getattr(args, argument)
         if getattr(args, f"clear_{argument}"):

@@ -30,6 +30,7 @@ from ouro.core.context import (
     estimate_text_tokens,
     project_recovery_messages,
 )
+from ouro.core.context_providers import ContextProviderCall, ContextProviderRegistry
 from ouro.core.errors import CompactionError, ContextBlockedError, ContextOverflowError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
@@ -326,6 +327,7 @@ class ContextPreparationService:
         store: SessionStore,
         adapter: RuntimeAdapter,
         hooks: HookRegistry,
+        context_providers: ContextProviderRegistry,
         events: RuntimeEventRecorder,
         context_builder: ContextBuilder,
         strategies: CompactionStrategyRegistry,
@@ -336,6 +338,7 @@ class ContextPreparationService:
         self.store = store
         self.adapter = adapter
         self.hooks = hooks
+        self.context_providers = context_providers
         self.events = events
         self.context_builder = context_builder
         self.strategies = strategies
@@ -356,25 +359,33 @@ class ContextPreparationService:
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
         hooks: HookRegistry | None = None,
+        context_providers: ContextProviderRegistry | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
     ) -> tuple[ContextView, int]:
         active_adapter = adapter or self.adapter
         active_hooks = hooks or self.hooks
-        hook_result = await active_hooks.dispatch(
-            HookContext(
-                hook_name="after_context_build",
+        active_context_providers = context_providers or self.context_providers
+        provider_result = await active_context_providers.evaluate(
+            ContextProviderCall(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                data={"message_count": len(messages), "model_round": model_round},
+                message_count=len(messages),
+                model_round=model_round,
             )
         )
-        sequence = await self.events.record_hook_failures(
+        sequence = await self.events.record_context_provider_failures(
             emitted,
             sequence,
-            hook_result.failures,
+            provider_result.failures,
         )
-        added_context = [text for result in hook_result.results for text in result.added_context]
+        if provider_result.blocked:
+            failure = provider_result.failures[-1]
+            raise ContextBlockedError(
+                "required context provider failed: "
+                f"{failure.plugin_id}:{failure.provider_id}: {failure.error_type}"
+            )
+        added_context = [fragment.text for fragment in provider_result.fragments]
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
@@ -423,7 +434,17 @@ class ContextPreparationService:
                         "covered_message_count": len(active.covered_message_ids) if active else 0,
                     }
                 )
-                return view.model_copy(update={"context_metadata": metadata}), sequence
+                final_view = view.model_copy(update={"context_metadata": metadata})
+                sequence = await self._observe_built_context(
+                    emitted,
+                    sequence,
+                    hooks=active_hooks,
+                    session=session,
+                    run=run,
+                    view=final_view,
+                    model_round=model_round,
+                )
+                return final_view, sequence
             sequence = execution.sequence
             if execution.record is None and view.context_metadata["over_budget"]:
                 raise ContextBlockedError(
@@ -458,7 +479,47 @@ class ContextPreparationService:
                 "covered_message_count": len(active.covered_message_ids) if active else 0,
             }
         )
-        return view.model_copy(update={"context_metadata": metadata}), sequence
+        final_view = view.model_copy(update={"context_metadata": metadata})
+        sequence = await self._observe_built_context(
+            emitted,
+            sequence,
+            hooks=active_hooks,
+            session=session,
+            run=run,
+            view=final_view,
+            model_round=model_round,
+        )
+        return final_view, sequence
+
+    async def _observe_built_context(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        hooks: HookRegistry,
+        session: SessionRecord,
+        run: RunRecord,
+        view: ContextView,
+        model_round: int,
+    ) -> int:
+        hook_result = await hooks.dispatch(
+            HookContext(
+                hook_name="after_context_build",
+                session_id=session.session_id,
+                run_id=run.run_id,
+                data={
+                    "message_count": len(view.model_messages),
+                    "tool_count": len(view.tool_definitions),
+                    "model_round": model_round,
+                    "context_metadata": dict(view.context_metadata),
+                },
+            )
+        )
+        return await self.events.record_hook_failures(
+            emitted,
+            sequence,
+            hook_result.failures,
+        )
 
     async def compact(
         self,

@@ -139,6 +139,53 @@ async def test_parallel_batch_preserves_one_assistant_message_and_source_order(t
 
 
 @pytest.mark.asyncio
+async def test_exclusive_tool_rejects_mixed_batch_before_any_handler_runs(tmp_path) -> None:
+    registry = ToolRegistry()
+    executed: list[str] = []
+
+    def execute(invocation) -> ToolResult:
+        executed.append(invocation.tool_name)
+        return _result(invocation, "must not execute")
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="EnterWorkflow",
+                description="Enter a workflow.",
+                batch_behavior="exclusive",
+            ),
+            handler=execute,
+        )
+    )
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Write", description="Write data."),
+            handler=execute,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        mode="parallel",
+        first_calls=[
+            ToolCallRequest(id="call_enter", name="EnterWorkflow", source_index=0),
+            ToolCallRequest(id="call_write", name="Write", source_index=1),
+        ],
+    )
+
+    result = await runtime.run("enter and write")
+    snapshot = runtime.store.load_session(result.session.session_id)
+
+    assert result.run.status == "completed"
+    assert executed == []
+    assert [item.structured["error_type"] for item in result.tool_results] == [
+        "ExclusiveToolBatchViolation",
+        "ExclusiveToolBatchViolation",
+    ]
+    assert any(event.event_type == "tool_batch_rejected" for event in snapshot.events)
+
+
+@pytest.mark.asyncio
 async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp_path) -> None:
     requested = {
         "type": "plan_confirmation",
@@ -204,6 +251,71 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
         separators=(",", ":"),
     )
     assert resolved_event.payload["answer"] == answer
+
+
+@pytest.mark.asyncio
+async def test_resumable_tool_can_request_multiple_inputs_and_owns_final_result(tmp_path) -> None:
+    initial_calls = 0
+    resume_calls: list[tuple[object, object]] = []
+
+    def begin(_call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        nonlocal initial_calls
+        initial_calls += 1
+        return sdk.ToolInputRequest(data={"stage": "first"})
+
+    def resume(call: sdk.ToolResumeCall) -> sdk.ToolInputRequest | sdk.ToolOutput:
+        resume_calls.append((call.request, call.answer))
+        if call.request == {"stage": "first"}:
+            return sdk.ToolInputRequest(data={"stage": "second"})
+        return sdk.ToolOutput(
+            content="workflow accepted",
+            structured={"accepted": call.answer},
+        )
+
+    contribution = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="workflow",
+                    exposed_name="workflow__advance",
+                    description="Advance an interactive workflow.",
+                    permission_mode="auto",
+                    handler=begin,
+                    resume_handler=resume,
+                )
+            ]
+        )
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        first_calls=[ToolCallRequest(id="call_workflow", name="workflow__advance")],
+    )
+
+    first = await runtime.run("advance")
+    second = await runtime.answer_user(
+        session_id=first.session.session_id,
+        run_id=first.run.run_id,
+        answer={"choice": "next"},
+    )
+    completed = await runtime.answer_user(
+        session_id=second.session.session_id,
+        run_id=second.run.run_id,
+        answer={"choice": "accept"},
+    )
+
+    assert first.run.status == "waiting_user"
+    assert second.run.status == "waiting_user"
+    assert completed.run.status == "completed"
+    assert initial_calls == 1
+    assert resume_calls == [
+        ({"stage": "first"}, {"choice": "next"}),
+        ({"stage": "second"}, {"choice": "accept"}),
+    ]
+    assert completed.tool_results[0].content == "workflow accepted"
+    assert completed.tool_results[0].structured == {"accepted": {"choice": "accept"}}
 
 
 @pytest.mark.asyncio

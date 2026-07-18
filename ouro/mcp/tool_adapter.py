@@ -8,6 +8,7 @@ from ouro.mcp.models import MCPRemoteTool, MCPRemoteToolResult, MCPServerConfig
 from ouro.tools import (
     Tool,
     ToolDefinition,
+    ToolEffect,
     ToolExecutionContext,
     ToolInvocation,
     ToolResult,
@@ -24,6 +25,7 @@ def adapt_mcp_tool(
     invoke: MCPToolInvoker,
 ) -> Tool:
     name = exposed_tool_name(config.server_id, remote.name)
+    effect, effect_source = _resolve_effect(config, remote)
     definition = ToolDefinition(
         name=name,
         display_name=remote.title,
@@ -32,10 +34,12 @@ def adapt_mcp_tool(
         result_schema=remote.output_schema,
         source="mcp",
         permission_mode=config.permission_mode,
+        effect=effect,
         metadata={
             "mcp_server_id": config.server_id,
             "mcp_tool_name": remote.name,
             "mcp_annotations": dict(remote.annotations),
+            "effect_source": effect_source,
         },
     )
     validate_tool_definition(definition)
@@ -47,6 +51,21 @@ def adapt_mcp_tool(
         return await invoke(config.server_id, remote.name, invocation, context)
 
     return Tool(definition=definition, handler=handler)
+
+
+def _resolve_effect(
+    config: MCPServerConfig,
+    remote: MCPRemoteTool,
+) -> tuple[ToolEffect, str]:
+    override = config.tool_effect_overrides.get(remote.name)
+    if override is not None:
+        return override, "user_override"
+    read_only = remote.annotations.get("readOnlyHint")
+    if read_only is True:
+        return "read_only", "mcp_annotation"
+    if read_only is False:
+        return "state_changing", "mcp_annotation"
+    return "unknown", "default"
 
 
 def exposed_tool_name(server_id: str, remote_name: str) -> str:

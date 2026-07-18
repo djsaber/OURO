@@ -114,18 +114,20 @@ def test_session_auto_mode_overrides_denied_tool_permission() -> None:
 
 @pytest.mark.parametrize("approval_mode", ["inherit", "auto", "approval", "deny"])
 @pytest.mark.parametrize(
-    ("permission_mode", "override", "policy_mode", "expected_status"),
+    ("permission_mode", "override", "policy_mode", "expected_status", "expected_mode"),
     [
-        ("auto", "deny", "deny", "ready"),
-        ("deny", "auto", "approval", "completed"),
+        ("auto", "deny", "deny", "completed", "deny"),
+        ("auto", "deny", "approval", "approval_required", "approval"),
+        ("deny", "auto", "ignore", "completed", "deny"),
     ],
 )
-def test_tool_controlled_permission_is_the_only_execution_authority(
+def test_tool_controlled_permission_bypasses_host_mode_but_not_tool_policy(
     approval_mode,
     permission_mode,
     override,
     policy_mode,
     expected_status,
+    expected_mode,
 ) -> None:
     async def execute(_invocation):
         return "unused"
@@ -153,13 +155,13 @@ def test_tool_controlled_permission_is_the_only_execution_authority(
         invocation,
         approval_mode=approval_mode,
         policy_mode=policy_mode,
-        policy_reason="host policy must not govern this tool",
+        policy_reason="extension policy governs every tool",
     )
 
     assert outcome.status == expected_status
     assert outcome.invocation.permission_control == "tool"
-    assert outcome.invocation.permission_mode == permission_mode
-    if permission_mode == "deny":
+    assert outcome.invocation.permission_mode == expected_mode
+    if expected_mode == "deny":
         assert outcome.result is not None
         assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
 

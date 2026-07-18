@@ -6,11 +6,13 @@ from ouro.plugins.adapters import (
     BACKGROUND_SERVICE_PROJECTION_ADAPTER,
     COMMAND_PROJECTION_ADAPTER,
     COMPACTION_PROJECTION_ADAPTER,
+    CONTEXT_PROJECTION_ADAPTER,
     CONTINUATION_PROJECTION_ADAPTER,
     HOOK_PROJECTION_ADAPTER,
     SKILL_PROJECTION_ADAPTER,
     TOOL_POLICY_PROJECTION_ADAPTER,
     TOOL_PROJECTION_ADAPTER,
+    TURN_POLICY_PROJECTION_ADAPTER,
     ContributionLifecycle,
     ContributionProjectionAdapter,
 )
@@ -23,6 +25,7 @@ from ouro.plugins.api import (
     HOOK_SDK_ADAPTER,
     TOOL_POLICY_SDK_ADAPTER,
     TOOL_SDK_ADAPTER,
+    TURN_POLICY_SDK_ADAPTER,
     SDKContributionAdapter,
 )
 from ouro.plugins.contracts import (
@@ -34,6 +37,7 @@ from ouro.plugins.contracts import (
     HOOK_CONTRACT_ADAPTER,
     TOOL_CONTRACT_ADAPTER,
     TOOL_POLICY_CONTRACT_ADAPTER,
+    TURN_POLICY_CONTRACT_ADAPTER,
     ContributionContractAdapter,
 )
 from ouro.plugins.contributions import (
@@ -47,6 +51,7 @@ from ouro.plugins.contributions import (
     SKILL_PREPARATION_ADAPTER,
     TOOL_POLICY_PREPARATION_ADAPTER,
     TOOL_PREPARATION_ADAPTER,
+    TURN_POLICY_PREPARATION_ADAPTER,
     ContributionPreparationAdapter,
 )
 from ouro.plugins.generation_resources import (
@@ -64,6 +69,7 @@ from ouro.plugins.worker import (
     HOOK_WORKER_ADAPTER,
     TOOL_POLICY_WORKER_ADAPTER,
     TOOL_WORKER_ADAPTER,
+    TURN_POLICY_WORKER_ADAPTER,
     WorkerContributionAdapter,
 )
 
@@ -114,7 +120,7 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         "context_providers",
         "snapshot-bound",
         CONTEXT_PREPARATION_ADAPTER,
-        HOOK_PROJECTION_ADAPTER,
+        CONTEXT_PROJECTION_ADAPTER,
         sdk=CONTEXT_SDK_ADAPTER,
         worker=CONTEXT_WORKER_ADAPTER,
         contract=CONTEXT_CONTRACT_ADAPTER,
@@ -159,6 +165,15 @@ _CONTRIBUTION_TYPE_ADAPTERS: tuple[ContributionTypeAdapter, ...] = (
         sdk=CONTINUATION_SDK_ADAPTER,
         worker=CONTINUATION_WORKER_ADAPTER,
         contract=CONTINUATION_CONTRACT_ADAPTER,
+    ),
+    ContributionTypeAdapter(
+        "turn_policies",
+        "snapshot-bound",
+        TURN_POLICY_PREPARATION_ADAPTER,
+        TURN_POLICY_PROJECTION_ADAPTER,
+        sdk=TURN_POLICY_SDK_ADAPTER,
+        worker=TURN_POLICY_WORKER_ADAPTER,
+        contract=TURN_POLICY_CONTRACT_ADAPTER,
     ),
     ContributionTypeAdapter(
         "tool_policies",

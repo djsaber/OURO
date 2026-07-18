@@ -9,6 +9,8 @@ from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionCo
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 
 ToolExecutionPreference = Literal["inherit", "sequential"]
+ToolEffect = Literal["read_only", "state_changing", "unknown"]
+ToolBatchBehavior = Literal["compatible", "exclusive"]
 ToolKind = Literal["standard", "user_input"]
 ToolSource = Literal[
     "builtin",
@@ -31,6 +33,9 @@ class ToolDefinition(OuroModel):
     result_schema: dict[str, Any] = Field(default_factory=dict)
     can_abort: bool = True
     execution_mode: ToolExecutionPreference = "inherit"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
+    resumable: bool = False
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
 
@@ -61,7 +66,11 @@ class ToolInvocation(OuroModel):
     run_id: str
     turn_id: str | None = None
     tool_name: str
+    canonical_tool_id: str | None = None
+    owner_id: str | None = None
     source: ToolSource = "builtin"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
     arguments: dict[str, Any] = Field(default_factory=dict)
     requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
@@ -75,11 +84,6 @@ class ToolInvocation(OuroModel):
     execution_contract_hash: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
-
-    @model_validator(mode="after")
-    def validate_permission_control(self) -> Self:
-        _validate_permission_control(self.permission_mode, self.permission_control)
-        return self
 
 
 class ToolResult(OuroModel):

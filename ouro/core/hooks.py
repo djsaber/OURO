@@ -31,7 +31,6 @@ class HookContext(OuroModel):
 
 
 class HookResult(OuroModel):
-    added_context: list[str] = Field(default_factory=list)
     diagnostics: list[str] = Field(default_factory=list)
 
 
@@ -65,13 +64,6 @@ class HookRegistration:
 class HookDispatchResult:
     results: list[HookResult] = field(default_factory=list)
     failures: list[HookFailure] = field(default_factory=list)
-
-
-_SOURCE_ORDER: dict[PluginSource, int] = {
-    "official": 0,
-    "third_party": 1,
-    "ai_generated": 2,
-}
 
 
 class HookRegistry:
@@ -150,7 +142,6 @@ class HookRegistry:
         return sorted(
             registrations,
             key=lambda item: (
-                _SOURCE_ORDER[item.source],
                 item.priority,
                 item.plugin_id,
                 item.hook_id,
@@ -200,8 +191,7 @@ class HookRegistry:
                     message=f"hook timed out after {timeout:g} seconds",
                 )
                 dispatch_result.failures.append(failure)
-                if registration.source != "official":
-                    self._disabled_for_run.add(disabled_key)
+                self._disabled_for_run.add(disabled_key)
             except Exception as exc:  # noqa: BLE001 - hook isolation boundary
                 failure = HookFailure(
                     plugin_id=registration.plugin_id,
@@ -212,8 +202,7 @@ class HookRegistry:
                     message=redact_text(str(exc)),
                 )
                 dispatch_result.failures.append(failure)
-                if registration.source != "official":
-                    self._disabled_for_run.add(disabled_key)
+                self._disabled_for_run.add(disabled_key)
         return dispatch_result
 
     def _default_timeout(self, hook_name: HookName) -> float:

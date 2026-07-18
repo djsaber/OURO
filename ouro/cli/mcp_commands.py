@@ -79,6 +79,7 @@ def show_mcp_config(
                 f"Auto start: {'yes' if public['auto_start'] else 'no'}",
                 f"Auto reconnect: {'yes' if public['auto_reconnect'] else 'no'}",
                 f"Permission: {public['permission_mode']}",
+                f"Tool effects: {public['tool_effect_overrides']}",
                 f"Config: {facade.config_path}",
             ]
         )

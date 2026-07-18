@@ -24,10 +24,12 @@ from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
+from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import OuroError
 from ouro.core.hooks import HookRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
+from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
 from ouro.plugins.contributions import ContributionCoordinator
@@ -124,8 +126,10 @@ class LocalApplication:
             configured_home,
             tools=runtime.tools,
             hooks=runtime.hooks,
+            context_providers=runtime.context_providers,
             compaction=runtime.compaction_strategies,
             continuations=runtime.continuations,
+            turn_policies=runtime.turn_policies,
             tool_policies=runtime.tool_policies,
             skills=runtime.skills,
             session_store=runtime.store,
@@ -223,8 +227,10 @@ async def open_local_plugins(
         root,
         tools=ToolRegistry(),
         hooks=HookRegistry(),
+        context_providers=ContextProviderRegistry(),
         compaction=CompactionStrategyRegistry(),
         continuations=RunContinuationRegistry(),
+        turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
     )
@@ -390,8 +396,10 @@ def _build_local_plugin_runtime(
     *,
     tools: ToolRegistry,
     hooks: HookRegistry,
+    context_providers: ContextProviderRegistry,
     compaction: CompactionStrategyRegistry,
     continuations: RunContinuationRegistry,
+    turn_policies: TurnPolicyRegistry,
     tool_policies: ToolPolicyRegistry,
     skills: tuple[SkillMetadata, ...] = (),
     session_store: SessionStore | None,
@@ -404,9 +412,11 @@ def _build_local_plugin_runtime(
         ContributionCoordinator(
             tools=tools,
             hooks=hooks,
+            context_providers=context_providers,
             commands=commands,
             compaction=compaction,
             continuations=continuations,
+            turn_policies=turn_policies,
             tool_policies=tool_policies,
         ),
         credential_resolver=resolve_plugin_credential,

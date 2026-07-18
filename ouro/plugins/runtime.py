@@ -1027,9 +1027,11 @@ class PluginRuntimeResource:
             self._catalog_base = ExtensionCatalogBase.capture(
                 tools=self.coordinator.tools,
                 hooks=self.coordinator.hooks,
+                context_providers=self.coordinator.context_providers,
                 commands=self.coordinator.commands,
                 compaction=self.coordinator.compaction,
                 continuations=self.coordinator.continuations,
+                turn_policies=self.coordinator.turn_policies,
                 tool_policies=self.coordinator.tool_policies,
                 skills=self.base_skills,
             )

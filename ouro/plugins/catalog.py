@@ -18,6 +18,12 @@ from ouro.core.compaction import (
     CompactionStrategy,
     CompactionStrategyRegistry,
 )
+from ouro.core.context_providers import (
+    ContextProviderCall,
+    ContextProviderRegistration,
+    ContextProviderRegistry,
+    ContextProviderResult,
+)
 from ouro.core.continuations import (
     ContinuationDecision,
     ContinuationPolicyRegistration,
@@ -30,6 +36,12 @@ from ouro.core.tool_policies import (
     ToolPolicyDecision,
     ToolPolicyRegistration,
     ToolPolicyRegistry,
+)
+from ouro.core.turn_policies import (
+    TurnCompletionCandidate,
+    TurnPolicyDecision,
+    TurnPolicyRegistration,
+    TurnPolicyRegistry,
 )
 from ouro.plugins.adapters import CatalogProjectionTargets, project_prepared_contributions
 from ouro.plugins.contributions import PreparedContributionSet
@@ -132,9 +144,11 @@ class ContributionOwnerRecord:
 class ExtensionCatalogBase:
     tools: tuple[dict[str, Tool], dict[str, str]]
     hooks: tuple[list[HookRegistration], set[tuple[str | None, str, HookName, str]]]
+    context_providers: list[ContextProviderRegistration]
     commands: dict[str, PluginCommand]
     compaction: tuple[dict[str, CompactionStrategy], dict[str, str]]
     continuations: list[ContinuationPolicyRegistration]
+    turn_policies: list[TurnPolicyRegistration]
     tool_policies: list[ToolPolicyRegistration]
     skills: tuple[SkillMetadata, ...]
 
@@ -144,9 +158,11 @@ class ExtensionCatalogBase:
         *,
         tools: ToolRegistry,
         hooks: HookRegistry,
+        context_providers: ContextProviderRegistry | None = None,
         commands: PluginCommandRegistry | None,
         compaction: CompactionStrategyRegistry | None,
         continuations: RunContinuationRegistry | None,
+        turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None,
         skills: Sequence[SkillMetadata] = (),
     ) -> ExtensionCatalogBase:
@@ -157,9 +173,11 @@ class ExtensionCatalogBase:
         return cls(
             tools=tools.snapshot(),
             hooks=hooks.snapshot(),
+            context_providers=(context_providers or ContextProviderRegistry()).snapshot(),
             commands=commands.snapshot() if commands is not None else {},
             compaction=(compaction or CompactionStrategyRegistry()).snapshot(),
             continuations=(continuations or RunContinuationRegistry()).snapshot(),
+            turn_policies=(turn_policies or TurnPolicyRegistry()).snapshot(),
             tool_policies=(tool_policies or ToolPolicyRegistry()).snapshot(),
             skills=captured_skills,
         )
@@ -174,9 +192,11 @@ class ExtensionCatalog:
         generations: Sequence[CatalogGeneration],
         tools: ToolRegistry,
         hooks: HookRegistry,
+        context_providers: ContextProviderRegistry,
         commands: PluginCommandRegistry,
         compaction: CompactionStrategyRegistry,
         continuations: RunContinuationRegistry,
+        turn_policies: TurnPolicyRegistry,
         tool_policies: ToolPolicyRegistry,
         skills: Sequence[SkillMetadata],
         owners: Mapping[str, ContributionOwnerRecord],
@@ -188,9 +208,11 @@ class ExtensionCatalog:
         )
         self.tools = tools
         self.hooks = hooks
+        self.context_providers = context_providers
         self.commands = commands
         self.compaction = compaction
         self.continuations = continuations
+        self.turn_policies = turn_policies
         self.tool_policies = tool_policies
         self._skills = tuple(skill.model_copy(deep=True) for skill in skills)
         self.owners = MappingProxyType(dict(owners))
@@ -277,6 +299,10 @@ class ExtensionCatalogLease:
         return self.catalog.hooks
 
     @property
+    def context_providers(self) -> ContextProviderRegistry:
+        return self.catalog.context_providers
+
+    @property
     def commands(self) -> PluginCommandRegistry:
         return self.catalog.commands
 
@@ -287,6 +313,10 @@ class ExtensionCatalogLease:
     @property
     def continuations(self) -> RunContinuationRegistry:
         return self.catalog.continuations
+
+    @property
+    def turn_policies(self) -> TurnPolicyRegistry:
+        return self.catalog.turn_policies
 
     @property
     def tool_policies(self) -> ToolPolicyRegistry:
@@ -329,12 +359,16 @@ def build_extension_catalog(
     tools.restore(base.tools)
     hooks = HookRegistry()
     hooks.restore(base.hooks)
+    context_providers = ContextProviderRegistry()
+    context_providers.restore(base.context_providers)
     commands = PluginCommandRegistry()
     commands.restore(base.commands)
     compaction = CompactionStrategyRegistry()
     compaction.restore(base.compaction)
     continuations = RunContinuationRegistry()
     continuations.restore(base.continuations)
+    turn_policies = TurnPolicyRegistry()
+    turn_policies.restore(base.turn_policies)
     tool_policies = ToolPolicyRegistry()
     tool_policies.restore(base.tool_policies)
     skills = {skill.name: skill.model_copy(deep=True) for skill in base.skills}
@@ -342,9 +376,11 @@ def build_extension_catalog(
     targets = CatalogProjectionTargets(
         tools=tools,
         hooks=hooks,
+        context_providers=context_providers,
         commands=commands,
         compaction=compaction,
         continuations=continuations,
+        turn_policies=turn_policies,
         tool_policies=tool_policies,
         skills=skills,
     )
@@ -371,17 +407,21 @@ def build_extension_catalog(
             )
     tools.freeze()
     hooks.freeze()
+    context_providers.freeze()
     commands.freeze()
     compaction.freeze()
     continuations.freeze()
+    turn_policies.freeze()
     tool_policies.freeze()
     return ExtensionCatalog(
         generations=generations,
         tools=tools,
         hooks=hooks,
+        context_providers=context_providers,
         commands=commands,
         compaction=compaction,
         continuations=continuations,
+        turn_policies=turn_policies,
         tool_policies=tool_policies,
         skills=tuple(skills[name] for name in sorted(skills)),
         owners=owners,
@@ -396,6 +436,9 @@ def bind_generation_gate(
         prepared,
         tools=tuple(_gated_tool(item, gate) for item in prepared.tools),
         hooks=tuple(_gated_hook(item, gate) for item in prepared.hooks),
+        context_providers=tuple(
+            _gated_context_provider(item, gate) for item in prepared.context_providers
+        ),
         commands=tuple(_gated_command(item, gate) for item in prepared.commands),
         compaction_strategies=tuple(
             _GatedCompactionStrategy(item, gate) for item in prepared.compaction_strategies
@@ -403,6 +446,7 @@ def bind_generation_gate(
         continuation_policies=tuple(
             _gated_continuation(item, gate) for item in prepared.continuation_policies
         ),
+        turn_policies=tuple(_gated_turn_policy(item, gate) for item in prepared.turn_policies),
         tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
     )
 
@@ -417,7 +461,28 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
         async with gate.invocation():
             return await tool.execute(invocation, context=context, signal=signal)
 
-    return Tool(definition=tool.definition, handler=invoke)
+    async def resume(
+        invocation,
+        answer,
+        *,
+        request,
+        context: ToolExecutionContext | None = None,
+        signal=None,
+    ):
+        async with gate.invocation():
+            return await tool.resume(
+                invocation,
+                answer,
+                request=request,
+                context=context,
+                signal=signal,
+            )
+
+    return Tool(
+        definition=tool.definition,
+        handler=invoke,
+        resume_handler=resume if tool.resume_handler is not None else None,
+    )
 
 
 def _gated_hook(
@@ -427,6 +492,17 @@ def _gated_hook(
     async def invoke(context: HookContext):
         async with gate.invocation():
             return await _invoke_callback(registration.handler, context)
+
+    return replace(registration, handler=invoke)
+
+
+def _gated_context_provider(
+    registration: ContextProviderRegistration,
+    gate: GenerationGate,
+) -> ContextProviderRegistration:
+    async def invoke(call: ContextProviderCall) -> ContextProviderResult:
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, call)
 
     return replace(registration, handler=invoke)
 
@@ -487,6 +563,17 @@ def _gated_tool_policy(
     return replace(registration, handler=invoke)
 
 
+def _gated_turn_policy(
+    registration: TurnPolicyRegistration,
+    gate: GenerationGate,
+) -> TurnPolicyRegistration:
+    async def invoke(candidate: TurnCompletionCandidate) -> TurnPolicyDecision:
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, candidate)
+
+    return replace(registration, handler=invoke)
+
+
 async def _invoke_callback(handler: Callable[[Any], Any], argument: Any) -> Any:
     if inspect.iscoroutinefunction(handler):
         return await handler(argument)
@@ -524,6 +611,18 @@ def _base_owner_records(
                 }
             ),
         )
+    for provider in base.context_providers:
+        identity = f"ouro.host/context_providers/{provider.plugin_id}:{provider.provider_id}"
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "priority": provider.priority,
+                    "timeout_seconds": provider.timeout_seconds,
+                    "failure_mode": provider.failure_mode,
+                }
+            ),
+        )
     for identity, command in base.commands.items():
         canonical = f"ouro.host/commands/{identity}"
         records[canonical] = _host_owner(
@@ -558,6 +657,20 @@ def _base_owner_records(
                 {
                     "priority": tool_policy_registration.priority,
                     "timeout_seconds": tool_policy_registration.timeout_seconds,
+                }
+            ),
+        )
+    for turn_policy_registration in base.turn_policies:
+        identity = (
+            "ouro.host/turn_policies/"
+            f"{turn_policy_registration.plugin_id}:{turn_policy_registration.policy_id}"
+        )
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "priority": turn_policy_registration.priority,
+                    "timeout_seconds": turn_policy_registration.timeout_seconds,
                 }
             ),
         )

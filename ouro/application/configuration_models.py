@@ -205,6 +205,9 @@ class MCPServerConfigView(ApplicationDTO):
     timeout_seconds: float
     health_check_interval_seconds: float
     permission_mode: PermissionMode
+    tool_effect_overrides: dict[str, Literal["read_only", "state_changing", "unknown"]] = Field(
+        default_factory=dict
+    )
 
 
 class MCPConfigCatalogView(ApplicationDTO):

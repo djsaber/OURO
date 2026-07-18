@@ -12,7 +12,7 @@ RunBudgetReason = Literal[
     "output_tokens",
     "elapsed_time",
 ]
-RunPauseReason = RunBudgetReason | Literal["context_blocked"]
+RunPauseReason = RunBudgetReason | Literal["context_blocked", "turn_policy_blocked"]
 
 
 class RunBudgetPolicy(OuroModel):

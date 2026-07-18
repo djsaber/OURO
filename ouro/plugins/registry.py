@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, replace
@@ -11,7 +10,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.errors import OuroError
-from ouro.core.hooks import HookContext, HookResult, PluginSource
+from ouro.core.hooks import PluginSource
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionInput, SessionInputRequest
 
@@ -44,10 +43,6 @@ PluginCommandHandler = Callable[
     | PluginCommandResult
     | Awaitable[str | Mapping[str, Any] | PluginCommandResult],
 ]
-PluginContextProviderHandler = Callable[
-    [HookContext],
-    str | list[str] | HookResult | Awaitable[str | list[str] | HookResult | None] | None,
-]
 
 
 @dataclass(frozen=True)
@@ -66,13 +61,6 @@ class PluginCommand:
     @property
     def command_id(self) -> str:
         return f"{self.plugin_id}:{self.name}"
-
-
-@dataclass(frozen=True)
-class PluginContextProvider:
-    provider_id: str
-    handler: PluginContextProviderHandler
-    priority: int = 100
 
 
 class PluginCommandRegistry:
@@ -219,22 +207,6 @@ class PluginCommandRegistry:
                 ]
             }
         )
-
-
-def context_provider_hook(provider: PluginContextProvider):
-    async def _handler(context: HookContext) -> HookResult:
-        result = provider.handler(context)
-        if inspect.isawaitable(result):
-            result = await result
-        if result is None:
-            return HookResult()
-        if isinstance(result, HookResult):
-            return result
-        if isinstance(result, str):
-            return HookResult(added_context=[result])
-        return HookResult(added_context=list(result))
-
-    return _handler
 
 
 def bind_plugin_command(

@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from typing import Literal, Protocol
 
 from ouro.core.compaction import CompactionStrategyRegistry
+from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.hooks import HookRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
+from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions import PreparedContributionSet
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.skills import SkillMetadata
@@ -19,9 +21,11 @@ ContributionLifecycle = Literal["snapshot-bound", "activation-singleton"]
 class CatalogProjectionTargets:
     tools: ToolRegistry
     hooks: HookRegistry
+    context_providers: ContextProviderRegistry
     commands: PluginCommandRegistry
     compaction: CompactionStrategyRegistry
     continuations: RunContinuationRegistry
+    turn_policies: TurnPolicyRegistry
     tool_policies: ToolPolicyRegistry
     skills: dict[str, SkillMetadata]
 
@@ -97,10 +101,11 @@ class _SkillProjectionAdapter:
 
 
 TOOL_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("tools", "tools", "tools")
-HOOK_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
-    "hooks_context_skills",
-    "hooks",
-    "hooks",
+HOOK_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("hooks", "hooks", "hooks")
+CONTEXT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "context_providers",
+    "context_providers",
+    "context_providers",
 )
 COMMAND_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "commands",
@@ -121,6 +126,11 @@ TOOL_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "tool_policies",
     "tool_policies",
     "tool_policies",
+)
+TURN_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "turn_policies",
+    "turn_policies",
+    "turn_policies",
 )
 BACKGROUND_SERVICE_PROJECTION_ADAPTER = _BackgroundServiceAdapter()
 SKILL_PROJECTION_ADAPTER = _SkillProjectionAdapter()
@@ -147,5 +157,6 @@ __all__ = [
     "CatalogProjectionTargets",
     "ContributionLifecycle",
     "ContributionProjectionAdapter",
+    "CONTEXT_PROJECTION_ADAPTER",
     "project_prepared_contributions",
 ]

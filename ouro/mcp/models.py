@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, ToolEffect
 
 MCPTransport = Literal["stdio", "http", "sse"]
 MCPServerStatus = Literal[
@@ -63,6 +63,7 @@ class MCPServerConfig(OuroModel):
     timeout_seconds: float = Field(default=30.0, gt=0, le=3600)
     health_check_interval_seconds: float = Field(default=30.0, gt=0, le=3600)
     permission_mode: PermissionMode = "approval"
+    tool_effect_overrides: dict[str, ToolEffect] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
 
     @field_validator("name")
@@ -105,6 +106,16 @@ class MCPServerConfig(OuroModel):
         if any("\r" in item or "\n" in item for item in value.values()):
             raise ValueError("header values must not contain newlines")
         return value
+
+    @field_validator("tool_effect_overrides")
+    @classmethod
+    def _validate_tool_effect_overrides(
+        cls,
+        value: dict[str, ToolEffect],
+    ) -> dict[str, ToolEffect]:
+        if any(not name.strip() for name in value):
+            raise ValueError("tool effect override names must not be blank")
+        return {name.strip(): effect for name, effect in value.items()}
 
     @model_validator(mode="after")
     def _validate_transport_fields(self) -> MCPServerConfig:

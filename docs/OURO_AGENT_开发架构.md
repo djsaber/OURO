@@ -108,14 +108,22 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
   权限：`inherit` 沿用配置权限，`auto` 放行，`approval` 要求审批，`deny` 拒绝；限制性插件
   `tool_policies` 最后只能提高限制。
 - `tool` 表示工具定义拥有最终控制权，只允许 `permission_mode="auto"` 或 `"deny"`。用户覆盖、会话批准模式和
-  `tool_policies` 均不参与决策；协调器不会为这类工具调用限制性策略，保证 Harness 控制工具不会被自身流程锁死。
+  Host permission override 不参与决策；限制性 `tool_policies` 仍对这类工具评估。它只免受 Host 审批模式干预，
+  不能借此逃逸其他编排扩展的工具策略。
 
 `ToolCallCoordinator` 在预检时把会话模式交给 `ToolExecutor`，最终权限和控制权写入 durable
 `ToolInvocation`，因此恢复不依赖当前进程的配置快照。内置、插件和 MCP 工具都通过这一边界。新增会话策略
-只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。
+只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。每个 Tool contract 还显式携带
+`effect = read_only | state_changing | unknown` 和 `batch_behavior = compatible | exclusive`。builtin 与插件
+在定义处声明 effect；MCP 依次采用用户 override、协议 `readOnlyHint` 或 `unknown`，不按名称和描述猜测。
+归一化后的 effect、batch behavior 和 resumable 能力都进入 execution contract hash。工具策略只接收 canonical
+identity、owner、这些归一化语义、schema 校验后的参数及 Session/Run 上下文；包含 exclusive 工具的混合批次
+必须在任何 handler 执行前整批拒绝。
 工具 handler 可以返回
 `ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
-`AskUser` 只是该协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
+需要根据回答继续执行的工具必须声明 resumable 并提供 resume handler；恢复仍绑定原 Catalog 与精确工具 contract，
+允许再次请求输入或产生最终工具结果。非 resumable 工具保留直接把回答作为结果的单阶段协议。`AskUser` 只是该
+协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
 workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制不等同于操作系统沙箱。
 
 ## 模型路由与 Provider 边界
@@ -155,9 +163,15 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
 没有模型回合身份的普通消息按用户请求分组；不完整工具交换及其后续恢复上下文作为受保护后缀。
 
-`ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要和
-token 预算。canonical history 永不被压缩覆盖；`CompactionRecord` 通过 message id 前缀和 digest 验证
-摘要来源。
+`ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要、
+snapshot-bound Context Provider 和 token 预算。Context Provider 在模型请求构建前返回带 owner 的类型化 fragment；
+optional provider 失败时省略自身，required provider 失败时阻断本轮，不能借用观察 Hook 修改语义。canonical
+history 永不被压缩覆盖；`CompactionRecord` 通过 message id 前缀和 digest 验证摘要来源。
+
+模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
+`allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 synthetic feedback 持久化到同一
+Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-closed 并暂停 Run。跨 Run 的 Continuation Policy 与此
+保持分离：前者约束当前 Run 的轮次收束，后者只消费终态 `RunOutcome`。
 
 用户附件采用同一投影原则：canonical message 只保存 `resource_refs`。ResourceService 在 Run/Message 提交前
 校验 Session 归属、digest、size、媒体类型和 Endpoint 能力，再把受支持文本或图片仅注入本次模型请求；附件
@@ -307,8 +321,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 - Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
   observational hook 使用不同超时上限。
-- 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、Hook、Host-neutral command、上下文
-  provider、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
+- 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、观察 Hook、Host-neutral command、
+  上下文 provider、turn policy、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
   未授权插件保持 `needs_authorization`。用户信任并授权插件后，其工具权限与内置工具使用相同语义，不按来源
   降级；manifest 工具权限是授权契约，运行时 SDK 贡献不得偏离，相关字段变化会改变 contribution fingerprint。
@@ -320,9 +334,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；普通 `after_run` Hook 仍是 fail-open observer。
 - 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace 路径与协作式取消语义；
-  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。Host 控制工具的 `tool_policies` 与观察型
-  `before_tool_call` 分离，只能把 `auto` 提升为审批或拒绝，失败时拒绝，且审批修改后的最终参数必须重新评估；
-  工具自控的 Harness 工具不进入该限制性策略链。
+  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call`
+  分离，对 host-controlled 和 tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
+  审批修改后的最终参数必须重新评估。`permission_control="tool"` 只隔离 Host permission 维度，不隔离插件策略维度。
 - 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
   `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
   superseded；目标插件在下一 Run 重新评估。
@@ -347,8 +361,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   active dependent 存在时不能禁用依赖项。不同 digest 共用 plugin data，候选 Host API 写入先进入隔离 staging，
   发布成功才提交；只有最后一个安装被移除时才允许 purge。
 - `ContributionCoordinator` 只负责把 generation contribution 校验、归一化为 owner set；`ExtensionCatalog` builder
-  从稳定 Host baseline 与 active generation set 构建结构冻结的 Tool、tool policy、Hook、command、compaction 与
-  continuation registry。候选失败不会改写 baseline 或 current Catalog。
+  从稳定 Host baseline 与 active generation set 构建结构冻结的 Tool、tool policy、观察 Hook、context provider、
+  turn policy、command、compaction 与 continuation registry。候选失败不会改写 baseline 或 current Catalog。
 - `ouro.plugins.contribution_types` 是 Host-owned 封闭清单，把每种 Manifest capability 的 SDK、worker、prepare、
   optional、contract、resource 与 Catalog projection facet 绑定在同一记录。主流程遍历清单且不接受用户动态注册；
   Skill/MCP 是 generation-owned resource facet，只有准备成功的资源进入 contract。Background Service 唯一属于
@@ -360,7 +374,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   冲突，实际加载键为 `_ouro_plugin_<generation_id>`。插件内依赖必须放在 owned package 并使用相对 import；关闭
   generation 时删除其完整私有 module tree。需要独立第三方环境时使用 worker。
 - Runtime 在 Run 创建时取得 `ExtensionCatalogLease`，并把同一 Catalog 贯穿 context、model tool list、tool
-  execution、Hook、compaction、continuation 和异步 `on_event`。current pointer 仅在短同步临界区交换；旧 Catalog
+  execution、Hook、turn completion、compaction、continuation 和异步 `on_event`。current pointer 仅在短同步临界区交换；旧 Catalog
   由自身 lease 自然 drain，插件 import、worker/MCP 启停、回调和 I/O 均不在 pointer lock 内。
 - 插件生命周期 mutation 由单一 runtime lock 串行化；候选 generation set、required MCP 与 Catalog 全部成功后，
   Store 以 expected state 比较提交，并在无 `await` 的发布段打开新 gate、交换 pointer。Background Service 不进入
@@ -372,7 +386,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 本地 store、credential resolver、registry 和 runtime 的具体装配只属于 `ouro.local_application`；
   `ouro.application.plugins.PluginService` 保持 Host-neutral，不提供隐藏的本地构造入口。
 - pending Tool/Approval、Continuation 和 Run Catalog 持久化 `execution_contract_hash`；摘要覆盖 package digest、有效
-  配置修订、传递依赖锁、Plugin API/worker protocol 和 contribution contract。恢复忽略随机 `generation_id`，但会
+  配置修订、传递依赖锁、Plugin API/worker protocol 和全部 contribution contract；Tool 的归一化 effect、batch
+  behavior 与 resumable 能力属于该 contract。恢复忽略随机 `generation_id`，但会
   复核所有稳定事实与 ToolExecutor 契约，绝不按同名工具猜测替代。
 - 插件更新后，若 durable Run 的旧 digest、配置修订和依赖仍保留，runtime 可重建一个非 current generation 与精确
   Catalog；该 Catalog 只由恢复 Run 持有，不修改 selected/desired state，不启动 activation-singleton Background
@@ -388,7 +403,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
   协调 owner，避免跨任务退出 AnyIO 取消域。
 - MCP 工具以 `<server_id>__<remote_name>` 形成稳定 identity，通过 ToolRegistry 原子替换 projection，并继续
-  经过 OURO schema、权限、批次和恢复边界。
+  经过 OURO schema、effect 归一化、权限/策略、批次和恢复边界。用户可以按 server 内的 remote tool name 显式
+  覆盖 effect；override 改变会产生不同 contract hash。
 - Plugin MCP 由 generation resource owner 启停：required 连接失败中止候选，optional 失败投影 degraded；只有
   connected server 生成 contract，已发现 Tool 冻结进 Catalog，server 的后续变化只在下一 generation 可见。
 - `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；shutdown 关闭 session、HTTP

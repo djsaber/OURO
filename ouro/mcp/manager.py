@@ -228,7 +228,13 @@ class MCPManager:
             metadata = dict(tool.definition.metadata)
             metadata["mcp_server_id"] = server_id
             definition = tool.definition.model_copy(update={"source": "mcp", "metadata": metadata})
-            adapted.append(Tool(definition=definition, handler=tool.handler))
+            adapted.append(
+                Tool(
+                    definition=definition,
+                    handler=tool.handler,
+                    resume_handler=tool.resume_handler,
+                )
+            )
         registry.replace((), adapted)
         return [tool.definition.name for tool in adapted]
 

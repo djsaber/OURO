@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from pydantic import JsonValue
+
 from ouro.core.approvals import ApprovalRecord, SessionApprovalMode, resolve_tool_permission
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
@@ -86,15 +88,16 @@ class ToolExecutor:
             override=self.permission_overrides.get(tool.definition.name),
         )
         denial_reason: str | None = None
-        if tool.definition.permission_control == "host":
-            if policy_mode == "deny":
-                effective_mode = "deny"
-                denial_reason = policy_reason
-            elif policy_mode == "approval" and effective_mode == "auto":
-                effective_mode = "approval"
+        if policy_mode == "deny":
+            effective_mode = "deny"
+            denial_reason = policy_reason
+        elif policy_mode == "approval" and effective_mode == "auto":
+            effective_mode = "approval"
         invocation = invocation.model_copy(
             update={
                 "source": tool.definition.source,
+                "effect": tool.definition.effect,
+                "batch_behavior": tool.definition.batch_behavior,
                 "permission_mode": effective_mode,
                 "permission_control": tool.definition.permission_control,
                 "arguments": arguments_override
@@ -201,6 +204,91 @@ class ToolExecutor:
                     "metadata": {**result.metadata, "output_truncated": True},
                 }
             )
+        return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+    async def resume(
+        self,
+        invocation: ToolInvocation,
+        *,
+        answer: JsonValue,
+        request: ToolInputRequest,
+        signal: AbortSignal | None = None,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolExecutionOutcome:
+        try:
+            tool = self.registry.get(invocation.tool_name)
+        except KeyError:
+            return _error_outcome(
+                invocation,
+                error_type="UnknownTool",
+                error_message=f"unknown tool: {invocation.tool_name}",
+            )
+        contract_error = _tool_contract_error(invocation, tool.definition.metadata)
+        if contract_error is not None:
+            return _error_outcome(
+                invocation,
+                error_type="ToolExecutionContractMismatch",
+                error_message=contract_error,
+            )
+        if not tool.definition.resumable or tool.resume_handler is None:
+            return _error_outcome(
+                invocation,
+                error_type="ToolResumeUnsupported",
+                error_message=f"tool does not support resume: {invocation.tool_name}",
+            )
+        context = context or ToolExecutionContext(signal=signal)
+        try:
+            context.raise_if_aborted()
+            execution_result = await tool.resume(
+                invocation,
+                answer,
+                request=request,
+                context=context,
+            )
+        except ToolExecutionAborted as exc:
+            result = ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                is_error=True,
+                content=exc.reason,
+                structured={"aborted": True, "reason": exc.reason},
+                ended_at=utc_now(),
+            )
+            return ToolExecutionOutcome(status="aborted", invocation=invocation, result=result)
+        except Exception as exc:  # noqa: BLE001 - tool resume is an extension boundary.
+            error_type = type(exc).__name__
+            error_message = redact_text(str(exc))
+            result = ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                is_error=True,
+                content=(
+                    f"Tool {invocation.tool_name} resume failed: [{error_type}] {error_message}"
+                ),
+                structured={
+                    "error_type": error_type,
+                    "error_message": error_message,
+                },
+                ended_at=utc_now(),
+            )
+            return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+        if isinstance(execution_result, ToolInputRequest):
+            return ToolExecutionOutcome(
+                status="waiting_user",
+                invocation=invocation,
+                input_request=execution_result,
+            )
+        content, truncated = context.limit_output(execution_result.content)
+        result = (
+            execution_result.model_copy(
+                update={
+                    "content": content,
+                    "metadata": {**execution_result.metadata, "output_truncated": True},
+                }
+            )
+            if truncated
+            else execution_result
+        )
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
     def rejected_result(

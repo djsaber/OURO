@@ -27,6 +27,7 @@ from ouro.plugins.authorization import (
     create_code_trust_grant,
     plugin_install_readiness,
 )
+from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.plugins.compatibility import inspect_community_package
 from ouro.plugins.dependencies import (
     BuiltinPluginContract,
@@ -265,7 +266,7 @@ class PluginService:
         workspace: str | None = None,
     ) -> PluginCommandExecutionView:
         runtime = self._require_runtime()
-        snapshot = runtime.snapshot()
+        snapshot = await self._command_catalog(runtime, session_id=session_id)
         try:
             result = await snapshot.commands.execute(
                 command_id,
@@ -281,6 +282,38 @@ class PluginService:
             data=dict(result.data),
             session_inputs=list(result.attributed_session_inputs),
         )
+
+    async def _command_catalog(
+        self,
+        runtime: PluginRuntimeResource,
+        *,
+        session_id: str | None,
+    ) -> ExtensionCatalogLease:
+        if session_id is None or self.session_store is None:
+            return runtime.snapshot()
+        session_snapshot = self.session_store.load_runtime_session(session_id)
+        active_run_id = session_snapshot.session.active_run_id
+        if active_run_id is None:
+            return runtime.snapshot()
+        active_run = next(
+            (run for run in session_snapshot.runs if run.run_id == active_run_id),
+            None,
+        )
+        if active_run is None or active_run.status not in {
+            "queued",
+            "running",
+            "waiting_user",
+            "waiting_approval",
+        }:
+            return runtime.snapshot()
+        generations = active_run.metadata.get("extension_generations", [])
+        if not isinstance(generations, list) or any(
+            not isinstance(item, dict) for item in generations
+        ):
+            raise ValueError("active run has invalid extension generation metadata")
+        raw_catalog_id = active_run.metadata.get("extension_catalog_id")
+        catalog_id = raw_catalog_id if isinstance(raw_catalog_id, str) else None
+        return await runtime.snapshot_for(generations, catalog_id=catalog_id)
 
     def dependencies(
         self,

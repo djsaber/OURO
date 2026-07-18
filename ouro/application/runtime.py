@@ -43,11 +43,17 @@ from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
+from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import CompactionError, ConfigError, ResourceAttachmentError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
-from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts, TurnBoundaryInputResult
+from ouro.core.inner_loop import (
+    InnerAgentLoop,
+    InnerLoopPorts,
+    TurnBoundaryInputResult,
+    TurnCompletionPolicyResult,
+)
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
@@ -63,6 +69,7 @@ from ouro.core.state import (
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.tools import PermissionMode
+from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore
 from ouro.skills import SkillMetadata
@@ -83,6 +90,7 @@ class RuntimeService:
         model_catalog: RuntimeAdapterCatalog | None = None,
         tools: ToolRegistry,
         hooks: HookRegistry | None = None,
+        context_providers: ContextProviderRegistry | None = None,
         context_builder: ContextBuilder | None = None,
         run_budget: RunBudgetPolicy | None = None,
         system_prompt: str | None = None,
@@ -95,6 +103,7 @@ class RuntimeService:
         compaction_adapter_error: str | None = None,
         continuations: RunContinuationRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
+        turn_policies: TurnPolicyRegistry | None = None,
         queued_input_config: QueuedInputConfig | None = None,
         skills: tuple[SkillMetadata, ...] = (),
         resources: ResourceService | None = None,
@@ -125,8 +134,10 @@ class RuntimeService:
         self._permission_overrides = dict(permission_overrides or {})
         self._tool_execution_config = tool_execution_config or ToolExecutionConfig()
         self.hooks = hooks or HookRegistry()
+        self.context_providers = context_providers or ContextProviderRegistry()
         self.continuations = continuations or RunContinuationRegistry()
         self.tool_policies = tool_policies or ToolPolicyRegistry()
+        self.turn_policies = turn_policies or TurnPolicyRegistry()
         self.event_recorder = RuntimeEventRecorder(
             store=store,
             hooks=self.hooks,
@@ -176,6 +187,7 @@ class RuntimeService:
             store=store,
             adapter=adapter,
             hooks=self.hooks,
+            context_providers=self.context_providers,
             events=self.event_recorder,
             context_builder=self.context_builder,
             strategies=self.compaction_strategies,
@@ -215,6 +227,10 @@ class RuntimeService:
         snapshot = self._extension_snapshots.get(run_id)
         return snapshot.hooks if snapshot is not None else self.hooks
 
+    def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.context_providers if snapshot is not None else self.context_providers
+
     def _skills_for_run(self, run_id: str) -> tuple[SkillMetadata, ...]:
         snapshot = self._extension_snapshots.get(run_id)
         return snapshot.skills if snapshot is not None else self.skills
@@ -233,6 +249,10 @@ class RuntimeService:
     def _tool_policies_for_run(self, run_id: str) -> ToolPolicyRegistry:
         snapshot = self._extension_snapshots.get(run_id)
         return snapshot.tool_policies if snapshot is not None else self.tool_policies
+
+    def _turn_policies_for_run(self, run_id: str) -> TurnPolicyRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        return snapshot.turn_policies if snapshot is not None else self.turn_policies
 
     def _tool_calls_for_run(self, run_id: str) -> ToolCallCoordinator:
         tools = self._tools_for_run(run_id)
@@ -690,6 +710,7 @@ class RuntimeService:
     ) -> RunResult:
         tools = self._tools_for_run(run.run_id)
         hooks = self._hooks_for_run(run.run_id)
+        context_providers = self._context_providers_for_run(run.run_id)
         compaction = self._compaction_for_run(run.run_id)
         tool_calls = self._tool_calls_for_run(run.run_id)
         loop = InnerAgentLoop(
@@ -701,6 +722,7 @@ class RuntimeService:
                     self.context_preparation.prepare,
                     adapter=adapter,
                     hooks=hooks,
+                    context_providers=context_providers,
                     strategies=compaction,
                     skill_instructions=self._skill_instructions_for_run(run.run_id),
                 ),
@@ -714,6 +736,10 @@ class RuntimeService:
                 fail_run=self.run_lifecycle.fail,
                 pause_run=self.run_lifecycle.pause,
                 consume_turn_boundary_inputs=self._consume_turn_boundary_inputs,
+                evaluate_turn_completion=partial(
+                    self._evaluate_turn_completion,
+                    policies=self._turn_policies_for_run(run.run_id),
+                ),
             ),
         )
         return await loop.run(
@@ -1078,6 +1104,93 @@ class RuntimeService:
             )
         return TurnBoundaryInputResult(sequence=sequence, messages=appended)
 
+    async def _evaluate_turn_completion(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        assistant_text: str,
+        assistant_reasoning: str,
+        assistant_continuation: ProviderContinuationArtifact | None,
+        turn_id: str,
+        policies: TurnPolicyRegistry,
+    ) -> TurnCompletionPolicyResult:
+        evaluation = await policies.evaluate(
+            TurnCompletionCandidate(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                turn_id=turn_id,
+                assistant_text=assistant_text,
+                assistant_reasoning=assistant_reasoning,
+            )
+        )
+        sequence = await self.event_recorder.record_turn_policy_failures(
+            emitted,
+            sequence,
+            evaluation.failures,
+        )
+        if evaluation.failures:
+            failure = evaluation.failures[-1]
+            return TurnCompletionPolicyResult(
+                sequence=sequence,
+                blocked_reason=(
+                    f"turn policy failed: {failure.plugin_id}:{failure.policy_id}: "
+                    f"{failure.error_type}"
+                ),
+            )
+        if not evaluation.should_continue:
+            return TurnCompletionPolicyResult(sequence=sequence)
+
+        assistant_message = self.run_lifecycle.append_assistant_message(
+            session=session,
+            run=run,
+            text=assistant_text,
+            reasoning_content=assistant_reasoning,
+            provider_continuation=assistant_continuation,
+            sequence=len(messages) + 1,
+            turn_id=turn_id,
+        )
+        controllers = [
+            {
+                "plugin_id": item.plugin_id,
+                "policy_id": item.policy_id,
+                "generation_id": item.generation_id,
+            }
+            for item in evaluation.decisions
+        ]
+        feedback_message = self.run_lifecycle.append_synthetic_input(
+            session=session,
+            run=run,
+            prompt=evaluation.feedback,
+            sequence=len(messages) + 2,
+            metadata={
+                "session_input_source": "turn_policy",
+                "turn_id": turn_id,
+                "controllers": controllers,
+            },
+        )
+        sequence = await self.event_recorder.emit(
+            emitted,
+            sequence,
+            session_id=session.session_id,
+            run_id=run.run_id,
+            event_type="turn_policy_continued",
+            payload={
+                "turn_id": turn_id,
+                "policy_ids": [
+                    f"{item.plugin_id}/turn_policies/{item.policy_id}"
+                    for item in evaluation.decisions
+                ],
+            },
+        )
+        return TurnCompletionPolicyResult(
+            sequence=sequence,
+            messages=[assistant_message, feedback_message],
+        )
+
     def _append_session_input(
         self,
         *,
@@ -1296,10 +1409,11 @@ class RuntimeService:
             if waiting_call is None:
                 raise ValueError("run has no tool call waiting for user input")
             await self._ensure_extension_snapshot(run)
-            batch = self._tool_calls_for_run(run.run_id).resolve_user_answer(
+            batch = await self._tool_calls_for_run(run.run_id).resolve_user_answer(
                 batch,
                 tool_call_id=waiting_call.request.id,
                 answer=answer,
+                workspace=session.workspace,
             )
             resolved_call = next(
                 call for call in batch.calls if call.request.id == waiting_call.request.id
@@ -1320,6 +1434,22 @@ class RuntimeService:
                     "answer": answer,
                 },
             )
+            if resolved_call.status == "waiting_user" and resolved_call.input_request is not None:
+                sequence = await self.event_recorder.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="ask_user_requested",
+                    payload={
+                        "batch_id": batch.batch_id,
+                        "turn_id": batch.turn_id,
+                        "tool_call_id": resolved_call.request.id,
+                        "tool_name": resolved_call.request.name,
+                        "request": resolved_call.input_request.data,
+                        "question": resolved_call.input_request.data,
+                    },
+                )
             result = await self._continue_resolved_batch(
                 snapshot=snapshot,
                 session=session,

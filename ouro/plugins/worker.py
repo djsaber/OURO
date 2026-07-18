@@ -406,6 +406,39 @@ class WorkerPluginInstance:
 
         return handler
 
+    def _tool_resume_handler(self, identity: str):
+        async def handler(
+            call: sdk.ToolResumeCall,
+        ) -> sdk.ToolOutput | sdk.ToolInputRequest:
+            raw = await self.client.request(
+                "tool.resume",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "tool_call_id": call.tool_call_id,
+                        "session_id": call.session_id,
+                        "run_id": call.run_id,
+                        "tool_name": call.tool_name,
+                        "arguments": dict(call.arguments),
+                        "request": call.request,
+                        "answer": call.answer,
+                        "workspace": call.workspace,
+                        "workspace_only": call.workspace_only,
+                    },
+                },
+            )
+            result = self._result(raw, "tool.resume")
+            if "input_request" in result:
+                return sdk.ToolInputRequest(data=result["input_request"])
+            return sdk.ToolOutput(
+                content=str(result.get("content", "")),
+                structured=_object_value(result.get("structured", {})),
+                resource_refs=tuple(str(item) for item in result.get("resource_refs", [])),
+                is_error=bool(result.get("is_error", False)),
+            )
+
+        return handler
+
     def _hook_handler(self, identity: str):
         async def handler(call: sdk.HookCall) -> sdk.HookOutput:
             raw = await self.client.request(
@@ -435,43 +468,28 @@ class WorkerPluginInstance:
             )
             result = self._result(raw, "hook.call")
             return sdk.HookOutput(
-                added_context=tuple(str(item) for item in result.get("added_context", [])),
                 diagnostics=tuple(str(item) for item in result.get("diagnostics", [])),
             )
 
         return handler
 
     def _context_handler(self, identity: str):
-        async def handler(call: sdk.HookCall) -> sdk.HookOutput:
+        async def handler(call: sdk.ContextCall) -> sdk.ContextOutput:
             raw = await self.client.request(
-                "hook.call",
+                "context.call",
                 {
                     "contribution_id": identity,
                     "call": {
-                        "event": call.event,
                         "session_id": call.session_id,
                         "run_id": call.run_id,
-                        "data": dict(call.data),
-                        "run_outcome": (
-                            {
-                                "session_id": call.run_outcome.session_id,
-                                "run_id": call.run_outcome.run_id,
-                                "status": call.run_outcome.status,
-                                "origin": call.run_outcome.origin,
-                                "final_text": call.run_outcome.final_text,
-                                "error": call.run_outcome.error,
-                                "usage": dict(call.run_outcome.usage),
-                            }
-                            if call.run_outcome is not None
-                            else None
-                        ),
+                        "message_count": call.message_count,
+                        "model_round": call.model_round,
                     },
                 },
             )
-            result = self._result(raw, "hook.call")
-            return sdk.HookOutput(
-                added_context=tuple(str(item) for item in result.get("added_context", [])),
-                diagnostics=tuple(str(item) for item in result.get("diagnostics", [])),
+            result = self._result(raw, "context.call")
+            return sdk.ContextOutput(
+                fragments=tuple(str(item) for item in result.get("fragments", [])),
             )
 
         return handler
@@ -574,8 +592,13 @@ class WorkerPluginInstance:
                         "run_id": call.run_id,
                         "tool_call_id": call.tool_call_id,
                         "tool_name": call.tool_name,
+                        "canonical_tool_id": call.canonical_tool_id,
+                        "owner_id": call.owner_id,
                         "arguments": dict(call.arguments),
                         "source": call.source,
+                        "effect": call.effect,
+                        "batch_behavior": call.batch_behavior,
+                        "permission_control": call.permission_control,
                         "workspace": call.workspace,
                     },
                 },
@@ -588,6 +611,32 @@ class WorkerPluginInstance:
             if reason is not None and not isinstance(reason, str):
                 raise WorkerProtocolError("worker tool policy reason must be a string")
             return sdk.ToolPolicyDecision(action=action, reason=reason)
+
+        return handler
+
+    def _turn_policy_handler(self, identity: str):
+        async def handler(call: sdk.TurnCompletionCall) -> sdk.TurnPolicyDecision:
+            raw = await self.client.request(
+                "turn_policy.call",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "session_id": call.session_id,
+                        "run_id": call.run_id,
+                        "turn_id": call.turn_id,
+                        "assistant_text": call.assistant_text,
+                        "assistant_reasoning": call.assistant_reasoning,
+                    },
+                },
+            )
+            result = self._result(raw, "turn_policy.call")
+            action = result.get("action", "allow")
+            if action not in {"allow", "continue"}:
+                raise WorkerProtocolError(f"worker turn policy action is invalid: {action}")
+            feedback = result.get("feedback")
+            if feedback is not None and not isinstance(feedback, str):
+                raise WorkerProtocolError("worker turn policy feedback must be a string")
+            return sdk.TurnPolicyDecision(action=action, feedback=feedback)
 
         return handler
 
@@ -625,9 +674,12 @@ def _worker_tools(
             description=item.description,
             permission_mode=item.permission_mode,
             permission_control=item.permission_control,
+            effect=item.effect,
+            batch_behavior=item.batch_behavior,
             parameters_schema=_worker_schema(raw, "tools", item.id, "parameters_schema"),
             result_schema=_worker_schema(raw, "tools", item.id, "result_schema"),
             handler=instance._tool_handler(item.id),
+            resume_handler=(instance._tool_resume_handler(item.id) if item.resumable else None),
         )
         for item in instance.manifest.contributes.tools
         if item.id in available.get("tools", set())
@@ -680,6 +732,9 @@ def _worker_context_providers(
         sdk.ContextContribution(
             id=item.id,
             handler=instance._context_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            failure_mode=item.failure_mode,
         )
         for item in instance.manifest.contributes.context_providers
         if item.id in available.get("context_providers", set())
@@ -752,6 +807,24 @@ def _worker_tool_policies(
     ]
 
 
+def _worker_turn_policies(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.TurnPolicyContribution(
+            id=item.id,
+            handler=instance._turn_policy_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+        )
+        for item in instance.manifest.contributes.turn_policies
+        if item.id in available.get("turn_policies", set())
+    ]
+
+
 TOOL_WORKER_ADAPTER = WorkerContributionAdapter("tools", "tools", _worker_tools)
 HOOK_WORKER_ADAPTER = WorkerContributionAdapter("hooks", "hooks", _worker_hooks)
 COMMAND_WORKER_ADAPTER = WorkerContributionAdapter(
@@ -783,6 +856,11 @@ TOOL_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
     "tool_policies",
     "tool_policies",
     _worker_tool_policies,
+)
+TURN_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
+    "turn_policies",
+    "turn_policies",
+    _worker_turn_policies,
 )
 
 
@@ -940,12 +1018,12 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
                         if not isinstance(value, dict):
                             raise WorkerProtocolError(f"worker tool {field} must be an object")
         return
-    if method == "tool.call":
+    if method in {"tool.call", "tool.resume"}:
         if "input_request" in result:
             output_fields = {"content", "structured", "resource_refs", "is_error"}
             if output_fields.intersection(result):
                 raise WorkerProtocolError(
-                    "worker tool.call cannot return input_request together with tool output"
+                    f"worker {method} cannot return input_request together with tool output"
                 )
             return
         _require_optional_type(result, "content", str, method)
@@ -954,8 +1032,10 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "is_error", bool, method)
         return
     if method == "hook.call":
-        _require_string_list(result, "added_context", method)
         _require_string_list(result, "diagnostics", method)
+        return
+    if method == "context.call":
+        _require_string_list(result, "fragments", method)
         return
     if method == "command.call":
         _require_optional_type(result, "output", str, method)
@@ -988,6 +1068,12 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         if action not in {"ignore", "require_approval", "deny"}:
             raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
         _require_optional_type(result, "reason", str, method, allow_none=True)
+        return
+    if method == "turn_policy.call":
+        action = result.get("action", "allow")
+        if action not in {"allow", "continue"}:
+            raise WorkerProtocolError(f"worker turn policy action is invalid: {action}")
+        _require_optional_type(result, "feedback", str, method, allow_none=True)
 
 
 def _require_optional_type(

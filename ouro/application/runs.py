@@ -604,7 +604,13 @@ class RunLifecycle:
                 )
             metadata = dict(latest_run.metadata)
             metadata["pause"] = {
-                "kind": ("context_maintenance" if reason == "context_blocked" else "soft_budget"),
+                "kind": (
+                    "context_maintenance"
+                    if reason == "context_blocked"
+                    else "turn_policy"
+                    if reason == "turn_policy_blocked"
+                    else "soft_budget"
+                ),
                 "reason": reason,
                 "next_model_round": next_model_round,
             }

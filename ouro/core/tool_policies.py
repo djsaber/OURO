@@ -9,7 +9,7 @@ from pydantic import Field, field_validator, model_validator
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.redaction import redact_text
-from ouro.core.tools import ToolSource
+from ouro.core.tools import ToolBatchBehavior, ToolEffect, ToolPermissionControl, ToolSource
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
 ToolPolicyMode = Literal["approval", "deny"]
@@ -22,8 +22,13 @@ class ToolPolicyCall(OuroModel):
     run_id: str
     tool_call_id: str
     tool_name: str
+    canonical_tool_id: str
+    owner_id: str
     arguments: dict[str, object] = Field(default_factory=dict)
     source: ToolSource = "builtin"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
+    permission_control: ToolPermissionControl = "host"
     workspace: str | None = None
 
 

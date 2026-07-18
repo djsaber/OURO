@@ -7,7 +7,12 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.hooks import HookName
-from ouro.core.tools import PermissionMode, ToolPermissionControl
+from ouro.core.tools import (
+    PermissionMode,
+    ToolBatchBehavior,
+    ToolEffect,
+    ToolPermissionControl,
+)
 from ouro.plugins.semver import SemVer, validate_version_range
 
 PluginCapability = Literal[
@@ -20,6 +25,7 @@ PluginCapability = Literal[
     "mcp_servers",
     "background_services",
     "continuation_policies",
+    "turn_policies",
     "tool_policies",
 ]
 PluginRuntimeKind = Literal["declarative", "python-inprocess", "worker"]
@@ -120,6 +126,9 @@ class ToolContributionSpec(OuroModel):
     description: str
     permission_mode: PermissionMode = "approval"
     permission_control: ToolPermissionControl = "host"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
+    resumable: bool = False
     optional: bool = False
 
     @model_validator(mode="after")
@@ -189,6 +198,31 @@ class ToolPolicyContributionSpec(OuroModel):
         return _validate_local_id(value)
 
 
+class ContextProviderContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    failure_mode: Literal["omit", "block"] = "omit"
+    optional: bool = False
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
+
+
+class TurnPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    optional: bool = False
+
+    @field_validator("id")
+    @classmethod
+    def _validate_id(cls, value: str) -> str:
+        return _validate_local_id(value)
+
+
 class NamedContributionSpec(OuroModel):
     id: str
     optional: bool = False
@@ -207,12 +241,13 @@ class PluginContributes(OuroModel):
     tools: list[ToolContributionSpec] = Field(default_factory=list)
     commands: list[CommandContributionSpec] = Field(default_factory=list)
     hooks: list[HookContributionSpec] = Field(default_factory=list)
-    context_providers: list[NamedContributionSpec] = Field(default_factory=list)
+    context_providers: list[ContextProviderContributionSpec] = Field(default_factory=list)
     compaction_strategies: list[NamedContributionSpec] = Field(default_factory=list)
     skills: list[PathContributionSpec] = Field(default_factory=list)
     mcp_servers: list[PathContributionSpec] = Field(default_factory=list)
     background_services: list[NamedContributionSpec] = Field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContributionSpec] = Field(default_factory=list)
+    turn_policies: list[TurnPolicyContributionSpec] = Field(default_factory=list)
     tool_policies: list[ToolPolicyContributionSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -237,6 +272,7 @@ class PluginContributes(OuroModel):
             "mcp_servers": list(self.mcp_servers),
             "background_services": list(self.background_services),
             "continuation_policies": list(self.continuation_policies),
+            "turn_policies": list(self.turn_policies),
             "tool_policies": list(self.tool_policies),
         }
 

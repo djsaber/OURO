@@ -6,9 +6,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from ouro.core.compaction import CompactionStrategy
+from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.continuations import ContinuationPolicyRegistration
 from ouro.core.hooks import HookRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
+from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.registry import PluginCommand
 from ouro.tools import Tool
@@ -24,10 +26,12 @@ class ContributionContractContext:
     manifest: PluginManifest
     tools: tuple[Tool, ...]
     hooks: tuple[HookRegistration, ...]
+    context_providers: tuple[ContextProviderRegistration, ...]
     commands: tuple[PluginCommand, ...]
     compaction: tuple[CompactionStrategy, ...]
     background_services: tuple[ContractBackgroundService, ...]
     continuation_policies: tuple[ContinuationPolicyRegistration, ...]
+    turn_policies: tuple[TurnPolicyRegistration, ...]
     tool_policies: tuple[ToolPolicyRegistration, ...]
     resource_contracts: dict[str, object]
 
@@ -61,7 +65,7 @@ class _HookContractAdapter:
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         contracts: dict[str, object] = {}
         for hook in context.hooks:
-            if hook.hook_id.startswith(("skill:", "context:")):
+            if hook.hook_id.startswith("skill:"):
                 continue
             contracts[f"{context.manifest.plugin_id}/hooks/{hook.hook_id}"] = {
                 "event": hook.hook_name,
@@ -76,13 +80,12 @@ class _ContextContractAdapter:
 
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
-            f"{context.manifest.plugin_id}/context_providers/"
-            f"{hook.hook_id.removeprefix('context:')}": {
-                "event": hook.hook_name,
-                "priority": hook.priority,
+            f"{context.manifest.plugin_id}/context_providers/{provider.provider_id}": {
+                "priority": provider.priority,
+                "timeout_seconds": provider.timeout_seconds,
+                "failure_mode": provider.failure_mode,
             }
-            for hook in context.hooks
-            if hook.hook_id.startswith("context:")
+            for provider in context.context_providers
         }
 
 
@@ -154,6 +157,20 @@ class _ToolPolicyContractAdapter:
         }
 
 
+@dataclass(frozen=True)
+class _TurnPolicyContractAdapter:
+    kind: str = "turn_policies"
+
+    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+        return {
+            f"{context.manifest.plugin_id}/turn_policies/{policy.policy_id}": {
+                "priority": policy.priority,
+                "timeout_seconds": policy.timeout_seconds,
+            }
+            for policy in context.turn_policies
+        }
+
+
 TOOL_CONTRACT_ADAPTER = _ToolContractAdapter()
 HOOK_CONTRACT_ADAPTER = _HookContractAdapter()
 COMMAND_CONTRACT_ADAPTER = _CommandContractAdapter()
@@ -162,6 +179,7 @@ COMPACTION_CONTRACT_ADAPTER = _CompactionContractAdapter()
 BACKGROUND_SERVICE_CONTRACT_ADAPTER = _BackgroundServiceContractAdapter()
 CONTINUATION_CONTRACT_ADAPTER = _ContinuationContractAdapter()
 TOOL_POLICY_CONTRACT_ADAPTER = _ToolPolicyContractAdapter()
+TURN_POLICY_CONTRACT_ADAPTER = _TurnPolicyContractAdapter()
 
 
 def build_contribution_contract_hashes(

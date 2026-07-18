@@ -18,6 +18,8 @@ def _call() -> ToolPolicyCall:
         run_id="run_1",
         tool_call_id="tool_1",
         tool_name="Shell",
+        canonical_tool_id="ouro.host/tools/Shell",
+        owner_id="ouro.host",
         arguments={"command": "rm -rf build"},
         workspace="/workspace",
     )

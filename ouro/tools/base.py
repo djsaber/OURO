@@ -10,13 +10,15 @@ from dataclasses import dataclass
 from inspect import Parameter, signature
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, JsonValue
 
 from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
 from ouro.core.tools import (
     PermissionMode,
+    ToolBatchBehavior,
     ToolDefinition,
+    ToolEffect,
     ToolExecutionOutcome,
     ToolInputRequest,
     ToolInvocation,
@@ -30,6 +32,8 @@ __all__ = [
     "PermissionMode",
     "Tool",
     "ToolDefinition",
+    "ToolBatchBehavior",
+    "ToolEffect",
     "ToolExecutionAborted",
     "ToolExecutionContext",
     "ToolPolicyError",
@@ -223,11 +227,13 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
 
 ToolExecutionResult = ToolResult | ToolInputRequest
 ToolHandler = Callable[..., ToolExecutionResult | Awaitable[ToolExecutionResult]]
+ToolResumeHandler = Callable[..., ToolExecutionResult | Awaitable[ToolExecutionResult]]
 
 
 class Tool(OuroModel):
     definition: ToolDefinition
     handler: ToolHandler = Field(exclude=True)
+    resume_handler: ToolResumeHandler | None = Field(default=None, exclude=True)
 
     async def execute(
         self,
@@ -238,6 +244,29 @@ class Tool(OuroModel):
     ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
         raw_result = _call_handler(self.handler, invocation, context)
+        if isinstance(raw_result, Awaitable):
+            return await raw_result
+        return raw_result
+
+    async def resume(
+        self,
+        invocation: ToolInvocation,
+        answer: JsonValue,
+        *,
+        request: ToolInputRequest,
+        context: ToolExecutionContext | None = None,
+        signal: AbortSignal | None = None,
+    ) -> ToolExecutionResult:
+        if self.resume_handler is None:
+            raise RuntimeError(f"tool does not support resume: {self.definition.name}")
+        context = context or ToolExecutionContext(signal=signal)
+        raw_result = _call_resume_handler(
+            self.resume_handler,
+            invocation,
+            answer,
+            request,
+            context,
+        )
         if isinstance(raw_result, Awaitable):
             return await raw_result
         return raw_result
@@ -267,3 +296,26 @@ def _call_handler(
     if len(positional) >= 2:
         return handler(invocation, context)
     return handler(invocation)
+
+
+def _call_resume_handler(
+    handler: ToolResumeHandler,
+    invocation: ToolInvocation,
+    answer: JsonValue,
+    request: ToolInputRequest,
+    context: ToolExecutionContext,
+) -> ToolExecutionResult | Awaitable[ToolExecutionResult]:
+    try:
+        parameters = tuple(signature(handler).parameters.values())
+    except (TypeError, ValueError):
+        return handler(invocation, answer, request)
+
+    keyword_arguments: dict[str, object] = {}
+    names = {parameter.name for parameter in parameters}
+    if "request" in names:
+        keyword_arguments["request"] = request
+    if "context" in names:
+        keyword_arguments["context"] = context
+    if "signal" in names:
+        keyword_arguments["signal"] = context.signal
+    return handler(invocation, answer, **keyword_arguments)

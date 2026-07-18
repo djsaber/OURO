@@ -26,6 +26,7 @@ from ouro.core.tool_batches import (
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
 from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocation, ToolResult
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
+from ouro.tools.schema import tool_argument_error
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
@@ -113,6 +114,54 @@ class ToolCallCoordinator:
                 "execution_mode": batch.execution_mode,
             },
         )
+
+        exclusive_tools = self._exclusive_tools_in_mixed_batch(tool_calls)
+        if exclusive_tools:
+            rejected_calls = [
+                ToolBatchCall(
+                    request=request,
+                    status="failed",
+                    result=ToolResult(
+                        tool_call_id=request.id,
+                        tool_name=request.name,
+                        is_error=True,
+                        content=(
+                            "Tool batch rejected: exclusive tools must be called alone. "
+                            f"Exclusive tools in this batch: {', '.join(exclusive_tools)}"
+                        ),
+                        structured={
+                            "error_type": "ExclusiveToolBatchViolation",
+                            "exclusive_tools": exclusive_tools,
+                        },
+                        ended_at=utc_now(),
+                    ),
+                )
+                for request in tool_calls
+            ]
+            batch = batch.model_copy(update={"calls": rejected_calls, "updated_at": utc_now()})
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="tool_batch_rejected",
+                payload={
+                    "batch_id": batch.batch_id,
+                    "turn_id": turn_id,
+                    "reason": "exclusive_tool_mixed_batch",
+                    "exclusive_tools": exclusive_tools,
+                },
+            )
+            executed = await self.execute_batch(
+                emitted,
+                sequence,
+                session=session,
+                run=run,
+                batch=batch,
+                message_sequence=message_sequence + 1,
+                abort_signal=abort_signal,
+            )
+            return executed.model_copy(update={"messages": [assistant_message, *executed.messages]})
 
         calls: list[ToolBatchCall] = []
         for request in tool_calls:
@@ -622,12 +671,13 @@ class ToolCallCoordinator:
             update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
         )
 
-    def resolve_user_answer(
+    async def resolve_user_answer(
         self,
         batch: ToolCallBatchRecord,
         *,
         tool_call_id: str,
-        answer: object,
+        answer: JsonValue,
+        workspace: str | None = None,
     ) -> ToolCallBatchRecord:
         answer = _JSON_VALUE_ADAPTER.validate_python(answer)
         resolved_calls: list[ToolBatchCall] = []
@@ -639,6 +689,40 @@ class ToolCallCoordinator:
             found = True
             if call.status != "waiting_user" or call.invocation is None:
                 raise ValueError(f"tool call is not waiting for user input: {tool_call_id}")
+            definition = self.registry.get(call.request.name).definition
+            if definition.resumable:
+                assert call.input_request is not None
+                outcome = await self.executor.resume(
+                    call.invocation,
+                    answer=answer,
+                    request=call.input_request,
+                    context=ToolExecutionContext(
+                        workspace=workspace or self.default_workspace,
+                        workspace_only=self.execution_config.workspace_only,
+                        max_output_chars=self.execution_config.max_output_chars,
+                    ),
+                )
+                result = outcome.result
+                status = (
+                    "waiting_user"
+                    if outcome.status == "waiting_user"
+                    else "aborted"
+                    if outcome.status == "aborted"
+                    else "failed"
+                    if result is not None and result.is_error
+                    else "completed"
+                )
+                resolved_calls.append(
+                    call.model_copy(
+                        update={
+                            "status": status,
+                            "invocation": outcome.invocation,
+                            "input_request": outcome.input_request,
+                            "result": result,
+                        }
+                    )
+                )
+                continue
             resolved_calls.append(
                 call.model_copy(
                     update={
@@ -716,7 +800,11 @@ class ToolCallCoordinator:
             turn_id=turn_id,
             tool_call_id=request.id,
             tool_name=request.name,
+            canonical_tool_id=_canonical_tool_id(request.name, metadata),
+            owner_id=_optional_text(metadata.get("plugin_id")) or "ouro.host",
             source=definition.source if definition is not None else "builtin",
+            effect=definition.effect if definition is not None else "unknown",
+            batch_behavior=(definition.batch_behavior if definition is not None else "compatible"),
             permission_control=(
                 definition.permission_control if definition is not None else "host"
             ),
@@ -852,7 +940,11 @@ class ToolCallCoordinator:
         invocation: ToolInvocation,
         phase: str,
     ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
-        if invocation.permission_control == "tool":
+        try:
+            definition = self.registry.get(invocation.tool_name).definition
+        except KeyError:
+            return invocation, None, None, sequence
+        if tool_argument_error(definition, invocation.arguments) is not None:
             return invocation, None, None, sequence
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
@@ -860,8 +952,15 @@ class ToolCallCoordinator:
                 run_id=run.run_id,
                 tool_call_id=invocation.tool_call_id,
                 tool_name=invocation.tool_name,
+                canonical_tool_id=(
+                    invocation.canonical_tool_id or f"ouro.host/tools/{invocation.tool_name}"
+                ),
+                owner_id=invocation.owner_id or "ouro.host",
                 arguments=dict(invocation.arguments),
                 source=invocation.source,
+                effect=invocation.effect,
+                batch_behavior=invocation.batch_behavior,
+                permission_control=invocation.permission_control,
                 workspace=session.workspace or self.default_workspace,
             )
         )
@@ -897,6 +996,19 @@ class ToolCallCoordinator:
         )
         return invocation, policy.mode, policy.reason, sequence
 
+    def _exclusive_tools_in_mixed_batch(self, calls: list[ToolCallRequest]) -> list[str]:
+        if len(calls) < 2:
+            return []
+        exclusive: list[str] = []
+        for call in calls:
+            try:
+                definition = self.registry.get(call.name).definition
+            except KeyError:
+                continue
+            if definition.batch_behavior == "exclusive":
+                exclusive.append(call.name)
+        return list(dict.fromkeys(exclusive))
+
     def _effective_mode(self, calls: list[ToolCallRequest]) -> ToolExecutionMode:
         if self.execution_config.mode == "sequential":
             return "sequential"
@@ -914,3 +1026,11 @@ def _tool_input_result_content(answer: object) -> str:
     if isinstance(answer, str):
         return answer
     return json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
+
+
+def _canonical_tool_id(name: str, metadata: dict[str, object]) -> str:
+    plugin_id = _optional_text(metadata.get("plugin_id"))
+    contribution_id = _optional_text(metadata.get("contribution_id"))
+    if plugin_id is not None and contribution_id is not None:
+        return f"{plugin_id}/tools/{contribution_id}"
+    return f"ouro.host/tools/{name}"

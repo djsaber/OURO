@@ -6,6 +6,8 @@ from typing import Literal, Protocol
 
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolPermissionControl = Literal["host", "tool"]
+ToolEffect = Literal["read_only", "state_changing", "unknown"]
+ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
 RunStatus = Literal[
@@ -148,14 +150,30 @@ class ToolInputRequest:
 
 
 ToolHandlerResult = (
-    ToolOutput
-    | ToolInputRequest
-    | str
-    | Awaitable[ToolOutput | ToolInputRequest | str]
+    ToolOutput | ToolInputRequest | str | Awaitable[ToolOutput | ToolInputRequest | str]
 )
 ToolHandler = (
     Callable[[ToolCall], ToolHandlerResult]
     | Callable[[ToolCall, ToolExecutionContext], ToolHandlerResult]
+)
+
+
+@dataclass(frozen=True)
+class ToolResumeCall:
+    tool_call_id: str
+    session_id: str
+    run_id: str
+    tool_name: str
+    arguments: Mapping[str, object]
+    request: JsonValue
+    answer: JsonValue
+    workspace: str | None = None
+    workspace_only: bool = False
+
+
+ToolResumeHandler = (
+    Callable[[ToolResumeCall], ToolHandlerResult]
+    | Callable[[ToolResumeCall, ToolExecutionContext], ToolHandlerResult]
 )
 
 
@@ -178,6 +196,9 @@ class ToolContribution:
     result_schema: Mapping[str, object] = field(default_factory=dict)
     permission_mode: PermissionMode = "approval"
     permission_control: ToolPermissionControl = "host"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
+    resume_handler: ToolResumeHandler | None = None
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
@@ -189,8 +210,13 @@ class ToolPolicyCall:
     run_id: str
     tool_call_id: str
     tool_name: str
+    canonical_tool_id: str
+    owner_id: str
     arguments: Mapping[str, object] = field(default_factory=dict)
     source: str = "builtin"
+    effect: ToolEffect = "unknown"
+    batch_behavior: ToolBatchBehavior = "compatible"
+    permission_control: ToolPermissionControl = "host"
     workspace: str | None = None
 
 
@@ -210,6 +236,38 @@ ToolPolicyHandler = Callable[
 class ToolPolicyContribution:
     id: str
     handler: ToolPolicyHandler
+    priority: int = 100
+    timeout_seconds: float = 5.0
+
+
+TurnPolicyAction = Literal["allow", "continue"]
+
+
+@dataclass(frozen=True)
+class TurnCompletionCall:
+    session_id: str
+    run_id: str
+    turn_id: str
+    assistant_text: str
+    assistant_reasoning: str = ""
+
+
+@dataclass(frozen=True)
+class TurnPolicyDecision:
+    action: TurnPolicyAction = "allow"
+    feedback: str | None = None
+
+
+TurnPolicyHandler = Callable[
+    [TurnCompletionCall],
+    TurnPolicyDecision | Awaitable[TurnPolicyDecision],
+]
+
+
+@dataclass(frozen=True)
+class TurnPolicyContribution:
+    id: str
+    handler: TurnPolicyHandler
     priority: int = 100
     timeout_seconds: float = 5.0
 
@@ -236,7 +294,6 @@ class HookCall:
 
 @dataclass(frozen=True)
 class HookOutput:
-    added_context: tuple[str, ...] = ()
     diagnostics: tuple[str, ...] = ()
 
 
@@ -311,10 +368,31 @@ class CommandContribution:
 
 
 @dataclass(frozen=True)
+class ContextCall:
+    session_id: str
+    run_id: str
+    message_count: int
+    model_round: int
+
+
+@dataclass(frozen=True)
+class ContextOutput:
+    fragments: tuple[str, ...] = ()
+
+
+ContextHandler = Callable[
+    [ContextCall],
+    ContextOutput | str | tuple[str, ...] | Awaitable[ContextOutput | str | tuple[str, ...]],
+]
+
+
+@dataclass(frozen=True)
 class ContextContribution:
     id: str
-    handler: HookHandler
+    handler: ContextHandler
     priority: int = 100
+    timeout_seconds: float = 10.0
+    failure_mode: Literal["omit", "block"] = "omit"
 
 
 @dataclass(frozen=True)
@@ -361,6 +439,7 @@ class ContributionSet:
     compaction_strategies: list[CompactionContribution] = field(default_factory=list)
     background_services: list[BackgroundServiceContribution] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContribution] = field(default_factory=list)
+    turn_policies: list[TurnPolicyContribution] = field(default_factory=list)
     tool_policies: list[ToolPolicyContribution] = field(default_factory=list)
 
 
@@ -387,6 +466,8 @@ __all__ = [
     "ContinuationDecision",
     "ContinuationPolicyContribution",
     "ContextContribution",
+    "ContextCall",
+    "ContextOutput",
     "ContributionSet",
     "DiagnosticEmitter",
     "HookCall",
@@ -409,7 +490,9 @@ __all__ = [
     "SessionInputMode",
     "StopReason",
     "ToolCall",
+    "ToolBatchBehavior",
     "ToolContribution",
+    "ToolEffect",
     "ToolExecutionContext",
     "ToolInputRequest",
     "ToolOutput",
@@ -418,4 +501,9 @@ __all__ = [
     "ToolPolicyContribution",
     "ToolPolicyDecision",
     "ToolPermissionControl",
+    "ToolResumeCall",
+    "TurnCompletionCall",
+    "TurnPolicyAction",
+    "TurnPolicyContribution",
+    "TurnPolicyDecision",
 ]

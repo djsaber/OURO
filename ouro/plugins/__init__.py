@@ -8,7 +8,6 @@ from ouro.plugins.registry import (
     PluginCommandRegistry,
     PluginCommandRequest,
     PluginCommandResult,
-    PluginContextProvider,
 )
 
 __all__ = [
@@ -19,6 +18,5 @@ __all__ = [
     "PluginCommandResult",
     "PluginCapability",
     "PluginContributions",
-    "PluginContextProvider",
     "PluginManifest",
 ]

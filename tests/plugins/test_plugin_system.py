@@ -14,11 +14,13 @@ import pytest
 
 from ouro.application.plugins import PluginService
 from ouro.core.compaction import CompactionStrategyRegistry
+from ouro.core.context_providers import ContextProviderCall
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.hooks import HookRegistry, RunOutcome
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
+from ouro.core.turn_policies import TurnCompletionCandidate
 from ouro.local_application import build_local_plugin_service, resolve_plugin_credential
 from ouro.plugins.catalog import (
     ExtensionCatalogBase,
@@ -234,6 +236,42 @@ def test_contribution_type_inventory_is_closed_complete_and_lifecycle_explicit()
             assert adapter.sdk is not None
             assert adapter.worker is not None
             assert adapter.contract is not None
+
+
+def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_hash() -> None:
+    def contract_hash(*, effect: str, batch_behavior: str) -> str:
+        tools = ToolRegistry()
+        tools.register(
+            Tool(
+                definition=ToolDefinition(
+                    name="WorkflowControl",
+                    description="Control a workflow.",
+                    effect=effect,
+                    batch_behavior=batch_behavior,
+                ),
+                handler=lambda _invocation: ToolResult(
+                    tool_call_id="unused",
+                    tool_name="WorkflowControl",
+                ),
+            )
+        )
+        base = ExtensionCatalogBase.capture(
+            tools=tools,
+            hooks=HookRegistry(),
+            commands=PluginCommandRegistry(),
+            compaction=CompactionStrategyRegistry(),
+            continuations=RunContinuationRegistry(),
+            tool_policies=ToolPolicyRegistry(),
+        )
+        catalog = build_extension_catalog(base, ())
+        return catalog.owners["ouro.host/tools/WorkflowControl"].contract_hash
+
+    compatible_read = contract_hash(effect="read_only", batch_behavior="compatible")
+    compatible_write = contract_hash(effect="state_changing", batch_behavior="compatible")
+    exclusive_read = contract_hash(effect="read_only", batch_behavior="exclusive")
+
+    assert compatible_read != compatible_write
+    assert compatible_read != exclusive_read
 
 
 def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tmp_path) -> None:
@@ -673,7 +711,7 @@ async def test_inprocess_lifecycle_requires_separate_grants_and_drains_snapshot(
                     "description": "Control the harness.",
                     "permission_mode": "auto",
                     "permission_control": "tool",
-                }
+                },
             ]
         },
     )
@@ -738,8 +776,8 @@ def create_plugin(context):
                 tool_name="echo__control",
             ),
             approval_mode="deny",
-            policy_mode="deny",
-            policy_reason="must be ignored",
+            policy_mode="ignore",
+            policy_reason=None,
         )
         assert preflight.status == "ready"
         assert preflight.invocation.permission_mode == "auto"
@@ -1722,7 +1760,15 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
         },
         contributes={
             "commands": [{"id": "goal", "description": "Start a goal."}],
+            "context_providers": [
+                {
+                    "id": "goal_context",
+                    "priority": 5,
+                    "failure_mode": "block",
+                }
+            ],
             "continuation_policies": [{"id": "goal"}],
+            "turn_policies": [{"id": "goal_completion", "priority": 7}],
             "tool_policies": [{"id": "guard"}],
         },
         extra={
@@ -1743,7 +1789,9 @@ for line in sys.stdin:
     elif method == 'contributions.prepare':
         result = {
             'commands': ['goal'],
+            'context_providers': ['goal_context'],
             'continuation_policies': ['goal'],
+            'turn_policies': ['goal_completion'],
             'tool_policies': ['guard'],
         }
     elif method == 'command.call':
@@ -1754,6 +1802,10 @@ for line in sys.stdin:
         }
     elif method == 'continuation.call':
         result = {'action': 'continue', 'prompt': 'Continue goal', 'state_revision': 3}
+    elif method == 'context.call':
+        result = {'fragments': ['Current goal: ship']}
+    elif method == 'turn_policy.call':
+        result = {'action': 'continue', 'feedback': 'Continue the current goal'}
     elif method == 'tool_policy.call':
         result = {'action': 'deny', 'reason': 'worker guard denied the call'}
     if 'id' in request:
@@ -1785,6 +1837,28 @@ for line in sys.stdin:
     assert decision.action == "continue"
     assert decision.prompt == "Continue goal"
     assert decision.state_revision == 3
+    context_provider = snapshot.context_providers.registered()[0]
+    context_result = await context_provider.handler(
+        ContextProviderCall(
+            session_id="ses_worker",
+            run_id="run_worker",
+            message_count=1,
+            model_round=1,
+        )
+    )
+    assert [fragment.text for fragment in context_result.fragments] == ["Current goal: ship"]
+    assert context_provider.failure_mode == "block"
+    turn_policy = snapshot.turn_policies.registered()[0]
+    turn_decision = await turn_policy.handler(
+        TurnCompletionCandidate(
+            session_id="ses_worker",
+            run_id="run_worker",
+            turn_id="turn_worker",
+            assistant_text="candidate",
+        )
+    )
+    assert turn_decision.action == "continue"
+    assert turn_decision.feedback == "Continue the current goal"
     tool_policy = snapshot.tool_policies.registered()[0]
     tool_decision = await tool_policy.handler(
         ToolPolicyCall(
@@ -1792,6 +1866,8 @@ for line in sys.stdin:
             run_id="run_worker",
             tool_call_id="call_worker",
             tool_name="Bash",
+            canonical_tool_id="ouro.host/tools/Bash",
+            owner_id="ouro.host",
             arguments={"command": "unsafe"},
         )
     )

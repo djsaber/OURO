@@ -4,16 +4,16 @@ from ouro.core.hooks import HookContext, HookRegistration, HookRegistry, HookRes
 
 
 @pytest.mark.asyncio
-async def test_hook_ordering_and_context_merge() -> None:
+async def test_hook_ordering_uses_priority_not_provenance() -> None:
     registry = HookRegistry()
 
     async def official_handler(context: HookContext) -> HookResult:
         assert context.data["value"] == 1
-        return HookResult(added_context=["official"])
+        return HookResult(diagnostics=["official"])
 
     def third_party_handler(context: HookContext) -> HookResult:
         assert context.run_id == "run_1"
-        return HookResult(added_context=["third"])
+        return HookResult(diagnostics=["third"])
 
     registry.register(
         HookRegistration(
@@ -43,7 +43,7 @@ async def test_hook_ordering_and_context_merge() -> None:
         )
     )
 
-    assert [item.added_context[0] for item in result.results] == ["official", "third"]
+    assert [item.diagnostics[0] for item in result.results] == ["third", "official"]
     assert result.failures == []
 
 
@@ -91,7 +91,7 @@ async def test_one_failed_hook_does_not_disable_sibling_hook_for_same_event() ->
 
     def succeed(_context):
         calls.append("succeed")
-        return HookResult(added_context=["ok"])
+        return HookResult(diagnostics=["ok"])
 
     registry.register_many(
         (
@@ -118,6 +118,6 @@ async def test_one_failed_hook_does_not_disable_sibling_hook_for_same_event() ->
     first = await registry.dispatch(context)
     second = await registry.dispatch(context)
 
-    assert [item.added_context for item in first.results] == [["ok"]]
-    assert [item.added_context for item in second.results] == [["ok"]]
+    assert [item.diagnostics for item in first.results] == [["ok"]]
+    assert [item.diagnostics for item in second.results] == [["ok"]]
     assert calls == ["fail", "succeed", "succeed"]

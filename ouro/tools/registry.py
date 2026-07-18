@@ -32,7 +32,7 @@ class ToolRegistry:
         if len(addition_names) != len(set(addition_names)):
             raise ValueError("replacement contains duplicate tool names")
         for tool in additions:
-            validate_tool_definition(tool.definition)
+            _validate_tool(tool)
 
         updated = dict(self._tools)
         owners = dict(self._owners)
@@ -56,7 +56,7 @@ class ToolRegistry:
         if len(names) != len(set(names)):
             raise ValueError("replacement contains duplicate tool names")
         for tool in additions:
-            validate_tool_definition(tool.definition)
+            _validate_tool(tool)
         updated = {
             name: tool for name, tool in self._tools.items() if self._owners.get(name) != owner
         }
@@ -100,3 +100,11 @@ class ToolRegistry:
 
     def owner_of(self, name: str) -> str | None:
         return self._owners.get(name)
+
+
+def _validate_tool(tool: Tool) -> None:
+    validate_tool_definition(tool.definition)
+    if tool.definition.resumable is not (tool.resume_handler is not None):
+        raise ValueError(
+            f"tool resumable contract does not match resume handler: {tool.definition.name}"
+        )

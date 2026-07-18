@@ -86,6 +86,7 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
         "follow_up_input_queued": "queue_id",
         "steering_input_queued": "queue_id",
         "queued_input_consumed": "queue_id",
+        "turn_policy_continued": "turn_id",
         "run_continuation_resolved": "decision_id",
     }
     field = required.get(event_type)
@@ -118,6 +119,9 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         "recovery_tool_result_committed",
         "persistence_warning",
         "plugin_hook_failed",
+        "context_provider_failed",
+        "turn_policy_continued",
+        "turn_policy_failed",
         "diagnostic",
         "event_sink_failed",
         "event_observer_overflow",

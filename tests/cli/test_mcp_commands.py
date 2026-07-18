@@ -4,7 +4,10 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 from ouro.cli.main import main
+from ouro.cli.parser import build_parser
 from ouro.mcp import MCPConfigStore
 
 
@@ -27,6 +30,8 @@ def test_mcp_cli_set_list_show_and_remove(tmp_path, capsys) -> None:
             "--auto-start",
             "--permission-mode",
             "auto",
+            "--tool-effect",
+            "read=read_only",
             "--json",
         ]
     )
@@ -45,11 +50,20 @@ def test_mcp_cli_set_list_show_and_remove(tmp_path, capsys) -> None:
     shown = json.loads(capsys.readouterr().out)["server"]
     assert shown["name"] == "Local tools"
     assert shown["permission_mode"] == "auto"
+    assert shown["tool_effect_overrides"] == {"read": "read_only"}
 
     assert main(["mcp", "remove", "local", "--home", str(tmp_path), "--json"]) == 0
     removed = json.loads(capsys.readouterr().out)
     assert removed["removed"] == "local"
     assert MCPConfigStore(tmp_path).snapshot().servers == ()
+
+
+def test_mcp_cli_rejects_invalid_tool_effect(capsys) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(["mcp", "set", "local", "--tool-effect", "read=harmless"])
+
+    assert exc_info.value.code == 2
+    assert "tool effect must be read_only, state_changing, or unknown" in capsys.readouterr().err
 
 
 def test_mcp_cli_replaces_and_clears_collections(tmp_path, capsys) -> None:

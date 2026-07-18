@@ -7,9 +7,11 @@ from inspect import isawaitable, iscoroutinefunction
 from typing import Any
 
 from ouro.application.event_models import validate_runtime_event_payload
+from ouro.core.context_providers import ContextProviderFailure
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookFailure, HookRegistry
 from ouro.core.redaction import redact_text
+from ouro.core.turn_policies import TurnPolicyFailure
 from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
@@ -114,6 +116,49 @@ class RuntimeEventRecorder:
                     session_id=failure.session_id or "unknown",
                     run_id=failure.run_id or "unknown",
                     event_type="plugin_hook_failed",
+                    sequence=sequence + 1,
+                    payload=failure.model_dump(mode="json"),
+                )
+            )
+            sequence = event.sequence
+            emitted.append(event)
+            self._publish(event, notify_hooks=False)
+        return sequence
+
+    async def record_context_provider_failures(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        failures: Sequence[ContextProviderFailure],
+    ) -> int:
+        for failure in failures:
+            event = await self._append_ordered_event(
+                EventRecord(
+                    session_id=failure.session_id,
+                    run_id=failure.run_id,
+                    event_type="context_provider_failed",
+                    sequence=sequence + 1,
+                    payload=failure.model_dump(mode="json"),
+                )
+            )
+            sequence = event.sequence
+            emitted.append(event)
+            self._publish(event, notify_hooks=False)
+        return sequence
+
+    async def record_turn_policy_failures(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        failures: Sequence[TurnPolicyFailure],
+    ) -> int:
+        for failure in failures:
+            event = await self._append_ordered_event(
+                EventRecord(
+                    session_id=failure.session_id,
+                    run_id=failure.run_id,
+                    turn_id=failure.turn_id,
+                    event_type="turn_policy_failed",
                     sequence=sequence + 1,
                     payload=failure.model_dump(mode="json"),
                 )

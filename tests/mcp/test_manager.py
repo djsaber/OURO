@@ -138,6 +138,8 @@ async def test_manager_owns_connection_discovery_invocation_and_cleanup() -> Non
     definition = registry.get("fs__read").definition
     assert definition.source == "mcp"
     assert definition.permission_mode == "approval"
+    assert definition.effect == "read_only"
+    assert definition.metadata["effect_source"] == "mcp_annotation"
     assert definition.metadata["mcp_server_id"] == "fs"
     assert definition.metadata["mcp_tool_name"] == "read"
 
@@ -173,6 +175,52 @@ async def test_manager_start_is_idempotent_and_configure_rejects_active_server()
     assert factory.open_count == 1
     with pytest.raises(MCPStateError, match="stop it first"):
         manager.configure(_config(name="Changed"))
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_effect_normalization_prefers_user_override_and_keeps_unknown() -> None:
+    session = FakeSession(
+        tools=[
+            _remote_tool("read"),
+            MCPRemoteTool(name="write", annotations={"readOnlyHint": False}),
+            MCPRemoteTool(name="mystery", annotations={}),
+        ]
+    )
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=FakeFactory(session))
+    manager.configure(
+        _config(
+            tool_effect_overrides={
+                "read": "state_changing",
+                "mystery": "read_only",
+            }
+        )
+    )
+
+    await manager.start("fs")
+
+    assert registry.get("fs__read").definition.effect == "state_changing"
+    assert registry.get("fs__read").definition.metadata["effect_source"] == "user_override"
+    assert registry.get("fs__write").definition.effect == "state_changing"
+    assert registry.get("fs__write").definition.metadata["effect_source"] == "mcp_annotation"
+    assert registry.get("fs__mystery").definition.effect == "read_only"
+    assert registry.get("fs__mystery").definition.metadata["effect_source"] == "user_override"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_effect_without_annotation_or_override_is_unknown() -> None:
+    session = FakeSession(tools=[MCPRemoteTool(name="mystery", annotations={})])
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=FakeFactory(session))
+    manager.configure(_config())
+
+    await manager.start("fs")
+
+    definition = registry.get("fs__mystery").definition
+    assert definition.effect == "unknown"
+    assert definition.metadata["effect_source"] == "default"
     await manager.close()
 
 

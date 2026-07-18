@@ -10,7 +10,7 @@ from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.core.redaction import public_url
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.mcp.models import MCPServerConfig, MCPTransport
 
 
@@ -40,6 +40,7 @@ class MCPServerConfigUpdate(OuroModel):
     timeout_seconds: float | None = None
     health_check_interval_seconds: float | None = None
     permission_mode: PermissionMode | None = None
+    tool_effect_overrides: dict[str, ToolEffect] | None = None
 
 
 class MCPConfigStore:

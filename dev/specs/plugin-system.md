@@ -345,6 +345,7 @@ Context 只暴露稳定、必要的能力：
 - `commands`；
 - `hooks`；
 - `context_providers`；
+- `turn_policies`；
 - `compaction_strategies`；
 - `skills`；
 - `mcp_servers`；
@@ -383,7 +384,7 @@ Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规�
 - `snapshot-bound`：投影到 Run Catalog，可由旧、新 generation 并存；
 - `activation-singleton`：不进入 Run 可调用目录，每个 plugin id 同时只允许一个 generation 的 gate 打开。
 
-Tools、Commands、Hooks、Context、Compaction、Skills、MCP tool projection、Continuation 和 Tool Policy 是
+Tools、Commands、Hooks、Context、Turn Policy、Compaction、Skills、MCP tool projection、Continuation 和 Tool Policy 是
 snapshot-bound；Background Service 是 activation-singleton。
 
 当前实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
@@ -416,13 +417,15 @@ Hook 不使用万能可变 output。稳定类型按语义分类：
 
 | 类型 | 示例 | 组合 | 失败 |
 |---|---|---|---|
-| observational | on_event、after_run | 稳定顺序或有界并发，不改变语义 | fail-open |
-| enrich | context provider | 追加带 owner 的 typed fragment | 隔离失败项 |
+| observational | on_event、after_context_build、after_run | 按 priority/canonical identity，不改变语义 | fail-open |
+| enrich | context provider | 追加带 owner 的 typed fragment | optional 省略，required 阻断 |
 | transform | 明确的 request patch | 逐项校验 typed patch | 拒绝无效 patch |
 | guard | tool policy | 只允许收紧 | fail-closed |
+| turn guard | turn policy | allow 或带 feedback 的同 Run continue | fail-closed |
 | lifecycle | generation start/stop | 幂等、有 deadline | 按阶段失败 |
 
-只在 producer、typed input/output 和失败规则同时存在时增加 Hook 事件。
+Context Provider 和 Turn Policy 是独立 registry，不通过 Hook output 承载语义。Hook 的 provenance 只用于归属、
+诊断和 contract，不改变顺序或失败规则。只在 producer、typed input/output 和失败规则同时存在时增加事件或策略点。
 
 ### 10.2 Tool Policy
 
@@ -431,11 +434,22 @@ Hook 不使用万能可变 output。稳定类型按语义分类：
 - 多策略按稳定 identity 排序，取最严格结果；
 - `deny` 短路；
 - 不能改写参数、批准工具或降低 Host permission；
+- 对 host-controlled 和 tool-controlled 工具统一执行；`permission_control="tool"` 只绕过 Host permission override；
+- 调用输入包含 canonical tool identity、owner、effect、batch behavior、validated arguments 和 Session/Run context；
 - 审批修改参数后以最终参数重新评估；
 - timeout、异常和非法返回视为 deny；
 - 决策 owner 和 reason 进入 invocation provenance。
 
-### 10.3 Continuation Policy
+### 10.3 Turn Policy
+
+Turn Policy 在模型给出无工具的候选完成、Run 尚未完成时执行，返回 `allow | continue`。
+
+- `continue` 必须提供 feedback，由 application 与候选 assistant message 一起持久化到同一 Run；
+- 多策略按 priority 和 canonical identity 稳定评估；任一 continue 使当前 Run 进入下一模型轮次；
+- timeout、异常和非法返回暂停 Run，不能静默完成；
+- 它不创建新 Run，也不替代只消费终态 `RunOutcome` 的 Continuation Policy。
+
+### 10.4 Continuation Policy
 
 Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | pause | fail`。
 
@@ -444,6 +458,16 @@ Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | 
 - 多个控制决策、timeout 或异常使自动续跑暂停；
 - application 使用稳定 decision/queue identity 幂等提交；
 - 插件不能自行创建 Run 或伪造 user message。
+
+### 10.5 Tool contract 与用户输入恢复
+
+每个工具显式声明 `effect = read_only | state_changing | unknown`、
+`batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、
+协议只读注解或 `unknown`，不做名称/描述启发式推断。归一化结果进入所有 contribution/execution contract hash。
+
+含 exclusive 工具的批次若还有兄弟调用，必须在任何 handler 执行前整批拒绝。工具返回 `ToolInputRequest` 后，只有
+声明 resumable 且具有 resume handler 的工具能消费回答继续执行；恢复绑定原 Catalog 和精确 execution contract，
+并允许再次请求输入。非 resumable 工具仅支持回答直接成为结果的单阶段交互。
 
 ## 11. Trust、Permission 与 Credentials
 
@@ -766,7 +790,7 @@ ouro/application/plugins.py
 - Plugin Skill 使用统一 Skill Catalog，disable 后只影响新 catalog；
 - Plugin MCP 随 generation 启停；
 - contribution adapter 统一执行 declaration、contract、projection 和 cleanup；
-- Continuation、Tool Policy、Command synthetic input 继续满足既有来源和组合规则。
+- Context Provider、Turn Policy、Continuation、Tool Policy、Command synthetic input 继续满足各自来源和组合规则。
 
 B6 实现注记：Plugin Skill 已不再转换为 `after_context_build` Hook；`RuntimeService` 每轮从该 Run 的
 `ExtensionCatalogLease.skills` 生成 Skill 提示词。Plugin MCP 只为 connected server 生成 contract，required 失败
