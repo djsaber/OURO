@@ -141,7 +141,7 @@ Plan rejected by user. Plan mode remains active.
 
 1. 进入计划模式：
   - LLM 自主决策，调用 EnterPlanMode 工具进入；
-  - 用户指定开启，注入脚手架消息，构造EnterPlanMode调用和结果消息进入。
+  - 用户指定开启时，`/plan` 只迁移插件的 Session 状态，不创建 Run、不提交模型输入；用户随后单独发送规划请求，Context Provider 在该模型轮注入脚手架消息。
 2. 创建计划并保存：需要上下时，LLM 调用相关只读工具查询或搜索获取信息，理解分析充分后，LLM 调用写入工具保存计划文件；
 3. 退出计划模式：LLM 自主决策，调用 ExitPlanMode 退出计划：
   1. 未创建 / 空计划时，ExitPlanMode 调用失败，返回错误结果，LLM 重新决策；
@@ -150,17 +150,18 @@ Plan rejected by user. Plan mode remains active.
 ## 核心设计
 
 1. 正常对话时，EnterPlanMode 调用决策交给 LLM；
-2. 指定计划模式时（/plan），OURO 框架注入脚手架消息；
+2. 指定计划模式时（`/plan`），命令只切换状态；下一条用户消息触发模型 Run 时，Context Provider 才注入脚手架消息；
 3. 处于计划模式时，每轮用户消息前面都要注入脚手架消息，加强对 LLM 引导；
 4. 同一会话内多次开启计划模式，每次计划模式的 PLAN_FILE_PATH 指向不同文件，可用时间后缀方式；
 5. ExitPlanMode 调用决策交给 LLM；
 6. ExitPlanMode 工具只有一个可选参数 options，用于在计划包含多个可选方案时，让用户在批准时选择执行哪一个；
 7. EnterPlanMode 和 ExitPlanMode 工具自身的调用不走批准策略；
+8. 计划模式不控制 Run 的继续或完成，不注册 Turn Policy；EnterPlanMode 和 ExitPlanMode 只通过工具结果向 LLM 表达状态迁移，由 LLM 自主决定下一步。
 
 
 PLAN_FILE_PATH: {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_xxx.md
 
-> plan 模式不改变智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现的。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效
+> plan 模式不改变也不控制智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效。
 
 ## 示例插件实现约束
 
@@ -177,7 +178,7 @@ PLAN_FILE_PATH: {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_xxx.md
 
 脚手架消息属于模型执行事实，必须持久化：
 
-- `/plan` 返回的 attributed `SessionInput` 以 `system_synthetic` 进入 canonical history；
+- `/plan` 本身不产生消息；它只迁移插件状态，等待下一条用户消息正常创建 Run；
 - active Context Provider 返回 `persistence="message"` 的 Context Fragment，Application 在模型请求前通过
   `RunLifecycle` 落盘，并记录 plugin/provider/generation/model-round provenance；
 - 同一 Run/model round 的恢复使用 delivery key 去重，持久化失败时阻断模型请求，不能静默降级为临时提示。

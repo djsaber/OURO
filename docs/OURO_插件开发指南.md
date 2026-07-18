@@ -211,7 +211,7 @@ uv run ouro plugin import-report ./community-package --json
 
 - [`declarative-skill`](../examples/plugins/declarative-skill)：静态 Agent Skill；
 - [`inprocess-command`](../examples/plugins/inprocess-command)：Python Command；
-- [`plan-mode`](../examples/plugins/plan-mode)：Context/Tool/Turn Policy 组合的完整计划模式；
+- [`plan-mode`](../examples/plugins/plan-mode)：Context/Tool Policy 与可恢复控制工具组合的完整计划模式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
 这些 package 由测试执行真实 validate/authorize/enable 生命周期，避免文档示例与实现漂移。
