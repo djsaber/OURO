@@ -101,12 +101,18 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
 按 provider 原始顺序提交。
 
-会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto`、`approval` 或 `deny`。
-工具定义权限先由用户 `config permissions` 覆盖，再由 Core 的单一策略解析边界计算最终权限：`inherit`
-沿用工具权限，`auto` 统一放行，`approval` 统一要求审批，`deny` 统一拒绝。`ToolCallCoordinator` 在预检时
-把会话模式交给 `ToolExecutor`，最终权限写入 durable `ToolInvocation`，因此批准恢复不依赖当前进程的配置
-快照。内置、插件和 MCP 工具都通过这一边界；限制性插件 `tool_policies` 随后作为独立安全闸门组合，仍可
-提升审批要求或拒绝调用。新增会话策略只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。
+会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto`、`approval` 或 `deny`。工具定义
+通过 `permission_control` 明确最终权限的控制权，避免用两个可产生非法组合的布尔开关表达同一概念：
+
+- `host` 是默认值。工具定义权限先由用户 `config permissions` 覆盖，再由 Core 的单一策略解析边界计算最终
+  权限：`inherit` 沿用配置权限，`auto` 放行，`approval` 要求审批，`deny` 拒绝；限制性插件
+  `tool_policies` 最后只能提高限制。
+- `tool` 表示工具定义拥有最终控制权，只允许 `permission_mode="auto"` 或 `"deny"`。用户覆盖、会话批准模式和
+  `tool_policies` 均不参与决策；协调器不会为这类工具调用限制性策略，保证 Harness 控制工具不会被自身流程锁死。
+
+`ToolCallCoordinator` 在预检时把会话模式交给 `ToolExecutor`，最终权限和控制权写入 durable
+`ToolInvocation`，因此恢复不依赖当前进程的配置快照。内置、插件和 MCP 工具都通过这一边界。新增会话策略
+只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。
 工具 handler 可以返回
 `ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
 `AskUser` 只是该协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
@@ -304,7 +310,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、Hook、Host-neutral command、上下文
   provider、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
-  未授权插件保持 `needs_authorization`。第三方自动工具会降级为需要审批。
+  未授权插件保持 `needs_authorization`。用户信任并授权插件后，其工具权限与内置工具使用相同语义，不按来源
+  降级；manifest 工具权限是授权契约，运行时 SDK 贡献不得偏离，相关字段变化会改变 contribution fingerprint。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
   `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。
@@ -313,8 +320,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；普通 `after_run` Hook 仍是 fail-open observer。
 - 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace 路径与协作式取消语义；
-  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call` 分离，
-  只能把 `auto` 提升为审批或拒绝，失败时拒绝，且审批修改后的最终参数必须重新评估。
+  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。Host 控制工具的 `tool_policies` 与观察型
+  `before_tool_call` 分离，只能把 `auto` 提升为审批或拒绝，失败时拒绝，且审批修改后的最终参数必须重新评估；
+  工具自控的 Harness 工具不进入该限制性策略链。
 - 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
   `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
   superseded；目标插件在下一 Run 重新评估。

@@ -312,15 +312,21 @@ class ContributionCoordinator:
                     "tool contribution id does not match manifest: "
                     f"{sdk_identity} != {declaration.id}"
                 )
-            permission = tool.definition.permission_mode
-            if source != "official" and permission == "auto":
-                permission = "approval"
+            if sdk_identity is not None and (
+                tool.definition.permission_mode != declaration.permission_mode
+                or tool.definition.permission_control != declaration.permission_control
+            ):
+                raise ContributionValidationError(
+                    "tool permission contract does not match manifest: "
+                    f"{declaration.exposed_name}"
+                )
             definition = tool.definition.model_copy(
                 update={
                     "name": declaration.exposed_name,
                     "description": declaration.description,
                     "source": ("official_plugin" if source == "official" else "third_party_plugin"),
-                    "permission_mode": permission,
+                    "permission_mode": declaration.permission_mode,
+                    "permission_control": declaration.permission_control,
                 }
             )
             contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))

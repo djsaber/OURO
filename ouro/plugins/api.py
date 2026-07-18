@@ -479,6 +479,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             parameters_schema=dict(contribution.parameters_schema),
             result_schema=dict(contribution.result_schema),
             permission_mode=contribution.permission_mode,
+            permission_control=contribution.permission_control,
             metadata={"sdk_contribution_id": contribution.id},
         ),
         handler=handler,

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Protocol
 
 PermissionMode = Literal["auto", "approval", "deny"]
+ToolPermissionControl = Literal["host", "tool"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
 RunStatus = Literal[
@@ -176,6 +177,7 @@ class ToolContribution:
     parameters_schema: Mapping[str, object] = field(default_factory=dict)
     result_schema: Mapping[str, object] = field(default_factory=dict)
     permission_mode: PermissionMode = "approval"
+    permission_control: ToolPermissionControl = "host"
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
@@ -415,4 +417,5 @@ __all__ = [
     "ToolPolicyCall",
     "ToolPolicyContribution",
     "ToolPolicyDecision",
+    "ToolPermissionControl",
 ]

@@ -58,6 +58,7 @@ from ouro.tools import (
     Tool,
     ToolDefinition,
     ToolExecutionContext,
+    ToolExecutor,
     ToolInputRequest,
     ToolRegistry,
     ToolResult,
@@ -665,6 +666,13 @@ async def test_inprocess_lifecycle_requires_separate_grants_and_drains_snapshot(
                     "exposed_name": "echo__run",
                     "description": "Echo input.",
                     "permission_mode": "auto",
+                },
+                {
+                    "id": "control",
+                    "exposed_name": "echo__control",
+                    "description": "Control the harness.",
+                    "permission_mode": "auto",
+                    "permission_control": "tool",
                 }
             ]
         },
@@ -679,10 +687,17 @@ class Plugin:
     async def prepare(self):
         async def run(call):
             return ToolOutput(content=str(call.arguments.get('value', '')))
-        return ContributionSet(tools=[ToolContribution(
-            id='run', exposed_name='echo__run', description='Echo input.',
-            permission_mode='auto', handler=run,
-        )])
+        return ContributionSet(tools=[
+            ToolContribution(
+                id='run', exposed_name='echo__run', description='Echo input.',
+                permission_mode='auto', handler=run,
+            ),
+            ToolContribution(
+                id='control', exposed_name='echo__control',
+                description='Control the harness.', permission_mode='auto',
+                permission_control='tool', handler=run,
+            ),
+        ])
 
     async def start(self):
         self.context.data.write_bytes('status.txt', b'started')
@@ -707,8 +722,27 @@ def create_plugin(context):
     assert (await service.enable("dev.ouro.echo")).status == "active"
     with runtime.snapshot() as current:
         definition = current.tools.get("echo__run").definition
-        assert definition.permission_mode == "approval"
+        assert definition.permission_mode == "auto"
+        assert definition.permission_control == "host"
         assert definition.metadata["contract_hash"]
+        control_definition = current.tools.get("echo__control").definition
+        assert control_definition.permission_mode == "auto"
+        assert control_definition.permission_control == "tool"
+        preflight = ToolExecutor(
+            current.tools,
+            permission_overrides={"echo__control": "deny"},
+        ).preflight(
+            ToolInvocation(
+                session_id="ses_1",
+                run_id="run_1",
+                tool_name="echo__control",
+            ),
+            approval_mode="deny",
+            policy_mode="deny",
+            policy_reason="must be ignored",
+        )
+        assert preflight.status == "ready"
+        assert preflight.invocation.permission_mode == "auto"
         result = await current.tools.get("echo__run").execute(
             ToolInvocation(
                 session_id="ses_1",
@@ -2408,6 +2442,56 @@ def create_plugin(context): return Plugin()
 
 
 @pytest.mark.asyncio
+async def test_sdk_tool_permission_contract_must_match_manifest(tmp_path) -> None:
+    source = tmp_path / "tool-permission"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.tool_permission",
+        runtime={"kind": "python-inprocess", "entrypoint": "tool_permission_plugin:create_plugin"},
+        contributes={
+            "tools": [
+                {
+                    "id": "control",
+                    "exposed_name": "permission__control",
+                    "description": "Control the harness.",
+                    "permission_mode": "auto",
+                    "permission_control": "tool",
+                }
+            ]
+        },
+    )
+    (source / "tool_permission_plugin.py").write_text(
+        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+class Plugin:
+    async def prepare(self):
+        async def control(call): return 'bad'
+        return ContributionSet(tools=[ToolContribution(
+            id='control', exposed_name='permission__control',
+            description='Control the harness.', permission_mode='approval',
+            handler=control,
+        )])
+    async def start(self): pass
+    async def stop(self, reason, deadline): pass
+def create_plugin(context): return Plugin()
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.tool_permission")
+    service.trust_code("dev.ouro.tool_permission")
+
+    assert (await service.enable("dev.ouro.tool_permission")).status == "failed"
+    assert any(
+        "tool permission contract does not match manifest" in item.message
+        for item in service.diagnostics("dev.ouro.tool_permission")
+    )
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_dependency_disable_and_incompatible_selection_are_rejected_atomically(
     tmp_path,
 ) -> None:
@@ -2917,6 +3001,31 @@ def test_native_manifest_model_rejects_unknown_security_fields() -> None:
                 "namespace": "strict",
                 "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
                 "verified": True,
+            }
+        )
+
+
+def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
+    with pytest.raises(ValueError, match="tool-controlled permission must be auto or deny"):
+        PluginManifest.model_validate(
+            {
+                "schema_version": 2,
+                "plugin_id": "dev.ouro.control",
+                "name": "Control",
+                "version": "1.0.0",
+                "namespace": "control",
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "contributes": {
+                    "tools": [
+                        {
+                            "id": "control",
+                            "exposed_name": "control__harness",
+                            "description": "Control the harness.",
+                            "permission_mode": "approval",
+                            "permission_control": "tool",
+                        }
+                    ]
+                },
             }
         )
 

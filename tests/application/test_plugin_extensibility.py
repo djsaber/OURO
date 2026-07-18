@@ -21,7 +21,14 @@ from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v1 as sdk
 from ouro.sessions import LocalSessionStore
-from ouro.tools import ToolExecutionContext, ToolRegistry, builtin_tools
+from ouro.tools import (
+    Tool,
+    ToolDefinition,
+    ToolExecutionContext,
+    ToolRegistry,
+    ToolResult,
+    builtin_tools,
+)
 
 
 @pytest.mark.asyncio
@@ -145,6 +152,90 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     assert policy_event.payload["policy_ids"] == ["dev.ouro.guard/tool_policies/safe_shell"]
 
     await application.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_controlled_tool_bypasses_host_permission_pipeline(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    tools = ToolRegistry()
+
+    async def control_harness(invocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="harness controlled",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ControlHarness",
+                description="Control the harness.",
+                permission_mode="auto",
+                permission_control="tool",
+            ),
+            handler=control_harness,
+        )
+    )
+    evaluated: list[str] = []
+
+    def reject(call):
+        evaluated.append(call.tool_name)
+        return ToolPolicyDecision(action="deny", reason="host policy denied")
+
+    policies = ToolPolicyRegistry()
+    policies.replace_owner(
+        "guard",
+        (
+            ToolPolicyRegistration(
+                plugin_id="dev.ouro.guard",
+                policy_id="deny_all",
+                handler=reject,
+            ),
+        ),
+    )
+    provider = FauxProvider(
+        event_batches=[
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_control",
+                        "name": "ControlHarness",
+                        "arguments": {},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="controlled"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="control", provider_id="faux"),
+        ),
+        tools=tools,
+        tool_policies=policies,
+        permission_overrides={"ControlHarness": "deny"},
+        environment=RuntimeEnvironment(home=home),
+    )
+
+    result = await runtime.run("control the harness", approval_mode="deny")
+
+    assert result.run.status == "completed"
+    assert result.tool_results[0].content == "harness controlled"
+    assert result.tool_results[0].is_error is False
+    assert evaluated == []
+    events = store.load_session(result.session.session_id).events
+    assert all(event.event_type != "tool_policy_evaluated" for event in events)
+    await runtime.close()
 
 
 @pytest.mark.asyncio

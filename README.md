@@ -77,8 +77,8 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 原生插件使用 `.ouro-plugin/plugin.json`。产品模型把插件定义为系统级扩展，只分 builtin 与 user，不存在
 workspace/project 插件；插件安装、state、grant、CLI 和 DTO 已删除 workspace scope。安装只做静态校验和不可变发布，
-不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。第三方工具即使
-声明 `auto` 也会降级为审批。
+不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。完成信任和
+能力授权后，插件工具权限不按来源降级；manifest 声明属于 contribution 授权指纹的一部分。
 
 ```bash
 uv run ouro plugin scaffold ./my-plugin --plugin-id dev.example.plugin --name "Example plugin"
@@ -136,7 +136,8 @@ Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>`
 类型化会话输入；输入以 `system_synthetic` 和完整 execution-contract provenance 持久化，不会冒充用户。Run
 continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
 插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
-`tool_policies` 可把工具提升为审批或拒绝，但不能批准、改写参数或降低 Host 权限，失败时默认拒绝。
+插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，
+不会因来源降级。`tool_policies` 可把 Host 控制的工具提升为审批或拒绝，但不能批准或改写参数，失败时默认拒绝。
 
 ## Provider 与 Endpoint
 
@@ -262,13 +263,15 @@ PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影�
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
 交付模式。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
 
-批准模式是会话状态，不是工具配置：`inherit` 沿用各工具定义和 `config permissions` 的结果，`auto`
-自动执行所有工具，`approval` 要求所有工具先批准，`deny` 拒绝所有工具（`AskUser` 在可执行时仍按用户问答
-流程处理，而不是转成普通工具审批）。单次运行可使用
+批准模式是会话状态，不是工具配置：对于默认 `permission_control="host"` 的工具，`inherit` 沿用工具定义和
+`config permissions` 的结果，`auto` 自动执行，`approval` 要求审批，`deny` 拒绝调用（`AskUser` 在可执行时
+仍按用户问答流程处理，而不是转成普通工具审批）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
-`/approval-mode <inherit|auto|approval|deny>`。会话分支继承源会话的批准模式。工具定义的权限先由
-`config permissions` 覆盖，再由会话批准模式统一解析；内置、插件和 MCP 工具遵循同一规则。限制性插件
-工具策略是独立安全闸门，仍可提升审批要求或拒绝调用。
+`/approval-mode <inherit|auto|approval|deny>`。会话分支继承源会话的批准模式。
+
+Harness 编排工具可声明 `permission_control="tool"`，此时工具定义的权限是唯一执行依据，只允许 `auto` 或
+`deny`；用户同名权限覆盖、会话批准模式和限制性 `tool_policies` 均不参与决策。该控制权适用于内置和受信
+插件工具，适合进入/退出计划模式、目标模式等必须保持可调用的控制面操作。
 
 ## 全局 Token 与费用统计
 

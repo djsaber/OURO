@@ -27,14 +27,18 @@ This project records user-visible and framework-contract changes in this file.
 - Route-scoped reasoning continuation for OpenAI-compatible tool turns and opaque signed
   Anthropic thinking blocks.
 - Tool permission modes, workspace path policy, and bounded tool output.
+- Tool-controlled `auto`/`deny` permissions for indispensable Harness control tools, isolated from
+  user overrides, Session approval modes, and restrictive tool policies.
 - Request-local text and image resource projection from canonical Session resource references.
 - Cursor-based incremental Session message and event queries.
 - Cross-platform CI, branch coverage enforcement, and security/contribution guidance.
 
 ### Changed
 
-- Session approval policy now resolves configured permissions uniformly for built-in, plugin, and
-  MCP tools: `inherit` uses the tool mode, while `auto`, `approval`, and `deny` apply globally.
+- Session approval policy now resolves Host-controlled permissions uniformly for built-in, plugin,
+  and MCP tools: `inherit` uses the tool mode, while `auto`, `approval`, and `deny` apply globally.
+- Trusted plugin tool permissions now use the same semantics as built-ins without source-based
+  downgrades; the authorized manifest is authoritative and SDK contributions must match it.
 - Removed the legacy 0.1 plugin bridge: root-level `plugin.json` packages are no longer accepted, the
   `PluginLoader`/`LegacyPluginManifest` compatibility layer and the `legacy` flags on install records and
   application DTOs are gone, and queued Session inputs with missing fields are dropped as invalid instead of

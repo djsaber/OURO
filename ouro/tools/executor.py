@@ -79,20 +79,24 @@ class ToolExecutor:
                 error_type="ToolExecutionContractMismatch",
                 error_message=contract_error,
             )
-        configured_mode = self.permission_overrides.get(
-            tool.definition.name, tool.definition.permission_mode
+        effective_mode = resolve_tool_permission(
+            tool.definition.permission_mode,
+            approval_mode,
+            permission_control=tool.definition.permission_control,
+            override=self.permission_overrides.get(tool.definition.name),
         )
-        effective_mode = resolve_tool_permission(configured_mode, approval_mode)
         denial_reason: str | None = None
-        if policy_mode == "deny":
-            effective_mode = "deny"
-            denial_reason = policy_reason
-        elif policy_mode == "approval" and effective_mode == "auto":
-            effective_mode = "approval"
+        if tool.definition.permission_control == "host":
+            if policy_mode == "deny":
+                effective_mode = "deny"
+                denial_reason = policy_reason
+            elif policy_mode == "approval" and effective_mode == "auto":
+                effective_mode = "approval"
         invocation = invocation.model_copy(
             update={
                 "source": tool.definition.source,
                 "permission_mode": effective_mode,
+                "permission_control": tool.definition.permission_control,
                 "arguments": arguments_override
                 if arguments_override is not None
                 else invocation.arguments,

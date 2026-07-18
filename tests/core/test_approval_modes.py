@@ -28,3 +28,28 @@ def test_approval_mode_resolves_every_tool_permission(
     expected: str,
 ) -> None:
     assert resolve_tool_permission(tool_permission, approval_mode) == expected
+
+
+@pytest.mark.parametrize("approval_mode", ["inherit", "auto", "approval", "deny"])
+@pytest.mark.parametrize(
+    ("permission_mode", "override", "expected"),
+    [
+        ("auto", "deny", "auto"),
+        ("deny", "auto", "deny"),
+    ],
+)
+def test_tool_controlled_permission_ignores_host_strategy_and_override(
+    approval_mode: str,
+    permission_mode: str,
+    override: str,
+    expected: str,
+) -> None:
+    assert (
+        resolve_tool_permission(
+            permission_mode,
+            approval_mode,
+            permission_control="tool",
+            override=override,
+        )
+        == expected
+    )

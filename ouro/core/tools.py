@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Self
 
-from pydantic import Field, JsonValue
+from pydantic import Field, JsonValue, model_validator
 
-from ouro.core.approvals import ApprovalRecord, PermissionMode
+from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 
 ToolExecutionPreference = Literal["inherit", "sequential"]
@@ -27,11 +27,17 @@ class ToolDefinition(OuroModel):
     parameters_schema: dict[str, Any] = Field(default_factory=dict)
     source: ToolSource = "builtin"
     permission_mode: PermissionMode = "auto"
+    permission_control: ToolPermissionControl = "host"
     result_schema: dict[str, Any] = Field(default_factory=dict)
     can_abort: bool = True
     execution_mode: ToolExecutionPreference = "inherit"
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
+
+    @model_validator(mode="after")
+    def validate_permission_control(self) -> Self:
+        _validate_permission_control(self.permission_mode, self.permission_control)
+        return self
 
 
 class ToolCallRequest(OuroModel):
@@ -59,6 +65,7 @@ class ToolInvocation(OuroModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     requested_at: datetime = Field(default_factory=utc_now)
     permission_mode: PermissionMode = "auto"
+    permission_control: ToolPermissionControl = "host"
     approval_id: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None
@@ -68,6 +75,11 @@ class ToolInvocation(OuroModel):
     execution_contract_hash: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
+
+    @model_validator(mode="after")
+    def validate_permission_control(self) -> Self:
+        _validate_permission_control(self.permission_mode, self.permission_control)
+        return self
 
 
 class ToolResult(OuroModel):
@@ -103,3 +115,11 @@ class ToolExecutionOutcome(OuroModel):
         if self.input_request is None or not isinstance(self.input_request.data, str):
             return None
         return self.input_request.data
+
+
+def _validate_permission_control(
+    permission_mode: PermissionMode,
+    permission_control: ToolPermissionControl,
+) -> None:
+    if permission_control == "tool" and permission_mode == "approval":
+        raise ValueError("tool-controlled permission must be auto or deny")

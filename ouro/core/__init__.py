@@ -3,6 +3,7 @@
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
     SessionApprovalMode,
+    ToolPermissionControl,
     resolve_tool_permission,
 )
 from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
@@ -26,6 +27,7 @@ __all__ = [
     "ResourceSource",
     "SESSION_APPROVAL_MODES",
     "SessionApprovalMode",
+    "ToolPermissionControl",
     "resolve_tool_permission",
     "SessionResourceReference",
     "SessionRecord",

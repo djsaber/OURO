@@ -717,6 +717,9 @@ class ToolCallCoordinator:
             tool_call_id=request.id,
             tool_name=request.name,
             source=definition.source if definition is not None else "builtin",
+            permission_control=(
+                definition.permission_control if definition is not None else "host"
+            ),
             arguments=request.arguments,
             plugin_id=_optional_text(metadata.get("plugin_id")),
             plugin_version=_optional_text(metadata.get("plugin_version")),
@@ -849,6 +852,8 @@ class ToolCallCoordinator:
         invocation: ToolInvocation,
         phase: str,
     ) -> tuple[ToolInvocation, ToolPolicyMode | None, str | None, int]:
+        if invocation.permission_control == "tool":
+            return invocation, None, None, sequence
         policy = await self.tool_policies.evaluate(
             ToolPolicyCall(
                 session_id=session.session_id,

@@ -7,6 +7,16 @@ from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
 
 
+def test_tool_controlled_permission_rejects_approval_mode() -> None:
+    with pytest.raises(ValueError, match="tool-controlled permission must be auto or deny"):
+        ToolDefinition(
+            name="ControlHarness",
+            description="Control the harness.",
+            permission_mode="approval",
+            permission_control="tool",
+        )
+
+
 @pytest.mark.asyncio
 async def test_permission_override_changes_mode_to_approval() -> None:
     registry = ToolRegistry()
@@ -100,6 +110,58 @@ def test_session_auto_mode_overrides_denied_tool_permission() -> None:
 
     assert outcome.status == "ready"
     assert outcome.invocation.permission_mode == "auto"
+
+
+@pytest.mark.parametrize("approval_mode", ["inherit", "auto", "approval", "deny"])
+@pytest.mark.parametrize(
+    ("permission_mode", "override", "policy_mode", "expected_status"),
+    [
+        ("auto", "deny", "deny", "ready"),
+        ("deny", "auto", "approval", "completed"),
+    ],
+)
+def test_tool_controlled_permission_is_the_only_execution_authority(
+    approval_mode,
+    permission_mode,
+    override,
+    policy_mode,
+    expected_status,
+) -> None:
+    async def execute(_invocation):
+        return "unused"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ControlHarness",
+                description="Control the harness.",
+                permission_mode=permission_mode,
+                permission_control="tool",
+            ),
+            handler=execute,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="ControlHarness",
+    )
+    executor = ToolExecutor(registry, permission_overrides={"ControlHarness": override})
+
+    outcome = executor.preflight(
+        invocation,
+        approval_mode=approval_mode,
+        policy_mode=policy_mode,
+        policy_reason="host policy must not govern this tool",
+    )
+
+    assert outcome.status == expected_status
+    assert outcome.invocation.permission_control == "tool"
+    assert outcome.invocation.permission_mode == permission_mode
+    if permission_mode == "deny":
+        assert outcome.result is not None
+        assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
 
 
 @pytest.mark.parametrize(

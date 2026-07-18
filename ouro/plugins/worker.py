@@ -624,6 +624,7 @@ def _worker_tools(
             exposed_name=item.exposed_name,
             description=item.description,
             permission_mode=item.permission_mode,
+            permission_control=item.permission_control,
             parameters_schema=_worker_schema(raw, "tools", item.id, "parameters_schema"),
             result_schema=_worker_schema(raw, "tools", item.id, "result_schema"),
             handler=instance._tool_handler(item.id),

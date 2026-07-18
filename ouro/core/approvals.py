@@ -9,6 +9,7 @@ from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, n
 
 ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
 PermissionMode = Literal["auto", "approval", "deny"]
+ToolPermissionControl = Literal["host", "tool"]
 SessionApprovalMode = Literal["inherit", "auto", "approval", "deny"]
 SESSION_APPROVAL_MODES = cast(
     tuple[SessionApprovalMode, ...],
@@ -19,20 +20,31 @@ SESSION_APPROVAL_MODES = cast(
 def resolve_tool_permission(
     permission_mode: PermissionMode,
     approval_mode: SessionApprovalMode,
+    *,
+    permission_control: ToolPermissionControl = "host",
+    override: PermissionMode | None = None,
 ) -> PermissionMode:
-    """Apply a session approval strategy to an already configured tool permission."""
+    """Resolve permission according to the authority declared by the tool definition."""
+
+    match permission_control:
+        case "tool":
+            return permission_mode
+        case "host":
+            configured_mode = override or permission_mode
+        case _ as invalid_control:
+            assert_never(invalid_control)
 
     match approval_mode:
         case "inherit":
-            return permission_mode
+            return configured_mode
         case "auto":
             return "auto"
         case "approval":
             return "approval"
         case "deny":
             return "deny"
-        case _ as unreachable:
-            assert_never(unreachable)
+        case _ as invalid_mode:
+            assert_never(invalid_mode)
 
 
 class ApprovalRecord(OuroModel):

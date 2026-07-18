@@ -7,7 +7,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.hooks import HookName
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, ToolPermissionControl
 from ouro.plugins.semver import SemVer, validate_version_range
 
 PluginCapability = Literal[
@@ -119,7 +119,14 @@ class ToolContributionSpec(OuroModel):
     exposed_name: str
     description: str
     permission_mode: PermissionMode = "approval"
+    permission_control: ToolPermissionControl = "host"
     optional: bool = False
+
+    @model_validator(mode="after")
+    def validate_permission_control(self) -> ToolContributionSpec:
+        if self.permission_control == "tool" and self.permission_mode == "approval":
+            raise ValueError("tool-controlled permission must be auto or deny")
+        return self
 
     @field_validator("id")
     @classmethod

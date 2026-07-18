@@ -21,6 +21,7 @@ from ouro.core.tools import (
     ToolInputRequest,
     ToolInvocation,
     ToolOutcomeStatus,
+    ToolPermissionControl,
     ToolResult,
     ToolSource,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "ToolInputRequest",
     "ToolInvocation",
     "ToolOutcomeStatus",
+    "ToolPermissionControl",
     "ToolProcessResult",
     "ToolResult",
     "ToolSource",
