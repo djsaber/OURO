@@ -16,9 +16,9 @@ from ouro.tools import ToolRegistry, builtin_tools
 
 
 def test_run_parser_accepts_session_approval_mode() -> None:
-    args = build_parser().parse_args(["run", "--approval-mode", "auto", "hello"])
+    args = build_parser().parse_args(["run", "--approval-mode", "deny", "hello"])
 
-    assert args.approval_mode == "auto"
+    assert args.approval_mode == "deny"
 
 
 def test_run_cli_persists_session_approval_mode(tmp_path, capsys) -> None:
@@ -51,7 +51,7 @@ def test_session_approval_mode_command_updates_existing_session(tmp_path, capsys
             "session",
             "approval-mode",
             session_id,
-            "approval",
+            "deny",
             "--home",
             str(tmp_path),
             "--json",
@@ -60,7 +60,7 @@ def test_session_approval_mode_command_updates_existing_session(tmp_path, capsys
     payload = json.loads(capsys.readouterr().out)
 
     assert code == 0
-    assert payload["session"]["approval_mode"] == "approval"
+    assert payload["session"]["approval_mode"] == "deny"
 
 
 @pytest.mark.asyncio

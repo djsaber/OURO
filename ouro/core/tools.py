@@ -5,10 +5,9 @@ from typing import Any, Literal
 
 from pydantic import Field, JsonValue
 
-from ouro.core.approvals import ApprovalRecord
+from ouro.core.approvals import ApprovalRecord, PermissionMode
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 
-PermissionMode = Literal["auto", "approval", "deny"]
 ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolKind = Literal["standard", "user_input"]
 ToolSource = Literal[

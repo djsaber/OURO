@@ -101,10 +101,13 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
 按 provider 原始顺序提交。
 
-会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto` 或 `approval`。
-`ToolCallCoordinator` 在工具预检时把会话模式交给 `ToolExecutor`；优先级为会话显式模式、工具权限配置、
-工具定义默认值。`inherit` 不覆盖工具策略。最终有效值写入 durable `ToolInvocation`，因此批准恢复不依赖
-当前进程的配置快照。工具权限配置的 `deny` 是硬拒绝，不能被会话 `auto` 覆盖。工具 handler 可以返回
+会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto`、`approval` 或 `deny`。
+工具定义权限先由用户 `config permissions` 覆盖，再由 Core 的单一策略解析边界计算最终权限：`inherit`
+沿用工具权限，`auto` 统一放行，`approval` 统一要求审批，`deny` 统一拒绝。`ToolCallCoordinator` 在预检时
+把会话模式交给 `ToolExecutor`，最终权限写入 durable `ToolInvocation`，因此批准恢复不依赖当前进程的配置
+快照。内置、插件和 MCP 工具都通过这一边界；限制性插件 `tool_policies` 随后作为独立安全闸门组合，仍可
+提升审批要求或拒绝调用。新增会话策略只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。
+工具 handler 可以返回
 `ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
 `AskUser` 只是该协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
 workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制不等同于操作系统沙箱。

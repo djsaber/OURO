@@ -96,6 +96,38 @@ async def test_approval_mode_requires_approval_for_automatic_tools(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_deny_mode_rejects_automatic_tools_without_requesting_approval(tmp_path) -> None:
+    target = tmp_path / "blocked.txt"
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_1",
+                        "name": "Write",
+                        "arguments": {"path": str(target), "content": "blocked"},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Denied."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+
+    result = await runtime.run("write", approval_mode="deny")
+
+    assert result.run.status == "completed"
+    assert result.session.approval_mode == "deny"
+    assert not target.exists()
+    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
+
+
+@pytest.mark.asyncio
 async def test_existing_idle_session_can_change_mode_with_next_run(tmp_path) -> None:
     runtime = _runtime(
         tmp_path,

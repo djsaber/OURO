@@ -84,7 +84,7 @@ def test_session_approval_mode_overrides_automatic_tool_policy() -> None:
     assert outcome.invocation.permission_mode == "approval"
 
 
-def test_deny_policy_cannot_be_overridden_by_session_auto_mode() -> None:
+def test_session_auto_mode_overrides_denied_tool_permission() -> None:
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
@@ -98,10 +98,92 @@ def test_deny_policy_cannot_be_overridden_by_session_auto_mode() -> None:
 
     outcome = executor.preflight(invocation, approval_mode="auto")
 
+    assert outcome.status == "ready"
+    assert outcome.invocation.permission_mode == "auto"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["builtin", "official_plugin", "third_party_plugin", "ai_generated_plugin", "mcp"],
+)
+@pytest.mark.parametrize("permission_mode", ["auto", "approval", "deny"])
+def test_session_deny_mode_blocks_every_tool_source(source, permission_mode) -> None:
+    async def execute(_invocation):
+        return "unused"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="extension__run",
+                description="Run an extension tool.",
+                source=source,
+                permission_mode=permission_mode,
+            ),
+            handler=execute,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="extension__run",
+    )
+
+    outcome = ToolExecutor(registry).preflight(invocation, approval_mode="deny")
+
     assert outcome.status == "completed"
+    assert outcome.invocation.source == source
     assert outcome.invocation.permission_mode == "deny"
     assert outcome.result is not None
     assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
+
+
+@pytest.mark.parametrize(
+    "source",
+    ["official_plugin", "third_party_plugin", "ai_generated_plugin", "mcp"],
+)
+@pytest.mark.parametrize(
+    ("approval_mode", "expected_status", "expected_permission"),
+    [
+        ("inherit", "approval_required", "approval"),
+        ("auto", "ready", "auto"),
+        ("approval", "approval_required", "approval"),
+        ("deny", "completed", "deny"),
+    ],
+)
+def test_extension_tools_use_shared_overrides_and_session_approval_modes(
+    source,
+    approval_mode,
+    expected_status,
+    expected_permission,
+) -> None:
+    async def execute(_invocation):
+        return "unused"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="extension__run",
+                description="Run an extension tool.",
+                source=source,
+                permission_mode="deny",
+            ),
+            handler=execute,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="extension__run",
+    )
+
+    executor = ToolExecutor(registry, permission_overrides={"extension__run": "approval"})
+    outcome = executor.preflight(invocation, approval_mode=approval_mode)
+
+    assert outcome.status == expected_status
+    assert outcome.invocation.source == source
+    assert outcome.invocation.permission_mode == expected_permission
 
 
 def test_extension_policy_can_raise_auto_tool_to_approval() -> None:

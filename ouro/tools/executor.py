@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ouro.core.approvals import ApprovalRecord, SessionApprovalMode
+from ouro.core.approvals import ApprovalRecord, SessionApprovalMode, resolve_tool_permission
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.redaction import redact_text
@@ -79,13 +79,14 @@ class ToolExecutor:
                 error_type="ToolExecutionContractMismatch",
                 error_message=contract_error,
             )
-        effective_mode = self.permission_overrides.get(
+        configured_mode = self.permission_overrides.get(
             tool.definition.name, tool.definition.permission_mode
         )
-        if effective_mode != "deny" and approval_mode != "inherit":
-            effective_mode = approval_mode
+        effective_mode = resolve_tool_permission(configured_mode, approval_mode)
+        denial_reason: str | None = None
         if policy_mode == "deny":
             effective_mode = "deny"
+            denial_reason = policy_reason
         elif policy_mode == "approval" and effective_mode == "auto":
             effective_mode = "approval"
         invocation = invocation.model_copy(
@@ -105,7 +106,7 @@ class ToolExecutor:
                 error_message=argument_error,
             )
         if invocation.permission_mode == "deny":
-            reason = policy_reason or (
+            reason = denial_reason or (
                 f"tool is disabled by permission policy: {invocation.tool_name}"
             )
             return _error_outcome(

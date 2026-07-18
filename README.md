@@ -263,10 +263,12 @@ Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>
 交付模式。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
 
 批准模式是会话状态，不是工具配置：`inherit` 沿用各工具定义和 `config permissions` 的结果，`auto`
-自动执行工具，`approval` 要求所有工具先批准（`AskUser` 仍按用户问答流程处理）。单次运行可使用
+自动执行所有工具，`approval` 要求所有工具先批准，`deny` 拒绝所有工具（`AskUser` 在可执行时仍按用户问答
+流程处理，而不是转成普通工具审批）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
-`/approval-mode <inherit|auto|approval>`。会话分支继承源会话的批准模式。
-工具级 `deny` 是硬拒绝，不能被会话 `auto` 或一次审批覆盖。
+`/approval-mode <inherit|auto|approval|deny>`。会话分支继承源会话的批准模式。工具定义的权限先由
+`config permissions` 覆盖，再由会话批准模式统一解析；内置、插件和 MCP 工具遵循同一规则。限制性插件
+工具策略是独立安全闸门，仍可提升审批要求或拒绝调用。
 
 ## 全局 Token 与费用统计
 

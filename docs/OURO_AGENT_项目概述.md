@@ -69,8 +69,9 @@ OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和�
 结果回填给模型。模型一次响应中的多个工具调用组成一个批次，可按配置顺序或并行执行；结果仍按原始调用顺序
 提交。输入请求与工具审批使用不同状态转换，二者都可持久化并恢复。
 
-权限支持 `auto`、`approval` 和不可被会话覆盖的硬 `deny`。内置文件路径与 Bash 工作目录默认限制在 Session
-workspace，工具输出由统一边界限长并标记截断。Bash 的工作目录约束不是操作系统命令沙箱。
+工具权限支持 `auto`、`approval` 和 `deny`，用户配置可覆盖工具定义。会话批准策略支持 `inherit`、`auto`、
+`approval` 和 `deny`，并在统一执行边界中应用于内置、插件和 MCP 工具。内置文件路径与 Bash 工作目录默认
+限制在 Session workspace，工具输出由统一边界限长并标记截断。Bash 的工作目录约束不是操作系统命令沙箱。
 
 ### Skills 与扩展框架
 

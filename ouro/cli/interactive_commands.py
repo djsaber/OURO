@@ -13,6 +13,8 @@ if TYPE_CHECKING:
     from ouro.application.plugins import PluginService
     from ouro.core.session_controls import AttributedSessionInput
 
+_APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
+
 
 @dataclass(frozen=True, slots=True)
 class CommandResult:
@@ -96,7 +98,7 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/model - Show the active or next-session model.",
         "/model <provider/endpoint> - Select the active or next-session model.",
         "/approval-mode - Show the current session approval mode.",
-        "/approval-mode <inherit|auto|approval> - Set the session approval mode.",
+        f"/approval-mode <{_APPROVAL_MODE_CHOICES}> - Set the session approval mode.",
         "/config - Show active local config path.",
         "/export - Show active session data path.",
         "/history - Show current session messages.",
@@ -240,7 +242,7 @@ def _approval_mode_command(
     if value not in SESSION_APPROVAL_MODES:
         return CommandResult(
             session_id=session_id,
-            output="Usage: /approval-mode <inherit|auto|approval>",
+            output=f"Usage: /approval-mode <{_APPROVAL_MODE_CHOICES}>",
         )
     mode = cast(SessionApprovalMode, value)
     if session_id is not None:
