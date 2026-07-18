@@ -427,6 +427,11 @@ Hook 不使用万能可变 output。稳定类型按语义分类：
 Context Provider 和 Turn Policy 是独立 registry，不通过 Hook output 承载语义。Hook 的 provenance 只用于归属、
 诊断和 contract，不改变顺序或失败规则。只在 producer、typed input/output 和失败规则同时存在时增加事件或策略点。
 
+Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`。`message` 表示该语义必须在模型
+请求前由 application 以带 provider/generation provenance 的 `system_synthetic` canonical message 持久化；
+Run/model round/provider/fragment index 构成幂等 delivery identity。持久化失败阻断模型请求，不能退化为临时注入。
+该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
+
 ### 10.2 Tool Policy
 
 `ToolPolicyDecision = ignore | require_approval | deny`。

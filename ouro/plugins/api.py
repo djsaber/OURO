@@ -693,7 +693,13 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
         else:
             values = raw
         return ContextProviderResult(
-            fragments=[ContextFragment(text=value) for value in values if value]
+            fragments=[
+                ContextFragment(text=value.text, persistence=value.persistence)
+                if isinstance(value, sdk.ContextFragment)
+                else ContextFragment(text=value)
+                for value in values
+                if value
+            ]
         )
 
     return ContextProviderRegistration(

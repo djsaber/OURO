@@ -1,5 +1,8 @@
 from concurrent.futures import ThreadPoolExecutor
 
+import pytest
+from pydantic import ValidationError
+
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
@@ -53,6 +56,31 @@ def test_queued_input_queue_removes_invalid_item(tmp_path) -> None:
     assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
 
 
+def test_queued_input_queue_drops_host_item_without_source_attribution(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(
+        title="Invalid Host input",
+        metadata={
+            QUEUED_INPUTS_KEY: [
+                {
+                    "prompt": "anonymous framework input",
+                    "mode": "follow_up",
+                    "source": "host",
+                }
+            ]
+        },
+    )
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+
+    item = queue.peek(store.load_session(session.session_id))
+    snapshot = store.load_session(session.session_id)
+
+    assert item is None
+    assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
+
+
 def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -74,6 +102,46 @@ def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
     assert repeated.queue_id == first.queue_id
     queue.acknowledge(snapshot, first.queue_id)
     assert queue.peek(store.load_session(session.session_id)) is None
+
+
+def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Host queue")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    snapshot = store.load_session(session.session_id)
+
+    with pytest.raises(ValidationError, match="Host queued input requires a source id"):
+        queue.enqueue(
+            snapshot=snapshot,
+            prompt="anonymous framework input",
+            title=None,
+            source="host",
+        )
+    with pytest.raises(ValidationError, match="cannot carry user resources"):
+        queue.enqueue(
+            snapshot=snapshot,
+            prompt="framework input with a user attachment",
+            title=None,
+            source="host",
+            host_source_id="ouro.runtime/recovery",
+            resource_refs=("resource_1",),
+        )
+
+    _, queued, _ = queue.enqueue(
+        snapshot=snapshot,
+        prompt="recover from checkpoint",
+        title="Recovery",
+        source="host",
+        host_source_id="ouro.runtime/recovery",
+    )
+    restored = queue.peek(store.load_session(session.session_id))
+
+    assert queued.source == "host"
+    assert restored is not None
+    assert restored.source == "host"
+    assert restored.host_source_id == "ouro.runtime/recovery"
 
 
 def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) -> None:

@@ -24,7 +24,7 @@ ACTIVE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
     {"queued", "running", "waiting_user", "waiting_approval"}
 )
 RunKind = Literal["agent", "compaction"]
-RunOrigin = Literal["user", "follow_up", "replay", "plugin"]
+RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin"]
 
 SessionStatus = Literal["idle", "running", "waiting_user", "waiting_approval", "failed"]
 SessionTitleSource = Literal["fallback", "generated", "user"]

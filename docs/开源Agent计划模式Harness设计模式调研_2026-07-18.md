@@ -1,0 +1,118 @@
+# 开源 Agent「计划模式」Harness 设计模式调研
+
+> 调研日期：2026-07-18
+> 调研对象：Claude Code、OpenAI Codex CLI（codex-rs）、OpenCode（sst/opencode）、Cline
+> 调研范围：仅关注智能体循环与 LLM 交互的 harness 算法流程（智能体怎么循环、上下文怎么构建、工具怎么提供、模式怎么退出），不涉及具体代码技术实现。
+
+## 0. 一句话本质
+
+**计划模式不是另一套循环，而是同一 agentic 循环上的一个"相位（phase）标注"**：循环骨架不变，变的是每轮的三个注入点——上下文里加什么（模式指令）、工具集给什么（合法动作空间）、工具执行前过什么闸（权限判定）、以及轮次以什么信号结束（出口协议）。四家的实现都是这一骨架的变体。
+
+## 1. 四家实现速览
+
+| 维度 | Claude Code | Codex CLI | OpenCode | Cline |
+|---|---|---|---|---|
+| 模式本质 | 权限模式之一（default/acceptEdits/**plan**） | 协作模式 `ModeKind.Plan`（独立于 update_plan 进度工具） | 两个内置 primary agent（plan/build），Tab 切换 | 单一 Task 循环 + 全局 `mode` 状态 |
+| 循环改造 | 循环不变；**轮次终止条件收窄**：只能以 AskUserQuestion 或 ExitPlanMode 收尾，禁止纯文本收轮 | 同构 turn 循环；模式作为 world_state 分段 diff 注入历史 | `runLoop` 不变；每条 user message 带 `agent` 字段决定本轮工具/权限 | 递归循环不变；模式经每条 user message 尾部 `environment_details` 注入 |
+| 工具供给 | **白名单裁剪**：只读工具保留 + plan 文件写豁免；禁用 Edit/Write/副作用 Bash | 提示词级只读；`request_user_input` 仅 Plan 模式可用；执行期 ToolOrchestrator 闸门 | **工具不裁剪**，permission 规则执行期拦截（`edit: deny, plans目录: allow`） | 工具不按模式过滤；`strictPlanMode` 下执行期拦截写类工具 |
+| 计划载体 | **plan 文件**（唯一可写路径） | **`<proposed_plan>` 标签块**（流式解析） | plan 文件（权限白名单豁免） | **对话流**（`plan_mode_respond` 的 `response` 参数） |
+| 出口信号 | `ExitPlanMode` 工具：无计划参数，纯信号 + `allowedPrompts` 权限预申报 | 标签块 → TUI 弹 "Implement this plan?" | `plan_exit` 工具 | `plan_mode_respond` 挂起循环等用户按键切 Act |
+| 批准回注 | reminder + plan 文件路径；可选"清上下文带计划重开" | 合成用户消息 "Implement the plan." / 清上下文交接 | 合成 user 消息（agent=build，指向 plan 文件） | 把 UI 事件**伪装成 tool result**："[The user has switched to ACT MODE...]" |
+| 探索外包 | Explore / Plan 只读子代理并行扇出 | — | 禁用 `task.general` | — |
+| 进度跟踪 | TodoWrite | `update_plan`（纯 UI 投影，Plan 模式内反被禁用） | — | `task_progress` 参数 |
+
+## 2. 可通用的设计模式
+
+### P1. 模式即状态，循环同构（Mode-as-State over an Invariant Loop）
+
+没有任何一家为计划模式写了第二个循环。通用的循环不变量是：
+
+```
+loop:
+    ctx    = build_context(base_instructions, mode_overlay[mode], history, world_state)
+    tools  = tool_registry | mode            # 过滤或打标
+    resp   = llm.sample(ctx, tools)
+    for call in resp.tool_calls:
+        verdict = gate(call, mode)           # allow / ask / deny
+        result  = execute(call) if verdict != deny else deny_message(call)
+        history.append(call, result)         # 拒绝同样回注
+    if resp.hit_exit_signal:  pause_and_ask_user()
+    elif resp.no_tool_calls:  end_turn_or_remind()
+```
+
+模式只是循环每轮读取的一个状态字段，影响 `mode_overlay`、`tools`、`gate` 三处。**这带来一个重要性质：模式切换不打断循环、不重建对话**（Cline 切换模式甚至不打断正在等待的 ask）。
+
+### P2. 三层防线冗余（Defense in Depth）
+
+"不许执行"这一约束被同时编码在三层：
+
+1. **提示词层（软约束）**：系统提示词写"MUST NOT make any edits, this supersedes any other instructions"——管模型的意图；
+2. **工具层（结构约束）**：要么直接收缩工具列表（Claude Code 白名单），要么保留列表但标注（OpenCode/Cline）——管模型的可见动作空间；
+3. **执行层（硬闸门）**：权限引擎在执行前做最终判定，deny 时**把拒绝原因作为 tool result 回注**（OpenCode 的 `DeniedError`、Cline 的 `toolError`、Codex 的审批拒绝），让模型自纠而非硬停。
+
+经验法则：**提示词约束会被长上下文稀释，执行层硬闸门是必需兜底**；而"拒绝回注而非中断"是共识——拒绝本身成为模型学习边界的上下文。
+
+### P3. 上下文分层注入（Layered Context Injection）
+
+模式信息按时效分三层注入，而非一次性写入：
+
+- **激活时**：全量模式指令（完整工作流、"覆盖一切其他指令"的优先级声明、plan 文件路径）；
+- **每轮常驻**：一句话精简 reminder（"Plan mode still active... End turns with AskUserQuestion or ExitPlanMode"）——对抗长程稀释；
+- **状态迁移事件**：进/出/重进各一条事件消息（退出时注入"已退出计划模式，plan 文件在 \<path\>"）。
+
+Codex 的变体更工程化：把模式指令当作 world_state 的一个**可 diff 分段**，只在变化时注入增量，且以 developer 角色消息形式进入历史——模式指令与普通消息同构，可撤销、可替换。Cline 则把当前模式塞进每条 user message 的 `environment_details`，保证模型每轮都能"重新看到"当前相位。
+
+### P4. 计划产物的三种载体（Plan-as-Artifact 的光谱）
+
+这是各家分歧最大的一点，三种载体各有权衡：
+
+- **文件 artifact**（Claude Code、OpenCode）：计划外化为唯一可写的 `plans/*.md`，权限白名单圈出写豁免。上下文与产物解耦——审批界面展示它、"清上下文重开"只带它、跨会话恢复引用它。代价是多一层文件协议，需要"边探索边落盘、禁止攒到最后"的纪律约束。
+- **结构化标签块**（Codex）：计划包在 `<proposed_plan>` 标签里混在文本流中，harness 流式解析后交给 UI 弹确认。模型侧零特权（没有专用出口工具），每轮至多一个、修订须整体替换。
+- **纯对话流**（Cline）：计划活在 transcript 里，"回复用户"这件事本身被工具化（`plan_mode_respond`）。最轻、迭代最快，但计划随上下文压缩最易丢失。
+
+补充区分：Codex 的 `update_plan`（TODO 勾选清单，纯 UI 投影、不回注上下文）是**进度跟踪**而非计划模式，二者语义被刻意隔离（Plan 模式内反而禁用 update_plan）。这个"双轨分离"本身也是一个可借鉴模式：**给用户看的进度投影 ≠ 待批准的计划提案 ≠ 执行期的任务清单**。
+
+### P5. 出口协议：相位转换信号（Exit-as-Signal）
+
+出口的本质是**模型能发出的唯一"写操作"是"提议"**。三种触发器：
+
+- **模型驱动**：专用出口工具（`ExitPlanMode` / `plan_exit`）。关键设计是**出口工具不携带计划内容参数**——信号与产物分离，避免"参数即批准"的耦合。Claude Code 还让出口工具顺带做**权限预申报**（`allowedPrompts`：执行此计划需要哪些类别的权限，随计划一并报批）。
+- **用户驱动**：Tab/toggle 直切（OpenCode、Cline）。harness 把外部 UI 事件**伪装成 tool result** 注回循环（"[The user has switched to ACT MODE...]"），模型无法区分这是用户按键还是工具返回——优雅地保持了"模型只与工具结果对话"的抽象。
+- **协议驱动**：标签块产出即触发 UI 确认（Codex）。
+
+同时，**轮次终止条件被收窄**：计划模式下禁止纯文本收轮，只能"问用户"或"交卷"二选一（Claude Code 硬性规定；Cline 用 `noToolsUsed` 提醒兜底）。这杜绝了模型空谈收尾。
+
+### P6. 收敛式探索循环 + 只读子代理扇出
+
+计划阶段的内部结构是"探索 → 即时落盘 → 问用户"的收敛循环，而非一次性产计划：
+
+- 首轮就要求快速扫描→写骨架→立即提问，**禁止 exhaustive 探索后才动笔**；
+- 每有发现立即写入 plan 文件，修订须整体替换；
+- 调研工作**外包给只读子代理**（Claude Code 的 Explore/Plan agent，工具集硬裁剪），主上下文只收结论——保护规划期的上下文预算；
+- 遇到代码回答不了的决策，批量问用户（AskUserQuestion），且问题里不许引用"the plan"（因为用户在批准前看不到计划文件）——这是个很细的交互协议设计。
+
+### P7. 批准即状态迁移（Approval-as-Transition）
+
+用户批准后，harness 完成三件事：
+
+1. **切换权限状态**：退出计划模式，恢复/升级到所选权限模式（且模式只能由用户决策解除，模型单方面声称"已批准"无效）；
+2. **计划回注执行上下文**：以文件路径引用（Claude Code/OpenCode）、合成用户消息（"Implement the plan." / "The plan at ... has been approved"）或 tool result 伪装（Cline）——计划成为执行期的规格说明；
+3. **可选的上下文重置**："清上下文、只带计划重开新会话"（Claude Code 与 Codex 都有此选项）——规划期的探索噪声不进执行期上下文，这是对"规划噪声污染"问题的直接回应。
+
+拒绝/修改时则简单得多：返回标准工具拒绝 result，计划模式保持激活，反馈进入下一轮迭代循环。
+
+## 3. 关键设计权衡一览
+
+- **工具列表收缩 vs 执行期拦截**：收缩（Claude Code）更省 token、边界对模型可见；拦截（OpenCode/Cline）实现简单且拒绝可回注教学。多数家选择"提示词约定 + 执行层兜底"的组合。
+- **对话式 vs 提案式**：对话式迭代快、适合小任务；提案式有持久交付物、可审计、可跨会话，适合大任务。Claude Code 实际上两者都做了（AskUserQuestion 对话 + plan 文件提案）。
+- **专用出口工具 vs 标签协议**：出口工具语义显式、可挂权限预申报；标签协议模型侧零特权、无需工具定义，但要写流式解析器。
+- **清上下文重开 vs 连续上下文**：前者干净（规划噪声隔离），后者信息无损（探索结论可复用）。趋势是把选择权交给用户（批准对话框里作为选项）。
+
+## 4. 调研方法说明
+
+本报告通过三路并行源码/文档调研完成，主要事实来源：
+
+- **Claude Code**：泄漏系统提示词仓库 [asgeirtj/system_prompts_leaks](https://github.com/asgeirtj/system_prompts_leaks/blob/main/Anthropic/claude-code.md)（含 Plan Mode Reminders 变体）、官方文档 [permission-modes](https://code.claude.com/docs/en/permission-modes)、[permissions](https://code.claude.com/docs/en/permissions)、[hooks-guide](https://code.claude.com/docs/en/hooks-guide)、[ClaudeLog Plan Mode](https://www.claudelog.com/mechanics/plan-mode/)、GitHub issues [#24302](https://github.com/anthropics/claude-code/issues/24302)（plan 文件机制）、[#59927](https://github.com/anthropics/claude-code/issues/59927)（审批选项）。
+- **Codex CLI**（github.com/openai/codex，main 分支）：[plan_tool.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/plan_tool.rs)（update_plan schema）、[base_instructions/default.md](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/prompts/base_instructions/default.md)（提示词驱动）、[orchestrator.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/tools/orchestrator.rs)（审批→沙箱→重试闸门）、[exec_policy.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/exec_policy.rs)、[config_types.rs](https://github.com/openai/codex/blob/main/codex-rs/protocol/src/config_types.rs)（ModeKind）、[plan.md 协作模式模板](https://github.com/openai/codex/blob/main/codex-rs/collaboration-mode-templates/templates/plan.md)、[proposed_plan.rs](https://github.com/openai/codex/blob/main/codex-rs/utils/stream-parser/src/proposed_plan.rs)（标签流式解析）、[collaboration_mode.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/context/world_state/collaboration_mode.rs)（diff 注入）、[session/turn.rs](https://github.com/openai/codex/blob/main/codex-rs/core/src/session/turn.rs)（turn 循环）。
+- **OpenCode**（github.com/sst/opencode）：文档 [agents](https://opencode.ai/docs/agents/)、[permissions](https://opencode.ai/docs/permissions/)；源码 `packages/opencode/src/agent/agent.ts`（plan agent 权限规则）、`session/prompt.ts`（runLoop）、`session/reminders.ts`（`<system-reminder>` 注入）、`permission/index.ts` 与 `session/processor.ts`（拒绝回注）、`tool/plan.ts`（plan_exit）。
+- **Cline**（github.com/cline/cline，v3.89.2）：`apps/vscode/src/core/controller/index.ts`（togglePlanActMode）、`task/index.ts`（递归循环、environment_details 注入）、`prompts/system-prompt/components/act_vs_plan_mode.ts`、`task/ToolExecutor.ts`（strictPlanMode 拦截）、`PlanModeRespondHandler`（PLAN_MODE_TOGGLE_RESPONSE 哨兵）。

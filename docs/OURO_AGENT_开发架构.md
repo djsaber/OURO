@@ -95,6 +95,11 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 用户输入请求恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
+队列来源是类型化的 `user | host | plugin`：用户输入写为 `role=user`；OURO Host/Application 输入必须携带稳定
+`host_source_id`；插件输入必须携带完整 Generation/contract attribution。后两者都写为带来源元数据的
+`role=system_synthetic`，不能携带用户资源引用，也不能在消费时退化为用户消息。`RuntimeService.submit_host_input`
+与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence 边界。
+
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
 规范化为 `tool_call_delta`；`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界
 聚合、解析和校验整批 tool calls。无法提供分片的非流式 Provider 可以产生完整 `tool_call` 事件；`done`
@@ -165,8 +170,11 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 
 `ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要、
 snapshot-bound Context Provider 和 token 预算。Context Provider 在模型请求构建前返回带 owner 的类型化 fragment；
-optional provider 失败时省略自身，required provider 失败时阻断本轮，不能借用观察 Hook 修改语义。canonical
-history 永不被压缩覆盖；`CompactionRecord` 通过 message id 前缀和 digest 验证摘要来源。
+fragment 默认只参与本次模型请求；声明 `persistence="message"` 时，Application 必须先通过 `RunLifecycle` 将它以
+`system_synthetic` 写入 canonical history，并记录 plugin、provider、generation、model round 和幂等 delivery key，
+成功后才能调用模型。同一 Run/model round 的重试不能重复落盘。optional provider 失败时省略自身，required
+provider 失败时阻断本轮，不能借用观察 Hook 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
+通过 message id 前缀和 digest 验证摘要来源。
 
 模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
 `allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 synthetic feedback 持久化到同一

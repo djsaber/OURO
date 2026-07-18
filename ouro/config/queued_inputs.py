@@ -15,7 +15,7 @@ QueuedInputConsumptionMode = Literal["one_by_one", "all_at_once"]
 
 
 class QueuedInputConfig(OuroModel):
-    """Configure how eligible queued user inputs are presented to the model."""
+    """Configure how eligible queued Session inputs are presented to the model."""
 
     consumption_mode: QueuedInputConsumptionMode = "one_by_one"
 

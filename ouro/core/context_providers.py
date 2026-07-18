@@ -11,6 +11,7 @@ from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.redaction import redact_text
 
 ContextProviderFailureMode = Literal["omit", "block"]
+ContextFragmentPersistence = Literal["ephemeral", "message"]
 
 
 class ContextProviderCall(OuroModel):
@@ -22,6 +23,16 @@ class ContextProviderCall(OuroModel):
 
 class ContextFragment(OuroModel):
     text: str = Field(min_length=1)
+    persistence: ContextFragmentPersistence = "ephemeral"
+
+
+class AttributedContextFragment(OuroModel):
+    plugin_id: str
+    provider_id: str
+    generation_id: str | None = None
+    fragment_index: int = Field(ge=0)
+    text: str = Field(min_length=1)
+    persistence: ContextFragmentPersistence = "ephemeral"
 
 
 class ContextProviderResult(OuroModel):
@@ -58,7 +69,7 @@ class ContextProviderFailure(OuroModel):
 
 @dataclass
 class ContextProviderEvaluation:
-    fragments: list[ContextFragment] = field(default_factory=list)
+    fragments: list[AttributedContextFragment] = field(default_factory=list)
     failures: list[ContextProviderFailure] = field(default_factory=list)
     blocked: bool = False
 
@@ -121,7 +132,17 @@ class ContextProviderRegistry:
                 )
                 if not isinstance(result, ContextProviderResult):
                     raise TypeError("context provider must return ContextProviderResult")
-                evaluation.fragments.extend(result.fragments)
+                evaluation.fragments.extend(
+                    AttributedContextFragment(
+                        plugin_id=registration.plugin_id,
+                        provider_id=registration.provider_id,
+                        generation_id=registration.generation_id,
+                        fragment_index=index,
+                        text=fragment.text,
+                        persistence=fragment.persistence,
+                    )
+                    for index, fragment in enumerate(result.fragments)
+                )
             except TimeoutError:
                 failure = ContextProviderFailure(
                     plugin_id=registration.plugin_id,
@@ -156,7 +177,9 @@ class ContextProviderRegistry:
 
 
 __all__ = [
+    "AttributedContextFragment",
     "ContextFragment",
+    "ContextFragmentPersistence",
     "ContextProviderCall",
     "ContextProviderEvaluation",
     "ContextProviderFailure",

@@ -37,9 +37,10 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
             ContextProviderRegistration(
                 plugin_id="dev.ouro.alpha",
                 provider_id="first",
+                generation_id="gen_alpha",
                 priority=10,
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[ContextFragment(text="first")]
+                    fragments=[ContextFragment(text="first", persistence="message")]
                 ),
             ),
         ),
@@ -48,6 +49,11 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
     result = await registry.evaluate(_call())
 
     assert [fragment.text for fragment in result.fragments] == ["first", "later"]
+    assert result.fragments[0].plugin_id == "dev.ouro.alpha"
+    assert result.fragments[0].provider_id == "first"
+    assert result.fragments[0].generation_id == "gen_alpha"
+    assert result.fragments[0].fragment_index == 0
+    assert result.fragments[0].persistence == "message"
     assert result.failures == []
     assert result.blocked is False
 

@@ -828,11 +828,123 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
         context_providers=context_providers,
     )
 
-    await runtime.run("Use context")
+    result = await runtime.run("Use context")
 
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
     assert seen_messages[0].role == "system_synthetic"
     assert seen_messages[0].text_content == "extra context"
+    snapshot = store.load_runtime_session(result.session.session_id)
+    assert not any(
+        message.metadata.get("kind") == "context_provider" for message in snapshot.messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_context_provider_message_with_provenance(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="dev.ouro.harness",
+                provider_id="scaffold",
+                generation_id="gen_harness",
+                handler=lambda _call: ContextProviderResult(
+                    fragments=[
+                        ContextFragment(
+                            text="durable harness context",
+                            persistence="message",
+                        )
+                    ]
+                ),
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+        context_providers=context_providers,
+    )
+
+    result = await runtime.run("Use durable context")
+
+    snapshot = store.load_runtime_session(result.session.session_id)
+    scaffold = next(
+        message
+        for message in snapshot.messages
+        if message.metadata.get("kind") == "context_provider"
+    )
+    assert scaffold.role == "system_synthetic"
+    assert scaffold.synthetic is True
+    assert scaffold.text_content == "durable harness context"
+    assert scaffold.metadata == {
+        "kind": "context_provider",
+        "context_provider_delivery_key": (f"{result.run.run_id}:1:dev.ouro.harness:scaffold:0"),
+        "plugin_id": "dev.ouro.harness",
+        "contribution_id": "scaffold",
+        "model_round": 1,
+        "fragment_index": 0,
+        "generation_id": "gen_harness",
+    }
+    assert [message.message_id for message in provider.messages].count(scaffold.message_id) == 1
+
+
+@pytest.mark.asyncio
+async def test_context_provider_message_persistence_failure_blocks_model_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="dev.ouro.harness",
+                provider_id="required-scaffold",
+                failure_mode="block",
+                handler=lambda _call: ContextProviderResult(
+                    fragments=[ContextFragment(text="must be durable", persistence="message")]
+                ),
+            ),
+        ),
+    )
+    append_message = store.append_message
+
+    def fail_scaffold(message: MessageRecord) -> None:
+        if message.metadata.get("kind") == "context_provider":
+            raise PersistenceError("simulated scaffold persistence failure")
+        append_message(message)
+
+    monkeypatch.setattr(store, "append_message", fail_scaffold)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+        context_providers=context_providers,
+    )
+
+    result = await runtime.run("Do not lose the scaffold")
+
+    assert result.run.status == "paused"
+    assert result.run.metadata["pause"]["reason"] == "context_blocked"
+    assert provider.messages == []
+    snapshot = store.load_runtime_session(result.session.session_id)
+    assert not any(
+        message.metadata.get("kind") == "context_provider" for message in snapshot.messages
+    )
 
 
 @pytest.mark.asyncio

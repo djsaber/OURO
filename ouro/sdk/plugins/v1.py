@@ -10,6 +10,7 @@ ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
+ContextFragmentPersistence = Literal["ephemeral", "message"]
 RunStatus = Literal[
     "queued",
     "running",
@@ -21,7 +22,7 @@ RunStatus = Literal[
     "paused",
     "recoverable",
 ]
-RunOrigin = Literal["user", "follow_up", "replay", "plugin"]
+RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin"]
 HookEvent = Literal[
     "after_run",
     "after_context_build",
@@ -377,12 +378,23 @@ class ContextCall:
 
 @dataclass(frozen=True)
 class ContextOutput:
-    fragments: tuple[str, ...] = ()
+    fragments: tuple[str | ContextFragment, ...] = ()
+
+
+@dataclass(frozen=True)
+class ContextFragment:
+    """Model context supplied for one request or persisted as a canonical message."""
+
+    text: str
+    persistence: ContextFragmentPersistence = "ephemeral"
 
 
 ContextHandler = Callable[
     [ContextCall],
-    ContextOutput | str | tuple[str, ...] | Awaitable[ContextOutput | str | tuple[str, ...]],
+    ContextOutput
+    | str
+    | tuple[str | ContextFragment, ...]
+    | Awaitable[ContextOutput | str | tuple[str | ContextFragment, ...]],
 ]
 
 
@@ -467,6 +479,8 @@ __all__ = [
     "ContinuationPolicyContribution",
     "ContextContribution",
     "ContextCall",
+    "ContextFragment",
+    "ContextFragmentPersistence",
     "ContextOutput",
     "ContributionSet",
     "DiagnosticEmitter",

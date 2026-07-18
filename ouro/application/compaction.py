@@ -30,8 +30,17 @@ from ouro.core.context import (
     estimate_text_tokens,
     project_recovery_messages,
 )
-from ouro.core.context_providers import ContextProviderCall, ContextProviderRegistry
-from ouro.core.errors import CompactionError, ContextBlockedError, ContextOverflowError
+from ouro.core.context_providers import (
+    AttributedContextFragment,
+    ContextProviderCall,
+    ContextProviderRegistry,
+)
+from ouro.core.errors import (
+    CompactionError,
+    ContextBlockedError,
+    ContextOverflowError,
+    PersistenceError,
+)
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord
@@ -64,6 +73,18 @@ class CompactionUsageRecorder(Protocol):
         request_id: str,
         purpose: UsagePurpose,
     ) -> RunRecord: ...
+
+
+class ContextMessageAppender(Protocol):
+    def __call__(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        prompt: str,
+        sequence: int,
+        metadata: dict[str, object],
+    ) -> MessageRecord: ...
 
 
 @dataclass(frozen=True)
@@ -333,6 +354,7 @@ class ContextPreparationService:
         strategies: CompactionStrategyRegistry,
         config: CompactionConfig,
         system_prompt: str,
+        append_context_message: ContextMessageAppender,
         project_model_messages: ModelMessageProjector | None = None,
     ) -> None:
         self.store = store
@@ -344,6 +366,7 @@ class ContextPreparationService:
         self.strategies = strategies
         self.config = config
         self.system_prompt = system_prompt
+        self.append_context_message = append_context_message
         self.project_model_messages = project_model_messages
 
     async def prepare(
@@ -385,7 +408,13 @@ class ContextPreparationService:
                 "required context provider failed: "
                 f"{failure.plugin_id}:{failure.provider_id}: {failure.error_type}"
             )
-        added_context = [fragment.text for fragment in provider_result.fragments]
+        added_context = self._materialize_context_fragments(
+            provider_result.fragments,
+            session=session,
+            run=run,
+            messages=messages,
+            model_round=model_round,
+        )
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
@@ -490,6 +519,54 @@ class ContextPreparationService:
             model_round=model_round,
         )
         return final_view, sequence
+
+    def _materialize_context_fragments(
+        self,
+        fragments: list[AttributedContextFragment],
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        model_round: int,
+    ) -> list[str]:
+        ephemeral: list[str] = []
+        for fragment in fragments:
+            if fragment.persistence == "ephemeral":
+                ephemeral.append(fragment.text)
+                continue
+            delivery_key = (
+                f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
+                f"{fragment.provider_id}:{fragment.fragment_index}"
+            )
+            if any(
+                message.metadata.get("context_provider_delivery_key") == delivery_key
+                for message in messages
+            ):
+                continue
+            metadata: dict[str, object] = {
+                "kind": "context_provider",
+                "context_provider_delivery_key": delivery_key,
+                "plugin_id": fragment.plugin_id,
+                "contribution_id": fragment.provider_id,
+                "model_round": model_round,
+                "fragment_index": fragment.fragment_index,
+            }
+            if fragment.generation_id is not None:
+                metadata["generation_id"] = fragment.generation_id
+            try:
+                message = self.append_context_message(
+                    session=session,
+                    run=run,
+                    prompt=fragment.text,
+                    sequence=len(messages) + 1,
+                    metadata=metadata,
+                )
+            except PersistenceError as exc:
+                raise ContextBlockedError(
+                    "context provider message could not be persisted before model execution"
+                ) from exc
+            messages.append(message)
+        return ephemeral
 
     async def _observe_built_context(
         self,

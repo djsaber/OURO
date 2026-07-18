@@ -7,6 +7,7 @@ from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.session_controls import HostSessionInput
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
@@ -154,6 +155,47 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
     assert len(provider.contexts) == expected_calls
     assert len(snapshot.runs) == expected_run_count
     assert _user_texts(provider.contexts[-1]) == last_context_users
+    assert "follow_up_queue" not in snapshot.session.metadata
+
+
+@pytest.mark.asyncio
+async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_path) -> None:
+    store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
+
+    first_task = asyncio.create_task(runtime.run("initial"))
+    session = await _active_session(store)
+    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+    queued = await runtime.submit_host_input(
+        HostSessionInput(
+            prompt="Recover from the durable checkpoint.",
+            mode="follow_up",
+            title="Recovery",
+            host_source_id="ouro.runtime/recovery",
+        ),
+        session_id=session.session_id,
+    )
+
+    assert queued.events[-1].payload["source"] == "host"
+    assert queued.events[-1].payload["host_source_id"] == "ouro.runtime/recovery"
+    provider.release_first.set()
+    await asyncio.wait_for(first_task, timeout=2)
+
+    snapshot = store.load_session(session.session_id)
+    host_message = next(
+        message
+        for message in snapshot.messages
+        if message.metadata.get("session_input_source") == "host"
+    )
+    host_run = snapshot.runs[-1]
+
+    assert host_message.role == "system_synthetic"
+    assert host_message.text_content == "Recover from the durable checkpoint."
+    assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
+    assert provider.contexts[-1][-1].message_id == host_message.message_id
+    assert host_run.origin == "host"
+    assert host_run.trigger == "host"
+    assert host_run.initiator_id == "ouro.runtime/recovery"
+    assert host_run.parent_run_id == snapshot.runs[0].run_id
     assert "follow_up_queue" not in snapshot.session.metadata
 
 

@@ -36,7 +36,8 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - 只读事件回放和数据导出；
 - 删除到本地回收站；
 - 进程锁、损坏索引重建和中断运行恢复；
-- active run 期间的 durable 排队输入、去重，以及 run 级 follow-up / turn 级 steer 交付；
+- active run 期间来自用户、OURO Host/Application 或插件的 durable 排队输入、来源归属、去重，以及 run 级
+  follow-up / turn 级 steer 交付；
 - 消息和事件按稳定 cursor 增量读取，事件订阅也支持 after-sequence 追赶，长历史不要求 Host 全量加载；
 - 后端中立 SessionRepository 下的本地可读文件与 SQLite 两种实现，以及原子、验证、失败回滚的
   文件到 SQLite 导入；

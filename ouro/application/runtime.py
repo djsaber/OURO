@@ -18,7 +18,12 @@ from ouro.application.models import (
     RuntimeAdapterCatalog,
     close_runtime_adapters,
 )
-from ouro.application.queued_inputs import QueuedInput, QueuedInputMode, QueuedInputQueue
+from ouro.application.queued_inputs import (
+    QueuedInput,
+    QueuedInputMode,
+    QueuedInputQueue,
+    QueuedInputSource,
+)
 from ouro.application.recovery import RunRecoveryService
 from ouro.application.run_continuations import RunContinuationService
 from ouro.application.runs import (
@@ -57,7 +62,7 @@ from ouro.core.inner_loop import (
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.session_controls import AttributedSessionInput
+from ouro.core.session_controls import AttributedSessionInput, HostSessionInput
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
@@ -193,6 +198,7 @@ class RuntimeService:
             strategies=self.compaction_strategies,
             config=self.compaction_config,
             system_prompt=self.system_prompt,
+            append_context_message=self.run_lifecycle.append_synthetic_input,
             project_model_messages=(
                 resources.project_model_messages if resources is not None else None
             ),
@@ -434,7 +440,7 @@ class RuntimeService:
         resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
-        _input_attribution: AttributedSessionInput | None = None,
+        _input_attribution: AttributedSessionInput | HostSessionInput | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -479,15 +485,21 @@ class RuntimeService:
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
         emitted: list[EventRecord] = []
 
-        queued_origin = bool(
-            _queued_inputs and any(item.source == "plugin" for item in _queued_inputs)
+        queued_synthetic_input = next(
+            (item for item in (_queued_inputs or []) if item.source != "user"),
+            None,
+        )
+        synthetic_source = (
+            _attributed_input_source(_input_attribution)
+            if _input_attribution is not None
+            else (queued_synthetic_input.source if queued_synthetic_input is not None else None)
         )
         run = RunRecord(
             session_id=session.session_id,
             status="running",
             origin=(
-                "plugin"
-                if _input_attribution is not None or queued_origin
+                synthetic_source
+                if synthetic_source is not None
                 else ("follow_up" if _queued_inputs else "user")
             ),
             parent_run_id=(
@@ -501,18 +513,11 @@ class RuntimeService:
                 )
             ),
             initiator_id=(
-                _input_attribution.plugin_id
+                _attributed_input_initiator(_input_attribution)
                 if _input_attribution is not None
-                else next(
-                    (
-                        item.continuation_decision_id or item.plugin_id
-                        for item in (_queued_inputs or [])
-                        if item.source == "plugin"
-                    ),
-                    None,
-                )
+                else _queued_input_initiator(queued_synthetic_input)
             ),
-            trigger="plugin" if _input_attribution is not None or queued_origin else "user",
+            trigger=synthetic_source or "user",
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
@@ -596,21 +601,34 @@ class RuntimeService:
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
-                    source="plugin" if _input_attribution is not None else "user",
+                    source=(
+                        _attributed_input_source(_input_attribution)
+                        if _input_attribution is not None
+                        else "user"
+                    ),
+                    host_source_id=(
+                        _input_attribution.host_source_id
+                        if isinstance(_input_attribution, HostSessionInput)
+                        else None
+                    ),
                     plugin_id=(
                         _input_attribution.plugin_id if _input_attribution is not None else None
-                    ),
+                    )
+                    if isinstance(_input_attribution, AttributedSessionInput)
+                    else None,
                     contribution_id=(
                         _input_attribution.contribution_id
-                        if _input_attribution is not None
+                        if isinstance(_input_attribution, AttributedSessionInput)
                         else None
                     ),
                     generation_id=(
-                        _input_attribution.generation_id if _input_attribution is not None else None
+                        _input_attribution.generation_id
+                        if isinstance(_input_attribution, AttributedSessionInput)
+                        else None
                     ),
                     execution_contract_hash=(
                         _input_attribution.execution_contract_hash
-                        if _input_attribution is not None
+                        if isinstance(_input_attribution, AttributedSessionInput)
                         else None
                     ),
                 )
@@ -658,15 +676,12 @@ class RuntimeService:
                     sequence,
                     session_id=session.session_id,
                     run_id=run.run_id,
-                    event_type=(
-                        "plugin_message_added"
-                        if queued_input.source == "plugin"
-                        else "user_message_added"
-                    ),
+                    event_type=_session_input_event_type(queued_input.source),
                     payload={
                         "message_id": input_message.message_id,
                         "queued_input_id": queued_input.queue_id if is_queued else None,
                         "source": queued_input.source,
+                        "host_source_id": queued_input.host_source_id,
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
                         "resource_refs": list(queued_input.resource_refs),
@@ -944,6 +959,22 @@ class RuntimeService:
             _input_attribution=session_input,
         )
 
+    async def submit_host_input(
+        self,
+        session_input: HostSessionInput,
+        *,
+        session_id: str | None,
+    ) -> RunResult:
+        """Submit an OURO-owned synthetic input through the canonical Run boundary."""
+
+        return await self.run(
+            session_input.prompt,
+            session_id=session_id,
+            title=session_input.title,
+            queue_mode=session_input.mode,
+            _input_attribution=session_input,
+        )
+
     async def _queue_input(
         self,
         *,
@@ -953,7 +984,7 @@ class RuntimeService:
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
-        attribution: AttributedSessionInput | None = None,
+        attribution: AttributedSessionInput | HostSessionInput | None = None,
     ) -> tuple[SessionRecord, list[EventRecord]]:
         session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
@@ -961,14 +992,29 @@ class RuntimeService:
             title=title,
             mode=mode,
             resource_refs=resource_refs,
-            source="plugin" if attribution is not None else "user",
-            plugin_id=attribution.plugin_id if attribution is not None else None,
-            contribution_id=(attribution.contribution_id if attribution is not None else None),
-            generation_id=attribution.generation_id if attribution is not None else None,
-            execution_contract_hash=(
-                attribution.execution_contract_hash if attribution is not None else None
+            source=_attributed_input_source(attribution) if attribution is not None else "user",
+            host_source_id=(
+                attribution.host_source_id if isinstance(attribution, HostSessionInput) else None
             ),
-            caused_by_run_id=active_run.run_id if attribution is not None else None,
+            plugin_id=(
+                attribution.plugin_id if isinstance(attribution, AttributedSessionInput) else None
+            ),
+            contribution_id=(
+                attribution.contribution_id
+                if isinstance(attribution, AttributedSessionInput)
+                else None
+            ),
+            generation_id=(
+                attribution.generation_id
+                if isinstance(attribution, AttributedSessionInput)
+                else None
+            ),
+            execution_contract_hash=(
+                attribution.execution_contract_hash
+                if isinstance(attribution, AttributedSessionInput)
+                else None
+            ),
+            caused_by_run_id=(active_run.run_id if attribution is not None else None),
         )
         emitted: list[EventRecord] = []
         sequence = await self.event_recorder.emit(
@@ -987,6 +1033,7 @@ class RuntimeService:
                 "queue_size": queue_size,
                 "resource_refs": list(queued_input.resource_refs),
                 "source": queued_input.source,
+                "host_source_id": queued_input.host_source_id,
                 "plugin_id": queued_input.plugin_id,
                 "contribution_id": queued_input.contribution_id,
             },
@@ -1098,6 +1145,7 @@ class RuntimeService:
                     "mode": item.mode,
                     "turn_id": turn_id,
                     "source": item.source,
+                    "host_source_id": item.host_source_id,
                     "plugin_id": item.plugin_id,
                     "contribution_id": item.contribution_id,
                 },
@@ -1207,21 +1255,25 @@ class RuntimeService:
         if is_queued:
             metadata["queued_input_id"] = item.queue_id
             metadata["queued_input_mode"] = item.mode
-        if item.source == "plugin":
+        if item.source != "user":
             if item.resource_refs:
                 raise ResourceAttachmentError(
-                    "extension-produced session inputs cannot attach user resources"
+                    "synthetic session inputs cannot attach user resources"
                 )
-            metadata.update(
-                {
-                    "plugin_id": item.plugin_id,
-                    "contribution_id": item.contribution_id,
-                    "generation_id": item.generation_id,
-                    "execution_contract_hash": item.execution_contract_hash,
-                    "caused_by_run_id": item.caused_by_run_id,
-                    "continuation_decision_id": item.continuation_decision_id,
-                }
-            )
+            if item.source == "host":
+                metadata["host_source_id"] = item.host_source_id
+                metadata["caused_by_run_id"] = item.caused_by_run_id
+            else:
+                metadata.update(
+                    {
+                        "plugin_id": item.plugin_id,
+                        "contribution_id": item.contribution_id,
+                        "generation_id": item.generation_id,
+                        "execution_contract_hash": item.execution_contract_hash,
+                        "caused_by_run_id": item.caused_by_run_id,
+                        "continuation_decision_id": item.continuation_decision_id,
+                    }
+                )
             return self.run_lifecycle.append_synthetic_input(
                 session=session,
                 run=run,
@@ -1784,6 +1836,38 @@ class RuntimeService:
             raw,
             catalog_id=catalog_id,
         )
+
+
+def _attributed_input_source(
+    attribution: AttributedSessionInput | HostSessionInput,
+) -> QueuedInputSource:
+    return "host" if isinstance(attribution, HostSessionInput) else "plugin"
+
+
+def _attributed_input_initiator(
+    attribution: AttributedSessionInput | HostSessionInput,
+) -> str:
+    if isinstance(attribution, HostSessionInput):
+        return attribution.host_source_id
+    return attribution.plugin_id
+
+
+def _queued_input_initiator(item: QueuedInput | None) -> str | None:
+    if item is None:
+        return None
+    if item.source == "host":
+        return item.host_source_id
+    if item.source == "plugin":
+        return item.continuation_decision_id or item.plugin_id
+    return None
+
+
+def _session_input_event_type(source: QueuedInputSource) -> str:
+    if source == "host":
+        return "host_message_added"
+    if source == "plugin":
+        return "plugin_message_added"
+    return "user_message_added"
 
 
 def _title_from_prompt(prompt: str) -> str:

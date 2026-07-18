@@ -37,8 +37,23 @@ class AttributedSessionInput(SessionInputRequest):
     execution_contract_hash: str
 
 
+class HostSessionInput(SessionInputRequest):
+    """A synthetic input produced by an OURO Host/Application component."""
+
+    host_source_id: str = Field(min_length=1)
+
+    @field_validator("host_source_id")
+    @classmethod
+    def validate_host_source_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("host session input source id cannot be blank")
+        return normalized
+
+
 __all__ = [
     "AttributedSessionInput",
+    "HostSessionInput",
     "SessionInputMode",
     "SessionInputRequest",
 ]

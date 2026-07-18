@@ -12,6 +12,7 @@ EventType = Literal[
     "run_started",
     "run_status_changed",
     "user_message_added",
+    "host_message_added",
     "plugin_message_added",
     "model_request_started",
     "model_text_delta",

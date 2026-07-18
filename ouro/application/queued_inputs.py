@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.session_controls import SessionInputMode
@@ -15,7 +15,7 @@ from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 QUEUED_INPUTS_KEY = "follow_up_queue"
 
 QueuedInputMode = SessionInputMode
-QueuedInputSource = Literal["user", "plugin"]
+QueuedInputSource = Literal["user", "host", "plugin"]
 
 
 class QueuedInput(OuroModel):
@@ -26,6 +26,7 @@ class QueuedInput(OuroModel):
     resource_refs: tuple[str, ...] = ()
     queued_at: datetime = Field(default_factory=utc_now)
     source: QueuedInputSource = "user"
+    host_source_id: str | None = None
     plugin_id: str | None = None
     contribution_id: str | None = None
     generation_id: str | None = None
@@ -33,8 +34,23 @@ class QueuedInput(OuroModel):
     caused_by_run_id: str | None = None
     continuation_decision_id: str | None = None
 
+    @field_validator("host_source_id")
+    @classmethod
+    def normalize_host_source_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        return normalized or None
+
     @model_validator(mode="after")
     def validate_source(self) -> QueuedInput:
+        plugin_attribution = (
+            self.plugin_id,
+            self.contribution_id,
+            self.generation_id,
+            self.execution_contract_hash,
+            self.continuation_decision_id,
+        )
         if self.source == "plugin" and (
             not self.plugin_id
             or not self.contribution_id
@@ -42,17 +58,20 @@ class QueuedInput(OuroModel):
             or not self.execution_contract_hash
         ):
             raise ValueError("plugin queued input requires complete extension attribution")
-        if self.source == "user" and any(
-            value is not None
-            for value in (
-                self.plugin_id,
-                self.contribution_id,
-                self.generation_id,
-                self.execution_contract_hash,
-                self.continuation_decision_id,
-            )
+        if self.source == "plugin" and self.host_source_id is not None:
+            raise ValueError("plugin queued input cannot carry Host attribution")
+        if self.source == "host":
+            if not self.host_source_id:
+                raise ValueError("Host queued input requires a source id")
+            if any(value is not None for value in plugin_attribution):
+                raise ValueError("Host queued input cannot carry plugin attribution")
+        if self.source == "user" and (
+            self.host_source_id is not None
+            or any(value is not None for value in plugin_attribution)
         ):
-            raise ValueError("user queued input cannot carry plugin attribution")
+            raise ValueError("user queued input cannot carry synthetic-source attribution")
+        if self.source != "user" and self.resource_refs:
+            raise ValueError("synthetic queued input cannot carry user resources")
         return self
 
 
@@ -76,6 +95,7 @@ class QueuedInputQueue:
         resource_refs: tuple[str, ...] = (),
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
+        host_source_id: str | None = None,
         plugin_id: str | None = None,
         contribution_id: str | None = None,
         generation_id: str | None = None,
@@ -90,6 +110,7 @@ class QueuedInputQueue:
             title=title,
             resource_refs=resource_refs,
             source=source,
+            host_source_id=host_source_id,
             plugin_id=plugin_id,
             contribution_id=contribution_id,
             generation_id=generation_id,
@@ -141,7 +162,7 @@ class QueuedInputQueue:
         return items[0] if items else None
 
     def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
-        """Remove an item only after its user message is durably appended."""
+        """Remove an item only after its canonical message is durably appended."""
 
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
@@ -193,7 +214,7 @@ class QueuedInputQueue:
         if raw_mode not in {"follow_up", "steer"}:
             return None
         raw_source = item.get("source")
-        if raw_source not in {"user", "plugin"}:
+        if raw_source not in {"user", "host", "plugin"}:
             return None
         if raw_source == "plugin" and not all(
             isinstance(item.get(field), str) and bool(item.get(field))
@@ -205,42 +226,58 @@ class QueuedInputQueue:
             )
         ):
             return None
+        if raw_source == "host" and not (
+            isinstance(item.get("host_source_id"), str) and bool(item.get("host_source_id"))
+        ):
+            return None
         raw_resource_refs = item.get("resource_refs", ())
         resource_refs = (
             tuple(value for value in raw_resource_refs if isinstance(value, str))
             if isinstance(raw_resource_refs, list | tuple)
             else ()
         )
-        return QueuedInput(
-            queue_id=str(item.get("queue_id") or new_id("queued")),
-            prompt=prompt,
-            mode=raw_mode,
-            title=title if isinstance(title, str) else None,
-            resource_refs=resource_refs,
-            queued_at=item.get("queued_at") or utc_now(),
-            source=raw_source,
-            plugin_id=item.get("plugin_id") if isinstance(item.get("plugin_id"), str) else None,
-            contribution_id=(
-                item.get("contribution_id")
-                if isinstance(item.get("contribution_id"), str)
-                else None
-            ),
-            generation_id=(
-                item.get("generation_id") if isinstance(item.get("generation_id"), str) else None
-            ),
-            execution_contract_hash=(
-                item.get("execution_contract_hash")
-                if isinstance(item.get("execution_contract_hash"), str)
-                else None
-            ),
-            caused_by_run_id=(
-                item.get("caused_by_run_id")
-                if isinstance(item.get("caused_by_run_id"), str)
-                else None
-            ),
-            continuation_decision_id=(
-                item.get("continuation_decision_id")
-                if isinstance(item.get("continuation_decision_id"), str)
-                else None
-            ),
-        )
+        try:
+            return QueuedInput(
+                queue_id=str(item.get("queue_id") or new_id("queued")),
+                prompt=prompt,
+                mode=raw_mode,
+                title=title if isinstance(title, str) else None,
+                resource_refs=resource_refs,
+                queued_at=item.get("queued_at") or utc_now(),
+                source=raw_source,
+                host_source_id=(
+                    item.get("host_source_id")
+                    if isinstance(item.get("host_source_id"), str)
+                    else None
+                ),
+                plugin_id=(
+                    item.get("plugin_id") if isinstance(item.get("plugin_id"), str) else None
+                ),
+                contribution_id=(
+                    item.get("contribution_id")
+                    if isinstance(item.get("contribution_id"), str)
+                    else None
+                ),
+                generation_id=(
+                    item.get("generation_id")
+                    if isinstance(item.get("generation_id"), str)
+                    else None
+                ),
+                execution_contract_hash=(
+                    item.get("execution_contract_hash")
+                    if isinstance(item.get("execution_contract_hash"), str)
+                    else None
+                ),
+                caused_by_run_id=(
+                    item.get("caused_by_run_id")
+                    if isinstance(item.get("caused_by_run_id"), str)
+                    else None
+                ),
+                continuation_decision_id=(
+                    item.get("continuation_decision_id")
+                    if isinstance(item.get("continuation_decision_id"), str)
+                    else None
+                ),
+            )
+        except ValidationError:
+            return None

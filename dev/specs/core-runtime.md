@@ -101,13 +101,24 @@ Run 表示一次可恢复执行。状态集合为：
 active Run 期间的新输入写入 Session metadata 中的 durable 队列，每项显式保存交付模式：
 
 - `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
-- `steer`：当前 model turn 完整结束后交付，作为同一 Run 下一轮模型请求的新用户消息。
+- `steer`：当前 model turn 完整结束后交付，作为同一 Run 下一轮模型请求的新 canonical 消息。
+
+每项还显式保存生产来源：
+
+- `user`：真实用户输入，持久化为 `role=user`，可以携带用户资源引用；
+- `host`：OURO Host/Application 产生的输入，必须携带稳定 `host_source_id`，持久化为
+  `role=system_synthetic`；
+- `plugin`：插件产生的输入，必须携带完整 plugin/contribution/generation/contract provenance，持久化为
+  `role=system_synthetic`。
+
+Host 和插件输入都不能冒充用户，也不能携带用户资源引用。未知来源、Host 来源缺少 source id、插件来源缺少完整
+执行归属的持久化项均按无效项移除。
 
 工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
 符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
 
-队列项具备唯一 id；只有用户消息已经持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，
+队列项具备唯一 id；只有 canonical 消息已经持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，
 必须只确认队列而不重复追加消息。缺少必需字段的队列项按无效项移除，不按旧格式补全。
 
 审批和 AskUser 恢复属于原 Run 的同一锁事务。恢复后即使 Run 已 completed，也不能在该锁的作用域内递归

@@ -96,8 +96,8 @@ class Plugin:
 - `start` 在候选 contribution 与 required resource 准备完成后调用；
 - `stop` 必须幂等，并在 deadline 内关闭 owner 资源。
 
-当前稳定 contribution 包括 Tool、Command、Hook、Context Provider、Compaction Strategy、Skill、MCP Server、
-Background Service、Continuation Policy 和 Tool Policy。插件不能动态注册新的 extension point。
+当前稳定 contribution 包括 Tool、Command、观察 Hook、Context Provider、Turn Policy、Compaction Strategy、Skill、
+MCP Server、Background Service、Continuation Policy 和 Tool Policy。插件不能动态注册新的 extension point。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、受约束路径解析、取消与输出限制。Command、
 Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 synthetic input、队列和持久化。Tool
@@ -105,7 +105,9 @@ Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批�
 
 Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的
 任意 JSON 值；Host 可据此构建单选、多选、表单或卡片界面。Run 会进入 `waiting_user`，Host 调用
-`answer_user` 后，回答以该次 tool call 的结果返回模型。此协议收集数据，不表示批准或拒绝工具执行。
+`answer_user` 后，非 resumable 工具把回答作为该次 tool call 的结果；resumable 工具则由原 contribution 的
+`resume_handler` 消费 `ToolResumeCall`，可以返回最终输出或下一次 `ToolInputRequest`。恢复始终绑定原 Catalog 和
+execution contract。此协议收集数据，不表示批准或拒绝工具执行。
 
 ```python
 from ouro.sdk.plugins.v1 import ToolInputRequest
@@ -119,6 +121,26 @@ async def confirm_plan(call):
         }
     )
 ```
+
+Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响本次模型请求。如果 Harness 指令必须进入可审计、
+可恢复的 canonical history，显式返回持久 fragment：
+
+```python
+from ouro.sdk.plugins.v1 import ContextFragment, ContextOutput
+
+def plan_scaffold(call):
+    return ContextOutput(
+        fragments=(
+            ContextFragment(
+                text="Plan mode is active for this Session.",
+                persistence="message",
+            ),
+        )
+    )
+```
+
+Host 在调用模型前把它写成带 plugin/provider/generation provenance 的 `system_synthetic` 消息；同一
+Run/model round 的恢复不会重复写入。不要把瞬时状态快照无差别持久化。
 
 ## 5. Catalog、owner 与 durable contract
 
@@ -166,6 +188,8 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
+`context.call` 的 `fragments` 既接受字符串，也接受
+`{"text": "...", "persistence": "ephemeral|message"}` 对象。
 
 ## 8. 社区资源导入前审查
 
@@ -187,6 +211,7 @@ uv run ouro plugin import-report ./community-package --json
 
 - [`declarative-skill`](../examples/plugins/declarative-skill)：静态 Agent Skill；
 - [`inprocess-command`](../examples/plugins/inprocess-command)：Python Command；
+- [`plan-mode`](../examples/plugins/plan-mode)：Context/Tool/Turn Policy 组合的完整计划模式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
-这三个 package 由测试执行真实 validate/authorize/enable 生命周期，避免文档示例与实现漂移。
+这些 package 由测试执行真实 validate/authorize/enable 生命周期，避免文档示例与实现漂移。

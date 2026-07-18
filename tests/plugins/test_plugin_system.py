@@ -1803,7 +1803,11 @@ for line in sys.stdin:
     elif method == 'continuation.call':
         result = {'action': 'continue', 'prompt': 'Continue goal', 'state_revision': 3}
     elif method == 'context.call':
-        result = {'fragments': ['Current goal: ship']}
+        result = {
+            'fragments': [
+                {'text': 'Current goal: ship', 'persistence': 'message'},
+            ]
+        }
     elif method == 'turn_policy.call':
         result = {'action': 'continue', 'feedback': 'Continue the current goal'}
     elif method == 'tool_policy.call':
@@ -1847,6 +1851,7 @@ for line in sys.stdin:
         )
     )
     assert [fragment.text for fragment in context_result.fragments] == ["Current goal: ship"]
+    assert context_result.fragments[0].persistence == "message"
     assert context_provider.failure_mode == "block"
     turn_policy = snapshot.turn_policies.registered()[0]
     turn_decision = await turn_policy.handler(

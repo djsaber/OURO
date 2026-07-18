@@ -489,7 +489,9 @@ class WorkerPluginInstance:
             )
             result = self._result(raw, "context.call")
             return sdk.ContextOutput(
-                fragments=tuple(str(item) for item in result.get("fragments", [])),
+                fragments=tuple(
+                    _worker_context_fragment(item) for item in result.get("fragments", [])
+                ),
             )
 
         return handler
@@ -1035,7 +1037,11 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_string_list(result, "diagnostics", method)
         return
     if method == "context.call":
-        _require_string_list(result, "fragments", method)
+        fragments = result.get("fragments", [])
+        if not isinstance(fragments, list):
+            raise WorkerProtocolError("worker context.call fragments must be a list")
+        for item in fragments:
+            _worker_context_fragment(item)
         return
     if method == "command.call":
         _require_optional_type(result, "output", str, method)
@@ -1124,6 +1130,22 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
             raise WorkerProtocolError("worker session input title must be a string")
         inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title))
     return tuple(inputs)
+
+
+def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, dict):
+        raise WorkerProtocolError("worker context fragment must be a string or object")
+    text = raw.get("text")
+    persistence = raw.get("persistence", "ephemeral")
+    if not isinstance(text, str) or not text:
+        raise WorkerProtocolError("worker context fragment text must not be empty")
+    if persistence not in {"ephemeral", "message"}:
+        raise WorkerProtocolError(
+            "worker context fragment persistence must be ephemeral or message"
+        )
+    return sdk.ContextFragment(text=text, persistence=persistence)
 
 
 async def _noop_background_lifecycle() -> None:
