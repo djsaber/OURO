@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from ouro.core.base import utc_now
 from ouro.tools.base import (
     Tool,
@@ -11,62 +9,12 @@ from ouro.tools.base import (
     ToolInvocation,
     ToolResult,
 )
+from ouro.tools.builtin_files import builtin_file_tools
 
 
 def builtin_tools() -> list[Tool]:
     return [
-        Tool(
-            definition=ToolDefinition(
-                name="Read",
-                description="Read a text file or list a directory.",
-                parameters_schema={
-                    "type": "object",
-                    "properties": {"path": {"type": "string", "minLength": 1}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-                permission_mode="auto",
-                effect="read_only",
-            ),
-            handler=_read,
-        ),
-        Tool(
-            definition=ToolDefinition(
-                name="Write",
-                description="Create or overwrite a text file.",
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "minLength": 1},
-                        "content": {"type": "string"},
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-                permission_mode="approval",
-                effect="state_changing",
-            ),
-            handler=_write,
-        ),
-        Tool(
-            definition=ToolDefinition(
-                name="Edit",
-                description="Replace exact text in a text file.",
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "minLength": 1},
-                        "old": {"type": "string", "minLength": 1},
-                        "new": {"type": "string"},
-                    },
-                    "required": ["path", "old", "new"],
-                    "additionalProperties": False,
-                },
-                permission_mode="approval",
-                effect="state_changing",
-            ),
-            handler=_edit,
-        ),
+        *builtin_file_tools(),
         Tool(
             definition=ToolDefinition(
                 name="Bash",
@@ -107,87 +55,11 @@ def builtin_tools() -> list[Tool]:
     ]
 
 
-def _path_arg(invocation: ToolInvocation, context: ToolExecutionContext) -> Path:
-    path = invocation.arguments.get("path")
-    if not isinstance(path, str) or not path:
-        raise ValueError("tool argument 'path' must be a non-empty string")
-    return context.resolve_path(path)
-
-
 def _text_arg(invocation: ToolInvocation, name: str) -> str:
     value = invocation.arguments.get(name)
     if not isinstance(value, str):
         raise ValueError(f"tool argument '{name}' must be a string")
     return value
-
-
-def _read(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context)
-    if path.is_dir():
-        content = "\n".join(sorted(child.name for child in path.iterdir()))
-        structured: dict[str, object] = {"kind": "directory", "path": str(path)}
-    else:
-        content = path.read_text(encoding="utf-8")
-        structured = {"kind": "file", "path": str(path)}
-    content, truncated = context.limit_output(content)
-    structured["truncated"] = truncated
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        content=content,
-        structured=structured,
-        ended_at=utc_now(),
-    )
-
-
-def _write(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context)
-    content = _text_arg(invocation, "content")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        content=f"Wrote {path}",
-        structured={"path": str(path), "bytes": len(content.encode("utf-8"))},
-        ended_at=utc_now(),
-    )
-
-
-def _edit(
-    invocation: ToolInvocation,
-    *,
-    context: ToolExecutionContext,
-) -> ToolResult:
-    path = _path_arg(invocation, context)
-    old = _text_arg(invocation, "old")
-    new = _text_arg(invocation, "new")
-    text = path.read_text(encoding="utf-8")
-    if old not in text:
-        return ToolResult(
-            tool_call_id=invocation.tool_call_id,
-            tool_name=invocation.tool_name,
-            is_error=True,
-            content="Old text was not found.",
-            structured={"path": str(path), "changed": False},
-            ended_at=utc_now(),
-        )
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-    return ToolResult(
-        tool_call_id=invocation.tool_call_id,
-        tool_name=invocation.tool_name,
-        content=f"Edited {path}",
-        structured={"path": str(path), "changed": True},
-        ended_at=utc_now(),
-    )
 
 
 async def _bash(

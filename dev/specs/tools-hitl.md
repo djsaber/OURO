@@ -18,15 +18,17 @@
 
 ## 内置工具
 
-- Read：读取文本文件；
-- Write：写入文件；
-- Edit：执行精确文本替换；
+- Read：只读取 UTF-8 文本文件，不承担目录枚举；使用 1 基 `offset` 和 `limit` 分页，按
+  `<行号>\t<内容>` 返回，单次至多 1000 行或 100,000 UTF-8 字节；
+- Write：以覆盖或追加模式写入 UTF-8 文本，并自动创建缺失的父目录；
+- Edit：执行精确字面文本替换，默认替换首处，可显式选择替换全部；
 - Bash：执行 shell 命令，捕获 stdout/stderr/return code；
 - AskUser：暂停 Run 并请求用户输入。
 
 写入、编辑和 Bash 默认可由权限配置要求审批。Read/Write/Edit 的路径和 Bash 的工作目录统一经过
-`ToolExecutionContext` 解析；默认限制在 Session workspace 内，并拒绝 `..` 与符号链接逃逸。所有工具结果
-在 executor 边界执行统一长度上限和显式截断标记。
+`ToolExecutionContext` 解析；默认限制在 Session workspace 内，并拒绝 `..` 与符号链接逃逸。Read 在文件
+IO 边界流式执行自身的行数和 UTF-8 字节上限，返回 `next_offset`、实际行数与截断信息，避免为截取一页而
+全量载入文件；所有工具结果仍在 executor 边界执行宿主统一长度上限和显式截断标记。
 
 ## 权限
 

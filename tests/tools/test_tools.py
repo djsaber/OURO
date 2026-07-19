@@ -41,7 +41,7 @@ async def test_read_runs_automatically(tmp_path) -> None:
 
     assert outcome.status == "completed"
     assert outcome.result is not None
-    assert outcome.result.content == "hello"
+    assert outcome.result.content == "1\thello"
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_relative_file_path_resolves_against_workspace(tmp_path) -> None:
     )
 
     assert outcome.result is not None
-    assert outcome.result.content == "workspace content"
+    assert outcome.result.content == "1\tworkspace content"
     assert outcome.result.structured["path"] == str(target.resolve())
 
 

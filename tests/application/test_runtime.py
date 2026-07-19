@@ -1396,7 +1396,7 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
     assert snapshot.messages[1].tool_calls[0].id == "call_1"
     assert snapshot.messages[2].tool_result is not None
     assert snapshot.messages[2].tool_result.tool_call_id == "call_1"
-    assert snapshot.messages[2].text_content == "important notes"
+    assert snapshot.messages[2].text_content == "1\timportant notes"
     assert [event.event_type for event in snapshot.events].count("model_request_started") == 2
 
 
