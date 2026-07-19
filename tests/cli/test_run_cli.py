@@ -344,7 +344,7 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert any(output.startswith("Sessions:") for output in outputs)
     assert "No configured models available." in outputs
     assert "No configured model selected." in outputs
-    assert any(output.startswith("Context: ctx_") for output in outputs)
+    assert any(output.startswith("Context: current") for output in outputs)
     assert any("Provider context:" in output for output in outputs)
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs

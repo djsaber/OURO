@@ -12,14 +12,17 @@ from ouro.application.session_models import (
     SessionSort,
 )
 from ouro.application.sessions import SessionService
-from ouro.cli.context_output import render_context_snapshot, render_context_status
+from ouro.cli.context_output import (
+    render_current_context_snapshot,
+    render_current_context_status,
+)
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend
-from ouro.local_application import build_local_session_services
+from ouro.local_application import LocalApplication, build_local_session_services
 
 
 def list_sessions(
@@ -88,7 +91,7 @@ def rename_session(
 ) -> int:
     try:
         result = _sessions(home, session_backend).rename(session_id, title)
-    except (OuroError, FileNotFoundError, ValueError) as exc:
+    except (OuroError, FileNotFoundError, RuntimeError, ValueError) as exc:
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc) if isinstance(exc, OuroError) else 1
     if json_mode:
@@ -277,7 +280,7 @@ def show_session(
     return 0
 
 
-def show_session_context(
+async def show_session_context(
     session_id: str,
     *,
     include_content: bool = False,
@@ -285,28 +288,22 @@ def show_session_context(
     json_mode: bool = False,
     session_backend: SessionBackend | None = None,
 ) -> int:
+    runtime = None
     try:
-        sessions = _sessions(home, session_backend)
-        snapshot = sessions.context(session_id) if include_content else None
-        status = snapshot.status if snapshot is not None else sessions.context_status(session_id)
+        runtime = build_default_runtime(home, session_backend=session_backend)
+        async with LocalApplication.from_runtime(runtime, home=home):
+            snapshot = runtime.current_context(session_id)
     except (OuroError, FileNotFoundError, ValueError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
         _print_error(ouro_exc, json_mode=json_mode)
         return error_exit_code(ouro_exc)
 
-    if status is None:
-        if json_mode:
-            print(json.dumps({"status": "ok", "context_status": None}, ensure_ascii=False))
-        else:
-            print("No prepared context for this session.")
-        return 0
-
     if json_mode:
         payload: dict[str, Any] = {
             "status": "ok",
-            "context_status": status.model_dump(mode="json"),
+            "context_status": snapshot.status.model_dump(mode="json"),
         }
-        if snapshot is not None:
+        if include_content:
             payload.update(
                 {
                     "provider_context": snapshot.provider_context.model_dump(mode="json"),
@@ -314,10 +311,10 @@ def show_session_context(
                 }
             )
         print(json.dumps(payload, ensure_ascii=False))
-    elif snapshot is not None:
-        print(render_context_snapshot(snapshot))
+    elif include_content:
+        print(render_current_context_snapshot(snapshot))
     else:
-        print(render_context_status(status))
+        print(render_current_context_status(snapshot.status))
     return 0
 
 

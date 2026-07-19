@@ -2,29 +2,27 @@ from __future__ import annotations
 
 import json
 
-from ouro.application.session_models import SessionContextSnapshot, SessionContextStatus
+from ouro.application.session_models import (
+    CurrentSessionContextSnapshot,
+    CurrentSessionContextStatus,
+    SessionContextSnapshot,
+    SessionContextStatus,
+)
+from ouro.core.context import ContextMetrics
 
 
 def render_context_status(status: SessionContextStatus) -> str:
-    metrics = status.metrics
     route = "/".join(
         value for value in (status.provider_id, status.endpoint_id, status.model_id) if value
     )
-    if metrics.input_budget_tokens is None:
-        size = f"{metrics.estimated_input_tokens} estimated input tokens"
-    else:
-        utilization = metrics.estimated_utilization_ratio or 0.0
-        remaining = metrics.estimated_remaining_tokens or 0
-        size = (
-            f"{metrics.estimated_input_tokens}/{metrics.input_budget_tokens} estimated input "
-            f"tokens ({utilization:.1%}, {remaining} remaining)"
-        )
+    size = _context_size(status.metrics)
     lines = [
         f"Context: {status.context_id}",
         f"Route: {route}",
         f"Size: {size}",
         f"Prepared: {status.prepared_at.isoformat()}",
     ]
+    metrics = status.metrics
     if metrics.context_window_tokens is not None:
         lines.append(
             f"Window: {metrics.context_window_tokens} tokens "
@@ -35,6 +33,38 @@ def render_context_status(status: SessionContextStatus) -> str:
     if status.active_compaction_id is not None:
         lines.append(f"Compaction: {status.active_compaction_id}")
     return "\n".join(lines)
+
+
+def render_current_context_status(status: CurrentSessionContextStatus) -> str:
+    route = "/".join(
+        value for value in (status.provider_id, status.endpoint_id, status.model_id) if value
+    )
+    metrics = status.metrics
+    lines = [
+        "Context: current",
+        f"Route: {route}",
+        f"Size: {_context_size(metrics)}",
+        f"Projected: {status.projected_at.isoformat()}",
+    ]
+    if metrics.context_window_tokens is not None:
+        lines.append(
+            f"Window: {metrics.context_window_tokens} tokens "
+            f"({metrics.reserved_output_tokens} reserved for output)"
+        )
+    if status.active_compaction_id is not None:
+        lines.append(f"Compaction: {status.active_compaction_id}")
+    return "\n".join(lines)
+
+
+def _context_size(metrics: ContextMetrics) -> str:
+    if metrics.input_budget_tokens is None:
+        return f"{metrics.estimated_input_tokens} estimated input tokens"
+    utilization = metrics.estimated_utilization_ratio or 0.0
+    remaining = metrics.estimated_remaining_tokens or 0
+    return (
+        f"{metrics.estimated_input_tokens}/{metrics.input_budget_tokens} estimated input "
+        f"tokens ({utilization:.1%}, {remaining} remaining)"
+    )
 
 
 def render_context_snapshot(snapshot: SessionContextSnapshot) -> str:
@@ -49,7 +79,21 @@ def render_context_snapshot(snapshot: SessionContextSnapshot) -> str:
     )
 
 
+def render_current_context_snapshot(snapshot: CurrentSessionContextSnapshot) -> str:
+    payload = snapshot.provider_context.model_dump(mode="json")
+    return "\n".join(
+        (
+            render_current_context_status(snapshot.status),
+            f"Digest: {snapshot.context_digest}",
+            "Provider context:",
+            json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+    )
+
+
 __all__ = [
+    "render_current_context_snapshot",
+    "render_current_context_status",
     "render_context_snapshot",
     "render_context_status",
 ]

@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from ouro.application.runtime import RuntimeService
-from ouro.cli.context_output import render_context_snapshot, render_context_status
+from ouro.cli.context_output import (
+    render_current_context_snapshot,
+    render_current_context_status,
+)
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
@@ -388,17 +391,8 @@ def _session_context(
             output="Usage: /context [full]",
         )
     if argument == "full":
-        snapshot = runtime.sessions.context(session_id)
-        output = (
-            "No prepared context for this session."
-            if snapshot is None
-            else render_context_snapshot(snapshot)
-        )
+        snapshot = runtime.current_context(session_id)
+        output = render_current_context_snapshot(snapshot)
     else:
-        status = runtime.sessions.context_status(session_id)
-        output = (
-            "No prepared context for this session."
-            if status is None
-            else render_context_status(status)
-        )
+        output = render_current_context_status(runtime.current_context(session_id).status)
     return CommandResult(session_id=session_id, output=output)

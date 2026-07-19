@@ -210,12 +210,14 @@ def _session_command(args: argparse.Namespace) -> int:
             session_backend=session_backend,
         )
     if command == "context":
-        return show_session_context(
-            args.session_id,
-            include_content=args.content,
-            home=home,
-            json_mode=args.json,
-            session_backend=session_backend,
+        return asyncio.run(
+            show_session_context(
+                args.session_id,
+                include_content=args.content,
+                home=home,
+                json_mode=args.json,
+                session_backend=session_backend,
+            )
         )
     if command == "rename":
         return rename_session(

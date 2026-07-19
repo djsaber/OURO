@@ -61,7 +61,7 @@ class ContextSnapshotRecord(OuroModel):
 
 
 def context_view_digest(view: ContextView) -> str:
-    """Digest exactly the provider-neutral arguments supplied to ``Provider.stream``."""
+    """Digest the provider-neutral arguments represented by one context view."""
 
     payload = view.provider_context().model_dump(mode="json")
     encoded = json.dumps(

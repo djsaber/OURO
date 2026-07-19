@@ -459,13 +459,13 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
 
     context_parser = session_subparsers.add_parser(
         "context",
-        help="Show the latest unified Provider context status or content",
+        help="Show the current unified Provider context status or content",
     )
     context_parser.add_argument("session_id", help="Session id")
     context_parser.add_argument(
         "--content",
         action="store_true",
-        help="Include the exact provider-neutral content supplied to RuntimeAdapter",
+        help="Include the current provider-neutral content projected for RuntimeAdapter",
     )
     context_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     _add_session_backend_arg(context_parser)

@@ -850,6 +850,49 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
     )
 
 
+def test_current_context_projection_does_not_execute_request_time_context_providers(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Current projection")
+    store.create_session(session)
+    calls = 0
+
+    def provide(_call):
+        nonlocal calls
+        calls += 1
+        return ContextProviderResult(fragments=[ContextFragment(text="ephemeral")])
+
+    context_providers = ContextProviderRegistry()
+    context_providers.replace_owner(
+        "ctx",
+        (
+            ContextProviderRegistration(
+                plugin_id="ctx",
+                provider_id="ephemeral",
+                handler=provide,
+            ),
+        ),
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=_tools(),
+        context_providers=context_providers,
+    )
+
+    projection = runtime.current_context(session.session_id)
+
+    assert calls == 0
+    assert all(
+        message.text_content != "ephemeral" for message in projection.provider_context.messages
+    )
+
+
 @pytest.mark.asyncio
 async def test_runtime_persists_context_provider_message_with_provenance(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)

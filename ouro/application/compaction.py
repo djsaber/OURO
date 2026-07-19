@@ -419,10 +419,9 @@ class ContextPreparationService:
         )
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
-        source_messages = project_recovery_messages(project_compacted_messages(messages, active))
-        effective_messages = self._materialize_messages(source_messages, active_adapter)
-        view = self._build_view(
-            messages=effective_messages,
+        source_messages, view = self._project_context(
+            messages=messages,
+            active=active,
             tools=tools,
             added_context=added_context,
             adapter=active_adapter,
@@ -486,15 +485,9 @@ class ContextPreparationService:
                     "for compaction"
                 )
             active = execution.record or active
-            source_messages = project_recovery_messages(
-                project_compacted_messages(messages, active)
-            )
-            effective_messages = self._materialize_messages(
-                source_messages,
-                active_adapter,
-            )
-            view = self._build_view(
-                messages=effective_messages,
+            source_messages, view = self._project_context(
+                messages=messages,
+                active=active,
                 tools=tools,
                 added_context=added_context,
                 adapter=active_adapter,
@@ -505,15 +498,6 @@ class ContextPreparationService:
             raise ContextBlockedError(
                 "context remains over the model input budget after summary compaction"
             )
-        metadata = dict(view.context_metadata)
-        metadata.update(
-            {
-                "compaction_id": active.compaction_id if active else None,
-                "compaction_strategy": active.strategy_id if active else None,
-                "covered_message_count": len(active.covered_message_ids) if active else 0,
-            }
-        )
-        final_view = view.model_copy(update={"context_metadata": metadata})
         return await self._finalize_prepared_context(
             emitted,
             sequence,
@@ -523,7 +507,7 @@ class ContextPreparationService:
             model_round=model_round,
             adapter=active_adapter,
             hooks=active_hooks,
-            view=final_view,
+            view=view,
             source_messages=source_messages,
             injected_message_count=len(added_context),
         )
@@ -699,9 +683,9 @@ class ContextPreparationService:
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         materialized_messages = self._materialize_messages(messages, active_adapter)
-        projected = project_compacted_messages(materialized_messages, active)
-        initial_view = self._build_view(
-            messages=projected,
+        _, initial_view = self._project_context(
+            messages=messages,
+            active=active,
             tools=tools,
             added_context=added_context or [],
             adapter=active_adapter,
@@ -807,9 +791,9 @@ class ContextPreparationService:
                 usage=artifact.usage,
                 metadata=dict(artifact.metadata),
             )
-            projected_after = project_compacted_messages(materialized_messages, record)
-            final_view = self._build_view(
-                messages=projected_after,
+            _, final_view = self._project_context(
+                messages=messages,
+                active=record,
                 tools=tools,
                 added_context=added_context or [],
                 adapter=active_adapter,
@@ -890,6 +874,56 @@ class ContextPreparationService:
             "all configured compaction strategies failed: "
             + "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)
         )
+
+    def project_current(
+        self,
+        *,
+        session_id: str,
+        messages: list[MessageRecord],
+        tools: list[ToolDefinition],
+        adapter: RuntimeAdapter | None = None,
+        skill_instructions: str = "",
+    ) -> ContextView:
+        """Project current durable Session state without executing request-time contributions."""
+
+        _, view = self._project_context(
+            messages=messages,
+            active=self.store.load_active_compaction(session_id),
+            tools=tools,
+            added_context=[],
+            adapter=adapter or self.adapter,
+            skill_instructions=skill_instructions,
+        )
+        return view
+
+    def _project_context(
+        self,
+        *,
+        messages: list[MessageRecord],
+        active: CompactionRecord | None,
+        tools: list[ToolDefinition],
+        added_context: list[str],
+        adapter: RuntimeAdapter,
+        skill_instructions: str,
+    ) -> tuple[list[MessageRecord], ContextView]:
+        source_messages = project_recovery_messages(project_compacted_messages(messages, active))
+        effective_messages = self._materialize_messages(source_messages, adapter)
+        view = self._build_view(
+            messages=effective_messages,
+            tools=tools,
+            added_context=added_context,
+            adapter=adapter,
+            skill_instructions=skill_instructions,
+        )
+        metadata = dict(view.context_metadata)
+        metadata.update(
+            {
+                "compaction_id": active.compaction_id if active else None,
+                "compaction_strategy": active.strategy_id if active else None,
+                "covered_message_count": len(active.covered_message_ids) if active else 0,
+            }
+        )
+        return source_messages, view.model_copy(update={"context_metadata": metadata})
 
     def _build_view(
         self,

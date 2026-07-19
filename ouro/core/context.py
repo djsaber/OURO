@@ -64,7 +64,7 @@ class ContextMetrics(OuroModel):
 
 
 class ProviderContext(OuroModel):
-    """The exact provider-neutral arguments supplied to ``Provider.stream``."""
+    """Provider-neutral arguments accepted by OURO's unified Provider boundary."""
 
     system_prompt: str = ""
     messages: list[ModelMessage] = Field(default_factory=list)

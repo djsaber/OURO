@@ -198,12 +198,16 @@ Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-cl
 两者不互相覆盖。内置 estimator 对文本、工具 schema 和 continuation 计数；图片使用有界保守值，不把 data URI 的
 base64 字节错误当作文本 token。
 
-查询采用 write-through latest snapshot，而不是查询时重建。上下文准备完成后，在模型请求前原子替换 Session 的
-最新 `ContextSnapshotRecord`；记录保存 ephemeral 注入、压缩/恢复后的 source messages、工具、指标、路由和实际
-Provider 内容 digest。资源 blob 不复制进快照，内容查询通过不可变 resource reference 还原后校验 digest。
-`SessionService.context_status` 只读取已维护的事实，不执行 Context Provider、Hook、压缩、资源物化或 token 重算；
-`SessionService.context` 才按需还原完整内容。只保留最新一次请求，避免无界历史增长；完整内容读取仍然是不可避免的
-O(context bytes)，实时活动订阅则直接消费 `model_request_started` 中的同一组指标，不读盘。
+请求审计采用 write-through latest snapshot。上下文准备完成后，在模型请求前原子替换 Session 的最新
+`ContextSnapshotRecord`；记录保存 ephemeral 注入、压缩/恢复后的 source messages、工具、指标、路由和实际
+Provider 内容 digest。资源 blob 不复制进快照，审计内容查询通过不可变 resource reference 还原后校验 digest。
+`SessionService.context_status/context` 只读取这一最近请求事实，供运行活动、Provider usage 和诊断使用。
+
+面向用户的当前上下文查询属于另一应用用例。`RuntimeService.current_context` 使用与请求准备、压缩完成相同的纯投影
+边界，从 canonical messages、active compaction、当前模型、Catalog 工具、Skills 和资源构造 `ContextView`；
+`/context` 与 `session context` 读取 metrics，full/content 读取同一视图的统一 `ProviderContext`。查询不执行
+Context Provider、Hook 或自动压缩，也不写入 Session。请求级 ephemeral 注入只属于具体 Run，不能伪装成空闲
+Session 的当前事实。该查询需要显式 O(context bytes) 投影，以保证手动压缩后不会继续展示旧请求快照。
 
 ## Provider Usage 与全局费用账本
 
@@ -328,7 +332,7 @@ CLI 命令使用资源层级表达职责：
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；
-- `session context` 读取最新上下文长度，`session context --content` 显式读取统一 Provider 内容；
+- `session context` 投影当前上下文长度，`session context --content` 显式读取同一当前统一 Provider 内容；
 - `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
 - `run --resource` 将已导入资源附加到本次输入；

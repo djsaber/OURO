@@ -450,6 +450,43 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
 
 
 @pytest.mark.asyncio
+async def test_manual_compaction_updates_current_context_without_rewriting_last_request(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Current context")
+    store.create_session(session)
+    strategy = RecordingStrategy()
+    runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
+    await runtime.run("seed", session_id=session.session_id)
+    _append_turns(store, session.session_id, 3)
+
+    last_request_before = runtime.sessions.context_status(session.session_id)
+    current_before = runtime.current_context(session.session_id)
+    result = await runtime.compact(session_id=session.session_id)
+    current_after = runtime.current_context(session.session_id)
+    last_request_after = runtime.sessions.context_status(session.session_id)
+
+    assert result.compaction is not None
+    assert last_request_before is not None
+    assert last_request_after is not None
+    assert last_request_after.context_id == last_request_before.context_id
+    assert current_after.status.active_compaction_id == result.compaction.compaction_id
+    assert (
+        current_after.status.metrics.estimated_input_tokens
+        == result.compaction.estimated_tokens_after
+    )
+    assert (
+        current_after.status.metrics.estimated_input_tokens
+        < current_before.status.metrics.estimated_input_tokens
+    )
+    assert current_after.context_digest != current_before.context_digest
+    assert current_after.provider_context.messages[0].role == "system_synthetic"
+    assert current_after.provider_context.messages[0].text_content == "summary-1"
+
+
+@pytest.mark.asyncio
 async def test_compaction_failure_is_visible_and_never_truncates_history(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -526,7 +563,16 @@ async def test_interactive_compact_command_displays_progress_and_completion(tmp_
     _append_turns(store, session.session_id, 3)
     strategy = RecordingStrategy()
     runtime = _runtime(store, RecordingProvider(), strategy, strategy_id=strategy.strategy_id)
-    inputs = iter([f"/open {session.session_id}", "/compact", "/exit"])
+    inputs = iter(
+        [
+            f"/open {session.session_id}",
+            "/context",
+            "/compact",
+            "/context",
+            "/context full",
+            "/exit",
+        ]
+    )
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -539,3 +585,7 @@ async def test_interactive_compact_command_displays_progress_and_completion(tmp_
     assert any("Compacting context · manual" in output for output in outputs)
     assert any("Context compaction completed" in output for output in outputs)
     assert any(output.startswith("Active compaction: cmp_") for output in outputs)
+    assert any(
+        output.startswith("Context: current") and "Compaction: cmp_" in output for output in outputs
+    )
+    assert any("Provider context:" in output and "summary-1" in output for output in outputs)
