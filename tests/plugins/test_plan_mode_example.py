@@ -162,10 +162,11 @@ class WrongWriteProvider:
         )
 
 
-class CommandPauseProvider:
+class PlainTextProvider:
     provider_id = "plan-command"
 
     def __init__(self) -> None:
+        self.stream_count = 0
         self.messages: list[MessageRecord] = []
 
     async def stream(
@@ -177,15 +178,9 @@ class CommandPauseProvider:
         tools=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, tools
+        self.stream_count += 1
         self.messages = list(messages)
-        yield ProviderStreamEvent(
-            type="tool_call",
-            tool_call=ToolCallRequest(
-                id="call_question",
-                name="AskUser",
-                arguments={"question": "Which component matters most?"},
-            ),
-        )
+        yield ProviderStreamEvent(type="text_delta", text="Planning can continue later.")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model) -> ProviderCheckResult:
@@ -197,11 +192,12 @@ class CommandPauseProvider:
         )
 
 
-class PlainTextThenQuestionProvider:
-    provider_id = "plan-turn-policy"
+class RejectedWriteThenTextProvider:
+    provider_id = "plan-rejected-write"
 
-    def __init__(self) -> None:
+    def __init__(self, target: Path) -> None:
         self.stream_count = 0
+        self.target = target
 
     async def stream(
         self,
@@ -213,25 +209,14 @@ class PlainTextThenQuestionProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         if self.stream_count == 0:
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call=ToolCallRequest(
-                    id="call_enter",
-                    name="EnterPlanMode",
-                    arguments={},
-                ),
+            call = ToolCallRequest(
+                id="call_rejected_write",
+                name="Write",
+                arguments={"path": str(self.target), "content": "must not be written"},
             )
-        elif self.stream_count == 1:
-            yield ProviderStreamEvent(type="text_delta", text="I have enough information.")
+            yield ProviderStreamEvent(type="tool_call", tool_call=call)
         else:
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call=ToolCallRequest(
-                    id="call_question",
-                    name="AskUser",
-                    arguments={"question": "Which compatibility target is required?"},
-                ),
-            )
+            yield ProviderStreamEvent(type="text_delta", text="Okay, ending this response.")
         self.stream_count += 1
         yield ProviderStreamEvent(type="done")
 
@@ -389,11 +374,11 @@ async def test_plan_mode_requires_approval_for_write_outside_current_plan(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_plan_command_returns_durable_attributed_scaffold_input(tmp_path) -> None:
+async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    provider = CommandPauseProvider()
+    provider = PlainTextProvider()
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _install_and_enable(application)
@@ -402,32 +387,24 @@ async def test_plan_command_returns_durable_attributed_scaffold_input(tmp_path) 
 
     command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:plan",
-        "Refactor the parser",
+        "",
         session_id=session.session_id,
         workspace=str(workspace),
     )
 
-    assert len(command.session_inputs) == 1
-    session_input = command.session_inputs[0]
-    assert session_input.plugin_id == PLUGIN_ID
-    assert session_input.contribution_id == "plan"
-    assert "Planning request:\nRefactor the parser" in session_input.prompt
-    waiting = await runtime.run(
-        session_input.prompt,
+    assert command.session_inputs == []
+    before_run = store.load_runtime_session(session.session_id)
+    assert before_run.messages == []
+    assert before_run.runs == []
+    result = await runtime.run(
+        "Refactor the parser",
         session_id=session.session_id,
         approval_mode="auto",
-        _input_attribution=session_input,
     )
-    assert waiting.run.status == "waiting_user"
+    assert result.run.status == "completed"
+    assert result.final_text == "Planning can continue later."
+    assert provider.stream_count == 1
     snapshot = store.load_runtime_session(session.session_id)
-    scaffold = next(
-        message
-        for message in snapshot.messages
-        if message.metadata.get("session_input_source") == "plugin"
-    )
-    assert scaffold.role == "system_synthetic"
-    assert scaffold.metadata["plugin_id"] == PLUGIN_ID
-    assert "Plan mode is now active" in scaffold.text_content
     reminder = next(
         message
         for message in snapshot.messages
@@ -435,42 +412,58 @@ async def test_plan_command_returns_durable_attributed_scaffold_input(tmp_path) 
     )
     assert reminder.metadata["plugin_id"] == PLUGIN_ID
     assert "Plan mode is active" in reminder.text_content
+    assert not any(
+        message.metadata.get("session_input_source") in {"plugin", "turn_policy"}
+        for message in snapshot.messages
+    )
+    assert application.plugin_runtime is not None
+    assert application.plugin_runtime.snapshot().turn_policies.registered() == []
     await application.close()
 
 
 @pytest.mark.asyncio
-async def test_plan_mode_turn_policy_persists_feedback_and_continues_same_run(tmp_path) -> None:
+async def test_plan_mode_allows_run_to_finish_after_user_rejects_tool(tmp_path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    provider = PlainTextThenQuestionProvider()
+    target = workspace / "implementation.py"
+    provider = RejectedWriteThenTextProvider(target)
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _install_and_enable(application)
-
-    waiting = await runtime.run("Prepare a plan", approval_mode="auto")
-
-    assert waiting.run.status == "waiting_user"
-    assert provider.stream_count == 3
-    snapshot = store.load_runtime_session(waiting.session.session_id)
-    attempted = next(
-        message
-        for message in snapshot.messages
-        if message.role == "assistant" and message.text_content == "I have enough information."
+    session = runtime.create_session(title="Rejected plan tool")
+    assert application.plugins is not None
+    command = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "",
+        session_id=session.session_id,
+        workspace=str(workspace),
     )
-    feedback = next(
-        message
-        for message in snapshot.messages
-        if message.metadata.get("session_input_source") == "turn_policy"
+    assert command.session_inputs == []
+
+    waiting = await runtime.run(
+        "Change the implementation",
+        session_id=session.session_id,
+        approval_mode="auto",
     )
-    assert attempted.run_id == waiting.run.run_id
-    assert feedback.run_id == waiting.run.run_id
-    assert "plain-text answer cannot finish" in feedback.text_content
-    controllers = feedback.metadata["controllers"]
-    assert isinstance(controllers, list)
-    assert controllers[0]["plugin_id"] == PLUGIN_ID
-    assert controllers[0]["policy_id"] == "require-plan-exit"
-    assert isinstance(controllers[0]["generation_id"], str)
+
+    assert waiting.run.status == "waiting_approval"
+    completed = await runtime.approve_tool(
+        session_id=session.session_id,
+        run_id=waiting.run.run_id,
+        approved=False,
+        reason="结束对话",
+    )
+
+    assert completed.run.status == "completed"
+    assert completed.final_text == "Okay, ending this response."
+    assert provider.stream_count == 2
+    assert not target.exists()
+    snapshot = store.load_runtime_session(session.session_id)
+    assert not any(
+        message.metadata.get("session_input_source") == "turn_policy"
+        for message in snapshot.messages
+    )
     await application.close()
 
 

@@ -1,0 +1,65 @@
+{
+  "schema_version": 2,
+  "plugin_id": "dev.ouro.examples.plan_mode",
+  "name": "Plan Mode Example",
+  "version": "0.1.0",
+  "description": "Implements plan mode as composable OURO harness contributions.",
+  "namespace": "plan_mode",
+  "engines": {
+    "ouro": ">=0.1.0,<0.2.0",
+    "plugin_api": "^1.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "plan_mode_plugin:create_plugin"
+  },
+  "contributes": {
+    "tools": [
+      {
+        "id": "enter",
+        "exposed_name": "EnterPlanMode",
+        "description": "Use this tool proactively before starting a non-trivial implementation task.",
+        "permission_mode": "auto",
+        "permission_control": "tool",
+        "effect": "state_changing",
+        "batch_behavior": "exclusive"
+      },
+      {
+        "id": "exit",
+        "exposed_name": "ExitPlanMode",
+        "description": "Submit the current plan file for user approval.",
+        "permission_mode": "auto",
+        "permission_control": "tool",
+        "effect": "state_changing",
+        "batch_behavior": "exclusive",
+        "resumable": true
+      }
+    ],
+    "commands": [
+      {
+        "id": "plan",
+        "description": "Enter plan mode for the current Session."
+      }
+    ],
+    "context_providers": [
+      {
+        "id": "plan-scaffold",
+        "priority": 10,
+        "timeout_seconds": 5,
+        "failure_mode": "block"
+      }
+    ],
+    "tool_policies": [
+      {
+        "id": "plan-tool-gate",
+        "priority": 10,
+        "timeout_seconds": 5
+      }
+    ]
+  },
+  "permissions": [],
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

@@ -1,9 +1,10 @@
 # OURO plugin examples
 
-These packages are intentionally small and validate against the current development schema.
+These packages are focused examples and validate against the current development schema.
 
 - `declarative-skill`: no executable plugin code; contributes one Agent Skill.
 - `inprocess-command`: trusted Python in-process command contribution.
+- `plan-mode`: composable plan-mode harness using Context and Tool policies.
 - `worker-tool`: stdio JSON-RPC worker with one approval-gated Tool.
 
 Validate any example before installing it:
