@@ -7,21 +7,14 @@ import re
 from dataclasses import dataclass
 from typing import Literal
 
-from ouro.sdk.plugins.v1 import JsonValue, PluginDataStore
+from ouro.sdk.plugins.v1 import PluginDataStore
+
+from .interaction import PlanOption
 
 _STATE_SCHEMA_VERSION = 1
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 PlanPhase = Literal["inactive", "active", "awaiting_approval"]
-
-
-@dataclass(frozen=True)
-class PlanOption:
-    label: str
-    description: str = ""
-
-    def to_json(self) -> dict[str, JsonValue]:
-        return {"label": self.label, "description": self.description}
 
 
 @dataclass(frozen=True)
@@ -54,12 +47,7 @@ class SessionPlanState:
             raise ValueError("plan mode options must be a list")
         options: list[PlanOption] = []
         for item in options_raw:
-            if not isinstance(item, dict) or not isinstance(item.get("label"), str):
-                raise ValueError("plan mode option must contain a string label")
-            description = item.get("description", "")
-            if not isinstance(description, str):
-                raise ValueError("plan mode option description must be a string")
-            options.append(PlanOption(label=item["label"], description=description))
+            options.append(PlanOption.from_json(item))
         last_output = raw.get("last_resume_output")
         if last_output is not None and not isinstance(last_output, dict):
             raise ValueError("plan mode last resume output must be an object")

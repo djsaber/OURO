@@ -23,9 +23,12 @@ Workflow:
    file you are allowed to modify.
 5. Exit — call ExitPlanMode for user approval.
 
-Handling multiple approaches: at most 2–3 meaningfully different approaches;
-if one is clearly superior, just propose that one. When multiple approaches
-are included, pass them as `options` to ExitPlanMode.
+Handling multiple approaches: at most 2–3 meaningfully different implementation
+approaches; if one is clearly superior, just propose that one. When multiple
+approaches are included, pass them as `options` to ExitPlanMode. Options are
+implementation approaches, not approval actions. Never create options for
+approving, revising, or rejecting the plan; the Host provides those actions
+separately.
 
 AskUser is for clarifying missing requirements or preferences. Never
 ask about plan approval via text or AskUser. Do NOT reference
@@ -89,6 +92,7 @@ Plan mode is already active. Use ExitPlanMode when the plan is ready.
         "type": "array",
         "maxItems": 3,
         "minItems": 1,
+        "description": "Optional mutually exclusive implementation approaches from the plan. Never create options for approving, revising, or rejecting the plan; the Host provides those actions separately.",
         "items": {
           "type": "object",
           "properties": {
@@ -154,7 +158,8 @@ Plan rejected by user. Plan mode remains active.
 3. 处于计划模式时，每轮用户消息前面都要注入脚手架消息，加强对 LLM 引导；
 4. 同一会话内多次开启计划模式，每次计划模式的 PLAN_FILE_PATH 指向不同文件，可用时间后缀方式；
 5. ExitPlanMode 调用决策交给 LLM；
-6. ExitPlanMode 工具只有一个可选参数 options，用于在计划包含多个可选方案时，让用户在批准时选择执行哪一个；
+6. ExitPlanMode 工具只有一个可选参数 options，用于在计划包含多个可选实施方案时，让用户在批准时选择执行哪一个；
+   options 不能承载 accept/revise/reject，这三个审批动作由交互请求中的稳定 action code 独立表达；
 7. EnterPlanMode 和 ExitPlanMode 工具自身的调用不走批准策略；
 8. 计划模式不控制 Run 的继续或完成，不注册 Turn Policy；EnterPlanMode 和 ExitPlanMode 只通过工具结果向 LLM 表达状态迁移，由 LLM 自主决定下一步。
 
@@ -162,6 +167,30 @@ Plan rejected by user. Plan mode remains active.
 PLAN_FILE_PATH: {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_xxx.md
 
 > plan 模式不改变也不控制智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效。
+
+## 计划确认交互契约
+
+ExitPlanMode 通过 resumable `ToolInputRequest` 进入 `waiting_user`，而不是进入工具权限系统的
+`waiting_approval`。Core 和 Runtime 只持久化、转发请求与回答 JSON，不解释计划语义。CLI 仅在等待调用同时满足
+以下 provenance 时启用官方计划确认界面：
+
+- `plugin_class=builtin`；
+- `plugin_id=dev.ouro.plan_mode`；
+- canonical tool id 为 `dev.ouro.plan_mode/tools/exit`；
+- `ToolInputRequest.data.type=plan_confirmation`。
+
+CLI 展示计划和候选实施方案，通过编号选择保留请求中的原始 option label，并构造以下回答：
+
+```json
+{"action": "accept"}
+{"action": "accept", "option": "所选实施方案的原始 label"}
+{"action": "revise", "feedback": "需要补充回滚步骤"}
+{"action": "reject"}
+```
+
+没有 options 时 accept 不携带 option；一个 option 时 CLI 展示后自动绑定；多个 options 时要求用户明确选择，不能
+默认选择第一项。`/abort` 仍终止 Run，不作为插件回答。未知或非官方来源的结构化请求继续使用通用 JSON/文本输入
+fallback，计划 UI 不是新的插件 contribution 或 Core 特例。
 
 ## 内置插件实现约束
 

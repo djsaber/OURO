@@ -8,7 +8,13 @@ from pydantic import JsonValue
 
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
+from ouro.cli.plan_confirmation import (
+    PlanConfirmationControl,
+    collect_plan_confirmation,
+    parse_builtin_plan_confirmation,
+)
 from ouro.core.results import RunResult
+from ouro.core.tool_batches import ToolBatchCall
 
 InputFunc = Callable[[str], str]
 _MAX_APPROVAL_ARGUMENT_PREVIEW = 240
@@ -136,6 +142,39 @@ async def _resolve_user_question(
     output: InteractiveOutput,
 ) -> RunResult | None:
     await output.suspend_tools_for_prompt()
+    waiting_call = _pending_user_call(result)
+    try:
+        request = (
+            parse_builtin_plan_confirmation(
+                waiting_call.invocation,
+                waiting_call.input_request.data,
+            )
+            if waiting_call is not None and waiting_call.input_request is not None
+            else None
+        )
+    except ValueError as exc:
+        output_func(f"Invalid plan confirmation request: {exc}")
+        request = None
+    if request is not None:
+        collected = collect_plan_confirmation(
+            request,
+            input_func=input_func,
+            output_func=output_func,
+        )
+        if collected is PlanConfirmationControl.EOF:
+            output_func("")
+            return None
+        if collected is PlanConfirmationControl.ABORT:
+            return await runtime.abort_run(
+                session_id=result.session.session_id,
+                run_id=result.run.run_id,
+            )
+        return await runtime.answer_user(
+            session_id=result.session.session_id,
+            run_id=result.run.run_id,
+            answer=collected,
+        )
+
     output_func(f"Question: {_pending_question(result)}")
     try:
         answer = input_func("Answer: ")
@@ -184,17 +223,15 @@ def _approval_request(invocation: dict[str, Any]) -> str:
 
 
 def _pending_question(result: RunResult) -> str:
-    batch = result.run.active_tool_batch
-    if batch is not None:
-        waiting = next((call for call in batch.calls if call.status == "waiting_user"), None)
-        if waiting is not None:
-            if waiting.input_request is not None:
-                return _format_user_input_request(waiting.input_request.data)
-            if waiting.result is not None and waiting.result.content:
-                return waiting.result.content
-            question = waiting.request.arguments.get("question")
-            if question is not None:
-                return _format_user_input_request(question)
+    waiting = _pending_user_call(result)
+    if waiting is not None:
+        if waiting.input_request is not None:
+            return _format_user_input_request(waiting.input_request.data)
+        if waiting.result is not None and waiting.result.content:
+            return waiting.result.content
+        question = waiting.request.arguments.get("question")
+        if question is not None:
+            return _format_user_input_request(question)
     raw_question = result.run.metadata.get("pending_question")
     if isinstance(raw_question, str) and raw_question:
         return raw_question
@@ -202,6 +239,13 @@ def _pending_question(result: RunResult) -> str:
     if isinstance(arguments, dict) and isinstance(arguments.get("question"), str):
         return arguments["question"]
     return "Please provide the requested information."
+
+
+def _pending_user_call(result: RunResult) -> ToolBatchCall | None:
+    batch = result.run.active_tool_batch
+    if batch is None:
+        return None
+    return next((call for call in batch.calls if call.status == "waiting_user"), None)
 
 
 def _format_user_input_request(data: object) -> str:

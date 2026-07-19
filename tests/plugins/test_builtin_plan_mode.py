@@ -9,6 +9,7 @@ import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import ModelMessage
 from ouro.core.provider import (
@@ -68,7 +69,7 @@ class PlanBuildProvider:
                     "content": "# Proposed plan\n\n1. Inspect.\n2. Implement.\n3. Verify.",
                 },
             )
-        else:
+        elif self.stream_count == 2:
             call = ToolCallRequest(
                 id="call_exit",
                 name="ExitPlanMode",
@@ -81,6 +82,14 @@ class PlanBuildProvider:
                     ]
                 },
             )
+        else:
+            self.stream_count += 1
+            yield ProviderStreamEvent(
+                type="text_delta",
+                text="Plan approved; ready to implement.",
+            )
+            yield ProviderStreamEvent(type="done")
+            return
         self.stream_count += 1
         yield ProviderStreamEvent(type="tool_call", tool_call=call)
         yield ProviderStreamEvent(type="done")
@@ -333,6 +342,48 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["state"]["phase"] == "inactive"
     await second_application.close()
+
+
+@pytest.mark.asyncio
+async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answer(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanBuildProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    inputs = iter(["Design the implementation", "accept", "/exit"])
+    prompts: list[str] = []
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        approval_mode="auto",
+        input_func=lambda prompt: prompts.append(prompt) or next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Plan decision [accept/revise/reject]: " in prompts
+    assert not any(prompt.startswith("Select plan option") for prompt in prompts)
+    assert any(output.startswith("Plan approval requested.") for output in outputs)
+    assert not any(output.startswith("Question: {") for output in outputs)
+    assert "Plan approved; ready to implement." in outputs
+    session = store.list_sessions()[0]
+    snapshot = store.load_runtime_session(session.session_id)
+    exit_result = next(
+        message
+        for message in snapshot.messages
+        if message.tool_result is not None and message.tool_result.tool_call_id == "call_exit"
+    )
+    assert "Selected option: Direct implementation" in exit_result.text_content
+    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["state"]["phase"] == "inactive"
+    await application.close()
 
 
 @pytest.mark.asyncio

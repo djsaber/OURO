@@ -128,11 +128,19 @@ async def confirm_plan(call):
     return ToolInputRequest(
         data={
             "type": "plan_confirmation",
+            "plan_path": call.arguments["plan_path"],
             "plan": call.arguments["plan"],
-            "choices": ["accept", "revise"],
+            "plan_digest": call.arguments["plan_digest"],
+            "options": call.arguments.get("options", []),
+            "actions": ["accept", "revise", "reject"],
+            "error": None,
         }
     )
 ```
+
+前端适配只负责把用户选择编码为请求生产者定义的 JSON，领域校验和状态迁移仍由 resumable tool 完成。OURO CLI
+只为带官方内置 Plan 插件 provenance 的 `plan_confirmation` 提供专用展示；其他插件返回相同 `type` 不会获得官方
+界面，而是继续使用通用 JSON/文本输入。这种展示映射不改变 `ToolInputRequest` 的 Host-neutral Core 契约。
 
 Context Provider 返回的字符串或普通 `ContextFragment` 默认只影响本次模型请求。如果 Harness 指令必须进入可审计、
 可恢复的 canonical history，显式返回持久 fragment：

@@ -25,8 +25,13 @@ from ouro.sdk.plugins.v1 import (
     ToolResumeCall,
 )
 
-from .state import (
+from .interaction import (
+    PLAN_CONFIRMATION_ACTIONS,
+    PlanConfirmationAnswer,
+    PlanConfirmationRequest,
     PlanOption,
+)
+from .state import (
     PlanStateRepository,
     SessionPlanState,
     validate_session_id,
@@ -60,10 +65,12 @@ Workflow:
    file you may modify without separate approval.
 5. Exit — call ExitPlanMode for user approval.
 
-When alternatives are genuinely useful, provide at most three options to
-ExitPlanMode. Use AskUser only for missing requirements or preferences. Never
-ask for plan approval through text or AskUser, and do not refer to \"the plan\"
-in an AskUser question.
+When the plan contains genuinely different implementation approaches, provide
+at most three approaches as options to ExitPlanMode. Options are implementation
+approaches, not approval actions. Never create options for approving, revising,
+or rejecting the plan; the Host provides those actions separately. Use AskUser
+only for missing requirements or preferences. Never ask for plan approval
+through text or AskUser, and do not refer to \"the plan\" in an AskUser question.
 
 Plan file: {plan_path}"""
 
@@ -119,6 +126,12 @@ class PlanModePlugin:
                                 "type": "array",
                                 "minItems": 1,
                                 "maxItems": 3,
+                                "description": (
+                                    "Optional mutually exclusive implementation approaches "
+                                    "from the plan. Never create options for approving, "
+                                    "revising, or rejecting the plan; the Host provides those "
+                                    "actions separately."
+                                ),
                                 "items": {
                                     "type": "object",
                                     "properties": {
@@ -347,13 +360,17 @@ class PlanModePlugin:
                 )
                 self._finish_resume(call.session_id, state, output, phase="active")
                 return output
-            action, selected_option, feedback = _parse_approval_answer(call.answer)
-            if action not in {"accept", "revise", "reject"}:
+            try:
+                answer = PlanConfirmationAnswer.from_json(call.answer)
+            except ValueError:
                 return _approval_request(
                     state,
                     plan=plan,
                     error="Choose accept, revise, or reject.",
                 )
+            action = answer.action
+            selected_option = answer.option
+            feedback = answer.feedback
             if action == "accept" and state.options:
                 labels = {option.label for option in state.options}
                 if selected_option not in labels:
@@ -463,16 +480,17 @@ def _approval_request(
     plan: str,
     error: str | None = None,
 ) -> ToolInputRequest:
+    if state.plan_path is None:
+        raise ValueError("plan confirmation requires an active plan path")
     return ToolInputRequest(
-        data={
-            "type": "plan_confirmation",
-            "plan_path": state.plan_path,
-            "plan": plan,
-            "plan_digest": state.approval_digest,
-            "options": [option.to_json() for option in state.options],
-            "actions": ["accept", "revise", "reject"],
-            "error": error,
-        }
+        data=PlanConfirmationRequest(
+            plan_path=state.plan_path,
+            plan=plan,
+            plan_digest=state.approval_digest,
+            options=state.options,
+            actions=PLAN_CONFIRMATION_ACTIONS,
+            error=error,
+        ).to_json()
     )
 
 
@@ -494,31 +512,11 @@ def _normalize_options(raw: object) -> tuple[PlanOption, ...]:
         raise ValueError("ExitPlanMode options must be a list")
     options: list[PlanOption] = []
     for item in raw:
-        if not isinstance(item, Mapping):
-            raise ValueError("ExitPlanMode option must be an object")
-        label = item.get("label")
-        description = item.get("description", "")
-        if not isinstance(label, str) or not label.strip():
-            raise ValueError("ExitPlanMode option label must not be empty")
-        if not isinstance(description, str):
-            raise ValueError("ExitPlanMode option description must be a string")
-        options.append(PlanOption(label=label.strip(), description=description.strip()))
+        try:
+            options.append(PlanOption.from_json(item))
+        except ValueError as exc:
+            raise ValueError(f"ExitPlanMode {exc}") from exc
     return tuple(options)
-
-
-def _parse_approval_answer(answer: object) -> tuple[str, str | None, str | None]:
-    if isinstance(answer, str):
-        return answer.strip().lower(), None, None
-    if not isinstance(answer, Mapping):
-        return "", None, None
-    action = answer.get("action")
-    selected = answer.get("option")
-    feedback = answer.get("feedback")
-    return (
-        action.strip().lower() if isinstance(action, str) else "",
-        selected.strip() if isinstance(selected, str) and selected.strip() else None,
-        feedback.strip() if isinstance(feedback, str) and feedback.strip() else None,
-    )
 
 
 def _read_plan(plan_path: str) -> tuple[str, str | None]:
