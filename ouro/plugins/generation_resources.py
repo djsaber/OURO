@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.mcp import PluginMCPResource
 from ouro.plugins.models import (
-    InstalledPlugin,
     PluginConfigurationRevision,
     PluginGenerationRecord,
 )
@@ -19,7 +19,7 @@ from ouro.tools import Tool
 
 @dataclass(frozen=True)
 class GenerationResourceRequest:
-    installed: InstalledPlugin
+    candidate: PluginRuntimeCandidate
     generation: PluginGenerationRecord
     package_root: Path
     configuration: PluginConfigurationRevision
@@ -72,7 +72,7 @@ class PluginSkillResourceAdapter:
         skills: list[SkillMetadata] = []
         degraded_reasons: list[str] = []
         contracts: dict[str, object] = {}
-        for declaration in request.installed.manifest.contributes.skills:
+        for declaration in request.candidate.manifest.contributes.skills:
             declared_path = resolve_manifest_path(
                 request.package_root,
                 declaration.path,
@@ -102,8 +102,10 @@ class PluginSkillResourceAdapter:
                         "extensions": {
                             **skill.extensions,
                             "ouro": {
-                                "plugin_id": request.installed.plugin_id,
-                                "package_digest": request.installed.package_digest,
+                                "plugin_id": request.candidate.plugin_id,
+                                "plugin_class": request.candidate.plugin_class,
+                                "release_id": request.candidate.release_id,
+                                "package_digest": request.candidate.package_digest,
                                 "generation_id": request.generation.generation_id,
                                 "contribution_id": declaration.id,
                             },
@@ -115,7 +117,7 @@ class PluginSkillResourceAdapter:
                 f"skills/{declaration.id}: {diagnostic.message}"
                 for diagnostic in catalog.diagnostics
             )
-            contracts[f"{request.installed.plugin_id}/skills/{declaration.id}"] = {
+            contracts[f"{request.candidate.plugin_id}/skills/{declaration.id}"] = {
                 "path": declaration.path
             }
         return PreparedGenerationResources(
@@ -133,10 +135,10 @@ class PluginMCPResourceAdapter:
         self,
         request: GenerationResourceRequest,
     ) -> PreparedGenerationResources:
-        if not request.installed.manifest.contributes.mcp_servers:
+        if not request.candidate.manifest.contributes.mcp_servers:
             return PreparedGenerationResources()
         resource = PluginMCPResource(
-            request.installed.manifest,
+            request.candidate.manifest,
             request.package_root,
             resolve_credential=request.credential_resolver,
             credential_bindings=request.configuration.credential_refs,
@@ -152,11 +154,11 @@ class PluginMCPResourceAdapter:
             owned_resources=(resource,),
             degraded_reasons=tuple(resource.degraded_reasons),
             resource_contracts={
-                f"{request.installed.plugin_id}/mcp_servers/{declaration.id}": {
+                f"{request.candidate.plugin_id}/mcp_servers/{declaration.id}": {
                     "path": declaration.path,
                     "optional": declaration.optional,
                 }
-                for declaration in request.installed.manifest.contributes.mcp_servers
+                for declaration in request.candidate.manifest.contributes.mcp_servers
                 if declaration.id in resource.active_server_ids
             },
         )

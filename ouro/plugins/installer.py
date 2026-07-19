@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from collections.abc import Set
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
 from ouro.plugins.models import (
     InstalledPlugin,
     PluginActivationState,
@@ -35,11 +35,11 @@ class PluginInstaller:
         store: PluginPackageStore,
         *,
         limits: PackageLimits | None = None,
-        builtin_plugin_ids: Set[str] = frozenset(),
+        builtin_plugins: BuiltinPluginRegistry = EMPTY_BUILTIN_PLUGIN_REGISTRY,
     ) -> None:
         self.store = store
         self.limits = limits or PackageLimits()
-        self.builtin_plugin_ids = frozenset(builtin_plugin_ids)
+        self.builtin_plugins = builtin_plugins
 
     def validate(
         self,
@@ -64,10 +64,7 @@ class PluginInstaller:
         provider = source_provider(source, ref=ref, subdirectory=subdirectory)
         with PluginSourceMaterializer(provider) as materialized:
             package = validate_plugin_package(materialized.root, limits=self.limits)
-            if package.manifest.plugin_id in self.builtin_plugin_ids:
-                raise ValueError(
-                    f"user plugin cannot replace builtin identity: {package.manifest.plugin_id}"
-                )
+            self.builtin_plugins.assert_user_manifest_allowed(package.manifest)
             if expected_plugin_id is not None and package.manifest.plugin_id != expected_plugin_id:
                 raise ValueError(
                     f"plugin identity changed from {expected_plugin_id} "

@@ -330,16 +330,49 @@ def _tool_contract_error(
     invocation: ToolInvocation,
     metadata: Mapping[str, object],
 ) -> str | None:
+    if invocation.plugin_class is None and invocation.package_digest is not None:
+        return _legacy_user_tool_contract_error(invocation, metadata)
+    expected_common = {
+        "plugin_id": invocation.plugin_id,
+        "plugin_class": invocation.plugin_class,
+        "release_id": invocation.release_id,
+        "contract_hash": invocation.contract_hash,
+        "execution_contract_hash": invocation.execution_contract_hash,
+    }
+    if not any(value is not None for value in expected_common.values()):
+        return None
+    for field, expected_value in expected_common.items():
+        actual = metadata.get(field)
+        if expected_value is None or actual != expected_value:
+            return f"persisted {field} does not match the active tool contract"
+    if invocation.plugin_class == "user":
+        if (
+            invocation.package_digest is None
+            or metadata.get("package_digest") != invocation.package_digest
+        ):
+            return "persisted package_digest does not match the active tool contract"
+    elif invocation.plugin_class == "builtin":
+        if (
+            invocation.builtin_contract_hash is None
+            or metadata.get("builtin_contract_hash") != invocation.builtin_contract_hash
+        ):
+            return "persisted builtin_contract_hash does not match the active tool contract"
+    else:
+        return "persisted plugin_class does not identify a supported plugin class"
+    return None
+
+
+def _legacy_user_tool_contract_error(
+    invocation: ToolInvocation,
+    metadata: Mapping[str, object],
+) -> str | None:
     expected = {
         "plugin_id": invocation.plugin_id,
         "package_digest": invocation.package_digest,
         "contract_hash": invocation.contract_hash,
         "execution_contract_hash": invocation.execution_contract_hash,
     }
-    if not any(value is not None for value in expected.values()):
-        return None
     for field, expected_value in expected.items():
-        actual = metadata.get(field)
-        if expected_value is None or actual != expected_value:
+        if expected_value is None or metadata.get(field) != expected_value:
             return f"persisted {field} does not match the active tool contract"
     return None

@@ -318,6 +318,49 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
                 description="Run the example plugin.",
                 metadata={
                     "plugin_id": "dev.ouro.example",
+                    "plugin_class": "user",
+                    "release_id": "a" * 64,
+                    "package_digest": "a" * 64,
+                    "contract_hash": "b" * 64,
+                    "execution_contract_hash": "c" * 64,
+                },
+            ),
+            handler=execute,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="s1",
+        run_id="r1",
+        tool_name="example__run",
+        plugin_id="dev.ouro.example",
+        plugin_class="user",
+        release_id="a" * 64,
+        package_digest="a" * 64,
+        contract_hash="b" * 64,
+        execution_contract_hash="d" * 64,
+    )
+
+    outcome = ToolExecutor(registry).preflight(invocation)
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+
+
+def test_legacy_user_plugin_tool_contract_remains_recoverable() -> None:
+    async def execute(_invocation):
+        return "unused"
+
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="example__run",
+                description="Run the example plugin.",
+                metadata={
+                    "plugin_id": "dev.ouro.example",
+                    "plugin_class": "user",
+                    "release_id": "a" * 64,
                     "package_digest": "a" * 64,
                     "contract_hash": "b" * 64,
                     "execution_contract_hash": "c" * 64,
@@ -333,11 +376,7 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
         plugin_id="dev.ouro.example",
         package_digest="a" * 64,
         contract_hash="b" * 64,
-        execution_contract_hash="d" * 64,
+        execution_contract_hash="c" * 64,
     )
 
-    outcome = ToolExecutor(registry).preflight(invocation)
-
-    assert outcome.status == "completed"
-    assert outcome.result is not None
-    assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
+    assert ToolExecutor(registry).preflight(invocation).status == "ready"

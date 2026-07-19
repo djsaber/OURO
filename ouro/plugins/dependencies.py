@@ -17,6 +17,7 @@ class BuiltinPluginContract:
     version: str
     contract_hash: str
     dependencies: tuple[tuple[str, str], ...] = ()
+    default_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -55,10 +56,20 @@ def plan_desired_plugin_activation(
     *,
     builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
 ) -> PluginActivationPlan:
+    builtin_contracts = builtin_contracts or {}
     roots = sorted(
-        plugin_id
-        for plugin_id, record in state.plugins.items()
-        if record.activation.desired_enabled
+        {
+            *(
+                plugin_id
+                for plugin_id, record in state.plugins.items()
+                if record.activation.desired_enabled
+            ),
+            *(
+                plugin_id
+                for plugin_id, contract in builtin_contracts.items()
+                if builtin_desired_enabled(state, contract)
+            ),
+        }
     )
     ordered: list[LockedPluginDependency] = []
     added: set[str] = set()
@@ -91,9 +102,16 @@ def resolve_plugin_dependencies(
         roots
         if roots is not None
         else {
-            plugin_id
-            for plugin_id, record in state.plugins.items()
-            if record.activation.desired_enabled
+            *(
+                plugin_id
+                for plugin_id, record in state.plugins.items()
+                if record.activation.desired_enabled
+            ),
+            *(
+                plugin_id
+                for plugin_id, contract in builtin_contracts.items()
+                if builtin_desired_enabled(state, contract)
+            ),
         }
     )
     selected_versions: dict[str, str] = {}
@@ -180,7 +198,12 @@ def resolve_plugin_dependencies(
     return PluginLockGraph(tuple(ordered))
 
 
-def active_dependents(state: PluginStateDocument, plugin_id: str) -> list[str]:
+def active_dependents(
+    state: PluginStateDocument,
+    plugin_id: str,
+    *,
+    builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
+) -> list[str]:
     dependents: list[str] = []
     for candidate_id, record in state.plugins.items():
         if not record.activation.desired_enabled:
@@ -193,12 +216,19 @@ def active_dependents(state: PluginStateDocument, plugin_id: str) -> list[str]:
             for dependency in installed.manifest.dependencies.plugins
         ):
             dependents.append(candidate_id)
-    return sorted(dependents)
+    for candidate_id, contract in (builtin_contracts or {}).items():
+        if not builtin_desired_enabled(state, contract):
+            continue
+        if any(dependency_id == plugin_id for dependency_id, _ in contract.dependencies):
+            dependents.append(candidate_id)
+    return sorted(set(dependents))
 
 
 def desired_dependant_closure(
     state: PluginStateDocument,
     roots: set[str],
+    *,
+    builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
 ) -> set[str]:
     """Return roots plus every transitively desired plugin that depends on them."""
 
@@ -218,4 +248,18 @@ def desired_dependant_closure(
             if dependencies & affected:
                 affected.add(candidate_id)
                 changed = True
+        for candidate_id, contract in (builtin_contracts or {}).items():
+            if candidate_id in affected or not builtin_desired_enabled(state, contract):
+                continue
+            if {dependency_id for dependency_id, _ in contract.dependencies} & affected:
+                affected.add(candidate_id)
+                changed = True
     return affected
+
+
+def builtin_desired_enabled(
+    state: PluginStateDocument,
+    contract: BuiltinPluginContract,
+) -> bool:
+    override = state.builtin_activation_overrides.get(contract.plugin_id)
+    return override.desired_enabled if override is not None else contract.default_enabled

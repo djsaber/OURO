@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
+from typing import Literal
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -33,6 +34,10 @@ _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _optional_plugin_class(value: object) -> Literal["builtin", "user"] | None:
+    return value if value in {"builtin", "user"} else None
 
 
 class ToolCallCoordinator:
@@ -811,7 +816,10 @@ class ToolCallCoordinator:
             arguments=request.arguments,
             plugin_id=_optional_text(metadata.get("plugin_id")),
             plugin_version=_optional_text(metadata.get("plugin_version")),
+            plugin_class=_optional_plugin_class(metadata.get("plugin_class")),
+            release_id=_optional_text(metadata.get("release_id")),
             package_digest=_optional_text(metadata.get("package_digest")),
+            builtin_contract_hash=_optional_text(metadata.get("builtin_contract_hash")),
             generation_id=_optional_text(metadata.get("generation_id")),
             contract_hash=_optional_text(metadata.get("contract_hash")),
             execution_contract_hash=_optional_text(metadata.get("execution_contract_hash")),

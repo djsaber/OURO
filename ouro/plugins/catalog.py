@@ -135,7 +135,9 @@ class ContributionOwnerRecord:
     owner_id: str
     plugin_class: PluginClass | None
     plugin_id: str | None
+    release_id: str | None
     package_digest: str | None
+    builtin_contract_hash: str | None
     generation_id: str | None
     contract_hash: str
 
@@ -399,9 +401,11 @@ def build_extension_catalog(
             owners[identity] = ContributionOwnerRecord(
                 canonical_identity=identity,
                 owner_id=prepared.owner.key,
-                plugin_class="user",
+                plugin_class=source.record.plugin_class,
                 plugin_id=source.record.plugin_id,
+                release_id=source.record.release_id,
                 package_digest=source.record.package_digest,
+                builtin_contract_hash=source.record.builtin_contract_hash,
                 generation_id=source.record.generation_id,
                 contract_hash=contract_hash,
             )
@@ -700,7 +704,10 @@ def generation_matches_execution_contract(
         generation.execution_contract_hash is not None
         and generation.execution_contract_hash == expected.get("execution_contract_hash")
         and generation.version == expected.get("version")
+        and generation.plugin_class == expected.get("plugin_class", "user")
+        and generation.release_id == expected.get("release_id", expected.get("package_digest"))
         and generation.package_digest == expected.get("package_digest")
+        and generation.builtin_contract_hash == expected.get("builtin_contract_hash")
         and generation.runtime_kind == expected.get("runtime_kind")
         and generation.configuration_revision_id == expected.get("configuration_revision_id")
         and generation.dependency_lock_fingerprint == expected.get("dependency_lock_fingerprint")
@@ -716,7 +723,9 @@ def _host_owner(identity: str, contract_hash: str) -> ContributionOwnerRecord:
         owner_id="ouro.host",
         plugin_class="builtin",
         plugin_id="ouro.host",
+        release_id=None,
         package_digest=None,
+        builtin_contract_hash=None,
         generation_id=None,
         contract_hash=contract_hash,
     )

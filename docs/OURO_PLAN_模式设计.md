@@ -163,10 +163,10 @@ PLAN_FILE_PATH: {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_xxx.md
 
 > plan 模式不改变也不控制智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效。
 
-## 示例插件实现约束
+## 内置插件实现约束
 
-`examples/plugins/plan-mode` 复用内置 `Write`/`Edit`，不贡献重复的文件工具。由于 OURO 默认启用
-`tool_execution.workspace_only=true`，示例的实际路径采用：
+内置插件 `ouro/builtin_plugins/plan_mode` 复用 Host 的 `Write`/`Edit`，不贡献重复的文件工具。由于 OURO 默认启用
+`tool_execution.workspace_only=true`，插件的实际路径采用：
 
 ```text
 {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_{timestamp}_{nonce}.md

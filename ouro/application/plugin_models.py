@@ -31,11 +31,13 @@ class PluginSummary(OuroModel):
     plugin_id: str
     name: str
     version: str
-    package_digest: str
+    package_digest: str | None = None
+    builtin_contract_hash: str | None = None
     status: PluginStatus
     runtime_kind: PluginRuntimeKind
     desired_enabled: bool
     plugin_class: PluginClass
+    default_enabled: bool | None = None
 
 
 class PluginDetail(PluginSummary):

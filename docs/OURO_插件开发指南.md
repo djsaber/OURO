@@ -10,6 +10,10 @@ OURO 插件是系统级扩展模块，只有两类：
 - `builtin` 由 OURO composition root 提供，user package 不能安装、更新、移除或覆盖其 identity；
 - `user` 安装到一个 `OURO_HOME`，不随项目或 workspace 自动激活。
 
+Builtin 不是“启动时自动安装的 user plugin”，也不是绕过插件生命周期的 Host baseline。启用后它与 user plugin 使用
+相同的 Generation、gate、Catalog lease 和 durable execution contract，只省略 source materialization、安装、能力授权和
+代码信任。`builtin | user` 不能由 Manifest 声明；它由 installer 或 composition root 根据真实供应方式确定。
+
 workspace 可以作为一次 Tool/Command 调用的 request context。项目级说明应使用 workspace Skill 或提示词，而不是
 创建项目插件。
 
@@ -22,6 +26,14 @@ workspace 可以作为一次 Tool/Command 调用的 request context。项目级�
 | `worker` | 独立进程、多语言或进程故障隔离 | 严格 stdio JSON-RPC 协议；不是 OS sandbox |
 
 不要为了简单 Skill 建 worker，也不要把需要独立第三方依赖环境的代码塞进 OURO 主 Python 环境。
+
+OURO 自身开发者新增 builtin 时，应在 `ouro/builtin_plugins/` 中实现普通 Plugin SDK factory，并在本地 application
+composition root 的 builtin registry 显式装配。插件机制层不得 import Plan、Goal 等产品插件；具体 builtin 也不得取得
+`RuntimeService`、`SessionStore` 或可变 registry。首版 builtin 只支持已经有真实需求的 in-process、空配置形态。
+
+用户可用普通管理入口查询、启用、关闭、重启和检查 builtin，例如
+`ouro plugin enable dev.ouro.plan_mode`。Builtin 不经过 install/authorize/trust-code/configure/update/remove；这些操作会
+明确返回 operation-not-allowed。关闭后可以显式清理其私有 data，但不能删除随 OURO 分发的 definition/code。
 
 ## 2. 最小本地闭环
 
@@ -74,8 +86,8 @@ Manifest 固定在 `.ouro-plugin/plugin.json`，关键 identity 是：
 - `engines.ouro` / `engines.plugin_api`：显式版本范围；
 - `runtime`、`contributes`、`permissions`、`dependencies`：可执行契约。
 
-相同 version、不同 bytes 会形成不同 digest 并并排保存，不静默覆盖。当前开发阶段不兼容旧 manifest/state/SDK 或
-worker protocol，schema 错误会直接拒绝。
+相同 version、不同 bytes 会形成不同 digest 并并排保存，不静默覆盖。除显式提供的单向 state schema migration 外，
+旧 manifest/SDK 或 worker protocol 不做隐式兼容，schema 错误会直接拒绝。
 
 Git source 使用 shallow、blob-filtered fetch；指定 `--subdirectory` 时在 checkout 前按 Git tree 校验文件数与大小，
 再做 sparse checkout。Git LFS 自动下载被禁用。archive/local/Git 最终都经过同一 package path、symlink、类型、大小、
@@ -155,6 +167,9 @@ revision、传递 dependency lock、Plugin API/worker protocol 和 contribution 
 当前进程 owner 与诊断。重启后可以从保留的等价内容构建新的 process-local generation；同名但不同 contract 的 Tool
 不能接管 pending invocation。
 
+对 builtin，用户包摘要由 definition 在装配时冻结的 builtin contract hash 取代；该摘要同时覆盖规范化 Manifest 与实现
+目录内容，因此代码变化不会沿用旧 release identity。
+
 ## 6. 权限、配置与数据
 
 OURO 保留个人智能体所需的基础边界：
@@ -211,7 +226,8 @@ uv run ouro plugin import-report ./community-package --json
 
 - [`declarative-skill`](../examples/plugins/declarative-skill)：静态 Agent Skill；
 - [`inprocess-command`](../examples/plugins/inprocess-command)：Python Command；
-- [`plan-mode`](../examples/plugins/plan-mode)：Context/Tool Policy 与可恢复控制工具组合的完整计划模式；
+- 内置 Plan 模式位于 `ouro/builtin_plugins/plan_mode`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
-这些 package 由测试执行真实 validate/authorize/enable 生命周期，避免文档示例与实现漂移。
+三个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin
+enable/disable、Generation、工具恢复与跨进程 Run 集成测试覆盖，避免文档示例与实现漂移。

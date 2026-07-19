@@ -50,10 +50,34 @@ class RunContinuationControllerRef(OuroModel):
     plugin_id: str
     policy_id: str
     version: str
-    package_digest: str
+    plugin_class: Literal["builtin", "user"] = "user"
+    release_id: str | None = None
+    package_digest: str | None = None
+    builtin_contract_hash: str | None = None
     generation_id: str
     contract_hash: str
     execution_contract_hash: str
+
+    @model_validator(mode="after")
+    def validate_release_identity(self) -> Self:
+        if self.plugin_class == "user":
+            if self.package_digest is None or self.builtin_contract_hash is not None:
+                raise ValueError("user continuation controller requires only package_digest")
+            if self.release_id is not None and self.release_id != self.package_digest:
+                raise ValueError(
+                    "user continuation controller release id must equal package digest"
+                )
+        elif (
+            self.release_id is None
+            or self.builtin_contract_hash is None
+            or self.package_digest is not None
+        ):
+            raise ValueError(
+                "builtin continuation controller requires release_id and builtin_contract_hash"
+            )
+        elif self.release_id != self.builtin_contract_hash:
+            raise ValueError("builtin continuation controller release id must equal contract hash")
+        return self
 
     @property
     def canonical_id(self) -> str:

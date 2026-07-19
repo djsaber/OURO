@@ -24,12 +24,13 @@ from ouro.core.continuations import (
 from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
+from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.contracts import (
     ContributionContractContext,
     build_contribution_contract_hashes,
 )
 from ouro.plugins.manifest import PluginManifest
-from ouro.plugins.models import InstalledPlugin, PluginGenerationRecord
+from ouro.plugins.models import PluginClass, PluginGenerationRecord
 from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRegistry,
@@ -63,12 +64,15 @@ class PluginContributions:
 @dataclass(frozen=True)
 class ContributionOwner:
     plugin_id: str
-    package_digest: str
+    plugin_class: PluginClass
+    release_id: str
     generation_id: str
+    package_digest: str | None = None
+    builtin_contract_hash: str | None = None
 
     @property
     def key(self) -> str:
-        return f"{self.plugin_id}@{self.package_digest}#{self.generation_id}"
+        return f"{self.plugin_id}@{self.release_id}#{self.generation_id}"
 
 
 @dataclass(frozen=True)
@@ -155,7 +159,7 @@ def bind_execution_contract(
 
 @dataclass(frozen=True)
 class _PreparationContext:
-    installed: InstalledPlugin
+    candidate: PluginRuntimeCandidate
     generation: PluginGenerationRecord
     contributions: PluginContributions
     owner: ContributionOwner
@@ -237,7 +241,7 @@ class ContributionCoordinator:
 
     def prepare(
         self,
-        installed: InstalledPlugin,
+        candidate: PluginRuntimeCandidate,
         generation: PluginGenerationRecord,
         contributions: PluginContributions,
         *,
@@ -245,15 +249,18 @@ class ContributionCoordinator:
         discovered_tools: tuple[Tool, ...] = (),
         resource_contracts: Mapping[str, object] | None = None,
     ) -> PreparedContributionSet:
-        manifest = installed.manifest
+        manifest = candidate.manifest
         owner = ContributionOwner(
-            plugin_id=installed.plugin_id,
-            package_digest=installed.package_digest,
+            plugin_id=candidate.plugin_id,
+            plugin_class=candidate.plugin_class,
+            release_id=candidate.release_id,
             generation_id=generation.generation_id,
+            package_digest=candidate.package_digest,
+            builtin_contract_hash=candidate.builtin_contract_hash,
         )
-        source: PluginSource = "third_party"
+        source: PluginSource = "official" if candidate.plugin_class == "builtin" else "third_party"
         context = _PreparationContext(
-            installed=installed,
+            candidate=candidate,
             generation=generation,
             contributions=contributions,
             owner=owner,
@@ -358,7 +365,10 @@ class ContributionCoordinator:
                         **tool.definition.metadata,
                         "plugin_id": manifest.plugin_id,
                         "plugin_version": manifest.version,
+                        "plugin_class": owner.plugin_class,
+                        "release_id": owner.release_id,
                         "package_digest": owner.package_digest,
+                        "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": declaration.id,
                         "contract_hash": contract_hash,
@@ -423,7 +433,10 @@ class ContributionCoordinator:
                         **tool.definition.metadata,
                         "plugin_id": manifest.plugin_id,
                         "plugin_version": manifest.version,
+                        "plugin_class": owner.plugin_class,
+                        "release_id": owner.release_id,
                         "package_digest": owner.package_digest,
+                        "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": f"mcp:{server_id}:{remote_name}",
                         "contract_hash": contract_hash,
@@ -642,7 +655,7 @@ class _ToolPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.tools = coordinator._prepare_tools(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.source,
             context.contributions.tools,
@@ -656,7 +669,7 @@ class _ToolPreparationAdapter:
         del builder
         return _missing_optional(
             "tools",
-            context.installed.manifest.contributes.tools,
+            context.candidate.manifest.contributes.tools,
             {tool.definition.name for tool in context.contributions.tools},
             exposed_name=True,
         )
@@ -675,7 +688,7 @@ class _HookPreparationAdapter:
         builder.hooks = (
             *builder.hooks,
             *coordinator._prepare_hooks(
-                context.installed.manifest,
+                context.candidate.manifest,
                 context.owner,
                 context.source,
                 context.contributions.hooks,
@@ -689,7 +702,7 @@ class _HookPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "hooks",
-            context.installed.manifest.contributes.hooks,
+            context.candidate.manifest.contributes.hooks,
             {hook.hook_id for hook in builder.hooks if not hook.hook_id.startswith("skill:")},
         )
 
@@ -705,7 +718,7 @@ class _ContextPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.context_providers = coordinator._prepare_context_providers(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.contributions.context_providers,
         )
@@ -717,7 +730,7 @@ class _ContextPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "context_providers",
-            context.installed.manifest.contributes.context_providers,
+            context.candidate.manifest.contributes.context_providers,
             {provider.provider_id for provider in builder.context_providers},
         )
 
@@ -733,7 +746,7 @@ class _CommandPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.commands = coordinator._prepare_commands(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.source,
             context.contributions.commands,
@@ -746,7 +759,7 @@ class _CommandPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "commands",
-            context.installed.manifest.contributes.commands,
+            context.candidate.manifest.contributes.commands,
             {command.name for command in builder.commands},
         )
 
@@ -762,7 +775,7 @@ class _CompactionPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.compaction_strategies = coordinator._prepare_compaction(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.contributions.compaction_strategies,
         )
 
@@ -773,9 +786,9 @@ class _CompactionPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "compaction_strategies",
-            context.installed.manifest.contributes.compaction_strategies,
+            context.candidate.manifest.contributes.compaction_strategies,
             {
-                strategy.strategy_id.removeprefix(f"{context.installed.plugin_id}.")
+                strategy.strategy_id.removeprefix(f"{context.candidate.plugin_id}.")
                 for strategy in builder.compaction_strategies
             },
         )
@@ -801,7 +814,7 @@ class _SkillPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "skills",
-            context.installed.manifest.contributes.skills,
+            context.candidate.manifest.contributes.skills,
             {skill.name for skill in builder.skills},
         )
 
@@ -819,7 +832,7 @@ class _MCPPreparationAdapter:
         builder.tools = (
             *builder.tools,
             *coordinator._prepare_discovered_tools(
-                context.installed.manifest,
+                context.candidate.manifest,
                 context.owner,
                 context.discovered_tools,
             ),
@@ -845,7 +858,7 @@ class _BackgroundServicePreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         coordinator._validate_background_services(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.contributions.background_services,
         )
         builder.background_services = tuple(context.contributions.background_services)
@@ -857,7 +870,7 @@ class _BackgroundServicePreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "background_services",
-            context.installed.manifest.contributes.background_services,
+            context.candidate.manifest.contributes.background_services,
             {service.service_id for service in builder.background_services},
         )
 
@@ -873,7 +886,7 @@ class _ContinuationPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.continuation_policies = coordinator._prepare_continuation_policies(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.contributions.continuation_policies,
         )
@@ -885,7 +898,7 @@ class _ContinuationPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "continuation_policies",
-            context.installed.manifest.contributes.continuation_policies,
+            context.candidate.manifest.contributes.continuation_policies,
             {policy.policy_id for policy in builder.continuation_policies},
         )
 
@@ -901,7 +914,7 @@ class _ToolPolicyPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.tool_policies = coordinator._prepare_tool_policies(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.contributions.tool_policies,
         )
@@ -913,7 +926,7 @@ class _ToolPolicyPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "tool_policies",
-            context.installed.manifest.contributes.tool_policies,
+            context.candidate.manifest.contributes.tool_policies,
             {policy.policy_id for policy in builder.tool_policies},
         )
 
@@ -929,7 +942,7 @@ class _TurnPolicyPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> None:
         builder.turn_policies = coordinator._prepare_turn_policies(
-            context.installed.manifest,
+            context.candidate.manifest,
             context.owner,
             context.contributions.turn_policies,
         )
@@ -941,7 +954,7 @@ class _TurnPolicyPreparationAdapter:
     ) -> tuple[str, ...]:
         return _missing_optional(
             "turn_policies",
-            context.installed.manifest.contributes.turn_policies,
+            context.candidate.manifest.contributes.turn_policies,
             {policy.policy_id for policy in builder.turn_policies},
         )
 

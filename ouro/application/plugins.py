@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Mapping
 from pathlib import Path
 
 from ouro.application.dto import Diagnostic
@@ -27,11 +26,13 @@ from ouro.plugins.authorization import (
     create_code_trust_grant,
     plugin_install_readiness,
 )
+from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog import ExtensionCatalogLease
 from ouro.plugins.compatibility import inspect_community_package
 from ouro.plugins.dependencies import (
-    BuiltinPluginContract,
+    PluginDependencyError,
     active_dependents,
+    builtin_desired_enabled,
     desired_dependant_closure,
     resolve_plugin_dependencies,
 )
@@ -40,6 +41,7 @@ from ouro.plugins.manifest import PluginStatus
 from ouro.plugins.models import (
     InstalledPlugin,
     PluginAuditEvent,
+    PluginClass,
     PluginDiagnostic,
     PluginRecord,
     PluginStateDocument,
@@ -56,6 +58,10 @@ _PLUGIN_GENERATION_RETAINING_RUN_STATUSES = frozenset(
 )
 
 
+class PluginOperationNotAllowedError(ValueError):
+    pass
+
+
 class PluginService:
     """Host-neutral plugin queries and state-changing use cases."""
 
@@ -65,15 +71,16 @@ class PluginService:
         *,
         runtime: PluginRuntimeResource | None = None,
         session_store: SessionStore | None = None,
-        builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
+        builtin_plugins: BuiltinPluginRegistry | None = None,
     ) -> None:
         self.store = store
-        self.builtin_contracts = dict(builtin_contracts or {})
+        self.builtin_plugins = builtin_plugins or BuiltinPluginRegistry()
+        self.builtin_contracts = self.builtin_plugins.contracts
         if runtime is not None and runtime.builtin_contracts != self.builtin_contracts:
-            raise ValueError("plugin service and runtime builtin contracts must match")
+            raise ValueError("plugin service and runtime builtin registries must match")
         self.installer = PluginInstaller(
             store,
-            builtin_plugin_ids=self.builtin_contracts.keys(),
+            builtin_plugins=self.builtin_plugins,
         )
         self.runtime = runtime
         self.session_store = session_store
@@ -168,13 +175,23 @@ class PluginService:
 
     def list(self) -> list[PluginSummary]:
         state = self.store.read_state()
-        return [
-            self._summary(record)
-            for _, record in sorted(state.plugins.items(), key=lambda item: item[0])
+        summaries = {
+            plugin_id: self._summary(record)
+            for plugin_id, record in state.plugins.items()
             if record.selected() is not None
-        ]
+        }
+        summaries.update(
+            {
+                definition.plugin_id: self._builtin_summary(definition, state)
+                for definition in self.builtin_plugins.list()
+            }
+        )
+        return [summaries[plugin_id] for plugin_id in sorted(summaries)]
 
     def show(self, plugin_id: str) -> PluginDetail:
+        definition = self.builtin_plugins.get(plugin_id)
+        if definition is not None:
+            return self._builtin_detail(definition)
         record = self._record(plugin_id)
         installed = _require_selected(record)
         summary = self._summary(record)
@@ -230,7 +247,10 @@ class PluginService:
                     for key, value in (
                         ("phase", item.phase),
                         ("version", item.version),
+                        ("plugin_class", item.plugin_class),
+                        ("release_id", item.release_id),
                         ("package_digest", item.package_digest),
+                        ("builtin_contract_hash", item.builtin_contract_hash),
                         ("generation_id", item.generation_id),
                         ("contribution_id", item.contribution_id),
                         ("correlation_id", item.correlation_id),
@@ -319,10 +339,15 @@ class PluginService:
         self,
         plugin_id: str,
     ) -> builtins.list[dict[str, str | None]]:
-        installed = _require_selected(self._record(plugin_id))
+        definition = self.builtin_plugins.get(plugin_id)
+        manifest = (
+            definition.manifest
+            if definition is not None
+            else _require_selected(self._record(plugin_id)).manifest
+        )
         return [
             item.model_dump(mode="json", exclude_none=True)
-            for item in installed.manifest.dependencies.plugins
+            for item in manifest.dependencies.plugins
         ]
 
     def import_compatibility(self, source: str | Path) -> CompatibilityReportView:
@@ -360,6 +385,7 @@ class PluginService:
         request_id: str | None = None,
         preview: bool = False,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "authorize")
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
         grant = create_capability_grant(installed)
@@ -398,6 +424,7 @@ class PluginService:
         request_id: str | None = None,
         preview: bool = False,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "trust code for")
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
         grant = create_code_trust_grant(installed)
@@ -427,6 +454,7 @@ class PluginService:
         code_trust: bool = False,
         request_id: str | None = None,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "revoke grants from")
         expected = self.store.read_state()
         record = _state_plugin_record(expected, plugin_id)
         installed = _require_selected(record)
@@ -440,7 +468,11 @@ class PluginService:
             "active",
             "degraded",
         }:
-            affected = desired_dependant_closure(candidate, {plugin_id})
+            affected = desired_dependant_closure(
+                candidate,
+                {plugin_id},
+                builtin_contracts=self.builtin_contracts,
+            )
             await self.runtime.apply_candidate_state(
                 expected=expected,
                 candidate=candidate,
@@ -465,6 +497,7 @@ class PluginService:
         request_id: str | None = None,
         preview: bool = False,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "configure")
         expected = self.store.read_state()
         record = _state_plugin_record(expected, plugin_id)
         installed = _select_install(record, package_digest)
@@ -530,6 +563,7 @@ class PluginService:
         *,
         expected_digest: str | None = None,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "select a release for")
         expected = self.store.read_state()
         record = _state_plugin_record(expected, plugin_id)
         installed = _select_install(record, package_digest)
@@ -563,7 +597,11 @@ class PluginService:
             raise ValueError("selected plugin digest has no configuration revision")
         activation.active_configuration_revision_id = configuration.revision_id
         if activation.desired_enabled:
-            affected = desired_dependant_closure(candidate, {plugin_id})
+            affected = desired_dependant_closure(
+                candidate,
+                {plugin_id},
+                builtin_contracts=self.builtin_contracts,
+            )
             resolve_plugin_dependencies(
                 candidate,
                 roots=affected,
@@ -604,6 +642,7 @@ class PluginService:
         subdirectory: str | None = None,
         request_id: str | None = None,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "update")
         _require_selected(self._record(plugin_id))
         result = self.installer.install(
             source,
@@ -633,6 +672,7 @@ class PluginService:
     ) -> PluginActionResult:
         """Install local development bytes and atomically select them when ready."""
 
+        self._require_user_operation(plugin_id, "reload")
         before = self._record(plugin_id)
         previous_digest = before.activation.selected_digest
         desired_enabled = before.activation.desired_enabled
@@ -696,6 +736,7 @@ class PluginService:
         )
 
     async def rollback(self, plugin_id: str, package_digest: str) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "roll back")
         selected = await self.select(plugin_id, package_digest)
         return PluginActionResult(
             action="rollback",
@@ -712,6 +753,7 @@ class PluginService:
         purge_data: bool = False,
         request_id: str | None = None,
     ) -> PluginActionResult:
+        self._require_user_operation(plugin_id, "remove")
         record = self._record(plugin_id)
         target_digest = package_digest or record.activation.selected_digest
         if target_digest is None:
@@ -731,7 +773,13 @@ class PluginService:
             )
         removing_selected = target_digest == record.activation.selected_digest
         dependents = (
-            active_dependents(self.store.read_state(), plugin_id) if removing_selected else []
+            active_dependents(
+                self.store.read_state(),
+                plugin_id,
+                builtin_contracts=self.builtin_contracts,
+            )
+            if removing_selected
+            else []
         )
         if dependents:
             raise ValueError(f"plugin has active dependents: {plugin_id}: {', '.join(dependents)}")
@@ -755,6 +803,26 @@ class PluginService:
         return [str(path) for path in self.installer.garbage_collect()]
 
     def purge_data(self, plugin_id: str) -> PluginActionResult:
+        definition = self.builtin_plugins.get(plugin_id)
+        if definition is not None:
+            state = self.store.read_state()
+            if builtin_desired_enabled(state, definition.dependency_contract()):
+                raise ValueError(f"plugin must be disabled before purging data: {plugin_id}")
+            references = self._durable_references(
+                plugin_id,
+                definition.contract_hash,
+                plugin_class="builtin",
+            )
+            if references:
+                raise ValueError(
+                    "plugin data is retained by active durable runs: " + ", ".join(references)
+                )
+            self.store.purge_data(plugin_id)
+            return PluginActionResult(
+                action="purge_data",
+                plugin_id=plugin_id,
+                status="disabled",
+            )
         record = self._record(plugin_id)
         if record.activation.desired_enabled:
             raise ValueError(f"plugin must be disabled before purging data: {plugin_id}")
@@ -771,6 +839,14 @@ class PluginService:
         return PluginActionResult(action="purge_data", plugin_id=plugin_id, status="disabled")
 
     def check(self, plugin_id: str) -> PluginActionResult:
+        definition = self.builtin_plugins.get(plugin_id)
+        if definition is not None:
+            return PluginActionResult(
+                action="check",
+                plugin_id=plugin_id,
+                status=self._builtin_status(definition, self.store.read_state()),
+                changed=False,
+            )
         record = self._record(plugin_id)
         installed = _require_selected(record)
         diagnostics = self.diagnostics(plugin_id)
@@ -814,6 +890,77 @@ class PluginService:
             plugin_class="user",
         )
 
+    def _builtin_summary(
+        self,
+        definition: BuiltinPluginDefinition,
+        state: PluginStateDocument,
+    ) -> PluginSummary:
+        return PluginSummary(
+            plugin_id=definition.plugin_id,
+            name=definition.manifest.name,
+            version=definition.version,
+            builtin_contract_hash=definition.contract_hash,
+            status=self._builtin_status(definition, state),
+            runtime_kind=definition.manifest.runtime.kind,
+            desired_enabled=builtin_desired_enabled(state, definition.dependency_contract()),
+            plugin_class="builtin",
+            default_enabled=definition.default_enabled,
+        )
+
+    def _builtin_detail(self, definition: BuiltinPluginDefinition) -> PluginDetail:
+        state = self.store.read_state()
+        manifest = definition.manifest
+        generations: list[dict[str, object]] = []
+        if self.runtime is not None:
+            with self.runtime.snapshot() as snapshot:
+                generations = [
+                    generation.model_dump(mode="json", exclude_none=True)
+                    for generation in snapshot.generations
+                    if generation.plugin_id == definition.plugin_id
+                ]
+        return PluginDetail(
+            **self._builtin_summary(definition, state).model_dump(),
+            description=manifest.description,
+            namespace=manifest.namespace,
+            installs=[],
+            capabilities=sorted(manifest.contributes.capabilities()),
+            permissions=[
+                item.model_dump(mode="json", exclude_none=True) for item in manifest.permissions
+            ],
+            contributions={
+                kind: [item.id for item in items]
+                for kind, items in manifest.contributes.by_kind().items()
+                if items
+            },
+            dependencies=[
+                item.model_dump(mode="json", exclude_none=True)
+                for item in manifest.dependencies.plugins
+            ],
+            active_generations=generations,
+            diagnostics=(
+                self.runtime.diagnostics(definition.plugin_id) if self.runtime is not None else []
+            ),
+        )
+
+    def _builtin_status(
+        self,
+        definition: BuiltinPluginDefinition,
+        state: PluginStateDocument,
+    ) -> PluginStatus:
+        if self.runtime is not None:
+            return self.runtime.status(definition.plugin_id)
+        if not builtin_desired_enabled(state, definition.dependency_contract()):
+            return "disabled"
+        try:
+            resolve_plugin_dependencies(
+                state,
+                roots={definition.plugin_id},
+                builtin_contracts=self.builtin_contracts,
+            )
+        except PluginDependencyError:
+            return "incompatible"
+        return "ready"
+
     def _status(self, record: PluginRecord) -> PluginStatus:
         if self.runtime is not None:
             return self.runtime.project_status(record)
@@ -838,6 +985,10 @@ class PluginService:
             return self.store.read_state().plugins[plugin_id]
         except KeyError as exc:
             raise KeyError(f"plugin is not installed: {plugin_id}") from exc
+
+    def _require_user_operation(self, plugin_id: str, operation: str) -> None:
+        if self.builtin_plugins.get(plugin_id) is not None:
+            raise PluginOperationNotAllowedError(f"cannot {operation} builtin plugin: {plugin_id}")
 
     def _install_view(self, installed: InstalledPlugin, record: PluginRecord) -> PluginInstallView:
         provenance = installed.provenance
@@ -887,9 +1038,11 @@ class PluginService:
     def _durable_references(
         self,
         plugin_id: str,
-        package_digest: str | None,
+        release_id: str | None,
+        *,
+        plugin_class: PluginClass = "user",
     ) -> builtins.list[str]:
-        if self.session_store is None or package_digest is None:
+        if self.session_store is None or release_id is None:
             return []
         references: builtins.list[str] = []
         for session in self.session_store.list_sessions():
@@ -904,7 +1057,15 @@ class PluginService:
                 if any(
                     isinstance(item, dict)
                     and item.get("plugin_id") == plugin_id
-                    and item.get("package_digest") == package_digest
+                    and item.get("plugin_class", "user") == plugin_class
+                    and (
+                        item.get("release_id") == release_id
+                        or (
+                            plugin_class == "user"
+                            and "release_id" not in item
+                            and item.get("package_digest") == release_id
+                        )
+                    )
                     for item in generations
                 ):
                     references.append(f"{session.session_id}/{run.run_id}")

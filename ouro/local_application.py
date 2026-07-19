@@ -20,6 +20,7 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
+from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionStrategyRegistry
@@ -33,7 +34,6 @@ from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
 from ouro.mcp import MCPRuntimeResource
 from ouro.plugins.contributions import ContributionCoordinator
-from ouro.plugins.dependencies import BuiltinPluginContract
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import PluginPackageStore
@@ -42,10 +42,6 @@ from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry, builtin_tools
-
-# Builtin plugins are application components, not installable package records.
-# Core tools remain core facilities until they are deliberately modeled as plugins.
-LOCAL_BUILTIN_PLUGIN_CONTRACTS: dict[str, BuiltinPluginContract] = {}
 
 
 @dataclass(frozen=True)
@@ -362,7 +358,7 @@ def build_local_plugin_service(
     return PluginService(
         store,
         session_store=session_store,
-        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
+        builtin_plugins=LOCAL_BUILTIN_PLUGINS,
     )
 
 
@@ -420,14 +416,14 @@ def _build_local_plugin_runtime(
             tool_policies=tool_policies,
         ),
         credential_resolver=resolve_plugin_credential,
-        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
+        builtin_plugins=LOCAL_BUILTIN_PLUGINS,
         base_skills=skills,
     )
     service = PluginService(
         store,
         runtime=runtime,
         session_store=session_store,
-        builtin_contracts=LOCAL_BUILTIN_PLUGIN_CONTRACTS,
+        builtin_plugins=LOCAL_BUILTIN_PLUGINS,
     )
     return runtime, service
 

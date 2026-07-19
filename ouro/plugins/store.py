@@ -121,7 +121,7 @@ class PluginPackageStore:
             raise PluginStoreIOError(f"could not read plugin state: {exc}") from exc
         try:
             raw = json.loads(content)
-            return PluginStateDocument.model_validate(raw)
+            return PluginStateDocument.model_validate(_migrate_plugin_state(raw))
         except (json.JSONDecodeError, ValueError) as exc:
             raise PluginStateFormatError(f"invalid plugin state: {exc}") from exc
 
@@ -261,6 +261,15 @@ class PluginPackageStore:
         finally:
             if temporary is not None and temporary.exists():
                 temporary.unlink()
+
+
+def _migrate_plugin_state(raw: object) -> object:
+    if not isinstance(raw, dict) or raw.get("schema_version") != 2:
+        return raw
+    migrated = dict(raw)
+    migrated["schema_version"] = 3
+    migrated.setdefault("builtin_activation_overrides", {})
+    return migrated
 
 
 def _fsync_tree(root: Path) -> None:

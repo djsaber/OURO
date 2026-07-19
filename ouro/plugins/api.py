@@ -39,8 +39,9 @@ from ouro.core.turn_policies import (
     TurnPolicyDecision,
     TurnPolicyRegistration,
 )
+from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.contributions import PluginContributions
-from ouro.plugins.models import InstalledPlugin, PluginDiagnostic, PluginGenerationRecord
+from ouro.plugins.models import PluginDiagnostic, PluginGenerationRecord
 from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.registry import (
     PluginCommand,
@@ -244,12 +245,12 @@ class RedactedPluginLogger:
 class PluginDiagnosticEmitter:
     def __init__(
         self,
-        installed: InstalledPlugin,
+        candidate: PluginRuntimeCandidate,
         generation: PluginGenerationRecord,
         sink: list[PluginDiagnostic],
         redactor: SensitiveValueRedactor,
     ) -> None:
-        self.installed = installed
+        self.candidate = candidate
         self.generation = generation
         self.sink = sink
         self.redactor = redactor
@@ -268,9 +269,12 @@ class PluginDiagnosticEmitter:
                 phase="runtime",
                 severity=normalized_severity,  # type: ignore[arg-type]
                 message=self.redactor.redact(message),
-                plugin_id=self.installed.plugin_id,
-                version=self.installed.version,
-                package_digest=self.installed.package_digest,
+                plugin_id=self.candidate.plugin_id,
+                version=self.candidate.version,
+                plugin_class=self.candidate.plugin_class,
+                release_id=self.candidate.release_id,
+                package_digest=self.candidate.package_digest,
+                builtin_contract_hash=self.candidate.builtin_contract_hash,
                 generation_id=self.generation.generation_id,
             )
         )
@@ -392,7 +396,7 @@ def _execute_private_module(
 
 
 def build_plugin_context(
-    installed: InstalledPlugin,
+    candidate: PluginRuntimeCandidate,
     generation: PluginGenerationRecord,
     *,
     data_root: Path,
@@ -406,26 +410,29 @@ def build_plugin_context(
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
         identity=sdk.PluginIdentity(
-            plugin_id=installed.plugin_id,
-            version=installed.version,
-            package_digest=installed.package_digest,
+            plugin_id=candidate.plugin_id,
+            version=candidate.version,
+            plugin_class=candidate.plugin_class,
+            release_id=candidate.release_id,
+            package_digest=candidate.package_digest,
+            builtin_contract_hash=candidate.builtin_contract_hash,
             generation_id=generation.generation_id,
         ),
         provenance=sdk.PluginProvenanceSummary(
-            source_kind=installed.provenance.source_kind,
-            public_source=installed.provenance.public_source,
+            source_kind=candidate.source_kind,
+            public_source=candidate.public_source,
         ),
         configuration=MappingProxyType(dict(configuration)),
-        data=data_store or ScopedPluginDataStore(data_root / installed.plugin_id),
+        data=data_store or ScopedPluginDataStore(data_root / candidate.plugin_id),
         credentials=BoundCredentialResolver(
             credential_bindings,
             credential_resolver,
             redactor,
         ),
         tasks=tasks,
-        logger=RedactedPluginLogger(installed.plugin_id, redactor),
-        diagnostics=PluginDiagnosticEmitter(installed, generation, diagnostics, redactor),
-        permissions=frozenset(request.id for request in installed.manifest.permissions),
+        logger=RedactedPluginLogger(candidate.plugin_id, redactor),
+        diagnostics=PluginDiagnosticEmitter(candidate, generation, diagnostics, redactor),
+        permissions=frozenset(request.id for request in candidate.manifest.permissions),
     )
 
 

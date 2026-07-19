@@ -12,7 +12,7 @@ from types import ModuleType
 
 import pytest
 
-from ouro.application.plugins import PluginService
+from ouro.application.plugins import PluginOperationNotAllowedError, PluginService
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderCall
 from ouro.core.continuations import RunContinuationRegistry
@@ -22,6 +22,12 @@ from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
 from ouro.core.turn_policies import TurnCompletionCandidate
 from ouro.local_application import build_local_plugin_service, resolve_plugin_credential
+from ouro.plugins.builtin import (
+    EMPTY_BUILTIN_PLUGIN_REGISTRY,
+    BuiltinPluginDefinition,
+    BuiltinPluginRegistry,
+)
+from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.catalog import (
     ExtensionCatalogBase,
     GenerationGate,
@@ -37,13 +43,17 @@ from ouro.plugins.contributions import (
     PreparedContributionSet,
 )
 from ouro.plugins.dependencies import (
-    BuiltinPluginContract,
     PluginDependencyError,
     resolve_plugin_dependencies,
 )
 from ouro.plugins.manifest import PluginContributes, PluginManifest
 from ouro.plugins.mcp import PluginMCPResource
-from ouro.plugins.models import PluginGenerationRecord, PluginStateDocument
+from ouro.plugins.models import (
+    InstalledPlugin,
+    PluginGenerationRecord,
+    PluginStateDocument,
+    create_configuration_revision,
+)
 from ouro.plugins.package import PluginPackageError, validate_plugin_package
 from ouro.plugins.registry import PluginCommand, PluginCommandError, PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
@@ -54,6 +64,7 @@ from ouro.plugins.store import (
     PluginStoreIOError,
 )
 from ouro.plugins.worker import JsonRpcWorkerClient, WorkerProtocolError
+from ouro.sdk.plugins.v1 import ContributionSet
 from ouro.sessions import LocalSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
@@ -105,7 +116,7 @@ def _write_native_plugin(
 def _runtime(
     home: Path,
     *,
-    builtin_contracts: dict[str, BuiltinPluginContract] | None = None,
+    builtin_plugins: BuiltinPluginRegistry = EMPTY_BUILTIN_PLUGIN_REGISTRY,
     base_skills: tuple[SkillMetadata, ...] = (),
 ):
     tools = ToolRegistry()
@@ -124,10 +135,70 @@ def _runtime(
             continuations=continuations,
             tool_policies=tool_policies,
         ),
-        builtin_contracts=builtin_contracts,
+        builtin_plugins=builtin_plugins,
         base_skills=base_skills,
     )
     return runtime, tools, hooks, commands, compaction
+
+
+class _EmptyBuiltinPlugin:
+    async def prepare(self) -> ContributionSet:
+        return ContributionSet()
+
+    async def start(self) -> None:
+        pass
+
+    async def stop(self, reason: str, deadline: float) -> None:
+        del reason, deadline
+
+
+def _builtin_plugin(
+    root: Path,
+    *,
+    plugin_id: str,
+    version: str = "1.0.0",
+    dependencies: list[dict[str, object]] | None = None,
+    contributes: dict[str, object] | None = None,
+    default_enabled: bool = False,
+) -> BuiltinPluginDefinition:
+    root.mkdir(parents=True, exist_ok=True)
+    namespace = plugin_id.rsplit(".", 1)[-1].replace("-", "_")
+    return BuiltinPluginDefinition(
+        manifest=PluginManifest.model_validate(
+            {
+                "schema_version": 2,
+                "plugin_id": plugin_id,
+                "name": plugin_id.rsplit(".", 1)[-1].title(),
+                "version": version,
+                "namespace": namespace,
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "runtime": {
+                    "kind": "python-inprocess",
+                    "entrypoint": f"{namespace}_plugin:create_plugin",
+                },
+                "contributes": contributes or {},
+                "permissions": [],
+                "dependencies": {"plugins": dependencies or []},
+                "metadata": {},
+            }
+        ),
+        factory=lambda _context: _EmptyBuiltinPlugin(),
+        root=root,
+        default_enabled=default_enabled,
+    )
+
+
+def _user_candidate(installed: InstalledPlugin, root: Path) -> PluginRuntimeCandidate:
+    return PluginRuntimeCandidate(
+        plugin_class="user",
+        manifest=installed.manifest,
+        release_id=installed.package_digest,
+        root=root,
+        configuration=create_configuration_revision(),
+        source_kind=installed.provenance.source_kind,
+        public_source=installed.provenance.public_source,
+        package_digest=installed.package_digest,
+    )
 
 
 def _process_is_running(process_id: int) -> bool:
@@ -378,6 +449,28 @@ def test_state_format_error_remains_a_typed_persistence_failure(tmp_path) -> Non
         store.read_state()
 
 
+def test_plugin_state_schema_two_migrates_without_losing_user_installs(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    _write_native_plugin(source)
+    service = build_local_plugin_service(tmp_path / "home")
+    installed = service.install(source)
+    raw = json.loads(service.store.state_path.read_text(encoding="utf-8"))
+    raw["schema_version"] = 2
+    raw.pop("builtin_activation_overrides")
+    service.store.state_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    migrated = service.store.read_state()
+
+    selected = migrated.plugins["dev.ouro.echo"].selected()
+    assert selected is not None
+    assert selected.package_digest == installed.package_digest
+    assert migrated.builtin_activation_overrides == {}
+    service.store.mutate_state(lambda state: state)
+    persisted = json.loads(service.store.state_path.read_text(encoding="utf-8"))
+    assert persisted["schema_version"] == 3
+
+
 def test_permission_registry_and_builtin_identity_are_enforced_before_install(tmp_path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -397,19 +490,66 @@ def test_permission_registry_and_builtin_identity_are_enforced_before_install(tm
 
     _write_native_plugin(source := tmp_path / "reserved")
     store = PluginPackageStore(tmp_path / "home")
+    builtin_plugins = BuiltinPluginRegistry(
+        (
+            _builtin_plugin(
+                tmp_path / "builtin-echo",
+                plugin_id="dev.ouro.echo",
+                contributes={
+                    "tools": [
+                        {
+                            "id": "reserved",
+                            "exposed_name": "ReservedBuiltinTool",
+                            "description": "Reserved by a builtin plugin.",
+                        }
+                    ]
+                },
+            ),
+        )
+    )
     service = PluginService(
         store,
-        builtin_contracts={
-            "dev.ouro.echo": BuiltinPluginContract(
-                plugin_id="dev.ouro.echo",
-                version="1.0.0",
-                contract_hash="builtin-echo-v1",
-            )
-        },
+        builtin_plugins=builtin_plugins,
     )
     with pytest.raises(ValueError, match="cannot replace builtin identity"):
         service.install(source)
     assert not store.package_path("dev.ouro.echo", "unused").parent.exists()
+
+    collision = tmp_path / "collision"
+    collision.mkdir()
+    _write_native_plugin(
+        collision,
+        plugin_id="dev.ouro.collision",
+        runtime={
+            "kind": "python-inprocess",
+            "entrypoint": "collision_plugin:create_plugin",
+        },
+        contributes={
+            "tools": [
+                {
+                    "id": "reserved",
+                    "exposed_name": "ReservedBuiltinTool",
+                    "description": "Attempts to replace a builtin tool.",
+                }
+            ]
+        },
+    )
+    (collision / "collision_plugin.py").write_text("def create_plugin(context): ...\n")
+    with pytest.raises(ValueError, match="cannot replace builtin tool names"):
+        service.install(collision)
+
+
+def test_builtin_contract_hash_covers_implementation_content(tmp_path) -> None:
+    root = tmp_path / "builtin"
+    root.mkdir()
+    implementation = root / "example_plugin.py"
+    implementation.write_text("VALUE = 1\n", encoding="utf-8")
+    first = _builtin_plugin(root, plugin_id="dev.ouro.example")
+
+    implementation.write_text("VALUE = 2\n", encoding="utf-8")
+    second = _builtin_plugin(root, plugin_id="dev.ouro.example")
+
+    assert first.contract_hash != second.contract_hash
 
 
 @pytest.mark.asyncio
@@ -928,6 +1068,8 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
     assert Path(skill.location).read_text(encoding="utf-8").endswith("Instructions.\n")
     assert skill.extensions["ouro"] == {
         "plugin_id": "dev.ouro.echo",
+        "plugin_class": "user",
+        "release_id": snapshot.generations[0].release_id,
         "package_digest": snapshot.generations[0].package_digest,
         "generation_id": snapshot.generations[0].generation_id,
         "contribution_id": "calendar",
@@ -1118,7 +1260,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
         plugin_api_version="1.0.0",
     )
     prepared = coordinator.prepare(
-        installed,
+        _user_candidate(installed, source),
         generation,
         PluginContributions(
             tools=[
@@ -1168,7 +1310,13 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         continuations=None,
         tool_policies=None,
     )
-    previous_owner = ContributionOwner("dev.ouro.echo", "digest-1", "generation-1")
+    previous_owner = ContributionOwner(
+        plugin_id="dev.ouro.echo",
+        plugin_class="user",
+        release_id="digest-1",
+        generation_id="generation-1",
+        package_digest="digest-1",
+    )
     previous_record = PluginGenerationRecord(
         generation_id="generation-1",
         plugin_id="dev.ouro.echo",
@@ -1201,7 +1349,13 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
     )
 
     replacement = PreparedContributionSet(
-        owner=ContributionOwner("dev.ouro.echo", "digest-2", "generation-2"),
+        owner=ContributionOwner(
+            plugin_id="dev.ouro.echo",
+            plugin_class="user",
+            release_id="digest-2",
+            generation_id="generation-2",
+            package_digest="digest-2",
+        ),
         tools=(
             Tool(
                 definition=ToolDefinition(name="host__run", description="Conflict."),
@@ -2631,18 +2785,18 @@ async def test_builtin_contract_participates_in_dependency_lock(tmp_path) -> Non
         plugin_id="dev.ouro.incompatible",
         dependencies=[{"plugin_id": "dev.ouro.builtin", "version": "^3.0.0"}],
     )
-    contracts = {
-        "dev.ouro.builtin": BuiltinPluginContract(
-            plugin_id="dev.ouro.builtin",
-            version="2.1.0",
-            contract_hash="builtin-v2-contract",
-        )
-    }
-    runtime, *_ = _runtime(tmp_path / "home", builtin_contracts=contracts)
+    definition = _builtin_plugin(
+        tmp_path / "builtin",
+        plugin_id="dev.ouro.builtin",
+        version="2.1.0",
+    )
+    builtin_plugins = BuiltinPluginRegistry((definition,))
+    contracts = builtin_plugins.contracts
+    runtime, *_ = _runtime(tmp_path / "home", builtin_plugins=builtin_plugins)
     service = PluginService(
         runtime.store,
         runtime=runtime,
-        builtin_contracts=contracts,
+        builtin_plugins=builtin_plugins,
     )
     service.install(compatible)
     service.install(incompatible)
@@ -2656,9 +2810,12 @@ async def test_builtin_contract_participates_in_dependency_lock(tmp_path) -> Non
     builtin = graph.nodes[0]
     assert builtin.plugin_class == "builtin"
     assert builtin.package_digest is None
-    assert builtin.contract_hash == "builtin-v2-contract"
+    assert builtin.contract_hash == definition.contract_hash
     with runtime.snapshot() as catalog:
-        assert [item.plugin_id for item in catalog.generations] == ["dev.ouro.compatible"]
+        assert [item.plugin_id for item in catalog.generations] == [
+            "dev.ouro.builtin",
+            "dev.ouro.compatible",
+        ]
 
     assert (await service.enable("dev.ouro.incompatible")).status == "incompatible"
     assert service.show("dev.ouro.incompatible").status == "incompatible"
@@ -2668,6 +2825,61 @@ async def test_builtin_contract_participates_in_dependency_lock(tmp_path) -> Non
         for item in service.diagnostics("dev.ouro.incompatible")
     )
     await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_builtin_plugin_uses_generation_lifecycle_and_persisted_override(tmp_path) -> None:
+    home = tmp_path / "home"
+    definition = _builtin_plugin(
+        tmp_path / "builtin",
+        plugin_id="dev.ouro.builtin",
+        default_enabled=True,
+    )
+    builtin_plugins = BuiltinPluginRegistry((definition,))
+    runtime, *_ = _runtime(home, builtin_plugins=builtin_plugins)
+    service = PluginService(
+        runtime.store,
+        runtime=runtime,
+        builtin_plugins=builtin_plugins,
+    )
+
+    await runtime.start()
+
+    detail = service.show("dev.ouro.builtin")
+    assert detail.plugin_class == "builtin"
+    assert detail.default_enabled is True
+    assert detail.desired_enabled is True
+    assert detail.status == "active"
+    assert detail.package_digest is None
+    assert detail.builtin_contract_hash == definition.contract_hash
+    assert detail.installs == []
+    assert runtime.store.read_state().builtin_activation_overrides == {}
+    with runtime.snapshot() as snapshot:
+        generation = snapshot.generations[0]
+        assert generation.plugin_class == "builtin"
+        assert generation.release_id == definition.contract_hash
+        assert generation.builtin_contract_hash == definition.contract_hash
+        assert generation.package_digest is None
+
+    assert (await service.disable("dev.ouro.builtin")).status == "disabled"
+    override = runtime.store.read_state().builtin_activation_overrides["dev.ouro.builtin"]
+    assert override.desired_enabled is False
+    with pytest.raises(PluginOperationNotAllowedError, match="cannot remove builtin plugin"):
+        await service.remove("dev.ouro.builtin")
+    with pytest.raises(PluginOperationNotAllowedError, match="cannot configure builtin plugin"):
+        await service.configure("dev.ouro.builtin", {})
+    await runtime.close()
+
+    restarted, *_ = _runtime(home, builtin_plugins=builtin_plugins)
+    restarted_service = PluginService(
+        restarted.store,
+        runtime=restarted,
+        builtin_plugins=builtin_plugins,
+    )
+    await restarted.start()
+    assert restarted_service.show("dev.ouro.builtin").status == "disabled"
+    assert (await restarted_service.enable("dev.ouro.builtin")).status == "active"
+    await restarted.close()
 
 
 @pytest.mark.asyncio

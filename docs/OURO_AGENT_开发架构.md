@@ -373,6 +373,15 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 插件是 OURO 系统级扩展模块，来源只分 `builtin` 与 `user`。workspace/project 只作为一次请求的执行上下文，
   不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 均不再
   携带 activation scope。
+- Builtin 由 application composition root 的显式 definition registry 装配，不扫描磁盘、不写入 user immutable
+  store，也不伪造 install/provenance。definition registry 是 builtin identity、默认启停、依赖 contract 和公开名称
+  保留的唯一事实来源；user installer、dependency resolver、application facade 与 runtime 都消费该 registry 的派生视图。
+- Builtin 与 user 的差异止于供应、授权和管理操作。启用后两者进入同一个 candidate reconciliation，拥有正常
+  Generation、gate、owner、Catalog projection 和 durable execution contract；可关闭 builtin 不能放入 Host baseline，
+  也不新增 `builtin` runtime kind 或第二套插件 runtime。
+- `PluginPackageStore.state.json` 保留 user install/activation，并另存稀疏 builtin enablement override；builtin code 随
+  OURO distribution 发布，私有 data 继续使用 `OURO_HOME/plugins/data/<plugin-id>/`。没有 override 时使用 definition 的
+  product default，显式用户选择跨重启保留。
 - 插件系统将 package、install/provenance、authorization 和 runtime generation 分层。当前代码已经形成首版
   管理与运行闭环；[插件系统规格](../dev/specs/plugin-system.md)描述权威目标与剩余契约，现状差距以
   [插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)为准。同进程插件为 full trust，worker
@@ -415,7 +424,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   runtime 等待 lease drain 到 deadline，逾期记录诊断后继续清理，避免资源 owner 先于消费者失效。
 - 本地 store、credential resolver、registry 和 runtime 的具体装配只属于 `ouro.local_application`；
   `ouro.application.plugins.PluginService` 保持 Host-neutral，不提供隐藏的本地构造入口。
-- pending Tool/Approval、Continuation 和 Run Catalog 持久化 `execution_contract_hash`；摘要覆盖 package digest、有效
+- pending Tool/Approval、Continuation 和 Run Catalog 持久化 `execution_contract_hash`；摘要覆盖 release identity（user
+  package digest 或 builtin contract hash）、有效
   配置修订、传递依赖锁、Plugin API/worker protocol 和全部 contribution contract；Tool 的归一化 effect、batch
   behavior 与 resumable 能力属于该 contract。恢复忽略随机 `generation_id`，但会
   复核所有稳定事实与 ToolExecutor 契约，绝不按同名工具猜测替代。

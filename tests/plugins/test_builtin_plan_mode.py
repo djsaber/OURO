@@ -28,8 +28,7 @@ from ouro.tools import (
     builtin_tools,
 )
 
-EXAMPLE = Path(__file__).parents[2] / "examples" / "plugins" / "plan-mode"
-PLUGIN_ID = "dev.ouro.examples.plan_mode"
+PLUGIN_ID = "dev.ouro.plan_mode"
 
 
 class PlanBuildProvider:
@@ -248,11 +247,8 @@ def _runtime(home: Path, workspace: Path, provider) -> tuple[RuntimeService, Loc
     return runtime, store
 
 
-async def _install_and_enable(application: LocalApplication) -> None:
+async def _enable_plan_mode(application: LocalApplication) -> None:
     assert application.plugins is not None
-    application.plugins.install(EXAMPLE)
-    application.plugins.authorize(PLUGIN_ID)
-    application.plugins.trust_code(PLUGIN_ID)
     await application.start()
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
 
@@ -267,7 +263,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     first_provider = PlanBuildProvider()
     first_runtime, first_store = _runtime(home, workspace, first_provider)
     first_application = LocalApplication.from_runtime(first_runtime, home=home)
-    await _install_and_enable(first_application)
+    await _enable_plan_mode(first_application)
 
     waiting = await first_runtime.run("Design the implementation", approval_mode="auto")
 
@@ -348,7 +344,7 @@ async def test_plan_mode_requires_approval_for_write_outside_current_plan(tmp_pa
     provider = WrongWriteProvider(wrong_path)
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
-    await _install_and_enable(application)
+    await _enable_plan_mode(application)
 
     result = await runtime.run("Plan without changing implementation", approval_mode="auto")
 
@@ -359,9 +355,7 @@ async def test_plan_mode_requires_approval_for_write_outside_current_plan(tmp_pa
     )
     assert call.invocation is not None
     assert call.invocation.permission_mode == "approval"
-    assert call.invocation.tool_policy_ids == [
-        "dev.ouro.examples.plan_mode/tool_policies/plan-tool-gate"
-    ]
+    assert call.invocation.tool_policy_ids == ["dev.ouro.plan_mode/tool_policies/plan-tool-gate"]
     events = store.load_session(result.session.session_id).events
     policy_event = next(
         event
@@ -381,7 +375,7 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
     provider = PlainTextProvider()
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
-    await _install_and_enable(application)
+    await _enable_plan_mode(application)
     session = runtime.create_session(title="Plan command")
     assert application.plugins is not None
 
@@ -430,7 +424,7 @@ async def test_plan_mode_allows_run_to_finish_after_user_rejects_tool(tmp_path) 
     provider = RejectedWriteThenTextProvider(target)
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
-    await _install_and_enable(application)
+    await _enable_plan_mode(application)
     session = runtime.create_session(title="Rejected plan tool")
     assert application.plugins is not None
     command = await application.plugins.execute_command(
@@ -476,7 +470,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     workspace.mkdir()
     runtime, _ = _runtime(home, workspace, FinalProvider())
     application = LocalApplication.from_runtime(runtime, home=home)
-    await _install_and_enable(application)
+    await _enable_plan_mode(application)
     assert application.plugin_runtime is not None
     catalog = application.plugin_runtime.snapshot()
     enter = catalog.tools.get("EnterPlanMode")

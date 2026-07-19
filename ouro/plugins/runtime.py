@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from time import monotonic
@@ -20,6 +20,8 @@ from ouro.plugins.api import (
     load_plugin_factory,
 )
 from ouro.plugins.authorization import plugin_install_readiness
+from ouro.plugins.builtin import EMPTY_BUILTIN_PLUGIN_REGISTRY, BuiltinPluginRegistry
+from ouro.plugins.candidates import PluginRuntimeCandidate
 from ouro.plugins.catalog import (
     ExtensionCatalog,
     ExtensionCatalogBase,
@@ -35,10 +37,10 @@ from ouro.plugins.contributions import (
     bind_execution_contract,
 )
 from ouro.plugins.dependencies import (
-    BuiltinPluginContract,
     PluginDependencyError,
     PluginLockGraph,
     active_dependents,
+    builtin_desired_enabled,
     desired_dependant_closure,
     resolve_plugin_dependencies,
 )
@@ -52,13 +54,14 @@ from ouro.plugins.generation_resources import (
 )
 from ouro.plugins.manifest import plugin_module_namespace
 from ouro.plugins.models import (
-    InstalledPlugin,
+    BuiltinPluginActivationOverride,
     PluginAuditEvent,
     PluginDiagnostic,
     PluginGenerationRecord,
     PluginRecord,
     PluginStateDocument,
     PluginStatus,
+    create_configuration_revision,
 )
 from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.store import PluginPackageStore, PluginStateConflictError
@@ -87,7 +90,7 @@ class PluginExecutionContractUnavailableError(RuntimeError):
 @dataclass
 class ActivePluginGeneration:
     record: PluginGenerationRecord
-    installed: InstalledPlugin
+    candidate: PluginRuntimeCandidate
     instance: Any
     contributions: PreparedContributionSet
     gate: GenerationGate
@@ -150,14 +153,15 @@ class PluginRuntimeResource:
         *,
         credential_resolver=None,
         stop_timeout_seconds: float = 5.0,
-        builtin_contracts: Mapping[str, BuiltinPluginContract] | None = None,
+        builtin_plugins: BuiltinPluginRegistry = EMPTY_BUILTIN_PLUGIN_REGISTRY,
         base_skills: tuple[SkillMetadata, ...] = (),
     ) -> None:
         self.store = store
         self.coordinator = coordinator
         self.credential_resolver = credential_resolver
         self.stop_timeout_seconds = stop_timeout_seconds
-        self.builtin_contracts = dict(builtin_contracts or {})
+        self.builtin_plugins = builtin_plugins
+        self.builtin_contracts = builtin_plugins.contracts
         self.base_skills = tuple(skill.model_copy(deep=True) for skill in base_skills)
         self._active: dict[str, ActivePluginGeneration] = {}
         self._retired: dict[str, ActivePluginGeneration] = {}
@@ -206,13 +210,22 @@ class PluginRuntimeResource:
             )
         state = recovery.state
         desired_roots = sorted(
-            plugin_id
-            for plugin_id, record in state.plugins.items()
-            if record.activation.desired_enabled
+            {
+                *(
+                    plugin_id
+                    for plugin_id, record in state.plugins.items()
+                    if record.activation.desired_enabled
+                ),
+                *(
+                    plugin_id
+                    for plugin_id, contract in self.builtin_contracts.items()
+                    if builtin_desired_enabled(state, contract)
+                ),
+            }
         )
         for plugin_id in desired_roots:
             try:
-                await self.enable(plugin_id)
+                await self.activate(plugin_id)
             except Exception as exc:  # noqa: BLE001 - isolate independent roots.
                 self._diagnostics.append(
                     PluginDiagnostic(
@@ -228,26 +241,26 @@ class PluginRuntimeResource:
         async with self._mutation_lock:
             self._ensure_catalog()
             expected = self.store.read_state()
-            record = _state_plugin_record(expected, plugin_id)
-            installed = record.selected()
-            if installed is None:
-                return "invalid"
-            status = self.project_status(record)
+            candidate = self._runtime_candidate(expected, plugin_id)
+            status = self.status(plugin_id)
             if plugin_id in self._active:
                 status = "ready"
-            if status == "failed" and self._failed.get(plugin_id) == installed.package_digest:
+            if status == "failed" and self._failed.get(plugin_id) == candidate.release_id:
                 self._failed.pop(plugin_id, None)
-                status = self.project_status(record)
+                status = self.status(plugin_id)
             if status not in {"ready", "active"}:
                 return status
             try:
-                affected = desired_dependant_closure(expected, {plugin_id})
+                affected = desired_dependant_closure(
+                    expected,
+                    {plugin_id},
+                    builtin_contracts=self.builtin_contracts,
+                )
                 affected_graph = self._resolve_dependencies(expected, roots=affected)
                 rebuild_ids = {
                     node.plugin_id
                     for node in affected_graph.nodes
-                    if node.plugin_class == "user"
-                    and (node.plugin_id in affected or node.plugin_id not in self._active)
+                    if node.plugin_id in affected or node.plugin_id not in self._active
                 }
                 await self._transition_state_locked(
                     expected=expected,
@@ -256,12 +269,11 @@ class PluginRuntimeResource:
                     reason="restart" if plugin_id in self._active else "activate",
                 )
             except PluginCandidateBuildError as exc:
-                failed = _state_plugin_record(expected, exc.plugin_id).selected()
-                if failed is not None:
-                    self._record_failure(failed, "activation", exc.cause)
+                failed = self._runtime_candidate(expected, exc.plugin_id)
+                self._record_failure(failed, "activation", exc.cause)
                 return self.status(plugin_id)
             except Exception as exc:
-                self._record_failure(installed, "activation", exc)
+                self._record_failure(candidate, "activation", exc)
                 return "failed"
             return "active"
 
@@ -270,14 +282,18 @@ class PluginRuntimeResource:
             raise ValueError("non-blocking plugin disable is not supported")
         async with self._mutation_lock:
             expected = self.store.read_state()
-            record = _state_plugin_record(expected, plugin_id)
-            dependents = active_dependents(expected, plugin_id)
+            candidate_definition = self._runtime_candidate(expected, plugin_id)
+            dependents = active_dependents(
+                expected,
+                plugin_id,
+                builtin_contracts=self.builtin_contracts,
+            )
             if dependents:
                 raise PluginDependencyError(
                     f"plugin has active dependents: {plugin_id}: {', '.join(dependents)}"
                 )
             candidate = expected.model_copy(deep=True)
-            candidate.plugins[plugin_id].activation.desired_enabled = False
+            self._set_desired_enabled(candidate, plugin_id, False)
             await self._transition_state_locked(
                 expected=expected,
                 candidate_state=candidate,
@@ -285,15 +301,17 @@ class PluginRuntimeResource:
                 close_gate_ids={plugin_id},
                 reason="disable",
             )
-            installed = record.selected()
-            if installed is not None:
-                self.store.append_audit(
-                    PluginAuditEvent(
-                        action="disable",
-                        plugin_id=plugin_id,
-                        package_digest=installed.package_digest,
-                    )
+            self.store.append_audit(
+                PluginAuditEvent(
+                    action="disable",
+                    plugin_id=plugin_id,
+                    package_digest=candidate_definition.package_digest,
+                    metadata={
+                        "plugin_class": candidate_definition.plugin_class,
+                        "release_id": candidate_definition.release_id,
+                    },
                 )
+            )
             return "disabled"
 
     async def suspend(self, plugin_id: str, *, revoke: bool = False) -> PluginStatus:
@@ -301,8 +319,16 @@ class PluginRuntimeResource:
 
         async with self._mutation_lock:
             expected = self.store.read_state()
-            _state_plugin_record(expected, plugin_id)
-            affected = desired_dependant_closure(expected, {plugin_id}) if revoke else {plugin_id}
+            self._runtime_candidate(expected, plugin_id)
+            affected = (
+                desired_dependant_closure(
+                    expected,
+                    {plugin_id},
+                    builtin_contracts=self.builtin_contracts,
+                )
+                if revoke
+                else {plugin_id}
+            )
             await self._transition_state_locked(
                 expected=expected,
                 candidate_state=expected,
@@ -315,43 +341,44 @@ class PluginRuntimeResource:
     async def enable(self, plugin_id: str) -> PluginStatus:
         async with self._mutation_lock:
             expected = self.store.read_state()
-            record = _state_plugin_record(expected, plugin_id)
-            installed = record.selected()
-            if installed is None:
-                return "invalid"
-            affected = desired_dependant_closure(expected, {plugin_id})
-            if record.activation.desired_enabled and all(
+            root_candidate = self._runtime_candidate(expected, plugin_id)
+            affected = desired_dependant_closure(
+                expected,
+                {plugin_id},
+                builtin_contracts=self.builtin_contracts,
+            )
+            if self._desired_enabled(expected, plugin_id) and all(
                 affected_id in self._active for affected_id in affected
             ):
                 return self.status(plugin_id)
             candidate = expected.model_copy(deep=True)
-            candidate.plugins[plugin_id].activation.desired_enabled = True
+            self._set_desired_enabled(candidate, plugin_id, True)
             try:
-                affected = desired_dependant_closure(candidate, {plugin_id})
+                affected = desired_dependant_closure(
+                    candidate,
+                    {plugin_id},
+                    builtin_contracts=self.builtin_contracts,
+                )
                 graph = self._resolve_dependencies(candidate, roots=affected)
             except PluginDependencyError:
                 self.store.commit_candidate_state(expected, candidate)
                 return self.status(plugin_id)
             for node in graph.nodes:
-                if node.plugin_class == "user":
-                    candidate.plugins[node.plugin_id].activation.desired_enabled = True
+                self._set_desired_enabled(candidate, node.plugin_id, True)
             try:
                 committed = self.store.commit_candidate_state(expected, candidate)
                 not_ready = [
-                    (node.plugin_id, self._candidate_readiness(committed.plugins[node.plugin_id]))
+                    (node.plugin_id, self._candidate_readiness(committed, node.plugin_id))
                     for node in graph.nodes
-                    if node.plugin_class == "user"
-                    and self._candidate_readiness(committed.plugins[node.plugin_id]) != "ready"
+                    if self._candidate_readiness(committed, node.plugin_id) != "ready"
                 ]
                 if not_ready:
-                    target_status = self._candidate_readiness(committed.plugins[plugin_id])
+                    target_status = self._candidate_readiness(committed, plugin_id)
                     if target_status != "ready":
                         return target_status
                     return self.status(plugin_id)
                 rebuild_ids = {
-                    node.plugin_id
-                    for node in graph.nodes
-                    if node.plugin_class == "user" and node.plugin_id not in self._active
+                    node.plugin_id for node in graph.nodes if node.plugin_id not in self._active
                 }
                 await self._transition_state_locked(
                     expected=committed,
@@ -360,18 +387,18 @@ class PluginRuntimeResource:
                     reason="activate",
                 )
             except PluginCandidateBuildError as exc:
-                failed = _state_plugin_record(committed, exc.plugin_id).selected()
-                if failed is not None:
-                    self._record_failure(failed, "activation", exc.cause)
+                failed = self._runtime_candidate(committed, exc.plugin_id)
+                self._record_failure(failed, "activation", exc.cause)
                 return self.status(plugin_id)
             except Exception as exc:
-                self._record_failure(installed, "activation", exc)
+                self._record_failure(root_candidate, "activation", exc)
                 return self.status(plugin_id)
             return self.status(plugin_id)
 
     async def restart(self, plugin_id: str) -> PluginStatus:
-        record = self._plugin_record(plugin_id)
-        if not record.activation.desired_enabled:
+        state = self.store.read_state()
+        self._runtime_candidate(state, plugin_id)
+        if not self._desired_enabled(state, plugin_id):
             return "disabled"
         return await self.activate(plugin_id)
 
@@ -391,11 +418,15 @@ class PluginRuntimeResource:
         async with self._mutation_lock:
             rebuild_ids = set(roots)
             if cascade_dependants:
-                rebuild_ids = desired_dependant_closure(candidate, rebuild_ids)
+                rebuild_ids = desired_dependant_closure(
+                    candidate,
+                    rebuild_ids,
+                    builtin_contracts=self.builtin_contracts,
+                )
             rebuild_ids = {
                 plugin_id
                 for plugin_id in rebuild_ids
-                if candidate.plugins[plugin_id].activation.desired_enabled
+                if self._desired_enabled(candidate, plugin_id)
             }
             try:
                 await self._transition_state_locked(
@@ -409,10 +440,9 @@ class PluginRuntimeResource:
             except Exception as exc:
                 failure_id = exc.plugin_id if isinstance(exc, PluginCandidateBuildError) else None
                 root = failure_id or next(iter(sorted(roots)))
-                installed = _state_plugin_record(candidate, root).selected()
-                if installed is not None:
-                    cause = exc.cause if isinstance(exc, PluginCandidateBuildError) else exc
-                    self._record_failure(installed, reason, cause)
+                failed = self._runtime_candidate(candidate, root)
+                cause = exc.cause if isinstance(exc, PluginCandidateBuildError) else exc
+                self._record_failure(failed, reason, cause)
                 raise
 
     def snapshot(self) -> ExtensionCatalogLease:
@@ -488,8 +518,24 @@ class PluginRuntimeResource:
         state = self.store.read_state()
         recovery_state = state.model_copy(deep=True)
         for plugin_id, expected in expected_records.items():
+            if not self._desired_enabled(recovery_state, plugin_id):
+                raise PluginExecutionContractUnavailableError(
+                    "required plugin catalog is no longer available"
+                )
+            if expected.plugin_class == "builtin":
+                definition = self.builtin_plugins.get(plugin_id)
+                if (
+                    definition is None
+                    or definition.contract_hash != expected.builtin_contract_hash
+                    or create_configuration_revision().revision_id
+                    != expected.configuration_revision_id
+                ):
+                    raise PluginExecutionContractUnavailableError(
+                        "required builtin plugin contract is no longer available"
+                    )
+                continue
             record = recovery_state.plugins.get(plugin_id)
-            if record is None or not record.activation.desired_enabled:
+            if record is None:
                 raise PluginExecutionContractUnavailableError(
                     "required plugin catalog is no longer available"
                 )
@@ -526,8 +572,7 @@ class PluginRuntimeResource:
             raise PluginExecutionContractUnavailableError(
                 "required plugin catalog is no longer available"
             ) from exc
-        user_nodes = {node.plugin_id for node in graph.nodes if node.plugin_class == "user"}
-        if user_nodes != set(expected_records):
+        if {node.plugin_id for node in graph.nodes} != set(expected_records):
             raise PluginExecutionContractUnavailableError(
                 "required plugin catalog dependency lock is incomplete"
             )
@@ -536,8 +581,6 @@ class PluginRuntimeResource:
         rebuilt: list[ActivePluginGeneration] = []
         try:
             for node in graph.nodes:
-                if node.plugin_class == "builtin":
-                    continue
                 expected = expected_records[node.plugin_id]
                 active = self._active.get(node.plugin_id)
                 if active is not None and generation_matches_execution_contract(
@@ -546,9 +589,7 @@ class PluginRuntimeResource:
                 ):
                     sources[node.plugin_id] = active
                     continue
-                record = recovery_state.plugins[node.plugin_id]
-                installed = record.selected()
-                if installed is None or self._candidate_readiness(record) != "ready":
+                if self._candidate_readiness(recovery_state, node.plugin_id) != "ready":
                     raise PluginExecutionContractUnavailableError(
                         "required plugin catalog is no longer available"
                     )
@@ -563,8 +604,7 @@ class PluginRuntimeResource:
                     owner_plugin_id=node.plugin_id,
                 )
                 generation = await self._build_generation(
-                    installed,
-                    record,
+                    self._runtime_candidate(recovery_state, node.plugin_id),
                     dependency_lock_fingerprint=dependency_fingerprint,
                 )
                 if not generation_matches_execution_contract(
@@ -633,7 +673,26 @@ class PluginRuntimeResource:
             return "blocked"
         return "ready"
 
+    def project_builtin_status(self, plugin_id: str) -> PluginStatus:
+        state = self.store.read_state()
+        definition = self.builtin_plugins.require(plugin_id)
+        active = self._active.get(plugin_id)
+        if active is not None:
+            return active.record.status
+        if self._failed.get(plugin_id) == definition.contract_hash:
+            return "failed"
+        if not self._desired_enabled(state, plugin_id):
+            return "disabled"
+        error = self._dependency_resolution_error(state, plugin_id)
+        if error is not None:
+            return "incompatible"
+        if self._dependency_blockers(state, plugin_id):
+            return "blocked"
+        return "ready"
+
     def status(self, plugin_id: str) -> PluginStatus:
+        if self.builtin_plugins.get(plugin_id) is not None:
+            return self.project_builtin_status(plugin_id)
         return self.project_status(self._plugin_record(plugin_id))
 
     def diagnostics(self, plugin_id: str | None = None) -> list[PluginDiagnostic]:
@@ -646,7 +705,11 @@ class PluginRuntimeResource:
             ),
         ]
         state = self.store.read_state()
-        observed_ids = [plugin_id] if plugin_id is not None else sorted(state.plugins)
+        observed_ids = (
+            [plugin_id]
+            if plugin_id is not None
+            else sorted({*state.plugins, *self.builtin_plugins.plugin_ids})
+        )
         for observed_id in observed_ids:
             diagnostic = self._dependency_diagnostic(state, observed_id)
             if diagnostic is not None:
@@ -753,9 +816,10 @@ class PluginRuntimeResource:
         requested_rebuilds = set(rebuild_ids or ())
         requested_removals = set(remove_ids or ())
         gated_removals = set(close_gate_ids or ())
-        unknown = (requested_rebuilds | requested_removals | gated_removals) - set(expected.plugins)
+        known_ids = {*expected.plugins, *self.builtin_plugins.plugin_ids}
+        unknown = (requested_rebuilds | requested_removals | gated_removals) - known_ids
         if unknown:
-            raise KeyError(f"plugin is not installed: {sorted(unknown)[0]}")
+            raise KeyError(f"plugin is not available: {sorted(unknown)[0]}")
         requested_rebuilds -= requested_removals
 
         graph = (
@@ -766,10 +830,9 @@ class PluginRuntimeResource:
         build_ids = set(requested_rebuilds)
         if graph is not None:
             for node in graph.nodes:
-                if node.plugin_class == "builtin":
-                    continue
                 active = self._active.get(node.plugin_id)
-                if active is None or active.installed.package_digest != node.package_digest:
+                release_id = node.package_digest or node.contract_hash
+                if active is None or active.candidate.release_id != release_id:
                     build_ids.add(node.plugin_id)
 
         candidates: dict[str, ActivePluginGeneration] = {}
@@ -777,17 +840,10 @@ class PluginRuntimeResource:
         try:
             if graph is not None:
                 for node in graph.nodes:
-                    if node.plugin_class == "builtin":
-                        continue
                     if node.plugin_id not in build_ids:
                         continue
-                    record = _state_plugin_record(candidate_state, node.plugin_id)
-                    installed = record.selected()
-                    if installed is None:
-                        raise PluginDependencyError(
-                            f"required plugin has no selected install: {node.plugin_id}"
-                        )
-                    readiness = self._candidate_readiness(record)
+                    runtime_candidate = self._runtime_candidate(candidate_state, node.plugin_id)
+                    readiness = self._candidate_readiness(candidate_state, node.plugin_id)
                     if readiness != "ready":
                         raise PluginGenerationStartError(
                             f"plugin candidate is not activation-ready: "
@@ -797,8 +853,6 @@ class PluginRuntimeResource:
                         dependency_node = next(
                             item for item in graph.nodes if item.plugin_id == dependency_id
                         )
-                        if dependency_node.plugin_class == "builtin":
-                            continue
                         dependency = candidates.get(dependency_id) or self._active.get(
                             dependency_id
                         )
@@ -806,14 +860,10 @@ class PluginRuntimeResource:
                             raise PluginDependencyError(
                                 f"required plugin generation is unavailable: {dependency_id}"
                             )
-                        selected_dependency = _state_plugin_record(
-                            candidate_state, dependency_id
-                        ).selected()
-                        if (
-                            selected_dependency is None
-                            or dependency.installed.package_digest
-                            != selected_dependency.package_digest
-                        ):
+                        expected_release_id = (
+                            dependency_node.package_digest or dependency_node.contract_hash
+                        )
+                        if dependency.candidate.release_id != expected_release_id:
                             raise PluginDependencyError(
                                 f"required plugin generation is stale: {dependency_id}"
                             )
@@ -840,8 +890,7 @@ class PluginRuntimeResource:
                             owner_plugin_id=node.plugin_id,
                         )
                         candidates[node.plugin_id] = await self._build_generation(
-                            installed,
-                            record,
+                            runtime_candidate,
                             dependency_lock_fingerprint=dependency_fingerprint,
                         )
                     except Exception as exc:
@@ -875,9 +924,12 @@ class PluginRuntimeResource:
                                 code="plugin_candidate_data_commit_failed",
                                 phase="activate",
                                 message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                                plugin_id=generation.installed.plugin_id,
-                                version=generation.installed.version,
-                                package_digest=generation.installed.package_digest,
+                                plugin_id=generation.candidate.plugin_id,
+                                version=generation.candidate.version,
+                                plugin_class=generation.candidate.plugin_class,
+                                release_id=generation.candidate.release_id,
+                                package_digest=generation.candidate.package_digest,
+                                builtin_contract_hash=(generation.candidate.builtin_contract_hash),
                                 generation_id=generation.record.generation_id,
                                 suggested_action="Inspect the plugin data directory and retry.",
                             )
@@ -931,12 +983,21 @@ class PluginRuntimeResource:
                         await self._stop_generation(generation, reason="startup_failed")
             raise
 
-    def _candidate_readiness(self, record: PluginRecord) -> PluginStatus:
+    def _candidate_readiness(
+        self,
+        state: PluginStateDocument,
+        plugin_id: str,
+    ) -> PluginStatus:
+        if not self._desired_enabled(state, plugin_id):
+            return "disabled"
+        if self.builtin_plugins.get(plugin_id) is not None:
+            return "ready"
+        record = state.plugins.get(plugin_id)
+        if record is None:
+            return "invalid"
         installed = record.selected()
         if installed is None:
             return "invalid"
-        if not record.activation.desired_enabled:
-            return "disabled"
         package_root = self.store.package_path(record.plugin_id, installed.package_digest)
         return plugin_install_readiness(installed, record.activation, package_root)
 
@@ -962,20 +1023,16 @@ class PluginRuntimeResource:
             return []
         blockers: list[tuple[str, PluginStatus]] = []
         for node in graph.nodes:
-            if node.plugin_id == plugin_id or node.plugin_class == "builtin":
+            if node.plugin_id == plugin_id:
                 continue
             active = self._active.get(node.plugin_id)
             if active is not None and active.record.status in {"active", "degraded"}:
                 continue
-            record = _state_plugin_record(state, node.plugin_id)
-            installed = record.selected()
-            if (
-                installed is not None
-                and self._failed.get(node.plugin_id) == installed.package_digest
-            ):
+            release_id = node.package_digest or node.contract_hash
+            if self._failed.get(node.plugin_id) == release_id:
                 status: PluginStatus = "failed"
             else:
-                status = self._candidate_readiness(record)
+                status = self._candidate_readiness(state, node.plugin_id)
             blockers.append((node.plugin_id, status))
         return blockers
 
@@ -996,8 +1053,9 @@ class PluginRuntimeResource:
         state: PluginStateDocument,
         plugin_id: str,
     ) -> PluginDiagnostic | None:
-        record = state.plugins.get(plugin_id)
-        if record is None or not record.activation.desired_enabled:
+        if not self._plugin_available(state, plugin_id) or not self._desired_enabled(
+            state, plugin_id
+        ):
             return None
         error = self._dependency_resolution_error(state, plugin_id)
         if error is not None:
@@ -1107,13 +1165,14 @@ class PluginRuntimeResource:
         async with self._mutation_lock:
             if self._closed:
                 return
-            current = self._active.get(generation.installed.plugin_id)
+            current = self._active.get(generation.candidate.plugin_id)
             if current is not generation:
                 return
             expected = self.store.read_state()
             affected = desired_dependant_closure(
                 expected,
-                {generation.installed.plugin_id},
+                {generation.candidate.plugin_id},
+                builtin_contracts=self.builtin_contracts,
             )
             try:
                 await self._transition_state_locked(
@@ -1130,20 +1189,27 @@ class PluginRuntimeResource:
                         code="plugin_failure_reconciliation_failed",
                         phase="reconcile",
                         message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                        plugin_id=generation.installed.plugin_id,
-                        version=generation.installed.version,
-                        package_digest=generation.installed.package_digest,
+                        plugin_id=generation.candidate.plugin_id,
+                        version=generation.candidate.version,
+                        plugin_class=generation.candidate.plugin_class,
+                        release_id=generation.candidate.release_id,
+                        package_digest=generation.candidate.package_digest,
+                        builtin_contract_hash=generation.candidate.builtin_contract_hash,
                         generation_id=generation.record.generation_id,
                         suggested_action="Retry plugin restart or restart OURO.",
                     )
                 )
                 return
-            self._failed[generation.installed.plugin_id] = generation.installed.package_digest
+            self._failed[generation.candidate.plugin_id] = generation.candidate.release_id
             self.store.append_audit(
                 PluginAuditEvent(
                     action="failure",
-                    plugin_id=generation.installed.plugin_id,
-                    package_digest=generation.installed.package_digest,
+                    plugin_id=generation.candidate.plugin_id,
+                    package_digest=generation.candidate.package_digest,
+                    metadata={
+                        "plugin_class": generation.candidate.plugin_class,
+                        "release_id": generation.candidate.release_id,
+                    },
                     result="failed",
                     detail="worker generation exited unexpectedly",
                 )
@@ -1164,9 +1230,12 @@ class PluginRuntimeResource:
                     code="plugin_retirement_failed",
                     phase="retire",
                     message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                    plugin_id=generation.installed.plugin_id,
-                    version=generation.installed.version,
-                    package_digest=generation.installed.package_digest,
+                    plugin_id=generation.candidate.plugin_id,
+                    version=generation.candidate.version,
+                    plugin_class=generation.candidate.plugin_class,
+                    release_id=generation.candidate.release_id,
+                    package_digest=generation.candidate.package_digest,
+                    builtin_contract_hash=generation.candidate.builtin_contract_hash,
                     generation_id=generation.record.generation_id,
                     suggested_action="Restart OURO to retry complete plugin cleanup.",
                 )
@@ -1193,9 +1262,12 @@ class PluginRuntimeResource:
                             code="plugin_background_service_stop_failed",
                             phase="background",
                             message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                            plugin_id=generation.installed.plugin_id,
-                            version=generation.installed.version,
-                            package_digest=generation.installed.package_digest,
+                            plugin_id=generation.candidate.plugin_id,
+                            version=generation.candidate.version,
+                            plugin_class=generation.candidate.plugin_class,
+                            release_id=generation.candidate.release_id,
+                            package_digest=generation.candidate.package_digest,
+                            builtin_contract_hash=(generation.candidate.builtin_contract_hash),
                             generation_id=generation.record.generation_id,
                             suggested_action="Inspect the service and restart OURO if needed.",
                         )
@@ -1226,9 +1298,12 @@ class PluginRuntimeResource:
                         code="plugin_background_service_start_failed",
                         phase="background",
                         message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-                        plugin_id=generation.installed.plugin_id,
-                        version=generation.installed.version,
-                        package_digest=generation.installed.package_digest,
+                        plugin_id=generation.candidate.plugin_id,
+                        version=generation.candidate.version,
+                        plugin_class=generation.candidate.plugin_class,
+                        release_id=generation.candidate.release_id,
+                        package_digest=generation.candidate.package_digest,
+                        builtin_contract_hash=generation.candidate.builtin_contract_hash,
                         generation_id=generation.record.generation_id,
                         suggested_action="Fix the background service and restart the plugin.",
                     )
@@ -1258,28 +1333,26 @@ class PluginRuntimeResource:
 
     async def _build_generation(
         self,
-        installed: InstalledPlugin,
-        state: PluginRecord,
+        candidate: PluginRuntimeCandidate,
         *,
         dependency_lock_fingerprint: str,
     ) -> ActivePluginGeneration:
-        configuration = state.activation.configuration_for(installed.package_digest)
-        if configuration is None:
-            raise RuntimeError("plugin configuration revision is unavailable")
-        if state.activation.active_configuration_revision_id != configuration.revision_id:
-            raise RuntimeError("plugin active configuration revision is inconsistent")
+        configuration = candidate.configuration
         generation = PluginGenerationRecord(
             generation_id=new_id("plg"),
-            plugin_id=installed.plugin_id,
-            version=installed.version,
-            package_digest=installed.package_digest,
-            runtime_kind=installed.manifest.runtime.kind,
+            plugin_id=candidate.plugin_id,
+            version=candidate.version,
+            plugin_class=candidate.plugin_class,
+            release_id=candidate.release_id,
+            package_digest=candidate.package_digest,
+            builtin_contract_hash=candidate.builtin_contract_hash,
+            runtime_kind=candidate.manifest.runtime.kind,
             configuration_revision_id=configuration.revision_id,
             dependency_lock_fingerprint=dependency_lock_fingerprint,
             plugin_api_version=PLUGIN_API_VERSION,
             worker_protocol_version=(
-                installed.manifest.runtime.protocol
-                if installed.manifest.runtime.kind == "worker"
+                candidate.manifest.runtime.protocol
+                if candidate.manifest.runtime.kind == "worker"
                 else None
             ),
             status="starting",
@@ -1296,9 +1369,12 @@ class PluginRuntimeResource:
                     code="plugin_background_task_failed",
                     phase="background",
                     message=f"{type(exc).__name__}: {redactor.redact(str(exc))}",
-                    plugin_id=installed.plugin_id,
-                    version=installed.version,
-                    package_digest=installed.package_digest,
+                    plugin_id=candidate.plugin_id,
+                    version=candidate.version,
+                    plugin_class=candidate.plugin_class,
+                    release_id=candidate.release_id,
+                    package_digest=candidate.package_digest,
+                    builtin_contract_hash=candidate.builtin_contract_hash,
                     generation_id=generation.generation_id,
                 )
             )
@@ -1309,26 +1385,31 @@ class PluginRuntimeResource:
         instance: Any = _DeclarativePluginInstance()
         prepared: PreparedContributionSet | None = None
         data_store: ScopedPluginDataStore | None = None
-        package_root = self.store.verify_package(
-            installed.plugin_id,
-            installed.package_digest,
+        package_root = (
+            self.store.verify_package(candidate.plugin_id, candidate.package_digest)
+            if candidate.package_digest is not None
+            else candidate.root
         )
         try:
-            if installed.manifest.runtime.kind == "python-inprocess":
-                entrypoint = installed.manifest.runtime.entrypoint
-                assert entrypoint is not None
-                factory, module = load_plugin_factory(
-                    package_root,
-                    entrypoint,
-                    module_namespace=plugin_module_namespace(installed.manifest.namespace),
-                    generation_id=generation.generation_id,
-                )
+            if candidate.manifest.runtime.kind == "python-inprocess":
+                if candidate.plugin_class == "builtin":
+                    factory = candidate.factory
+                    assert factory is not None
+                else:
+                    entrypoint = candidate.manifest.runtime.entrypoint
+                    assert entrypoint is not None
+                    factory, module = load_plugin_factory(
+                        package_root,
+                        entrypoint,
+                        module_namespace=plugin_module_namespace(candidate.manifest.namespace),
+                        generation_id=generation.generation_id,
+                    )
                 data_store = ScopedPluginDataStore(
-                    self.store.data_root / installed.plugin_id,
+                    self.store.data_root / candidate.plugin_id,
                     staged=True,
                 )
                 context = build_plugin_context(
-                    installed,
+                    candidate,
                     generation,
                     data_root=self.store.data_root,
                     configuration=configuration.values,
@@ -1342,7 +1423,7 @@ class PluginRuntimeResource:
                 instance = factory(context)
                 if inspect.isawaitable(instance):
                     instance = await instance
-            elif installed.manifest.runtime.kind == "worker":
+            elif candidate.manifest.runtime.kind == "worker":
 
                 def worker_diagnostic(code: str, message: str) -> None:
                     diagnostics.append(
@@ -1351,15 +1432,18 @@ class PluginRuntimeResource:
                             phase="worker",
                             severity="warning",
                             message=redactor.redact(message),
-                            plugin_id=installed.plugin_id,
-                            version=installed.version,
-                            package_digest=installed.package_digest,
+                            plugin_id=candidate.plugin_id,
+                            version=candidate.version,
+                            plugin_class=candidate.plugin_class,
+                            release_id=candidate.release_id,
+                            package_digest=candidate.package_digest,
+                            builtin_contract_hash=candidate.builtin_contract_hash,
                             generation_id=generation.generation_id,
                         )
                     )
                     if code == "worker_exit":
                         generation_gate.close()
-                        active = self._active.get(installed.plugin_id)
+                        active = self._active.get(candidate.plugin_id)
                         if (
                             active is not None
                             and active.record.generation_id == generation.generation_id
@@ -1373,12 +1457,12 @@ class PluginRuntimeResource:
                 for value in credentials.values():
                     redactor.add(value)
                 instance = WorkerPluginInstance(
-                    installed.manifest,
+                    candidate.manifest,
                     package_root=package_root,
-                    package_digest=installed.package_digest,
-                    permissions=frozenset(request.id for request in installed.manifest.permissions),
+                    package_digest=candidate.release_id,
+                    permissions=frozenset(request.id for request in candidate.manifest.permissions),
                     configuration=configuration.values,
-                    data_directory=self.store.data_root / installed.plugin_id,
+                    data_directory=self.store.data_root / candidate.plugin_id,
                     credentials=credentials,
                     diagnostic=worker_diagnostic,
                 )
@@ -1390,7 +1474,7 @@ class PluginRuntimeResource:
                 raise TypeError("plugin prepare() must return SDK ContributionSet")
             prepared_resources = await prepare_generation_resources(
                 GenerationResourceRequest(
-                    installed=installed,
+                    candidate=candidate,
                     generation=generation,
                     package_root=package_root,
                     configuration=configuration,
@@ -1399,7 +1483,7 @@ class PluginRuntimeResource:
             )
             resources.extend(prepared_resources.owned_resources)
             prepared = self.coordinator.prepare(
-                installed,
+                candidate,
                 generation,
                 contributions,
                 resource_skills=prepared_resources.skills,
@@ -1418,7 +1502,8 @@ class PluginRuntimeResource:
             generation.execution_contract_hash = build_execution_contract_hash(
                 plugin_id=generation.plugin_id,
                 version=generation.version,
-                package_digest=generation.package_digest,
+                plugin_class=generation.plugin_class,
+                release_id=candidate.release_id,
                 runtime_kind=generation.runtime_kind,
                 configuration_revision_id=generation.configuration_revision_id,
                 dependency_lock_fingerprint=generation.dependency_lock_fingerprint,
@@ -1443,15 +1528,18 @@ class PluginRuntimeResource:
                         phase="prepare",
                         severity="warning",
                         message=f"optional contribution is unavailable: {redact_text(reason)}",
-                        plugin_id=installed.plugin_id,
-                        version=installed.version,
-                        package_digest=installed.package_digest,
+                        plugin_id=candidate.plugin_id,
+                        version=candidate.version,
+                        plugin_class=candidate.plugin_class,
+                        release_id=candidate.release_id,
+                        package_digest=candidate.package_digest,
+                        builtin_contract_hash=candidate.builtin_contract_hash,
                         generation_id=generation.generation_id,
                     )
                 )
             active = ActivePluginGeneration(
                 record=generation,
-                installed=installed,
+                candidate=candidate,
                 instance=instance,
                 contributions=prepared,
                 gate=generation_gate,
@@ -1533,26 +1621,103 @@ class PluginRuntimeResource:
         except KeyError as exc:
             raise KeyError(f"plugin is not installed: {plugin_id}") from exc
 
-    def _record_failure(self, installed: InstalledPlugin, phase: str, exc: Exception) -> None:
+    def _plugin_available(self, state: PluginStateDocument, plugin_id: str) -> bool:
+        return plugin_id in state.plugins or self.builtin_plugins.get(plugin_id) is not None
+
+    def _desired_enabled(self, state: PluginStateDocument, plugin_id: str) -> bool:
+        definition = self.builtin_plugins.get(plugin_id)
+        if definition is not None:
+            return builtin_desired_enabled(state, definition.dependency_contract())
+        return _state_plugin_record(state, plugin_id).activation.desired_enabled
+
+    def _set_desired_enabled(
+        self,
+        state: PluginStateDocument,
+        plugin_id: str,
+        desired_enabled: bool,
+    ) -> None:
+        if self.builtin_plugins.get(plugin_id) is not None:
+            state.builtin_activation_overrides[plugin_id] = BuiltinPluginActivationOverride(
+                desired_enabled=desired_enabled
+            )
+            return
+        _state_plugin_record(state, plugin_id).activation.desired_enabled = desired_enabled
+
+    def _runtime_candidate(
+        self,
+        state: PluginStateDocument,
+        plugin_id: str,
+    ) -> PluginRuntimeCandidate:
+        definition = self.builtin_plugins.get(plugin_id)
+        if definition is not None:
+            if plugin_id in state.plugins:
+                raise PluginDependencyError(
+                    f"builtin plugin identity is also installed as a user plugin: {plugin_id}"
+                )
+            builtin_configuration = create_configuration_revision()
+            return PluginRuntimeCandidate(
+                plugin_class="builtin",
+                manifest=definition.manifest,
+                release_id=definition.contract_hash,
+                root=definition.root,
+                configuration=builtin_configuration,
+                source_kind="builtin",
+                public_source="bundled with OURO",
+                builtin_contract_hash=definition.contract_hash,
+                factory=definition.factory,
+            )
+        record = _state_plugin_record(state, plugin_id)
+        installed = record.selected()
+        if installed is None:
+            raise ValueError(f"plugin has no selected install: {plugin_id}")
+        configuration = record.activation.configuration_for(installed.package_digest)
+        if configuration is None:
+            raise RuntimeError("plugin configuration revision is unavailable")
+        if record.activation.active_configuration_revision_id != configuration.revision_id:
+            raise RuntimeError("plugin active configuration revision is inconsistent")
+        return PluginRuntimeCandidate(
+            plugin_class="user",
+            manifest=installed.manifest,
+            release_id=installed.package_digest,
+            root=self.store.package_path(plugin_id, installed.package_digest),
+            configuration=configuration,
+            source_kind=installed.provenance.source_kind,
+            public_source=installed.provenance.public_source,
+            package_digest=installed.package_digest,
+        )
+
+    def _record_failure(
+        self,
+        candidate: PluginRuntimeCandidate,
+        phase: str,
+        exc: Exception,
+    ) -> None:
         diagnostic = PluginDiagnostic(
             code="plugin_activation_failed",
             phase=phase,
             message=f"{type(exc).__name__}: {redact_text(str(exc))}",
-            plugin_id=installed.plugin_id,
-            version=installed.version,
-            package_digest=installed.package_digest,
+            plugin_id=candidate.plugin_id,
+            version=candidate.version,
+            plugin_class=candidate.plugin_class,
+            release_id=candidate.release_id,
+            package_digest=candidate.package_digest,
+            builtin_contract_hash=candidate.builtin_contract_hash,
             retryable=True,
             suggested_action="Review plugin diagnostics and retry activation.",
         )
         self._diagnostics.append(diagnostic)
-        self._failed[installed.plugin_id] = installed.package_digest
+        self._failed[candidate.plugin_id] = candidate.release_id
         self.store.append_audit(
             PluginAuditEvent(
                 action="activation",
-                plugin_id=installed.plugin_id,
-                package_digest=installed.package_digest,
+                plugin_id=candidate.plugin_id,
+                package_digest=candidate.package_digest,
                 result="failed",
                 detail=diagnostic.message,
+                metadata={
+                    "plugin_class": candidate.plugin_class,
+                    "release_id": candidate.release_id,
+                },
             )
         )
 
@@ -1590,7 +1755,7 @@ def _retirement_reason(
 ) -> StopReason:
     if not replaced:
         return "disable" if reason in {"disable", "revoke"} else "restart"
-    if new is not None and new.installed.package_digest != old.installed.package_digest:
+    if new is not None and new.candidate.release_id != old.candidate.release_id:
         return "upgrade"
     return "restart"
 

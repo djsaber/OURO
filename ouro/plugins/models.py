@@ -124,9 +124,16 @@ class PluginRecord(OuroModel):
         return next((item for item in self.installs if item.package_digest == digest), None)
 
 
+class BuiltinPluginActivationOverride(OuroModel):
+    desired_enabled: bool
+
+
 class PluginStateDocument(OuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     plugins: dict[str, PluginRecord] = Field(default_factory=dict)
+    builtin_activation_overrides: dict[str, BuiltinPluginActivationOverride] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def _validate_records(self) -> PluginStateDocument:
@@ -178,7 +185,10 @@ class PluginDiagnostic(OuroModel):
     suggested_action: str | None = None
     plugin_id: str | None = None
     version: str | None = None
+    plugin_class: PluginClass | None = None
+    release_id: str | None = None
     package_digest: str | None = None
+    builtin_contract_hash: str | None = None
     generation_id: str | None = None
     contribution_id: str | None = None
     correlation_id: str | None = None
@@ -189,7 +199,10 @@ class PluginGenerationRecord(OuroModel):
     generation_id: str
     plugin_id: str
     version: str
-    package_digest: str
+    plugin_class: PluginClass = "user"
+    release_id: str = ""
+    package_digest: str | None = None
+    builtin_contract_hash: str | None = None
     runtime_kind: PluginRuntimeKind
     configuration_revision_id: str
     dependency_lock_fingerprint: str
@@ -202,6 +215,19 @@ class PluginGenerationRecord(OuroModel):
 
     @model_validator(mode="after")
     def validate_execution_contract(self) -> PluginGenerationRecord:
+        if self.plugin_class == "user":
+            if self.package_digest is None or self.builtin_contract_hash is not None:
+                raise ValueError("user plugin generation requires only a package digest")
+            if not self.release_id:
+                self.release_id = self.package_digest
+            elif self.release_id != self.package_digest:
+                raise ValueError("user plugin generation release id must equal package digest")
+        elif self.builtin_contract_hash is None or self.package_digest is not None:
+            raise ValueError("builtin plugin generation requires only a builtin contract hash")
+        elif not self.release_id:
+            raise ValueError("builtin plugin generation requires a release id")
+        elif self.release_id != self.builtin_contract_hash:
+            raise ValueError("builtin plugin generation release id must equal contract hash")
         if self.status in {"active", "degraded"} and self.execution_contract_hash is None:
             raise ValueError("active plugin generation requires an execution contract")
         for field_name, value in (

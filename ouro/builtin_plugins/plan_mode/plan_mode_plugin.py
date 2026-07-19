@@ -34,8 +34,8 @@ from .state import (
 
 _ACTIVE_PHASES = {"active", "awaiting_approval"}
 _OWN_TOOLS = {
-    "dev.ouro.examples.plan_mode/tools/enter",
-    "dev.ouro.examples.plan_mode/tools/exit",
+    "dev.ouro.plan_mode/tools/enter",
+    "dev.ouro.plan_mode/tools/exit",
 }
 _PLAN_WRITERS = {
     "ouro.host/tools/Write",

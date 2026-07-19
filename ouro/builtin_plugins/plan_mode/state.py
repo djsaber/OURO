@@ -1,4 +1,4 @@
-"""Session-scoped state and private persistence for the plan mode example."""
+"""Session-scoped state and private persistence for the builtin plan mode plugin."""
 
 from __future__ import annotations
 

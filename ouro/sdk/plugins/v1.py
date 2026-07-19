@@ -37,7 +37,10 @@ StopReason = Literal["disable", "restart", "upgrade", "shutdown", "startup_faile
 class PluginIdentity:
     plugin_id: str
     version: str
-    package_digest: str
+    plugin_class: Literal["builtin", "user"]
+    release_id: str
+    package_digest: str | None
+    builtin_contract_hash: str | None
     generation_id: str
 
 

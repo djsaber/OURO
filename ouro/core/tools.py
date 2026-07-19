@@ -78,7 +78,10 @@ class ToolInvocation(OuroModel):
     approval_id: str | None = None
     plugin_id: str | None = None
     plugin_version: str | None = None
+    plugin_class: Literal["builtin", "user"] | None = None
+    release_id: str | None = None
     package_digest: str | None = None
+    builtin_contract_hash: str | None = None
     generation_id: str | None = None
     contract_hash: str | None = None
     execution_contract_hash: str | None = None

@@ -61,7 +61,8 @@ def build_execution_contract_hash(
     *,
     plugin_id: str,
     version: str,
-    package_digest: str,
+    plugin_class: str,
+    release_id: str,
     runtime_kind: str,
     configuration_revision_id: str,
     dependency_lock_fingerprint: str,
@@ -71,12 +72,21 @@ def build_execution_contract_hash(
 ) -> str:
     """Build the stable identity used to reconstruct a generation after restart."""
 
+    if plugin_class == "user":
+        release_contract = {"package_digest": release_id}
+    elif plugin_class == "builtin":
+        release_contract = {
+            "plugin_class": "builtin",
+            "builtin_contract_hash": release_id,
+        }
+    else:
+        raise ValueError(f"unsupported plugin class: {plugin_class}")
     return _content_hash(
         {
             "schema_version": 1,
             "plugin_id": plugin_id,
             "version": version,
-            "package_digest": package_digest,
+            **release_contract,
             "runtime_kind": runtime_kind,
             "configuration_revision_id": configuration_revision_id,
             "dependency_lock_fingerprint": dependency_lock_fingerprint,

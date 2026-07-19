@@ -74,8 +74,8 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 16. Disable/revoke 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
 18. 状态查询和管理命令必须使用同一 observed-state reconciler。
-19. Pending tool/approval 恢复必须验证 package digest 和 execution contract，不能按同名新工具替代。
-20. 旧格式默认严格拒绝；不得用兼容分支掩盖当前领域模型错误。
+19. Pending tool/approval 恢复必须验证发布引用（user package digest 或 builtin contract hash）和 execution contract，不能按同名新工具替代。
+20. 旧格式只允许经过显式、单向的 schema migration；不得用散落的兼容分支掩盖当前领域模型错误。
 21. 依赖契约变化时必须原子重建受影响的 active dependant closure，不能在新 Catalog 中保留旧 dependency lock。
 22. 候选阶段不得执行自主后台副作用或破坏性修改共享 plugin data。
 
@@ -119,11 +119,23 @@ ExtensionCatalog
 Builtin plugin：
 
 - 由 application composition root 提供；
-- 可以复用 contribution、catalog 和 lifecycle 契约；
+- 由显式、不可变的 builtin definition registry 提供，不扫描 workspace、`OURO_HOME` 或用户插件目录；
+- definition 包含稳定 identity、version、Manifest contribution/dependency contract、in-process factory、
+  `default_enabled` 和由规范化 Manifest 与实现文件内容派生的 builtin contract hash；
+- 与 user plugin 复用同一 generation、gate、owner、contribution preparation、catalog transaction 和 durable
+  execution contract；builtin 不是 Host baseline，也不建立第二套 runtime；
 - 不进入 user install/update/remove 流程；
 - 不需要用户 capability grant 或 code trust；
 - identity 和公开名称不能被 user plugin 覆盖；
-- 以稳定 version 和 builtin contract hash 参与 dependency lock。
+- 以稳定 version 和 builtin contract hash 参与 dependency lock；实现内容变化即使忘记提升 version，也必须产生不同 release identity。
+
+`builtin | user` 是代码供应类别，`declarative | python-inprocess | worker` 是运行方式，二者相互独立。Manifest
+不能声明 plugin class，也不新增可由 user package 伪造的 `runtime.kind = builtin`。首版 builtin 只实现当前 Plan/Goal
+模式所需的 `python-inprocess`、空 configuration 和无 package resource 形态；其他 runtime、configuration、Skill/MCP
+package resource 在出现真实 builtin 用例后再扩展，不预建第二套配置、凭据或资源协议。
+
+启用的 builtin 必须拥有正常 `PluginGeneration`。只有不可关闭、属于 Agent 正确运行前提的 Host/Core facility 才进入
+Catalog baseline；“随 OURO 分发”本身不足以把一个可关闭模块放入 baseline。
 
 User plugin：
 
@@ -141,6 +153,11 @@ User plugin：
 - capability grants 和 code trust grants；
 - 每 digest 的 immutable configuration revisions 与 active revision reference；
 - user plugin data reference。
+
+Builtin code/definition 不写入 user install state。`state.json` 另存稀疏的
+`builtin_activation_overrides[plugin_id].desired_enabled`；没有 override 时使用 definition 的 `default_enabled`。
+显式 enable/disable 必须保存 override，以免后续产品默认值变化覆盖用户选择。当前 OURO 版本不存在的 builtin override
+作为 dormant intent 保留，不视为 state 内容损坏。
 
 运行时状态由 reconciler 投影：
 
@@ -535,8 +552,10 @@ OURO_HOME/plugins/
   state.json
 ```
 
-- store 不可变；data 跨 user plugin 版本保留；
-- state.json 内容违反当前契约（旧 schema、非法编码、截断或损坏）时不得阻断 Host 启动：boot 路径将其隔离
+- store 不可变且只保存 user plugin；builtin code 随 OURO distribution 发布，不复制或伪装安装到 store；
+- data 同时服务 builtin/user plugin，并按稳定 plugin id 隔离；data 跨 user plugin 版本和 OURO 进程重启保留；
+- state.json 先执行显式支持的单向 schema migration；迁移后仍违反当前契约（不支持的旧 schema、非法编码、截断或
+  损坏）时不得阻断 Host 启动：boot 路径将其隔离
   重命名（不删除）并以空注册表降级启动，记录 diagnostic 与 audit；临时读取、权限、锁和其他 I/O 错误不得被
   误判为内容损坏或触发隔离；
 - `LocalApplication` 将插件与 MCP 启动降级投影为 Host-neutral `ApplicationStartupReport`；Interactive、普通 run、
@@ -576,6 +595,8 @@ Plugin dependency 只有 `plugin_id + SemVer range`。
 
 - resolver 使用 composition root 提供的 builtin contract 与已安装且 selected 的 user digest，不隐式下载、安装、
   选版或改变 dependency desired state；
+- builtin contract 必须由同一 builtin definition registry 派生，不能由 composition root 维护一份可能漂移的手写
+  contract 表；
 - cycle、缺失和 version conflict 使依赖者 blocked/incompatible；
 - dependencies 按拓扑先激活，未 active 时不得启动依赖者；
 - shutdown 按逆拓扑；
@@ -583,6 +604,9 @@ Plugin dependency 只有 `plugin_id + SemVer range`。
 - dependency digest、configuration 或 contract 变化时，受影响 active dependant 必须进入同一 activation plan；
 - Python/Node library dependency 不是 plugin dependency；
 - 不存在 `optional_feature`，直到 OURO 有真实 feature negotiation 模型。
+
+首版 builtin dependency graph 必须闭合于 builtin definitions；user plugin 可以依赖 builtin，builtin 不依赖 user
+install。启用 dependant 时沿用现有语义启用 dependency closure；存在 active dependant 时不能关闭 builtin dependency。
 
 ## 14. Activation 与 Reconciliation
 
@@ -626,10 +650,10 @@ Disable：
 
 ## 15. Durable Run
 
-Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 user plugin 的 execution contract：
+Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 builtin/user plugin generation 的 execution contract：
 
 - plugin id；
-- package digest；
+- release reference：user 使用 package digest，builtin 使用 builtin contract hash；不得给 builtin 伪造 package digest；
 - configuration revision id/fingerprint（覆盖规范化配置和 credential binding reference，不包含秘密值）；
 - dependency lock，包含 builtin/user dependency contract；
 - Plugin API/worker protocol；
@@ -643,6 +667,9 @@ Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 user plugin 的
 - package 缺失、contract 改变或依赖不满足时稳定失败；
 - 不能仅按 tool name、plugin version 或随机 generation id 猜测等价性；
 - pending approval/tool batch 必须重新通过当前 generation gate 和 ToolExecutor。
+
+Builtin 不保留随旧 OURO 版本发布的代码副本。恢复所需 builtin contract 与当前 definition 不一致时必须确定性失败，
+不能按同名 Tool、相同 plugin id 或当前 factory 猜测兼容。
 
 ## 16. Update、Rollback 与 Remove
 
@@ -698,6 +725,11 @@ Active plugin 的配置更新使用相同流程：创建 immutable candidate rev
 - list/execute plugin command；
 - compatibility report。
 
+查询、enable、disable、restart、check、diagnostics 和 dependencies 同时适用于 builtin/user。install、update、reload、
+select、rollback、remove、authorize、trust-code 和 revoke 只适用于 user plugin；对 builtin 调用时 application 层返回
+类型化的 operation-not-allowed 错误，不能静默 no-op。builtin disabled 后允许显式 purge 私有 data，但 GC 永不处理
+builtin code。
+
 CLI/TUI/Desktop 只映射这些用例。Plugin command canonical name 为 `<plugin_id>:<command>`；builtin command
 优先，只有 local name 唯一时 Host 才能提供短别名。
 
@@ -731,6 +763,8 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 
 ```text
 ouro/plugins/
+  builtin.py         # immutable builtin definition registry
+  candidates.py      # unified builtin/user runtime candidate
   manifest.py        # package schema
   models.py          # install/activation/generation/catalog records
   sources.py         # source adapters
@@ -750,6 +784,9 @@ ouro/sdk/plugins/v1.py
 
 ouro/application/plugins.py
   # Host-neutral use cases and DTO orchestration
+
+ouro/builtin_plugins/
+  # product-owned plugin implementations assembled only by the application composition root
 ```
 
 不要求为目录结构预建空文件。只有在对应职责开始实现时拆分；拆分目的是明确变化轴，不是追求文件数量。

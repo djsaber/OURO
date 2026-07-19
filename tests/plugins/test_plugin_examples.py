@@ -15,7 +15,6 @@ EXAMPLES = Path(__file__).parents[2] / "examples" / "plugins"
     [
         ("declarative-skill", "dev.ouro.examples.declarative_skill", False),
         ("inprocess-command", "dev.ouro.examples.inprocess_command", True),
-        ("plan-mode", "dev.ouro.examples.plan_mode", True),
         ("worker-tool", "dev.ouro.examples.worker_tool", True),
     ],
 )
