@@ -273,6 +273,11 @@ class RuntimeService:
             runs=self.run_lifecycle,
             execution_config=self._tool_execution_config,
             default_workspace=self.default_workspace,
+            artifact_root=(
+                str(self.environment.artifact_root)
+                if self.environment.artifact_root is not None
+                else None
+            ),
             is_aborted=self._is_run_aborted,
             tool_policies=self._tool_policies_for_run(run_id),
         )

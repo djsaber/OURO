@@ -95,6 +95,61 @@ async def test_workspace_policy_rejects_parent_traversal(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_workspace_policy_allows_host_artifact_root(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    artifact_root = tmp_path / "home" / "artifacts"
+    target = artifact_root / "dev.example.plugin" / "plan.md"
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Write",
+            arguments={"path": str(target), "content": "# Plan"},
+        ),
+        approved=True,
+        context=ToolExecutionContext(
+            workspace=workspace,
+            artifact_root=artifact_root,
+            workspace_only=True,
+        ),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.is_error is False
+    assert target.read_text(encoding="utf-8") == "# Plan"
+
+
+@pytest.mark.asyncio
+async def test_workspace_policy_does_not_allow_other_user_data(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "home"
+    target = home / "config" / "config.json"
+
+    outcome = await ToolExecutor(_registry()).execute(
+        ToolInvocation(
+            session_id="ses_1",
+            run_id="run_1",
+            tool_name="Write",
+            arguments={"path": str(target), "content": "{}"},
+        ),
+        approved=True,
+        context=ToolExecutionContext(
+            workspace=workspace,
+            artifact_root=home / "artifacts",
+            workspace_only=True,
+        ),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.is_error is True
+    assert outcome.result.structured["error_type"] == "ToolPolicyError"
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
 async def test_workspace_policy_rejects_symlink_escape(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()

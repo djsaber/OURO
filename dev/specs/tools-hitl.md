@@ -27,9 +27,10 @@
 - AskUser：暂停 Run 并请求用户输入。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
-`ToolExecutionContext` 解析；默认限制在 Session workspace 内，并拒绝 `..` 与符号链接逃逸。Read 在文件
-IO 边界流式执行自身的行数和 UTF-8 字节上限，返回 `next_offset`、实际行数与截断信息，避免为截取一页而
-全量载入文件；所有工具结果仍在 executor 边界执行宿主统一长度上限和显式截断标记。
+`ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，
+不会放开其他用户数据，并拒绝 `..` 与符号链接逃逸。Read 在文件 IO 边界流式执行自身的行数和 UTF-8 字节上限，
+返回 `next_offset`、实际行数与截断信息，避免为截取一页而全量载入文件；所有工具结果仍在 executor 边界执行
+宿主统一长度上限和显式截断标记。
 
 命令行工具的模型可见 name、方言描述和执行包装必须由同一个检测结果生成，不能用 `Bash` 名称委托宿主
 默认 shell。PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用

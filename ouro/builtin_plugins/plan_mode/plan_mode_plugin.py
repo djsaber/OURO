@@ -47,22 +47,22 @@ _PLAN_WRITERS = {
     "ouro.host/tools/Edit",
 }
 
-_SCAFFOLD = """Plan mode is active. You MUST NOT make any edits (with the exception of the
-current plan file) or otherwise make changes to the environment, external
-systems, or any state, unless a tool request is explicitly approved. Prefer
-read-only tools. Tools that could modify state or produce side effects follow
-the normal permission mode and rules. This supersedes any other instructions
-you have received. Any other tools that would break plan mode — state-mutating,
-side-effecting, or irreversible actions — are also blocked; call ExitPlanMode
-first if you need them.
+_SCAFFOLD = """Plan mode is active. Read-only tools are available without additional plan
+mode restrictions. To create or change the plan, you MUST use OURO's builtin
+Write or Edit tool and target the exact plan file shown below. Those Write/Edit
+calls are denied for every other path. Every other state-changing or
+unknown-effect tool is denied regardless of target. Do not use shell, MCP,
+plugin, or other tools to make changes, even if they could write the plan file.
+This supersedes any other instructions you have received. Call ExitPlanMode
+before performing implementation work or making any other change.
 
 Workflow:
 
 1. Understand — explore the relevant context using read-only tools.
 2. Design — converge on one concrete recommendation and its trade-offs.
 3. Verify — re-check the key facts and affected files.
-4. Write Plan — record the plan in the designated plan file; this is the only
-   file you may modify without separate approval.
+4. Write Plan — use only OURO's builtin Write or Edit tool to record the plan in
+   the designated plan file; no other file may be modified.
 5. Exit — call ExitPlanMode for user approval.
 
 When the plan contains genuinely different implementation approaches, provide
@@ -78,18 +78,22 @@ _ENTERED = """Plan mode is now active. Your workflow:
 
 Plan file: {plan_path}
 
-1. Use read-only tools to investigate the codebase.
+1. Use any read-only tools to investigate the codebase.
 2. Design a concrete, step-by-step plan.
-3. Write the plan to the plan file with the shared Write or Edit tool.
+3. Write the plan with OURO's builtin Write or Edit tool, targeting exactly the
+   plan file above.
 4. When the plan is ready, call ExitPlanMode for user approval.
 
-Do not edit other files while plan mode is active unless that exact tool call
-is separately approved."""
+All other state-changing or unknown-effect tool calls are denied while plan
+mode is active. Approval cannot override this restriction."""
 
 
 class PlanModePlugin:
     def __init__(self, context: PluginContext) -> None:
+        if context.artifact_root is None:
+            raise RuntimeError("plan mode requires a Host-managed artifact root")
         self._state = PlanStateRepository(context.data)
+        self._artifact_root = Path(context.artifact_root).expanduser().resolve(strict=False)
         self._lock = threading.RLock()
 
     async def prepare(self) -> ContributionSet:
@@ -209,7 +213,6 @@ class PlanModePlugin:
                 )
             state = self._new_active_state(
                 call.session_id,
-                call.workspace,
                 previous=current,
                 activation_tool_call_id=call.tool_call_id,
             )
@@ -231,7 +234,6 @@ class PlanModePlugin:
             else:
                 state = self._new_active_state(
                     call.session_id,
-                    call.workspace,
                     previous=current,
                     activation_tool_call_id=None,
                 )
@@ -266,20 +268,30 @@ class PlanModePlugin:
             state = self._state.load(call.session_id)
         if state.phase not in _ACTIVE_PHASES:
             return ToolPolicyDecision()
-        if call.canonical_tool_id in _OWN_TOOLS or call.effect == "read_only":
+        if call.canonical_tool_id in _OWN_TOOLS:
             return ToolPolicyDecision()
-        if (
-            call.canonical_tool_id in _PLAN_WRITERS
-            and state.plan_path is not None
-            and self._targets_plan_file(call.arguments, call.workspace, state.plan_path)
-        ):
+        if call.canonical_tool_id in _PLAN_WRITERS:
+            if state.plan_path is not None and self._targets_plan_file(
+                call.arguments,
+                call.workspace,
+                state.plan_path,
+            ):
+                return ToolPolicyDecision()
+            return ToolPolicyDecision(
+                action="deny",
+                reason=(
+                    "Plan mode denied this Write or Edit call because it does not "
+                    "exclusively target the current plan file."
+                ),
+            )
+        if call.effect == "read_only":
             return ToolPolicyDecision()
         return ToolPolicyDecision(
-            action="require_approval",
+            action="deny",
             reason=(
-                "Plan mode is active. This state-changing or unknown-effect tool call "
-                "requires explicit approval because it does not exclusively target the "
-                "current plan file."
+                "Plan mode denied this state-changing or unknown-effect tool call. "
+                "Only OURO's builtin Write or Edit may modify the current plan file; "
+                "read-only tools remain available."
             ),
         )
 
@@ -433,20 +445,17 @@ class PlanModePlugin:
         )
         self._state.save(session_id, completed)
 
-    @staticmethod
     def _new_active_state(
+        self,
         session_id: str,
-        workspace: str | None,
         *,
         previous: SessionPlanState,
         activation_tool_call_id: str | None,
     ) -> SessionPlanState:
         safe_session_id = validate_session_id(session_id)
-        root = Path(workspace or Path.cwd()).expanduser().resolve(strict=False)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         plan_path = (
-            root
-            / ".ouro"
+            self._artifact_root
             / "sessions"
             / safe_session_id
             / "plans"

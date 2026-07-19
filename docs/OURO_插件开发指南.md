@@ -108,10 +108,16 @@ class Plugin:
 - `start` 在候选 contribution 与 required resource 准备完成后调用；
 - `stop` 必须幂等，并在 deadline 内关闭 owner 资源。
 
+`PluginContext.data` 保存插件私有状态；若插件需要产生可由 OURO 内置文件工具读取或编辑的用户制品，使用
+`PluginContext.artifact_root`。Host 为每个插件提供 `OURO_HOME/artifacts/<plugin-id>/` 隔离目录；该目录不是
+configuration、插件私有 data 或 canonical Session 数据。没有本地用户数据根的 Host 可以返回 `None`，依赖文件
+制品的插件应在激活时明确失败。
+
 当前稳定 contribution 包括 Tool、Command、观察 Hook、Context Provider、Turn Policy、Compaction Strategy、Skill、
 MCP Server、Background Service、Continuation Policy 和 Tool Policy。插件不能动态注册新的 extension point。
 
-Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、受约束路径解析、取消与输出限制。Command、
+Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
+输出限制。Command、
 Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 synthetic input、队列和持久化。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 

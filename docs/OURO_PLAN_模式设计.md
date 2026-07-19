@@ -3,14 +3,14 @@
 计划模式下，在每一轮用户消息前插入脚手架消息，提示词如下：
 
 ```md
-Plan mode is active. You MUST NOT make any edits (with the exception of the
-current plan file) or otherwise make changes to the environment, external
-systems, or any state, unless a tool request is explicitly approved. Prefer
-read-only tools. Tools that could modify state or produce side effects follow
-the normal permission mode and rules. This supersedes any other instructions
-you have received. Any other tools that would break plan mode — state-mutating,
-side-effecting, or irreversible actions — are also blocked; call ExitPlanMode
-first if you need them.
+Plan mode is active. Read-only tools are available without additional plan
+mode restrictions. To create or change the plan, you MUST use OURO's builtin
+Write or Edit tool and target the exact plan file shown below. Those Write/Edit
+calls are denied for every other path. Every other state-changing or
+unknown-effect tool is denied regardless of target. Do not use shell, MCP,
+plugin, or other tools to make changes, even if they could write the plan file.
+This supersedes any other instructions you have received. Call ExitPlanMode
+before performing implementation work or making any other change.
 
 Workflow:
 
@@ -19,8 +19,8 @@ Workflow:
 2. Design — converge on the best approach; consider trade-offs but aim for a
    single recommendation.
 3. Verify — re-check key facts, files, or sources to confirm your understanding.
-4. Write Plan — record the plan in the designated plan file; this is the only
-   file you are allowed to modify.
+4. Write Plan — use only OURO's builtin Write or Edit tool to record the plan in
+   the designated plan file; no other file may be modified.
 5. Exit — call ExitPlanMode for user approval.
 
 Handling multiple approaches: at most 2–3 meaningfully different implementation
@@ -63,13 +63,14 @@ Plan mode is now active. Your workflow:
 
 Plan file: {PLAN_FILE_PATH}
 
-1. Use read-only tools to investigate the codebase. Use Bash only when needed.
+1. Use any read-only tools to investigate the codebase.
 2. Design a concrete, step-by-step plan.
-3. Write the plan to the plan file with Write or Edit.
+3. Write the plan with OURO's builtin Write or Edit tool, targeting exactly the
+   plan file above.
 4. When the plan is ready, call ExitPlanMode for user approval.
 
-Do NOT edit files other than the plan file while plan mode is active.
-Use Bash only when needed; Bash follows the normal permission mode and rules.
+All other state-changing or unknown-effect tool calls are denied while plan
+mode is active. Approval cannot override this restriction.
 ```
 
 - 工具调用失败
@@ -146,7 +147,8 @@ Plan rejected by user. Plan mode remains active.
 1. 进入计划模式：
   - LLM 自主决策，调用 EnterPlanMode 工具进入；
   - 用户指定开启时，`/plan` 只迁移插件的 Session 状态，不创建 Run、不提交模型输入；用户随后单独发送规划请求，Context Provider 在该模型轮注入脚手架消息。
-2. 创建计划并保存：需要上下时，LLM 调用相关只读工具查询或搜索获取信息，理解分析充分后，LLM 调用写入工具保存计划文件；
+2. 创建计划并保存：需要上下文时，LLM 可调用任意声明为 `read_only` 的工具查询或搜索；保存计划时只能调用 OURO
+   内置 Write/Edit 且路径必须精确等于当前计划文件；
 3. 退出计划模式：LLM 自主决策，调用 ExitPlanMode 退出计划：
   1. 未创建 / 空计划时，ExitPlanMode 调用失败，返回错误结果，LLM 重新决策；
   2. 已创建，触发用户批准反馈，LLM 基于反馈自主决策后续动作（执行任务/chong）
@@ -162,9 +164,12 @@ Plan rejected by user. Plan mode remains active.
    options 不能承载 accept/revise/reject，这三个审批动作由交互请求中的稳定 action code 独立表达；
 7. EnterPlanMode 和 ExitPlanMode 工具自身的调用不走批准策略；
 8. 计划模式不控制 Run 的继续或完成，不注册 Turn Policy；EnterPlanMode 和 ExitPlanMode 只通过工具结果向 LLM 表达状态迁移，由 LLM 自主决定下一步。
+9. active/awaiting_approval 阶段的 Tool Policy 使用硬限制：插件自身 Enter/Exit 与任意 `read_only` 工具放行；内置
+   Write/Edit 仅在目标为当前计划文件时放行；其他 `state_changing` 或 `unknown` 工具直接 `deny`。Session
+   approval mode 和用户批准不能覆盖 deny；拒绝以 `ToolPermissionDenied` 工具结果反馈，模型循环照常继续。
 
 
-PLAN_FILE_PATH: {WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_xxx.md
+PLAN_FILE_PATH: {OURO_HOME}/artifacts/dev.ouro.plan_mode/sessions/{session_id}/plans/plan_xxx.md
 
 > plan 模式不改变也不控制智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效。
 
@@ -195,15 +200,23 @@ fallback，计划 UI 不是新的插件 contribution 或 Core 特例。
 ## 内置插件实现约束
 
 内置插件 `ouro/builtin_plugins/plan_mode` 复用 Host 的 `Write`/`Edit`，不贡献重复的文件工具。由于 OURO 默认启用
-`tool_execution.workspace_only=true`，插件的实际路径采用：
+`tool_execution.workspace_only=true`，Host 除 workspace 外显式提供隔离的用户制品根目录；插件的实际路径采用：
 
 ```text
-{WORKSPACE}/.ouro/sessions/{session_id}/plans/plan_{timestamp}_{nonce}.md
+{OURO_HOME}/artifacts/dev.ouro.plan_mode/sessions/{session_id}/plans/plan_{timestamp}_{nonce}.md
 ```
 
-这保留了“每次激活生成唯一 Session 计划文件”的语义，同时不扩大内置写工具的允许根目录，也不让 Core 识别
-计划文件特权。若未来产品需要把 artifact 放到 OURO_HOME，应先设计独立于 canonical Session 数据的通用 artifact
-根目录，不能直接放宽 Write 对整个 `~/.ouro/sessions` 的写权限。
+`OURO_HOME` 由统一部署解析决定（默认 `~/.ouro`，并尊重显式 home 或 `OURO_HOME` 覆盖），因此计划文件不依赖
+项目目录或进程工作目录。`artifacts/<plugin-id>/` 是用户可见制品，不属于 canonical Session 数据，也不同于
+`plugins/data/<plugin-id>/` 的插件私有状态。`ToolExecutionContext` 只把 workspace 与 `OURO_HOME/artifacts` 作为
+受控路径根；它不会放开整个用户目录。Plan 插件再通过调用级 Tool Policy 把 Write/Edit 精确收窄到当前计划文件，
+因此 Core 只认识通用制品边界，不认识计划文件特权。
+
+Tool Policy 依据 validated invocation 的 canonical tool id、effect 和 path 判定，不按 exposed name、描述或命令文本
+猜测副作用。任何来源只要明确声明 `read_only` 均可用于调查；`unknown` 因无法证明无副作用而按非只读处理。Shell、
+MCP、用户插件或其他 Host 工具即使理论上能写计划文件，也不能替代 canonical `ouro.host/tools/Write` 和
+`ouro.host/tools/Edit`。错误路径或不允许的工具通过 deny 生成普通错误 ToolResult，不创建审批、不改变 Plan Session
+状态，也不增加 Harness 分支。
 
 脚手架消息属于模型执行事实，必须持久化：
 

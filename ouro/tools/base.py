@@ -72,6 +72,7 @@ class ToolExecutionContext:
     signal: AbortSignal | None = None
     poll_interval: float = 0.05
     workspace: str | Path | None = None
+    artifact_root: str | Path | None = None
     workspace_only: bool = False
     max_output_chars: int | None = None
 
@@ -97,7 +98,7 @@ class ToolExecutionContext:
             await asyncio.sleep(min(self.poll_interval, remaining))
 
     def resolve_path(self, path: str) -> Path:
-        """Resolve a tool path and enforce the configured workspace boundary."""
+        """Resolve a tool path and enforce the Host-configured path boundaries."""
 
         candidate = Path(path).expanduser()
         workspace = self._resolved_workspace()
@@ -105,12 +106,16 @@ class ToolExecutionContext:
             candidate = (workspace or Path.cwd()) / candidate
         candidate = candidate.resolve(strict=False)
         if self.workspace_only:
-            if workspace is None:
+            artifact_root = self._resolved_artifact_root()
+            allowed_roots = tuple(root for root in (workspace, artifact_root) if root is not None)
+            if not allowed_roots:
                 raise ToolPolicyError(
-                    "workspace-only tool execution requires a configured workspace"
+                    "workspace-only tool execution requires a configured workspace or artifact root"
                 )
-            if not candidate.is_relative_to(workspace):
-                raise ToolPolicyError(f"path is outside the configured workspace: {candidate}")
+            if not any(candidate.is_relative_to(root) for root in allowed_roots):
+                raise ToolPolicyError(
+                    f"path is outside the configured workspace and artifact roots: {candidate}"
+                )
         return candidate
 
     def resolve_working_directory(self, cwd: str | None) -> Path | None:
@@ -137,6 +142,11 @@ class ToolExecutionContext:
         if self.workspace is None:
             return None
         return Path(self.workspace).expanduser().resolve(strict=False)
+
+    def _resolved_artifact_root(self) -> Path | None:
+        if self.artifact_root is None:
+            return None
+        return Path(self.artifact_root).expanduser().resolve(strict=False)
 
     async def run_shell(
         self,

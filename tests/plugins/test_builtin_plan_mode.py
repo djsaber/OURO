@@ -21,6 +21,9 @@ from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore
 from ouro.tools import (
+    Tool,
+    ToolDefinition,
+    ToolEffect,
     ToolExecutionContext,
     ToolInputRequest,
     ToolInvocation,
@@ -70,6 +73,17 @@ class PlanBuildProvider:
                 },
             )
         elif self.stream_count == 2:
+            assert self.plan_path is not None
+            call = ToolCallRequest(
+                id="call_edit",
+                name="Edit",
+                arguments={
+                    "path": str(self.plan_path),
+                    "old": "2. Implement.",
+                    "new": "2. Implement safely.",
+                },
+            )
+        elif self.stream_count == 3:
             call = ToolCallRequest(
                 id="call_exit",
                 name="ExitPlanMode",
@@ -132,12 +146,13 @@ class FinalProvider:
         )
 
 
-class WrongWriteProvider:
-    provider_id = "plan-wrong-write"
+class PlanToolAttemptProvider:
+    provider_id = "plan-tool-attempt"
 
-    def __init__(self, wrong_path: Path) -> None:
+    def __init__(self, tool_name: str, arguments: dict[str, object]) -> None:
         self.stream_count = 0
-        self.wrong_path = wrong_path
+        self.tool_name = tool_name
+        self.arguments = arguments
 
     async def stream(
         self,
@@ -148,17 +163,27 @@ class WrongWriteProvider:
         tools=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
-        call = (
-            ToolCallRequest(id="call_enter", name="EnterPlanMode", arguments={})
-            if self.stream_count == 0
-            else ToolCallRequest(
-                id="call_wrong_write",
-                name="Write",
-                arguments={"path": str(self.wrong_path), "content": "must not be written"},
+        if self.stream_count == 0:
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call=ToolCallRequest(
+                    id="call_enter",
+                    name="EnterPlanMode",
+                    arguments={},
+                ),
             )
-        )
+        elif self.stream_count == 1:
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call=ToolCallRequest(
+                    id="call_attempt",
+                    name=self.tool_name,
+                    arguments=self.arguments,
+                ),
+            )
+        else:
+            yield ProviderStreamEvent(type="text_delta", text="Tool attempt handled.")
         self.stream_count += 1
-        yield ProviderStreamEvent(type="tool_call", tool_call=call)
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model) -> ProviderCheckResult:
@@ -189,43 +214,6 @@ class PlainTextProvider:
         self.stream_count += 1
         self.messages = list(messages)
         yield ProviderStreamEvent(type="text_delta", text="Planning can continue later.")
-        yield ProviderStreamEvent(type="done")
-
-    async def check_connection(self, model) -> ProviderCheckResult:
-        return ProviderCheckResult(
-            provider_id=self.provider_id,
-            model_id=model.model_id,
-            ok=True,
-            message="ok",
-        )
-
-
-class RejectedWriteThenTextProvider:
-    provider_id = "plan-rejected-write"
-
-    def __init__(self, target: Path) -> None:
-        self.stream_count = 0
-        self.target = target
-
-    async def stream(
-        self,
-        *,
-        model,
-        system_prompt="",
-        messages,
-        tools=None,
-    ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, system_prompt, messages, tools
-        if self.stream_count == 0:
-            call = ToolCallRequest(
-                id="call_rejected_write",
-                name="Write",
-                arguments={"path": str(self.target), "content": "must not be written"},
-            )
-            yield ProviderStreamEvent(type="tool_call", tool_call=call)
-        else:
-            yield ProviderStreamEvent(type="text_delta", text="Okay, ending this response.")
-        self.stream_count += 1
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model) -> ProviderCheckResult:
@@ -278,7 +266,12 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
 
     assert waiting.run.status == "waiting_user"
     assert first_provider.plan_path is not None
-    assert first_provider.plan_path.is_relative_to(workspace)
+    expected_plan_directory = (
+        home / "artifacts" / PLUGIN_ID / "sessions" / waiting.session.session_id / "plans"
+    )
+    assert first_provider.plan_path.parent == expected_plan_directory
+    assert not first_provider.plan_path.is_relative_to(workspace)
+    assert not (workspace / ".ouro").exists()
     assert first_provider.plan_path.read_text(encoding="utf-8").startswith("# Proposed plan")
     waiting_snapshot = first_store.load_runtime_session(waiting.session.session_id)
     scaffolds = [
@@ -287,7 +280,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         if message.metadata.get("kind") == "context_provider"
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
-    assert len(scaffolds) == 2
+    assert len(scaffolds) == 3
     assert all(message.role == "system_synthetic" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
     waiting_call = next(
@@ -328,7 +321,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
                 and message.metadata.get("plugin_id") == PLUGIN_ID
             ]
         )
-        == 2
+        == 3
     )
     assert not any(
         message.metadata.get("kind") == "context_provider"
@@ -359,10 +352,14 @@ async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answ
     prompts: list[str] = []
     outputs: list[str] = []
 
+    def read_input(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(inputs)
+
     code = await run_interactive(
         runtime=runtime,
         approval_mode="auto",
-        input_func=lambda prompt: prompts.append(prompt) or next(inputs),
+        input_func=read_input,
         output_func=outputs.append,
     )
 
@@ -387,34 +384,52 @@ async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answ
 
 
 @pytest.mark.asyncio
-async def test_plan_mode_requires_approval_for_write_outside_current_plan(tmp_path) -> None:
+@pytest.mark.parametrize("tool_name", ["Write", "Edit"])
+async def test_plan_mode_denies_builtin_writer_outside_current_plan_and_continues(
+    tmp_path,
+    tool_name: str,
+) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     wrong_path = workspace / "implementation.py"
-    provider = WrongWriteProvider(wrong_path)
+    if tool_name == "Edit":
+        wrong_path.write_text("old content", encoding="utf-8")
+    arguments: dict[str, object] = (
+        {"path": str(wrong_path), "content": "must not be written"}
+        if tool_name == "Write"
+        else {"path": str(wrong_path), "old": "old content", "new": "must not be edited"}
+    )
+    provider = PlanToolAttemptProvider(
+        tool_name,
+        arguments,
+    )
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_plan_mode(application)
 
     result = await runtime.run("Plan without changing implementation", approval_mode="auto")
 
-    assert result.run.status == "waiting_approval"
-    assert not wrong_path.exists()
-    call = next(
-        item for item in result.run.active_tool_batch.calls if item.request.id == "call_wrong_write"
+    assert result.run.status == "completed"
+    assert result.final_text == "Tool attempt handled."
+    if tool_name == "Write":
+        assert not wrong_path.exists()
+    else:
+        assert wrong_path.read_text(encoding="utf-8") == "old content"
+    denied = next(
+        tool_result for tool_result in result.tool_results if tool_result.tool_name == tool_name
     )
-    assert call.invocation is not None
-    assert call.invocation.permission_mode == "approval"
-    assert call.invocation.tool_policy_ids == ["dev.ouro.plan_mode/tool_policies/plan-tool-gate"]
+    assert denied.is_error is True
+    assert denied.structured["error_type"] == "ToolPermissionDenied"
+    assert "does not exclusively target the current plan file" in denied.content
     events = store.load_session(result.session.session_id).events
     policy_event = next(
         event
         for event in events
         if event.event_type == "tool_policy_evaluated"
-        and event.payload.get("tool_call_id") == "call_wrong_write"
+        and event.payload.get("tool_call_id") == "call_attempt"
     )
-    assert policy_event.payload["mode"] == "approval"
+    assert policy_event.payload["mode"] == "deny"
     await application.close()
 
 
@@ -467,48 +482,94 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_plan_mode_allows_run_to_finish_after_user_rejects_tool(tmp_path) -> None:
+@pytest.mark.parametrize("effect", ["state_changing", "unknown"])
+async def test_plan_mode_denies_other_state_changing_tools_without_running_them(
+    tmp_path,
+    effect: ToolEffect,
+) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    target = workspace / "implementation.py"
-    provider = RejectedWriteThenTextProvider(target)
-    runtime, store = _runtime(home, workspace, provider)
+    provider = PlanToolAttemptProvider("ExternalMutation", {})
+    runtime, _ = _runtime(home, workspace, provider)
+    invoked: list[str] = []
+
+    def mutate(invocation: ToolInvocation) -> ToolResult:
+        invoked.append(invocation.tool_call_id)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="mutated",
+        )
+
+    runtime.tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ExternalMutation",
+                description="Mutate an external system.",
+                permission_mode="auto",
+                effect=effect,
+            ),
+            handler=mutate,
+        )
+    )
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_plan_mode(application)
-    session = runtime.create_session(title="Rejected plan tool")
-    assert application.plugins is not None
-    command = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:plan",
-        "",
-        session_id=session.session_id,
-        workspace=str(workspace),
-    )
-    assert command.session_inputs == []
 
-    waiting = await runtime.run(
-        "Change the implementation",
-        session_id=session.session_id,
-        approval_mode="auto",
-    )
-
-    assert waiting.run.status == "waiting_approval"
-    completed = await runtime.approve_tool(
-        session_id=session.session_id,
-        run_id=waiting.run.run_id,
-        approved=False,
-        reason="结束对话",
-    )
+    completed = await runtime.run("Try another mutation", approval_mode="auto")
 
     assert completed.run.status == "completed"
-    assert completed.final_text == "Okay, ending this response."
-    assert provider.stream_count == 2
-    assert not target.exists()
-    snapshot = store.load_runtime_session(session.session_id)
-    assert not any(
-        message.metadata.get("session_input_source") == "turn_policy"
-        for message in snapshot.messages
+    assert completed.final_text == "Tool attempt handled."
+    assert invoked == []
+    denied = next(
+        result for result in completed.tool_results if result.tool_name == "ExternalMutation"
     )
+    assert denied.is_error is True
+    assert denied.structured["error_type"] == "ToolPermissionDenied"
+    assert "Only OURO's builtin Write or Edit" in denied.content
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_mode_allows_any_declared_read_only_tool(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanToolAttemptProvider("ExternalRead", {})
+    runtime, _ = _runtime(home, workspace, provider)
+    invoked: list[str] = []
+
+    def read(invocation: ToolInvocation) -> ToolResult:
+        invoked.append(invocation.tool_call_id)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="read result",
+        )
+
+    runtime.tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ExternalRead",
+                description="Read from an external source.",
+                permission_mode="auto",
+                effect="read_only",
+            ),
+            handler=read,
+        )
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+
+    completed = await runtime.run("Read external information", approval_mode="auto")
+
+    assert completed.run.status == "completed"
+    assert invoked == ["call_attempt"]
+    read_result = next(
+        result for result in completed.tool_results if result.tool_name == "ExternalRead"
+    )
+    assert read_result.is_error is False
+    assert read_result.content == "read result"
     await application.close()
 
 

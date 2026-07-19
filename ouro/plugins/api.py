@@ -407,6 +407,7 @@ def build_plugin_context(
     diagnostics: list[PluginDiagnostic],
     redactor: SensitiveValueRedactor,
     data_store: ScopedPluginDataStore | None = None,
+    artifact_root: Path | None = None,
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
         identity=sdk.PluginIdentity(
@@ -433,6 +434,11 @@ def build_plugin_context(
         logger=RedactedPluginLogger(candidate.plugin_id, redactor),
         diagnostics=PluginDiagnosticEmitter(candidate, generation, diagnostics, redactor),
         permissions=frozenset(request.id for request in candidate.manifest.permissions),
+        artifact_root=(
+            str((artifact_root / candidate.plugin_id).resolve(strict=False))
+            if artifact_root is not None
+            else None
+        ),
     )
 
 

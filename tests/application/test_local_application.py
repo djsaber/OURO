@@ -16,6 +16,7 @@ async def test_local_application_composes_and_closes_sqlite_runtime(tmp_path) ->
         assert isinstance(application.runtime.store, SQLiteSessionStore)
         assert application.runtime.environment.home == tmp_path.resolve()
         assert application.runtime.environment.session_data_dir is None
+        assert application.runtime.environment.artifact_root == tmp_path.resolve() / "artifacts"
 
     assert result.run.status == "completed"
     assert (tmp_path / "sessions.sqlite3").is_file()

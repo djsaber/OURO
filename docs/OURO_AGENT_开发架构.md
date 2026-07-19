@@ -129,8 +129,9 @@ identity、owner、这些归一化语义、schema 校验后的参数及 Session/
 `ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
 需要根据回答继续执行的工具必须声明 resumable 并提供 resume handler；恢复仍绑定原 Catalog 与精确工具 contract，
 允许再次请求输入或产生最终工具结果。非 resumable 工具保留直接把回答作为结果的单阶段协议。`AskUser` 只是该
-协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd 在
-workspace 内，并在 executor 边界统一限制结果长度；Bash cwd 限制不等同于操作系统沙箱。
+协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd
+只能落在 workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录，并在 executor 边界统一限制结果长度；它不会
+放开 `OURO_HOME` 的配置、会话或插件私有数据，Bash cwd 限制也不等同于操作系统沙箱。
 
 ## 模型路由与 Provider 边界
 
@@ -232,6 +233,8 @@ OURO_HOME/
   locks/session-mutations/
   locks/billing-mutations.lock
   billing/usage.jsonl
+  artifacts/
+    <plugin-id>/
   sessions/
     index.json
     <session_id>/
@@ -363,7 +366,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；普通 `after_run` Hook 仍是 fail-open observer。
-- 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace 路径与协作式取消语义；
+- 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace/Host artifact 路径边界与
+  协作式取消语义；
   worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call`
   分离，对 host-controlled 和 tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
   审批修改后的最终参数必须重新评估。`permission_control="tool"` 只隔离 Host permission 维度，不隔离插件策略维度。
@@ -381,7 +385,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   也不新增 `builtin` runtime kind 或第二套插件 runtime。
 - `PluginPackageStore.state.json` 保留 user install/activation，并另存稀疏 builtin enablement override；builtin code 随
   OURO distribution 发布，私有 data 继续使用 `OURO_HOME/plugins/data/<plugin-id>/`。没有 override 时使用 definition 的
-  product default，显式用户选择跨重启保留。
+  product default，显式用户选择跨重启保留。需要交给模型内置文件工具编辑的用户制品使用独立的
+  `OURO_HOME/artifacts/<plugin-id>/`，不混入插件私有 data 或 canonical Session 存储。
 - 插件系统将 package、install/provenance、authorization 和 runtime generation 分层。当前代码已经形成首版
   管理与运行闭环；[插件系统规格](../dev/specs/plugin-system.md)描述权威目标与剩余契约，现状差距以
   [插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)为准。同进程插件为 full trust，worker

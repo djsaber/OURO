@@ -53,6 +53,7 @@ class ToolCallCoordinator:
         runs: RunLifecycle,
         execution_config: ToolExecutionConfig,
         default_workspace: str | None,
+        artifact_root: str | None,
         is_aborted: Callable[[str, str], bool],
         tool_policies: ToolPolicyRegistry | None = None,
     ) -> None:
@@ -64,6 +65,7 @@ class ToolCallCoordinator:
         self.runs = runs
         self.execution_config = execution_config
         self.default_workspace = default_workspace
+        self.artifact_root = artifact_root
         self.is_aborted = is_aborted
         self.tool_policies = tool_policies or ToolPolicyRegistry()
 
@@ -452,6 +454,7 @@ class ToolCallCoordinator:
         execution_context = ToolExecutionContext(
             signal=abort_signal,
             workspace=session.workspace or self.default_workspace,
+            artifact_root=self.artifact_root,
             workspace_only=self.execution_config.workspace_only,
             max_output_chars=self.execution_config.max_output_chars,
         )
@@ -703,6 +706,7 @@ class ToolCallCoordinator:
                     request=call.input_request,
                     context=ToolExecutionContext(
                         workspace=workspace or self.default_workspace,
+                        artifact_root=self.artifact_root,
                         workspace_only=self.execution_config.workspace_only,
                         max_output_chars=self.execution_config.max_output_chars,
                     ),

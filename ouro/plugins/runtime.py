@@ -1419,6 +1419,7 @@ class PluginRuntimeResource:
                     diagnostics=diagnostics,
                     redactor=redactor,
                     data_store=data_store,
+                    artifact_root=self.store.home / "artifacts",
                 )
                 instance = factory(context)
                 if inspect.isawaitable(instance):

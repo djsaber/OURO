@@ -337,14 +337,16 @@ Context 只暴露稳定、必要的能力：
 - credential slot resolver；
 - supervised tasks；
 - redacted logger 和 diagnostics；
-- 已授权 Host-service permission 集合。
+- 已授权 Host-service permission 集合；
+- 可选的 plugin-scoped artifact root，用于用户可见、可由 Host 文件工具处理的制品；它与 plugin-private data 和
+  canonical Session 数据分离。
 
 不暴露 RuntimeService、SessionStore、全局 registry、Host UI、原始配置文件或 credential store。
 
 ### 8.2 Request context
 
 需要 workspace/session/run 的能力通过每次调用的 request context 传入，不能缓存到调用结束以后。Tool context 至少
-提供 workspace、workspace-only path resolution、abort 状态和可取消 sleep。worker 获得等价的序列化字段和 cancel。
+提供 workspace、Host artifact path resolution、abort 状态和可取消 sleep。worker 获得等价的序列化字段和 cancel。
 
 ### 8.3 开发期 API 规则
 
@@ -550,10 +552,15 @@ OURO_HOME/plugins/
   staging/
   locks/
   state.json
+
+OURO_HOME/artifacts/
+  <plugin-id>/
 ```
 
 - store 不可变且只保存 user plugin；builtin code 随 OURO distribution 发布，不复制或伪装安装到 store；
 - data 同时服务 builtin/user plugin，并按稳定 plugin id 隔离；data 跨 user plugin 版本和 OURO 进程重启保留；
+- artifacts 保存用户可见、可由 Host 文件工具处理的插件制品；它不参与 candidate data staging，也不是 canonical
+  Session 后端的一部分；Host 的路径策略只开放这一根目录，不开放整个 `OURO_HOME`；
 - state.json 先执行显式支持的单向 schema migration；迁移后仍违反当前契约（不支持的旧 schema、非法编码、截断或
   损坏）时不得阻断 Host 启动：boot 路径将其隔离
   重命名（不删除）并以空注册表降级启动，记录 diagnostic 与 audit；临时读取、权限、锁和其他 I/O 错误不得被

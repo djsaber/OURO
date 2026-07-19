@@ -97,6 +97,7 @@ class PluginContext:
     logger: PluginLogger
     diagnostics: DiagnosticEmitter
     permissions: frozenset[str] = frozenset()
+    artifact_root: str | None = None
 
 
 class ToolExecutionContext(Protocol):

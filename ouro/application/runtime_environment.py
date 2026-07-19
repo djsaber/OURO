@@ -34,3 +34,9 @@ class RuntimeEnvironment:
         if self.session_data_dir is None:
             return None
         return self.session_data_dir / session_id
+
+    @property
+    def artifact_root(self) -> Path | None:
+        """Return the Host-managed, user-data root for agent-created artifacts."""
+
+        return self.home / "artifacts" if self.home is not None else None
