@@ -20,8 +20,17 @@ from ouro.prompts import DEFAULT_SYSTEM_PROMPT
 from ouro.providers import FauxProvider, OpenAICompatibleProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from ouro.tools.builtin_shell import detect_command_shell
 
 MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
+
+
+def _expected_builtin_tool_names() -> list[str]:
+    shell = detect_command_shell()
+    names = ["AskUser", "Edit", "Read", "Write"]
+    if shell is not None:
+        names.append(shell.tool_name)
+    return sorted(names)
 
 
 class CapturingProvider:
@@ -191,7 +200,7 @@ async def test_run_print_composes_configured_mcp_tool_and_closes_it(
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out.strip() == "MCP completed."
-    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+    assert runtime.tools.names() == _expected_builtin_tool_names()
     session = runtime.store.list_sessions()[0]
     snapshot = runtime.store.load_session(session.session_id)
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
@@ -247,7 +256,7 @@ async def test_run_json_composes_mcp_without_corrupting_machine_output(
     assert payload["status"] == "completed"
     assert payload["final_text"] == "JSON MCP done."
     assert captured.err == ""
-    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+    assert runtime.tools.names() == _expected_builtin_tool_names()
 
 
 async def test_run_print_isolates_mcp_start_failure(
@@ -398,7 +407,7 @@ async def test_interactive_composes_mcp_for_process_lifetime(
     assert "Connecting MCP · 1 server(s) · Echo" in rendered
     assert "MCP · 1 connected · 1 tool(s)" in rendered
     assert "● Echo [echo] · stdio · 1 tool(s)" in rendered
-    assert runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+    assert runtime.tools.names() == _expected_builtin_tool_names()
 
 
 async def test_interactive_reports_runtime_error_and_keeps_prompt_alive(tmp_path) -> None:

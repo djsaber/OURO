@@ -3,8 +3,15 @@ from __future__ import annotations
 import pytest
 
 from ouro.tools import Tool, ToolDefinition, ToolInvocation, builtin_tools
+from ouro.tools.builtin_shell import detect_command_shell
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
+
+
+def _command_tool_name() -> str:
+    shell = detect_command_shell()
+    assert shell is not None
+    return shell.tool_name
 
 
 def test_tool_controlled_permission_rejects_approval_mode() -> None:
@@ -22,12 +29,13 @@ async def test_permission_override_changes_mode_to_approval() -> None:
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
-    executor = ToolExecutor(registry, permission_overrides={"Bash": "approval"})
+    command_tool_name = _command_tool_name()
+    executor = ToolExecutor(registry, permission_overrides={command_tool_name: "approval"})
 
     invocation = ToolInvocation(
         session_id="s1",
         run_id="r1",
-        tool_name="Bash",
+        tool_name=command_tool_name,
         arguments={"command": "echo hi"},
     )
     outcome = await executor.execute(invocation)

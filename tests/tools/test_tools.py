@@ -15,6 +15,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
+from ouro.tools.builtin_shell import detect_command_shell
 
 
 def _registry() -> ToolRegistry:
@@ -22,6 +23,12 @@ def _registry() -> ToolRegistry:
     for tool in builtin_tools():
         registry.register(tool)
     return registry
+
+
+def _command_tool_name() -> str:
+    shell = detect_command_shell()
+    assert shell is not None
+    return shell.tool_name
 
 
 @pytest.mark.asyncio
@@ -139,7 +146,7 @@ async def test_tool_output_is_truncated_at_executor_boundary() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bash_rejects_working_directory_outside_workspace(tmp_path) -> None:
+async def test_command_shell_rejects_working_directory_outside_workspace(tmp_path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
@@ -147,7 +154,7 @@ async def test_bash_rejects_working_directory_outside_workspace(tmp_path) -> Non
         ToolInvocation(
             session_id="ses_1",
             run_id="run_1",
-            tool_name="Bash",
+            tool_name=_command_tool_name(),
             arguments={"command": "echo unreachable", "cwd": str(tmp_path)},
         ),
         approved=True,

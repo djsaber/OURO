@@ -22,13 +22,19 @@
   `<行号>\t<内容>` 返回，单次至多 1000 行或 100,000 UTF-8 字节；
 - Write：以覆盖或追加模式写入 UTF-8 文本，并自动创建缺失的父目录；
 - Edit：执行精确字面文本替换，默认替换首处，可显式选择替换全部；
-- Bash：执行 shell 命令，捕获 stdout/stderr/return code；
+- 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
+  PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
 
-写入、编辑和 Bash 默认可由权限配置要求审批。Read/Write/Edit 的路径和 Bash 的工作目录统一经过
+写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
 `ToolExecutionContext` 解析；默认限制在 Session workspace 内，并拒绝 `..` 与符号链接逃逸。Read 在文件
 IO 边界流式执行自身的行数和 UTF-8 字节上限，返回 `next_offset`、实际行数与截断信息，避免为截取一页而
 全量载入文件；所有工具结果仍在 executor 边界执行宿主统一长度上限和显式截断标记。
+
+命令行工具的模型可见 name、方言描述和执行包装必须由同一个检测结果生成，不能用 `Bash` 名称委托宿主
+默认 shell。PowerShell 以无 Profile、非交互、UTF-8 文本模式运行；Bash 以无 Profile、非交互并启用
+`pipefail` 的模式运行。各方言描述需明确其引用、管道、路径、可选程序探测、错误状态与非持久会话等常见
+陷阱。若没有支持的 shell，则不注册命令行工具，不能暴露一个实际无法执行或会落到其他方言的定义。
 
 ## 权限
 
@@ -76,7 +82,8 @@ AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案
 
 插件工具应使用 execution context 的协作式 API，不能屏蔽取消信号。
 
-workspace 约束只限制 Bash 的工作目录，不是操作系统命令沙箱；Bash 仍依赖权限策略、审批和部署环境隔离。
+workspace 约束只限制命令行工具的工作目录，不是操作系统命令沙箱；命令执行仍依赖权限策略、审批和部署
+环境隔离。
 
 ## 恢复
 

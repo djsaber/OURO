@@ -17,8 +17,17 @@ from ouro.mcp import MCPConfigStore, MCPRuntimeResource, MCPServerConfig
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+from ouro.tools.builtin_shell import detect_command_shell
 
 MCP_ECHO_SERVER = Path(__file__).parents[1] / "mcp" / "fixtures" / "echo_server.py"
+
+
+def _expected_builtin_tool_names() -> list[str]:
+    shell = detect_command_shell()
+    names = ["AskUser", "Edit", "Read", "Write"]
+    if shell is not None:
+        names.append(shell.tool_name)
+    return sorted(names)
 
 
 def _runtime(tmp_path: Path, event_batches: list[list[ProviderStreamEvent]]) -> RuntimeService:
@@ -138,7 +147,7 @@ async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.tool_name == "echo__echo"
     assert tool_message.tool_result.is_error is False
-    assert resumed_runtime.tools.names() == ["AskUser", "Bash", "Edit", "Read", "Write"]
+    assert resumed_runtime.tools.names() == _expected_builtin_tool_names()
 
 
 @pytest.mark.asyncio

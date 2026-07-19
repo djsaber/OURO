@@ -29,6 +29,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
+from ouro.tools.builtin_shell import detect_command_shell
 
 
 @pytest.mark.asyncio
@@ -94,6 +95,8 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     tools = ToolRegistry()
     for tool in builtin_tools():
         tools.register(tool)
+    shell = detect_command_shell()
+    assert shell is not None
     provider = FauxProvider(
         event_batches=[
             [
@@ -102,7 +105,7 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
                     tool_call_delta=ToolCallDelta(
                         index=0,
                         id_delta="call_guarded",
-                        name_delta="Bash",
+                        name_delta=shell.tool_name,
                         arguments_delta=json.dumps(
                             {"command": "echo unsafe > should-not-exist.txt"}
                         ),
@@ -128,7 +131,7 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     )
     application = LocalApplication.from_runtime(runtime, home=home)
     source = tmp_path / "guard-plugin"
-    _write_guard_plugin(source)
+    _write_guard_plugin(source, shell.tool_name)
     assert application.plugins is not None
     application.plugins.install(source)
     application.plugins.authorize("dev.ouro.guard")
@@ -793,7 +796,7 @@ async def test_tool_policy_rechecks_user_modified_approval_arguments(tmp_path) -
     assert reevaluation.payload["mode"] == "deny"
 
 
-def _write_guard_plugin(source) -> None:
+def _write_guard_plugin(source, command_tool_name: str) -> None:
     manifest_dir = source / ".ouro-plugin"
     manifest_dir.mkdir(parents=True)
     (manifest_dir / "plugin.json").write_text(
@@ -819,7 +822,7 @@ def _write_guard_plugin(source) -> None:
         ),
         encoding="utf-8",
     )
-    (source / "guard_plugin.py").write_text(
+    plugin_source = (
         """from ouro.sdk.plugins.v1 import (
     ContributionSet,
     ToolPolicyContribution,
@@ -829,7 +832,8 @@ def _write_guard_plugin(source) -> None:
 class Plugin:
     async def prepare(self):
         async def safe_shell(call):
-            if call.tool_name == 'Bash' and 'unsafe' in str(call.arguments.get('command', '')):
+            command = str(call.arguments.get('command', ''))
+            if call.tool_name == '__COMMAND_TOOL__' and 'unsafe' in command:
                 return ToolPolicyDecision(
                     action='deny',
                     reason='guard policy blocked the command',
@@ -845,7 +849,10 @@ class Plugin:
 
 def create_plugin(context):
     return Plugin()
-""",
+""".replace("__COMMAND_TOOL__", command_tool_name)
+    )
+    (source / "guard_plugin.py").write_text(
+        plugin_source,
         encoding="utf-8",
     )
 

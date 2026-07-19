@@ -46,6 +46,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
+from ouro.tools.builtin_shell import detect_command_shell
 
 
 def _tools() -> ToolRegistry:
@@ -1777,10 +1778,14 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
 
 
 @pytest.mark.asyncio
-async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
+async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    command = f'"{sys.executable}" -c "import time; time.sleep(5); print(\'done\')"'
+    shell = detect_command_shell()
+    assert shell is not None
+    command = f'"{sys.executable}" -c "import time; time.sleep(5)"'
+    if shell.kind in ("powershell", "windows_powershell"):
+        command = f"& {command}"
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1789,8 +1794,8 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
                     ProviderStreamEvent(
                         type="tool_call",
                         tool_call={
-                            "id": "bash_1",
-                            "name": "Bash",
+                            "id": "shell_1",
+                            "name": shell.tool_name,
                             "arguments": {"command": command, "timeout_seconds": 30},
                         },
                     ),
@@ -1816,7 +1821,7 @@ async def test_runtime_aborts_active_approved_bash_tool(tmp_path) -> None:
             break
         await asyncio.sleep(0.01)
     else:
-        raise AssertionError("bash tool did not start")
+        raise AssertionError("command tool did not start")
 
     await runtime.abort_run(
         session_id=pending.session.session_id,
