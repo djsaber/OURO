@@ -10,7 +10,7 @@ import pytest
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ModelMessage
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -38,7 +38,7 @@ class PlanBuildProvider:
     def __init__(self) -> None:
         self.stream_count = 0
         self.plan_path: Path | None = None
-        self.requests: list[list[MessageRecord]] = []
+        self.requests: list[list[ModelMessage]] = []
 
     async def stream(
         self,
@@ -56,7 +56,7 @@ class PlanBuildProvider:
             scaffold = next(
                 message.text_content
                 for message in reversed(messages)
-                if message.metadata.get("kind") == "context_provider"
+                if message.role == "system_synthetic" and "Plan file:" in message.text_content
             )
             match = re.search(r"Plan file: (.+)", scaffold)
             assert match is not None
@@ -100,7 +100,7 @@ class FinalProvider:
     provider_id = "plan-build"
 
     def __init__(self) -> None:
-        self.messages: list[MessageRecord] = []
+        self.messages: list[ModelMessage] = []
 
     async def stream(
         self,
@@ -167,7 +167,7 @@ class PlainTextProvider:
 
     def __init__(self) -> None:
         self.stream_count = 0
-        self.messages: list[MessageRecord] = []
+        self.messages: list[ModelMessage] = []
 
     async def stream(
         self,

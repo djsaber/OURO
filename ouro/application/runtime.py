@@ -745,6 +745,7 @@ class RuntimeService:
                 record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_batch=tool_calls.handle_batch,
                 record_usage=self.run_lifecycle.record_usage,
+                record_context_completion=self.context_preparation.record_provider_completion,
                 aborted_result=self._aborted_result,
                 save_waiting_state=self.run_lifecycle.save_waiting_state,
                 complete_run=self.run_lifecycle.complete,

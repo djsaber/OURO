@@ -55,6 +55,48 @@ class ProviderContinuationArtifact(OuroModel):
         )
 
 
+class ModelMessage(OuroModel):
+    """Provider-neutral message containing only model-visible semantics.
+
+    Canonical ``MessageRecord`` identity, persistence metadata and resource
+    references deliberately stop at the context projection boundary.
+    """
+
+    role: MessageRole
+    content: list[ContentBlock] = Field(default_factory=list)
+    tool_calls: list[ToolCallRequest] = Field(default_factory=list)
+    tool_result: ToolResultReference | None = None
+    provider_continuation: ProviderContinuationArtifact | None = None
+
+    @model_validator(mode="after")
+    def validate_tool_fields(self) -> ModelMessage:
+        if self.tool_calls and self.role != "assistant":
+            raise ValueError("only assistant model messages may contain tool_calls")
+        if self.tool_result is not None and self.role != "tool_result":
+            raise ValueError("only tool_result model messages may contain tool_result")
+        if self.provider_continuation is not None and self.role != "assistant":
+            raise ValueError("only assistant model messages may contain provider continuation")
+        return self
+
+    @classmethod
+    def from_record(cls, message: MessageRecord) -> ModelMessage:
+        return cls(
+            role=message.role,
+            content=list(message.content),
+            tool_calls=list(message.tool_calls),
+            tool_result=message.tool_result,
+            provider_continuation=message.provider_continuation,
+        )
+
+    @classmethod
+    def text(cls, *, role: MessageRole, text: str) -> ModelMessage:
+        return cls(role=role, content=[TextContent(text=text)])
+
+    @property
+    def text_content(self) -> str:
+        return "".join(block.text for block in self.content if isinstance(block, TextContent))
+
+
 class MessageRecord(OuroModel):
     schema_version: int = SCHEMA_VERSION
     message_id: str = Field(default_factory=lambda: new_id("msg"))

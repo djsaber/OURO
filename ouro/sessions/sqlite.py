@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from ouro.core.base import new_id, utc_now
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import MigrationRequiredError, PersistenceError, ResourceNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -92,6 +93,12 @@ class SQLiteSessionStore:
                         row_id INTEGER PRIMARY KEY AUTOINCREMENT,
                         session_id TEXT NOT NULL,
                         compaction_id TEXT NOT NULL UNIQUE,
+                        payload TEXT NOT NULL,
+                        FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                    );
+                    CREATE TABLE IF NOT EXISTS latest_contexts (
+                        session_id TEXT PRIMARY KEY,
+                        context_id TEXT NOT NULL UNIQUE,
                         payload TEXT NOT NULL,
                         FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
@@ -235,6 +242,33 @@ class SQLiteSessionStore:
                 "started_at = excluded.started_at, payload = excluded.payload",
                 (run.session_id, run.run_id, str(run.started_at), run.model_dump_json()),
             )
+
+    def save_latest_context(self, context: ContextSnapshotRecord) -> None:
+        with self.session_mutation(context.session_id):
+            connection = self._transaction_connection()
+            self._require_session(connection, context.session_id)
+            connection.execute(
+                "INSERT INTO latest_contexts(session_id, context_id, payload) VALUES(?, ?, ?) "
+                "ON CONFLICT(session_id) DO UPDATE SET "
+                "context_id = excluded.context_id, payload = excluded.payload",
+                (context.session_id, context.context_id, context.model_dump_json()),
+            )
+
+    def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            row = connection.execute(
+                "SELECT payload FROM latest_contexts WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return ContextSnapshotRecord.model_validate_json(row[0])
+        except (ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not load latest context for session {session_id}: {exc}"
+            ) from exc
 
     def append_compaction(self, compaction: CompactionRecord) -> None:
         with self.session_mutation(compaction.session_id):

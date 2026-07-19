@@ -232,6 +232,8 @@ async def test_activity_subscription_exposes_initial_and_live_fine_grained_state
 
     assert "preparing_model" in observed
     assert supervisor.activity(handle).activity == "waiting_model"
+    assert supervisor.activity(handle).context_status is not None
+    assert supervisor.activity(handle).context_status.metrics.estimated_input_tokens > 0
 
     provider.release.set()
     terminal = await asyncio.wait_for(supervisor.wait(handle), timeout=2)

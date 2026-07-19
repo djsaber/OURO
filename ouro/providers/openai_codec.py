@@ -4,13 +4,13 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ouro.core.messages import ImageContent, MessageRecord, TextContent
+from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tools import ToolCallRequest
 
 
 def _message_to_openai(
-    message: MessageRecord,
+    message: ModelMessage,
     *,
     supports_vision: bool = False,
     provider_id: str,
@@ -57,7 +57,7 @@ def _message_to_openai(
 
 
 def _message_content_to_openai(
-    message: MessageRecord,
+    message: ModelMessage,
     *,
     supports_vision: bool,
 ) -> str | list[dict[str, Any]]:

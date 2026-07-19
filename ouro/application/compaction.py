@@ -9,7 +9,7 @@ from typing import Protocol
 from ouro.application.events import RuntimeEventRecorder
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.base import new_id
+from ouro.core.base import new_id, utc_now
 from ouro.core.billing import UsagePurpose
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import (
@@ -35,6 +35,7 @@ from ouro.core.context_providers import (
     ContextProviderCall,
     ContextProviderRegistry,
 )
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import (
     CompactionError,
     ContextBlockedError,
@@ -43,7 +44,7 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
@@ -296,7 +297,7 @@ class LLMSummaryCompactionStrategy:
         ).model_copy(update={"synthetic": True, "metadata": {"kind": "compaction_input"}})
         context = ContextView(
             system_prompt=self.prompt,
-            model_messages=[summary_input],
+            model_messages=[ModelMessage.from_record(summary_input)],
             tool_definitions=[],
         )
         text_parts: list[str] = []
@@ -379,6 +380,7 @@ class ContextPreparationService:
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
         model_round: int,
+        turn_id: str,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
         hooks: HookRegistry | None = None,
@@ -417,18 +419,18 @@ class ContextPreparationService:
         )
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
-        effective_messages = project_recovery_messages(project_compacted_messages(messages, active))
-        effective_messages = self._materialize_messages(effective_messages, active_adapter)
+        source_messages = project_recovery_messages(project_compacted_messages(messages, active))
+        effective_messages = self._materialize_messages(source_messages, active_adapter)
         view = self._build_view(
             messages=effective_messages,
             tools=tools,
             added_context=added_context,
-            budget=budget,
+            adapter=active_adapter,
             skill_instructions=skill_instructions,
         )
 
         trigger_tokens = int(budget * self.config.policy.trigger_ratio)
-        estimated = int(view.context_metadata["estimated_input_tokens"])
+        estimated = view.metrics.estimated_input_tokens
         if self.config.policy.auto_enabled and estimated >= trigger_tokens:
             try:
                 execution = await self.compact(
@@ -449,7 +451,7 @@ class ContextPreparationService:
                 )
             except CompactionError as exc:
                 sequence = self.store.latest_event_sequence(session.session_id)
-                if view.context_metadata["over_budget"]:
+                if view.metrics.over_budget:
                     raise ContextBlockedError(
                         f"context compaction is required before the run can continue: {exc}"
                     ) from exc
@@ -464,39 +466,42 @@ class ContextPreparationService:
                     }
                 )
                 final_view = view.model_copy(update={"context_metadata": metadata})
-                sequence = await self._observe_built_context(
+                return await self._finalize_prepared_context(
                     emitted,
                     sequence,
-                    hooks=active_hooks,
                     session=session,
                     run=run,
-                    view=final_view,
+                    turn_id=turn_id,
                     model_round=model_round,
+                    adapter=active_adapter,
+                    hooks=active_hooks,
+                    view=final_view,
+                    source_messages=source_messages,
+                    injected_message_count=len(added_context),
                 )
-                return final_view, sequence
             sequence = execution.sequence
-            if execution.record is None and view.context_metadata["over_budget"]:
+            if execution.record is None and view.metrics.over_budget:
                 raise ContextBlockedError(
                     "context is over budget and no complete older context frame is eligible "
                     "for compaction"
                 )
             active = execution.record or active
-            effective_messages = project_recovery_messages(
+            source_messages = project_recovery_messages(
                 project_compacted_messages(messages, active)
             )
             effective_messages = self._materialize_messages(
-                effective_messages,
+                source_messages,
                 active_adapter,
             )
             view = self._build_view(
                 messages=effective_messages,
                 tools=tools,
                 added_context=added_context,
-                budget=budget,
+                adapter=active_adapter,
                 skill_instructions=skill_instructions,
             )
 
-        if view.context_metadata["over_budget"]:
+        if view.metrics.over_budget:
             raise ContextBlockedError(
                 "context remains over the model input budget after summary compaction"
             )
@@ -509,16 +514,42 @@ class ContextPreparationService:
             }
         )
         final_view = view.model_copy(update={"context_metadata": metadata})
-        sequence = await self._observe_built_context(
+        return await self._finalize_prepared_context(
             emitted,
             sequence,
-            hooks=active_hooks,
             session=session,
             run=run,
-            view=final_view,
+            turn_id=turn_id,
             model_round=model_round,
+            adapter=active_adapter,
+            hooks=active_hooks,
+            view=final_view,
+            source_messages=source_messages,
+            injected_message_count=len(added_context),
         )
-        return final_view, sequence
+
+    def record_provider_completion(
+        self,
+        *,
+        session_id: str,
+        context_id: str,
+        usage: Usage | None,
+    ) -> None:
+        record = self.store.load_latest_context(session_id)
+        if record is None or record.context_id != context_id:
+            raise PersistenceError(
+                f"latest context for session {session_id} does not match {context_id}"
+            )
+        self.store.save_latest_context(
+            record.model_copy(
+                update={
+                    "completed_at": utc_now(),
+                    "provider_reported_input_tokens": (
+                        usage.input_tokens if usage is not None else None
+                    ),
+                }
+            )
+        )
 
     def _materialize_context_fragments(
         self,
@@ -598,6 +629,54 @@ class ContextPreparationService:
             hook_result.failures,
         )
 
+    async def _finalize_prepared_context(
+        self,
+        emitted: list[EventRecord],
+        sequence: int,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        turn_id: str,
+        model_round: int,
+        adapter: RuntimeAdapter,
+        hooks: HookRegistry,
+        view: ContextView,
+        source_messages: list[MessageRecord],
+        injected_message_count: int,
+    ) -> tuple[ContextView, int]:
+        context_id = new_id("ctx")
+        prepared = view.model_copy(update={"context_id": context_id})
+        self.store.save_latest_context(
+            ContextSnapshotRecord(
+                context_id=context_id,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                turn_id=turn_id,
+                model_round=model_round,
+                provider_id=adapter.model.provider_id,
+                endpoint_id=adapter.model.endpoint_id,
+                model_id=adapter.model.model_id,
+                supports_vision=adapter.model.supports_vision,
+                system_prompt=prepared.system_prompt,
+                injected_messages=prepared.model_messages[:injected_message_count],
+                source_messages=source_messages,
+                tool_definitions=prepared.tool_definitions,
+                metrics=prepared.metrics,
+                context_metadata=prepared.context_metadata,
+                context_digest=context_view_digest(prepared),
+            )
+        )
+        sequence = await self._observe_built_context(
+            emitted,
+            sequence,
+            hooks=hooks,
+            session=session,
+            run=run,
+            view=prepared,
+            model_round=model_round,
+        )
+        return prepared, sequence
+
     async def compact(
         self,
         emitted: list[EventRecord],
@@ -625,16 +704,16 @@ class ContextPreparationService:
             messages=projected,
             tools=tools,
             added_context=added_context or [],
-            budget=budget,
+            adapter=active_adapter,
             skill_instructions=skill_instructions,
         )
         before_tokens = (
             estimated_tokens_before
             if estimated_tokens_before is not None
-            else int(initial_view.context_metadata["estimated_input_tokens"])
+            else initial_view.metrics.estimated_input_tokens
         )
         target_tokens = int(budget * self.config.policy.target_ratio)
-        fixed_tokens = int(initial_view.context_metadata["estimated_fixed_tokens"])
+        fixed_tokens = initial_view.metrics.estimated_fixed_tokens
         summary_output_tokens = self.config.policy.summary_output_tokens
         tail_budget = max(
             1,
@@ -733,11 +812,11 @@ class ContextPreparationService:
                 messages=projected_after,
                 tools=tools,
                 added_context=added_context or [],
-                budget=budget,
+                adapter=active_adapter,
                 skill_instructions=skill_instructions,
             )
-            after_tokens = int(final_view.context_metadata["estimated_input_tokens"])
-            if final_view.context_metadata["over_budget"]:
+            after_tokens = final_view.metrics.estimated_input_tokens
+            if final_view.metrics.over_budget:
                 raise ContextOverflowError(
                     "generated summary and protected recent turn exceed the model input budget"
                 )
@@ -818,7 +897,7 @@ class ContextPreparationService:
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
         added_context: list[str],
-        budget: int,
+        adapter: RuntimeAdapter,
         skill_instructions: str = "",
     ) -> ContextView:
         return self.context_builder.build(
@@ -827,7 +906,8 @@ class ContextPreparationService:
             system_prompt=self.system_prompt,
             added_context=added_context,
             additional_skill_instructions=skill_instructions,
-            input_token_budget=budget,
+            context_window_tokens=adapter.model.context_window,
+            reserved_output_tokens=adapter.model.max_output_tokens,
         )
 
     def _materialize_messages(

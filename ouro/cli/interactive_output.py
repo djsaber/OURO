@@ -189,7 +189,7 @@ class InteractiveOutput:
             await self._transition_waiting(
                 event.run_id,
                 "model",
-                "Waiting · model response",
+                _model_wait_activity(event.payload),
             )
         elif event.event_type == "model_text_delta":
             text = event.payload.get("text")
@@ -714,6 +714,20 @@ def _compaction_activity(payload: dict[str, Any]) -> str:
         return message
     phase_label = "generating summary" if phase == "generating" else phase.replace("_", " ")
     return f"{message} · {phase_label}"
+
+
+def _model_wait_activity(payload: dict[str, Any]) -> str:
+    message = "Waiting · model response"
+    metrics = payload.get("context_metrics")
+    if not isinstance(metrics, dict):
+        return message
+    estimated = metrics.get("estimated_input_tokens")
+    budget = metrics.get("input_budget_tokens")
+    if not isinstance(estimated, int) or estimated < 0:
+        return message
+    if isinstance(budget, int) and budget > 0:
+        return f"{message} · context {estimated}/{budget} tokens"
+    return f"{message} · context {estimated} tokens"
 
 
 def _compaction_completed(payload: dict[str, Any]) -> str:

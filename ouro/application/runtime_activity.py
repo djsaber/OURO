@@ -3,12 +3,14 @@ from __future__ import annotations
 from collections.abc import Iterable
 from typing import Any, cast
 
+from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import (
     RuntimeActivity,
     RuntimeActivitySnapshot,
     RuntimeToolCallActivity,
     SupervisorRunStatus,
 )
+from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallStatus
@@ -50,6 +52,7 @@ def project_runtime_activity(
     *,
     run_id: str | None = None,
     status_override: SupervisorRunStatus | None = None,
+    context_status: SessionContextStatus | None = None,
 ) -> RuntimeActivitySnapshot:
     run = _selected_run(snapshot, run_id=run_id)
     if run is None:
@@ -58,6 +61,7 @@ def project_runtime_activity(
             session_id=snapshot.session.session_id,
             status=status,
             activity=runtime_activity_for_status(status),
+            context_status=context_status,
             sequence=_latest_sequence(snapshot.events),
         )
 
@@ -66,6 +70,7 @@ def project_runtime_activity(
         run_id=run.run_id,
         status="queued",
         activity="queued",
+        context_status=context_status,
         sequence=0,
         updated_at=run.started_at,
     )
@@ -89,6 +94,7 @@ def project_runtime_activity_state(
     *,
     sequence: int,
     status_override: SupervisorRunStatus | None = None,
+    context_status: SessionContextStatus | None = None,
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
@@ -98,6 +104,7 @@ def project_runtime_activity_state(
             session_id=session.session_id,
             status=status,
             activity=runtime_activity_for_status(status),
+            context_status=context_status,
             sequence=sequence,
         )
     activity = RuntimeActivitySnapshot(
@@ -105,6 +112,7 @@ def project_runtime_activity_state(
         run_id=run.run_id,
         status=run.status,
         activity=runtime_activity_for_status(run.status),
+        context_status=context_status,
         sequence=sequence,
         updated_at=run.ended_at or run.started_at,
     )
@@ -148,6 +156,9 @@ def reduce_runtime_activity(
             run_phase="model_streaming",
             compaction_id=None,
         )
+        context_status = _context_status_from_request(event)
+        if context_status is not None:
+            updates["context_status"] = context_status
     elif event_type == "run_retry_scheduled":
         updates.update(activity="waiting_model", status="running")
     elif event_type == "model_reasoning_delta":
@@ -163,6 +174,21 @@ def reduce_runtime_activity(
             if isinstance(tool_call_count, int) and tool_call_count > 0
             else "finalizing_response"
         )
+        context_status = current.context_status
+        usage = payload.get("usage")
+        context_id = _string_or_none(payload.get("context_id"))
+        if context_status is not None and context_status.context_id == context_id:
+            input_tokens = usage.get("input_tokens") if isinstance(usage, dict) else None
+            updates["context_status"] = context_status.model_copy(
+                update={
+                    "completed_at": event.created_at,
+                    "provider_reported_input_tokens": (
+                        input_tokens
+                        if isinstance(input_tokens, int) and input_tokens >= 0
+                        else None
+                    ),
+                }
+            )
     elif event_type == "tool_batch_planned":
         updates.update(
             activity="preparing_tools",
@@ -487,3 +513,41 @@ def _latest_sequence(events: Iterable[EventRecord]) -> int:
 
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _context_status_from_request(event: EventRecord) -> SessionContextStatus | None:
+    payload = event.payload
+    context_id = _string_or_none(payload.get("context_id"))
+    provider_id = _string_or_none(payload.get("provider"))
+    model_id = _string_or_none(payload.get("model"))
+    turn_id = _string_or_none(payload.get("turn_id"))
+    metrics_payload = payload.get("context_metrics")
+    model_round = payload.get("round")
+    if (
+        context_id is None
+        or provider_id is None
+        or model_id is None
+        or turn_id is None
+        or event.run_id is None
+        or not isinstance(model_round, int)
+        or model_round < 1
+        or not isinstance(metrics_payload, dict)
+    ):
+        return None
+    try:
+        metrics = ContextMetrics.model_validate(metrics_payload)
+    except ValueError:
+        return None
+    return SessionContextStatus(
+        context_id=context_id,
+        session_id=event.session_id,
+        run_id=event.run_id,
+        turn_id=turn_id,
+        model_round=model_round,
+        provider_id=provider_id,
+        endpoint_id=_string_or_none(payload.get("endpoint")),
+        model_id=model_id,
+        prepared_at=event.created_at,
+        metrics=metrics,
+        active_compaction_id=_string_or_none(payload.get("active_compaction_id")),
+    )

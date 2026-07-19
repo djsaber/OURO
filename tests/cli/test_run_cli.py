@@ -309,7 +309,19 @@ def test_run_mode_can_continue_existing_session(tmp_path, capsys) -> None:
 
 
 async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
-    inputs = iter(["hello", "/sessions", "/models", "/model", "/export", "/new", "/exit"])
+    inputs = iter(
+        [
+            "hello",
+            "/sessions",
+            "/models",
+            "/model",
+            "/context",
+            "/context full",
+            "/export",
+            "/new",
+            "/exit",
+        ]
+    )
     outputs: list[str] = []
 
     async_code = await run_interactive(
@@ -323,6 +335,8 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert any(output.startswith("Sessions:") for output in outputs)
     assert "No configured models available." in outputs
     assert "No configured model selected." in outputs
+    assert any(output.startswith("Context: ctx_") for output in outputs)
+    assert any("Provider context:" in output for output in outputs)
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
 

@@ -15,7 +15,7 @@ from ouro.core.context_providers import (
     ContextProviderResult,
 )
 from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -195,8 +195,9 @@ class CapturingProvider:
     provider_id = "capture"
 
     def __init__(self) -> None:
-        self.messages: list[MessageRecord] = []
+        self.messages: list[ModelMessage] = []
         self.system_prompt = ""
+        self.tools: list[dict[str, object]] = []
         self.calls = 0
 
     async def stream(
@@ -207,10 +208,11 @@ class CapturingProvider:
         messages,
         tools=None,
     ):
-        del model, tools
+        del model
         self.calls += 1
         self.system_prompt = system_prompt
         self.messages = list(messages)
+        self.tools = list(tools or [])
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
 
@@ -307,10 +309,17 @@ async def test_runtime_projects_resource_content_but_persists_only_reference(tmp
 
     assert result.run.status == "completed"
     assert "projected attachment" in provider.messages[0].text_content
-    assert provider.messages[0].resource_refs == [resource.resource_id]
+    assert not hasattr(provider.messages[0], "resource_refs")
     assert snapshot.messages[0].text_content == "Use the brief"
     assert snapshot.messages[0].resource_refs == [resource.resource_id]
     assert "projected attachment" not in snapshot.messages[0].model_dump_json()
+    prepared = runtime.sessions.context(session.session_id)
+    assert prepared is not None
+    assert prepared.status.completed_at is not None
+    assert prepared.status.provider_reported_input_tokens is None
+    assert prepared.provider_context.system_prompt == provider.system_prompt
+    assert prepared.provider_context.messages == provider.messages
+    assert prepared.provider_context.tools == provider.tools
 
 
 @pytest.mark.asyncio
@@ -634,7 +643,8 @@ async def test_next_run_projects_interrupted_assistant_as_recovery_context(tmp_p
         "system_synthetic",
         "user",
     ]
-    assert provider.messages[1].metadata["kind"] == "interrupted_assistant_recovery"
+    assert "partial work" in provider.messages[1].text_content
+    assert not hasattr(provider.messages[1], "metadata")
 
 
 @pytest.mark.asyncio
@@ -893,7 +903,14 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
         "fragment_index": 0,
         "generation_id": "gen_harness",
     }
-    assert [message.message_id for message in provider.messages].count(scaffold.message_id) == 1
+    assert (
+        sum(
+            message.role == "system_synthetic" and message.text_content == "durable harness context"
+            for message in provider.messages
+        )
+        == 1
+    )
+    assert all(not hasattr(message, "message_id") for message in provider.messages)
 
 
 @pytest.mark.asyncio
@@ -1408,6 +1425,11 @@ async def test_runtime_records_provider_usage(tmp_path) -> None:
     assert result.run.usage["output_tokens"] == 2
     assert snapshot.runs[0].usage["input_tokens"] == 3
     assert "model_message_completed" in [event.event_type for event in snapshot.events]
+    context_status = runtime.sessions.context_status(result.session.session_id)
+    assert context_status is not None
+    assert context_status.metrics.estimated_input_tokens > 0
+    assert context_status.provider_reported_input_tokens == 3
+    assert context_status.completed_at is not None
 
 
 @pytest.mark.asyncio
@@ -2115,7 +2137,7 @@ class ReasoningToolProvider:
 
     def __init__(self, read_path: str = "data.txt") -> None:
         self.calls = 0
-        self.messages: list[list[MessageRecord]] = []
+        self.messages: list[list[ModelMessage]] = []
         self.system_prompts: list[str] = []
         self.read_path = read_path
 
@@ -2159,7 +2181,7 @@ class ReasoningToolProvider:
 
 
 @pytest.mark.asyncio
-async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path) -> None:
+async def test_runtime_keeps_internal_reasoning_out_of_provider_context(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     (tmp_path / "data.txt").write_text("hello", encoding="utf-8")
@@ -2189,8 +2211,13 @@ async def test_runtime_preserves_reasoning_content_for_next_model_call(tmp_path)
     assistant_messages = [m for m in second_call_messages if m.role == "assistant"]
     assert len(assistant_messages) == 1
     assistant_message = assistant_messages[0]
-    assert assistant_message.reasoning_content == "I should read the file."
+    assert not hasattr(assistant_message, "reasoning_content")
+    assert assistant_message.provider_continuation is None
     assert assistant_message.tool_calls
+    persisted_assistant = next(
+        message for message in snapshot.messages if message.role == "assistant"
+    )
+    assert persisted_assistant.reasoning_content == "I should read the file."
     assert snapshot.messages[-1].text_content == "Done"
 
 

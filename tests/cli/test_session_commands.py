@@ -64,6 +64,40 @@ def test_session_show_missing(tmp_path, capsys) -> None:
     assert "session not found" in captured.err
 
 
+def test_session_context_reports_status_and_exact_provider_content(tmp_path, capsys) -> None:
+    assert main(["run", "--json", "--home", str(tmp_path), "hello context"]) == 0
+    run_payload = json.loads(capsys.readouterr().out)
+    session_id = run_payload["session_id"]
+
+    assert main(["session", "context", session_id, "--home", str(tmp_path), "--json"]) == 0
+    status_payload = json.loads(capsys.readouterr().out)
+    assert status_payload["context_status"]["metrics"]["estimated_input_tokens"] > 0
+    assert status_payload["context_status"]["provider_reported_input_tokens"] == 1
+    assert "provider_context" not in status_payload
+
+    assert (
+        main(
+            [
+                "session",
+                "context",
+                session_id,
+                "--home",
+                str(tmp_path),
+                "--content",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    content_payload = json.loads(capsys.readouterr().out)
+    assert content_payload["provider_context"]["messages"][0]["role"] == "user"
+    assert content_payload["provider_context"]["messages"][0]["content"][0]["text"] == (
+        "hello context"
+    )
+    assert "message_id" not in content_payload["provider_context"]["messages"][0]
+    assert content_payload["context_digest"].startswith("sha256:")
+
+
 def test_session_remove_with_force(tmp_path, capsys) -> None:
     run_code = main(["run", "--json", "--home", str(tmp_path), "hello"])
     run_payload = json.loads(capsys.readouterr().out)

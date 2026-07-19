@@ -13,7 +13,7 @@ from ouro.config import (
 )
 from ouro.core.context import ContextView
 from ouro.core.errors import ConfigError
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.providers import (
     AnthropicCompatibleProvider,
@@ -164,7 +164,7 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
         async for event in adapter.stream(
             ContextView(
                 system_prompt="System instructions.",
-                model_messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+                model_messages=[ModelMessage.text(role="user", text="hello")],
             )
         )
     ]
@@ -237,9 +237,7 @@ async def test_custom_compatible_endpoint_encodes_declared_reasoning_profile(
     events = [
         event
         async for event in adapter.stream(
-            ContextView(
-                model_messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")]
-            )
+            ContextView(model_messages=[ModelMessage.text(role="user", text="hello")])
         )
     ]
 

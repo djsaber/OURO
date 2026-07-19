@@ -242,6 +242,56 @@ def test_repeated_stream_deltas_advance_cursor_without_republishing_activity() -
     assert runtime_activity_changed(activity, next_activity) is False
 
 
+def test_runtime_activity_tracks_live_context_estimate_and_provider_usage() -> None:
+    activity = reduce_runtime_activity(
+        queued_runtime_activity("ses_1"),
+        _event(
+            1,
+            "model_request_started",
+            {
+                "context_id": "ctx_1",
+                "provider": "test",
+                "endpoint": "primary",
+                "model": "test-model",
+                "round": 1,
+                "turn_id": "turn_1",
+                "context_metrics": {
+                    "estimated_input_tokens": 123,
+                    "estimated_fixed_tokens": 10,
+                    "context_window_tokens": 1_000,
+                    "reserved_output_tokens": 100,
+                    "input_budget_tokens": 900,
+                    "estimated_remaining_tokens": 777,
+                    "estimated_utilization_ratio": 123 / 900,
+                    "over_budget": False,
+                },
+            },
+        ),
+    )
+
+    assert activity.context_status is not None
+    assert activity.context_status.context_id == "ctx_1"
+    assert activity.context_status.metrics.estimated_input_tokens == 123
+
+    completed = reduce_runtime_activity(
+        activity,
+        _event(
+            2,
+            "model_message_completed",
+            {
+                "context_id": "ctx_1",
+                "turn_id": "turn_1",
+                "tool_call_count": 0,
+                "usage": {"input_tokens": 117, "output_tokens": 4},
+            },
+        ),
+    )
+
+    assert completed.context_status is not None
+    assert completed.context_status.provider_reported_input_tokens == 117
+    assert completed.context_status.completed_at is not None
+
+
 def test_tool_events_preserve_exact_preflight_and_aborted_statuses() -> None:
     activity = reduce_runtime_activity(
         queued_runtime_activity("ses_1"),

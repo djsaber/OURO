@@ -15,6 +15,8 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionCatalogQuery,
     SessionCatalogResult,
+    SessionContextSnapshot,
+    SessionContextStatus,
     SessionDetail,
     SessionEventPage,
     SessionExport,
@@ -27,12 +29,15 @@ from ouro.application.session_models import (
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
+from ouro.core.context import ContextView
+from ouro.core.context_snapshots import context_view_digest
 from ouro.core.errors import (
+    PersistenceError,
     SessionBranchError,
     SessionBusyError,
     SessionNotFoundError,
 )
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.state import SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
 
@@ -107,6 +112,49 @@ class SessionService:
             recent_run=recent_run,
             active_compaction=self._store.load_active_compaction(session_id),
             diagnostics=diagnostics,
+        )
+
+    def context_status(self, session_id: str) -> SessionContextStatus | None:
+        self._require_session(session_id)
+        record = self._store.load_latest_context(session_id)
+        return SessionContextStatus.from_record(record) if record is not None else None
+
+    def context(self, session_id: str) -> SessionContextSnapshot | None:
+        self._require_session(session_id)
+        record = self._store.load_latest_context(session_id)
+        if record is None:
+            return None
+        if any(message.resource_refs for message in record.source_messages):
+            if self._resources is None:
+                raise PersistenceError(
+                    "session context contains resources but no ResourceService is available"
+                )
+            source_messages = self._resources.project_model_messages(
+                record.source_messages,
+                supports_vision=record.supports_vision,
+            )
+        else:
+            source_messages = record.source_messages
+        context = ContextView(
+            context_id=record.context_id,
+            system_prompt=record.system_prompt,
+            model_messages=[
+                *record.injected_messages,
+                *(ModelMessage.from_record(message) for message in source_messages),
+            ],
+            tool_definitions=record.tool_definitions,
+            metrics=record.metrics,
+            context_metadata=record.context_metadata,
+        )
+        digest = context_view_digest(context)
+        if digest != record.context_digest:
+            raise PersistenceError(
+                f"context snapshot {record.context_id} does not match its stored digest"
+            )
+        return SessionContextSnapshot(
+            status=SessionContextStatus.from_record(record),
+            provider_context=context.provider_context(),
+            context_digest=digest,
         )
 
     def export(self, session_id: str) -> SessionExport:
@@ -411,6 +459,12 @@ class SessionService:
             if recover:
                 return self._recovery.recover(session_id)
             return self._store.load_session(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+
+    def _require_session(self, session_id: str) -> None:
+        try:
+            self._store.load_session_record(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
 

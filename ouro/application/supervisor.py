@@ -604,6 +604,7 @@ class RuntimeSupervisor:
             run,
             sequence=self.store.latest_event_sequence(session_id),
             status_override=status_override,
+            context_status=self.runtime.sessions.context_status(session_id),
         )
 
     def _resolve_job(self, handle_or_session: RunHandle | str) -> _RunJob:

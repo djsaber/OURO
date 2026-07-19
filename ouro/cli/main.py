@@ -72,6 +72,7 @@ from ouro.cli.session_commands import (
     replay_session,
     set_session_approval_mode,
     show_session,
+    show_session_context,
 )
 from ouro.cli.skills import (
     install_skills,
@@ -204,6 +205,14 @@ def _session_command(args: argparse.Namespace) -> int:
     if command == "show":
         return show_session(
             args.session_id,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
+    if command == "context":
+        return show_session_context(
+            args.session_id,
+            include_content=args.content,
             home=home,
             json_mode=args.json,
             session_backend=session_backend,

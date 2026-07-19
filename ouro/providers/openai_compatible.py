@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -69,7 +69,7 @@ class OpenAICompatibleProvider:
         *,
         model: ModelMetadata,
         system_prompt: str = "",
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         async for event in stream_with_retries(
@@ -88,7 +88,7 @@ class OpenAICompatibleProvider:
         *,
         model: ModelMetadata,
         system_prompt: str,
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         stream_json = getattr(self.transport, "stream_json", None)
@@ -134,8 +134,7 @@ class OpenAICompatibleProvider:
                 model=model,
                 system_prompt="",
                 messages=[
-                    MessageRecord.text(
-                        session_id="connection_check",
+                    ModelMessage.text(
                         role="user",
                         text="ping",
                     )
@@ -171,7 +170,7 @@ class OpenAICompatibleProvider:
         *,
         model: ModelMetadata,
         system_prompt: str,
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
@@ -194,7 +193,7 @@ class OpenAICompatibleProvider:
         *,
         model: ModelMetadata,
         system_prompt: str,
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:

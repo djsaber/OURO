@@ -2,22 +2,94 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from math import ceil
+from math import ceil, isclose
+from typing import Any
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ImageContent, MessageRecord, ModelMessage, TextContent
 from ouro.core.tools import ToolDefinition
 
 TokenEstimator = Callable[[str], int]
 
 
+class ContextMetrics(OuroModel):
+    """Typed context-budget facts for one effective model request."""
+
+    estimated_input_tokens: int = Field(ge=0)
+    estimated_fixed_tokens: int = Field(ge=0)
+    context_window_tokens: int | None = Field(default=None, ge=1)
+    reserved_output_tokens: int = Field(default=0, ge=0)
+    input_budget_tokens: int | None = Field(default=None, ge=1)
+    estimated_remaining_tokens: int | None = None
+    estimated_utilization_ratio: float | None = Field(default=None, ge=0)
+    over_budget: bool = False
+    estimator_id: str = "builtin.conservative"
+    estimator_version: str = "2"
+
+    @model_validator(mode="after")
+    def _validate_budget_facts(self) -> ContextMetrics:
+        if self.estimated_fixed_tokens > self.estimated_input_tokens:
+            raise ValueError("fixed tokens must not exceed the total input estimate")
+        if not self.estimator_id.strip() or not self.estimator_version.strip():
+            raise ValueError("context estimator identity must not be empty")
+        budget = self.input_budget_tokens
+        if self.context_window_tokens is not None:
+            if self.reserved_output_tokens >= self.context_window_tokens:
+                raise ValueError("reserved output must be lower than the context window")
+            expected_budget = self.context_window_tokens - self.reserved_output_tokens
+            if budget != expected_budget:
+                raise ValueError("input budget must equal context window minus reserved output")
+        if budget is None:
+            if self.estimated_remaining_tokens is not None:
+                raise ValueError("remaining tokens require an input budget")
+            if self.estimated_utilization_ratio is not None:
+                raise ValueError("utilization requires an input budget")
+            if self.over_budget:
+                raise ValueError("over-budget state requires an input budget")
+            return self
+        expected_remaining = budget - self.estimated_input_tokens
+        if self.estimated_remaining_tokens != expected_remaining:
+            raise ValueError("remaining tokens do not match the input estimate and budget")
+        expected_utilization = self.estimated_input_tokens / budget
+        if self.estimated_utilization_ratio is None or not isclose(
+            self.estimated_utilization_ratio,
+            expected_utilization,
+        ):
+            raise ValueError("utilization does not match the input estimate and budget")
+        if self.over_budget != (self.estimated_input_tokens > budget):
+            raise ValueError("over-budget state does not match the input estimate and budget")
+        return self
+
+
+class ProviderContext(OuroModel):
+    """The exact provider-neutral arguments supplied to ``Provider.stream``."""
+
+    system_prompt: str = ""
+    messages: list[ModelMessage] = Field(default_factory=list)
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class ContextView(OuroModel):
-    model_messages: list[MessageRecord] = Field(default_factory=list)
+    context_id: str | None = None
+    model_messages: list[ModelMessage] = Field(default_factory=list)
     system_prompt: str = ""
     tool_definitions: list[ToolDefinition] = Field(default_factory=list)
+    metrics: ContextMetrics = Field(
+        default_factory=lambda: ContextMetrics(
+            estimated_input_tokens=0,
+            estimated_fixed_tokens=0,
+        )
+    )
     context_metadata: Metadata = MetadataField
+
+    def provider_context(self) -> ProviderContext:
+        return ProviderContext(
+            system_prompt=self.system_prompt,
+            messages=list(self.model_messages),
+            tools=[tool.model_dump() for tool in self.tool_definitions],
+        )
 
 
 class ContextBuilder:
@@ -39,9 +111,22 @@ class ContextBuilder:
         added_context: list[str] | None = None,
         additional_skill_instructions: str = "",
         input_token_budget: int | None = None,
+        context_window_tokens: int | None = None,
+        reserved_output_tokens: int = 0,
     ) -> ContextView:
         if input_token_budget is not None and input_token_budget < 1:
             raise ValueError("input_token_budget must be at least 1")
+        if context_window_tokens is not None and context_window_tokens < 1:
+            raise ValueError("context_window_tokens must be at least 1")
+        if reserved_output_tokens < 0:
+            raise ValueError("reserved_output_tokens must not be negative")
+        if context_window_tokens is not None:
+            derived_budget = context_window_tokens - reserved_output_tokens
+            if derived_budget < 1:
+                raise ValueError("reserved_output_tokens must be lower than the context window")
+            if input_token_budget is not None and input_token_budget != derived_budget:
+                raise ValueError("input_token_budget does not match the supplied context limits")
+            input_token_budget = derived_budget
         skill_instructions = _compose_skill_instructions(
             self.skill_instructions,
             additional_skill_instructions,
@@ -49,34 +134,45 @@ class ContextBuilder:
         composed_prompt = _compose_system_prompt(system_prompt, skill_instructions)
         context_fragments = [text for text in (added_context or []) if text]
         context_messages = [
-            MessageRecord.text(
-                session_id=messages[-1].session_id if messages else "system",
+            ModelMessage.text(
                 role="system_synthetic",
                 text=text,
-                sequence=-(len(context_fragments) - index),
             )
-            for index, text in enumerate(context_fragments)
+            for text in context_fragments
         ]
+        model_messages = [ModelMessage.from_record(message) for message in messages]
         fixed_tokens = self.token_estimator(composed_prompt)
         fixed_tokens += sum(_estimate_tool_tokens(tool, self.token_estimator) for tool in tools)
         fixed_tokens += sum(
             estimate_message_tokens(message, self.token_estimator) for message in context_messages
         )
         estimated_tokens = fixed_tokens + sum(
-            estimate_message_tokens(message, self.token_estimator) for message in messages
+            estimate_message_tokens(message, self.token_estimator) for message in model_messages
+        )
+        remaining = (
+            input_token_budget - estimated_tokens if input_token_budget is not None else None
+        )
+        utilization = (
+            estimated_tokens / input_token_budget if input_token_budget is not None else None
         )
         return ContextView(
-            model_messages=[*context_messages, *messages],
+            model_messages=[*context_messages, *model_messages],
             system_prompt=composed_prompt,
             tool_definitions=tools,
-            context_metadata={
-                "skills_injected": bool(skill_instructions),
-                "estimated_fixed_tokens": fixed_tokens,
-                "estimated_input_tokens": estimated_tokens,
-                "input_token_budget": input_token_budget,
-                "over_budget": (
+            metrics=ContextMetrics(
+                estimated_fixed_tokens=fixed_tokens,
+                estimated_input_tokens=estimated_tokens,
+                context_window_tokens=context_window_tokens,
+                reserved_output_tokens=reserved_output_tokens,
+                input_budget_tokens=input_token_budget,
+                estimated_remaining_tokens=remaining,
+                estimated_utilization_ratio=utilization,
+                over_budget=(
                     input_token_budget is not None and estimated_tokens > input_token_budget
                 ),
+            ),
+            context_metadata={
+                "skills_injected": bool(skill_instructions),
             },
         )
 
@@ -111,24 +207,40 @@ def estimate_text_tokens(text: str) -> int:
 
 
 def estimate_message_tokens(
-    message: MessageRecord,
+    message: MessageRecord | ModelMessage,
     estimator: TokenEstimator | None = None,
 ) -> int:
     active_estimator = estimator or estimate_text_tokens
-    payload = {
-        "role": message.role,
-        "content": [block.model_dump(mode="json") for block in message.content],
-        "resource_refs": message.resource_refs,
-        "tool_calls": [call.model_dump(mode="json") for call in message.tool_calls],
-        "tool_result": message.tool_result.model_dump(mode="json")
-        if message.tool_result is not None
+    model_message = (
+        ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
+    )
+    content_tokens = sum(
+        active_estimator(block.text)
+        if isinstance(block, TextContent)
+        else _estimate_image_tokens(block)
+        for block in model_message.content
+    )
+    protocol_payload = {
+        "role": model_message.role,
+        "tool_calls": [call.model_dump(mode="json") for call in model_message.tool_calls],
+        "tool_result": model_message.tool_result.model_dump(mode="json")
+        if model_message.tool_result is not None
         else None,
-        "provider_continuation": message.provider_continuation.model_dump(mode="json")
-        if message.provider_continuation is not None
+        "provider_continuation": model_message.provider_continuation.model_dump(mode="json")
+        if model_message.provider_continuation is not None
         else None,
-        "metadata": message.metadata,
     }
-    return 4 + active_estimator(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    return (
+        4
+        + content_tokens
+        + active_estimator(json.dumps(protocol_payload, ensure_ascii=False, sort_keys=True))
+    )
+
+
+def _estimate_image_tokens(_image: ImageContent) -> int:
+    """Use a bounded fallback instead of treating base64 bytes as text tokens."""
+
+    return 2048
 
 
 def _estimate_tool_tokens(tool: ToolDefinition, estimator: TokenEstimator) -> int:

@@ -26,11 +26,12 @@ class RuntimeAdapter:
             if max_output_tokens < 1 or max_output_tokens > self.model.context_window:
                 raise ValueError("max_output_tokens must be between 1 and the context window")
             model = self.model.model_copy(update={"max_output_tokens": max_output_tokens})
+        provider_context = context.provider_context()
         provider_events = self.provider.stream(
             model=model,
-            system_prompt=context.system_prompt,
-            messages=list(context.model_messages),
-            tools=[tool.model_dump() for tool in context.tool_definitions],
+            system_prompt=provider_context.system_prompt,
+            messages=provider_context.messages,
+            tools=provider_context.tools,
         )
         async for event in _interruptible(provider_events, signal=signal):
             yield event

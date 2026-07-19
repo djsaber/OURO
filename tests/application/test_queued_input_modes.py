@@ -1,11 +1,12 @@
 import asyncio
+from collections.abc import Sequence
 
 import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.session_controls import HostSessionInput
 from ouro.sessions import LocalSessionStore
@@ -18,7 +19,7 @@ class TurnGateProvider:
     def __init__(self) -> None:
         self.first_started = asyncio.Event()
         self.release_first = asyncio.Event()
-        self.contexts: list[list[MessageRecord]] = []
+        self.contexts: list[list[ModelMessage]] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
         del model, system_prompt, tools
@@ -80,7 +81,7 @@ async def _active_session(store: LocalSessionStore):
     raise AssertionError("active session was not created")
 
 
-def _user_texts(messages: list[MessageRecord]) -> list[str]:
+def _user_texts(messages: Sequence[MessageRecord | ModelMessage]) -> list[str]:
     return [message.text_content for message in messages if message.role == "user"]
 
 
@@ -191,7 +192,8 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
     assert host_message.role == "system_synthetic"
     assert host_message.text_content == "Recover from the durable checkpoint."
     assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
-    assert provider.contexts[-1][-1].message_id == host_message.message_id
+    assert provider.contexts[-1][-1].text_content == host_message.text_content
+    assert not hasattr(provider.contexts[-1][-1], "message_id")
     assert host_run.origin == "host"
     assert host_run.trigger == "host"
     assert host_run.initiator_id == "ouro.runtime/recovery"

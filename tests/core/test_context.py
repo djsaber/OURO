@@ -4,7 +4,9 @@ import pytest
 
 from ouro.core.context import ContextBuilder, estimate_message_tokens
 from ouro.core.messages import (
+    ImageContent,
     MessageRecord,
+    ModelMessage,
     ProviderContinuationArtifact,
     ToolResultReference,
 )
@@ -29,9 +31,9 @@ def test_context_builder_preserves_all_messages_and_reports_hard_overflow() -> N
         input_token_budget=20,
     )
 
-    assert context.model_messages == messages
-    assert context.context_metadata["over_budget"] is True
-    assert context.context_metadata["estimated_input_tokens"] > 20
+    assert context.model_messages == [ModelMessage.from_record(message) for message in messages]
+    assert context.metrics.over_budget is True
+    assert context.metrics.estimated_input_tokens > 20
     assert "truncated" not in context.context_metadata
     assert "omitted_message_count" not in context.context_metadata
 
@@ -71,9 +73,34 @@ def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
     )
 
     assert (
-        with_context.context_metadata["estimated_fixed_tokens"]
-        > without_context.context_metadata["estimated_fixed_tokens"]
+        with_context.metrics.estimated_fixed_tokens > without_context.metrics.estimated_fixed_tokens
     )
+
+
+def test_context_builder_derives_budget_metrics_from_model_limits() -> None:
+    context = ContextBuilder().build(
+        messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        tools=[],
+        context_window_tokens=1_000,
+        reserved_output_tokens=200,
+    )
+
+    assert context.metrics.context_window_tokens == 1_000
+    assert context.metrics.reserved_output_tokens == 200
+    assert context.metrics.input_budget_tokens == 800
+    assert context.metrics.estimated_remaining_tokens == (
+        800 - context.metrics.estimated_input_tokens
+    )
+
+
+def test_message_token_estimate_does_not_count_base64_image_bytes_as_text() -> None:
+    small = ModelMessage(role="user", content=[ImageContent(uri="data:image/png;base64,AA==")])
+    large = ModelMessage(
+        role="user",
+        content=[ImageContent(uri=f"data:image/png;base64,{'A' * 1_000_000}")],
+    )
+
+    assert estimate_message_tokens(small) == estimate_message_tokens(large)
 
 
 def test_message_token_estimate_includes_typed_tool_protocol_fields() -> None:

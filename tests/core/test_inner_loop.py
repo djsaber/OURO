@@ -27,10 +27,12 @@ async def _prepare_context(
     messages,
     tools,
     model_round,
+    turn_id,
     abort_signal,
 ):
     del emitted, session, run, model_round, abort_signal
-    return ContextBuilder().build(messages=messages, tools=tools), sequence
+    context = ContextBuilder().build(messages=messages, tools=tools)
+    return context.model_copy(update={"context_id": f"ctx_{turn_id}"}), sequence
 
 
 @pytest.mark.asyncio

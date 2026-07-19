@@ -158,8 +158,19 @@ class ContextPreparer(Protocol):
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
         model_round: int,
+        turn_id: str,
         abort_signal: AbortSignal,
     ) -> tuple[ContextView, int]: ...
+
+
+class ContextCompletionRecorder(Protocol):
+    def __call__(
+        self,
+        *,
+        session_id: str,
+        context_id: str,
+        usage: Usage | None,
+    ) -> None: ...
 
 
 class TurnBoundaryInputConsumer(Protocol):
@@ -223,6 +234,7 @@ class InnerLoopPorts:
     complete_run: RunCompleter
     fail_run: RunFailer
     pause_run: RunPauser
+    record_context_completion: ContextCompletionRecorder | None = None
     consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
     evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
 
@@ -323,8 +335,14 @@ class InnerAgentLoop:
                     tool_results=state.tool_results,
                 )
 
+            round_state = _RoundState()
             try:
-                context = await self._build_context(state, model_round, abort_signal)
+                context = await self._build_context(
+                    state,
+                    model_round,
+                    round_state.turn_id,
+                    abort_signal,
+                )
             except ContextBlockedError:
                 return await self.ports.pause_run(
                     state.emitted,
@@ -338,8 +356,7 @@ class InnerAgentLoop:
                 )
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
-            round_state = _RoundState()
-            await self._start_round(state, model_round, round_state.turn_id)
+            await self._start_round(state, model_round, round_state.turn_id, context)
             terminal_result = await self._consume_provider_stream(
                 state=state,
                 round_state=round_state,
@@ -466,6 +483,7 @@ class InnerAgentLoop:
         self,
         state: _LoopState,
         model_round: int,
+        turn_id: str,
         abort_signal: AbortSignal,
     ) -> ContextView:
         context, state.sequence = await self.ports.prepare_context(
@@ -476,8 +494,11 @@ class InnerAgentLoop:
             messages=state.messages,
             tools=self.tools.definitions(),
             model_round=model_round,
+            turn_id=turn_id,
             abort_signal=abort_signal,
         )
+        if context.context_id is None:
+            raise ValueError("prepared model context is missing its identity")
         return context
 
     async def _consume_turn_boundary_inputs(
@@ -516,6 +537,7 @@ class InnerAgentLoop:
         state: _LoopState,
         model_round: int,
         turn_id: str,
+        context: ContextView,
     ) -> None:
         reasoning = self.adapter.model.reasoning_resolution
         state.sequence = await self.ports.emit(
@@ -530,6 +552,9 @@ class InnerAgentLoop:
                 "model": self.adapter.model.model_id,
                 "round": model_round,
                 "turn_id": turn_id,
+                "context_id": context.context_id,
+                "context_metrics": context.metrics.model_dump(mode="json"),
+                "active_compaction_id": context.context_metadata.get("compaction_id"),
                 "reasoning": {
                     "requested": reasoning.requested.model_dump(mode="json"),
                     "effective": reasoning.effective.model_dump(mode="json"),
@@ -548,6 +573,15 @@ class InnerAgentLoop:
     ) -> RunResult | None:
         try:
             async for provider_event in self.adapter.stream(context, signal=abort_signal):
+                if provider_event.type == "done":
+                    if context.context_id is None:
+                        raise ValueError("prepared model context is missing its identity")
+                    if self.ports.record_context_completion is not None:
+                        self.ports.record_context_completion(
+                            session_id=state.session.session_id,
+                            context_id=context.context_id,
+                            usage=provider_event.usage,
+                        )
                 if provider_event.type == "done" and provider_event.usage is not None:
                     state.run = self.ports.record_usage(
                         state.run,
@@ -637,6 +671,7 @@ class InnerAgentLoop:
                         payload={
                             "round": model_round,
                             "turn_id": round_state.turn_id,
+                            "context_id": context.context_id,
                             "tool_call_count": len(round_state.tool_calls),
                             "usage": provider_event.usage.model_dump(mode="json")
                             if provider_event.usage is not None

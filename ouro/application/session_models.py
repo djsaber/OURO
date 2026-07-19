@@ -8,6 +8,8 @@ from pydantic import Field
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextMetrics, ProviderContext
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.state import (
@@ -143,6 +145,47 @@ class SessionDetail(ApplicationDTO):
     recent_run: RunRecord | None = None
     active_compaction: CompactionRecord | None = None
     diagnostics: tuple[Diagnostic, ...] = ()
+
+
+class SessionContextStatus(ApplicationDTO):
+    context_id: str
+    session_id: str
+    run_id: str
+    turn_id: str
+    model_round: int
+    provider_id: str
+    endpoint_id: str | None = None
+    model_id: str
+    prepared_at: datetime
+    completed_at: datetime | None = None
+    metrics: ContextMetrics
+    provider_reported_input_tokens: int | None = None
+    active_compaction_id: str | None = None
+
+    @classmethod
+    def from_record(cls, record: ContextSnapshotRecord) -> SessionContextStatus:
+        compaction_id = record.context_metadata.get("compaction_id")
+        return cls(
+            context_id=record.context_id,
+            session_id=record.session_id,
+            run_id=record.run_id,
+            turn_id=record.turn_id,
+            model_round=record.model_round,
+            provider_id=record.provider_id,
+            endpoint_id=record.endpoint_id,
+            model_id=record.model_id,
+            prepared_at=record.prepared_at,
+            completed_at=record.completed_at,
+            metrics=record.metrics,
+            provider_reported_input_tokens=record.provider_reported_input_tokens,
+            active_compaction_id=compaction_id if isinstance(compaction_id, str) else None,
+        )
+
+
+class SessionContextSnapshot(ApplicationDTO):
+    status: SessionContextStatus
+    provider_context: ProviderContext
+    context_digest: str
 
 
 class SessionExport(ApplicationDTO):

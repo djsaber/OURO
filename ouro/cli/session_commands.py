@@ -12,6 +12,7 @@ from ouro.application.session_models import (
     SessionSort,
 )
 from ouro.application.sessions import SessionService
+from ouro.cli.context_output import render_context_snapshot, render_context_status
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
 from ouro.core.approvals import SessionApprovalMode
@@ -273,6 +274,50 @@ def show_session(
             ]
         )
     )
+    return 0
+
+
+def show_session_context(
+    session_id: str,
+    *,
+    include_content: bool = False,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
+) -> int:
+    try:
+        sessions = _sessions(home, session_backend)
+        snapshot = sessions.context(session_id) if include_content else None
+        status = snapshot.status if snapshot is not None else sessions.context_status(session_id)
+    except (OuroError, FileNotFoundError, ValueError) as exc:
+        ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
+        _print_error(ouro_exc, json_mode=json_mode)
+        return error_exit_code(ouro_exc)
+
+    if status is None:
+        if json_mode:
+            print(json.dumps({"status": "ok", "context_status": None}, ensure_ascii=False))
+        else:
+            print("No prepared context for this session.")
+        return 0
+
+    if json_mode:
+        payload: dict[str, Any] = {
+            "status": "ok",
+            "context_status": status.model_dump(mode="json"),
+        }
+        if snapshot is not None:
+            payload.update(
+                {
+                    "provider_context": snapshot.provider_context.model_dump(mode="json"),
+                    "context_digest": snapshot.context_digest,
+                }
+            )
+        print(json.dumps(payload, ensure_ascii=False))
+    elif snapshot is not None:
+        print(render_context_snapshot(snapshot))
+    else:
+        print(render_context_status(status))
     return 0
 
 

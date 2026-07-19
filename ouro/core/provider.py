@@ -6,7 +6,7 @@ from typing import Any, Literal, Protocol
 from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.reasoning import (
     ReasoningCapability,
     ReasoningRequest,
@@ -178,6 +178,6 @@ class Provider(Protocol):
         *,
         model: ModelMetadata,
         system_prompt: str = "",
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, Any]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]: ...

@@ -12,6 +12,7 @@ from pydantic import ValidationError
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import MigrationRequiredError, PersistenceError, ResourceNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -206,6 +207,23 @@ class LocalSessionStore:
             run_dir.mkdir(parents=True, exist_ok=True)
             run_id = _validated_record_id(run.run_id, kind="run")
             self._write_model_atomic(run_dir / f"{run_id}.json", run)
+
+    def save_latest_context(self, context: ContextSnapshotRecord) -> None:
+        with self.session_mutation(context.session_id):
+            session_dir = self._require_session_dir(context.session_id)
+            self._write_model_atomic(session_dir / "context.json", context)
+
+    def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None:
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "context.json"
+            if not path.exists():
+                return None
+            try:
+                return ContextSnapshotRecord.model_validate_json(path.read_text("utf-8"))
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load latest context for session {session_id}: {exc}"
+                ) from exc
 
     def append_compaction(self, compaction: CompactionRecord) -> None:
         with self.session_mutation(compaction.session_id):

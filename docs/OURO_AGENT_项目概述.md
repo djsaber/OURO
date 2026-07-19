@@ -63,6 +63,11 @@ OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和�
 组合；超过硬预算时明确失败或暂停，不静默丢弃 canonical history。摘要压缩使用独立记录保存覆盖范围、
 来源 digest、策略和 usage。
 
+统一 Provider 只接收纯模型语义 `ModelMessage`，不会看到 Session 持久化 identity、metadata 或资源引用。
+OURO 在每次模型请求前维护最新上下文快照和类型化 token 指标；Host 可实时读取发送前估算，在 Provider 完成后
+同时看到供应商报告的 input token。状态查询不重新执行动态 Context Provider、资源读取或压缩；完整内容查询返回
+`RuntimeAdapter` 交给统一 Provider 的 system prompt、messages 和 tools，并以 digest 校验按引用还原的资源内容。
+
 ### 工具与人机协同
 
 内置工具包括 Read、Write、Edit、Bash 和 AskUser。所有工具通过统一 schema 校验、权限判断、执行上下文

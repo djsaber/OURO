@@ -8,6 +8,8 @@ import pytest
 
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextBuilder
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
@@ -91,6 +93,51 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     )
     assert [event.event_type for event in first_after_zero] == ["run_started"]
     assert has_more is True
+
+
+def test_session_store_replaces_latest_context_atomically(session_store: SessionStore) -> None:
+    session = SessionRecord(title="Context")
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="hello")
+    run = RunRecord(session_id=session.session_id, status="running")
+    session_store.create_session_snapshot(session, [message])
+    view = (
+        ContextBuilder()
+        .build(
+            messages=[message],
+            tools=[],
+            context_window_tokens=10_000,
+            reserved_output_tokens=1_000,
+        )
+        .model_copy(update={"context_id": "ctx_first"})
+    )
+    first = ContextSnapshotRecord(
+        context_id="ctx_first",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        turn_id="turn_first",
+        model_round=1,
+        provider_id="test",
+        model_id="test-model",
+        system_prompt=view.system_prompt,
+        source_messages=[message],
+        tool_definitions=view.tool_definitions,
+        metrics=view.metrics,
+        context_metadata=view.context_metadata,
+        context_digest=context_view_digest(view),
+    )
+    second = first.model_copy(
+        update={
+            "context_id": "ctx_second",
+            "turn_id": "turn_second",
+            "model_round": 2,
+        }
+    )
+
+    assert session_store.load_latest_context(session.session_id) is None
+    session_store.save_latest_context(first)
+    assert session_store.load_latest_context(session.session_id) == first
+    session_store.save_latest_context(second)
+    assert session_store.load_latest_context(session.session_id) == second
 
 
 def test_session_store_loads_runs_without_reading_journals(session_store: SessionStore) -> None:

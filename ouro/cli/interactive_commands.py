@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 from ouro.application.runtime import RuntimeService
+from ouro.cli.context_output import render_context_snapshot, render_context_status
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
@@ -69,6 +70,8 @@ async def handle_command(
         return await _abort_session(runtime, session_id)
     if command == "/compact":
         return await _compact_session(runtime, session_id)
+    if command == "/context":
+        return _session_context(runtime, session_id, argument)
     if command == "/history":
         return _session_history(runtime, session_id)
     if command == "/events":
@@ -108,6 +111,7 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/steer <prompt> - Queue at the next model-turn boundary.",
         "/abort - Abort the active request when supported.",
         "/compact - Summarize older context for the active session.",
+        "/context [full] - Show the latest unified Provider context size or content.",
         "/exit - Quit.",
     ]
     if plugins is not None:
@@ -369,3 +373,32 @@ async def _compact_session(runtime: RuntimeService, session_id: str | None) -> C
             f"({len(result.compaction.covered_message_ids)} messages covered)."
         ),
     )
+
+
+def _session_context(
+    runtime: RuntimeService,
+    session_id: str | None,
+    argument: str,
+) -> CommandResult:
+    if session_id is None:
+        return CommandResult(session_id=None, output="No active session.")
+    if argument not in {"", "full"}:
+        return CommandResult(
+            session_id=session_id,
+            output="Usage: /context [full]",
+        )
+    if argument == "full":
+        snapshot = runtime.sessions.context(session_id)
+        output = (
+            "No prepared context for this session."
+            if snapshot is None
+            else render_context_snapshot(snapshot)
+        )
+    else:
+        status = runtime.sessions.context_status(session_id)
+        output = (
+            "No prepared context for this session."
+            if status is None
+            else render_context_status(status)
+        )
+    return CommandResult(session_id=session_id, output=output)

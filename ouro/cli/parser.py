@@ -457,6 +457,20 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     _add_session_backend_arg(show_parser)
     show_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    context_parser = session_subparsers.add_parser(
+        "context",
+        help="Show the latest unified Provider context status or content",
+    )
+    context_parser.add_argument("session_id", help="Session id")
+    context_parser.add_argument(
+        "--content",
+        action="store_true",
+        help="Include the exact provider-neutral content supplied to RuntimeAdapter",
+    )
+    context_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(context_parser)
+    context_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     rename_parser = session_subparsers.add_parser("rename", help="Rename a session")
     rename_parser.add_argument("session_id", help="Session id")
     rename_parser.add_argument("title", help="New title")

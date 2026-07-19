@@ -5,13 +5,13 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ouro.core.messages import ImageContent, MessageRecord, TextContent
+from ouro.core.messages import ImageContent, ModelMessage, TextContent
 from ouro.core.provider import Usage
 from ouro.core.tools import ToolCallRequest
 
 
 def messages_to_anthropic(
-    messages: list[MessageRecord],
+    messages: list[ModelMessage],
     *,
     system_prompt: str,
     supports_vision: bool,
@@ -134,7 +134,7 @@ def error_from_anthropic(response: Mapping[str, Any]) -> str:
 
 
 def _message_to_anthropic(
-    message: MessageRecord,
+    message: ModelMessage,
     *,
     supports_vision: bool,
     provider_id: str,
@@ -184,7 +184,7 @@ def _message_to_anthropic(
 
 
 def _message_content(
-    message: MessageRecord,
+    message: ModelMessage,
     *,
     supports_vision: bool,
 ) -> list[dict[str, Any]]:

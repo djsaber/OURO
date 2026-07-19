@@ -4,6 +4,8 @@ import pytest
 
 from ouro.application.session_models import SessionCatalogQuery
 from ouro.application.sessions import SessionService
+from ouro.core.context import ContextBuilder
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -35,6 +37,35 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
     assert reloaded.title == renamed.session.title
     assert reloaded.title_source == renamed.session.title_source
     assert reloaded.title_locked == renamed.session.title_locked
+
+
+def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Context digest").session
+    message = MessageRecord.text(session_id=session.session_id, role="user", text="hello")
+    view = (
+        ContextBuilder()
+        .build(messages=[message], tools=[])
+        .model_copy(update={"context_id": "ctx_tampered"})
+    )
+    store.save_latest_context(
+        ContextSnapshotRecord(
+            context_id="ctx_tampered",
+            session_id=session.session_id,
+            run_id="run_1",
+            turn_id="turn_1",
+            model_round=1,
+            provider_id="test",
+            model_id="test-model",
+            source_messages=[message],
+            metrics=view.metrics,
+            context_digest="sha256:" + "0" * 64,
+        )
+    )
+
+    assert sessions.context_status(session.session_id) is not None
+    with pytest.raises(PersistenceError, match="does not match its stored digest"):
+        sessions.context(session.session_id)
 
 
 def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) -> None:

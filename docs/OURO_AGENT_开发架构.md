@@ -185,6 +185,24 @@ Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-cl
 校验 Session 归属、digest、size、媒体类型和 Endpoint 能力，再把受支持文本或图片仅注入本次模型请求；附件
 内容参与上下文预算与压缩，但不回写历史。
 
+`MessageRecord` 到统一 Provider 的投影以 `ModelMessage` 为硬边界。后者只包含 role、模型可见 content、工具调用/
+结果关联和路由绑定的 continuation，不携带 message/session/run identity、metadata、resource references 或仅供 Host
+展示的 reasoning。这里的“真实 Provider 上下文”特指 `RuntimeAdapter` 交给统一 `Provider.stream` 的
+`system_prompt`、`messages` 和 `tools` 三项，不是任何厂商 HTTP endpoint 的最终 payload；厂商 codec 在该边界之后
+继续负责协议编码。
+
+每次上下文构建只计算一次类型化 `ContextMetrics`：发送前的 input token 估算、固定部分、模型窗口、预留输出、
+可用 input budget、剩余量和占用率。估算用于预算与实时状态；Provider `done` 后单独补记供应商报告的 input token，
+两者不互相覆盖。内置 estimator 对文本、工具 schema 和 continuation 计数；图片使用有界保守值，不把 data URI 的
+base64 字节错误当作文本 token。
+
+查询采用 write-through latest snapshot，而不是查询时重建。上下文准备完成后，在模型请求前原子替换 Session 的
+最新 `ContextSnapshotRecord`；记录保存 ephemeral 注入、压缩/恢复后的 source messages、工具、指标、路由和实际
+Provider 内容 digest。资源 blob 不复制进快照，内容查询通过不可变 resource reference 还原后校验 digest。
+`SessionService.context_status` 只读取已维护的事实，不执行 Context Provider、Hook、压缩、资源物化或 token 重算；
+`SessionService.context` 才按需还原完整内容。只保留最新一次请求，避免无界历史增长；完整内容读取仍然是不可避免的
+O(context bytes)，实时活动订阅则直接消费 `model_request_started` 中的同一组指标，不读盘。
+
 ## Provider Usage 与全局费用账本
 
 Provider adapter 只在 `done` 边界产生类型化 `Usage`，数据源必须是供应商响应。`core/context.py` 的 token
@@ -220,6 +238,7 @@ OURO_HOME/
       messages.jsonl
       events.jsonl
       compactions.jsonl
+      context.json
       runs/
       resources/index.json
   resources/
@@ -240,7 +259,8 @@ OURO_HOME/
 选择后端不等于迁移数据；文件和 SQLite 数据集保持隔离。`import_sessions_to_sqlite` 在一个目标事务中复制、
 逐 Session 验证并在失败时整体回滚；文件后端继续作为可读实现和导出来源。
 
-`session.json`、messages、events、runs 和 compactions 是 canonical 数据；`sessions/index.json` 是可重建
+`session.json`、messages、events、runs 和 compactions 是 canonical history；`context.json` 是可替换的最新
+Provider 请求快照，SQLite 使用对应的 `latest_contexts` 单行记录；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
 `billing/usage.jsonl` 是独立的全局 canonical 账本，不随 Session 归档或进入回收站而删除。
 messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后
@@ -304,6 +324,7 @@ CLI 命令使用资源层级表达职责：
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；
+- `session context` 读取最新上下文长度，`session context --content` 显式读取统一 Provider 内容；
 - `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
 - `run --resource` 将已导入资源附加到本次输入；
@@ -322,7 +343,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 循环终端在提交用户输入前启动本地单调时钟；`run_started` 表示请求与上下文准备阶段，
 `model_request_started` 表示等待 Provider 阶段，首个 reasoning/text/tool-call delta 结束等待。状态行动态显示
-当前阶段秒数，并在响应开始时稳定输出总等待及分阶段耗时；自动压缩作为独立阶段计时，手动压缩不伪装成
+当前阶段秒数和本轮上下文估算，并在响应开始时稳定输出总等待及分阶段耗时；自动压缩作为独立阶段计时，手动压缩不伪装成
 模型等待。
 
 ## 扩展边界

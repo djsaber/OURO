@@ -7,6 +7,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
@@ -71,6 +72,10 @@ class SessionRepository(Protocol):
     def append_ordered_event(self, event: EventRecord) -> EventRecord: ...
 
     def save_run(self, run: RunRecord) -> None: ...
+
+    def save_latest_context(self, context: ContextSnapshotRecord) -> None: ...
+
+    def load_latest_context(self, session_id: str) -> ContextSnapshotRecord | None: ...
 
     def append_compaction(self, compaction: CompactionRecord) -> None: ...
 

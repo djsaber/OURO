@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Iterable, Sequence
 
-from ouro.core.messages import MessageRecord
+from ouro.core.messages import ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
 
 
@@ -33,7 +33,7 @@ class FauxProvider:
         *,
         model: ModelMetadata,
         system_prompt: str = "",
-        messages: list[MessageRecord],
+        messages: list[ModelMessage],
         tools: list[dict[str, object]] | None = None,
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools

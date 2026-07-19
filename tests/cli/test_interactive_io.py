@@ -72,6 +72,31 @@ async def test_interactive_output_finishes_wait_when_model_has_no_stream_delta()
     await output.close()
 
 
+async def test_interactive_output_shows_live_context_size_while_waiting() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+
+    await output.start_waiting()
+    await output.handle_event(
+        _event(
+            1,
+            "model_request_started",
+            {
+                "context_metrics": {
+                    "estimated_input_tokens": 123,
+                    "input_budget_tokens": 900,
+                }
+            },
+        )
+    )
+
+    assert "context 123/900 tokens" in output.status_line.message
+    await output.close()
+
+
 async def test_interactive_output_reports_compaction_as_a_distinct_wait_phase() -> None:
     outputs: list[str] = []
     now = 0.0
