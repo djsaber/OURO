@@ -291,6 +291,7 @@ class AnthropicCompatibleProvider:
         saw_content = False
         saw_tool_call = False
         continuation_blocks: dict[int, dict[str, Any]] = {}
+        tool_call_indices: dict[int, int] = {}
         async for chunk in chunks:
             response_error = error_from_anthropic(chunk)
             if response_error:
@@ -321,10 +322,14 @@ class AnthropicCompatibleProvider:
                     if isinstance(name, str) and name and isinstance(call_id, str) and call_id:
                         saw_content = True
                         saw_tool_call = True
+                        tool_call_index = tool_call_indices.setdefault(
+                            index,
+                            len(tool_call_indices),
+                        )
                         yield ProviderStreamEvent(
                             type="tool_call_delta",
                             tool_call_delta=ToolCallDelta(
-                                index=index,
+                                index=tool_call_index,
                                 id_delta=call_id,
                                 name_delta=name,
                             ),
@@ -360,17 +365,25 @@ class AnthropicCompatibleProvider:
                     if isinstance(index, int) and index in continuation_blocks:
                         current = str(continuation_blocks[index].get("signature") or "")
                         continuation_blocks[index]["signature"] = current + str(delta["signature"])
-                elif (
-                    delta_type == "input_json_delta"
-                    and isinstance(index, int)
-                    and isinstance(delta.get("partial_json"), str)
-                    and delta.get("partial_json")
+                elif delta_type == "input_json_delta" and isinstance(
+                    delta.get("partial_json"), str
                 ):
+                    if not isinstance(index, int) or index not in tool_call_indices:
+                        yield ProviderStreamEvent(
+                            type="error",
+                            error=(
+                                "provider streamed tool input for an unknown content block "
+                                f"index: {index!r}"
+                            ),
+                        )
+                        return
+                    if not delta.get("partial_json"):
+                        continue
                     saw_content = True
                     yield ProviderStreamEvent(
                         type="tool_call_delta",
                         tool_call_delta=ToolCallDelta(
-                            index=index,
+                            index=tool_call_indices[index],
                             arguments_delta=str(delta["partial_json"]),
                         ),
                     )

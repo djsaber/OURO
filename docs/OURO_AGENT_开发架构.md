@@ -101,7 +101,8 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence 边界。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
-规范化为 `tool_call_delta`；`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界
+规范化为 `tool_call_delta`；其中 `index` 是响应内从零开始的工具调用序号，不得泄漏供应商原生 content-block
+坐标。`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界
 聚合、解析和校验整批 tool calls。无法提供分片的非流式 Provider 可以产生完整 `tool_call` 事件；`done`
 只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
 按 provider 原始顺序提交。

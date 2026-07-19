@@ -103,7 +103,12 @@ class ProviderCheckResult(OuroModel):
 
 
 class ToolCallDelta(OuroModel):
-    """Provider-neutral fragment of one streamed tool call."""
+    """Provider-neutral fragment of one streamed tool call.
+
+    ``index`` is the zero-based ordinal among tool calls in the assistant
+    response. Provider-native content-block coordinates must be normalized by
+    the adapter before crossing this boundary.
+    """
 
     index: int = Field(ge=0)
     id_delta: str = ""

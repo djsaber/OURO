@@ -245,6 +245,24 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
                     "partial_json": '{"path":"README.md"}',
                 },
             },
+            {
+                "type": "content_block_start",
+                "index": 2,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "call_2",
+                    "name": "Bash",
+                    "input": {},
+                },
+            },
+            {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"command":"pwd"}',
+                },
+            },
             {"type": "message_delta", "usage": {"output_tokens": 4}},
             {"type": "message_stop"},
         ]
@@ -266,15 +284,57 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
         "text_delta",
         "tool_call_delta",
         "tool_call_delta",
+        "tool_call_delta",
+        "tool_call_delta",
         "done",
     ]
-    assert events[1].tool_call_delta is not None
-    assert events[1].tool_call_delta.id_delta == "call_1"
-    assert events[2].tool_call_delta is not None
-    assert events[2].tool_call_delta.arguments_delta == '{"path":"README.md"}'
+    deltas = [event.tool_call_delta for event in events if event.tool_call_delta is not None]
+    assert [delta.index for delta in deltas] == [0, 0, 1, 1]
+    assert deltas[0].id_delta == "call_1"
+    assert deltas[1].arguments_delta == '{"path":"README.md"}'
+    assert deltas[2].id_delta == "call_2"
+    assert deltas[3].arguments_delta == '{"command":"pwd"}'
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 5
     assert events[-1].usage.output_tokens == 4
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_rejects_tool_input_without_a_started_tool_block() -> None:
+    transport = FakeStreamingTransport(
+        [
+            {
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": 1, "output_tokens": 0}},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 3,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"path":"README.md"}',
+                },
+            },
+            {"type": "message_stop"},
+        ]
+    )
+    provider = AnthropicCompatibleProvider(
+        base_url="https://api.example.test",
+        transport=transport,
+    )
+
+    events = [
+        event
+        async for event in provider.stream(
+            model=ModelMetadata(model_id="claude-test", provider_id="anthropic"),
+            messages=[MessageRecord.text(session_id="ses_1", role="user", text="read")],
+        )
+    ]
+
+    assert [event.type for event in events] == ["error"]
+    assert events[0].error == (
+        "provider streamed tool input for an unknown content block index: 3"
+    )
 
 
 @pytest.mark.asyncio

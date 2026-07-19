@@ -30,6 +30,7 @@ _MAX_TOOL_ARGUMENT_PREVIEW = 120
 
 @dataclass
 class _ToolCallPreview:
+    tool_call_id: str = ""
     tool_name: str = ""
     argument_chunks: list[str] = field(default_factory=list)
     phase: str = "generating parameters"
@@ -37,6 +38,7 @@ class _ToolCallPreview:
     show_arguments: bool = False
 
     def append(self, payload: dict[str, Any]) -> None:
+        self.tool_call_id += _payload_text(payload, "id_delta")
         self.tool_name += _payload_text(payload, "name_delta")
         arguments_delta = _payload_text(payload, "arguments_delta")
         if arguments_delta:
@@ -375,6 +377,8 @@ class InteractiveOutput:
         key = (event.run_id or "", turn_id, index)
         preview = self.tool_call_previews.setdefault(key, _ToolCallPreview())
         preview.append(event.payload)
+        if preview.tool_call_id:
+            self.tool_call_keys[(event.run_id or "", preview.tool_call_id)] = key
         await self.tool_lines.upsert(
             _tool_row_key(key),
             "tool_input",
@@ -431,8 +435,12 @@ class InteractiveOutput:
         source_index = event.payload.get("source_index")
         if not tool_call_id or not isinstance(source_index, int):
             return
-        key = (event.run_id or "", event.turn_id or "", source_index)
-        preview = self.tool_call_previews.setdefault(key, _ToolCallPreview())
+        key = self._tool_key_for_event(event)
+        if key is None:
+            return
+        preview = self.tool_call_previews[key]
+        if not preview.tool_call_id:
+            preview.tool_call_id = tool_call_id
         if not preview.tool_name:
             preview.tool_name = _payload_text(event.payload, "tool_name")
         if not preview.argument_chunks:
@@ -569,8 +577,8 @@ class InteractiveOutput:
             preview = self.tool_call_previews[key]
             if preview.tone is not None:
                 continue
-            phase = "aborted" if event.event_type == "tool_batch_aborted" else "finished"
-            tone: StatusTone = "warning" if phase == "aborted" else "neutral"
+            phase = "aborted" if event.event_type == "tool_batch_aborted" else "unknown outcome"
+            tone: StatusTone = "warning"
             await self._finish_tool_row(key, phase, tone)
         await self.tool_lines.commit()
         self._remove_tool_state(run_id, turn_id=turn_id or None)

@@ -193,23 +193,36 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
     deltas = [
-        {"index": 0, "id_delta": "call_1", "name_delta": "Read", "arguments_delta": "{"},
+        {"index": 1, "id_delta": "call_1", "name_delta": "Read", "arguments_delta": "{"},
         {
-            "index": 1,
+            "index": 2,
             "id_delta": "call_2",
             "name_delta": "Write",
             "arguments_delta": '{"path":"out.txt"}',
         },
-        {"index": 0, "id_delta": "", "name_delta": "", "arguments_delta": "}"},
+        {"index": 1, "id_delta": "", "name_delta": "", "arguments_delta": "}"},
     ]
     for sequence, payload in enumerate(deltas, start=1):
         await output.handle_event(_event(sequence, "model_tool_call_delta", payload))
 
     await output.handle_event(_event(4, "model_message_completed", {"tool_call_count": 2}))
-    for index, (tool_call_id, tool_name) in enumerate((("call_1", "Read"), ("call_2", "Write"))):
+    calls = (("call_1", "Read"), ("call_2", "Write"))
+    for index, (tool_call_id, tool_name) in enumerate(calls):
         await output.handle_event(
             _event(
                 5 + index,
+                "tool_call_requested",
+                {
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "source_index": index,
+                },
+            )
+        )
+    for index, (tool_call_id, tool_name) in enumerate(calls):
+        await output.handle_event(
+            _event(
+                7 + index,
                 "tool_call_started",
                 {
                     "tool_call_id": tool_call_id,
@@ -218,9 +231,10 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
                 },
             )
         )
+    for index, (tool_call_id, tool_name) in enumerate(calls):
         await output.handle_event(
             _event(
-                7 + index,
+                9 + index,
                 "tool_call_completed",
                 {
                     "tool_call_id": tool_call_id,
@@ -231,11 +245,13 @@ async def test_interactive_output_finalizes_interleaved_tool_calls_in_source_ord
                 },
             )
         )
-    await output.handle_event(_event(9, "tool_batch_completed", {"batch_id": "batch_1"}))
+    await output.handle_event(_event(11, "tool_batch_completed", {"batch_id": "batch_1"}))
 
-    final_lines = [line for line in outputs if "completed" in line][-2:]
-    assert "Read" in final_lines[0]
-    assert "Write" in final_lines[1]
+    assert outputs[:2] == [
+        "● Read · completed\n",
+        "● Write · completed\n",
+    ]
+    assert len([line for line in outputs if "completed" in line]) == 2
 
 
 async def test_interactive_output_only_shows_bounded_arguments_while_awaiting_approval() -> None:
@@ -250,7 +266,7 @@ async def test_interactive_output_only_shows_bounded_arguments_while_awaiting_ap
             1,
             "model_tool_call_delta",
             {
-                "index": 0,
+                "index": 1,
                 "id_delta": "call_1",
                 "name_delta": "Write",
                 "arguments_delta": "x\n" + "y" * 300,
@@ -316,7 +332,7 @@ async def test_interactive_output_animates_tool_execution_and_reports_result() -
             1,
             "model_tool_call_delta",
             {
-                "index": 0,
+                "index": 1,
                 "id_delta": "call_1",
                 "name_delta": "Read",
                 "arguments_delta": '{"path":"README.md"}',

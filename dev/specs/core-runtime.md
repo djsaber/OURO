@@ -77,8 +77,9 @@ Run 表示一次可恢复执行。状态集合为：
 
 - 流式 Provider 必须把每个工具调用 chunk 规范化为 `tool_call_delta`，不得在 Provider 内等待完整响应后再
   一次性提交；只支持非流式响应的 Provider 可以产生完整 `tool_call`。
-- `tool_call_delta` 使用稳定 stream index 关联同一调用，`id_delta`、`name_delta` 和
-  `arguments_delta` 字段均保持追加分片语义。
+- `tool_call_delta.index` 是当前 assistant 响应内从零开始的工具调用序号，并稳定关联同一调用；Provider
+  适配器必须在统一边界内把供应商原生 content-block 坐标归一化，不能向 Core 泄漏。`id_delta`、
+  `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。
 - `InnerAgentLoop` 按到达顺序产生 `model_tool_call_delta`，并只在 `done` 边界聚合工具调用、解析 arguments
   JSON、校验身份和批次唯一性。
 - Provider 可在工具调用响应中产生一个 `continuation` 事件；Inner loop 只接受一个类型化 artifact，并与
