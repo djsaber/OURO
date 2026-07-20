@@ -11,6 +11,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.interactions import AnswerResolution
 from ouro.core.messages import ModelMessage
 from ouro.core.provider import (
     ModelMetadata,
@@ -338,6 +339,50 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
 
 
 @pytest.mark.asyncio
+async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanBuildProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+
+    completed = await runtime.run(
+        "Design the implementation",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+
+    assert completed.run.status == "completed"
+    assert completed.session.interaction_mode == "unattended"
+    assert all(
+        any("AFK mode is active" in message.text_content for message in request)
+        for request in provider.requests
+    )
+    exit_result = next(
+        result for result in completed.tool_results if result.tool_call_id == "call_exit"
+    )
+    assert exit_result.structured["phase"] == "inactive"
+    assert exit_result.structured["decision"] == "proceed"
+    assert exit_result.structured["resolved_by"] == "host_policy"
+    assert exit_result.structured["resolver_id"] == "ouro.afk"
+    assert exit_result.structured["selected_option"] == "Direct implementation"
+    assert "User approval was not requested" in exit_result.content
+    event_snapshot = store.load_session(completed.session.session_id)
+    resolved_event = next(
+        event for event in event_snapshot.events if event.event_type == "ask_user_resolved"
+    )
+    assert resolved_event.payload["resolution"]["kind"] == "unattended"
+    state_path = (
+        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{completed.session.session_id}.json"
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["state"]["phase"] == "inactive"
+    await application.close()
+
+
+@pytest.mark.asyncio
 async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answer(
     tmp_path,
 ) -> None:
@@ -644,7 +689,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
 
     invalid = await exit_plan.resume(
         first_exit,
-        {"action": "accept"},
+        AnswerResolution(value={"action": "accept"}),
         request=first_request,
         context=context,
     )
@@ -652,13 +697,13 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert invalid.data["error"] == "Select one of the proposed plan options before accepting."
     rejected = await exit_plan.resume(
         first_exit,
-        {"action": "reject"},
+        AnswerResolution(value={"action": "reject"}),
         request=invalid,
         context=context,
     )
     replayed_rejection = await exit_plan.resume(
         first_exit,
-        {"action": "reject"},
+        AnswerResolution(value={"action": "reject"}),
         request=invalid,
         context=context,
     )
@@ -672,7 +717,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(second_request, ToolInputRequest)
     revised = await exit_plan.resume(
         second_exit,
-        {"action": "revise", "feedback": "Add rollback steps."},
+        AnswerResolution(value={"action": "revise", "feedback": "Add rollback steps."}),
         request=second_request,
         context=context,
     )
@@ -685,13 +730,13 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(third_request, ToolInputRequest)
     accepted = await exit_plan.resume(
         third_exit,
-        {"action": "accept"},
+        AnswerResolution(value={"action": "accept"}),
         request=third_request,
         context=context,
     )
     replayed_acceptance = await exit_plan.resume(
         third_exit,
-        {"action": "accept"},
+        AnswerResolution(value={"action": "accept"}),
         request=third_request,
         context=context,
     )

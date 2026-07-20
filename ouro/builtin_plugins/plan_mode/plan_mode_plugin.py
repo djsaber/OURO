@@ -23,6 +23,7 @@ from ouro.sdk.plugins.v1 import (
     ToolPolicyContribution,
     ToolPolicyDecision,
     ToolResumeCall,
+    UnattendedResolution,
 )
 
 from .interaction import (
@@ -160,6 +161,7 @@ class PlanModePlugin:
                     permission_control="tool",
                     effect="state_changing",
                     batch_behavior="exclusive",
+                    supports_unattended=True,
                 ),
             ],
             commands=[
@@ -371,6 +373,39 @@ class PlanModePlugin:
                     is_error=True,
                 )
                 self._finish_resume(call.session_id, state, output, phase="active")
+                return output
+            if isinstance(call.resolution, UnattendedResolution):
+                selected_option = state.options[0].label if len(state.options) == 1 else None
+                option_selection = (
+                    "only_option"
+                    if selected_option is not None
+                    else "agent_discretion"
+                    if state.options
+                    else "not_applicable"
+                )
+                selected = (
+                    f"\nSelected option by AFK policy: {selected_option}\n"
+                    if selected_option is not None
+                    else ""
+                )
+                output = ToolOutput(
+                    content=(
+                        "Exited plan mode under AFK policy. User approval was not "
+                        "requested; execution is delegated to the agent.\n"
+                        f"Plan saved to: {state.plan_path}\n{selected}\n{plan}"
+                    ),
+                    structured={
+                        "phase": "inactive",
+                        "plan_path": state.plan_path,
+                        "plan": plan,
+                        "decision": "proceed",
+                        "resolved_by": call.resolution.resolved_by,
+                        "resolver_id": call.resolution.resolver_id,
+                        "selected_option": selected_option,
+                        "option_selection": option_selection,
+                    },
+                )
+                self._finish_resume(call.session_id, state, output, phase="inactive")
                 return output
             try:
                 answer = PlanConfirmationAnswer.from_json(call.answer)

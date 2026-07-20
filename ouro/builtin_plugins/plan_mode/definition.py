@@ -44,6 +44,7 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                         "effect": "state_changing",
                         "batch_behavior": "exclusive",
                         "resumable": True,
+                        "supports_unattended": True,
                     },
                 ],
                 "commands": [

@@ -197,6 +197,12 @@ CLI 展示计划和候选实施方案，通过编号选择保留请求中的原�
 默认选择第一项。`/abort` 仍终止 Run，不作为插件回答。未知或非官方来源的结构化请求继续使用通用 JSON/文本输入
 fallback，计划 UI 不是新的插件 contribution 或 Core 特例。
 
+AFK 下 `ExitPlanMode` 不进入 `waiting_user`。该工具显式声明 `supports_unattended`，收到
+`UnattendedResolution(resolver_id="ouro.afk")` 后把 `awaiting_approval` 原子迁移为 `inactive`，并在结果中记录
+`resolved_by=host_policy`。无 options 时直接继续；只有一个 option 时记录该选择；多个 options 时不擅自选择第一项，
+由 Agent 根据计划自主决定后续实现。此路径不使用 reject 作为 fallback，也不声称“用户已批准”。Plan Tool Policy 的
+硬 `deny` 在 AFK 下仍然有效。
+
 ## 内置插件实现约束
 
 内置插件 `ouro/builtin_plugins/plan_mode` 复用 Host 的 `Write`/`Edit`，不贡献重复的文件工具。由于 OURO 默认启用
