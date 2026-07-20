@@ -36,12 +36,15 @@ class ToolDefinition(OuroModel):
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"
     resumable: bool = False
+    supports_unattended: bool = False
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")
     def validate_permission_control(self) -> Self:
         _validate_permission_control(self.permission_mode, self.permission_control)
+        if self.supports_unattended and not self.resumable:
+            raise ValueError("unattended tool input handling requires a resumable tool")
         return self
 
 

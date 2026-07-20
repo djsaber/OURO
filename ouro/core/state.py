@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.interactions import SessionInteractionMode
 from ouro.core.tool_batches import ToolCallBatchRecord
 
 RunStatus = Literal[
@@ -127,6 +128,7 @@ class SessionRecord(OuroModel):
     workspace_trusted: bool = False
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
+    interaction_mode: SessionInteractionMode = "interactive"
     active_compaction_id: str | None = None
     status: SessionStatus = "idle"
     active_run_id: str | None = None

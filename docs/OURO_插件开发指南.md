@@ -127,6 +127,13 @@ Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(d
 `resume_handler` 消费 `ToolResumeCall`，可以返回最终输出或下一次 `ToolInputRequest`。恢复始终绑定原 Catalog 和
 execution contract。此协议收集数据，不表示批准或拒绝工具执行。
 
+`ToolResumeCall.resolution` 是判别联合，而不是把控制信息混入任意回答 JSON：正常交互收到
+`AnswerResolution(kind="answer", value=...)`，`call.answer` 仍可作为该分支的便捷投影；AFK 等 Host policy
+会发送 `UnattendedResolution(kind="unattended", resolved_by="host_policy", resolver_id=...)`。只有同时声明
+`resume_handler` 和 `supports_unattended=True` 的工具会收到无人值守 resolution。该 handler 必须返回最终输出；
+再次返回 `ToolInputRequest` 会被 Host 转换为 `UnattendedInteractionLoop`。未声明能力的工具不会收到伪造答案，而会
+得到标准 `UserInputUnavailable` 工具结果。
+
 ```python
 from ouro.sdk.plugins.v1 import ToolInputRequest
 
@@ -210,6 +217,7 @@ worker 从 stdin 逐行读取 JSON-RPC 2.0 request，只向 stdout 写协议 JSO
 - `contributions.prepare`：返回 manifest 已声明 contribution 的协议描述；
 - `lifecycle.start` / `lifecycle.stop` / `shutdown`；
 - contribution 调用，例如 `tool.call`；
+- resumable 工具使用 `tool.resume`；协议 `1.1` 的 `call.resolution` 传输 `answer` 或 `unattended` 判别对象；
 - `cancel`：取消超时或被 Host 取消的 request。
 
 stdout 污染、未知消息、过大响应、声明不一致和错误 result shape 都会使协议调用失败。完整最小实现见
@@ -217,6 +225,9 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
+声明 `resumable=true` 的 worker tool 通过 `tool.resume` 接收原请求和 `resolution`；如需在 AFK 下自定义业务迁移，
+还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `1.1`，Host 不把旧版 `answer`
+字段静默转换为新契约。
 `context.call` 的 `fragments` 既接受字符串，也接受
 `{"text": "...", "persistence": "ephemeral|message"}` 对象。
 

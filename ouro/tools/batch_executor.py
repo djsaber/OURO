@@ -24,6 +24,9 @@ class ToolBatchExecutor:
         max_concurrency: int,
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
+        resolve_outcome: (
+            Callable[[ToolExecutionOutcome], Awaitable[ToolExecutionOutcome]] | None
+        ) = None,
         on_start: Callable[[ToolInvocation], Awaitable[None]] | None = None,
         on_outcome: Callable[[ToolExecutionOutcome], Awaitable[None]] | None = None,
     ) -> list[ToolExecutionOutcome]:
@@ -38,6 +41,8 @@ class ToolBatchExecutor:
                     signal=signal,
                     context=context,
                 )
+                if resolve_outcome is not None:
+                    outcome = await resolve_outcome(outcome)
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 outcomes.append(outcome)
@@ -60,6 +65,8 @@ class ToolBatchExecutor:
                     signal=signal,
                     context=context,
                 )
+                if resolve_outcome is not None:
+                    outcome = await resolve_outcome(outcome)
                 if outcome.status == "waiting_user":
                     interaction_requested.set()
                 if on_outcome is not None:

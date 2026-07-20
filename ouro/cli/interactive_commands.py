@@ -11,6 +11,7 @@ from ouro.cli.context_output import (
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import PersistenceError
+from ouro.core.interactions import SessionInteractionMode
 from ouro.skills import discover_available_skills
 
 if TYPE_CHECKING:
@@ -26,6 +27,7 @@ class CommandResult:
     output: str = ""
     should_exit: bool = False
     approval_mode: SessionApprovalMode | None = None
+    interaction_mode: SessionInteractionMode | None = None
     initial_model: str | None = None
     session_inputs: tuple[AttributedSessionInput, ...] = ()
 
@@ -37,6 +39,7 @@ async def handle_command(
     approval_mode: SessionApprovalMode = "inherit",
     initial_model: str | None = None,
     plugins: PluginService | None = None,
+    interaction_mode: SessionInteractionMode = "interactive",
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -51,6 +54,7 @@ async def handle_command(
             session_id=None,
             output="Started a new session.",
             approval_mode="inherit",
+            interaction_mode="interactive",
             initial_model=runtime.current_model().key,
         )
     if command == "/sessions":
@@ -63,6 +67,14 @@ async def handle_command(
         return _model_command(runtime, session_id, initial_model, argument)
     if command == "/approval-mode":
         return _approval_mode_command(runtime, session_id, approval_mode, argument)
+    if command == "/afk":
+        return _afk_command(
+            runtime,
+            session_id,
+            approval_mode,
+            interaction_mode,
+            argument,
+        )
     if command == "/config":
         home = runtime.environment.home
         output = f"OURO_HOME={home}" if home is not None else "OURO_HOME is unavailable."
@@ -105,6 +117,7 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/model <provider/endpoint> - Select the active or next-session model.",
         "/approval-mode - Show the current session approval mode.",
         f"/approval-mode <{_APPROVAL_MODE_CHOICES}> - Set the session approval mode.",
+        "/afk [on|off] - Show or change the unattended AFK policy preset.",
         "/config - Show active local config path.",
         "/export - Show active session data path.",
         "/history - Show current session messages.",
@@ -261,6 +274,41 @@ def _approval_mode_command(
     )
 
 
+def _afk_command(
+    runtime: RuntimeService,
+    session_id: str | None,
+    approval_mode: SessionApprovalMode,
+    interaction_mode: SessionInteractionMode,
+    value: str,
+) -> CommandResult:
+    if session_id is not None:
+        session = runtime.store.load_session_record(session_id)
+        approval_mode = session.approval_mode
+        interaction_mode = session.interaction_mode
+    enabled = approval_mode == "auto" and interaction_mode == "unattended"
+    if not value:
+        return CommandResult(
+            session_id=session_id,
+            output=f"AFK mode: {'on' if enabled else 'off'}",
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+    normalized = value.lower()
+    if normalized not in {"on", "off"}:
+        return CommandResult(session_id=session_id, output="Usage: /afk <on|off>")
+    enabled = normalized == "on"
+    next_approval: SessionApprovalMode = "auto" if enabled else "inherit"
+    next_interaction: SessionInteractionMode = "unattended" if enabled else "interactive"
+    if session_id is not None:
+        runtime.set_session_afk_mode(session_id, enabled=enabled)
+    return CommandResult(
+        session_id=session_id,
+        output=f"AFK mode: {'on' if enabled else 'off'}",
+        approval_mode=next_approval,
+        interaction_mode=next_interaction,
+    )
+
+
 def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
     if not session_id:
         return CommandResult(session_id=None, output="Usage: /open <session_id>")
@@ -272,6 +320,7 @@ def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
         session_id=snapshot.session.session_id,
         output=f"Opened session: {snapshot.session.session_id}",
         approval_mode=snapshot.session.approval_mode,
+        interaction_mode=snapshot.session.interaction_mode,
     )
 
 

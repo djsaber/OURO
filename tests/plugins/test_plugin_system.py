@@ -17,6 +17,7 @@ from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderCall
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.hooks import HookRegistry, RunOutcome
+from ouro.core.interactions import UnattendedResolution
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
@@ -1647,7 +1648,7 @@ async def test_worker_runtime_uses_stdio_protocol_and_closes_process(tmp_path) -
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         contributes={
             "tools": [
@@ -1666,7 +1667,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.0'}
+        result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {'parameters_schema': {'type': 'object'}}}}
     elif method == 'tool.call':
@@ -1712,7 +1713,7 @@ async def test_worker_tool_can_return_structured_input_request(tmp_path) -> None
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         contributes={
             "tools": [
@@ -1731,7 +1732,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.0'}
+        result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare':
         result = {'tools': {'confirm': {}}}
     elif method == 'tool.call':
@@ -1765,6 +1766,85 @@ for line in sys.stdin:
 
 
 @pytest.mark.asyncio
+async def test_worker_resumable_tool_receives_unattended_resolution_contract(tmp_path) -> None:
+    source = tmp_path / "worker-resume"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.worker_resume",
+        runtime={
+            "kind": "worker",
+            "command": ["{python}", "./worker.py"],
+            "protocol": "1.1",
+        },
+        contributes={
+            "tools": [
+                {
+                    "id": "confirm",
+                    "exposed_name": "worker__resume",
+                    "description": "Resume through worker policy.",
+                    "resumable": True,
+                    "supports_unattended": True,
+                }
+            ]
+        },
+    )
+    (source / "worker.py").write_text(
+        """import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    result = {}
+    if method == 'initialize':
+        result = {'protocol_version': '1.1'}
+    elif method == 'contributions.prepare':
+        result = {'tools': {'confirm': {}}}
+    elif method == 'tool.call':
+        result = {'input_request': {'type': 'confirm'}}
+    elif method == 'tool.resume':
+        resolution = request['params']['call']['resolution']
+        result = {'content': resolution['kind'], 'structured': resolution}
+    if 'id' in request:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if method == 'shutdown': break
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.worker_resume")
+    service.trust_code("dev.ouro.worker_resume")
+    assert (await service.enable("dev.ouro.worker_resume")).status == "active"
+
+    with runtime.snapshot() as snapshot:
+        tool = snapshot.tools.get("worker__resume")
+        invocation = ToolInvocation(
+            tool_call_id="call_resume",
+            session_id="ses_worker",
+            run_id="run_worker",
+            tool_name="worker__resume",
+        )
+        request = await tool.execute(invocation)
+        assert isinstance(request, ToolInputRequest)
+        result = await tool.resume(
+            invocation,
+            UnattendedResolution(
+                resolver_id="ouro.afk",
+                reason="AFK mode does not wait for user input",
+            ),
+            request=request,
+        )
+
+    assert isinstance(result, ToolResult)
+    assert result.content == "unattended"
+    assert result.structured["resolved_by"] == "host_policy"
+    assert result.structured["resolver_id"] == "ouro.afk"
+    await service.disable("dev.ouro.worker_resume")
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_worker_invalid_call_result_is_bounded_diagnostic(tmp_path) -> None:
     source = tmp_path / "worker-invalid-result"
     source.mkdir()
@@ -1774,7 +1854,7 @@ async def test_worker_invalid_call_result_is_bounded_diagnostic(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         contributes={
             "tools": [
@@ -1792,7 +1872,7 @@ for line in sys.stdin:
     request = json.loads(line)
     method = request.get('method')
     result = {}
-    if method == 'initialize': result = {'protocol_version': '1.0'}
+    if method == 'initialize': result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare': result = {'tools': {'run': {}}}
     elif method == 'tool.call': result = {'resource_refs': 'not-an-array'}
     if 'id' in request:
@@ -1839,7 +1919,7 @@ async def test_worker_exit_withdraws_generation_and_projects_failed(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         contributes={
             "tools": [
@@ -1861,7 +1941,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.0'}
+        result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare':
         result = {'tools': {'run': {}}}
     if 'id' in request:
@@ -1910,7 +1990,7 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         contributes={
             "commands": [{"id": "goal", "description": "Start a goal."}],
@@ -1939,7 +2019,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.0'}
+        result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare':
         result = {
             'commands': ['goal'],
@@ -2047,14 +2127,14 @@ async def test_worker_initialize_must_confirm_manifest_protocol(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
     )
     (source / "worker.py").write_text(
         """import json, sys
 for line in sys.stdin:
     request = json.loads(line)
-    result = {'protocol_version': '1.1'} if request.get('method') == 'initialize' else {}
+    result = {'protocol_version': '1.2'} if request.get('method') == 'initialize' else {}
     if 'id' in request:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
     if request.get('method') == 'shutdown': break
@@ -2087,7 +2167,7 @@ async def test_worker_credentials_use_declared_slots_without_protocol_or_log_lea
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.0",
+            "protocol": "1.1",
         },
         extra={
             "permissions": [
@@ -2113,7 +2193,7 @@ for line in sys.stdin:
         else:
             name = params['credential_environment']['calendar_api']
             print(os.environ[name], file=sys.stderr, flush=True)
-            result = {'protocol_version': '1.0'}
+            result = {'protocol_version': '1.1'}
     elif method == 'contributions.prepare':
         result = {}
     if 'id' in request:

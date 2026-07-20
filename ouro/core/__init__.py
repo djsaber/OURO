@@ -9,6 +9,13 @@ from ouro.core.approvals import (
 from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.compaction import CompactionRecord
 from ouro.core.events import EventRecord
+from ouro.core.interactions import (
+    SESSION_INTERACTION_MODES,
+    AnswerResolution,
+    SessionInteractionMode,
+    ToolInputResolution,
+    UnattendedResolution,
+)
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
@@ -27,6 +34,11 @@ __all__ = [
     "ResourceSource",
     "SESSION_APPROVAL_MODES",
     "SessionApprovalMode",
+    "SESSION_INTERACTION_MODES",
+    "AnswerResolution",
+    "SessionInteractionMode",
+    "ToolInputResolution",
+    "UnattendedResolution",
     "ToolPermissionControl",
     "resolve_tool_permission",
     "SessionResourceReference",

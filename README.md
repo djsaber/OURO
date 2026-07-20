@@ -8,6 +8,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
+- 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
 - 后端中立的会话、消息、事件、运行记录和压缩记录；本地文件与 SQLite 实现共享同一契约，支持显式恢复、
   原子验证迁移、搜索、分支、回放、归档、置顶、回收站删除和长历史 cursor 分页。
 - 内容寻址的本地资源导入、去重、校验、分支引用复制、导出、可达性清理，以及文本/图片请求内模型投影。
@@ -54,11 +55,13 @@ uv run mypy ouro
 # 交互模式
 uv run ouro --home ./.ouro-dev
 uv run ouro --home ./.ouro-dev --approval-mode auto
+uv run ouro --home ./.ouro-dev --afk
 
 # 单次运行
 uv run ouro run --print --home ./.ouro-dev "hello"
 uv run ouro run --json --home ./.ouro-dev "hello"
 uv run ouro run --json --home ./.ouro-dev --approval-mode approval "review first"
+uv run ouro run --json --home ./.ouro-dev --afk "continue autonomously"
 
 # 继续会话
 uv run ouro run --json --home ./.ouro-dev --session <session_id> "continue"
@@ -237,6 +240,7 @@ uv run ouro session context <session_id> --home ./.ouro-dev
 uv run ouro session context <session_id> --home ./.ouro-dev --content --json
 uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
 uv run ouro session approval-mode <session_id> auto --home ./.ouro-dev
+uv run ouro session afk <session_id> on --home ./.ouro-dev
 uv run ouro session branch <session_id> <message_id> --home ./.ouro-dev
 uv run ouro session replay <session_id> --home ./.ouro-dev --json
 uv run ouro session messages <session_id> --home ./.ouro-dev --cursor 0 --limit 100 --json
@@ -271,6 +275,12 @@ tools。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完�
 仍按用户问答流程处理，而不是转成普通工具审批）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
 `/approval-mode <inherit|auto|approval|deny>`。会话分支继承源会话的批准模式。
+
+AFK 是应用层预设，不是新的权限枚举：`AFK = approval_mode:auto + interaction_mode:unattended`。可用
+`--afk`、Interactive `/afk on|off` 或 `session afk <session_id> on|off` 原子切换。无人值守模式不会让 Run
+停在 `waiting_user`：支持该能力的 resumable tool 收到显式 `UnattendedResolution`；其他工具得到可反馈给模型的
+`UserInputUnavailable` 结果。AFK 只自动批准可批准的调用，不覆盖 Tool Policy `deny`、工具硬拒绝、schema、路径、
+执行契约或取消边界。会话分支同时继承 interaction mode。
 
 Harness 编排工具可声明 `permission_control="tool"`，此时工具定义的权限是唯一执行依据，只允许 `auto` 或
 `deny`；用户同名权限覆盖、会话批准模式和限制性 `tool_policies` 均不参与决策。该控制权适用于内置和受信

@@ -27,6 +27,11 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
 )
 from ouro.core.hooks import HookContext, HookRegistration, HookResult
+from ouro.core.interactions import (
+    AnswerResolution,
+    ToolInputResolution,
+    UnattendedResolution,
+)
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.session_controls import SessionInputRequest
 from ouro.core.tool_policies import (
@@ -497,7 +502,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
 
     async def resume_handler(
         invocation: ToolInvocation,
-        answer: sdk.JsonValue,
+        resolution: ToolInputResolution,
         *,
         request: ToolInputRequest,
         context: ToolExecutionContext,
@@ -511,7 +516,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             tool_name=invocation.tool_name,
             arguments=MappingProxyType(dict(invocation.arguments)),
             request=request.data,
-            answer=answer,
+            resolution=_sdk_input_resolution(resolution),
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
@@ -546,11 +551,27 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             effect=contribution.effect,
             batch_behavior=contribution.batch_behavior,
             resumable=contribution.resume_handler is not None,
+            supports_unattended=contribution.supports_unattended,
             metadata={"sdk_contribution_id": contribution.id},
         ),
         handler=handler,
         resume_handler=resume_handler if contribution.resume_handler is not None else None,
     )
+
+
+def _sdk_input_resolution(resolution: ToolInputResolution) -> sdk.ToolInputResolution:
+    if isinstance(resolution, AnswerResolution):
+        return sdk.AnswerResolution(
+            value=resolution.value,
+            resolved_by=resolution.resolved_by,
+            resolver_id=resolution.resolver_id,
+        )
+    if isinstance(resolution, UnattendedResolution):
+        return sdk.UnattendedResolution(
+            resolver_id=resolution.resolver_id,
+            reason=resolution.reason,
+        )
+    raise TypeError(f"unsupported tool input resolution: {type(resolution).__name__}")
 
 
 class _SDKToolExecutionContext:

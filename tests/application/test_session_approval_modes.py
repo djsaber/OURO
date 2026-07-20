@@ -155,6 +155,37 @@ async def test_existing_idle_session_can_change_mode_with_next_run(tmp_path) -> 
 
 
 @pytest.mark.asyncio
+async def test_existing_idle_session_can_enable_afk_policies_with_next_run(tmp_path) -> None:
+    runtime = _runtime(
+        tmp_path,
+        [
+            [
+                ProviderStreamEvent(type="text_delta", text="First."),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="Second."),
+                ProviderStreamEvent(type="done"),
+            ],
+        ],
+    )
+    first = await runtime.run("first")
+
+    second = await runtime.run(
+        "second",
+        session_id=first.session.session_id,
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+
+    assert second.run.status == "completed"
+    assert second.session.approval_mode == "auto"
+    assert second.session.interaction_mode == "unattended"
+    persisted = runtime.store.load_session_record(second.session.session_id)
+    assert persisted.interaction_mode == "unattended"
+
+
+@pytest.mark.asyncio
 async def test_run_rejects_mode_change_while_session_has_active_run(tmp_path) -> None:
     runtime = _runtime(
         tmp_path,
@@ -181,6 +212,13 @@ async def test_run_rejects_mode_change_while_session_has_active_run(tmp_path) ->
             approval_mode="auto",
         )
 
+    with pytest.raises(SessionBusyError, match="cannot change interaction mode"):
+        await runtime.run(
+            "queued input",
+            session_id=waiting.session.session_id,
+            interaction_mode="unattended",
+        )
+
 
 def test_branch_inherits_session_approval_mode(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
@@ -200,3 +238,48 @@ def test_branch_inherits_session_approval_mode(tmp_path) -> None:
     assert branch.session.approval_mode == "auto"
     persisted = store.load_session(branch.session.session_id).session
     assert persisted.approval_mode == "auto"
+
+
+def test_afk_preset_updates_both_session_policies_atomically(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(title="AFK").session
+
+    enabled = sessions.set_afk_mode(source.session_id, enabled=True)
+
+    assert enabled.session.approval_mode == "auto"
+    assert enabled.session.interaction_mode == "unattended"
+    catalog_entry = store.read_catalog().sessions[0]
+    assert catalog_entry.approval_mode == "auto"
+    assert catalog_entry.interaction_mode == "unattended"
+
+    disabled = sessions.set_afk_mode(source.session_id, enabled=False)
+
+    assert disabled.session.approval_mode == "inherit"
+    assert disabled.session.interaction_mode == "interactive"
+
+
+def test_branch_inherits_session_interaction_mode(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(
+        title="Source AFK",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    ).session
+    message = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="branch here",
+        sequence=1,
+    )
+    store.append_message(message)
+
+    branch = sessions.branch(source.session_id, message.message_id)
+
+    assert branch.session.approval_mode == "auto"
+    assert branch.session.interaction_mode == "unattended"
+    persisted = store.load_session_record(branch.session.session_id)
+    assert persisted.interaction_mode == "unattended"

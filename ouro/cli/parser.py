@@ -54,12 +54,19 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for interactive mode")
     _add_session_backend_arg(parser, dest="session_backend")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
-    parser.add_argument(
+    interactive_policy = parser.add_mutually_exclusive_group()
+    interactive_policy.add_argument(
         "--approval-mode",
         dest="interactive_approval_mode",
         choices=SESSION_APPROVAL_MODES,
         default="inherit",
         help="Initial approval mode for a new interactive session",
+    )
+    interactive_policy.add_argument(
+        "--afk",
+        dest="interactive_afk",
+        action="store_true",
+        help="Start new interactive sessions in unattended AFK mode",
     )
     parser.add_argument(
         "--version",
@@ -377,10 +384,16 @@ them exactly; unsupported requests fail before an HTTP request is sent.""",
         help="Attach an imported Session resource to this input (repeatable)",
     )
     run_parser.add_argument("--title", help="Title for a new session")
-    run_parser.add_argument(
+    run_policy = run_parser.add_mutually_exclusive_group()
+    run_policy.add_argument(
         "--approval-mode",
         choices=SESSION_APPROVAL_MODES,
         help="Set the session approval mode before running",
+    )
+    run_policy.add_argument(
+        "--afk",
+        action="store_true",
+        help="Apply the unattended AFK policy preset before running",
     )
     run_parser.add_argument(
         "--queue-mode",
@@ -491,6 +504,16 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     approval_mode_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     _add_session_backend_arg(approval_mode_parser)
     approval_mode_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    afk_parser = session_subparsers.add_parser(
+        "afk",
+        help="Enable or disable AFK mode for a session",
+    )
+    afk_parser.add_argument("session_id", help="Session id")
+    afk_parser.add_argument("state", choices=["on", "off"], help="AFK mode state")
+    afk_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(afk_parser)
+    afk_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     for command, help_text in (
         ("archive", "Archive a session"),

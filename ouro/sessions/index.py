@@ -7,6 +7,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.interactions import SessionInteractionMode
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 SessionCatalogStatus = Literal[
@@ -48,6 +49,7 @@ class SessionIndexEntry(OuroModel):
     current_endpoint: str | None = None
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
+    interaction_mode: SessionInteractionMode = "interactive"
     workspace: str | None = None
     workspace_trusted: bool = False
     archived: bool = False

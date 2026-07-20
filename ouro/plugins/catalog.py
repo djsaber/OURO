@@ -467,7 +467,7 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
 
     async def resume(
         invocation,
-        answer,
+        resolution,
         *,
         request,
         context: ToolExecutionContext | None = None,
@@ -476,7 +476,7 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
         async with gate.invocation():
             return await tool.resume(
                 invocation,
-                answer,
+                resolution,
                 request=request,
                 context=context,
                 signal=signal,

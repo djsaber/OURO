@@ -210,7 +210,7 @@ def reduce_runtime_activity(
         updates["tool_calls"] = _update_tool_call_status(
             current.tool_calls,
             _string_or_none(payload.get("tool_call_id")),
-            "waiting_user",
+            "resolving_input" if payload.get("will_suspend") is False else "waiting_user",
         )
     elif event_type in {"approval_resolved", "ask_user_resolved"}:
         call_status = _tool_call_status(payload.get("tool_call_status"))
@@ -495,6 +495,7 @@ def _tool_call_status(value: object) -> ToolCallStatus | None:
         "planned",
         "awaiting_approval",
         "waiting_user",
+        "resolving_input",
         "ready",
         "rejected",
         "running",

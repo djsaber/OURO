@@ -429,6 +429,42 @@ def test_recovery_marks_in_flight_tool_outcome_unknown(tmp_path) -> None:
     assert recovered_batch.calls[0].status == "unknown_outcome"
 
 
+def test_recovery_marks_in_flight_unattended_resume_outcome_unknown(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Interrupted unattended resume", status="running")
+    run = RunRecord(session_id=session.session_id, status="running", phase="human_interaction")
+    request = ToolCallRequest(id="call_resume", name="Workflow")
+    invocation = ToolInvocation(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        tool_call_id=request.id,
+        tool_name=request.name,
+    )
+    batch = ToolCallBatchRecord(
+        turn_id="turn_resume",
+        assistant_message_id="msg_resume",
+        phase="executing",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="resolving_input",
+                invocation=invocation,
+            )
+        ],
+    )
+    run = run.model_copy(update={"active_tool_batch": batch})
+    store.create_session(session)
+    store.save_run(run)
+
+    recovered = SessionRecoveryService(LocalSessionStore(tmp_path)).recover(session.session_id)
+
+    recovered_batch = recovered.runs[0].active_tool_batch
+    assert recovered.runs[0].status == "recoverable"
+    assert recovered_batch is not None
+    assert recovered_batch.calls[0].status == "unknown_outcome"
+
+
 def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

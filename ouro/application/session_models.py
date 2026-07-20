@@ -11,6 +11,7 @@ from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics, ProviderContext
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
+from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.state import (
     RunRecord,
@@ -63,6 +64,7 @@ class SessionCatalogEntry(ApplicationDTO):
     current_endpoint: str | None = None
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
+    interaction_mode: SessionInteractionMode = "interactive"
     workspace: str | None = None
     workspace_trusted: bool = False
     archived: bool = False
@@ -97,6 +99,7 @@ class SessionView(ApplicationDTO):
     workspace_trusted: bool
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
+    interaction_mode: SessionInteractionMode = "interactive"
     active_compaction_id: str | None = None
     status: SessionStatus
     active_run_id: str | None = None
@@ -125,6 +128,7 @@ class SessionView(ApplicationDTO):
             workspace_trusted=session.workspace_trusted,
             current_model=session.current_model,
             approval_mode=session.approval_mode,
+            interaction_mode=session.interaction_mode,
             active_compaction_id=session.active_compaction_id,
             status=session.status,
             active_run_id=session.active_run_id,

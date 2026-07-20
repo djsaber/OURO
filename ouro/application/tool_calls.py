@@ -10,11 +10,13 @@ from pydantic import JsonValue, TypeAdapter
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.runs import RunLifecycle
 from ouro.config.tool_execution import ToolExecutionConfig
+from ouro.core.approvals import ApprovalResolvedBy
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
+from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import (
@@ -22,14 +24,23 @@ from ouro.core.tool_batches import (
     ToolBatchHandlingResult,
     ToolBatchOutcomeStatus,
     ToolCallBatchRecord,
+    ToolCallStatus,
     ToolExecutionMode,
 )
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyMode, ToolPolicyRegistry
-from ouro.core.tools import ToolCallRequest, ToolExecutionOutcome, ToolInvocation, ToolResult
+from ouro.core.tools import (
+    ToolCallRequest,
+    ToolExecutionOutcome,
+    ToolInputRequest,
+    ToolInvocation,
+    ToolResult,
+)
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 from ouro.tools.schema import tool_argument_error
 
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
+_AFK_RESOLVER_ID = "ouro.afk"
+_AFK_UNATTENDED_REASON = "AFK mode does not wait for user input"
 
 
 def _optional_text(value: object) -> str | None:
@@ -325,6 +336,7 @@ class ToolCallCoordinator:
         )
         checkpoint_batch = batch
         checkpoint_lock = asyncio.Lock()
+        unattended_resolutions: dict[str, UnattendedResolution] = {}
 
         async def checkpoint_started(invocation: ToolInvocation) -> None:
             nonlocal checkpoint_batch, sequence
@@ -378,19 +390,17 @@ class ToolCallCoordinator:
                         checkpoint_calls.append(item)
                         continue
                     result = outcome.result
-                    status = (
-                        "waiting_user"
-                        if outcome.status == "waiting_user"
-                        else "aborted"
-                        if outcome.status == "aborted"
-                        else "failed"
-                        if result is not None and result.is_error
-                        else "completed"
-                    )
+                    waiting_for_input = outcome.status == "waiting_user"
                     completed_call = item.model_copy(
                         update={
-                            "status": status,
-                            "input_request": outcome.input_request,
+                            "status": _tool_call_status_for_outcome(outcome),
+                            "input_request": (
+                                outcome.input_request if waiting_for_input else item.input_request
+                            ),
+                            "input_resolution": (
+                                None if waiting_for_input else item.input_resolution
+                            ),
+                            "input_revision": item.input_revision + int(waiting_for_input),
                             "result": result,
                         }
                     )
@@ -415,7 +425,31 @@ class ToolCallCoordinator:
                 except SessionBusyError:
                     if not abort_signal.is_aborted():
                         raise
-                if completed_call is not None and completed_call.input_request is not None:
+                resolution = (
+                    unattended_resolutions.pop(completed_call.request.id, None)
+                    if completed_call is not None
+                    else None
+                )
+                if resolution is not None:
+                    assert completed_call is not None
+                    sequence = await self.events.emit(
+                        emitted,
+                        sequence,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="ask_user_resolved",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_call_id": completed_call.request.id,
+                            "tool_call_status": completed_call.status,
+                            "resolution": resolution.model_dump(mode="json"),
+                            "resolved_by": resolution.resolved_by,
+                            "resolver_id": resolution.resolver_id,
+                        },
+                    )
+                if completed_call is not None and outcome.status == "waiting_user":
+                    assert completed_call.input_request is not None
                     sequence = await self.events.emit(
                         emitted,
                         sequence,
@@ -451,6 +485,76 @@ class ToolCallCoordinator:
                         },
                     )
 
+        async def resolve_outcome(outcome: ToolExecutionOutcome) -> ToolExecutionOutcome:
+            nonlocal checkpoint_batch, sequence
+            if outcome.status != "waiting_user" or session.interaction_mode != "unattended":
+                return outcome
+            request = outcome.input_request
+            if request is None:
+                raise ValueError("waiting tool outcome has no input request")
+            resolution = UnattendedResolution(
+                resolver_id=_AFK_RESOLVER_ID,
+                reason=_AFK_UNATTENDED_REASON,
+            )
+            async with checkpoint_lock:
+                resolving_call: ToolBatchCall | None = None
+                calls: list[ToolBatchCall] = []
+                for item in checkpoint_batch.calls:
+                    if item.request.id != outcome.invocation.tool_call_id:
+                        calls.append(item)
+                        continue
+                    resolving_call = item.model_copy(
+                        update={
+                            "status": "resolving_input",
+                            "invocation": outcome.invocation,
+                            "input_request": request,
+                            "input_resolution": resolution,
+                            "input_revision": item.input_revision + 1,
+                        }
+                    )
+                    calls.append(resolving_call)
+                if resolving_call is None:
+                    raise ValueError(
+                        f"unknown unattended tool call in batch: {outcome.invocation.tool_call_id}"
+                    )
+                checkpoint_batch = checkpoint_batch.model_copy(
+                    update={"calls": calls, "updated_at": utc_now()}
+                )
+                self.runs.save_batch_state(
+                    session=session,
+                    run=run,
+                    batch=checkpoint_batch,
+                    status="running",
+                    phase="human_interaction",
+                )
+                sequence = await self.events.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="ask_user_requested",
+                    payload={
+                        "batch_id": batch.batch_id,
+                        "turn_id": batch.turn_id,
+                        "tool_call_id": resolving_call.request.id,
+                        "tool_name": resolving_call.request.name,
+                        "request": request.data,
+                        "question": request.data,
+                        "source_index": resolving_call.request.source_index,
+                        "interaction_mode": session.interaction_mode,
+                        "will_suspend": False,
+                    },
+                )
+            resolved = await self._resolve_unattended_input(
+                outcome,
+                resolution=resolution,
+                request=request,
+                abort_signal=abort_signal,
+                context=execution_context,
+            )
+            unattended_resolutions[outcome.invocation.tool_call_id] = resolution
+            return resolved
+
         execution_context = ToolExecutionContext(
             signal=abort_signal,
             workspace=session.workspace or self.default_workspace,
@@ -464,6 +568,7 @@ class ToolCallCoordinator:
             max_concurrency=batch.max_concurrency,
             signal=abort_signal,
             context=execution_context,
+            resolve_outcome=resolve_outcome,
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )
@@ -604,6 +709,8 @@ class ToolCallCoordinator:
         approved: bool,
         reason: str,
         arguments_override: dict[str, object] | None,
+        resolved_by: ApprovalResolvedBy = "user",
+        resolver_id: str | None = None,
     ) -> ToolCallBatchRecord:
         resolved_calls: list[ToolBatchCall] = []
         found = False
@@ -625,6 +732,8 @@ class ToolCallCoordinator:
                     update={
                         "status": "modified" if arguments_override is not None else "approved",
                         "resolved_at": utc_now(),
+                        "resolved_by": resolved_by,
+                        "resolver_id": resolver_id,
                         "modified_arguments": arguments_override,
                     }
                 )
@@ -659,6 +768,8 @@ class ToolCallCoordinator:
                                 update={
                                     "status": "rejected",
                                     "resolved_at": utc_now(),
+                                    "resolved_by": resolved_by,
+                                    "resolver_id": resolver_id,
                                     "reason": reason,
                                 }
                             ),
@@ -688,6 +799,7 @@ class ToolCallCoordinator:
         workspace: str | None = None,
     ) -> ToolCallBatchRecord:
         answer = _JSON_VALUE_ADAPTER.validate_python(answer)
+        resolution = AnswerResolution(value=answer)
         resolved_calls: list[ToolBatchCall] = []
         found = False
         for call in batch.calls:
@@ -702,7 +814,7 @@ class ToolCallCoordinator:
                 assert call.input_request is not None
                 outcome = await self.executor.resume(
                     call.invocation,
-                    answer=answer,
+                    resolution=resolution,
                     request=call.input_request,
                     context=ToolExecutionContext(
                         workspace=workspace or self.default_workspace,
@@ -712,21 +824,18 @@ class ToolCallCoordinator:
                     ),
                 )
                 result = outcome.result
-                status = (
-                    "waiting_user"
-                    if outcome.status == "waiting_user"
-                    else "aborted"
-                    if outcome.status == "aborted"
-                    else "failed"
-                    if result is not None and result.is_error
-                    else "completed"
-                )
+                status = _tool_call_status_for_outcome(outcome)
+                waiting_for_more = outcome.status == "waiting_user"
                 resolved_calls.append(
                     call.model_copy(
                         update={
                             "status": status,
                             "invocation": outcome.invocation,
-                            "input_request": outcome.input_request,
+                            "input_request": (
+                                outcome.input_request if waiting_for_more else call.input_request
+                            ),
+                            "input_resolution": None if waiting_for_more else resolution,
+                            "input_revision": call.input_revision + int(waiting_for_more),
                             "result": result,
                         }
                     )
@@ -736,7 +845,7 @@ class ToolCallCoordinator:
                 call.model_copy(
                     update={
                         "status": "completed",
-                        "input_request": None,
+                        "input_resolution": resolution,
                         "result": ToolResult(
                             tool_call_id=call.request.id,
                             tool_name=call.request.name,
@@ -758,6 +867,54 @@ class ToolCallCoordinator:
         )
         return batch.model_copy(
             update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
+        )
+
+    async def _resolve_unattended_input(
+        self,
+        outcome: ToolExecutionOutcome,
+        *,
+        resolution: UnattendedResolution,
+        request: ToolInputRequest,
+        abort_signal: AbortSignal,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionOutcome:
+        definition = self.registry.get(outcome.invocation.tool_name).definition
+        if not definition.resumable or not definition.supports_unattended:
+            return _interaction_error_outcome(
+                outcome.invocation,
+                error_type="UserInputUnavailable",
+                error_message=(
+                    "AFK mode does not wait for user input and this tool does not "
+                    "support unattended recovery. Continue using available context."
+                ),
+                structured={
+                    "resolved_by": resolution.resolved_by,
+                    "resolver_id": resolution.resolver_id,
+                    "input_request": request.data,
+                },
+            )
+        resumed = await self.executor.resume(
+            outcome.invocation,
+            resolution=resolution,
+            request=request,
+            signal=abort_signal,
+            context=context,
+        )
+        if resumed.status != "waiting_user":
+            return resumed
+        return _interaction_error_outcome(
+            resumed.invocation,
+            error_type="UnattendedInteractionLoop",
+            error_message=(
+                "a tool cannot request more user input after receiving an unattended resolution"
+            ),
+            structured={
+                "resolved_by": resolution.resolved_by,
+                "resolver_id": resolution.resolver_id,
+                "input_request": (
+                    resumed.input_request.data if resumed.input_request is not None else None
+                ),
+            },
         )
 
     async def after(
@@ -899,6 +1056,56 @@ class ToolCallCoordinator:
                     "tool_name": request.name,
                 },
             )
+            if session.interaction_mode == "unattended":
+                approval = outcome.approval.model_copy(
+                    update={
+                        "status": "approved",
+                        "resolved_at": utc_now(),
+                        "resolved_by": "host_policy",
+                        "resolver_id": _AFK_RESOLVER_ID,
+                    }
+                )
+                prepared = self.executor.preflight(
+                    outcome.invocation,
+                    approved=True,
+                    approval_mode=session.approval_mode,
+                    policy_mode=policy_mode,
+                    policy_reason=policy_reason,
+                )
+                status: ToolCallStatus = (
+                    "ready"
+                    if prepared.status == "ready"
+                    else (
+                        "failed"
+                        if prepared.result is not None and prepared.result.is_error
+                        else "completed"
+                    )
+                )
+                sequence = await self.events.emit(
+                    emitted,
+                    sequence,
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="approval_resolved",
+                    payload={
+                        "batch_id": batch_id,
+                        "turn_id": turn_id,
+                        "approval_id": approval.approval_id,
+                        "tool_call_id": request.id,
+                        "tool_call_status": status,
+                        "approved": True,
+                        "reason": None,
+                        "resolved_by": approval.resolved_by,
+                        "resolver_id": approval.resolver_id,
+                    },
+                )
+                return ToolBatchCall(
+                    request=request,
+                    status=status,
+                    invocation=prepared.invocation,
+                    approval=approval,
+                    result=prepared.result,
+                ), sequence
             return ToolBatchCall(
                 request=request,
                 status="awaiting_approval",
@@ -1038,6 +1245,38 @@ def _tool_input_result_content(answer: object) -> str:
     if isinstance(answer, str):
         return answer
     return json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
+
+
+def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStatus:
+    if outcome.status == "waiting_user":
+        return "waiting_user"
+    if outcome.status == "aborted":
+        return "aborted"
+    if outcome.result is not None and outcome.result.is_error:
+        return "failed"
+    return "completed"
+
+
+def _interaction_error_outcome(
+    invocation: ToolInvocation,
+    *,
+    error_type: str,
+    error_message: str,
+    structured: dict[str, object],
+) -> ToolExecutionOutcome:
+    result = ToolResult(
+        tool_call_id=invocation.tool_call_id,
+        tool_name=invocation.tool_name,
+        is_error=True,
+        content=f"Tool {invocation.tool_name} failed: [{error_type}] {error_message}",
+        structured={
+            "error_type": error_type,
+            "error_message": error_message,
+            **structured,
+        },
+        ended_at=utc_now(),
+    )
+    return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
 
 def _canonical_tool_id(name: str, metadata: dict[str, object]) -> str:

@@ -101,7 +101,7 @@ class PluginRuntimeSpec(OuroModel):
     kind: PluginRuntimeKind = "declarative"
     entrypoint: str | None = None
     command: list[str] = Field(default_factory=list)
-    protocol: str = "1.0"
+    protocol: str = "1.1"
 
     @model_validator(mode="after")
     def _validate_runtime(self) -> PluginRuntimeSpec:
@@ -129,12 +129,15 @@ class ToolContributionSpec(OuroModel):
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"
     resumable: bool = False
+    supports_unattended: bool = False
     optional: bool = False
 
     @model_validator(mode="after")
     def validate_permission_control(self) -> ToolContributionSpec:
         if self.permission_control == "tool" and self.permission_mode == "approval":
             raise ValueError("tool-controlled permission must be auto or deny")
+        if self.supports_unattended and not self.resumable:
+            raise ValueError("unattended tool input handling requires a resumable tool")
         return self
 
     @field_validator("id")

@@ -48,7 +48,7 @@ from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
-from ouro.prompts import SUMMARIZATION_PROMPT
+from ouro.prompts import AFK_CONTEXT_PROMPT, SUMMARIZATION_PROMPT
 from ouro.sessions import SessionStore
 
 _SUMMARY_PATTERN = re.compile(r"<summary>\s*(.*?)\s*</summary>", re.DOTALL)
@@ -417,6 +417,8 @@ class ContextPreparationService:
             messages=messages,
             model_round=model_round,
         )
+        if session.interaction_mode == "unattended":
+            added_context.append(AFK_CONTEXT_PROMPT)
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         source_messages, view = self._project_context(

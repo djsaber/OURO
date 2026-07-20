@@ -83,6 +83,7 @@ def catalog_entry_from_session(
         current_endpoint=endpoint,
         current_model=session.current_model,
         approval_mode=session.approval_mode,
+        interaction_mode=session.interaction_mode,
         workspace=session.workspace,
         workspace_trusted=session.workspace_trusted,
         archived=session.archived,

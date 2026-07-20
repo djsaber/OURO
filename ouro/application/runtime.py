@@ -64,6 +64,10 @@ from ouro.core.inner_loop import (
     TurnBoundaryInputResult,
     TurnCompletionPolicyResult,
 )
+from ouro.core.interactions import (
+    SESSION_INTERACTION_MODES,
+    SessionInteractionMode,
+)
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
@@ -385,11 +389,14 @@ class RuntimeService:
         title: str,
         initial_model: str | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        interaction_mode: SessionInteractionMode = "interactive",
     ) -> SessionRecord:
         """Create an idle Session before a Host starts asynchronous input work."""
 
         if approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         selected_model = (
             self.resolve_model(initial_model)
             if initial_model is not None
@@ -399,6 +406,7 @@ class RuntimeService:
             title=title,
             current_model=selected_model.key,
             approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
             workspace=self.default_workspace,
         )
         return self.store.load_session_record(created.session.session_id)
@@ -445,6 +453,40 @@ class RuntimeService:
         self.sessions.set_approval_mode(session_id, approval_mode)
         return self.store.load_session_record(session_id)
 
+    def set_session_interaction_mode(
+        self,
+        session_id: str,
+        interaction_mode: SessionInteractionMode,
+    ) -> SessionRecord:
+        """Persist how future tool input requests are resolved in a Session."""
+
+        self.sessions.set_interaction_mode(session_id, interaction_mode)
+        return self.store.load_session_record(session_id)
+
+    def set_session_afk_mode(self, session_id: str, *, enabled: bool) -> SessionRecord:
+        """Apply or clear the AFK policy preset for an idle Session."""
+
+        self.sessions.set_afk_mode(session_id, enabled=enabled)
+        return self.store.load_session_record(session_id)
+
+    @staticmethod
+    def _validate_requested_session_policies(
+        session: SessionRecord,
+        *,
+        approval_mode: SessionApprovalMode | None,
+        interaction_mode: SessionInteractionMode | None,
+    ) -> None:
+        if approval_mode is not None and approval_mode != session.approval_mode:
+            raise SessionBusyError(
+                "cannot change approval mode while the session has an active run: "
+                f"{session.session_id}"
+            )
+        if interaction_mode is not None and interaction_mode != session.interaction_mode:
+            raise SessionBusyError(
+                "cannot change interaction mode while the session has an active run: "
+                f"{session.session_id}"
+            )
+
     def _resolve_session_adapter(
         self,
         session: SessionRecord,
@@ -487,6 +529,7 @@ class RuntimeService:
         initial_model: str | None = None,
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
+        interaction_mode: SessionInteractionMode | None = None,
         resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
@@ -494,6 +537,8 @@ class RuntimeService:
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if interaction_mode is not None and interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         if initial_model is not None and session_id is not None:
             raise ValueError("initial_model can only be set when creating a session")
         input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
@@ -507,6 +552,7 @@ class RuntimeService:
                 title=title or _title_from_prompt(prompt),
                 initial_model=initial_model,
                 approval_mode=approval_mode or "inherit",
+                interaction_mode=interaction_mode or "interactive",
             )
             snapshot = RuntimeSessionSnapshot(session=session)
         else:
@@ -518,11 +564,11 @@ class RuntimeService:
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(session, input_resource_refs)
             if active_run is not None:
-                if approval_mode is not None and approval_mode != session.approval_mode:
-                    raise SessionBusyError(
-                        "cannot change approval mode while the session has an active run: "
-                        f"{session_id}"
-                    )
+                self._validate_requested_session_policies(
+                    session,
+                    approval_mode=approval_mode,
+                    interaction_mode=interaction_mode,
+                )
                 queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
@@ -575,11 +621,11 @@ class RuntimeService:
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(snapshot.session, input_resource_refs)
             if active_run is not None:
-                if approval_mode is not None and approval_mode != snapshot.session.approval_mode:
-                    raise SessionBusyError(
-                        "cannot change approval mode while the session has an active run: "
-                        f"{session.session_id}"
-                    )
+                self._validate_requested_session_policies(
+                    snapshot.session,
+                    approval_mode=approval_mode,
+                    interaction_mode=interaction_mode,
+                )
                 queued_session, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
@@ -604,11 +650,11 @@ class RuntimeService:
             session = locked_snapshot.session
             locked_active_run = maybe_active_run(locked_snapshot.runs)
             if locked_active_run is not None:
-                if approval_mode is not None and approval_mode != session.approval_mode:
-                    raise SessionBusyError(
-                        "cannot change approval mode while the session has an active run: "
-                        f"{session.session_id}"
-                    )
+                self._validate_requested_session_policies(
+                    session,
+                    approval_mode=approval_mode,
+                    interaction_mode=interaction_mode,
+                )
                 queued_session, queued_events = await self._queue_input(
                     snapshot=locked_snapshot,
                     active_run=locked_active_run,
@@ -623,13 +669,18 @@ class RuntimeService:
                     run=locked_active_run,
                     events=queued_events,
                 )
+            policy_updates: dict[str, object] = {}
             if approval_mode is not None and approval_mode != session.approval_mode:
+                policy_updates["approval_mode"] = approval_mode
+            if interaction_mode is not None and interaction_mode != session.interaction_mode:
+                policy_updates["interaction_mode"] = interaction_mode
+            if policy_updates:
                 with self.store.session_mutation(session.session_id):
                     latest_session_record = self.store.load_session_record(session.session_id)
                     now = utc_now()
                     session = latest_session_record.model_copy(
                         update={
-                            "approval_mode": approval_mode,
+                            **policy_updates,
                             "updated_at": now,
                             "last_activity_at": now,
                         }
@@ -1459,6 +1510,8 @@ class RuntimeService:
                     "tool_call_status": resolved_call.status,
                     "approved": approved,
                     "reason": None if approved else reason,
+                    "resolved_by": "user",
+                    "resolver_id": None,
                 },
             )
             result = await self._continue_resolved_batch(
@@ -1535,6 +1588,14 @@ class RuntimeService:
                     "tool_call_id": waiting_call.request.id,
                     "tool_call_status": resolved_call.status,
                     "answer": answer,
+                    "resolution": {
+                        "kind": "answer",
+                        "value": answer,
+                        "resolved_by": "user",
+                        "resolver_id": None,
+                    },
+                    "resolved_by": "user",
+                    "resolver_id": None,
                 },
             )
             if resolved_call.status == "waiting_user" and resolved_call.input_request is not None:

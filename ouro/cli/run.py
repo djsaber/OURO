@@ -13,6 +13,7 @@ from ouro.application.runtime_configuration import RuntimeProviderOptions
 from ouro.cli.errors import error_exit_code
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
+from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import (
@@ -63,6 +64,7 @@ async def run_print(
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
+    interaction_mode: SessionInteractionMode | None = None,
     resource_refs: list[str] | None = None,
     session_backend: SessionBackend | None = None,
 ) -> int:
@@ -81,6 +83,7 @@ async def run_print(
                 title=title,
                 queue_mode=queue_mode,
                 approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
                 resource_refs=resource_refs,
             )
     except OuroError as exc:
@@ -106,6 +109,7 @@ async def run_json(
     system_prompt: str | None = None,
     queue_mode: QueuedInputMode = "follow_up",
     approval_mode: SessionApprovalMode | None = None,
+    interaction_mode: SessionInteractionMode | None = None,
     resource_refs: list[str] | None = None,
     session_backend: SessionBackend | None = None,
 ) -> int:
@@ -125,6 +129,7 @@ async def run_json(
                 title=title,
                 queue_mode=queue_mode,
                 approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
                 resource_refs=resource_refs,
             )
     except OuroError as exc:
@@ -146,6 +151,7 @@ async def run_json(
                 "run_id": result.run.run_id,
                 "status": result.run.status,
                 "approval_mode": result.session.approval_mode,
+                "interaction_mode": result.session.interaction_mode,
                 "final_text": result.final_text,
                 "error": result.run.error,
                 "usage": result.run.usage,

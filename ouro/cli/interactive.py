@@ -20,6 +20,7 @@ from ouro.cli.run import (
 )
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
+from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
 from ouro.core.session_controls import AttributedSessionInput
 from ouro.deployment import SessionBackend
@@ -35,6 +36,7 @@ async def run_interactive(
     provider_options: RuntimeProviderOptions | None = None,
     system_prompt: str | None = None,
     approval_mode: SessionApprovalMode = "inherit",
+    interaction_mode: SessionInteractionMode = "interactive",
     session_backend: SessionBackend | None = None,
     runtime: RuntimeService | None = None,
     plugins: PluginService | None = None,
@@ -83,6 +85,7 @@ async def run_interactive(
             input_func=input_func,
             output_func=output_func,
             approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
             plugins=(owned_application.plugins if owned_application is not None else plugins),
         )
     finally:
@@ -100,10 +103,12 @@ async def _run_interactive_session(
     input_func: InputFunc,
     output_func: OutputFunc,
     approval_mode: SessionApprovalMode,
+    interaction_mode: SessionInteractionMode,
     plugins: PluginService | None = None,
 ) -> int:
     session_id: str | None = None
     current_approval_mode = approval_mode
+    current_interaction_mode = interaction_mode
     initial_model = runtime.current_model().key
     plugin_run_task: asyncio.Task[RunResult] | None = None
     output_func("OURO interactive. Type /help for commands, /exit to quit.")
@@ -120,6 +125,9 @@ async def _run_interactive_session(
                     output=output,
                 )
                 current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
+                current_interaction_mode = runtime.store.load_session_record(
+                    session_id
+                ).interaction_mode
             except OuroError as exc:
                 output_func(f"Error: {exc}")
             plugin_run_task = None
@@ -150,6 +158,9 @@ async def _run_interactive_session(
                     output=output,
                 )
                 current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
+                current_interaction_mode = runtime.store.load_session_record(
+                    session_id
+                ).interaction_mode
                 plugin_run_task = None
                 if consumes_line:
                     continue
@@ -177,6 +188,7 @@ async def _run_interactive_session(
                     current_approval_mode,
                     initial_model,
                     plugins,
+                    interaction_mode=current_interaction_mode,
                 )
             except OuroError as exc:
                 output_func(f"Error: {exc}")
@@ -184,6 +196,8 @@ async def _run_interactive_session(
             session_id = command_result.session_id
             if command_result.approval_mode is not None:
                 current_approval_mode = command_result.approval_mode
+            if command_result.interaction_mode is not None:
+                current_interaction_mode = command_result.interaction_mode
             if command_result.initial_model is not None:
                 initial_model = command_result.initial_model
             if command_result.output:
@@ -198,6 +212,7 @@ async def _run_interactive_session(
                         title=first.title or _interactive_title(first.prompt),
                         initial_model=initial_model,
                         approval_mode=current_approval_mode,
+                        interaction_mode=current_interaction_mode,
                     )
                     session_id = created.session_id
                 if plugin_run_task is None:
@@ -225,6 +240,7 @@ async def _run_interactive_session(
                 initial_model=initial_model if session_id is None else None,
                 queue_mode=queue_mode,
                 approval_mode=current_approval_mode if session_id is None else None,
+                interaction_mode=current_interaction_mode if session_id is None else None,
             )
             # Preserve the durable Session identity even when approval or AskUser
             # continuation fails after the initial RunResult has been returned.
@@ -242,6 +258,9 @@ async def _run_interactive_session(
                 output=output,
             )
             current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
+            current_interaction_mode = runtime.store.load_session_record(
+                session_id
+            ).interaction_mode
         except OuroError as exc:
             await output.close()
             output_func(f"Error: {exc}")

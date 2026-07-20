@@ -133,6 +133,18 @@ identity、owner、这些归一化语义、schema 校验后的参数及 Session/
 只能落在 workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录，并在 executor 边界统一限制结果长度；它不会
 放开 `OURO_HOME` 的配置、会话或插件私有数据，Bash cwd 限制也不等同于操作系统沙箱。
 
+用户交互策略与批准策略正交保存：`SessionRecord.interaction_mode` 为 `interactive | unattended`。AFK 是
+application/Host 的命名预设，原子设置 `approval_mode=auto` 与 `interaction_mode=unattended`，Core 不持久化第三个
+重复布尔字段。`ToolCallCoordinator` 是唯一解释 interaction mode 的执行协调边界；`ToolExecutor` 保持 Session-neutral。
+无人值守时，残余软审批以 `resolved_by=host_policy` 和稳定 resolver id 持久化后继续执行；硬 `deny` 不可降级。
+
+工具输入恢复使用判别式 `AnswerResolution | UnattendedResolution`。请求与 answer 的任意 JSON payload 仍由工具
+拥有，Core 不猜测 `null`、第一项或默认布尔值。只有 contract 声明 `supports_unattended` 的 resumable tool 才收到
+无人值守 resolution；未声明能力时产生 `UserInputUnavailable`，收到 resolution 后再次提问则产生
+`UnattendedInteractionLoop`。request、resolution、revision 与 provenance 在 active ToolBatch checkpoint 中先持久化，
+再调用 resume handler；顺序与并行 batch 都在 resolution 归一化后决定是否暂停。Plugin SDK 与 worker protocol 传输
+同一 resolution，能力字段进入 contribution/execution contract hash。
+
 ## 模型路由与 Provider 边界
 
 持久化模型路由只有一种格式：`provider_id/endpoint_id`。

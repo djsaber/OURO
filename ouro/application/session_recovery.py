@@ -99,7 +99,7 @@ class SessionRecoveryService:
                 ):
                     recovered_calls = [
                         call.model_copy(update={"status": "unknown_outcome"})
-                        if call.status == "running"
+                        if call.status in {"running", "resolving_input"}
                         else call
                         for call in active_batch.calls
                     ]

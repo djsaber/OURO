@@ -242,7 +242,6 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
     resolved_event = next(
         event for event in snapshot.events if event.event_type == "ask_user_resolved"
     )
-
     assert resumed.run.status == "completed"
     assert resumed.tool_results[0].structured == {"answer": answer}
     assert result_message.text_content == json.dumps(
@@ -251,6 +250,173 @@ async def test_sdk_tool_structured_input_round_trips_through_wait_and_resume(tmp
         separators=(",", ":"),
     )
     assert resolved_event.payload["answer"] == answer
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["sequential", "parallel"])
+async def test_unattended_session_resumes_capable_tool_without_waiting(
+    tmp_path,
+    mode: str,
+) -> None:
+    resolutions: list[sdk.ToolInputResolution] = []
+    executed_after_request: list[str] = []
+
+    def request_input(_call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        return sdk.ToolInputRequest(data={"type": "confirm", "subject": "release"})
+
+    def resume(call: sdk.ToolResumeCall) -> sdk.ToolOutput:
+        resolutions.append(call.resolution)
+        return sdk.ToolOutput(
+            content="continued without user input",
+            structured={"resolved_by": call.resolution.resolved_by},
+        )
+
+    def after_request(invocation) -> ToolResult:
+        executed_after_request.append(invocation.tool_call_id)
+        return _result(invocation, "continued batch")
+
+    contribution = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="confirm",
+                    exposed_name="afk__confirm",
+                    description="Confirm or apply unattended policy.",
+                    permission_mode="auto",
+                    handler=request_input,
+                    resume_handler=resume,
+                    supports_unattended=True,
+                )
+            ]
+        )
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="AfterAFK", description="Continue the batch."),
+            handler=after_request,
+        )
+    )
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        mode=mode,
+        first_calls=[
+            ToolCallRequest(id="call_confirm", name="afk__confirm", source_index=0),
+            ToolCallRequest(id="call_after_1", name="AfterAFK", source_index=1),
+            ToolCallRequest(id="call_after_2", name="AfterAFK", source_index=2),
+        ],
+    )
+
+    result = await runtime.run(
+        "continue unattended",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+    snapshot = runtime.store.load_session(result.session.session_id)
+    resolved_event = next(
+        event for event in snapshot.events if event.event_type == "ask_user_resolved"
+    )
+    requested_event = next(
+        event for event in snapshot.events if event.event_type == "ask_user_requested"
+    )
+
+    assert result.run.status == "completed"
+    assert sorted(executed_after_request) == ["call_after_1", "call_after_2"]
+    assert len(resolutions) == 1
+    resolution = resolutions[0]
+    assert isinstance(resolution, sdk.UnattendedResolution)
+    assert resolution.resolver_id == "ouro.afk"
+    assert requested_event.payload["interaction_mode"] == "unattended"
+    assert requested_event.payload["will_suspend"] is False
+    assert resolved_event.payload["resolution"]["kind"] == "unattended"
+    assert resolved_event.payload["resolved_by"] == "host_policy"
+    assert all(event.event_type != "run_status_changed" for event in snapshot.events)
+
+
+@pytest.mark.asyncio
+async def test_unattended_session_returns_explicit_error_for_unsupported_tool(tmp_path) -> None:
+    def request_input(_call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        return sdk.ToolInputRequest(data={"type": "form", "fields": ["environment"]})
+
+    contribution = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="form",
+                    exposed_name="afk__form",
+                    description="Collect a form from the user.",
+                    permission_mode="auto",
+                    handler=request_input,
+                )
+            ]
+        )
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        first_calls=[ToolCallRequest(id="call_form", name="afk__form")],
+    )
+
+    result = await runtime.run(
+        "collect details unattended",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+
+    assert result.run.status == "completed"
+    assert len(result.tool_results) == 1
+    assert result.tool_results[0].structured["error_type"] == "UserInputUnavailable"
+    assert result.tool_results[0].structured["resolved_by"] == "host_policy"
+    assert result.tool_results[0].structured["input_request"] == {
+        "type": "form",
+        "fields": ["environment"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_unattended_resume_cannot_request_user_input_again(tmp_path) -> None:
+    def request_input(_call: sdk.ToolCall) -> sdk.ToolInputRequest:
+        return sdk.ToolInputRequest(data={"stage": "first"})
+
+    def resume(_call: sdk.ToolResumeCall) -> sdk.ToolInputRequest:
+        return sdk.ToolInputRequest(data={"stage": "second"})
+
+    contribution = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="loop",
+                    exposed_name="afk__loop",
+                    description="Invalid unattended interaction loop.",
+                    permission_mode="auto",
+                    handler=request_input,
+                    resume_handler=resume,
+                    supports_unattended=True,
+                )
+            ]
+        )
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        first_calls=[ToolCallRequest(id="call_loop", name="afk__loop")],
+    )
+
+    result = await runtime.run(
+        "do not loop",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    )
+
+    assert result.run.status == "completed"
+    assert result.tool_results[0].structured["error_type"] == "UnattendedInteractionLoop"
+    assert result.tool_results[0].structured["input_request"] == {"stage": "second"}
 
 
 @pytest.mark.asyncio
@@ -364,6 +530,55 @@ async def test_approved_tool_can_transition_to_user_input_without_reexecution(tm
     assert waiting.run.status == "waiting_user"
     assert completed.run.status == "completed"
     assert executions == 1
+
+
+@pytest.mark.asyncio
+async def test_unattended_session_resolves_remaining_approval_with_policy_provenance(
+    tmp_path,
+) -> None:
+    executions = 0
+
+    def execute(call: sdk.ToolCall) -> sdk.ToolOutput:
+        nonlocal executions
+        executions += 1
+        return sdk.ToolOutput(content=f"executed {call.tool_name}")
+
+    contribution = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            tools=[
+                sdk.ToolContribution(
+                    id="deploy",
+                    exposed_name="afk__deploy",
+                    description="Deployment requiring approval.",
+                    permission_mode="approval",
+                    handler=execute,
+                )
+            ]
+        )
+    ).tools[0]
+    registry = ToolRegistry()
+    registry.register(contribution)
+    runtime = _runtime(
+        tmp_path,
+        registry=registry,
+        first_calls=[ToolCallRequest(id="call_deploy", name="afk__deploy")],
+    )
+
+    result = await runtime.run(
+        "deploy unattended",
+        approval_mode="approval",
+        interaction_mode="unattended",
+    )
+    snapshot = runtime.store.load_session(result.session.session_id)
+    resolved_event = next(
+        event for event in snapshot.events if event.event_type == "approval_resolved"
+    )
+
+    assert result.run.status == "completed"
+    assert executions == 1
+    assert resolved_event.payload["approved"] is True
+    assert resolved_event.payload["resolved_by"] == "host_policy"
+    assert resolved_event.payload["resolver_id"] == "ouro.afk"
 
 
 @pytest.mark.asyncio

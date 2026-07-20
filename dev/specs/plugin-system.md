@@ -493,6 +493,11 @@ Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | 
 声明 resumable 且具有 resume handler 的工具能消费回答继续执行；恢复绑定原 Catalog 和精确 execution contract，
 并允许再次请求输入。非 resumable 工具仅支持回答直接成为结果的单阶段交互。
 
+恢复输入必须使用 `AnswerResolution | UnattendedResolution` 判别联合，不能把 resolver provenance 混入工具拥有的
+任意 JSON answer。工具只有显式声明 `supports_unattended` 才能接收无人值守 resolution；该能力要求 resumable，
+并进入 Manifest、SDK、worker protocol 与 contribution/execution contract。无人值守 handler 必须返回最终结果，
+再次请求输入属于协议错误。Host 不为未知 request schema 猜测默认答案。
+
 ## 11. Trust、Permission 与 Credentials
 
 ### 11.1 Trust 模型

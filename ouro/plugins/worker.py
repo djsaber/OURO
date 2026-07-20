@@ -314,7 +314,7 @@ class WorkerPluginInstance:
             "initialize",
             {
                 "protocol_version": self.manifest.runtime.protocol,
-                "plugin_api": "1.0",
+                "plugin_api": "1.1",
                 "plugin_id": self.manifest.plugin_id,
                 "package_digest": self.package_digest,
                 "grants": sorted(self.permissions),
@@ -421,7 +421,7 @@ class WorkerPluginInstance:
                         "tool_name": call.tool_name,
                         "arguments": dict(call.arguments),
                         "request": call.request,
-                        "answer": call.answer,
+                        "resolution": _worker_input_resolution(call.resolution),
                         "workspace": call.workspace,
                         "workspace_only": call.workspace_only,
                     },
@@ -682,6 +682,7 @@ def _worker_tools(
             result_schema=_worker_schema(raw, "tools", item.id, "result_schema"),
             handler=instance._tool_handler(item.id),
             resume_handler=(instance._tool_resume_handler(item.id) if item.resumable else None),
+            supports_unattended=item.supports_unattended,
         )
         for item in instance.manifest.contributes.tools
         if item.id in available.get("tools", set())
@@ -993,6 +994,24 @@ def _object_result(raw: object, method: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise WorkerProtocolError(f"worker {method} result must be an object")
     return raw
+
+
+def _worker_input_resolution(resolution: sdk.ToolInputResolution) -> dict[str, object]:
+    if isinstance(resolution, sdk.AnswerResolution):
+        return {
+            "kind": "answer",
+            "value": resolution.value,
+            "resolved_by": resolution.resolved_by,
+            "resolver_id": resolution.resolver_id,
+        }
+    if isinstance(resolution, sdk.UnattendedResolution):
+        return {
+            "kind": "unattended",
+            "resolved_by": "host_policy",
+            "resolver_id": resolution.resolver_id,
+            "reason": resolution.reason,
+        }
+    raise WorkerProtocolError(f"unsupported tool input resolution: {type(resolution).__name__}")
 
 
 def _validate_worker_result(method: str, result: dict[str, Any]) -> None:

@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from pydantic import JsonValue
-
 from ouro.core.approvals import ApprovalRecord, SessionApprovalMode, resolve_tool_permission
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
+from ouro.core.interactions import ToolInputResolution
 from ouro.core.redaction import redact_text
 from ouro.core.tool_policies import ToolPolicyMode
 from ouro.core.tools import PermissionMode
@@ -210,7 +209,7 @@ class ToolExecutor:
         self,
         invocation: ToolInvocation,
         *,
-        answer: JsonValue,
+        resolution: ToolInputResolution,
         request: ToolInputRequest,
         signal: AbortSignal | None = None,
         context: ToolExecutionContext | None = None,
@@ -241,7 +240,7 @@ class ToolExecutor:
             context.raise_if_aborted()
             execution_result = await tool.resume(
                 invocation,
-                answer,
+                resolution,
                 request=request,
                 context=context,
             )

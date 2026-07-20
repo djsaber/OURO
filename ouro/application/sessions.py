@@ -37,6 +37,7 @@ from ouro.core.errors import (
     SessionBusyError,
     SessionNotFoundError,
 )
+from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.state import SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
@@ -76,6 +77,7 @@ class SessionService:
         workspace: str | None = None,
         current_model: str | None = None,
         approval_mode: SessionApprovalMode = "inherit",
+        interaction_mode: SessionInteractionMode = "interactive",
     ) -> SessionMutationResult:
         normalized_title = _normalize_title(title)
         session = SessionRecord(
@@ -85,6 +87,7 @@ class SessionService:
             workspace=workspace,
             current_model=current_model,
             approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
         )
         self._store.create_session(session)
         return SessionMutationResult(
@@ -239,6 +242,24 @@ class SessionService:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
         return self._update_session(session_id, approval_mode=approval_mode)
 
+    def set_interaction_mode(
+        self,
+        session_id: str,
+        interaction_mode: SessionInteractionMode,
+    ) -> SessionMutationResult:
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
+        return self._update_session(session_id, interaction_mode=interaction_mode)
+
+    def set_afk_mode(self, session_id: str, *, enabled: bool) -> SessionMutationResult:
+        """Apply the AFK policy preset atomically to an idle Session."""
+
+        return self._update_session(
+            session_id,
+            approval_mode="auto" if enabled else "inherit",
+            interaction_mode="unattended" if enabled else "interactive",
+        )
+
     async def generate_title(
         self,
         session_id: str,
@@ -373,6 +394,7 @@ class SessionService:
             workspace_trusted=source.session.workspace_trusted,
             current_model=source.session.current_model,
             approval_mode=source.session.approval_mode,
+            interaction_mode=source.session.interaction_mode,
             tags=list(source.session.tags),
         )
         copied_messages, message_id_map = copy_branch_messages(

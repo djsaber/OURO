@@ -108,6 +108,7 @@ class RunRecoveryService:
             return call.result
         outcome_unknown = call is not None and call.status in {
             "running",
+            "resolving_input",
             "unknown_outcome",
         }
         if outcome_unknown:

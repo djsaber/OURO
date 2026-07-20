@@ -70,6 +70,7 @@ from ouro.cli.session_commands import (
     remove_session,
     rename_session,
     replay_session,
+    set_session_afk_mode,
     set_session_approval_mode,
     show_session,
     show_session_context,
@@ -142,6 +143,16 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _skills_command(args)
     if args.command == "usage":
         return _usage_command(args)
+    if args.interactive_afk:
+        return asyncio.run(
+            run_interactive(
+                home=args.home,
+                system_prompt=args.system_prompt,
+                approval_mode="auto",
+                interaction_mode="unattended",
+                session_backend=args.session_backend,
+            )
+        )
     if args.interactive_approval_mode != "inherit":
         return asyncio.run(
             run_interactive(
@@ -177,7 +188,8 @@ def _run_command(args: argparse.Namespace) -> int:
             provider_options=provider_options,
             system_prompt=system_prompt,
             queue_mode=args.queue_mode,
-            approval_mode=args.approval_mode,
+            approval_mode="auto" if args.afk else args.approval_mode,
+            interaction_mode="unattended" if args.afk else None,
             resource_refs=args.resource_ids,
             session_backend=_selected_session_backend(args, scoped="run_session_backend"),
         )
@@ -231,6 +243,14 @@ def _session_command(args: argparse.Namespace) -> int:
         return set_session_approval_mode(
             args.session_id,
             args.mode,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
+    if command == "afk":
+        return set_session_afk_mode(
+            args.session_id,
+            enabled=args.state == "on",
             home=home,
             json_mode=args.json,
             session_backend=session_backend,

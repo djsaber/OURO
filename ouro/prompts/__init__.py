@@ -14,6 +14,13 @@ you make them. Prefer small, maintainable steps over clever detours.
 """
 
 
+AFK_CONTEXT_PROMPT = """AFK mode is active. The user is unavailable. Do not ask the user
+questions or wait for clarification. Make reasonable assumptions and continue
+autonomously. Tool approvals are handled by the Host. If a tool reports that user
+input is unavailable, use the available context and your best judgment instead of
+asking again."""
+
+
 AGENT_SKILLS_PROMPT_TEMPLATE = """
 Agent Skills
 
@@ -255,6 +262,7 @@ REMINDER: Do NOT call any tools. Respond with plain text only — an <analysis> 
 
 
 __all__ = [
+    "AFK_CONTEXT_PROMPT",
     "DEFAULT_SYSTEM_PROMPT",
     "AGENT_SKILLS_PROMPT_TEMPLATE",
     "AGENT_SKILLS_PROMPT_TEMPLATE_KIMI",

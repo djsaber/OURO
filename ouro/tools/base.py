@@ -10,10 +10,11 @@ from dataclasses import dataclass
 from inspect import Parameter, signature
 from pathlib import Path
 
-from pydantic import Field, JsonValue
+from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.cancellation import AbortSignal
+from ouro.core.interactions import ToolInputResolution
 from ouro.core.tools import (
     PermissionMode,
     ToolBatchBehavior,
@@ -261,7 +262,7 @@ class Tool(OuroModel):
     async def resume(
         self,
         invocation: ToolInvocation,
-        answer: JsonValue,
+        resolution: ToolInputResolution,
         *,
         request: ToolInputRequest,
         context: ToolExecutionContext | None = None,
@@ -273,7 +274,7 @@ class Tool(OuroModel):
         raw_result = _call_resume_handler(
             self.resume_handler,
             invocation,
-            answer,
+            resolution,
             request,
             context,
         )
@@ -311,14 +312,14 @@ def _call_handler(
 def _call_resume_handler(
     handler: ToolResumeHandler,
     invocation: ToolInvocation,
-    answer: JsonValue,
+    resolution: ToolInputResolution,
     request: ToolInputRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult | Awaitable[ToolExecutionResult]:
     try:
         parameters = tuple(signature(handler).parameters.values())
     except (TypeError, ValueError):
-        return handler(invocation, answer, request)
+        return handler(invocation, resolution, request)
 
     keyword_arguments: dict[str, object] = {}
     names = {parameter.name for parameter in parameters}
@@ -328,4 +329,4 @@ def _call_resume_handler(
         keyword_arguments["context"] = context
     if "signal" in names:
         keyword_arguments["signal"] = context.signal
-    return handler(invocation, answer, **keyword_arguments)
+    return handler(invocation, resolution, **keyword_arguments)

@@ -131,6 +131,32 @@ def set_session_approval_mode(
     return 0
 
 
+def set_session_afk_mode(
+    session_id: str,
+    *,
+    enabled: bool,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
+) -> int:
+    try:
+        result = _sessions(home, session_backend).set_afk_mode(session_id, enabled=enabled)
+    except (OuroError, FileNotFoundError, ValueError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        state = "enabled" if enabled else "disabled"
+        print(f"Session AFK mode {state}: {session_id}")
+    return 0
+
+
 def archive_session(
     session_id: str,
     *,
@@ -271,6 +297,7 @@ def show_session(
                 f"Status: {session.status}",
                 f"Model: {session.current_model or '-'}",
                 f"Approval mode: {session.approval_mode}",
+                f"Interaction mode: {session.interaction_mode}",
                 f"Workspace: {session.workspace or '-'}",
                 f"Messages: {session.message_count}",
                 f"Updated: {session.updated_at}",

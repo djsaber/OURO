@@ -197,6 +197,50 @@ def test_runtime_activity_projection_overlays_authoritative_durable_tool_state()
     assert activity.tool_calls[0].status == "running"
 
 
+def test_runtime_activity_does_not_project_afk_input_resolution_as_waiting_user() -> None:
+    activity = queued_runtime_activity("ses_1")
+    for event in [
+        _event(1, "run_started"),
+        _event(2, "tool_batch_planned", {"turn_id": "turn_1", "batch_id": "batch_1"}),
+        _event(
+            3,
+            "tool_call_requested",
+            {
+                "turn_id": "turn_1",
+                "batch_id": "batch_1",
+                "tool_call_id": "call_1",
+                "tool_name": "Workflow",
+                "source_index": 0,
+            },
+        ),
+        _event(
+            4,
+            "ask_user_requested",
+            {
+                "tool_call_id": "call_1",
+                "interaction_mode": "unattended",
+                "will_suspend": False,
+            },
+        ),
+    ]:
+        activity = reduce_runtime_activity(activity, event)
+
+    assert activity.status == "running"
+    assert activity.activity != "waiting_user"
+    assert activity.tool_calls[0].status == "resolving_input"
+
+    activity = reduce_runtime_activity(
+        activity,
+        _event(
+            5,
+            "ask_user_resolved",
+            {"tool_call_id": "call_1", "tool_call_status": "completed"},
+        ),
+    )
+
+    assert activity.tool_calls[0].status == "completed"
+
+
 def test_runtime_activity_tracks_compaction_and_response_finalization() -> None:
     activity = queued_runtime_activity("ses_1")
     for event in [

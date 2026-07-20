@@ -154,6 +154,25 @@ class ToolInputRequest:
     data: JsonValue
 
 
+@dataclass(frozen=True)
+class AnswerResolution:
+    value: JsonValue
+    kind: Literal["answer"] = "answer"
+    resolved_by: Literal["user", "host_policy"] = "user"
+    resolver_id: str | None = None
+
+
+@dataclass(frozen=True)
+class UnattendedResolution:
+    resolver_id: str
+    reason: str
+    kind: Literal["unattended"] = "unattended"
+    resolved_by: Literal["host_policy"] = "host_policy"
+
+
+ToolInputResolution = AnswerResolution | UnattendedResolution
+
+
 ToolHandlerResult = (
     ToolOutput | ToolInputRequest | str | Awaitable[ToolOutput | ToolInputRequest | str]
 )
@@ -171,9 +190,17 @@ class ToolResumeCall:
     tool_name: str
     arguments: Mapping[str, object]
     request: JsonValue
-    answer: JsonValue
+    resolution: ToolInputResolution
     workspace: str | None = None
     workspace_only: bool = False
+
+    @property
+    def answer(self) -> JsonValue:
+        """Return the opaque answer for an answered interaction."""
+
+        if not isinstance(self.resolution, AnswerResolution):
+            raise ValueError("unattended tool input resolution has no answer")
+        return self.resolution.value
 
 
 ToolResumeHandler = (
@@ -204,6 +231,7 @@ class ToolContribution:
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"
     resume_handler: ToolResumeHandler | None = None
+    supports_unattended: bool = False
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
@@ -471,6 +499,7 @@ PluginFactory = Callable[[PluginContext], PluginInstance | Awaitable[PluginInsta
 
 
 __all__ = [
+    "AnswerResolution",
     "BackgroundServiceContribution",
     "CommandCall",
     "CommandContribution",
@@ -513,6 +542,7 @@ __all__ = [
     "ToolEffect",
     "ToolExecutionContext",
     "ToolInputRequest",
+    "ToolInputResolution",
     "ToolOutput",
     "ToolPolicyAction",
     "ToolPolicyCall",
@@ -520,6 +550,7 @@ __all__ = [
     "ToolPolicyDecision",
     "ToolPermissionControl",
     "ToolResumeCall",
+    "UnattendedResolution",
     "TurnCompletionCall",
     "TurnPolicyAction",
     "TurnPolicyContribution",

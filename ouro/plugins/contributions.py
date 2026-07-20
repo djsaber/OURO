@@ -342,6 +342,7 @@ class ContributionCoordinator:
                 or tool.definition.effect != declaration.effect
                 or tool.definition.batch_behavior != declaration.batch_behavior
                 or tool.definition.resumable != declaration.resumable
+                or tool.definition.supports_unattended != declaration.supports_unattended
             ):
                 raise ContributionValidationError(
                     f"tool permission contract does not match manifest: {declaration.exposed_name}"
@@ -356,6 +357,7 @@ class ContributionCoordinator:
                     "effect": declaration.effect,
                     "batch_behavior": declaration.batch_behavior,
                     "resumable": declaration.resumable,
+                    "supports_unattended": declaration.supports_unattended,
                 }
             )
             contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))

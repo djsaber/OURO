@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal, assert_never, cast, get_args
+from typing import Literal, Self, assert_never, cast, get_args
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 
 ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
+ApprovalResolvedBy = Literal["user", "host_policy"]
 PermissionMode = Literal["auto", "approval", "deny"]
 ToolPermissionControl = Literal["host", "tool"]
 SessionApprovalMode = Literal["inherit", "auto", "approval", "deny"]
@@ -57,6 +58,16 @@ class ApprovalRecord(OuroModel):
     status: ApprovalStatus = "requested"
     requested_at: datetime = Field(default_factory=utc_now)
     resolved_at: datetime | None = None
+    resolved_by: ApprovalResolvedBy | None = None
+    resolver_id: str | None = None
     reason: str | None = None
     modified_arguments: dict[str, object] | None = None
     metadata: Metadata = MetadataField
+
+    @model_validator(mode="after")
+    def validate_resolution_provenance(self) -> Self:
+        if self.resolved_by == "host_policy" and not self.resolver_id:
+            raise ValueError("host policy approval requires resolver_id")
+        if self.resolved_by != "host_policy" and self.resolver_id is not None:
+            raise ValueError("approval resolver_id requires host policy provenance")
+        return self

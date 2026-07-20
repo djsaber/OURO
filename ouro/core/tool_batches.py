@@ -7,6 +7,7 @@ from pydantic import Field
 
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.interactions import ToolInputResolution
 from ouro.core.messages import MessageRecord
 from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation, ToolResult
 
@@ -25,6 +26,7 @@ ToolCallStatus = Literal[
     "planned",
     "awaiting_approval",
     "waiting_user",
+    "resolving_input",
     "ready",
     "rejected",
     "running",
@@ -42,6 +44,8 @@ class ToolBatchCall(OuroModel):
     invocation: ToolInvocation | None = None
     approval: ApprovalRecord | None = None
     input_request: ToolInputRequest | None = None
+    input_resolution: ToolInputResolution | None = None
+    input_revision: int = Field(default=0, ge=0)
     result: ToolResult | None = None
     result_message_id: str | None = None
     metadata: Metadata = MetadataField
