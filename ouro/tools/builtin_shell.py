@@ -331,11 +331,7 @@ def _decode_clixml_string(text: str) -> str:
     output: list[str] = []
     index = 0
     while index < len(text):
-        if (
-            text.startswith("_x", index)
-            and index + 7 <= len(text)
-            and text[index + 6] == "_"
-        ):
+        if text.startswith("_x", index) and index + 7 <= len(text) and text[index + 6] == "_":
             hexadecimal = text[index + 2 : index + 6]
             try:
                 output.append(chr(int(hexadecimal, 16)))

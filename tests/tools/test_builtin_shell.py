@@ -99,9 +99,7 @@ def test_no_command_tool_is_selected_when_no_supported_shell_exists() -> None:
 def test_builtin_tool_list_exposes_exactly_the_detected_shell() -> None:
     shell = detect_command_shell()
     command_definitions = [
-        tool.definition
-        for tool in builtin_tools()
-        if "shell_kind" in tool.definition.metadata
+        tool.definition for tool in builtin_tools() if "shell_kind" in tool.definition.metadata
     ]
 
     if shell is None:
@@ -158,8 +156,7 @@ def test_shell_contract_exposes_dialect_specific_pitfalls(
     assert definition.metadata["shell_executable"] == shell.executable
     assert all(text in definition.description for text in required_guidance)
     assert all(
-        "description" in schema
-        for schema in definition.parameters_schema["properties"].values()
+        "description" in schema for schema in definition.parameters_schema["properties"].values()
     )
 
 
@@ -232,9 +229,7 @@ async def test_command_result_identifies_shell_and_preserves_both_output_streams
 
     assert outcome.result is not None
     assert outcome.result.is_error is True
-    assert outcome.result.content == (
-        "stdout:\nstandard output\nstderr:\ndiagnostic output"
-    )
+    assert outcome.result.content == ("stdout:\nstandard output\nstderr:\ndiagnostic output")
     assert outcome.result.structured["shell"] == "bash"
     assert outcome.result.structured["executable"] == "/opt/bin/bash"
     assert outcome.result.structured["returncode"] == 7

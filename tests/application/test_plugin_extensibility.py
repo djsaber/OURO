@@ -822,8 +822,7 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
         ),
         encoding="utf-8",
     )
-    plugin_source = (
-        """from ouro.sdk.plugins.v1 import (
+    plugin_source = """from ouro.sdk.plugins.v1 import (
     ContributionSet,
     ToolPolicyContribution,
     ToolPolicyDecision,
@@ -850,7 +849,6 @@ class Plugin:
 def create_plugin(context):
     return Plugin()
 """.replace("__COMMAND_TOOL__", command_tool_name)
-    )
     (source / "guard_plugin.py").write_text(
         plugin_source,
         encoding="utf-8",

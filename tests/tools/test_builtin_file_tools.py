@@ -45,17 +45,11 @@ def test_file_tool_contracts_explain_behavior_and_every_field() -> None:
         "overwrite",
         "append",
     ]
-    assert all(
-        "description" in schema
-        for schema in write.parameters_schema["properties"].values()
-    )
+    assert all("description" in schema for schema in write.parameters_schema["properties"].values())
 
     assert "exact literal text" in edit.description
     assert edit.parameters_schema["properties"]["replace_all"]["default"] is False
-    assert all(
-        "description" in schema
-        for schema in edit.parameters_schema["properties"].values()
-    )
+    assert all("description" in schema for schema in edit.parameters_schema["properties"].values())
 
 
 @pytest.mark.asyncio
@@ -90,9 +84,7 @@ async def test_read_numbers_universal_text_line_endings(tmp_path) -> None:
     target = tmp_path / "line-endings.txt"
     target.write_bytes(b"alpha\rbravo\r\ncharlie\n")
 
-    outcome = await ToolExecutor(_registry()).execute(
-        _invocation("Read", {"path": str(target)})
-    )
+    outcome = await ToolExecutor(_registry()).execute(_invocation("Read", {"path": str(target)}))
 
     assert outcome.result is not None
     assert outcome.result.content == "1\talpha\n2\tbravo\n3\tcharlie"
@@ -104,9 +96,7 @@ async def test_read_numbers_universal_text_line_endings(tmp_path) -> None:
 async def test_read_rejects_directory_instead_of_listing_it(tmp_path) -> None:
     (tmp_path / "hidden.txt").write_text("must not be listed", encoding="utf-8")
 
-    outcome = await ToolExecutor(_registry()).execute(
-        _invocation("Read", {"path": str(tmp_path)})
-    )
+    outcome = await ToolExecutor(_registry()).execute(_invocation("Read", {"path": str(tmp_path)}))
 
     assert outcome.result is not None
     assert outcome.result.is_error is True
@@ -120,9 +110,7 @@ async def test_read_default_page_never_exceeds_one_thousand_lines(tmp_path) -> N
     target = tmp_path / "many-lines.txt"
     target.write_text("".join(f"line-{index}\n" for index in range(1, 1_002)), encoding="utf-8")
 
-    outcome = await ToolExecutor(_registry()).execute(
-        _invocation("Read", {"path": str(target)})
-    )
+    outcome = await ToolExecutor(_registry()).execute(_invocation("Read", {"path": str(target)}))
 
     assert outcome.result is not None
     rendered = outcome.result.content.splitlines()
@@ -138,9 +126,7 @@ async def test_read_stops_before_next_line_when_page_reaches_byte_cap(tmp_path) 
     target = tmp_path / "wide-lines.txt"
     target.write_text(f"{'a' * 60_000}\n{'b' * 60_000}\n", encoding="utf-8")
 
-    outcome = await ToolExecutor(_registry()).execute(
-        _invocation("Read", {"path": str(target)})
-    )
+    outcome = await ToolExecutor(_registry()).execute(_invocation("Read", {"path": str(target)}))
 
     assert outcome.result is not None
     assert outcome.result.content == f"1\t{'a' * 60_000}"
@@ -156,9 +142,7 @@ async def test_read_clips_single_oversized_line_on_valid_utf8_boundary(tmp_path)
     executor = ToolExecutor(_registry())
 
     first = await executor.execute(_invocation("Read", {"path": str(target)}))
-    second = await executor.execute(
-        _invocation("Read", {"path": str(target), "offset": 2})
-    )
+    second = await executor.execute(_invocation("Read", {"path": str(target), "offset": 2}))
 
     assert first.result is not None
     assert first.result.content.startswith("1\t你")
@@ -190,9 +174,7 @@ async def test_read_reports_non_utf8_input_as_tool_error(tmp_path) -> None:
     target = tmp_path / "binary.dat"
     target.write_bytes(b"valid\n\xffinvalid")
 
-    outcome = await ToolExecutor(_registry()).execute(
-        _invocation("Read", {"path": str(target)})
-    )
+    outcome = await ToolExecutor(_registry()).execute(_invocation("Read", {"path": str(target)}))
 
     assert outcome.result is not None
     assert outcome.result.is_error is True

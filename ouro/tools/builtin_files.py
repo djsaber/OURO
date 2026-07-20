@@ -320,9 +320,7 @@ def _read_text_page(
                 break
             available_bytes = _MAX_READ_BYTES - len(prefix.encode("utf-8"))
             available_chars = (
-                None
-                if max_output_chars is None
-                else max(0, max_output_chars - len(prefix))
+                None if max_output_chars is None else max(0, max_output_chars - len(prefix))
             )
             if available_bytes < 0 or available_chars == 0:
                 stream.seek(line_start)

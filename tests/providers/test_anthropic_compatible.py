@@ -332,9 +332,7 @@ async def test_anthropic_stream_rejects_tool_input_without_a_started_tool_block(
     ]
 
     assert [event.type for event in events] == ["error"]
-    assert events[0].error == (
-        "provider streamed tool input for an unknown content block index: 3"
-    )
+    assert events[0].error == ("provider streamed tool input for an unknown content block index: 3")
 
 
 @pytest.mark.asyncio
