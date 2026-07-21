@@ -28,6 +28,7 @@ class SessionPlanState:
     options: tuple[PlanOption, ...] = ()
     last_resume_tool_call_id: str | None = None
     last_resume_output: dict[str, object] | None = None
+    host_activation_id: str | None = None
 
     @classmethod
     def from_json(cls, raw: object) -> SessionPlanState:
@@ -61,6 +62,7 @@ class SessionPlanState:
             options=tuple(options),
             last_resume_tool_call_id=_optional_string(raw.get("last_resume_tool_call_id")),
             last_resume_output=dict(last_output) if last_output is not None else None,
+            host_activation_id=_optional_string(raw.get("host_activation_id")),
         )
 
     def to_json(self) -> dict[str, object]:
@@ -74,6 +76,7 @@ class SessionPlanState:
             "options": [option.to_json() for option in self.options],
             "last_resume_tool_call_id": self.last_resume_tool_call_id,
             "last_resume_output": self.last_resume_output,
+            "host_activation_id": self.host_activation_id,
         }
 
 

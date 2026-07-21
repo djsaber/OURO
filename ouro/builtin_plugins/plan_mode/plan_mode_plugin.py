@@ -17,6 +17,10 @@ from ouro.sdk.plugins.v1 import (
     ContextOutput,
     ContributionSet,
     PluginContext,
+    SessionControlClaim,
+    SessionControllerContribution,
+    SessionControllerOutput,
+    SessionControlTransition,
     ToolContribution,
     ToolInputRequest,
     ToolOutput,
@@ -162,6 +166,7 @@ class PlanModePlugin:
                     effect="state_changing",
                     batch_behavior="exclusive",
                     supports_unattended=True,
+                    active_when="mode",
                 ),
             ],
             commands=[
@@ -171,6 +176,20 @@ class PlanModePlugin:
                     handler=self.plan_command,
                 )
             ],
+            session_controllers=[
+                SessionControllerContribution(
+                    id="mode",
+                    description="Own the Plan mode lifecycle for one Session.",
+                    claims=(
+                        SessionControlClaim(
+                            domain="ouro.session.primary_behavior",
+                            access="exclusive",
+                        ),
+                    ),
+                    activate=self.activate_plan_controller,
+                    deactivate=self.deactivate_plan_controller,
+                )
+            ],
             context_providers=[
                 ContextContribution(
                     id="plan-scaffold",
@@ -178,6 +197,7 @@ class PlanModePlugin:
                     priority=10,
                     timeout_seconds=5,
                     failure_mode="block",
+                    active_when="mode",
                 )
             ],
             tool_policies=[
@@ -186,6 +206,7 @@ class PlanModePlugin:
                     handler=self.plan_tool_gate,
                     priority=10,
                     timeout_seconds=5,
+                    active_when="mode",
                 )
             ],
         )
@@ -197,70 +218,117 @@ class PlanModePlugin:
         del reason, deadline
 
     def enter_plan_mode(self, call) -> ToolOutput:
-        with self._lock:
-            current = self._state.load(call.session_id)
-            if current.phase in _ACTIVE_PHASES:
-                if (
-                    current.activation_tool_call_id == call.tool_call_id
-                    and current.plan_path is not None
-                ):
-                    return ToolOutput(
-                        content=_ENTERED.format(plan_path=current.plan_path),
-                        structured={"phase": current.phase, "plan_path": current.plan_path},
-                    )
-                return ToolOutput(
-                    content="Plan mode is already active. Use ExitPlanMode when ready.",
-                    structured={"phase": current.phase, "plan_path": current.plan_path},
-                    is_error=True,
-                )
-            state = self._new_active_state(
-                call.session_id,
-                previous=current,
-                activation_tool_call_id=call.tool_call_id,
-            )
-            self._state.save(call.session_id, state)
-        assert state.plan_path is not None
         return ToolOutput(
-            content=_ENTERED.format(plan_path=state.plan_path),
-            structured={"phase": state.phase, "plan_path": state.plan_path},
+            session_control_transitions=(
+                SessionControlTransition(
+                    action="acquire",
+                    controller_id="mode",
+                    payload={"activation_tool_call_id": call.tool_call_id},
+                ),
+            ),
         )
 
     def plan_command(self, call) -> CommandOutput:
         if call.session_id is None:
             return CommandOutput(output="The /plan command requires a target Session.")
+        argument = call.argument.strip().lower()
+        if argument == "off":
+            return CommandOutput(
+                session_control_transitions=(
+                    SessionControlTransition(
+                        action="release",
+                        controller_id="mode",
+                        reason="user_command",
+                    ),
+                ),
+            )
+        if argument == "status":
+            with self._lock:
+                state = self._state.load(call.session_id)
+            return CommandOutput(
+                output=(
+                    f"Plan mode phase: {state.phase}."
+                    + (f" Plan file: {state.plan_path}" if state.plan_path else "")
+                ),
+                data={"phase": state.phase, "plan_path": state.plan_path},
+            )
+        argument_notice = (
+            " The /plan command only changes mode; send the planning request as a separate message."
+            if argument and argument != "on"
+            else ""
+        )
+        return CommandOutput(
+            output=argument_notice.strip(),
+            session_control_transitions=(
+                SessionControlTransition(
+                    action="acquire",
+                    controller_id="mode",
+                ),
+            ),
+        )
+
+    def activate_plan_controller(self, call) -> SessionControllerOutput:
+        activation_tool_call_id = None
+        if isinstance(call.payload, dict):
+            raw_tool_call_id = call.payload.get("activation_tool_call_id")
+            if isinstance(raw_tool_call_id, str):
+                activation_tool_call_id = raw_tool_call_id
         with self._lock:
             current = self._state.load(call.session_id)
             if current.phase in _ACTIVE_PHASES:
-                state = current
-                activated = False
+                if current.host_activation_id not in {None, call.activation_id}:
+                    raise RuntimeError("Plan mode is already owned by another activation")
+                state = replace(current, host_activation_id=call.activation_id)
             else:
                 state = self._new_active_state(
                     call.session_id,
                     previous=current,
-                    activation_tool_call_id=None,
+                    activation_tool_call_id=activation_tool_call_id,
+                    host_activation_id=call.activation_id,
                 )
-                activated = True
             self._state.save(call.session_id, state)
         assert state.plan_path is not None
-        argument_notice = (
-            " The /plan command only changes mode; send the planning request as a separate message."
-            if call.argument.strip()
-            else ""
-        )
-        return CommandOutput(
-            output=(
-                f"Plan mode activated. Plan file: {state.plan_path}"
-                if activated
-                else f"Plan mode is already active. Plan file: {state.plan_path}"
-            )
-            + argument_notice,
+        return SessionControllerOutput(
+            output=f"Plan mode activated. Plan file: {state.plan_path}",
             data={"phase": state.phase, "plan_path": state.plan_path},
+            owner_state_revision=state.revision,
+        )
+
+    def deactivate_plan_controller(self, call) -> SessionControllerOutput:
+        with self._lock:
+            current = self._state.load(call.session_id)
+            if current.phase == "inactive":
+                return SessionControllerOutput(
+                    output="Plan mode is already inactive.",
+                    data={"phase": "inactive", "plan_path": current.plan_path},
+                    owner_state_revision=current.revision,
+                )
+            if current.host_activation_id not in {None, call.activation_id}:
+                raise RuntimeError("Plan mode activation identity does not match release")
+            state = replace(
+                current,
+                phase="inactive",
+                revision=current.revision + 1,
+                approval_tool_call_id=None,
+                approval_digest=None,
+                options=(),
+                host_activation_id=None,
+            )
+            self._state.save(call.session_id, state)
+        return SessionControllerOutput(
+            output="Plan mode deactivated. All tools are now available for the next round.",
+            data={
+                "phase": "inactive",
+                "plan_path": state.plan_path,
+                "cancelled_approval_tool_call_id": current.approval_tool_call_id,
+            },
+            owner_state_revision=state.revision,
         )
 
     def plan_context(self, call) -> ContextOutput:
         with self._lock:
             state = self._state.load(call.session_id)
-            if state.phase not in _ACTIVE_PHASES or state.plan_path is None:
+            if state.plan_path is None:
                 return ContextOutput()
             scaffold = _SCAFFOLD.format(plan_path=state.plan_path)
         return ContextOutput(fragments=(ContextFragment(text=scaffold, persistence="message"),))
@@ -268,8 +336,6 @@ class PlanModePlugin:
     def plan_tool_gate(self, call) -> ToolPolicyDecision:
         with self._lock:
             state = self._state.load(call.session_id)
-        if state.phase not in _ACTIVE_PHASES:
-            return ToolPolicyDecision()
         if call.canonical_tool_id in _OWN_TOOLS:
             return ToolPolicyDecision()
         if call.canonical_tool_id in _PLAN_WRITERS:
@@ -405,7 +471,17 @@ class PlanModePlugin:
                         "option_selection": option_selection,
                     },
                 )
-                self._finish_resume(call.session_id, state, output, phase="inactive")
+                output = replace(
+                    output,
+                    session_control_transitions=(
+                        SessionControlTransition(
+                            action="release",
+                            controller_id="mode",
+                            reason="unattended_plan_exit",
+                        ),
+                    ),
+                )
+                self._finish_resume(call.session_id, state, output, phase="active")
                 return output
             try:
                 answer = PlanConfirmationAnswer.from_json(call.answer)
@@ -442,7 +518,17 @@ class PlanModePlugin:
                         "selected_option": selected_option,
                     },
                 )
-                self._finish_resume(call.session_id, state, output, phase="inactive")
+                output = replace(
+                    output,
+                    session_control_transitions=(
+                        SessionControlTransition(
+                            action="release",
+                            controller_id="mode",
+                            reason="plan_accepted",
+                        ),
+                    ),
+                )
+                self._finish_resume(call.session_id, state, output, phase="active")
                 return output
             if action == "revise":
                 suffix = f" Feedback: {feedback}" if feedback else ""
@@ -486,6 +572,7 @@ class PlanModePlugin:
         *,
         previous: SessionPlanState,
         activation_tool_call_id: str | None,
+        host_activation_id: str,
     ) -> SessionPlanState:
         safe_session_id = validate_session_id(session_id)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -501,6 +588,7 @@ class PlanModePlugin:
             plan_path=str(plan_path),
             revision=previous.revision + 1,
             activation_tool_call_id=activation_tool_call_id,
+            host_activation_id=host_activation_id,
         )
 
     @staticmethod
@@ -586,12 +674,60 @@ def _tool_output_to_json(output: ToolOutput) -> dict[str, object]:
         "structured": dict(output.structured),
         "resource_refs": list(output.resource_refs),
         "is_error": output.is_error,
+        "session_control_transitions": [
+            {
+                "action": item.action,
+                "controller_id": item.controller_id,
+                "activation_id": item.activation_id,
+                "replace_activation_ids": list(item.replace_activation_ids),
+                "expected_session_revision": item.expected_session_revision,
+                "expected_activation_revision": item.expected_activation_revision,
+                "payload": item.payload,
+                "reason": item.reason,
+            }
+            for item in output.session_control_transitions
+        ],
     }
 
 
 def _tool_output_from_json(raw: Mapping[str, object]) -> ToolOutput:
     structured = raw.get("structured", {})
     resource_refs = raw.get("resource_refs", [])
+    transitions_raw = raw.get("session_control_transitions", [])
+    transitions = []
+    if isinstance(transitions_raw, list):
+        for item in transitions_raw:
+            if not isinstance(item, Mapping):
+                continue
+            transitions.append(
+                SessionControlTransition(
+                    action=item.get("action", "release"),
+                    controller_id=(
+                        str(item["controller_id"])
+                        if item.get("controller_id") is not None
+                        else None
+                    ),
+                    activation_id=(
+                        str(item["activation_id"])
+                        if item.get("activation_id") is not None
+                        else None
+                    ),
+                    replace_activation_ids=tuple(
+                        str(value)
+                        for value in item.get("replace_activation_ids", [])
+                    ),
+                    expected_session_revision=item.get("expected_session_revision"),
+                    expected_activation_revision=item.get(
+                        "expected_activation_revision"
+                    ),
+                    payload=item.get("payload"),
+                    reason=(
+                        str(item["reason"])
+                        if item.get("reason") is not None
+                        else None
+                    ),
+                )
+            )
     return ToolOutput(
         content=str(raw.get("content", "")),
         structured=dict(structured) if isinstance(structured, Mapping) else {},
@@ -599,6 +735,7 @@ def _tool_output_from_json(raw: Mapping[str, object]) -> ToolOutput:
             tuple(str(item) for item in resource_refs) if isinstance(resource_refs, list) else ()
         ),
         is_error=bool(raw.get("is_error", False)),
+        session_control_transitions=tuple(transitions),
     )
 
 

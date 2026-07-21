@@ -45,10 +45,24 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                         "batch_behavior": "exclusive",
                         "resumable": True,
                         "supports_unattended": True,
+                        "active_when": "mode",
                     },
                 ],
                 "commands": [
                     {"id": "plan", "description": "Enter plan mode for the current Session."}
+                ],
+                "session_controllers": [
+                    {
+                        "id": "mode",
+                        "description": "Own the Plan mode lifecycle for one Session.",
+                        "claims": [
+                            {
+                                "domain": "ouro.session.primary_behavior",
+                                "access": "exclusive",
+                            }
+                        ],
+                        "timeout_seconds": 5,
+                    }
                 ],
                 "context_providers": [
                     {
@@ -56,9 +70,17 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                         "priority": 10,
                         "timeout_seconds": 5,
                         "failure_mode": "block",
+                        "active_when": "mode",
                     }
                 ],
-                "tool_policies": [{"id": "plan-tool-gate", "priority": 10, "timeout_seconds": 5}],
+                "tool_policies": [
+                    {
+                        "id": "plan-tool-gate",
+                        "priority": 10,
+                        "timeout_seconds": 5,
+                        "active_when": "mode",
+                    }
+                ],
             },
             "permissions": [],
             "dependencies": {"plugins": []},

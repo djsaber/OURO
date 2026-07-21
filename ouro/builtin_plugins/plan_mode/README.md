@@ -146,7 +146,10 @@ Plan rejected by user. Plan mode remains active.
 
 1. 进入计划模式：
   - LLM 自主决策，调用 EnterPlanMode 工具进入；
-  - 用户指定开启时，`/plan` 只迁移插件的 Session 状态，不创建 Run、不提交模型输入；用户随后单独发送规划请求，Context Provider 在该模型轮注入脚手架消息。
+  - 用户指定开启时，`/plan` 只返回 Session Controller acquire transition，不创建 Run、不提交模型输入；Host 仲裁成功
+    后调用插件 activate lifecycle，用户随后单独发送规划请求，Context Provider 在该模型轮注入脚手架消息；
+  - `/plan off` 返回 release transition；在等待计划确认时关闭会取消绑定该 controller 的 pending interaction，且不
+    删除计划 artifact、不批准计划、不创建实施 Run。
 2. 创建计划并保存：需要上下文时，LLM 可调用任意声明为 `read_only` 的工具查询或搜索；保存计划时只能调用 OURO
    内置 Write/Edit 且路径必须精确等于当前计划文件；
 3. 退出计划模式：LLM 自主决策，调用 ExitPlanMode 退出计划：
@@ -156,14 +159,16 @@ Plan rejected by user. Plan mode remains active.
 ## 核心设计
 
 1. 正常对话时，EnterPlanMode 调用决策交给 LLM；
-2. 指定计划模式时（`/plan`），命令只切换状态；下一条用户消息触发模型 Run 时，Context Provider 才注入脚手架消息；
+2. 指定计划模式时（`/plan`），命令只请求 Host 激活 controller；下一条用户消息触发模型 Run 时，绑定
+   `active_when=mode` 的 Context Provider 才注入脚手架消息；
 3. 处于计划模式时，每轮用户消息前面都要注入脚手架消息，加强对 LLM 引导；
 4. 同一会话内多次开启计划模式，每次计划模式的 PLAN_FILE_PATH 指向不同文件，可用时间后缀方式；
 5. ExitPlanMode 调用决策交给 LLM；
 6. ExitPlanMode 工具只有一个可选参数 options，用于在计划包含多个可选实施方案时，让用户在批准时选择执行哪一个；
    options 不能承载 accept/revise/reject，这三个审批动作由交互请求中的稳定 action code 独立表达；
 7. EnterPlanMode 和 ExitPlanMode 工具自身的调用不走批准策略；
-8. 计划模式不控制 Run 的继续或完成，不注册 Turn Policy；EnterPlanMode 和 ExitPlanMode 只通过工具结果向 LLM 表达状态迁移，由 LLM 自主决定下一步。
+8. 计划模式不控制 Run 的继续或完成，不注册 Turn Policy；EnterPlanMode 和 ExitPlanMode 通过通用 transition 向
+   Host 请求状态迁移，由 LLM 自主决定下一步；
 9. active/awaiting_approval 阶段的 Tool Policy 使用硬限制：插件自身 Enter/Exit 与任意 `read_only` 工具放行；内置
    Write/Edit 仅在目标为当前计划文件时放行；其他 `state_changing` 或 `unknown` 工具直接 `deny`。Session
    approval mode 和用户批准不能覆盖 deny；拒绝以 `ToolPermissionDenied` 工具结果反馈，模型循环照常继续。
@@ -171,7 +176,9 @@ Plan rejected by user. Plan mode remains active.
 
 PLAN_FILE_PATH: {OURO_HOME}/artifacts/dev.ouro.plan_mode/sessions/{session_id}/plans/plan_xxx.md
 
-> plan 模式不改变也不控制智能体主循环。在 ReAct 工具循环上，通过「会话内状态机 + 每轮提醒注入 + 工具调用拦截/收窄 + 一个显式的退出审批门」这四件套实现。系统提示词和工具列表全程不变，模式切换只发生在对话流里，这样 prompt cache 的前缀不会因为模式切换而整体失效。
+> Plan 不改变也不控制智能体主循环。Host 只认识通用 Session Controller、claim、transition 和模型轮次 activation
+> snapshot；Plan 私有状态负责计划文件与审批业务。脚手架、Tool Policy 和 ExitPlanMode 通过 `active_when=mode`
+> 启停，EnterPlanMode 始终保留为进入入口。Host 不包含 Plan/Goal 冲突特例。
 
 ## 计划确认交互契约
 
@@ -226,7 +233,8 @@ MCP、用户插件或其他 Host 工具即使理论上能写计划文件，也�
 
 脚手架消息属于模型执行事实，必须持久化：
 
-- `/plan` 本身不产生消息；它只迁移插件状态，等待下一条用户消息正常创建 Run；
-- active Context Provider 返回 `persistence="message"` 的 Context Fragment，Application 在模型请求前通过
+- `/plan` 本身不产生消息；它只提交 acquire transition，等待下一条用户消息正常创建 Run；
+- Host 只在 controller activation 存在于本轮快照时分发 Context Provider；provider 返回
+  `persistence="message"` 的 Context Fragment，Application 在模型请求前通过
   `RunLifecycle` 落盘，并记录 plugin/provider/generation/model-round provenance；
 - 同一 Run/model round 的恢复使用 delivery key 去重，持久化失败时阻断模型请求，不能静默降级为临时提示。
