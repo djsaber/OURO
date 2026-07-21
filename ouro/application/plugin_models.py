@@ -89,6 +89,7 @@ class PluginCommandView(OuroModel):
     plugin_id: str
     name: str
     description: str = ""
+    usage: str = ""
 
 
 class PluginCommandExecutionView(OuroModel):

@@ -753,6 +753,7 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
     return PluginCommand(
         name=contribution.id,
         description=contribution.description,
+        usage=contribution.usage,
         handler=handler,
         timeout_seconds=contribution.timeout_seconds,
     )

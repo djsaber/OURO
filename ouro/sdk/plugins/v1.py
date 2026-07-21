@@ -404,6 +404,7 @@ class CommandContribution:
     id: str
     description: str
     handler: CommandHandler
+    usage: str = ""
     timeout_seconds: float = 5.0
 
 

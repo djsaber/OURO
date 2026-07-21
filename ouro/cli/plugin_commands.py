@@ -401,7 +401,11 @@ def _emit_many(values: Sequence[OuroModel], *, json_mode: bool) -> int:
         for value in values:
             raw = value.model_dump(mode="json", exclude_none=True)
             if "command_id" in raw:
-                print(f"{raw.get('command_id', '')}\t{raw.get('description', '')}")
+                parts = [raw.get("command_id", "")]
+                if raw.get("usage"):
+                    parts[0] = f"{parts[0]} {raw['usage']}"
+                parts.append(raw.get("description", ""))
+                print("\t".join(parts))
                 continue
             print(
                 f"{raw.get('plugin_id', '')}\t{raw.get('version', '')}\t"

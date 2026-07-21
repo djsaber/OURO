@@ -276,6 +276,7 @@ class PluginService:
                     plugin_id=item.plugin_id,
                     name=item.name,
                     description=item.description,
+                    usage=item.usage,
                 )
                 for item in snapshot.commands.list()
             ]

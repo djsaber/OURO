@@ -61,6 +61,7 @@ class PluginCommand:
     name: str
     handler: PluginCommandHandler
     description: str = ""
+    usage: str = ""
     plugin_id: str = ""
     source: PluginSource = "third_party"
     timeout_seconds: float = 5.0

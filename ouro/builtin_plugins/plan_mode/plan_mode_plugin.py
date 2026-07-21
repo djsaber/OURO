@@ -173,6 +173,7 @@ class PlanModePlugin:
                 CommandContribution(
                     id="plan",
                     description="Enter plan mode for the current Session.",
+                    usage="[on|off|status]",
                     handler=self.plan_command,
                 )
             ],

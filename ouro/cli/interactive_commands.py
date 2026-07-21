@@ -141,7 +141,10 @@ def _help_text(plugins: PluginService | None = None) -> str:
             lines.append("Plugin commands:")
             for item in commands:
                 description = f" - {item.description}" if item.description else ""
-                lines.append(f"/{item.command_id}{description}")
+                if item.usage:
+                    lines.append(f"/{item.command_id} {item.usage}{description}")
+                else:
+                    lines.append(f"/{item.command_id}{description}")
     return "\n".join(lines)
 
 

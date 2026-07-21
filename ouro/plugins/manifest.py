@@ -164,6 +164,7 @@ class ToolContributionSpec(OuroModel):
 class CommandContributionSpec(OuroModel):
     id: str
     description: str
+    usage: str = ""
     optional: bool = False
 
     @field_validator("id")

@@ -49,7 +49,7 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                     },
                 ],
                 "commands": [
-                    {"id": "plan", "description": "Enter plan mode for the current Session."}
+                    {"id": "plan", "description": "Enter plan mode for the current Session.", "usage": "[on|off|status]"}
                 ],
                 "session_controllers": [
                     {
