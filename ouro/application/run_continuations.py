@@ -8,7 +8,12 @@ from ouro.core.base import utc_now
 from ouro.core.continuations import ContinuationFailure, RunContinuationRegistry
 from ouro.core.messages import MessageRecord
 from ouro.core.session_controls import SessionInputMode
-from ouro.core.state import RunContinuationCheckpoint, RunOutcome, RunRecord
+from ouro.core.state import (
+    RunContinuationCheckpoint,
+    RunContinuationControllerRef,
+    RunOutcome,
+    RunRecord,
+)
 from ouro.sessions import SessionStore
 
 
@@ -89,6 +94,7 @@ class RunContinuationService:
                 controller.contract_hash,
             )
             for controller in checkpoint.controllers
+            if self._controller_is_current(run.session_id, controller)
         }
         evaluation = await self.registry.evaluate(
             outcome,
@@ -131,6 +137,12 @@ class RunContinuationService:
 
         attributed = evaluation.decisions[0]
         decision = attributed.decision
+        controller_ref = next(
+            controller
+            for controller in checkpoint.controllers
+            if controller.plugin_id == attributed.plugin_id
+            and controller.policy_id == attributed.policy_id
+        )
         controller_id = f"{attributed.plugin_id}/continuation_policies/{attributed.policy_id}"
         if decision.action != "continue":
             resolved = self._resolve(
@@ -155,6 +167,8 @@ class RunContinuationService:
             title=decision.title,
             reason=decision.reason,
             state_revision=decision.state_revision,
+            session_control_controller_id=controller_ref.active_when_controller_id,
+            session_control_activation_id=controller_ref.activation_id,
         )
         return RunContinuationSettlement(
             run=resolved,
@@ -177,6 +191,8 @@ class RunContinuationService:
         title: str | None,
         reason: str | None,
         state_revision: int | None,
+        session_control_controller_id: str | None,
+        session_control_activation_id: str | None,
     ) -> tuple[bool, RunRecord, str | None]:
         if generation_id is None or execution_contract_hash is None:
             resolved = self._resolve(
@@ -192,6 +208,24 @@ class RunContinuationService:
             latest_checkpoint = latest.continuation
             if latest_checkpoint is None or latest_checkpoint.state == "resolved":
                 return False, latest, None
+
+            if session_control_activation_id is not None and not any(
+                activation.activation_id == session_control_activation_id
+                and activation.controller_id == session_control_controller_id
+                and activation.phase == "active"
+                for activation in snapshot.session.controls.activations
+            ):
+                return (
+                    False,
+                    self._resolve_locked(
+                        latest,
+                        action="pause",
+                        controller_id=f"{plugin_id}/continuation_policies/{policy_id}",
+                        reason="session_control_released",
+                        state_revision=state_revision,
+                    ),
+                    "Session controller was released before continuation enqueue",
+                )
 
             if _input_is_durable(snapshot.messages, checkpoint.queue_id):
                 return (
@@ -259,6 +293,8 @@ class RunContinuationService:
                 execution_contract_hash=execution_contract_hash,
                 caused_by_run_id=run.run_id,
                 continuation_decision_id=checkpoint.decision_id,
+                session_control_controller_id=session_control_controller_id,
+                session_control_activation_id=session_control_activation_id,
             )
             resolved = self._resolve_locked(
                 latest,
@@ -268,6 +304,21 @@ class RunContinuationService:
                 state_revision=state_revision,
             )
             return True, resolved, None
+
+    def _controller_is_current(
+        self,
+        session_id: str,
+        controller: RunContinuationControllerRef,
+    ) -> bool:
+        if controller.activation_id is None:
+            return True
+        session = self.store.load_session_record(session_id)
+        return any(
+            activation.activation_id == controller.activation_id
+            and activation.controller_id == controller.active_when_controller_id
+            and activation.phase == "active"
+            for activation in session.controls.activations
+        )
 
     def _resolve(
         self,

@@ -52,6 +52,10 @@ from ouro.plugins.registry import (
     PluginCommandRequest,
     PluginCommandResult,
 )
+from ouro.plugins.session_controllers import (
+    PluginSessionController,
+    PluginSessionControllerRegistry,
+)
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolExecutionContext, ToolInputRequest, ToolRegistry, ToolResult
 
@@ -153,6 +157,7 @@ class ExtensionCatalogBase:
     turn_policies: list[TurnPolicyRegistration]
     tool_policies: list[ToolPolicyRegistration]
     skills: tuple[SkillMetadata, ...]
+    session_controllers: dict[str, PluginSessionController]
 
     @classmethod
     def capture(
@@ -167,6 +172,7 @@ class ExtensionCatalogBase:
         turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None,
         skills: Sequence[SkillMetadata] = (),
+        session_controllers: PluginSessionControllerRegistry | None = None,
     ) -> ExtensionCatalogBase:
         captured_skills = tuple(skill.model_copy(deep=True) for skill in skills)
         skill_names = [skill.name for skill in captured_skills]
@@ -182,6 +188,9 @@ class ExtensionCatalogBase:
             turn_policies=(turn_policies or TurnPolicyRegistry()).snapshot(),
             tool_policies=(tool_policies or ToolPolicyRegistry()).snapshot(),
             skills=captured_skills,
+            session_controllers=(
+                session_controllers or PluginSessionControllerRegistry()
+            ).snapshot(),
         )
 
 
@@ -201,6 +210,7 @@ class ExtensionCatalog:
         turn_policies: TurnPolicyRegistry,
         tool_policies: ToolPolicyRegistry,
         skills: Sequence[SkillMetadata],
+        session_controllers: PluginSessionControllerRegistry,
         owners: Mapping[str, ContributionOwnerRecord],
     ) -> None:
         self.catalog_id = new_id("cat")
@@ -216,6 +226,7 @@ class ExtensionCatalog:
         self.continuations = continuations
         self.turn_policies = turn_policies
         self.tool_policies = tool_policies
+        self.session_controllers = session_controllers
         self._skills = tuple(skill.model_copy(deep=True) for skill in skills)
         self.owners = MappingProxyType(dict(owners))
         self._lease_count = 0
@@ -328,6 +339,10 @@ class ExtensionCatalogLease:
     def skills(self) -> tuple[SkillMetadata, ...]:
         return self.catalog.skills
 
+    @property
+    def session_controllers(self) -> PluginSessionControllerRegistry:
+        return self.catalog.session_controllers
+
     def contract_hash(self, canonical_identity: str) -> str | None:
         return self.catalog.contract_hash(canonical_identity)
 
@@ -373,6 +388,8 @@ def build_extension_catalog(
     turn_policies.restore(base.turn_policies)
     tool_policies = ToolPolicyRegistry()
     tool_policies.restore(base.tool_policies)
+    session_controllers = PluginSessionControllerRegistry()
+    session_controllers.restore(base.session_controllers)
     skills = {skill.name: skill.model_copy(deep=True) for skill in base.skills}
     owners = _base_owner_records(base)
     targets = CatalogProjectionTargets(
@@ -385,6 +402,7 @@ def build_extension_catalog(
         turn_policies=turn_policies,
         tool_policies=tool_policies,
         skills=skills,
+        session_controllers=session_controllers,
     )
 
     for source in sorted(generations, key=lambda item: item.record.plugin_id):
@@ -417,6 +435,7 @@ def build_extension_catalog(
     continuations.freeze()
     turn_policies.freeze()
     tool_policies.freeze()
+    session_controllers.freeze()
     return ExtensionCatalog(
         generations=generations,
         tools=tools,
@@ -427,6 +446,7 @@ def build_extension_catalog(
         continuations=continuations,
         turn_policies=turn_policies,
         tool_policies=tool_policies,
+        session_controllers=session_controllers,
         skills=tuple(skills[name] for name in sorted(skills)),
         owners=owners,
     )
@@ -452,6 +472,29 @@ def bind_generation_gate(
         ),
         turn_policies=tuple(_gated_turn_policy(item, gate) for item in prepared.turn_policies),
         tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
+        session_controllers=tuple(
+            _gated_session_controller(item, gate)
+            for item in prepared.session_controllers
+        ),
+    )
+
+
+def _gated_session_controller(
+    controller: PluginSessionController,
+    gate: GenerationGate,
+) -> PluginSessionController:
+    async def activate(call):
+        async with gate.invocation():
+            return await _invoke_callback(controller.activate_handler, call)
+
+    async def deactivate(call):
+        async with gate.invocation():
+            return await _invoke_callback(controller.deactivate_handler, call)
+
+    return replace(
+        controller,
+        activate_handler=activate,
+        deactivate_handler=deactivate,
     )
 
 

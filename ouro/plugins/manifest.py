@@ -7,6 +7,7 @@ from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.hooks import HookName
+from ouro.core.session_controls import SessionControlAccess, SessionControlClaim
 from ouro.core.tools import (
     PermissionMode,
     ToolBatchBehavior,
@@ -27,6 +28,7 @@ PluginCapability = Literal[
     "continuation_policies",
     "turn_policies",
     "tool_policies",
+    "session_controllers",
 ]
 PluginRuntimeKind = Literal["declarative", "python-inprocess", "worker"]
 PLUGIN_PERMISSION_IDS = frozenset(
@@ -130,6 +132,7 @@ class ToolContributionSpec(OuroModel):
     batch_behavior: ToolBatchBehavior = "compatible"
     resumable: bool = False
     supports_unattended: bool = False
+    active_when: str | None = None
     optional: bool = False
 
     @model_validator(mode="after")
@@ -144,6 +147,11 @@ class ToolContributionSpec(OuroModel):
     @classmethod
     def _validate_id(cls, value: str) -> str:
         return _validate_local_id(value)
+
+    @field_validator("active_when")
+    @classmethod
+    def _validate_active_when(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
 
     @field_validator("exposed_name")
     @classmethod
@@ -164,34 +172,20 @@ class CommandContributionSpec(OuroModel):
         return _validate_local_id(value)
 
 
-class HookContributionSpec(OuroModel):
-    id: str
-    event: HookName
-    priority: int = Field(default=100, ge=-10_000, le=10_000)
-    timeout_seconds: float | None = Field(default=None, gt=0, le=30)
-    optional: bool = False
+class SessionControlClaimSpec(OuroModel):
+    domain: str
+    access: SessionControlAccess = "exclusive"
 
-    @field_validator("id")
+    @field_validator("domain")
     @classmethod
-    def _validate_id(cls, value: str) -> str:
-        return _validate_local_id(value)
+    def _validate_domain(cls, value: str) -> str:
+        return SessionControlClaim(domain=value).domain
 
 
-class ContinuationPolicyContributionSpec(OuroModel):
+class SessionControllerContributionSpec(OuroModel):
     id: str
-    priority: int = Field(default=100, ge=-10_000, le=10_000)
-    timeout_seconds: float = Field(default=10.0, gt=0, le=30)
-    optional: bool = False
-
-    @field_validator("id")
-    @classmethod
-    def _validate_id(cls, value: str) -> str:
-        return _validate_local_id(value)
-
-
-class ToolPolicyContributionSpec(OuroModel):
-    id: str
-    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    description: str
+    claims: list[SessionControlClaimSpec] = Field(min_length=1)
     timeout_seconds: float = Field(default=5.0, gt=0, le=30)
     optional: bool = False
 
@@ -199,6 +193,53 @@ class ToolPolicyContributionSpec(OuroModel):
     @classmethod
     def _validate_id(cls, value: str) -> str:
         return _validate_local_id(value)
+
+    @model_validator(mode="after")
+    def _validate_claims(self) -> SessionControllerContributionSpec:
+        domains = [claim.domain for claim in self.claims]
+        if len(domains) != len(set(domains)):
+            raise ValueError("session controller cannot claim the same domain twice")
+        return self
+
+
+class HookContributionSpec(OuroModel):
+    id: str
+    event: HookName
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float | None = Field(default=None, gt=0, le=30)
+    active_when: str | None = None
+    optional: bool = False
+
+    @field_validator("id", "active_when")
+    @classmethod
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
+
+
+class ContinuationPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=10.0, gt=0, le=30)
+    active_when: str | None = None
+    optional: bool = False
+
+    @field_validator("id", "active_when")
+    @classmethod
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
+
+
+class ToolPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    active_when: str | None = None
+    optional: bool = False
+
+    @field_validator("id", "active_when")
+    @classmethod
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
 
 
 class ContextProviderContributionSpec(OuroModel):
@@ -206,24 +247,26 @@ class ContextProviderContributionSpec(OuroModel):
     priority: int = Field(default=100, ge=-10_000, le=10_000)
     timeout_seconds: float = Field(default=10.0, gt=0, le=30)
     failure_mode: Literal["omit", "block"] = "omit"
+    active_when: str | None = None
     optional: bool = False
 
-    @field_validator("id")
+    @field_validator("id", "active_when")
     @classmethod
-    def _validate_id(cls, value: str) -> str:
-        return _validate_local_id(value)
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
 
 
 class TurnPolicyContributionSpec(OuroModel):
     id: str
     priority: int = Field(default=100, ge=-10_000, le=10_000)
     timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    active_when: str | None = None
     optional: bool = False
 
-    @field_validator("id")
+    @field_validator("id", "active_when")
     @classmethod
-    def _validate_id(cls, value: str) -> str:
-        return _validate_local_id(value)
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
 
 
 class NamedContributionSpec(OuroModel):
@@ -252,6 +295,7 @@ class PluginContributes(OuroModel):
     continuation_policies: list[ContinuationPolicyContributionSpec] = Field(default_factory=list)
     turn_policies: list[TurnPolicyContributionSpec] = Field(default_factory=list)
     tool_policies: list[ToolPolicyContributionSpec] = Field(default_factory=list)
+    session_controllers: list[SessionControllerContributionSpec] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_unique_ids(self) -> PluginContributes:
@@ -262,6 +306,20 @@ class PluginContributes(OuroModel):
         exposed_names = [item.exposed_name for item in self.tools]
         if len(exposed_names) != len(set(exposed_names)):
             raise ValueError("duplicate tool exposed_name")
+        controller_ids = {item.id for item in self.session_controllers}
+        activation_bound = (
+            *self.tools,
+            *self.hooks,
+            *self.context_providers,
+            *self.continuation_policies,
+            *self.turn_policies,
+            *self.tool_policies,
+        )
+        for item in activation_bound:
+            if item.active_when is not None and item.active_when not in controller_ids:
+                raise ValueError(
+                    f"{item.id} references unknown session controller: {item.active_when}"
+                )
         return self
 
     def by_kind(self) -> dict[PluginCapability, list[Any]]:
@@ -277,6 +335,7 @@ class PluginContributes(OuroModel):
             "continuation_policies": list(self.continuation_policies),
             "turn_policies": list(self.turn_policies),
             "tool_policies": list(self.tool_policies),
+            "session_controllers": list(self.session_controllers),
         }
 
     def capabilities(self) -> set[PluginCapability]:

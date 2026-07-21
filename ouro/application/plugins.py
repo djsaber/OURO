@@ -17,7 +17,9 @@ from ouro.application.plugin_models import (
     PluginSummary,
     PluginValidationView,
 )
+from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.redaction import redact_text
+from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.plugins.authorization import (
     capability_grant_is_valid,
     code_trust_is_valid,
@@ -84,6 +86,9 @@ class PluginService:
         )
         self.runtime = runtime
         self.session_store = session_store
+        self.session_controls = (
+            SessionControlCoordinator(session_store) if session_store is not None else None
+        )
 
     def validate(
         self,
@@ -294,12 +299,34 @@ class PluginService:
                 session_id=session_id,
                 workspace=workspace,
             )
+            control_results = []
+            if result.attributed_control_transitions:
+                if session_id is None or self.session_controls is None:
+                    raise ValueError(
+                        "plugin command Session control transitions require a target Session"
+                    )
+                for transition in result.attributed_control_transitions:
+                    control_results.append(
+                        await self.session_controls.apply(
+                            transition,
+                            session_id=session_id,
+                            controllers=snapshot.session_controllers,
+                            workspace=workspace,
+                        )
+                    )
         finally:
             snapshot.close()
+        output_parts = [result.output] if result.output else []
+        output_parts.extend(item.output for item in control_results if item.output)
+        data = dict(result.data)
+        if control_results:
+            data["session_controls"] = [
+                item.model_dump(mode="json") for item in control_results
+            ]
         return PluginCommandExecutionView(
             command_id=result.command_id,
-            output=result.output,
-            data=dict(result.data),
+            output="\n".join(output_parts),
+            data=data,
             session_inputs=list(result.attributed_session_inputs),
         )
 
@@ -625,6 +652,7 @@ class PluginService:
 
     async def disable(self, plugin_id: str) -> PluginActionResult:
         runtime = self._require_runtime()
+        await self._release_plugin_session_controls(plugin_id)
         status = await runtime.disable(plugin_id)
         return PluginActionResult(action="disable", plugin_id=plugin_id, status=status)
 
@@ -1034,6 +1062,47 @@ class PluginService:
         if self.runtime is None:
             raise RuntimeError("plugin runtime lifecycle is unavailable")
         return self.runtime
+
+    async def _release_plugin_session_controls(self, plugin_id: str) -> None:
+        if (
+            self.session_store is None
+            or self.session_controls is None
+            or self.runtime is None
+        ):
+            return
+        lease = self.runtime.snapshot()
+        try:
+            for session in self.session_store.list_sessions():
+                activations = [
+                    activation
+                    for activation in session.controls.activations
+                    if activation.plugin_id == plugin_id
+                ]
+                for activation in activations:
+                    try:
+                        await self.session_controls.apply(
+                            AttributedSessionControlTransition(
+                                action="release",
+                                activation_id=activation.activation_id,
+                                plugin_id=activation.plugin_id,
+                                generation_id=activation.generation_id,
+                                execution_contract_hash=(
+                                    activation.execution_contract_hash
+                                ),
+                                reason="plugin_disable",
+                            ),
+                            session_id=session.session_id,
+                            controllers=lease.session_controllers,
+                            workspace=session.workspace,
+                        )
+                    except Exception:  # noqa: BLE001 - disable must revoke Host gates.
+                        self.session_controls.force_release(
+                            session_id=session.session_id,
+                            activation_id=activation.activation_id,
+                            reason="plugin_disable_cleanup_unavailable",
+                        )
+        finally:
+            lease.close()
 
     def _durable_references(
         self,

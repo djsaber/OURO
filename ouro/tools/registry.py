@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from ouro.tools.base import Tool, ToolDefinition
 from ouro.tools.schema import validate_tool_definition
@@ -11,6 +11,7 @@ class ToolRegistry:
         self._tools: dict[str, Tool] = {}
         self._owners: dict[str, str] = {}
         self._frozen = False
+        self._active_controller_ids: Callable[[], set[str]] | None = None
 
     def freeze(self) -> None:
         self._frozen = True
@@ -88,18 +89,40 @@ class ToolRegistry:
 
     def get(self, name: str) -> Tool:
         try:
-            return self._tools[name]
+            tool = self._tools[name]
         except KeyError as exc:
             raise KeyError(f"unknown tool: {name}") from exc
+        if not self._is_visible(tool):
+            raise KeyError(f"inactive tool: {name}")
+        return tool
 
     def definitions(self) -> list[ToolDefinition]:
-        return [tool.definition for tool in self._tools.values()]
+        return [
+            tool.definition for tool in self._tools.values() if self._is_visible(tool)
+        ]
 
     def names(self) -> list[str]:
-        return sorted(self._tools)
+        return sorted(name for name, tool in self._tools.items() if self._is_visible(tool))
 
     def owner_of(self, name: str) -> str | None:
+        if name in self._tools and not self._is_visible(self._tools[name]):
+            return None
         return self._owners.get(name)
+
+    def scoped(self, active_controller_ids: Callable[[], set[str]]) -> ToolRegistry:
+        scoped = ToolRegistry()
+        scoped.restore(self.snapshot())
+        scoped._active_controller_ids = active_controller_ids
+        scoped.freeze()
+        return scoped
+
+    def _is_visible(self, tool: Tool) -> bool:
+        controller_id = tool.definition.active_when_controller_id
+        return (
+            controller_id is None
+            or self._active_controller_ids is None
+            or controller_id in self._active_controller_ids()
+        )
 
 
 def _validate_tool(tool: Tool) -> None:

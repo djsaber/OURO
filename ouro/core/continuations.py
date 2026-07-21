@@ -52,6 +52,7 @@ class ContinuationPolicyRegistration:
     generation_id: str | None = None
     execution_contract_hash: str | None = None
     contract_hash: str | None = None
+    active_when_controller_id: str | None = None
 
 
 class ContinuationFailure(OuroModel):
@@ -84,6 +85,7 @@ class RunContinuationRegistry:
     def __init__(self) -> None:
         self._registrations: list[ContinuationPolicyRegistration] = []
         self._frozen = False
+        self._active_controller_ids: Callable[[], set[str]] | None = None
 
     def freeze(self) -> None:
         self._frozen = True
@@ -120,10 +122,31 @@ class RunContinuationRegistry:
         self._registrations = list(snapshot)
 
     def registered(self) -> list[ContinuationPolicyRegistration]:
+        active = (
+            self._active_controller_ids()
+            if self._active_controller_ids is not None
+            else None
+        )
         return sorted(
-            self._registrations,
+            (
+                item
+                for item in self._registrations
+                if active is None
+                or item.active_when_controller_id is None
+                or item.active_when_controller_id in active
+            ),
             key=lambda item: (item.priority, item.plugin_id, item.policy_id, item.owner or ""),
         )
+
+    def scoped(
+        self,
+        active_controller_ids: Callable[[], set[str]],
+    ) -> RunContinuationRegistry:
+        scoped = RunContinuationRegistry()
+        scoped.restore(self.snapshot())
+        scoped._active_controller_ids = active_controller_ids
+        scoped.freeze()
+        return scoped
 
     async def evaluate(
         self,

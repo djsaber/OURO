@@ -378,6 +378,11 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
   `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。
+- Session 级长期控制统一由 `SessionControlCoordinator` 仲裁。插件以 `session_controllers` 声明 canonical controller、
+  `domain + exclusive|shared` claims 和生命周期，Command/Tool 只返回 transition intent；Host 不读取 Plan、Goal 或
+  私有 state 来判断冲突。Tool/Context/Tool Policy/Turn Policy/Continuation/observational Hook 可用 `active_when` 绑定 controller，
+  Runtime 每个模型轮次冻结 active controller refs，避免切换期间权限放宽。`/control` 是 Host-owned 状态、正常释放和
+  force release 逃生口；activation-bound pending interaction 与 queued continuation 随 release 取消。
 - 插件不得取得 `RuntimeService` 或 `SessionStore`。获得 `sessions.write` 与 `background.run` 后，command 可以
   返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和

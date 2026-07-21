@@ -87,6 +87,8 @@ async def handle_command(
         return await _compact_session(runtime, session_id)
     if command == "/context":
         return _session_context(runtime, session_id, argument)
+    if command == "/control":
+        return await _session_control(runtime, session_id, argument)
     if command == "/history":
         return _session_history(runtime, session_id)
     if command == "/events":
@@ -128,6 +130,9 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/abort - Abort the active request when supported.",
         "/compact - Summarize older context for the active session.",
         "/context [full] - Show the latest unified Provider context size or content.",
+        "/control [status] - Show active Session controllers.",
+        "/control release <activation-id|controller-id> [--force] - Release control.",
+        "/control release --all [--force] - Release every active controller.",
         "/exit - Quit.",
     ]
     if plugins is not None:
@@ -425,6 +430,85 @@ async def _compact_session(runtime: RuntimeService, session_id: str | None) -> C
             f"({len(result.compaction.covered_message_ids)} messages covered)."
         ),
     )
+
+
+async def _session_control(
+    runtime: RuntimeService,
+    session_id: str | None,
+    argument: str,
+) -> CommandResult:
+    if session_id is None:
+        return CommandResult(session_id=None, output="No active session.")
+    parts = argument.split()
+    if not parts or parts == ["status"]:
+        activations = runtime.session_control_activations(session_id)
+        if not activations:
+            return CommandResult(
+                session_id=session_id,
+                output="No active Session controllers.",
+            )
+        lines = ["Active Session controllers:"]
+        for activation in activations:
+            claims = ", ".join(
+                f"{claim.domain}:{claim.access}" for claim in activation.claims
+            )
+            lines.append(
+                f"- {activation.activation_id} {activation.controller_id} "
+                f"[{activation.phase}] claims={claims}"
+            )
+        return CommandResult(session_id=session_id, output="\n".join(lines))
+    if parts[0] != "release":
+        return CommandResult(
+            session_id=session_id,
+            output=(
+                "Usage: /control [status] | /control release "
+                "<activation-id|controller-id|--all> [--force]"
+            ),
+        )
+    force = "--force" in parts[1:]
+    selectors = [item for item in parts[1:] if item != "--force"]
+    if len(selectors) != 1:
+        return CommandResult(
+            session_id=session_id,
+            output=(
+                "Usage: /control release "
+                "<activation-id|controller-id|--all> [--force]"
+            ),
+        )
+    activations = runtime.session_control_activations(session_id)
+    selector = selectors[0]
+    if selector == "--all":
+        targets = list(activations)
+    else:
+        targets = [
+            activation
+            for activation in activations
+            if activation.activation_id == selector
+            or activation.controller_id == selector
+        ]
+    if not targets:
+        return CommandResult(
+            session_id=session_id,
+            output=f"Session controller not found: {selector}",
+        )
+    if len(targets) > 1 and selector != "--all":
+        return CommandResult(
+            session_id=session_id,
+            output=f"Ambiguous Session controller selector: {selector}",
+        )
+    outputs: list[str] = []
+    for activation in targets:
+        try:
+            result = await runtime.release_session_control(
+                session_id=session_id,
+                activation_id=activation.activation_id,
+                force=force,
+            )
+        except RuntimeError as exc:
+            outputs.append(f"{activation.controller_id}: {exc}")
+        else:
+            outputs.append(f"{activation.controller_id}: {result.output}")
+    return CommandResult(session_id=session_id, output="\n".join(outputs))
 
 
 def _session_context(

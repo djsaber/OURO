@@ -36,6 +36,10 @@ from ouro.plugins.registry import (
     PluginCommandRegistry,
     bind_plugin_command,
 )
+from ouro.plugins.session_controllers import (
+    PluginSessionController,
+    bind_plugin_session_controller,
+)
 from ouro.skills import SkillMetadata
 from ouro.tools import Tool, ToolRegistry
 
@@ -59,6 +63,7 @@ class PluginContributions:
     continuation_policies: list[ContinuationPolicyRegistration] = field(default_factory=list)
     turn_policies: list[TurnPolicyRegistration] = field(default_factory=list)
     tool_policies: list[ToolPolicyRegistration] = field(default_factory=list)
+    session_controllers: list[PluginSessionController] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -88,6 +93,7 @@ class PreparedContributionSet:
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
+    session_controllers: tuple[PluginSessionController, ...] = ()
     contract_hashes: dict[str, str] = field(default_factory=dict)
     degraded_reasons: tuple[str, ...] = ()
 
@@ -134,6 +140,16 @@ def bind_execution_contract(
         )
         for policy in prepared.continuation_policies
     )
+    session_controllers = tuple(
+        replace(
+            controller,
+            contract_hash=prepared.contract_hashes[
+                f"{plugin_id}/session_controllers/{controller.controller_id}"
+            ],
+            execution_contract_hash=execution_contract_hash,
+        )
+        for controller in prepared.session_controllers
+    )
     skills = tuple(
         skill.model_copy(
             update={
@@ -153,6 +169,7 @@ def bind_execution_contract(
         tools=tools,
         commands=commands,
         continuation_policies=continuation_policies,
+        session_controllers=session_controllers,
         skills=skills,
     )
 
@@ -180,6 +197,7 @@ class _PreparedBuilder:
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
+    session_controllers: tuple[PluginSessionController, ...] = ()
 
 
 class ContributionPreparationAdapter(Protocol):
@@ -287,6 +305,7 @@ class ContributionCoordinator:
                 continuation_policies=builder.continuation_policies,
                 turn_policies=builder.turn_policies,
                 tool_policies=builder.tool_policies,
+                session_controllers=builder.session_controllers,
                 resource_contracts=dict(resource_contracts or {}),
             )
         )
@@ -310,6 +329,7 @@ class ContributionCoordinator:
             continuation_policies=builder.continuation_policies,
             turn_policies=builder.turn_policies,
             tool_policies=builder.tool_policies,
+            session_controllers=builder.session_controllers,
             contract_hashes=hashes,
             degraded_reasons=degraded_reasons,
         )
@@ -343,6 +363,7 @@ class ContributionCoordinator:
                 or tool.definition.batch_behavior != declaration.batch_behavior
                 or tool.definition.resumable != declaration.resumable
                 or tool.definition.supports_unattended != declaration.supports_unattended
+                or tool.definition.active_when_controller_id != declaration.active_when
             ):
                 raise ContributionValidationError(
                     f"tool permission contract does not match manifest: {declaration.exposed_name}"
@@ -358,6 +379,10 @@ class ContributionCoordinator:
                     "batch_behavior": declaration.batch_behavior,
                     "resumable": declaration.resumable,
                     "supports_unattended": declaration.supports_unattended,
+                    "active_when_controller_id": _canonical_active_when(
+                        manifest.plugin_id,
+                        declaration.active_when,
+                    ),
                 }
             )
             contract_hash = _hash(definition.model_dump(mode="json", exclude={"metadata"}))
@@ -412,6 +437,54 @@ class ContributionCoordinator:
             )
             for command in actual.values()
         )
+
+    @staticmethod
+    def _prepare_session_controllers(
+        manifest: PluginManifest,
+        owner: ContributionOwner,
+        source: PluginSource,
+        controllers: list[PluginSessionController],
+    ) -> tuple[PluginSessionController, ...]:
+        declarations = {
+            item.id: item for item in manifest.contributes.session_controllers
+        }
+        actual = _unique_contribution_map(
+            "session controller",
+            ((controller.controller_id, controller) for controller in controllers),
+        )
+        _validate_declared_set("session controller", declarations, actual)
+        prepared: list[PluginSessionController] = []
+        for controller_id, controller in actual.items():
+            declaration = declarations[controller_id]
+            declared_claims = tuple(
+                (claim.domain, claim.access) for claim in declaration.claims
+            )
+            actual_claims = tuple(
+                (claim.domain, claim.access) for claim in controller.claims
+            )
+            if actual_claims != declared_claims:
+                raise ContributionValidationError(
+                    "session controller claims do not match manifest: "
+                    f"{controller_id}"
+                )
+            prepared.append(
+                bind_plugin_session_controller(
+                    replace(
+                        controller,
+                        description=declaration.description,
+                        timeout_seconds=declaration.timeout_seconds,
+                    ),
+                    plugin_id=manifest.plugin_id,
+                    source=source,
+                    plugin_class=owner.plugin_class,
+                    release_id=owner.release_id,
+                    package_digest=owner.package_digest,
+                    builtin_contract_hash=owner.builtin_contract_hash,
+                    generation_id=owner.generation_id,
+                    maximum_timeout_seconds=5.0,
+                )
+            )
+        return tuple(prepared)
 
     @staticmethod
     def _prepare_discovered_tools(
@@ -497,6 +570,10 @@ class ContributionCoordinator:
                     hook_id=hook_id,
                     owner=owner.key,
                     generation_id=owner.generation_id,
+                    active_when_controller_id=_canonical_active_when(
+                        manifest.plugin_id,
+                        declaration.active_when,
+                    ),
                 )
             )
         return tuple(prepared)
@@ -522,6 +599,10 @@ class ContributionCoordinator:
                 failure_mode=declarations[provider.provider_id].failure_mode,
                 owner=owner.key,
                 generation_id=owner.generation_id,
+                active_when_controller_id=_canonical_active_when(
+                    manifest.plugin_id,
+                    declarations[provider.provider_id].active_when,
+                ),
             )
             for provider in actual.values()
         )
@@ -593,6 +674,10 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
+                active_when_controller_id=_canonical_active_when(
+                    manifest.plugin_id,
+                    declarations[policy.policy_id].active_when,
+                ),
             )
             for policy in actual.values()
         )
@@ -617,6 +702,10 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
+                active_when_controller_id=_canonical_active_when(
+                    manifest.plugin_id,
+                    declarations[policy.policy_id].active_when,
+                ),
             )
             for policy in actual.values()
         )
@@ -641,6 +730,10 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
+                active_when_controller_id=_canonical_active_when(
+                    manifest.plugin_id,
+                    declarations[policy.policy_id].active_when,
+                ),
             )
             for policy in actual.values()
         )
@@ -763,6 +856,35 @@ class _CommandPreparationAdapter:
             "commands",
             context.candidate.manifest.contributes.commands,
             {command.name for command in builder.commands},
+        )
+
+
+@dataclass(frozen=True)
+class _SessionControllerPreparationAdapter:
+    kind: str = "session_controllers"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.session_controllers = coordinator._prepare_session_controllers(
+            context.candidate.manifest,
+            context.owner,
+            context.source,
+            context.contributions.session_controllers,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "session_controllers",
+            context.candidate.manifest.contributes.session_controllers,
+            {controller.controller_id for controller in builder.session_controllers},
         )
 
 
@@ -964,6 +1086,7 @@ class _TurnPolicyPreparationAdapter:
 TOOL_PREPARATION_ADAPTER = _ToolPreparationAdapter()
 HOOK_PREPARATION_ADAPTER = _HookPreparationAdapter()
 COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
+SESSION_CONTROLLER_PREPARATION_ADAPTER = _SessionControllerPreparationAdapter()
 CONTEXT_PREPARATION_ADAPTER = _ContextPreparationAdapter()
 COMPACTION_PREPARATION_ADAPTER = _CompactionPreparationAdapter()
 SKILL_PREPARATION_ADAPTER = _SkillPreparationAdapter()
@@ -1031,6 +1154,12 @@ def _missing_optional(
         )
         not in actual
     )
+
+
+def _canonical_active_when(plugin_id: str, controller_id: str | None) -> str | None:
+    if controller_id is None:
+        return None
+    return f"{plugin_id}/session_controllers/{controller_id}"
 
 
 def _hash(value: object) -> str:

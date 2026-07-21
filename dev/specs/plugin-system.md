@@ -370,7 +370,8 @@ Context 只暴露稳定、必要的能力：
 - `mcp_servers`；
 - `background_services`；
 - `continuation_policies`；
-- `tool_policies`。
+- `tool_policies`；
+- `session_controllers`。
 
 ### 9.2 Identity 与冲突
 
@@ -403,8 +404,9 @@ Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规�
 - `snapshot-bound`：投影到 Run Catalog，可由旧、新 generation 并存；
 - `activation-singleton`：不进入 Run 可调用目录，每个 plugin id 同时只允许一个 generation 的 gate 打开。
 
-Tools、Commands、Hooks、Context、Turn Policy、Compaction、Skills、MCP tool projection、Continuation 和 Tool Policy 是
-snapshot-bound；Background Service 是 activation-singleton。
+Tools、Commands、Hooks、Context、Turn Policy、Compaction、Skills、MCP tool projection、Continuation、Tool Policy
+和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
+activation 本身属于 durable Session state，不属于进程级插件 activation。
 
 当前实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
 optional、contract、resource 与 projection facet；facet 保留各类型独立语义，Catalog、Coordinator、worker 与
@@ -483,7 +485,32 @@ Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | 
 - application 使用稳定 decision/queue identity 幂等提交；
 - 插件不能自行创建 Run 或伪造 user message。
 
-### 10.5 Tool contract 与用户输入恢复
+### 10.5 Session Controller 与激活绑定
+
+长期改变一个 Session 行为的插件必须使用 Host-owned Session Controller 协议，不能只把“模式已开启”写入插件私有
+JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical identity，静态声明一个或多个
+`domain + exclusive|shared` claim，以及有界、幂等的 activate/deactivate callback。
+
+- Command 和 Tool 只返回 `acquire | release | replace` transition；Application 在 Session mutation 边界内校验
+  generation/execution contract、expected revision 和 claim 冲突，再提交 activation；
+- 同 domain 的 exclusive/exclusive 或 exclusive/shared 在 activate 前拒绝；不同 domain 或 shared/shared 可共存；
+- 冲突不能按 priority、加载顺序或 last-command-wins 自动解决，Host 不维护 Plan/Goal/第三方插件冲突表；
+- `replace` 仅允许同一插件内部显式交接，插件不能替换其他 owner 的 activation；跨插件切换必须先明确 release；
+- Session 持久化 activation id、controller id、release/generation/execution contract、claims、revision 与
+  `activating|active|deactivating|failed` phase；启动时未完成 transition fail-closed；
+- Tool、Context Provider、Tool Policy、Turn Policy、Continuation Policy 和 observational Hook 可用 Manifest/SDK 的
+  `active_when=<controller-local-id>` 绑定 activation；Manifest 引用未知 controller 时拒绝；
+- Runtime 在每个模型轮次开始时把 active activation refs 写入 Run metadata，并以该快照筛选本轮贡献。工具在本轮
+  acquire 后从下一轮生效；并发 release 不得放宽已开始轮次的 Tool Policy；
+- activation-bound Tool 的 pending interaction 在 controller release 时以 `SessionControlReleased` 取消，旧回答不能
+  恢复或重新激活；由正在 resolve 的同一 Tool 发出的 release 不取消自身提交；
+- Host 提供 `/control status`、`/control release <activation-id|controller-id>`、`/control release --all`，并允许
+  `--force` 在 owner contract/callback 不可用时只撤销 Host gate。force release 必须明确说明私有清理未确认。
+
+Tools 与 Commands 默认保持可见，以便提供 acquire/status/release 入口；只有显式声明 `active_when` 的 Tool 才会从模型
+tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务私有状态，但不能把它当作 Host activation 的真实性来源。
+
+### 10.6 Tool contract 与用户输入恢复
 
 每个工具显式声明 `effect = read_only | state_changing | unknown`、
 `batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、

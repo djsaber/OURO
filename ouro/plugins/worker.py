@@ -402,6 +402,7 @@ class WorkerPluginInstance:
                 structured=_object_value(result.get("structured", {})),
                 resource_refs=tuple(str(item) for item in result.get("resource_refs", [])),
                 is_error=bool(result.get("is_error", False)),
+                session_control_transitions=_worker_control_transitions(result),
             )
 
         return handler
@@ -435,6 +436,7 @@ class WorkerPluginInstance:
                 structured=_object_value(result.get("structured", {})),
                 resource_refs=tuple(str(item) for item in result.get("resource_refs", [])),
                 is_error=bool(result.get("is_error", False)),
+                session_control_transitions=_worker_control_transitions(result),
             )
 
         return handler
@@ -515,6 +517,36 @@ class WorkerPluginInstance:
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
                 session_inputs=_worker_session_inputs(result),
+                session_control_transitions=_worker_control_transitions(result),
+            )
+
+        return handler
+
+    def _session_controller_handler(self, identity: str):
+        async def handler(call: sdk.SessionControllerCall) -> sdk.SessionControllerOutput:
+            raw = await self.client.request(
+                "session_controller.call",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "session_id": call.session_id,
+                        "activation_id": call.activation_id,
+                        "controller_id": call.controller_id,
+                        "action": call.action,
+                        "payload": call.payload,
+                        "reason": call.reason,
+                        "workspace": call.workspace,
+                    },
+                },
+            )
+            result = self._result(raw, "session_controller.call")
+            owner_revision = result.get("owner_state_revision")
+            return sdk.SessionControllerOutput(
+                output=str(result.get("output", "")),
+                data=_object_value(result.get("data", {})),
+                owner_state_revision=(
+                    owner_revision if isinstance(owner_revision, int) else None
+                ),
             )
 
         return handler
@@ -683,6 +715,7 @@ def _worker_tools(
             handler=instance._tool_handler(item.id),
             resume_handler=(instance._tool_resume_handler(item.id) if item.resumable else None),
             supports_unattended=item.supports_unattended,
+            active_when=item.active_when,
         )
         for item in instance.manifest.contributes.tools
         if item.id in available.get("tools", set())
@@ -701,6 +734,7 @@ def _worker_hooks(
             event=item.event,
             priority=item.priority,
             timeout_seconds=item.timeout_seconds,
+            active_when=item.active_when,
             handler=instance._hook_handler(item.id),
         )
         for item in instance.manifest.contributes.hooks
@@ -725,6 +759,29 @@ def _worker_commands(
     ]
 
 
+def _worker_session_controllers(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.SessionControllerContribution(
+            id=item.id,
+            description=item.description,
+            claims=tuple(
+                sdk.SessionControlClaim(domain=claim.domain, access=claim.access)
+                for claim in item.claims
+            ),
+            activate=instance._session_controller_handler(item.id),
+            deactivate=instance._session_controller_handler(item.id),
+            timeout_seconds=item.timeout_seconds,
+        )
+        for item in instance.manifest.contributes.session_controllers
+        if item.id in available.get("session_controllers", set())
+    ]
+
+
 def _worker_context_providers(
     instance: WorkerPluginInstance,
     raw: object,
@@ -738,6 +795,7 @@ def _worker_context_providers(
             priority=item.priority,
             timeout_seconds=item.timeout_seconds,
             failure_mode=item.failure_mode,
+            active_when=item.active_when,
         )
         for item in instance.manifest.contributes.context_providers
         if item.id in available.get("context_providers", set())
@@ -788,6 +846,9 @@ def _worker_continuation_policies(
         sdk.ContinuationPolicyContribution(
             id=item.id,
             handler=instance._continuation_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            active_when=item.active_when,
         )
         for item in instance.manifest.contributes.continuation_policies
         if item.id in available.get("continuation_policies", set())
@@ -804,6 +865,9 @@ def _worker_tool_policies(
         sdk.ToolPolicyContribution(
             id=item.id,
             handler=instance._tool_policy_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            active_when=item.active_when,
         )
         for item in instance.manifest.contributes.tool_policies
         if item.id in available.get("tool_policies", set())
@@ -822,6 +886,7 @@ def _worker_turn_policies(
             handler=instance._turn_policy_handler(item.id),
             priority=item.priority,
             timeout_seconds=item.timeout_seconds,
+            active_when=item.active_when,
         )
         for item in instance.manifest.contributes.turn_policies
         if item.id in available.get("turn_policies", set())
@@ -864,6 +929,11 @@ TURN_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
     "turn_policies",
     "turn_policies",
     _worker_turn_policies,
+)
+SESSION_CONTROLLER_WORKER_ADAPTER = WorkerContributionAdapter(
+    "session_controllers",
+    "session_controllers",
+    _worker_session_controllers,
 )
 
 
@@ -1051,6 +1121,7 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "structured", dict, method)
         _require_string_list(result, "resource_refs", method)
         _require_optional_type(result, "is_error", bool, method)
+        _worker_control_transitions(result)
         return
     if method == "hook.call":
         _require_string_list(result, "diagnostics", method)
@@ -1066,6 +1137,18 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "output", str, method)
         _require_optional_type(result, "data", dict, method)
         _worker_session_inputs(result)
+        _worker_control_transitions(result)
+        return
+    if method == "session_controller.call":
+        _require_optional_type(result, "output", str, method)
+        _require_optional_type(result, "data", dict, method)
+        _require_optional_type(
+            result,
+            "owner_state_revision",
+            int,
+            method,
+            allow_none=True,
+        )
         return
     if method == "compaction.call":
         _require_optional_type(result, "summary", str, method)
@@ -1149,6 +1232,40 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
             raise WorkerProtocolError("worker session input title must be a string")
         inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title))
     return tuple(inputs)
+
+
+def _worker_control_transitions(
+    raw: dict[str, Any],
+) -> tuple[sdk.SessionControlTransition, ...]:
+    values = raw.get("session_control_transitions", [])
+    if not isinstance(values, list):
+        raise WorkerProtocolError(
+            "worker session_control_transitions result must be a list"
+        )
+    transitions: list[sdk.SessionControlTransition] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise WorkerProtocolError("worker session control transition must be an object")
+        try:
+            transitions.append(
+                sdk.SessionControlTransition(
+                    action=value["action"],
+                    controller_id=value.get("controller_id"),
+                    activation_id=value.get("activation_id"),
+                    replace_activation_ids=tuple(value.get("replace_activation_ids", [])),
+                    expected_session_revision=value.get("expected_session_revision"),
+                    expected_activation_revision=value.get(
+                        "expected_activation_revision"
+                    ),
+                    payload=value.get("payload"),
+                    reason=value.get("reason"),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise WorkerProtocolError(
+                f"worker session control transition is invalid: {exc}"
+            ) from exc
+    return tuple(transitions)
 
 
 def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:

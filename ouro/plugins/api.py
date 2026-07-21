@@ -33,7 +33,11 @@ from ouro.core.interactions import (
     UnattendedResolution,
 )
 from ouro.core.redaction import SensitiveValueRedactor
-from ouro.core.session_controls import SessionInputRequest
+from ouro.core.session_controls import (
+    SessionControlClaim,
+    SessionControlTransitionRequest,
+    SessionInputRequest,
+)
 from ouro.core.tool_policies import (
     ToolPolicyCall,
     ToolPolicyDecision,
@@ -52,6 +56,11 @@ from ouro.plugins.registry import (
     PluginCommand,
     PluginCommandRequest,
     PluginCommandResult,
+)
+from ouro.plugins.session_controllers import (
+    PluginSessionController,
+    PluginSessionControllerCall,
+    PluginSessionControllerOutput,
 )
 from ouro.sdk.plugins import v1 as sdk
 from ouro.tools import (
@@ -498,6 +507,19 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             structured=dict(raw.structured),
             resource_refs=list(raw.resource_refs),
             is_error=raw.is_error,
+            session_control_transitions=[
+                SessionControlTransitionRequest(
+                    action=item.action,
+                    controller_id=item.controller_id,
+                    activation_id=item.activation_id,
+                    replace_activation_ids=list(item.replace_activation_ids),
+                    expected_session_revision=item.expected_session_revision,
+                    expected_activation_revision=item.expected_activation_revision,
+                    payload=item.payload,
+                    reason=item.reason,
+                )
+                for item in raw.session_control_transitions
+            ],
         )
 
     async def resume_handler(
@@ -538,6 +560,19 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             structured=dict(raw.structured),
             resource_refs=list(raw.resource_refs),
             is_error=raw.is_error,
+            session_control_transitions=[
+                SessionControlTransitionRequest(
+                    action=item.action,
+                    controller_id=item.controller_id,
+                    activation_id=item.activation_id,
+                    replace_activation_ids=list(item.replace_activation_ids),
+                    expected_session_revision=item.expected_session_revision,
+                    expected_activation_revision=item.expected_activation_revision,
+                    payload=item.payload,
+                    reason=item.reason,
+                )
+                for item in raw.session_control_transitions
+            ],
         )
 
     return Tool(
@@ -552,6 +587,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             batch_behavior=contribution.batch_behavior,
             resumable=contribution.resume_handler is not None,
             supports_unattended=contribution.supports_unattended,
+            active_when_controller_id=contribution.active_when,
             metadata={"sdk_contribution_id": contribution.id},
         ),
         handler=handler,
@@ -671,6 +707,7 @@ def _adapt_hook(contribution: sdk.HookContribution) -> HookRegistration:
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
         hook_id=contribution.id,
+        active_when_controller_id=contribution.active_when,
     )
 
 
@@ -697,6 +734,19 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                     SessionInputRequest(prompt=item.prompt, mode=item.mode, title=item.title)
                     for item in raw.session_inputs
                 ],
+                session_control_transitions=[
+                    SessionControlTransitionRequest(
+                        action=item.action,
+                        controller_id=item.controller_id,
+                        activation_id=item.activation_id,
+                        replace_activation_ids=list(item.replace_activation_ids),
+                        expected_session_revision=item.expected_session_revision,
+                        expected_activation_revision=item.expected_activation_revision,
+                        payload=item.payload,
+                        reason=item.reason,
+                    )
+                    for item in raw.session_control_transitions
+                ],
             )
         return PluginCommandResult(command_id=request.command_id, data=dict(raw))
 
@@ -704,6 +754,44 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
         name=contribution.id,
         description=contribution.description,
         handler=handler,
+        timeout_seconds=contribution.timeout_seconds,
+    )
+
+
+def _adapt_session_controller(
+    contribution: sdk.SessionControllerContribution,
+) -> PluginSessionController:
+    async def invoke(handler, call: PluginSessionControllerCall):
+        raw = handler(
+            sdk.SessionControllerCall(
+                session_id=call.session_id,
+                activation_id=call.activation_id,
+                controller_id=call.controller_id,
+                action=call.action,
+                payload=call.payload,
+                reason=call.reason,
+                workspace=call.workspace,
+            )
+        )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if not isinstance(raw, sdk.SessionControllerOutput):
+            raise TypeError("session controller handler must return SessionControllerOutput")
+        return PluginSessionControllerOutput(
+            output=raw.output,
+            data=dict(raw.data),
+            owner_state_revision=raw.owner_state_revision,
+        )
+
+    return PluginSessionController(
+        controller_id=contribution.id,
+        description=contribution.description,
+        claims=tuple(
+            SessionControlClaim(domain=claim.domain, access=claim.access)
+            for claim in contribution.claims
+        ),
+        activate_handler=lambda call: invoke(contribution.activate, call),
+        deactivate_handler=lambda call: invoke(contribution.deactivate, call),
         timeout_seconds=contribution.timeout_seconds,
     )
 
@@ -743,6 +831,7 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
         failure_mode=contribution.failure_mode,
+        active_when_controller_id=contribution.active_when,
     )
 
 
@@ -822,6 +911,7 @@ def _adapt_continuation_policy(
         handler=handler,
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
+        active_when_controller_id=contribution.active_when,
     )
 
 
@@ -857,6 +947,7 @@ def _adapt_tool_policy(
         handler=handler,
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
+        active_when_controller_id=contribution.active_when,
     )
 
 
@@ -885,6 +976,7 @@ def _adapt_turn_policy(
         handler=handler,
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
+        active_when_controller_id=contribution.active_when,
     )
 
 
@@ -906,6 +998,10 @@ CONTINUATION_SDK_ADAPTER = SDKContributionAdapter(
 )
 TOOL_POLICY_SDK_ADAPTER = SDKContributionAdapter("tool_policies", _adapt_tool_policy)
 TURN_POLICY_SDK_ADAPTER = SDKContributionAdapter("turn_policies", _adapt_turn_policy)
+SESSION_CONTROLLER_SDK_ADAPTER = SDKContributionAdapter(
+    "session_controllers",
+    _adapt_session_controller,
+)
 
 
 def _module_belongs_to(module: ModuleType, package_root: Path) -> bool:

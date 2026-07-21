@@ -33,6 +33,8 @@ class QueuedInput(OuroModel):
     execution_contract_hash: str | None = None
     caused_by_run_id: str | None = None
     continuation_decision_id: str | None = None
+    session_control_controller_id: str | None = None
+    session_control_activation_id: str | None = None
 
     @field_validator("host_source_id")
     @classmethod
@@ -50,6 +52,8 @@ class QueuedInput(OuroModel):
             self.generation_id,
             self.execution_contract_hash,
             self.continuation_decision_id,
+            self.session_control_controller_id,
+            self.session_control_activation_id,
         )
         if self.source == "plugin" and (
             not self.plugin_id
@@ -72,6 +76,12 @@ class QueuedInput(OuroModel):
             raise ValueError("user queued input cannot carry synthetic-source attribution")
         if self.source != "user" and self.resource_refs:
             raise ValueError("synthetic queued input cannot carry user resources")
+        if (self.session_control_controller_id is None) is not (
+            self.session_control_activation_id is None
+        ):
+            raise ValueError(
+                "queued input Session control binding requires controller and activation ids"
+            )
         return self
 
 
@@ -102,6 +112,8 @@ class QueuedInputQueue:
         execution_contract_hash: str | None = None,
         caused_by_run_id: str | None = None,
         continuation_decision_id: str | None = None,
+        session_control_controller_id: str | None = None,
+        session_control_activation_id: str | None = None,
     ) -> tuple[SessionRecord, QueuedInput, int]:
         item = QueuedInput(
             queue_id=queue_id or new_id("queued"),
@@ -117,6 +129,8 @@ class QueuedInputQueue:
             execution_contract_hash=execution_contract_hash,
             caused_by_run_id=caused_by_run_id,
             continuation_decision_id=continuation_decision_id,
+            session_control_controller_id=session_control_controller_id,
+            session_control_activation_id=session_control_activation_id,
         )
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
@@ -174,6 +188,31 @@ class QueuedInputQueue:
                     queue.pop(index)
                     self._save_queue(latest, metadata, queue)
                     return
+
+    def cancel_for_session_control(
+        self,
+        *,
+        session_id: str,
+        controller_id: str,
+        activation_id: str,
+    ) -> tuple[str, ...]:
+        cancelled: list[str] = []
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
+            metadata = dict(latest.metadata)
+            retained: list[object] = []
+            for raw_item in self._raw_queue(metadata):
+                item = self._parse_item(raw_item)
+                if item is not None and (
+                    item.session_control_controller_id == controller_id
+                    and item.session_control_activation_id == activation_id
+                ):
+                    cancelled.append(item.queue_id)
+                else:
+                    retained.append(raw_item)
+            if cancelled:
+                self._save_queue(latest, metadata, retained)
+        return tuple(cancelled)
 
     def _remove_invalid(self, session_id: str) -> None:
         with self.store.session_mutation(session_id):
@@ -276,6 +315,16 @@ class QueuedInputQueue:
                 continuation_decision_id=(
                     item.get("continuation_decision_id")
                     if isinstance(item.get("continuation_decision_id"), str)
+                    else None
+                ),
+                session_control_controller_id=(
+                    item.get("session_control_controller_id")
+                    if isinstance(item.get("session_control_controller_id"), str)
+                    else None
+                ),
+                session_control_activation_id=(
+                    item.get("session_control_activation_id")
+                    if isinstance(item.get("session_control_activation_id"), str)
                     else None
                 ),
             )

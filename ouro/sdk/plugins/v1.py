@@ -145,6 +145,7 @@ class ToolOutput:
     structured: Mapping[str, object] = field(default_factory=dict)
     resource_refs: tuple[str, ...] = ()
     is_error: bool = False
+    session_control_transitions: tuple[SessionControlTransition, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -232,6 +233,7 @@ class ToolContribution:
     batch_behavior: ToolBatchBehavior = "compatible"
     resume_handler: ToolResumeHandler | None = None
     supports_unattended: bool = False
+    active_when: str | None = None
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
@@ -271,6 +273,7 @@ class ToolPolicyContribution:
     handler: ToolPolicyHandler
     priority: int = 100
     timeout_seconds: float = 5.0
+    active_when: str | None = None
 
 
 TurnPolicyAction = Literal["allow", "continue"]
@@ -303,6 +306,7 @@ class TurnPolicyContribution:
     handler: TurnPolicyHandler
     priority: int = 100
     timeout_seconds: float = 5.0
+    active_when: str | None = None
 
 
 @dataclass(frozen=True)
@@ -340,6 +344,7 @@ class HookContribution:
     handler: HookHandler
     priority: int = 100
     timeout_seconds: float | None = None
+    active_when: str | None = None
 
 
 @dataclass(frozen=True)
@@ -355,6 +360,7 @@ class CommandOutput:
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
     session_inputs: tuple[SessionInput, ...] = ()
+    session_control_transitions: tuple[SessionControlTransition, ...] = ()
 
 
 CommandHandler = Callable[
@@ -390,6 +396,7 @@ class ContinuationPolicyContribution:
     handler: ContinuationHandler
     priority: int = 100
     timeout_seconds: float = 10.0
+    active_when: str | None = None
 
 
 @dataclass(frozen=True)
@@ -397,6 +404,62 @@ class CommandContribution:
     id: str
     description: str
     handler: CommandHandler
+    timeout_seconds: float = 5.0
+
+
+SessionControlAccess = Literal["exclusive", "shared"]
+SessionControlTransitionAction = Literal["acquire", "release", "replace"]
+
+
+@dataclass(frozen=True)
+class SessionControlClaim:
+    domain: str
+    access: SessionControlAccess = "exclusive"
+
+
+@dataclass(frozen=True)
+class SessionControlTransition:
+    action: SessionControlTransitionAction
+    controller_id: str | None = None
+    activation_id: str | None = None
+    replace_activation_ids: tuple[str, ...] = ()
+    expected_session_revision: int | None = None
+    expected_activation_revision: int | None = None
+    payload: JsonValue = None
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionControllerCall:
+    session_id: str
+    activation_id: str
+    controller_id: str
+    action: Literal["activate", "deactivate"]
+    payload: JsonValue = None
+    reason: str | None = None
+    workspace: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionControllerOutput:
+    output: str = ""
+    data: Mapping[str, object] = field(default_factory=dict)
+    owner_state_revision: int | None = None
+
+
+SessionControllerHandler = Callable[
+    [SessionControllerCall],
+    SessionControllerOutput | Awaitable[SessionControllerOutput],
+]
+
+
+@dataclass(frozen=True)
+class SessionControllerContribution:
+    id: str
+    description: str
+    claims: tuple[SessionControlClaim, ...]
+    activate: SessionControllerHandler
+    deactivate: SessionControllerHandler
     timeout_seconds: float = 5.0
 
 
@@ -437,6 +500,7 @@ class ContextContribution:
     priority: int = 100
     timeout_seconds: float = 10.0
     failure_mode: Literal["omit", "block"] = "omit"
+    active_when: str | None = None
 
 
 @dataclass(frozen=True)
@@ -485,6 +549,7 @@ class ContributionSet:
     continuation_policies: list[ContinuationPolicyContribution] = field(default_factory=list)
     turn_policies: list[TurnPolicyContribution] = field(default_factory=list)
     tool_policies: list[ToolPolicyContribution] = field(default_factory=list)
+    session_controllers: list[SessionControllerContribution] = field(default_factory=list)
 
 
 class PluginInstance(Protocol):
@@ -533,6 +598,14 @@ __all__ = [
     "RunOutcome",
     "RunOrigin",
     "RunStatus",
+    "SessionControlAccess",
+    "SessionControlClaim",
+    "SessionControlTransition",
+    "SessionControlTransitionAction",
+    "SessionControllerCall",
+    "SessionControllerContribution",
+    "SessionControllerHandler",
+    "SessionControllerOutput",
     "SessionInput",
     "SessionInputMode",
     "StopReason",

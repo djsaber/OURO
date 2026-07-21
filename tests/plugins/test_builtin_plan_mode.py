@@ -10,6 +10,7 @@ import pytest
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.cli.interactive import run_interactive
+from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.interactions import AnswerResolution
 from ouro.core.messages import ModelMessage
@@ -43,6 +44,7 @@ class PlanBuildProvider:
         self.stream_count = 0
         self.plan_path: Path | None = None
         self.requests: list[list[ModelMessage]] = []
+        self.tool_names: list[set[str]] = []
 
     async def stream(
         self,
@@ -52,8 +54,9 @@ class PlanBuildProvider:
         messages,
         tools=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, system_prompt, tools
+        del model, system_prompt
         self.requests.append(list(messages))
+        self.tool_names.append({_provider_tool_name(tool) for tool in tools or []})
         if self.stream_count == 0:
             call = ToolCallRequest(id="call_enter", name="EnterPlanMode", arguments={})
         elif self.stream_count == 1:
@@ -124,6 +127,7 @@ class FinalProvider:
 
     def __init__(self) -> None:
         self.messages: list[ModelMessage] = []
+        self.tool_names: set[str] = set()
 
     async def stream(
         self,
@@ -133,8 +137,9 @@ class FinalProvider:
         messages,
         tools=None,
     ) -> AsyncIterator[ProviderStreamEvent]:
-        del model, system_prompt, tools
+        del model, system_prompt
         self.messages = list(messages)
+        self.tool_names = {_provider_tool_name(tool) for tool in tools or []}
         yield ProviderStreamEvent(type="text_delta", text="Plan approved; ready to implement.")
         yield ProviderStreamEvent(type="done")
 
@@ -226,6 +231,12 @@ class PlainTextProvider:
         )
 
 
+def _provider_tool_name(tool: object) -> str:
+    if isinstance(tool, dict):
+        return str(tool["name"])
+    return str(tool.name)
+
+
 def _runtime(home: Path, workspace: Path, provider) -> tuple[RuntimeService, LocalSessionStore]:
     store = LocalSessionStore(home)
     store.initialize()
@@ -284,6 +295,9 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert len(scaffolds) == 3
     assert all(message.role == "system_synthetic" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
+    assert "EnterPlanMode" in first_provider.tool_names[0]
+    assert "ExitPlanMode" not in first_provider.tool_names[0]
+    assert "ExitPlanMode" in first_provider.tool_names[1]
     waiting_call = next(
         call for call in waiting.run.active_tool_batch.calls if call.request.id == "call_exit"
     )
@@ -305,6 +319,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
 
     assert completed.run.status == "completed"
     assert completed.final_text == "Plan approved; ready to implement."
+    assert "ExitPlanMode" not in final_provider.tool_names
     completed_snapshot = second_store.load_runtime_session(completed.session.session_id)
     exit_result = next(
         message
@@ -527,6 +542,186 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = PlanBuildProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    waiting = await runtime.run("Design the implementation", approval_mode="auto")
+    assert waiting.run.status == "waiting_user"
+    assert application.plugins is not None
+
+    released = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "off",
+        session_id=waiting.session.session_id,
+        workspace=str(workspace),
+    )
+
+    snapshot = store.load_runtime_session(waiting.session.session_id)
+    cancelled = next(run for run in snapshot.runs if run.run_id == waiting.run.run_id)
+    assert cancelled.status == "aborted"
+    assert cancelled.active_tool_batch is not None
+    pending = next(
+        call
+        for call in cancelled.active_tool_batch.calls
+        if call.request.id == "call_exit"
+    )
+    assert pending.status == "aborted"
+    assert pending.result is not None
+    assert pending.result.structured["error_type"] == "SessionControlReleased"
+    assert snapshot.session.status == "idle"
+    assert snapshot.session.active_run_id is None
+    assert released.data["session_controls"][0]["data"]["cancelled_run_id"] == cancelled.run_id
+    with pytest.raises(ValueError, match="not waiting for user input"):
+        await runtime.answer_user(
+            session_id=waiting.session.session_id,
+            run_id=waiting.run.run_id,
+            answer={"action": "accept"},
+        )
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_plan_off_releases_controller_without_creating_run_or_deleting_artifact(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    provider = FinalProvider()
+    runtime, store = _runtime(home, workspace, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    session = runtime.create_session(title="Plan off")
+    assert application.plugins is not None
+
+    activated = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "",
+        session_id=session.session_id,
+        workspace=str(workspace),
+    )
+
+    active_snapshot = store.load_runtime_session(session.session_id)
+    assert len(active_snapshot.session.controls.activations) == 1
+    activation = active_snapshot.session.controls.activations[0]
+    assert activation.controller_id == f"{PLUGIN_ID}/session_controllers/mode"
+    assert activation.phase == "active"
+    control_result = activated.data["session_controls"][0]
+    plan_path = Path(str(control_result["data"]["plan_path"]))
+    plan_path.parent.mkdir(parents=True, exist_ok=True)
+    plan_path.write_text("# Draft plan\n", encoding="utf-8")
+
+    deactivated = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "off",
+        session_id=session.session_id,
+        workspace=str(workspace),
+    )
+    replayed = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "off",
+        session_id=session.session_id,
+        workspace=str(workspace),
+    )
+
+    completed = store.load_runtime_session(session.session_id)
+    assert completed.session.controls.activations == []
+    assert completed.messages == []
+    assert completed.runs == []
+    assert plan_path.read_text(encoding="utf-8") == "# Draft plan\n"
+    assert "Plan mode deactivated" in deactivated.output
+    assert replayed.data["session_controls"][0]["changed"] is False
+    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["state"]["phase"] == "inactive"
+
+    result = await runtime.run(
+        "Implement the parser change",
+        session_id=session.session_id,
+        approval_mode="auto",
+    )
+    assert result.run.status == "completed"
+    assert not any(
+        "Plan mode is active" in message.text_content for message in provider.messages
+    )
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_host_control_command_lists_and_releases_plan_without_business_rules(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, store = _runtime(home, workspace, FinalProvider())
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    session = runtime.create_session(title="Host control")
+    assert application.plugins is not None
+    await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "",
+        session_id=session.session_id,
+        workspace=str(workspace),
+    )
+
+    status = await handle_command(
+        "/control status",
+        runtime,
+        session.session_id,
+        plugins=application.plugins,
+    )
+    assert f"{PLUGIN_ID}/session_controllers/mode" in status.output
+    activation_id = store.load_session_record(
+        session.session_id
+    ).controls.activations[0].activation_id
+
+    released = await handle_command(
+        f"/control release {activation_id}",
+        runtime,
+        session.session_id,
+        plugins=application.plugins,
+    )
+
+    assert "Plan mode deactivated" in released.output
+    assert store.load_session_record(session.session_id).controls.activations == []
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_disabling_plugin_revokes_its_session_controller_gate(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, store = _runtime(home, workspace, FinalProvider())
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    session = runtime.create_session(title="Disable controller owner")
+    assert application.plugins is not None
+    await application.plugins.execute_command(
+        f"{PLUGIN_ID}:plan",
+        "",
+        session_id=session.session_id,
+        workspace=str(workspace),
+    )
+
+    disabled = await application.plugins.disable(PLUGIN_ID)
+
+    assert disabled.status == "disabled"
+    assert store.load_session_record(session.session_id).controls.activations == []
+    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["state"]["phase"] == "inactive"
+    await application.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("effect", ["state_changing", "unknown"])
 async def test_plan_mode_denies_other_state_changing_tools_without_running_them(
     tmp_path,
@@ -632,6 +827,9 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     catalog = application.plugin_runtime.snapshot()
     enter = catalog.tools.get("EnterPlanMode")
     exit_plan = catalog.tools.get("ExitPlanMode")
+    controller = catalog.session_controllers.get(
+        "dev.ouro.plan_mode/session_controllers/mode"
+    )
     context = ToolExecutionContext(workspace=workspace, workspace_only=True)
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"
@@ -648,8 +846,14 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(entered, ToolResult)
     assert isinstance(replayed_enter, ToolResult)
     assert replayed_enter.is_error is False
-    assert replayed_enter.structured["plan_path"] == entered.structured["plan_path"]
-    plan_path = Path(str(entered.structured["plan_path"]))
+    assert replayed_enter.session_control_transitions == entered.session_control_transitions
+    activated = await controller.activate(
+        session_id=session_id,
+        activation_id="activation_plan_1",
+        payload={"activation_tool_call_id": "call_enter"},
+        workspace=str(workspace),
+    )
+    plan_path = Path(str(activated.data["plan_path"]))
     missing_exit = ToolInvocation(
         tool_call_id="call_missing",
         session_id=session_id,
@@ -744,10 +948,23 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(replayed_acceptance, ToolResult)
     assert accepted.is_error is False
     assert replayed_acceptance.content == accepted.content
+    assert accepted.session_control_transitions[0].action == "release"
+    await controller.deactivate(
+        session_id=session_id,
+        activation_id="activation_plan_1",
+        reason="test_accepted",
+        workspace=str(workspace),
+    )
 
     next_enter = enter_invocation.model_copy(update={"tool_call_id": "call_enter_2"})
     next_activation = await enter.execute(next_enter, context=context)
     assert isinstance(next_activation, ToolResult)
-    assert next_activation.structured["plan_path"] != entered.structured["plan_path"]
+    activated_again = await controller.activate(
+        session_id=session_id,
+        activation_id="activation_plan_2",
+        payload={"activation_tool_call_id": "call_enter_2"},
+        workspace=str(workspace),
+    )
+    assert activated_again.data["plan_path"] != str(plan_path)
     catalog.close()
     await application.close()

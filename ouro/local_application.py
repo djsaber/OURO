@@ -154,6 +154,7 @@ class LocalApplication:
             await self.mcp.start()
             if self.plugin_runtime is not None:
                 await self.plugin_runtime.start()
+            self.runtime.reconcile_interrupted_session_controls()
         except BaseException:
             with suppress(Exception):
                 await self.mcp.close()

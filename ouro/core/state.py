@@ -8,6 +8,7 @@ from pydantic import Field, model_validator
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.session_controls import SessionControlState
 from ouro.core.tool_batches import ToolCallBatchRecord
 
 RunStatus = Literal[
@@ -58,6 +59,8 @@ class RunContinuationControllerRef(OuroModel):
     generation_id: str
     contract_hash: str
     execution_contract_hash: str
+    active_when_controller_id: str | None = None
+    activation_id: str | None = None
 
     @model_validator(mode="after")
     def validate_release_identity(self) -> Self:
@@ -78,6 +81,10 @@ class RunContinuationControllerRef(OuroModel):
             )
         elif self.release_id != self.builtin_contract_hash:
             raise ValueError("builtin continuation controller release id must equal contract hash")
+        if (self.active_when_controller_id is None) is not (self.activation_id is None):
+            raise ValueError(
+                "activation-bound continuation requires both controller and activation ids"
+            )
         return self
 
     @property
@@ -129,6 +136,7 @@ class SessionRecord(OuroModel):
     current_model: str | None = None
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
+    controls: SessionControlState = Field(default_factory=SessionControlState)
     active_compaction_id: str | None = None
     status: SessionStatus = "idle"
     active_run_id: str | None = None

@@ -211,6 +211,16 @@ class TurnCompletionPolicyEvaluator(Protocol):
     ) -> TurnCompletionPolicyResult: ...
 
 
+class ModelRoundBeginner(Protocol):
+    def __call__(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        model_round: int,
+    ) -> RunRecord: ...
+
+
 @dataclass(frozen=True)
 class TurnCompletionPolicyResult:
     sequence: int
@@ -237,6 +247,7 @@ class InnerLoopPorts:
     record_context_completion: ContextCompletionRecorder | None = None
     consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
     evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
+    begin_model_round: ModelRoundBeginner | None = None
 
 
 @dataclass
@@ -333,6 +344,12 @@ class InnerAgentLoop:
                     next_model_round=model_round,
                     final_text=state.final_text(),
                     tool_results=state.tool_results,
+                )
+            if self.ports.begin_model_round is not None:
+                state.run = self.ports.begin_model_round(
+                    session=state.session,
+                    run=state.run,
+                    model_round=model_round,
                 )
 
             round_state = _RoundState()

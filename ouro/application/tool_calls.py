@@ -9,6 +9,10 @@ from pydantic import JsonValue, TypeAdapter
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.runs import RunLifecycle
+from ouro.application.session_controls import (
+    SessionControlCoordinator,
+    SessionControlError,
+)
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.approvals import ApprovalResolvedBy
 from ouro.core.base import utc_now
@@ -18,6 +22,7 @@ from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import (
     ToolBatchCall,
@@ -35,6 +40,7 @@ from ouro.core.tools import (
     ToolInvocation,
     ToolResult,
 )
+from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.tools import ToolBatchExecutor, ToolExecutionContext, ToolExecutor, ToolRegistry
 from ouro.tools.schema import tool_argument_error
 
@@ -67,6 +73,8 @@ class ToolCallCoordinator:
         artifact_root: str | None,
         is_aborted: Callable[[str, str], bool],
         tool_policies: ToolPolicyRegistry | None = None,
+        session_controls: SessionControlCoordinator | None = None,
+        session_controllers: PluginSessionControllerRegistry | None = None,
     ) -> None:
         self.executor = executor
         self.batch_executor = ToolBatchExecutor(executor)
@@ -79,6 +87,10 @@ class ToolCallCoordinator:
         self.artifact_root = artifact_root
         self.is_aborted = is_aborted
         self.tool_policies = tool_policies or ToolPolicyRegistry()
+        self.session_controls = session_controls
+        self.session_controllers = (
+            session_controllers or PluginSessionControllerRegistry()
+        )
 
     async def handle_batch(
         self,
@@ -382,6 +394,10 @@ class ToolCallCoordinator:
 
         async def checkpoint_outcome(outcome: ToolExecutionOutcome) -> None:
             nonlocal checkpoint_batch, sequence
+            outcome = await self._apply_control_transitions(
+                outcome,
+                session=session,
+            )
             async with checkpoint_lock:
                 checkpoint_calls: list[ToolBatchCall] = []
                 completed_call: ToolBatchCall | None = None
@@ -404,6 +420,7 @@ class ToolCallCoordinator:
                             "result": result,
                         }
                     )
+
                     checkpoint_calls.append(completed_call)
                 checkpoint_batch = checkpoint_batch.model_copy(
                     update={"calls": checkpoint_calls, "updated_at": utc_now()}
@@ -701,6 +718,93 @@ class ToolCallCoordinator:
             sequence=sequence,
         )
 
+    async def _apply_control_transitions(
+        self,
+        outcome: ToolExecutionOutcome,
+        *,
+        session: SessionRecord,
+    ) -> ToolExecutionOutcome:
+        result = outcome.result
+        if result is None or not result.session_control_transitions:
+            return outcome
+        invocation = outcome.invocation
+        if (
+            self.session_controls is None
+            or invocation.plugin_id is None
+            or invocation.generation_id is None
+            or invocation.execution_contract_hash is None
+        ):
+            return outcome.model_copy(
+                update={
+                    "result": result.model_copy(
+                        update={
+                            "is_error": True,
+                            "content": (
+                                "Tool Session control transition has no active "
+                                "plugin execution contract."
+                            ),
+                            "structured": {
+                                "error_type": "SessionControlContractError"
+                            },
+                            "session_control_transitions": [],
+                        }
+                    )
+                }
+            )
+        outputs: list[str] = []
+        applied: list[dict[str, object]] = []
+        try:
+            for transition in result.session_control_transitions:
+                attributed = AttributedSessionControlTransition(
+                    **transition.model_dump(mode="python"),
+                    plugin_id=invocation.plugin_id,
+                    generation_id=invocation.generation_id,
+                    execution_contract_hash=invocation.execution_contract_hash,
+                )
+                settled = await self.session_controls.apply(
+                    attributed,
+                    session_id=session.session_id,
+                    controllers=self.session_controllers,
+                    workspace=session.workspace or self.default_workspace,
+                    resolving_tool_call_id=invocation.tool_call_id,
+                )
+                if settled.output:
+                    outputs.append(settled.output)
+                applied.append(settled.model_dump(mode="json"))
+        except SessionControlError as exc:
+            return outcome.model_copy(
+                update={
+                    "result": result.model_copy(
+                        update={
+                            "is_error": True,
+                            "content": str(exc),
+                            "structured": {
+                                **result.structured,
+                                "error_type": type(exc).__name__,
+                                "error_message": str(exc),
+                            },
+                            "session_control_transitions": [],
+                        }
+                    )
+                }
+            )
+        content_parts = [result.content] if result.content else []
+        content_parts.extend(outputs)
+        return outcome.model_copy(
+            update={
+                "result": result.model_copy(
+                    update={
+                        "content": "\n".join(content_parts),
+                        "structured": {
+                            **result.structured,
+                            "session_controls": applied,
+                        },
+                        "session_control_transitions": [],
+                    }
+                )
+            }
+        )
+
     def resolve_approval(
         self,
         batch: ToolCallBatchRecord,
@@ -794,6 +898,7 @@ class ToolCallCoordinator:
         self,
         batch: ToolCallBatchRecord,
         *,
+        session: SessionRecord,
         tool_call_id: str,
         answer: JsonValue,
         workspace: str | None = None,
@@ -822,6 +927,10 @@ class ToolCallCoordinator:
                         workspace_only=self.execution_config.workspace_only,
                         max_output_chars=self.execution_config.max_output_chars,
                     ),
+                )
+                outcome = await self._apply_control_transitions(
+                    outcome,
+                    session=session,
                 )
                 result = outcome.result
                 status = _tool_call_status_for_outcome(outcome)
@@ -984,6 +1093,9 @@ class ToolCallCoordinator:
             generation_id=_optional_text(metadata.get("generation_id")),
             contract_hash=_optional_text(metadata.get("contract_hash")),
             execution_contract_hash=_optional_text(metadata.get("execution_contract_hash")),
+            active_when_controller_id=(
+                definition.active_when_controller_id if definition is not None else None
+            ),
         )
         sequence = await self.events.emit(
             emitted,

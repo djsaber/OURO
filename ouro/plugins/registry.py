@@ -12,7 +12,12 @@ from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.errors import OuroError
 from ouro.core.hooks import PluginSource
 from ouro.core.redaction import redact_text
-from ouro.core.session_controls import AttributedSessionInput, SessionInputRequest
+from ouro.core.session_controls import (
+    AttributedSessionControlTransition,
+    AttributedSessionInput,
+    SessionControlTransitionRequest,
+    SessionInputRequest,
+)
 
 _COMMAND_NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}\Z")
 
@@ -30,6 +35,12 @@ class PluginCommandResult(OuroModel):
     data: dict[str, Any] = Field(default_factory=dict)
     session_inputs: list[SessionInputRequest] = Field(default_factory=list)
     attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(
+        default_factory=list
+    )
+    attributed_control_transitions: list[AttributedSessionControlTransition] = Field(
+        default_factory=list
+    )
 
 
 class PluginCommandError(OuroError):
@@ -185,7 +196,7 @@ class PluginCommandRegistry:
                 "plugin command requires sessions.write and background.run permissions: "
                 f"{command_id}"
             )
-        if not result.session_inputs:
+        if not result.session_inputs and not result.session_control_transitions:
             return result
         if command.generation_id is None or command.execution_contract_hash is None:
             raise PluginCommandError(
@@ -204,7 +215,16 @@ class PluginCommandRegistry:
                         execution_contract_hash=command.execution_contract_hash,
                     )
                     for item in result.session_inputs
-                ]
+                ],
+                "attributed_control_transitions": [
+                    AttributedSessionControlTransition(
+                        **item.model_dump(mode="python"),
+                        plugin_id=command.plugin_id,
+                        generation_id=command.generation_id,
+                        execution_contract_hash=command.execution_contract_hash,
+                    )
+                    for item in result.session_control_transitions
+                ],
             }
         )
 

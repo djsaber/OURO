@@ -58,6 +58,7 @@ class HookRegistration:
     hook_id: str = ""
     owner: str | None = None
     generation_id: str | None = None
+    active_when_controller_id: str | None = None
 
 
 @dataclass
@@ -80,6 +81,7 @@ class HookRegistry:
         self._frozen = False
         self._semantic_timeout_seconds = semantic_timeout_seconds
         self._observational_timeout_seconds = observational_timeout_seconds
+        self._active_controller_ids: Callable[[], set[str]] | None = None
 
     def freeze(self) -> None:
         self._frozen = True
@@ -137,6 +139,14 @@ class HookRegistry:
 
     def registered(self, hook_name: HookName | None = None) -> list[HookRegistration]:
         registrations = self._registrations
+        if self._active_controller_ids is not None:
+            active = self._active_controller_ids()
+            registrations = [
+                item
+                for item in registrations
+                if item.active_when_controller_id is None
+                or item.active_when_controller_id in active
+            ]
         if hook_name is not None:
             registrations = [item for item in registrations if item.hook_name == hook_name]
         return sorted(
@@ -152,7 +162,20 @@ class HookRegistry:
     def finish_run(self, run_id: str) -> None:
         """Forget per-run hook isolation state after a run reaches a terminal state."""
 
-        self._disabled_for_run = {key for key in self._disabled_for_run if key[0] != run_id}
+        self._disabled_for_run.intersection_update(
+            key for key in self._disabled_for_run if key[0] != run_id
+        )
+
+    def scoped(self, active_controller_ids: Callable[[], set[str]]) -> HookRegistry:
+        scoped = HookRegistry(
+            semantic_timeout_seconds=self._semantic_timeout_seconds,
+            observational_timeout_seconds=self._observational_timeout_seconds,
+        )
+        scoped.restore(self.snapshot())
+        scoped._disabled_for_run = self._disabled_for_run
+        scoped._active_controller_ids = active_controller_ids
+        scoped.freeze()
+        return scoped
 
     async def dispatch(self, context: HookContext) -> HookDispatchResult:
         dispatch_result = HookDispatchResult()

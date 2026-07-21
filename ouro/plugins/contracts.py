@@ -13,6 +13,7 @@ from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.registry import PluginCommand
+from ouro.plugins.session_controllers import PluginSessionController
 from ouro.tools import Tool
 
 
@@ -33,6 +34,7 @@ class ContributionContractContext:
     continuation_policies: tuple[ContinuationPolicyRegistration, ...]
     turn_policies: tuple[TurnPolicyRegistration, ...]
     tool_policies: tuple[ToolPolicyRegistration, ...]
+    session_controllers: tuple[PluginSessionController, ...]
     resource_contracts: dict[str, object]
 
 
@@ -70,6 +72,7 @@ class _HookContractAdapter:
             contracts[f"{context.manifest.plugin_id}/hooks/{hook.hook_id}"] = {
                 "event": hook.hook_name,
                 "priority": hook.priority,
+                "active_when_controller_id": hook.active_when_controller_id,
             }
         return contracts
 
@@ -84,6 +87,7 @@ class _ContextContractAdapter:
                 "priority": provider.priority,
                 "timeout_seconds": provider.timeout_seconds,
                 "failure_mode": provider.failure_mode,
+                "active_when_controller_id": provider.active_when_controller_id,
             }
             for provider in context.context_providers
         }
@@ -99,6 +103,21 @@ class _CommandContractAdapter:
                 "description": command.description
             }
             for command in context.commands
+        }
+
+
+@dataclass(frozen=True)
+class _SessionControllerContractAdapter:
+    kind: str = "session_controllers"
+
+    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+        return {
+            f"{context.manifest.plugin_id}/session_controllers/{controller.controller_id}": {
+                "description": controller.description,
+                "claims": [claim.model_dump(mode="json") for claim in controller.claims],
+                "timeout_seconds": controller.timeout_seconds,
+            }
+            for controller in context.session_controllers
         }
 
 
@@ -137,6 +156,7 @@ class _ContinuationContractAdapter:
             f"{context.manifest.plugin_id}/continuation_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
+                "active_when_controller_id": policy.active_when_controller_id,
             }
             for policy in context.continuation_policies
         }
@@ -152,6 +172,7 @@ class _ToolPolicyContractAdapter:
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
                 "restriction_only": True,
+                "active_when_controller_id": policy.active_when_controller_id,
             }
             for policy in context.tool_policies
         }
@@ -166,6 +187,7 @@ class _TurnPolicyContractAdapter:
             f"{context.manifest.plugin_id}/turn_policies/{policy.policy_id}": {
                 "priority": policy.priority,
                 "timeout_seconds": policy.timeout_seconds,
+                "active_when_controller_id": policy.active_when_controller_id,
             }
             for policy in context.turn_policies
         }
@@ -180,6 +202,7 @@ BACKGROUND_SERVICE_CONTRACT_ADAPTER = _BackgroundServiceContractAdapter()
 CONTINUATION_CONTRACT_ADAPTER = _ContinuationContractAdapter()
 TOOL_POLICY_CONTRACT_ADAPTER = _ToolPolicyContractAdapter()
 TURN_POLICY_CONTRACT_ADAPTER = _TurnPolicyContractAdapter()
+SESSION_CONTROLLER_CONTRACT_ADAPTER = _SessionControllerContractAdapter()
 
 
 def build_contribution_contract_hashes(

@@ -11,6 +11,7 @@ from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions import PreparedContributionSet
 from ouro.plugins.registry import PluginCommandRegistry
+from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolRegistry
 
@@ -28,6 +29,7 @@ class CatalogProjectionTargets:
     turn_policies: TurnPolicyRegistry
     tool_policies: ToolPolicyRegistry
     skills: dict[str, SkillMetadata]
+    session_controllers: PluginSessionControllerRegistry
 
 
 class ContributionProjectionAdapter(Protocol):
@@ -111,6 +113,11 @@ COMMAND_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "commands",
     "commands",
     "commands",
+)
+SESSION_CONTROLLER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "session_controllers",
+    "session_controllers",
+    "session_controllers",
 )
 COMPACTION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "compaction_strategies",

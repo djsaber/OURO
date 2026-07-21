@@ -57,6 +57,7 @@ class TurnPolicyRegistration:
     timeout_seconds: float = 5.0
     owner: str | None = None
     generation_id: str | None = None
+    active_when_controller_id: str | None = None
 
 
 class TurnPolicyFailure(OuroModel):
@@ -100,6 +101,7 @@ class TurnPolicyRegistry:
     def __init__(self) -> None:
         self._registrations: list[TurnPolicyRegistration] = []
         self._frozen = False
+        self._active_controller_ids: Callable[[], set[str]] | None = None
 
     def freeze(self) -> None:
         self._frozen = True
@@ -136,10 +138,31 @@ class TurnPolicyRegistry:
         self._registrations = list(snapshot)
 
     def registered(self) -> list[TurnPolicyRegistration]:
+        active = (
+            self._active_controller_ids()
+            if self._active_controller_ids is not None
+            else None
+        )
         return sorted(
-            self._registrations,
+            (
+                item
+                for item in self._registrations
+                if active is None
+                or item.active_when_controller_id is None
+                or item.active_when_controller_id in active
+            ),
             key=lambda item: (item.priority, item.plugin_id, item.policy_id, item.owner or ""),
         )
+
+    def scoped(
+        self,
+        active_controller_ids: Callable[[], set[str]],
+    ) -> TurnPolicyRegistry:
+        scoped = TurnPolicyRegistry()
+        scoped.restore(self.snapshot())
+        scoped._active_controller_ids = active_controller_ids
+        scoped.freeze()
+        return scoped
 
     async def evaluate(self, candidate: TurnCompletionCandidate) -> TurnPolicyEvaluation:
         evaluation = TurnPolicyEvaluation()

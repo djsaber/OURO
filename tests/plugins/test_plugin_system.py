@@ -3403,6 +3403,25 @@ def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
         )
 
 
+def test_native_manifest_rejects_unknown_activation_binding() -> None:
+    with pytest.raises(ValueError, match="unknown session controller"):
+        PluginManifest.model_validate(
+            {
+                "schema_version": 2,
+                "plugin_id": "dev.ouro.bound",
+                "name": "Bound",
+                "version": "1.0.0",
+                "namespace": "bound",
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "contributes": {
+                    "context_providers": [
+                        {"id": "context", "active_when": "missing"}
+                    ]
+                },
+            }
+        )
+
+
 @pytest.mark.asyncio
 async def test_plugin_command_boundary_is_namespaced_timed_and_redacted() -> None:
     registry = PluginCommandRegistry()

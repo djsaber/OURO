@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -11,6 +12,7 @@ from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.run_continuations import RunContinuationService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.session_controls import SessionControlCoordinator
 from ouro.cli.interactive import run_interactive
 from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
@@ -21,7 +23,12 @@ from ouro.core.continuations import (
 )
 from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
-from ouro.core.session_controls import SessionInputRequest
+from ouro.core.session_controls import (
+    SessionControlActivation,
+    SessionControlClaim,
+    SessionControlState,
+    SessionInputRequest,
+)
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
@@ -442,6 +449,65 @@ async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
     assert second.settled is False
     assert len(queued) == 1
     assert queued[0].queue_id == first.run.continuation.queue_id
+
+
+@pytest.mark.asyncio
+async def test_releasing_controller_cancels_its_queued_continuation(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    canonical_controller_id = "dev.ouro.goal/session_controllers/mode"
+    activation = SessionControlActivation(
+        controller_id=canonical_controller_id,
+        plugin_id="dev.ouro.goal",
+        controller_local_id="mode",
+        plugin_class="user",
+        release_id="digest-dev.ouro.goal",
+        generation_id="gen_goal",
+        execution_contract_hash="execution-dev.ouro.goal",
+        claims=[SessionControlClaim(domain="dev.ouro.goal-mode")],
+    )
+    session = SessionRecord(
+        controls=SessionControlState(revision=1, activations=[activation])
+    )
+    store.create_session(session)
+    controller = _controller("dev.ouro.goal", "goal", "gen_goal").model_copy(
+        update={
+            "active_when_controller_id": canonical_controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller]),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    policy = _policy("dev.ouro.goal", "gen_goal", "continue goal")
+    registry.replace_owner(
+        "goal",
+        (
+            replace(policy, active_when_controller_id=canonical_controller_id),
+        ),
+    )
+    queue = QueuedInputQueue(store)
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=queue,
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+    assert settlement.queued is True
+    queued = queue.eligible(store.load_runtime_session(session.session_id))
+    assert queued[0].session_control_activation_id == activation.activation_id
+
+    released = SessionControlCoordinator(store).force_release(
+        session_id=session.session_id,
+        activation_id=activation.activation_id,
+    )
+
+    assert released.data["cancelled_queue_ids"] == [queued[0].queue_id]
+    assert queue.eligible(store.load_runtime_session(session.session_id)) == []
 
 
 @pytest.mark.asyncio

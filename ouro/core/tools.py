@@ -7,6 +7,7 @@ from pydantic import Field, JsonValue, model_validator
 
 from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.session_controls import SessionControlTransitionRequest
 
 ToolExecutionPreference = Literal["inherit", "sequential"]
 ToolEffect = Literal["read_only", "state_changing", "unknown"]
@@ -37,6 +38,7 @@ class ToolDefinition(OuroModel):
     batch_behavior: ToolBatchBehavior = "compatible"
     resumable: bool = False
     supports_unattended: bool = False
+    active_when_controller_id: str | None = None
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
 
@@ -88,6 +90,7 @@ class ToolInvocation(OuroModel):
     generation_id: str | None = None
     contract_hash: str | None = None
     execution_contract_hash: str | None = None
+    active_when_controller_id: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
 
@@ -103,6 +106,9 @@ class ToolResult(OuroModel):
     ended_at: datetime | None = None
     exit_code: int | None = None
     metadata: Metadata = MetadataField
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(
+        default_factory=list
+    )
 
 
 class ToolInputRequest(OuroModel):

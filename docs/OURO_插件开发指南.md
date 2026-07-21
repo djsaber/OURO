@@ -114,7 +114,8 @@ configuration、插件私有 data 或 canonical Session 数据。没有本地用
 制品的插件应在激活时明确失败。
 
 当前稳定 contribution 包括 Tool、Command、观察 Hook、Context Provider、Turn Policy、Compaction Strategy、Skill、
-MCP Server、Background Service、Continuation Policy 和 Tool Policy。插件不能动态注册新的 extension point。
+MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能动态注册新的
+extension point。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Command、
@@ -174,6 +175,39 @@ def plan_scaffold(call):
 
 Host 在调用模型前把它写成带 plugin/provider/generation provenance 的 `system_synthetic` 消息；同一
 Run/model round 的恢复不会重复写入。不要把瞬时状态快照无差别持久化。
+
+### Session 级控制模式
+
+如果插件需要让 Agent 在多个模型轮次或多个 Run 中保持一种行为，声明 `SessionControllerContribution`，不要让
+Command 直接把插件私有 state 改成 active。Command/Tool 返回 `SessionControlTransition(action="acquire"|"release")`，
+Host 完成 claim 仲裁和 durable activation 后才调用 lifecycle handler。
+
+Manifest 中可把需要随模式启停的贡献绑定到 controller：
+
+```json
+{
+  "contributes": {
+    "session_controllers": [{
+      "id": "mode",
+      "description": "Own this Session mode.",
+      "claims": [{"domain": "dev.example.primary_behavior", "access": "exclusive"}]
+    }],
+    "context_providers": [{"id": "scaffold", "active_when": "mode"}],
+    "tool_policies": [{"id": "gate", "active_when": "mode"}],
+    "tools": [{
+      "id": "finish",
+      "exposed_name": "FinishMode",
+      "description": "Finish the active mode.",
+      "active_when": "mode"
+    }]
+  }
+}
+```
+
+同一 claim domain 的排他 controller 会在 activate 前得到确定冲突；插件不能用 `replace` 抢占其他 owner。为用户提供
+友好的 `off` 命令，但它仍应返回 release transition。Host 的 `/control status` 与 `/control release ... [--force]`
+不依赖具体插件命令，可在 owner 故障时撤销 gate。`active_when` 由 Host 按模型轮次快照执行，回调不应再次用私有
+`phase` 决定是否应用权限策略。
 
 ## 5. Catalog、owner 与 durable contract
 
