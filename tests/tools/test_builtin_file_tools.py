@@ -290,3 +290,64 @@ async def test_edit_missing_text_is_error_and_leaves_file_unchanged(tmp_path) ->
     assert outcome.result.is_error is True
     assert outcome.result.structured["replacements"] == 0
     assert target.read_text(encoding="utf-8") == "original"
+
+
+@pytest.mark.asyncio
+async def test_edit_matches_read_output_line_endings_in_crlf_file(tmp_path) -> None:
+    target = tmp_path / "crlf-note.txt"
+    target.write_bytes(b"alpha\r\nbravo\r\ncharlie\r\n")
+    executor = ToolExecutor(_registry())
+
+    read = await executor.execute(_invocation("Read", {"path": str(target)}))
+    assert read.result is not None
+    assert read.result.content == "1\talpha\n2\tbravo\n3\tcharlie"
+
+    edited = await executor.execute(
+        _invocation(
+            "Edit",
+            {"path": str(target), "old": "bravo\ncharlie", "new": "BRAVO\nCHARLIE"},
+        ),
+        approved=True,
+    )
+
+    assert edited.result is not None
+    assert edited.result.is_error is False
+    assert edited.result.structured["replacements"] == 1
+    assert target.read_bytes() == b"alpha\r\nBRAVO\r\nCHARLIE\r\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_replaces_all_occurrences_in_crlf_file(tmp_path) -> None:
+    target = tmp_path / "crlf-all.txt"
+    target.write_bytes(b"old\r\nold\r\n")
+
+    outcome = await ToolExecutor(_registry()).execute(
+        _invocation(
+            "Edit",
+            {"path": str(target), "old": "old\n", "new": "new\n", "replace_all": True},
+        ),
+        approved=True,
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.is_error is False
+    assert outcome.result.structured["replacements"] == 2
+    assert target.read_bytes() == b"new\r\nnew\r\n"
+
+
+@pytest.mark.asyncio
+async def test_edit_normalizes_crlf_line_endings_in_arguments(tmp_path) -> None:
+    target = tmp_path / "lf-note.txt"
+    target.write_bytes(b"alpha\nbravo\n")
+
+    outcome = await ToolExecutor(_registry()).execute(
+        _invocation(
+            "Edit",
+            {"path": str(target), "old": "alpha\r\nbravo", "new": "ALPHA\r\nBRAVO"},
+        ),
+        approved=True,
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.is_error is False
+    assert target.read_bytes() == b"ALPHA\nBRAVO\n"

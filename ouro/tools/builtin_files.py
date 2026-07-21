@@ -139,7 +139,9 @@ def builtin_file_tools() -> list[Tool]:
                     "Replace exact literal text in a UTF-8 text file. By default only the first "
                     "occurrence is replaced; set replace_all to true to replace every "
                     "occurrence. The call fails without changing the file when old text is not "
-                    "found."
+                    "found. Line endings are normalized to LF for matching, so text copied "
+                    "from Read output also matches CRLF files; a CRLF file keeps its CRLF "
+                    "line endings when written back."
                 ),
                 parameters_schema={
                     "type": "object",
@@ -249,11 +251,14 @@ def _edit(
     context: ToolExecutionContext,
 ) -> ToolResult:
     path = _path_arg(invocation, context)
-    old = _text_arg(invocation, "old")
-    new = _text_arg(invocation, "new")
+    old = _to_lf(_text_arg(invocation, "old"))
+    new = _to_lf(_text_arg(invocation, "new"))
     replace_all = _boolean_arg(invocation, "replace_all", default=False)
     with path.open("r", encoding="utf-8", newline="") as file:
-        text = file.read()
+        raw = file.read()
+    # Match against the same universal-newline view the Read tool presents, so
+    # text copied from Read output also matches files with CRLF line endings.
+    text = _to_lf(raw)
     occurrence_count = text.count(old)
     if occurrence_count == 0:
         return ToolResult(
@@ -267,6 +272,9 @@ def _edit(
     replacements = occurrence_count if replace_all else 1
     updated = text.replace(old, new, -1 if replace_all else 1)
     if updated != text:
+        if _is_pure_crlf(raw):
+            # Keep the file's original CRLF line endings on write back.
+            updated = updated.replace("\n", "\r\n")
         with path.open("w", encoding="utf-8", newline="") as file:
             file.write(updated)
     return ToolResult(
@@ -423,6 +431,17 @@ def _has_more_data(stream: TextIO) -> bool:
     more = bool(stream.read(1))
     stream.seek(position)
     return more
+
+
+def _to_lf(text: str) -> str:
+    """Normalize CRLF and lone CR line endings to LF, mirroring universal-newline reads."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _is_pure_crlf(text: str) -> bool:
+    """Return True when every line feed in the text is part of a CRLF sequence."""
+    crlf_count = text.count("\r\n")
+    return crlf_count > 0 and text.count("\n") == crlf_count
 
 
 def _path_arg(invocation: ToolInvocation, context: ToolExecutionContext) -> Path:
