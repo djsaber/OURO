@@ -32,6 +32,7 @@
 | 规格 | 目标能力 |
 |---|---|
 | [插件系统](plugin-system.md) | 在现有闭环上收敛 builtin/user 来源、不可变 Catalog、原子 generation、依赖协调、扩展类型适配与稳定执行契约 |
+| [子智能体](subagents.md) | AgentDefinition、durable Delegation、前后台执行、消息流、HITL、权限、取消、结果交付与恢复 |
 | [个人智能体平台能力](future-platform.md) | Desktop、记忆与子智能体等跨能力目标 |
 
 ## 规格完成标准

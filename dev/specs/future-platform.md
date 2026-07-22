@@ -38,6 +38,9 @@ OS 沙箱；插件只有 composition root 提供的 builtin 与 `OURO_HOME` 中�
 - Host 展示可验证进度和控制入口。
 - 不以递归 RuntimeService 调用或裸 prompt 拼接代替任务模型。
 
+子智能体的规范性领域、运行、持久化、HITL、权限与 Host 契约见[子智能体规格](subagents.md)。Goal/Task
+与 Delegation 是可关联但不同的模型；首版子智能体不以完整 Goal/Task 调度器为前置条件。
+
 ## 非功能门槛
 
 - 新协议和 Host 不改变 core 的依赖方向。
@@ -52,3 +55,4 @@ OS 沙箱；插件只有 composition root 提供的 builtin 与 `OURO_HOME` 中�
 - [连接与扩展计划](../plans/connectivity-extensions.md)
 - [桌面 Host 计划](../plans/desktop-host.md)
 - [高级智能体能力计划](../plans/advanced-agent-capabilities.md)
+- [子智能体实施计划](../plans/subagents.md)

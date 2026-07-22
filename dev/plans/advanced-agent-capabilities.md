@@ -66,18 +66,22 @@
 
 ## 工作流 C：子智能体
 
+规范性契约见[子智能体规格](../specs/subagents.md)，可执行里程碑、故障矩阵与退出条件见
+[子智能体实施计划](subagents.md)。本节只保留高级能力之间的总体集成门槛。
+
 ### C1. 能力与权限
 
 - [ ] 子智能体 profile 明确 model、tools、workspace、permissions 和预算。
 - [ ] 权限只能等于或小于父级授权，不能自行提升。
-- [ ] 每个子任务有独立 Session/Run identity 和 lineage。
+- [ ] 每个子任务有独立 Session/Run identity 和 DelegationRecord；不复用 branch lineage 表达委派。
 
 ### C2. 并发与结果
 
 - [ ] Supervisor 管理子 Run，不递归持有 RuntimeService 内部状态。
-- [ ] 结果通过 typed artifact/resource/task result 归并。
+- [ ] 结果通过 typed DelegationResult、message/resource refs 和 exact-once delivery 归并。
 - [ ] partial、failed、aborted 子任务对父任务有明确策略。
 - [ ] 取消向整个子树传播并有限等待。
+- [ ] Host 可订阅 child 消息流与根 Agent tree，并准确路由 child HITL。
 
 ### C3. 上下文隔离
 
