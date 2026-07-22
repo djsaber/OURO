@@ -56,7 +56,15 @@ from ouro.plugins.store import PluginPackageStore
 from ouro.sessions import SessionStore
 
 _PLUGIN_GENERATION_RETAINING_RUN_STATUSES = frozenset(
-    {"queued", "running", "waiting_user", "waiting_approval", "paused", "recoverable"}
+    {
+        "queued",
+        "running",
+        "waiting_user",
+        "waiting_approval",
+        "waiting_child",
+        "paused",
+        "recoverable",
+    }
 )
 
 
@@ -321,9 +329,7 @@ class PluginService:
         output_parts.extend(item.output for item in control_results if item.output)
         data = dict(result.data)
         if control_results:
-            data["session_controls"] = [
-                item.model_dump(mode="json") for item in control_results
-            ]
+            data["session_controls"] = [item.model_dump(mode="json") for item in control_results]
         return PluginCommandExecutionView(
             command_id=result.command_id,
             output="\n".join(output_parts),
@@ -352,6 +358,7 @@ class PluginService:
             "running",
             "waiting_user",
             "waiting_approval",
+            "waiting_child",
         }:
             return runtime.snapshot()
         generations = active_run.metadata.get("extension_generations", [])
@@ -1065,11 +1072,7 @@ class PluginService:
         return self.runtime
 
     async def _release_plugin_session_controls(self, plugin_id: str) -> None:
-        if (
-            self.session_store is None
-            or self.session_controls is None
-            or self.runtime is None
-        ):
+        if self.session_store is None or self.session_controls is None or self.runtime is None:
             return
         lease = self.runtime.snapshot()
         try:
@@ -1087,9 +1090,7 @@ class PluginService:
                                 activation_id=activation.activation_id,
                                 plugin_id=activation.plugin_id,
                                 generation_id=activation.generation_id,
-                                execution_contract_hash=(
-                                    activation.execution_contract_hash
-                                ),
+                                execution_contract_hash=(activation.execution_contract_hash),
                                 reason="plugin_disable",
                             ),
                             session_id=session.session_id,

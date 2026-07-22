@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ouro.application.agent_definitions import AgentDefinitionService
+from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
@@ -18,10 +20,12 @@ from ouro.application.runtime_configuration import (
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
+from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
+from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
@@ -74,11 +78,17 @@ class LocalApplication:
         *,
         plugin_runtime: PluginRuntimeResource | None = None,
         plugins: PluginService | None = None,
+        supervisor: RuntimeSupervisor | None = None,
+        agent_definitions: AgentDefinitionService | None = None,
+        agents: AgentService | None = None,
     ) -> None:
         self.runtime = runtime
         self.mcp = mcp
         self.plugin_runtime = plugin_runtime
         self.plugins = plugins
+        self.supervisor = supervisor or RuntimeSupervisor(runtime)
+        self.agent_definitions = agent_definitions
+        self.agents = agents
         self._startup_report = ApplicationStartupReport()
         self._started = False
         self._closed = False
@@ -131,11 +141,24 @@ class LocalApplication:
             session_store=runtime.store,
         )
         runtime.attach_extension_catalog(plugin_runtime)
+        agent_definitions = AgentDefinitionService(AgentDefinitionsConfigManager(configured_home))
+        runtime.attach_agent_definitions(agent_definitions)
+        supervisor = RuntimeSupervisor(runtime)
+        agents = AgentService(
+            store=runtime.store,
+            definitions=agent_definitions,
+            scheduler=supervisor,
+        )
+        runtime.attach_agent_controls(agents)
+        runtime.add_event_sink(agents.on_runtime_event)
         return cls(
             runtime,
             build_local_mcp_runtime(runtime, home=home),
             plugin_runtime=plugin_runtime,
             plugins=plugins,
+            supervisor=supervisor,
+            agent_definitions=agent_definitions,
+            agents=agents,
         )
 
     async def __aenter__(self) -> LocalApplication:
@@ -155,6 +178,9 @@ class LocalApplication:
             if self.plugin_runtime is not None:
                 await self.plugin_runtime.start()
             self.runtime.reconcile_interrupted_session_controls()
+            await self.supervisor.start()
+            if self.agents is not None:
+                await self.agents.start()
         except BaseException:
             with suppress(Exception):
                 await self.mcp.close()
@@ -162,7 +188,7 @@ class LocalApplication:
                 with suppress(Exception):
                     await self.plugin_runtime.close()
             with suppress(Exception):
-                await self.runtime.close()
+                await self.supervisor.shutdown()
             self._closed = True
             raise
         self._startup_report = self._collect_startup_report()
@@ -192,11 +218,16 @@ class LocalApplication:
             return
         self._closed = True
         errors: list[Exception] = []
+        if self.agents is not None:
+            try:
+                await self.agents.close()
+            except Exception as exc:  # noqa: BLE001 - close every owned resource.
+                errors.append(exc)
         try:
             # Runtime is the consumer of plugin generation snapshots and MCP
             # tools.  Close it first so every run lease is released before its
             # extension owners are drained.
-            await self.runtime.close()
+            await self.supervisor.shutdown()
         except Exception as exc:  # noqa: BLE001 - close every owned resource.
             errors.append(exc)
         if self.plugin_runtime is not None:

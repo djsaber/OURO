@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from ouro.core.agents import AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.interactions import ToolInputResolution
@@ -15,6 +16,7 @@ ToolExecutionMode = Literal["sequential", "parallel"]
 ToolBatchPhase = Literal[
     "planned",
     "awaiting_interaction",
+    "awaiting_child",
     "ready",
     "executing",
     "committing_results",
@@ -26,6 +28,7 @@ ToolCallStatus = Literal[
     "planned",
     "awaiting_approval",
     "waiting_user",
+    "waiting_child",
     "resolving_input",
     "ready",
     "rejected",
@@ -35,7 +38,7 @@ ToolCallStatus = Literal[
     "aborted",
     "unknown_outcome",
 ]
-ToolBatchOutcomeStatus = Literal["completed", "waiting_approval", "waiting_user"]
+ToolBatchOutcomeStatus = Literal["completed", "waiting_approval", "waiting_user", "waiting_child"]
 
 
 class ToolBatchCall(OuroModel):
@@ -46,6 +49,7 @@ class ToolBatchCall(OuroModel):
     input_request: ToolInputRequest | None = None
     input_resolution: ToolInputResolution | None = None
     input_revision: int = Field(default=0, ge=0)
+    agent_wait: AgentWaitRequest | None = None
     result: ToolResult | None = None
     result_message_id: str | None = None
     metadata: Metadata = MetadataField
@@ -73,7 +77,10 @@ class ToolCallBatchRecord(OuroModel):
 
     @property
     def is_interaction_resolved(self) -> bool:
-        return all(call.status not in {"awaiting_approval", "waiting_user"} for call in self.calls)
+        return all(
+            call.status not in {"awaiting_approval", "waiting_user", "waiting_child"}
+            for call in self.calls
+        )
 
 
 class ToolBatchHandlingResult(OuroModel):

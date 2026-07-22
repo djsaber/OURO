@@ -5,6 +5,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
+from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
@@ -16,6 +17,7 @@ RunStatus = Literal[
     "running",
     "waiting_user",
     "waiting_approval",
+    "waiting_child",
     "completed",
     "aborted",
     "failed",
@@ -23,7 +25,7 @@ RunStatus = Literal[
     "recoverable",
 ]
 ACTIVE_RUN_STATUSES: frozenset[RunStatus] = frozenset(
-    {"queued", "running", "waiting_user", "waiting_approval"}
+    {"queued", "running", "waiting_user", "waiting_approval", "waiting_child"}
 )
 RunKind = Literal["agent", "compaction"]
 RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin"]
@@ -31,7 +33,12 @@ RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin"]
 SessionStatus = Literal["idle", "running", "waiting_user", "waiting_approval", "failed"]
 SessionTitleSource = Literal["fallback", "generated", "user"]
 RunPhase = Literal[
-    "model_streaming", "tool_preflight", "human_interaction", "tool_execution", "result_commit"
+    "model_streaming",
+    "tool_preflight",
+    "human_interaction",
+    "tool_execution",
+    "subagent_join",
+    "result_commit",
 ]
 RunContinuationState = Literal["pending", "resolved"]
 
@@ -121,6 +128,8 @@ class SessionRecord(OuroModel):
     session_id: str = Field(default_factory=lambda: new_id("ses"))
     root_session_id: str | None = None
     parent_session_id: str | None = None
+    session_kind: Literal["primary", "subagent"] = "primary"
+    delegation_id: str | None = None
     forked_from_message_id: str | None = None
     forked_from_run_id: str | None = None
     title: str = "New session"
@@ -147,9 +156,20 @@ class SessionRecord(OuroModel):
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")
-    def default_root_session_id(self) -> Self:
+    def validate_session_identity(self) -> Self:
         if self.root_session_id is None:
             self.root_session_id = self.session_id
+        if self.session_kind == "primary":
+            if self.delegation_id is not None:
+                raise ValueError("primary session cannot carry delegation_id")
+        elif (
+            self.delegation_id is None
+            or self.parent_session_id is None
+            or self.root_session_id == self.session_id
+        ):
+            raise ValueError(
+                "subagent session requires distinct root, parent, and delegation identity"
+            )
         return self
 
 
@@ -174,4 +194,5 @@ class RunRecord(OuroModel):
     usage: dict[str, int | float] = Field(default_factory=dict)
     usage_entry_ids: list[str] = Field(default_factory=list)
     continuation: RunContinuationCheckpoint | None = None
+    agent_catalog: AgentCatalogSnapshot | None = None
     metadata: Metadata = MetadataField

@@ -773,7 +773,7 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 3"):
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 4"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
@@ -787,5 +787,5 @@ def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationRequiredError, match="found 2, expected 3"):
+    with pytest.raises(MigrationRequiredError, match="found 2, expected 4"):
         LocalSessionStore(tmp_path).initialize()

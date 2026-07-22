@@ -48,6 +48,7 @@ from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.agents import AgentCatalogSnapshot, AgentWaitResolution, EffectiveToolRef
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
@@ -89,15 +90,18 @@ from ouro.core.state import (
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, tool_definition_contract_hash
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
+from ouro.tools.builtin_agents import agent_control_tools
 
 if TYPE_CHECKING:
+    from ouro.application.agent_definitions import AgentDefinitionService
     from ouro.application.resources import ResourceService
+    from ouro.application.tool_calls import AgentControlExecutor
     from ouro.plugins.catalog import ExtensionCatalogLease
     from ouro.plugins.runtime import PluginRuntimeResource
 
@@ -224,12 +228,27 @@ class RuntimeService:
         self._extension_catalog: PluginRuntimeResource | None = None
         self._extension_snapshots: dict[str, ExtensionCatalogLease] = {}
         self._session_control_snapshots: dict[str, frozenset[str]] = {}
+        self._agent_definitions: AgentDefinitionService | None = None
+        self._agent_controls: AgentControlExecutor | None = None
+        self._run_agent_catalogs: dict[str, AgentCatalogSnapshot] = {}
+        self._run_tool_caps: dict[str, frozenset[str]] = {}
+        self._run_tool_refs: dict[str, tuple[EffectiveToolRef, ...]] = {}
 
     def attach_extension_catalog(self, catalog: PluginRuntimeResource) -> None:
         if self._extension_catalog is not None and self._extension_catalog is not catalog:
             raise RuntimeError("runtime already has an extension catalog")
         self._extension_catalog = catalog
         self.event_recorder.set_hook_registry_resolver(self._event_hooks_for_run)
+
+    def attach_agent_definitions(self, service: AgentDefinitionService) -> None:
+        if self._agent_definitions is not None and self._agent_definitions is not service:
+            raise RuntimeError("runtime already has an AgentDefinition service")
+        self._agent_definitions = service
+
+    def attach_agent_controls(self, controls: AgentControlExecutor) -> None:
+        if self._agent_controls is not None and self._agent_controls is not controls:
+            raise RuntimeError("runtime already has an Agent control executor")
+        self._agent_controls = controls
 
     def _event_hooks_for_run(
         self,
@@ -249,7 +268,29 @@ class RuntimeService:
     def _tools_for_run(self, run_id: str) -> ToolRegistry:
         snapshot = self._extension_snapshots.get(run_id)
         registry = snapshot.tools if snapshot is not None else self.tools
-        return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
+        scoped = registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
+        cap = self._run_tool_caps.get(run_id)
+        selected = scoped if cap is None else scoped.selected(cap)
+        for reference in self._run_tool_refs.get(run_id, ()):
+            definition = selected.get(reference.public_name).definition
+            metadata_hash = definition.metadata.get("execution_contract_hash")
+            execution_hash = (
+                metadata_hash
+                if isinstance(metadata_hash, str) and metadata_hash
+                else tool_definition_contract_hash(definition)
+            )
+            if (
+                execution_hash != reference.execution_contract_hash
+                or definition.source != reference.source
+                or definition.effect != reference.effect
+            ):
+                raise RuntimeError(
+                    f"delegated tool contract is unavailable or changed: {reference.public_name}"
+                )
+        catalog = self._run_agent_catalogs.get(run_id)
+        if catalog is None or self._agent_controls is None:
+            return selected
+        return selected.overlay(agent_control_tools(catalog))
 
     def _hooks_for_run(self, run_id: str) -> HookRegistry:
         snapshot = self._extension_snapshots.get(run_id)
@@ -258,9 +299,7 @@ class RuntimeService:
 
     def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
         snapshot = self._extension_snapshots.get(run_id)
-        registry = (
-            snapshot.context_providers if snapshot is not None else self.context_providers
-        )
+        registry = snapshot.context_providers if snapshot is not None else self.context_providers
         return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
 
     def _skills_for_run(self, run_id: str) -> tuple[SkillMetadata, ...]:
@@ -324,6 +363,7 @@ class RuntimeService:
             tool_policies=self._tool_policies_for_run(run_id),
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run_id),
+            agent_controls=self._agent_controls,
         )
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
@@ -389,8 +429,7 @@ class RuntimeService:
             )
         except Exception as exc:
             raise RuntimeError(
-                "Session controller cleanup could not be confirmed; "
-                "retry with force release"
+                "Session controller cleanup could not be confirmed; retry with force release"
             ) from exc
         finally:
             lease.close()
@@ -636,6 +675,7 @@ class RuntimeService:
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
         _input_attribution: AttributedSessionInput | HostSessionInput | None = None,
+        _prepared_run: RunRecord | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
@@ -643,6 +683,13 @@ class RuntimeService:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         if initial_model is not None and session_id is not None:
             raise ValueError("initial_model can only be set when creating a session")
+        if _prepared_run is not None:
+            if session_id is None or _prepared_run.session_id != session_id:
+                raise ValueError("prepared run must target the supplied existing session")
+            if _prepared_run.status != "queued":
+                raise ValueError("prepared run must be queued")
+            if not isinstance(_input_attribution, HostSessionInput):
+                raise ValueError("prepared run requires HostSessionInput attribution")
         input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
         if input_resource_refs and session_id is None:
             raise ResourceAttachmentError(
@@ -660,12 +707,14 @@ class RuntimeService:
         else:
             snapshot = self._load_runtime_snapshot(
                 session_id,
-                recover=not self._is_session_run_locked(session_id),
+                recover=(_prepared_run is None and not self._is_session_run_locked(session_id)),
             )
             session = snapshot.session
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(session, input_resource_refs)
-            if active_run is not None:
+            if active_run is not None and (
+                _prepared_run is None or active_run.run_id != _prepared_run.run_id
+            ):
                 self._validate_requested_session_policies(
                     session,
                     approval_mode=approval_mode,
@@ -692,7 +741,7 @@ class RuntimeService:
             if _input_attribution is not None
             else (queued_synthetic_input.source if queued_synthetic_input is not None else None)
         )
-        run = RunRecord(
+        run = _prepared_run or RunRecord(
             session_id=session.session_id,
             status="running",
             origin=(
@@ -722,7 +771,9 @@ class RuntimeService:
             snapshot = self.store.load_runtime_session(session.session_id)
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(snapshot.session, input_resource_refs)
-            if active_run is not None:
+            if active_run is not None and (
+                _prepared_run is None or active_run.run_id != _prepared_run.run_id
+            ):
                 self._validate_requested_session_policies(
                     snapshot.session,
                     approval_mode=approval_mode,
@@ -751,7 +802,9 @@ class RuntimeService:
             locked_snapshot = await self.run_recovery.reconcile(locked_snapshot)
             session = locked_snapshot.session
             locked_active_run = maybe_active_run(locked_snapshot.runs)
-            if locked_active_run is not None:
+            if locked_active_run is not None and (
+                _prepared_run is None or locked_active_run.run_id != _prepared_run.run_id
+            ):
                 self._validate_requested_session_policies(
                     session,
                     approval_mode=approval_mode,
@@ -843,7 +896,11 @@ class RuntimeService:
                     adapter=active_adapter,
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
-            run = self._attach_extension_snapshot(run)
+            self._restore_run_tool_cap(run)
+            if _prepared_run is not None and "extension_generations" in run.metadata:
+                await self._ensure_extension_snapshot(run)
+            else:
+                run = self._attach_extension_snapshot(run)
             session, run = self.run_lifecycle.start(
                 session=session,
                 run=run,
@@ -913,6 +970,22 @@ class RuntimeService:
             drain_queued_inputs=_drain_queued_inputs,
         )
 
+    async def run_prepared(
+        self,
+        run: RunRecord,
+        session_input: HostSessionInput,
+    ) -> RunResult:
+        """Execute an already durable queued Run with attributed Host input."""
+
+        return await self.run(
+            session_input.prompt,
+            session_id=run.session_id,
+            title=session_input.title,
+            queue_mode=session_input.mode,
+            _input_attribution=session_input,
+            _prepared_run=run,
+        )
+
     async def _continue_model_loop(
         self,
         *,
@@ -934,7 +1007,7 @@ class RuntimeService:
         loop = InnerAgentLoop(
             adapter=adapter,
             tools=tools,
-            run_budget=self.run_budget,
+            run_budget=self._run_budget_for_run(run),
             ports=InnerLoopPorts(
                 prepare_context=partial(
                     self.context_preparation.prepare,
@@ -942,7 +1015,7 @@ class RuntimeService:
                     hooks=hooks,
                     context_providers=context_providers,
                     strategies=compaction,
-                    skill_instructions=self._skill_instructions_for_run(run.run_id),
+                    skill_instructions=self._instructions_for_run(run),
                 ),
                 emit=self.event_recorder.emit,
                 record_hook_failures=self.event_recorder.record_hook_failures,
@@ -960,9 +1033,7 @@ class RuntimeService:
                     policies=self._turn_policies_for_run(run.run_id),
                 ),
                 begin_model_round=(
-                    self._begin_model_round
-                    if self._extension_catalog is not None
-                    else None
+                    self._begin_model_round if self._extension_catalog is not None else None
                 ),
             ),
         )
@@ -976,6 +1047,14 @@ class RuntimeService:
             tool_results=tool_results,
             abort_signal=abort_signal,
         )
+
+    def _run_budget_for_run(self, run: RunRecord) -> RunBudgetPolicy:
+        raw = run.metadata.get("run_budget")
+        if raw is None:
+            return self.run_budget
+        if not isinstance(raw, dict):
+            raise ValueError("run has invalid delegated budget metadata")
+        return RunBudgetPolicy.model_validate(raw)
 
     async def compact(self, *, session_id: str) -> CompactionCommandResult:
         """Manually compact a session through the same durable summary pipeline as auto mode."""
@@ -1201,6 +1280,7 @@ class RuntimeService:
             title=title,
             mode=mode,
             resource_refs=resource_refs,
+            queue_id=(attribution.queue_id if isinstance(attribution, HostSessionInput) else None),
             source=_attributed_input_source(attribution) if attribution is not None else "user",
             host_source_id=(
                 attribution.host_source_id if isinstance(attribution, HostSessionInput) else None
@@ -1736,6 +1816,90 @@ class RuntimeService:
         # recovery; a follow-up must acquire a fresh Session run lock.
         return await self._finalize_run_boundary(result, drain_queued_inputs=True)
 
+    async def resume_agent_wait(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+        resolution: AgentWaitResolution,
+        result: ToolResult,
+    ) -> RunResult:
+        """Resolve one durable child join and continue the original parent Run."""
+
+        snapshot = self._load_runtime_snapshot(session_id, recover=True)
+        run = find_run(snapshot.runs, run_id)
+        if run.status != "waiting_child":
+            raise ValueError(f"run is not waiting for a child: {run.status}")
+        run_lock = self._acquire_session_run_lock(session_id, run_id)
+        if run_lock is None:
+            raise SessionBusyError(f"run is already active: {run_id}")
+        try:
+            snapshot = self.store.load_runtime_session(session_id)
+            session = snapshot.session
+            run = find_run(snapshot.runs, run_id)
+            if run.status != "waiting_child" or run.active_tool_batch is None:
+                raise ValueError("parent Run no longer has a durable child wait")
+            batch = run.active_tool_batch
+            waiting_call = next(
+                (
+                    call
+                    for call in batch.calls
+                    if call.request.id == tool_call_id
+                    and call.status == "waiting_child"
+                    and call.agent_wait is not None
+                ),
+                None,
+            )
+            if waiting_call is None or waiting_call.agent_wait is None:
+                raise ValueError("parent ToolCall no longer has a pending child wait")
+            if result.tool_call_id != tool_call_id or result.tool_name != waiting_call.request.name:
+                raise ValueError("Agent wait result identity does not match the original ToolCall")
+            resolved_wait = waiting_call.agent_wait.model_copy(
+                update={"state": "resolved", "resolution": resolution}
+            )
+            calls = [
+                call.model_copy(
+                    update={
+                        "status": "completed",
+                        "agent_wait": resolved_wait,
+                        "result": result,
+                    }
+                )
+                if call.request.id == tool_call_id
+                else call
+                for call in batch.calls
+            ]
+            batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
+            await self._ensure_extension_snapshot(run)
+            sequence = self.store.latest_event_sequence(session_id)
+            emitted: list[EventRecord] = []
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session_id,
+                run_id=run_id,
+                event_type="agent_wait_resolved",
+                payload={
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                    "tool_call_id": tool_call_id,
+                    "wait_id": resolved_wait.wait_id,
+                    "resolution": resolution.model_dump(mode="json"),
+                },
+            )
+            resumed = await self._continue_resolved_batch(
+                snapshot=snapshot,
+                session=session,
+                run=run,
+                batch=batch,
+                emitted=emitted,
+                sequence=sequence,
+            )
+        finally:
+            self._release_session_run_lock(run_lock)
+        return await self._finalize_run_boundary(resumed, drain_queued_inputs=True)
+
     async def _continue_resolved_batch(
         self,
         *,
@@ -1810,7 +1974,7 @@ class RuntimeService:
             )
             if abort_result is not None:
                 return abort_result
-            if handling.status == "waiting_user":
+            if handling.status in {"waiting_user", "waiting_child"}:
                 return RunResult(
                     session=session,
                     run=run,
@@ -1983,14 +2147,43 @@ class RuntimeService:
             self._hooks_for_run(run.run_id).finish_run(run.run_id)
             snapshot = self._extension_snapshots.pop(run.run_id, None)
             self._session_control_snapshots.pop(run.run_id, None)
+            self._run_agent_catalogs.pop(run.run_id, None)
+            self._run_tool_caps.pop(run.run_id, None)
+            self._run_tool_refs.pop(run.run_id, None)
             if snapshot is not None:
                 snapshot.close()
 
     def _release_extension_snapshot(self, run_id: str) -> None:
         snapshot = self._extension_snapshots.pop(run_id, None)
         self._session_control_snapshots.pop(run_id, None)
+        self._run_agent_catalogs.pop(run_id, None)
+        self._run_tool_caps.pop(run_id, None)
+        self._run_tool_refs.pop(run_id, None)
         if snapshot is not None:
             snapshot.close()
+
+    def _restore_run_tool_cap(self, run: RunRecord) -> None:
+        if "effective_tool_names" not in run.metadata:
+            return
+        raw = run.metadata.get("effective_tool_names")
+        if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+            raise ValueError("run has invalid effective tool names")
+        self._run_tool_caps[run.run_id] = frozenset(raw)
+        raw_refs = run.metadata.get("effective_tool_refs", [])
+        if not isinstance(raw_refs, list) or any(not isinstance(item, dict) for item in raw_refs):
+            raise ValueError("run has invalid effective tool references")
+        self._run_tool_refs[run.run_id] = tuple(
+            EffectiveToolRef.model_validate(item) for item in raw_refs
+        )
+
+    def _instructions_for_run(self, run: RunRecord) -> str:
+        instructions = [self._skill_instructions_for_run(run.run_id)]
+        agent_prompt = run.metadata.get("agent_system_prompt")
+        if agent_prompt is not None and not isinstance(agent_prompt, str):
+            raise ValueError("run has invalid agent system prompt")
+        if agent_prompt:
+            instructions.append(agent_prompt)
+        return "\n\n".join(item.strip() for item in instructions if item.strip())
 
     def _begin_model_round(
         self,
@@ -2044,10 +2237,7 @@ class RuntimeService:
                     controller = catalog.session_controllers.get(activation.controller_id)
                 except KeyError:
                     continue
-                if (
-                    controller.execution_contract_hash
-                    != activation.execution_contract_hash
-                ):
+                if controller.execution_contract_hash != activation.execution_contract_hash:
                     continue
             eligible_controller_ids.add(activation.controller_id)
         self._session_control_snapshots[run_id] = frozenset(eligible_controller_ids)
@@ -2076,34 +2266,40 @@ class RuntimeService:
                     controller = catalog.session_controllers.get(controller_id)
                 except KeyError:
                     continue
-                if (
-                    controller.execution_contract_hash
-                    != item.get("execution_contract_hash")
-                ):
+                if controller.execution_contract_hash != item.get("execution_contract_hash"):
                     continue
             eligible.add(controller_id)
         self._session_control_snapshots[run.run_id] = frozenset(eligible)
 
     def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
-        if self._extension_catalog is None:
-            return run
-        snapshot = self._extension_catalog.snapshot()
-        self._extension_snapshots[run.run_id] = snapshot
         metadata = dict(run.metadata)
-        metadata["session_control_snapshot"] = self._session_control_snapshot(
-            run.session_id,
-            run_id=run.run_id,
-            model_round=0,
-            catalog=snapshot,
-        )
-        metadata["extension_catalog_id"] = snapshot.catalog_id
-        metadata["extension_generations"] = [
-            generation.model_dump(mode="json", exclude_none=True)
-            for generation in snapshot.generations
-        ]
+        metadata.setdefault("run_budget", self.run_budget.model_dump(mode="json"))
         update: dict[str, object] = {"metadata": metadata}
-        if run.kind == "agent":
-            update["continuation"] = self._continuation_checkpoint(run, snapshot)
+        if self._extension_catalog is not None:
+            snapshot = self._extension_catalog.snapshot()
+            self._extension_snapshots[run.run_id] = snapshot
+            metadata["session_control_snapshot"] = self._session_control_snapshot(
+                run.session_id,
+                run_id=run.run_id,
+                model_round=0,
+                catalog=snapshot,
+            )
+            metadata["extension_catalog_id"] = snapshot.catalog_id
+            metadata["extension_generations"] = [
+                generation.model_dump(mode="json", exclude_none=True)
+                for generation in snapshot.generations
+            ]
+            if run.kind == "agent":
+                update["continuation"] = self._continuation_checkpoint(run, snapshot)
+        session = self.store.load_session_record(run.session_id)
+        if (
+            run.kind == "agent"
+            and session.session_kind == "primary"
+            and self._agent_definitions is not None
+        ):
+            catalog = self._agent_definitions.catalog_snapshot(self._tools_for_run(run.run_id))
+            update["agent_catalog"] = catalog
+            self._run_agent_catalogs[run.run_id] = catalog
         return run.model_copy(update=update)
 
     def _continuation_checkpoint(
@@ -2111,9 +2307,7 @@ class RuntimeService:
         run: RunRecord,
         snapshot: ExtensionCatalogLease,
     ) -> RunContinuationCheckpoint | None:
-        generations = {
-            generation.generation_id: generation for generation in snapshot.generations
-        }
+        generations = {generation.generation_id: generation for generation in snapshot.generations}
         activations = {
             activation.controller_id: activation
             for activation in self.store.load_session_record(run.session_id).controls.activations
@@ -2162,9 +2356,7 @@ class RuntimeService:
                     contract_hash=contract_hash,
                     execution_contract_hash=generation.execution_contract_hash,
                     active_when_controller_id=registration.active_when_controller_id,
-                    activation_id=(
-                        activation.activation_id if activation is not None else None
-                    ),
+                    activation_id=(activation.activation_id if activation is not None else None),
                 )
             )
         if not controllers:
@@ -2174,6 +2366,9 @@ class RuntimeService:
         return run.continuation.model_copy(update={"controllers": controllers})
 
     async def _ensure_extension_snapshot(self, run: RunRecord) -> None:
+        self._restore_run_tool_cap(run)
+        if run.agent_catalog is not None:
+            self._run_agent_catalogs[run.run_id] = run.agent_catalog
         if self._extension_catalog is None or run.run_id in self._extension_snapshots:
             return
         raw = run.metadata.get("extension_generations", [])

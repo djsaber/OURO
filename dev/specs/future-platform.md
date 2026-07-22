@@ -13,11 +13,11 @@
 完整契约见[插件系统目标规格](plugin-system.md)。本平台规格只保留以下总体约束：插件生命周期不得改变
 core 依赖方向和 durable Run 语义；同进程插件明确标注 full trust，worker 只承诺崩溃/依赖隔离而不冒充
 OS 沙箱；插件只有 composition root 提供的 builtin 与 `OURO_HOME` 中的 user 两类，不存在 project/workspace
-插件；任意 Host 都通过 application facade/DTO 管理插件。
+插件；任意 Host 都通过细粒度 application service/DTO 管理插件。
 
 ## Desktop Host
 
-- 只依赖 application facade/DTO 和 RuntimeSupervisor 订阅。
+- 只依赖 application service/DTO 和 RuntimeSupervisor 订阅。
 - 覆盖 catalog、搜索、运行流、工具批次、审批、AskUser、diff、资源、配置和诊断。
 - UI 关闭不丢失 canonical 状态。
 - 大事件流和消息历史使用增量加载，不全量阻塞 UI。
@@ -33,7 +33,10 @@ OS 沙箱；插件只有 composition root 提供的 builtin 与 `OURO_HOME` 中�
 ## 计划与子智能体
 
 - durable goal/task tree 保存 owner、状态、依赖、预算和结果引用。
-- 子智能体继承明确的工具权限、workspace 和模型预算。
+- 子智能体使用稳定 AgentDefinition：OURO 始终提供不可编辑/删除的 builtin general，用户可管理自定义
+  name/description/system_prompt/all-or-selected tools；builtin/custom 只在 editable 管理属性上不同。
+- 子智能体继承明确的工具权限、workspace 和模型预算；all tools 仍受父级 cap、审批与 ToolPolicy 约束。
+- 每个 parent Run 冻结 AgentDefinition 目录，派遣工具 agent_id 参数与执行解析从同一快照自动生成。
 - 并发、取消、失败传播和结果归并由 application/Supervisor 编排。
 - Host 展示可验证进度和控制入口。
 - 不以递归 RuntimeService 调用或裸 prompt 拼接代替任务模型。

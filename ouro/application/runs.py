@@ -83,7 +83,10 @@ class RunLifecycle:
             snapshot=snapshot.model_copy(
                 update={
                     "session": active_session,
-                    "runs": [*snapshot.runs, active_run],
+                    "runs": [
+                        *(item for item in snapshot.runs if item.run_id != active_run.run_id),
+                        active_run,
+                    ],
                 }
             ),
         )
@@ -383,7 +386,7 @@ class RunLifecycle:
             )
             self.store.save_run(updated_run)
             self.store.save_session(updated_session)
-        if status in {"waiting_approval", "waiting_user"}:
+        if status in {"waiting_approval", "waiting_user", "waiting_child"}:
             self.store.refresh_catalog(updated_session.session_id)
         return updated_session, updated_run
 

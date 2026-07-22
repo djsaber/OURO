@@ -18,6 +18,7 @@ from ouro.tools.base import (
 )
 from ouro.tools.batch_executor import ToolBatchExecutor
 from ouro.tools.builtin import builtin_tools
+from ouro.tools.builtin_agents import agent_control_tools
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
 
@@ -40,4 +41,5 @@ __all__ = [
     "ToolRegistry",
     "ToolResult",
     "builtin_tools",
+    "agent_control_tools",
 ]

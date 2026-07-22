@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Callable
-from typing import Literal
+from typing import Literal, Protocol
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -14,6 +14,7 @@ from ouro.application.session_controls import (
     SessionControlError,
 )
 from ouro.config.tool_execution import ToolExecutionConfig
+from ouro.core.agents import AgentControlRequest, AgentControlResult, AgentWaitRequest
 from ouro.core.approvals import ApprovalResolvedBy
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
@@ -22,6 +23,7 @@ from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import (
@@ -47,6 +49,27 @@ from ouro.tools.schema import tool_argument_error
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 _AFK_RESOLVER_ID = "ouro.afk"
 _AFK_UNATTENDED_REASON = "AFK mode does not wait for user input"
+
+
+class AgentControlExecutor(Protocol):
+    async def execute_control(
+        self,
+        request: AgentControlRequest,
+        *,
+        invocation: ToolInvocation,
+        session: SessionRecord,
+        run: RunRecord,
+    ) -> AgentControlResult: ...
+
+    async def wait_parked(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        batch: ToolCallBatchRecord,
+        tool_call_id: str,
+        wait: AgentWaitRequest,
+    ) -> None: ...
 
 
 def _optional_text(value: object) -> str | None:
@@ -75,6 +98,7 @@ class ToolCallCoordinator:
         tool_policies: ToolPolicyRegistry | None = None,
         session_controls: SessionControlCoordinator | None = None,
         session_controllers: PluginSessionControllerRegistry | None = None,
+        agent_controls: AgentControlExecutor | None = None,
     ) -> None:
         self.executor = executor
         self.batch_executor = ToolBatchExecutor(executor)
@@ -88,9 +112,8 @@ class ToolCallCoordinator:
         self.is_aborted = is_aborted
         self.tool_policies = tool_policies or ToolPolicyRegistry()
         self.session_controls = session_controls
-        self.session_controllers = (
-            session_controllers or PluginSessionControllerRegistry()
-        )
+        self.session_controllers = session_controllers or PluginSessionControllerRegistry()
+        self.agent_controls = agent_controls
 
     async def handle_batch(
         self,
@@ -398,6 +421,11 @@ class ToolCallCoordinator:
                 outcome,
                 session=session,
             )
+            outcome = await self._apply_agent_control(
+                outcome,
+                session=session,
+                run=run,
+            )
             async with checkpoint_lock:
                 checkpoint_calls: list[ToolBatchCall] = []
                 completed_call: ToolBatchCall | None = None
@@ -407,6 +435,7 @@ class ToolCallCoordinator:
                         continue
                     result = outcome.result
                     waiting_for_input = outcome.status == "waiting_user"
+                    waiting_for_child = outcome.status == "waiting_child"
                     completed_call = item.model_copy(
                         update={
                             "status": _tool_call_status_for_outcome(outcome),
@@ -417,6 +446,9 @@ class ToolCallCoordinator:
                                 None if waiting_for_input else item.input_resolution
                             ),
                             "input_revision": item.input_revision + int(waiting_for_input),
+                            "agent_wait": (
+                                outcome.agent_wait if waiting_for_child else item.agent_wait
+                            ),
                             "result": result,
                         }
                     )
@@ -430,13 +462,27 @@ class ToolCallCoordinator:
                         (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
                         None,
                     )
+                    waiting_child = next(
+                        (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
+                        None,
+                    )
                     self.runs.save_batch_state(
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
-                        status="waiting_user" if waiting_user is not None else "running",
+                        status=(
+                            "waiting_child"
+                            if waiting_child is not None
+                            else "waiting_user"
+                            if waiting_user is not None
+                            else "running"
+                        ),
                         phase=(
-                            "human_interaction" if waiting_user is not None else "tool_execution"
+                            "subagent_join"
+                            if waiting_child is not None
+                            else "human_interaction"
+                            if waiting_user is not None
+                            else "tool_execution"
                         ),
                     )
                 except SessionBusyError:
@@ -481,6 +527,25 @@ class ToolCallCoordinator:
                             "request": completed_call.input_request.data,
                             "question": completed_call.input_request.data,
                             "source_index": completed_call.request.source_index,
+                        },
+                    )
+                elif completed_call is not None and outcome.status == "waiting_child":
+                    assert completed_call.agent_wait is not None
+                    sequence = await self.events.emit(
+                        emitted,
+                        sequence,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="agent_wait_requested",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "tool_call_id": completed_call.request.id,
+                            "wait_id": completed_call.agent_wait.wait_id,
+                            "delegation_ids": list(completed_call.agent_wait.delegation_ids),
+                            "completion_condition": (
+                                completed_call.agent_wait.completion_condition
+                            ),
                         },
                     )
                 elif completed_call is not None and completed_call.result is not None:
@@ -593,6 +658,49 @@ class ToolCallCoordinator:
             (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
             None,
         )
+        waiting_child = next(
+            (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
+            None,
+        )
+        if waiting_child is not None:
+            assert waiting_child.agent_wait is not None
+            waiting_batch = checkpoint_batch.model_copy(
+                update={"phase": "awaiting_child", "updated_at": utc_now()}
+            )
+            self.runs.save_batch_state(
+                session=session,
+                run=run,
+                batch=waiting_batch,
+                status="waiting_child",
+                phase="subagent_join",
+            )
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="run_status_changed",
+                payload={
+                    "to_status": "waiting_child",
+                    "status": "waiting_child",
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                },
+            )
+            if self.agent_controls is None:
+                raise RuntimeError("Agent control executor is unavailable")
+            await self.agent_controls.wait_parked(
+                session=session,
+                run=run,
+                batch=waiting_batch,
+                tool_call_id=waiting_child.request.id,
+                wait=waiting_child.agent_wait,
+            )
+            return ToolBatchHandlingResult(
+                status="waiting_child",
+                batch=waiting_batch,
+                sequence=sequence,
+            )
         if waiting_user is not None:
             waiting_batch = checkpoint_batch.model_copy(
                 update={"phase": "awaiting_interaction", "updated_at": utc_now()}
@@ -718,6 +826,56 @@ class ToolCallCoordinator:
             sequence=sequence,
         )
 
+    async def _apply_agent_control(
+        self,
+        outcome: ToolExecutionOutcome,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+    ) -> ToolExecutionOutcome:
+        result = outcome.result
+        if result is None or result.agent_control_request is None:
+            return outcome
+        invocation = outcome.invocation
+        if self.agent_controls is None:
+            return _agent_control_error(
+                invocation,
+                error_type="AgentControlUnavailable",
+                error_message="Agent control is unavailable on this Host",
+            )
+        try:
+            control = await self.agent_controls.execute_control(
+                result.agent_control_request,
+                invocation=invocation,
+                session=session,
+                run=run,
+            )
+        except Exception as exc:  # noqa: BLE001 - application control boundary.
+            return _agent_control_error(
+                invocation,
+                error_type=type(exc).__name__,
+                error_message=redact_text(str(exc)),
+            )
+        settled = ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            is_error=control.is_error,
+            content=control.content,
+            structured=control.structured,
+            ended_at=utc_now() if control.status == "completed" else None,
+        )
+        if control.status == "waiting_child":
+            return ToolExecutionOutcome(
+                status="waiting_child",
+                invocation=invocation,
+                agent_wait=control.wait,
+            )
+        return ToolExecutionOutcome(
+            status="completed",
+            invocation=invocation,
+            result=settled,
+        )
+
     async def _apply_control_transitions(
         self,
         outcome: ToolExecutionOutcome,
@@ -743,9 +901,7 @@ class ToolCallCoordinator:
                                 "Tool Session control transition has no active "
                                 "plugin execution contract."
                             ),
-                            "structured": {
-                                "error_type": "SessionControlContractError"
-                            },
+                            "structured": {"error_type": "SessionControlContractError"},
                             "session_control_transitions": [],
                         }
                     )
@@ -1362,11 +1518,36 @@ def _tool_input_result_content(answer: object) -> str:
 def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStatus:
     if outcome.status == "waiting_user":
         return "waiting_user"
+    if outcome.status == "waiting_child":
+        return "waiting_child"
     if outcome.status == "aborted":
         return "aborted"
     if outcome.result is not None and outcome.result.is_error:
         return "failed"
     return "completed"
+
+
+def _agent_control_error(
+    invocation: ToolInvocation,
+    *,
+    error_type: str,
+    error_message: str,
+) -> ToolExecutionOutcome:
+    return ToolExecutionOutcome(
+        status="completed",
+        invocation=invocation,
+        result=ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            is_error=True,
+            content=(f"Tool {invocation.tool_name} failed: [{error_type}] {error_message}"),
+            structured={
+                "error_type": error_type,
+                "error_message": error_message,
+            },
+            ended_at=utc_now(),
+        ),
+    )
 
 
 def _interaction_error_outcome(

@@ -170,7 +170,7 @@ async def run_json(
 def _run_exit_code(result: RunResult) -> int:
     if result.run.status == "completed":
         return 0
-    if result.run.status in {"waiting_approval", "waiting_user", "paused"}:
+    if result.run.status in {"waiting_approval", "waiting_user", "waiting_child", "paused"}:
         return 4
     if result.run.status == "aborted":
         return 5

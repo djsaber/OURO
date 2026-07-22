@@ -5,6 +5,7 @@ from typing import Protocol
 
 from pydantic import Field
 
+from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
@@ -53,6 +54,32 @@ class SessionRepository(Protocol):
     """
 
     def create_session(self, session: SessionRecord) -> None: ...
+
+    def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord: ...
+
+    def load_delegation(
+        self, root_session_id: str, delegation_id: str
+    ) -> DelegationRecord: ...
+
+    def save_delegation(
+        self, delegation: DelegationRecord, *, expected_revision: int
+    ) -> DelegationRecord: ...
+
+    def list_delegations(
+        self, root_session_id: str, *, parent_session_id: str | None = None
+    ) -> list[DelegationRecord]: ...
+
+    def find_delegation_by_child_session(
+        self, child_session_id: str
+    ) -> DelegationRecord | None: ...
+
+    def find_delegation_by_idempotency_key(
+        self, root_session_id: str, idempotency_key: str
+    ) -> DelegationRecord | None: ...
+
+    def load_incomplete_delegations(self) -> list[DelegationRecord]: ...
+
+    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]: ...
 
     def create_session_snapshot(
         self,

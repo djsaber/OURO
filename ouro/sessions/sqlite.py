@@ -12,6 +12,7 @@ from typing import Any, Self
 
 from pydantic import ValidationError
 
+from ouro.core.agents import DelegationRecord
 from ouro.core.base import new_id, utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
@@ -30,7 +31,7 @@ from ouro.sessions.index import SessionIndex
 from ouro.sessions.locks import SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 1
+SQLITE_SCHEMA_VERSION = 2
 
 
 class SQLiteSessionStore:
@@ -117,6 +118,29 @@ class SQLiteSessionStore:
                         trashed_at TEXT NOT NULL,
                         payload TEXT NOT NULL
                     );
+                    CREATE TABLE IF NOT EXISTS delegations (
+                        delegation_id TEXT PRIMARY KEY,
+                        root_session_id TEXT NOT NULL,
+                        parent_session_id TEXT NOT NULL,
+                        child_session_id TEXT,
+                        idempotency_key TEXT NOT NULL,
+                        spawn_state TEXT NOT NULL,
+                        delivery_status TEXT,
+                        revision INTEGER NOT NULL,
+                        created_at TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        UNIQUE(root_session_id, idempotency_key),
+                        FOREIGN KEY(root_session_id)
+                            REFERENCES sessions(session_id) ON DELETE CASCADE
+                    );
+                    CREATE INDEX IF NOT EXISTS delegations_root_parent
+                        ON delegations(root_session_id, parent_session_id, created_at);
+                    CREATE UNIQUE INDEX IF NOT EXISTS delegations_child_session
+                        ON delegations(child_session_id) WHERE child_session_id IS NOT NULL;
+                    CREATE INDEX IF NOT EXISTS delegations_spawn_state
+                        ON delegations(spawn_state);
+                    CREATE INDEX IF NOT EXISTS delegations_delivery_status
+                        ON delegations(delivery_status);
                 """
             )
             existing = connection.execute(
@@ -125,6 +149,11 @@ class SQLiteSessionStore:
             if existing is None:
                 connection.execute(
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
+                    (str(SQLITE_SCHEMA_VERSION),),
+                )
+            elif int(existing[0]) == 1:
+                connection.execute(
+                    "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
             elif int(existing[0]) != SQLITE_SCHEMA_VERSION:
@@ -149,6 +178,170 @@ class SQLiteSessionStore:
 
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
+
+    def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
+        with self.session_mutation(delegation.root_session_id):
+            connection = self._transaction_connection()
+            self._require_session(connection, delegation.root_session_id)
+            try:
+                connection.execute(
+                    "INSERT INTO delegations("
+                    "delegation_id, root_session_id, parent_session_id, child_session_id, "
+                    "idempotency_key, spawn_state, delivery_status, revision, created_at, payload"
+                    ") VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    self._delegation_row(delegation),
+                )
+            except sqlite3.IntegrityError as exc:
+                if self.find_delegation_by_idempotency_key(
+                    delegation.root_session_id, delegation.idempotency_key
+                ) is not None:
+                    raise PersistenceError(
+                        "delegation idempotency key already exists: "
+                        f"{delegation.idempotency_key}"
+                    ) from exc
+                raise PersistenceError(
+                    f"delegation already exists or is inconsistent: {delegation.delegation_id}"
+                ) from exc
+        return delegation
+
+    def load_delegation(
+        self,
+        root_session_id: str,
+        delegation_id: str,
+    ) -> DelegationRecord:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM delegations "
+                "WHERE root_session_id = ? AND delegation_id = ?",
+                (root_session_id, delegation_id),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(delegation_id)
+            return self._validate_model(
+                DelegationRecord, row[0], f"delegation {delegation_id}"
+            )
+
+    def save_delegation(
+        self,
+        delegation: DelegationRecord,
+        *,
+        expected_revision: int,
+    ) -> DelegationRecord:
+        if delegation.revision != expected_revision:
+            raise PersistenceError(
+                "delegation revision conflict: supplied record does not match expected revision"
+            )
+        updated = DelegationRecord.model_validate(
+            delegation.model_copy(
+                update={"revision": expected_revision + 1, "updated_at": utc_now()}
+            ).model_dump()
+        )
+        with self.session_mutation(delegation.root_session_id):
+            connection = self._transaction_connection()
+            cursor = connection.execute(
+                "UPDATE delegations SET parent_session_id = ?, child_session_id = ?, "
+                "spawn_state = ?, delivery_status = ?, revision = ?, payload = ? "
+                "WHERE root_session_id = ? AND delegation_id = ? AND revision = ?",
+                (
+                    updated.parent_session_id,
+                    updated.child_session_id,
+                    updated.spawn_state,
+                    self._delivery_status(updated),
+                    updated.revision,
+                    updated.model_dump_json(),
+                    updated.root_session_id,
+                    updated.delegation_id,
+                    expected_revision,
+                ),
+            )
+            if cursor.rowcount == 0:
+                exists = connection.execute(
+                    "SELECT revision FROM delegations WHERE root_session_id = ? "
+                    "AND delegation_id = ?",
+                    (delegation.root_session_id, delegation.delegation_id),
+                ).fetchone()
+                if exists is None:
+                    raise FileNotFoundError(delegation.delegation_id)
+                raise PersistenceError(
+                    "delegation revision conflict: "
+                    f"expected {expected_revision}, found {exists[0]}"
+                )
+        return updated
+
+    def list_delegations(
+        self,
+        root_session_id: str,
+        *,
+        parent_session_id: str | None = None,
+    ) -> list[DelegationRecord]:
+        query = "SELECT payload FROM delegations WHERE root_session_id = ?"
+        parameters: list[object] = [root_session_id]
+        if parent_session_id is not None:
+            query += " AND parent_session_id = ?"
+            parameters.append(parent_session_id)
+        query += " ORDER BY created_at, delegation_id"
+        with self._read_connection() as connection:
+            self._require_session(connection, root_session_id)
+            return self._load_models(
+                connection, query, tuple(parameters), DelegationRecord
+            )
+
+    def find_delegation_by_child_session(
+        self,
+        child_session_id: str,
+    ) -> DelegationRecord | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM delegations WHERE child_session_id = ?",
+                (child_session_id,),
+            ).fetchone()
+            return (
+                None
+                if row is None
+                else self._validate_model(
+                    DelegationRecord, row[0], f"delegation for child {child_session_id}"
+                )
+            )
+
+    def find_delegation_by_idempotency_key(
+        self,
+        root_session_id: str,
+        idempotency_key: str,
+    ) -> DelegationRecord | None:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM delegations "
+                "WHERE root_session_id = ? AND idempotency_key = ?",
+                (root_session_id, idempotency_key),
+            ).fetchone()
+            return (
+                None
+                if row is None
+                else self._validate_model(
+                    DelegationRecord, row[0], "delegation by idempotency key"
+                )
+            )
+
+    def load_incomplete_delegations(self) -> list[DelegationRecord]:
+        with self._read_connection() as connection:
+            return self._load_models(
+                connection,
+                "SELECT payload FROM delegations "
+                "WHERE spawn_state NOT IN ('submitted', 'failed') "
+                "ORDER BY created_at, delegation_id",
+                (),
+                DelegationRecord,
+            )
+
+    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]:
+        with self._read_connection() as connection:
+            return self._load_models(
+                connection,
+                "SELECT payload FROM delegations WHERE delivery_status = 'pending' "
+                "ORDER BY created_at, delegation_id",
+                (),
+                DelegationRecord,
+            )
 
     def create_session_snapshot(
         self,
@@ -674,6 +867,25 @@ class SQLiteSessionStore:
             return model_type.model_validate_json(payload)
         except (ValidationError, ValueError, TypeError) as exc:
             raise PersistenceError(f"could not load {label}: {exc}") from exc
+
+    @classmethod
+    def _delegation_row(cls, delegation: DelegationRecord) -> tuple[object, ...]:
+        return (
+            delegation.delegation_id,
+            delegation.root_session_id,
+            delegation.parent_session_id,
+            delegation.child_session_id,
+            delegation.idempotency_key,
+            delegation.spawn_state,
+            cls._delivery_status(delegation),
+            delegation.revision,
+            str(delegation.created_at),
+            delegation.model_dump_json(),
+        )
+
+    @staticmethod
+    def _delivery_status(delegation: DelegationRecord) -> str | None:
+        return delegation.result.delivery.status if delegation.result is not None else None
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database, timeout=5.0)

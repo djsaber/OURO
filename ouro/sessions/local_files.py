@@ -10,6 +10,7 @@ from typing import TypeVar
 
 from pydantic import ValidationError
 
+from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
@@ -64,6 +65,119 @@ class LocalSessionStore:
 
     def create_session(self, session: SessionRecord) -> None:
         self.create_session_snapshot(session, [])
+
+    def create_delegation(self, delegation: DelegationRecord) -> DelegationRecord:
+        root_id = delegation.root_session_id
+        with self.session_mutation(root_id):
+            self._require_session_dir(root_id)
+            if self.find_delegation_by_idempotency_key(
+                root_id, delegation.idempotency_key
+            ) is not None:
+                raise PersistenceError(
+                    f"delegation idempotency key already exists: {delegation.idempotency_key}"
+                )
+            path = self._delegation_path(root_id, delegation.delegation_id)
+            if path.exists():
+                raise PersistenceError(
+                    f"delegation already exists: {delegation.delegation_id}"
+                )
+            self._write_model_atomic(path, delegation)
+        return delegation
+
+    def load_delegation(
+        self,
+        root_session_id: str,
+        delegation_id: str,
+    ) -> DelegationRecord:
+        with self.session_mutation(root_session_id):
+            path = self._delegation_path(root_session_id, delegation_id)
+            try:
+                return DelegationRecord.model_validate_json(path.read_text("utf-8"))
+            except FileNotFoundError:
+                raise
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load delegation {delegation_id}: {exc}"
+                ) from exc
+
+    def save_delegation(
+        self,
+        delegation: DelegationRecord,
+        *,
+        expected_revision: int,
+    ) -> DelegationRecord:
+        root_id = delegation.root_session_id
+        with self.session_mutation(root_id):
+            current = self.load_delegation(root_id, delegation.delegation_id)
+            if current.revision != expected_revision:
+                raise PersistenceError(
+                    "delegation revision conflict: "
+                    f"expected {expected_revision}, found {current.revision}"
+                )
+            if delegation.revision != expected_revision:
+                raise PersistenceError(
+                    "delegation revision conflict: supplied record does not match expected revision"
+                )
+            updated = DelegationRecord.model_validate(
+                delegation.model_copy(
+                    update={"revision": expected_revision + 1, "updated_at": utc_now()}
+                ).model_dump()
+            )
+            self._write_model_atomic(
+                self._delegation_path(root_id, delegation.delegation_id), updated
+            )
+            return updated
+
+    def list_delegations(
+        self,
+        root_session_id: str,
+        *,
+        parent_session_id: str | None = None,
+    ) -> list[DelegationRecord]:
+        with self.session_mutation(root_session_id):
+            root_dir = self._require_session_dir(root_session_id)
+            records = self._load_delegations_from_dir(root_dir / "delegations")
+        if parent_session_id is not None:
+            records = [
+                item for item in records if item.parent_session_id == parent_session_id
+            ]
+        return sorted(records, key=lambda item: (item.created_at, item.delegation_id))
+
+    def find_delegation_by_child_session(
+        self,
+        child_session_id: str,
+    ) -> DelegationRecord | None:
+        _validated_record_id(child_session_id, kind="session")
+        for path in sorted(self.sessions_dir.glob("*/delegations/*.json")):
+            record = self._load_delegation_path(path)
+            if record.child_session_id == child_session_id:
+                return record
+        return None
+
+    def find_delegation_by_idempotency_key(
+        self,
+        root_session_id: str,
+        idempotency_key: str,
+    ) -> DelegationRecord | None:
+        root_dir = self._require_session_dir(root_session_id)
+        for record in self._load_delegations_from_dir(root_dir / "delegations"):
+            if record.idempotency_key == idempotency_key:
+                return record
+        return None
+
+    def load_incomplete_delegations(self) -> list[DelegationRecord]:
+        return [
+            item
+            for item in self._all_delegations()
+            if item.spawn_state not in {"submitted", "failed"}
+        ]
+
+    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]:
+        return [
+            item
+            for item in self._all_delegations()
+            if item.result is not None and item.result.delivery.status == "pending"
+        ]
 
     def create_session_snapshot(
         self,
@@ -536,6 +650,27 @@ class LocalSessionStore:
     def _session_dir(self, session_id: str) -> Path:
         return self.sessions_dir / _validated_record_id(session_id, kind="session")
 
+    def _delegation_path(self, root_session_id: str, delegation_id: str) -> Path:
+        root_dir = self._require_session_dir(root_session_id)
+        validated = _validated_record_id(delegation_id, kind="delegation")
+        return root_dir / "delegations" / f"{validated}.json"
+
+    def _all_delegations(self) -> list[DelegationRecord]:
+        return [
+            self._load_delegation_path(path)
+            for path in sorted(self.sessions_dir.glob("*/delegations/*.json"))
+        ]
+
+    def _load_delegations_from_dir(self, directory: Path) -> list[DelegationRecord]:
+        return [self._load_delegation_path(path) for path in sorted(directory.glob("*.json"))]
+
+    @staticmethod
+    def _load_delegation_path(path: Path) -> DelegationRecord:
+        try:
+            return DelegationRecord.model_validate_json(path.read_text("utf-8"))
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(f"could not load delegation {path}: {exc}") from exc
+
     def _resource_reference_path(self, session_id: str) -> Path:
         return self._require_session_dir(session_id) / "resources" / "index.json"
 
@@ -556,6 +691,12 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"could not load data layout manifest {self._layout_path}: {exc}"
             ) from exc
+        if manifest.data_layout_version == 3 and DATA_LAYOUT_VERSION == 4:
+            migrated = manifest.model_copy(
+                update={"data_layout_version": DATA_LAYOUT_VERSION, "updated_at": utc_now()}
+            )
+            self._write_model_atomic(self._layout_path, migrated)
+            return
         if manifest.data_layout_version != DATA_LAYOUT_VERSION:
             raise MigrationRequiredError(
                 "OURO data layout migration required: "

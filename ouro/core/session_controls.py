@@ -52,6 +52,7 @@ class HostSessionInput(SessionInputRequest):
     """A synthetic input produced by an OURO Host/Application component."""
 
     host_source_id: str = Field(min_length=1)
+    queue_id: str | None = Field(default=None, min_length=1, max_length=256)
 
     @field_validator("host_source_id")
     @classmethod
@@ -197,9 +198,7 @@ class SessionControlState(OuroModel):
         activation_ids = [item.activation_id for item in self.activations]
         if len(activation_ids) != len(set(activation_ids)):
             raise ValueError("duplicate session control activation id")
-        controller_ids = [
-            item.controller_id for item in self.activations if item.phase != "failed"
-        ]
+        controller_ids = [item.controller_id for item in self.activations if item.phase != "failed"]
         if len(controller_ids) != len(set(controller_ids)):
             raise ValueError("duplicate active session controller identity")
         return self

@@ -18,6 +18,7 @@ class SQLiteImportReport(OuroModel):
     run_count: int = 0
     compaction_count: int = 0
     resource_reference_count: int = 0
+    delegation_count: int = 0
 
 
 def import_sessions_to_sqlite(
@@ -56,6 +57,26 @@ def import_sessions_to_sqlite(
                         "resource_reference_count": report.resource_reference_count
                         + len(references),
                     }
+                )
+            root_ids = sorted(
+                {
+                    session.root_session_id or session.session_id
+                    for session in source_sessions
+                    if session.session_kind == "primary"
+                }
+            )
+            for root_id in root_ids:
+                with source.session_mutation(root_id):
+                    expected = source.list_delegations(root_id)
+                for delegation in expected:
+                    target.create_delegation(delegation)
+                actual = target.list_delegations(root_id)
+                if actual != expected:
+                    raise PersistenceError(
+                        f"SQLite import verification failed for root Delegations {root_id}"
+                    )
+                report = report.model_copy(
+                    update={"delegation_count": report.delegation_count + len(expected)}
                 )
     except PersistenceError:
         raise

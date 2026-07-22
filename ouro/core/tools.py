@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
 from typing import Any, Literal, Self
 
 from pydantic import Field, JsonValue, model_validator
 
+from ouro.core.agents import AgentControlRequest, AgentWaitRequest
 from ouro.core.approvals import ApprovalRecord, PermissionMode, ToolPermissionControl
 from ouro.core.base import Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.session_controls import SessionControlTransitionRequest
@@ -20,7 +23,14 @@ ToolSource = Literal[
     "ai_generated_plugin",
     "mcp",
 ]
-ToolOutcomeStatus = Literal["ready", "completed", "approval_required", "waiting_user", "aborted"]
+ToolOutcomeStatus = Literal[
+    "ready",
+    "completed",
+    "approval_required",
+    "waiting_user",
+    "waiting_child",
+    "aborted",
+]
 
 
 class ToolDefinition(OuroModel):
@@ -106,9 +116,8 @@ class ToolResult(OuroModel):
     ended_at: datetime | None = None
     exit_code: int | None = None
     metadata: Metadata = MetadataField
-    session_control_transitions: list[SessionControlTransitionRequest] = Field(
-        default_factory=list
-    )
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
+    agent_control_request: AgentControlRequest | None = None
 
 
 class ToolInputRequest(OuroModel):
@@ -123,6 +132,7 @@ class ToolExecutionOutcome(OuroModel):
     result: ToolResult | None = None
     approval: ApprovalRecord | None = None
     input_request: ToolInputRequest | None = None
+    agent_wait: AgentWaitRequest | None = None
 
     @property
     def question(self) -> str | None:
@@ -131,6 +141,16 @@ class ToolExecutionOutcome(OuroModel):
         if self.input_request is None or not isinstance(self.input_request.data, str):
             return None
         return self.input_request.data
+
+
+def tool_definition_contract_hash(definition: ToolDefinition) -> str:
+    encoded = json.dumps(
+        definition.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 def _validate_permission_control(

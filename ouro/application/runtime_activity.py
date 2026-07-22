@@ -224,10 +224,16 @@ def reduce_runtime_activity(
         run_status = _supervisor_status(payload.get("to_status", payload.get("status")))
         if run_status is not None:
             updates["status"] = run_status
-            if run_status in {"waiting_approval", "waiting_user"}:
+            if run_status in {"waiting_approval", "waiting_user", "waiting_child"}:
                 updates["activity"] = run_status
-                updates["run_phase"] = "human_interaction"
-                updates["batch_phase"] = "awaiting_interaction"
+                updates["run_phase"] = (
+                    "subagent_join" if run_status == "waiting_child" else "human_interaction"
+                )
+                updates["batch_phase"] = (
+                    "awaiting_child"
+                    if run_status == "waiting_child"
+                    else "awaiting_interaction"
+                )
             elif run_status in _TERMINAL_ACTIVITY:
                 updates["activity"] = _TERMINAL_ACTIVITY[run_status]
     elif event_type == "tool_batch_started":
@@ -349,7 +355,7 @@ def _overlay_run(
     }
     if run.status == "queued":
         updates["activity"] = "queued"
-    elif run.status in {"waiting_approval", "waiting_user"}:
+    elif run.status in {"waiting_approval", "waiting_user", "waiting_child"}:
         updates["activity"] = run.status
     elif run.status in _TERMINAL_ACTIVITY:
         updates["activity"] = _TERMINAL_ACTIVITY[run.status]
@@ -468,7 +474,7 @@ def _tool_calls_from_payload(value: object) -> tuple[RuntimeToolCallActivity, ..
 def runtime_activity_for_status(status: SupervisorRunStatus) -> RuntimeActivity:
     if status == "running":
         return "preparing_model"
-    if status in {"idle", "queued", "waiting_approval", "waiting_user"}:
+    if status in {"idle", "queued", "waiting_approval", "waiting_user", "waiting_child"}:
         return status
     return _TERMINAL_ACTIVITY[status]
 
@@ -480,6 +486,7 @@ def _supervisor_status(value: object) -> SupervisorRunStatus | None:
         "running",
         "waiting_user",
         "waiting_approval",
+        "waiting_child",
         "completed",
         "aborted",
         "failed",

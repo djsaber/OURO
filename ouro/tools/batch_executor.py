@@ -46,7 +46,7 @@ class ToolBatchExecutor:
                 if on_outcome is not None:
                     await on_outcome(outcome)
                 outcomes.append(outcome)
-                if outcome.status == "waiting_user":
+                if outcome.status in {"waiting_user", "waiting_child"}:
                     break
             return outcomes
 
@@ -67,7 +67,7 @@ class ToolBatchExecutor:
                 )
                 if resolve_outcome is not None:
                     outcome = await resolve_outcome(outcome)
-                if outcome.status == "waiting_user":
+                if outcome.status in {"waiting_user", "waiting_child"}:
                     interaction_requested.set()
                 if on_outcome is not None:
                     await on_outcome(outcome)

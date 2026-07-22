@@ -320,4 +320,13 @@ def _interaction_state_error(run: RunRecord) -> str | None:
         batch = run.active_tool_batch
         if batch is None or not any(call.status == "waiting_user" for call in batch.calls):
             return "Run was waiting for user input without a waiting tool call."
+    if run.status == "waiting_child":
+        batch = run.active_tool_batch
+        if batch is None or not any(
+            call.status == "waiting_child"
+            and call.agent_wait is not None
+            and call.agent_wait.state == "pending"
+            for call in batch.calls
+        ):
+            return "Run was waiting for a child without a pending Agent wait."
     return None

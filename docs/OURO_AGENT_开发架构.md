@@ -84,6 +84,25 @@ Host 可直接消费的细粒度活动状态；它不是第二套状态机，并
 且在创建时取得同一边界的 initial activity。每个订阅使用有界队列，慢 Host 不反向阻塞 Run；发生 lag 后
 Host 通过 activity 快照和 durable event cursor 重新同步。
 
+### 子智能体运行链
+
+子智能体不是另一套 Agent 内核。`AgentDefinitionService` 管理 builtin/custom 能力模板；primary Run 启动时把
+可用 definition、精确工具 identity 和执行契约冻结为 `AgentCatalogSnapshot`。`SpawnAgent` 等 product-owned
+工具只在普通工具校验、权限和审批边界内产生类型化控制请求，真正的 Session/Run/Delegation 写入由
+application 层 `AgentService` 完成。child instance 是独立 `SessionRecord(session_kind="subagent")`，每次执行或
+follow-up 是新的普通 `RunRecord`；`DelegationRecord` 只保存父子关系、冻结能力、结果和交付 identity，不镜像
+child Run 的运行状态。
+
+foreground 使用原 ToolBatchCall 中的 durable `AgentWaitRequest`：父 Run 进入 `waiting_child/subagent_join` 后释放
+Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。background 复用 Host synthetic input
+队列，以稳定 delivery/queue identity 实现 next-boundary 或 follow-up 的一次性交付。child Approval/AskUser 始终
+保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
+request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child 和一个 write-capable child；
+child 的工具、workspace、审批与 RunBudgetPolicy 只能从父级能力上限收紧。
+
+Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复时，关系阶段、child Run 终态、未完成结果交付
+和 parked parent wait 都从 durable Session/Run/ToolBatch/Delegation 重建；运行中未知副作用不会被自动重放。
+
 `RuntimeEventRecorder` 先在线程外持久化事件，再把 Host sink 与观察型 Hook 投递到彼此独立的有界 worker；
 慢观察者不会持有跨 Session 全局锁，也不会回滚 durable event。每个 sink/hook 都有超时和脱敏诊断，关闭
 生命周期会 drain 已接收事件。Host 收到的是类型化 `RuntimeEventView`，不需要重复解释任意 payload。
@@ -400,7 +419,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   携带 activation scope。
 - Builtin 由 application composition root 的显式 definition registry 装配，不扫描磁盘、不写入 user immutable
   store，也不伪造 install/provenance。definition registry 是 builtin identity、默认启停、依赖 contract 和公开名称
-  保留的唯一事实来源；user installer、dependency resolver、application facade 与 runtime 都消费该 registry 的派生视图。
+  保留的唯一事实来源；user installer、dependency resolver、application services 与 runtime 都消费该 registry 的派生视图。
 - Builtin 与 user 的差异止于供应、授权和管理操作。启用后两者进入同一个 candidate reconciliation，拥有正常
   Generation、gate、owner、Catalog projection 和 durable execution contract；可关闭 builtin 不能放入 Host baseline，
   也不新增 `builtin` runtime kind 或第二套插件 runtime。
@@ -458,7 +477,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - 插件更新后，若 durable Run 的旧 digest、配置修订和依赖仍保留，runtime 可重建一个非 current generation 与精确
   Catalog；该 Catalog 只由恢复 Run 持有，不修改 selected/desired state，不启动 activation-singleton Background
   Service，lease 释放后按 owner 回收。缺包、禁用或重建 contract 不一致时恢复显式失败；durable reference 释放前
-  application facade 阻止移除旧 digest。
+  application service 阻止移除旧 digest。
 - `PluginService.scaffold/reload` 是 Host-neutral 开发用例：scaffold 原子发布经验证的最小 user package；reload 先
   并排安装 immutable candidate，只有配置、能力授权与 exact-digest code trust 完整时才复用 candidate activation
   切换 current。CLI 只负责参数与 DTO 映射。

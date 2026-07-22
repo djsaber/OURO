@@ -1,5 +1,6 @@
 """Configuration and credential helpers."""
 
+from ouro.config.agents import AgentDefinitionsConfig, AgentDefinitionsConfigManager
 from ouro.config.compaction import (
     CompactionConfig,
     CompactionConfigManager,
@@ -66,6 +67,8 @@ from ouro.config.tool_execution import (
 )
 
 __all__ = [
+    "AgentDefinitionsConfig",
+    "AgentDefinitionsConfigManager",
     "CompactionConfig",
     "CompactionConfigManager",
     "CompactionModelConfig",

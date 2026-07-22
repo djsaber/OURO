@@ -61,7 +61,8 @@ class RunContinuationService:
             run.kind != "agent"
             or checkpoint is None
             or checkpoint.state == "resolved"
-            or run.status in {"queued", "running", "waiting_user", "waiting_approval"}
+            or run.status
+            in {"queued", "running", "waiting_user", "waiting_approval", "waiting_child"}
         ):
             return RunContinuationSettlement(run=run)
 

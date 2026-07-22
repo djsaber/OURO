@@ -6,6 +6,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Final, Protocol
 
+from pydantic import JsonValue
+
 from ouro.application.dto import Diagnostic
 from ouro.application.event_models import project_runtime_event
 from ouro.application.runs import maybe_active_run
@@ -26,10 +28,14 @@ from ouro.application.supervisor_models import (
     SupervisorRunStatus,
     SupervisorStartResult,
 )
+from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
 from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
+from ouro.core.session_controls import HostSessionInput
+from ouro.core.state import RunRecord
+from ouro.core.tools import ToolResult
 
 _CLOSED: Final = object()
 
@@ -47,6 +53,17 @@ class _RunJob:
     handle: RunHandle
     prompt: str
     title: str | None
+    prepared_run: RunRecord | None = None
+    host_input: HostSessionInput | None = None
+    agent_wait_resolution: AgentWaitResolution | None = None
+    agent_wait_result: ToolResult | None = None
+    agent_wait_tool_call_id: str | None = None
+    interaction_kind: str | None = None
+    approval_id: str | None = None
+    approval_decision: bool | None = None
+    approval_reason: str = "User rejected"
+    approval_arguments: dict[str, object] | None = None
+    user_answer: JsonValue = None
     done: asyncio.Event = field(default_factory=asyncio.Event)
     result: RunResult | None = None
     cancelled: bool = False
@@ -247,6 +264,207 @@ class RuntimeSupervisor:
         self._queue.put_nowait(job)
         return handle
 
+    async def submit_prepared(
+        self,
+        run: RunRecord,
+        session_input: HostSessionInput,
+    ) -> RunHandle:
+        """Schedule one already persisted queued Run without changing its identity."""
+
+        await self.start()
+        if run.status != "queued":
+            raise ValueError("prepared supervised run must be queued")
+        if not session_input.prompt.strip():
+            raise ValueError("run prompt cannot be empty")
+        session_id = run.session_id
+        if session_id in self._jobs_by_session:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        durable = self.store.load_runtime_session(session_id)
+        active = maybe_active_run(durable.runs)
+        if active is None or active.run_id != run.run_id or active.status != "queued":
+            raise SessionBusyError(
+                f"prepared run is not the Session's queued active run: {run.run_id}"
+            )
+        handle = RunHandle(session_id=session_id)
+        job = _RunJob(
+            handle=handle,
+            prompt=session_input.prompt,
+            title=session_input.title,
+            prepared_run=run,
+            host_input=session_input,
+        )
+        self._jobs_by_session[session_id] = job
+        self._jobs_by_handle[handle.handle_id] = job
+        self._completion_events[handle.handle_id] = job.done
+        self._snapshots[handle.handle_id] = RuntimeStatusSnapshot(
+            handle=handle,
+            session_id=session_id,
+            run_id=run.run_id,
+            status="queued",
+        )
+        self._publish_activity(
+            queued_runtime_activity(
+                session_id,
+                sequence=self.store.latest_event_sequence(session_id),
+            ).model_copy(update={"run_id": run.run_id})
+        )
+        self._queue.put_nowait(job)
+        return handle
+
+    async def resume_agent_wait(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+        resolution: AgentWaitResolution,
+        result: ToolResult,
+    ) -> RunHandle:
+        """Schedule continuation of one parked parent Run."""
+
+        await self.start()
+        if session_id in self._jobs_by_session:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        run = self.store.load_run(session_id, run_id)
+        if run.status != "waiting_child":
+            raise ValueError(f"run is not waiting for a child: {run.status}")
+        handle = RunHandle(session_id=session_id)
+        job = _RunJob(
+            handle=handle,
+            prompt="",
+            title=None,
+            agent_wait_resolution=resolution,
+            agent_wait_result=result,
+            agent_wait_tool_call_id=tool_call_id,
+        )
+        self._enqueue_job(job, run_id=run_id)
+        return handle
+
+    async def route_host_input(
+        self,
+        session_input: HostSessionInput,
+        *,
+        session_id: str,
+    ) -> RunHandle | None:
+        """Route synthetic Agent traffic through the supervised Host boundary."""
+
+        await self.start()
+        durable = self.store.load_runtime_session(session_id)
+        active = maybe_active_run(durable.runs)
+        if active is not None:
+            await self.runtime.submit_host_input(session_input, session_id=session_id)
+            return None
+        if session_id in self._jobs_by_session:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        handle = RunHandle(session_id=session_id)
+        job = _RunJob(
+            handle=handle,
+            prompt=session_input.prompt,
+            title=session_input.title,
+            host_input=session_input,
+        )
+        self._enqueue_job(job)
+        return handle
+
+    async def resolve_tool_approval(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        approval_id: str,
+        approved: bool,
+        reason: str = "User rejected",
+        arguments_override: dict[str, object] | None = None,
+    ) -> RunHandle:
+        await self.start()
+        await self._await_parked_session(
+            session_id,
+            run_id=run_id,
+            expected_status="waiting_approval",
+        )
+        run = self.store.load_run(session_id, run_id)
+        if run.status != "waiting_approval":
+            raise ValueError(f"run is not waiting for approval: {run.status}")
+        handle = RunHandle(session_id=session_id)
+        self._enqueue_job(
+            _RunJob(
+                handle=handle,
+                prompt="",
+                title=None,
+                interaction_kind="approval",
+                approval_id=approval_id,
+                approval_decision=approved,
+                approval_reason=reason,
+                approval_arguments=arguments_override,
+            ),
+            run_id=run_id,
+        )
+        return handle
+
+    async def resolve_tool_input(
+        self,
+        *,
+        session_id: str,
+        run_id: str,
+        answer: JsonValue,
+    ) -> RunHandle:
+        await self.start()
+        await self._await_parked_session(
+            session_id,
+            run_id=run_id,
+            expected_status="waiting_user",
+        )
+        run = self.store.load_run(session_id, run_id)
+        if run.status != "waiting_user":
+            raise ValueError(f"run is not waiting for user input: {run.status}")
+        handle = RunHandle(session_id=session_id)
+        self._enqueue_job(
+            _RunJob(
+                handle=handle,
+                prompt="",
+                title=None,
+                interaction_kind="user_input",
+                user_answer=answer,
+            ),
+            run_id=run_id,
+        )
+        return handle
+
+    async def _await_parked_session(
+        self,
+        session_id: str,
+        *,
+        run_id: str,
+        expected_status: str,
+    ) -> None:
+        job = self._jobs_by_session.get(session_id)
+        if job is None:
+            return
+        run = self.store.load_run(session_id, run_id)
+        if run.status != expected_status:
+            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        await job.done.wait()
+
+    def _enqueue_job(self, job: _RunJob, *, run_id: str | None = None) -> None:
+        session_id = job.handle.session_id
+        self._jobs_by_session[session_id] = job
+        self._jobs_by_handle[job.handle.handle_id] = job
+        self._completion_events[job.handle.handle_id] = job.done
+        self._snapshots[job.handle.handle_id] = RuntimeStatusSnapshot(
+            handle=job.handle,
+            session_id=session_id,
+            run_id=run_id,
+            status="queued",
+        )
+        activity = queued_runtime_activity(
+            session_id,
+            sequence=self.store.latest_event_sequence(session_id),
+        )
+        self._publish_activity(
+            activity if run_id is None else activity.model_copy(update={"run_id": run_id})
+        )
+        self._queue.put_nowait(job)
+
     def subscribe(
         self,
         session_id: str,
@@ -383,15 +601,40 @@ class RuntimeSupervisor:
             completed = self._snapshots.get(handle_or_session)
             if completed is not None:
                 return completed
-            raise
+            durable = self.status(handle_or_session)
+            if durable.run_id is None or durable.status not in {
+                "queued",
+                "running",
+                "waiting_user",
+                "waiting_approval",
+                "waiting_child",
+            }:
+                return durable
+            result = await self.runtime.abort_run(
+                session_id=handle_or_session,
+                run_id=durable.run_id,
+                reason=reason,
+            )
+            return RuntimeStatusSnapshot(
+                session_id=handle_or_session,
+                run_id=result.run.run_id,
+                status=result.run.status,
+            )
         snapshot = self._snapshots[job.handle.handle_id]
         if snapshot.status == "queued":
             job.cancelled = True
+            if snapshot.run_id is not None:
+                await self.runtime.abort_run(
+                    session_id=job.handle.session_id,
+                    run_id=snapshot.run_id,
+                    reason=reason,
+                )
             self._finish_job(
                 job,
                 RuntimeStatusSnapshot(
                     handle=job.handle,
                     session_id=job.handle.session_id,
+                    run_id=snapshot.run_id,
                     status="aborted",
                     diagnostics=(
                         Diagnostic(
@@ -406,7 +649,7 @@ class RuntimeSupervisor:
                 ),
             )
             return self.status(job.handle)
-        if snapshot.status in {"running", "waiting_user", "waiting_approval"}:
+        if snapshot.status in {"running", "waiting_user", "waiting_approval", "waiting_child"}:
             result = await self.runtime.abort_run(
                 session_id=job.handle.session_id,
                 run_id=snapshot.run_id,
@@ -494,10 +737,9 @@ class RuntimeSupervisor:
             try:
                 if job.cancelled:
                     continue
-                self._snapshots[job.handle.handle_id] = RuntimeStatusSnapshot(
-                    handle=job.handle,
-                    session_id=job.handle.session_id,
-                    status="running",
+                queued_snapshot = self._snapshots[job.handle.handle_id]
+                self._snapshots[job.handle.handle_id] = queued_snapshot.model_copy(
+                    update={"status": "running", "updated_at": utc_now()}
                 )
                 current_activity = self._activities.get(job.handle.session_id)
                 if current_activity is None:
@@ -512,11 +754,56 @@ class RuntimeSupervisor:
                     )
                 )
                 try:
-                    job.result = await self.runtime.run(
-                        job.prompt,
-                        session_id=job.handle.session_id,
-                        title=job.title,
-                    )
+                    if job.interaction_kind == "approval":
+                        run_id = self._snapshots[job.handle.handle_id].run_id
+                        assert run_id is not None
+                        assert job.approval_id is not None
+                        assert job.approval_decision is not None
+                        job.result = await self.runtime.approve_tool(
+                            session_id=job.handle.session_id,
+                            run_id=run_id,
+                            approval_id=job.approval_id,
+                            approved=job.approval_decision,
+                            reason=job.approval_reason,
+                            arguments_override=job.approval_arguments,
+                        )
+                    elif job.interaction_kind == "user_input":
+                        run_id = self._snapshots[job.handle.handle_id].run_id
+                        assert run_id is not None
+                        job.result = await self.runtime.answer_user(
+                            session_id=job.handle.session_id,
+                            run_id=run_id,
+                            answer=job.user_answer,
+                        )
+                    elif job.agent_wait_resolution is not None:
+                        assert job.agent_wait_result is not None
+                        assert job.agent_wait_tool_call_id is not None
+                        run_id = self._snapshots[job.handle.handle_id].run_id
+                        assert run_id is not None
+                        job.result = await self.runtime.resume_agent_wait(
+                            session_id=job.handle.session_id,
+                            run_id=run_id,
+                            tool_call_id=job.agent_wait_tool_call_id,
+                            resolution=job.agent_wait_resolution,
+                            result=job.agent_wait_result,
+                        )
+                    elif job.prepared_run is not None:
+                        assert job.host_input is not None
+                        job.result = await self.runtime.run_prepared(
+                            job.prepared_run,
+                            job.host_input,
+                        )
+                    elif job.host_input is not None:
+                        job.result = await self.runtime.submit_host_input(
+                            job.host_input,
+                            session_id=job.handle.session_id,
+                        )
+                    else:
+                        job.result = await self.runtime.run(
+                            job.prompt,
+                            session_id=job.handle.session_id,
+                            title=job.title,
+                        )
                 except asyncio.CancelledError:
                     self._finish_interrupted_job(job)
                     raise
@@ -706,6 +993,7 @@ def _status_from_event(
             "running",
             "waiting_user",
             "waiting_approval",
+            "waiting_child",
             "completed",
             "aborted",
             "failed",

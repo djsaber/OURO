@@ -841,7 +841,9 @@ class InnerAgentLoop:
         state.run = state.run.model_copy(
             update={
                 "status": handling.status,
-                "phase": "human_interaction",
+                "phase": (
+                    "subagent_join" if handling.status == "waiting_child" else "human_interaction"
+                ),
                 "active_tool_batch": handling.batch,
                 "pending_approval_id": pending_approvals[0].approval_id
                 if pending_approvals

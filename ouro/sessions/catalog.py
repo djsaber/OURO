@@ -111,7 +111,7 @@ def _catalog_status(
     latest_run: RunRecord | None,
 ) -> SessionCatalogStatus:
     if latest_run is not None:
-        if latest_run.status in {"queued", "running"}:
+        if latest_run.status in {"queued", "running", "waiting_child"}:
             return "active"
         if latest_run.status == "waiting_approval":
             return "waiting_approval"

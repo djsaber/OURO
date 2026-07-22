@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
@@ -36,6 +37,21 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
         )
     )
     source.create_session(second)
+    delegation = DelegationRecord(
+        idempotency_key="migration/delegation",
+        root_session_id=first.session_id,
+        parent_session_id=first.session_id,
+        parent_run_id=run.run_id,
+        agent_id="reader",
+        task_description="Verify migration",
+        prompt_digest="sha256:" + "a" * 64,
+        definition=AgentDefinition(
+            agent_id="reader",
+            name="Reader",
+            description="Read evidence.",
+        ),
+    )
+    source.create_delegation(delegation)
     target = SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
 
     report = import_sessions_to_sqlite(source, target)
@@ -45,6 +61,8 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     assert report.event_count == 1
     assert report.run_count == 1
     assert report.resource_reference_count == 1
+    assert report.delegation_count == 1
+    assert target.list_delegations(first.session_id) == [delegation]
     for session in source.list_sessions():
         assert target.load_session(session.session_id) == source.load_session(session.session_id)
         assert target.load_resource_references(

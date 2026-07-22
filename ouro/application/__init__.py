@@ -1,5 +1,18 @@
 """Application services that orchestrate OURO core runtime boundaries."""
 
+from ouro.application.agent_definitions import AgentDefinitionService
+from ouro.application.agent_models import (
+    AgentDefinitionCatalogView,
+    AgentDefinitionDetail,
+    AgentDefinitionView,
+    AgentHandleView,
+    AgentInteractionView,
+    AgentReadView,
+    AgentTreeSnapshot,
+    AgentWaitResultView,
+    SpawnAgentRequest,
+)
+from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
     ConfigurationOverview,
@@ -59,6 +72,16 @@ from ouro.application.usage_models import (
 from ouro.core.results import RunResult
 
 __all__ = [
+    "AgentDefinitionCatalogView",
+    "AgentDefinitionDetail",
+    "AgentDefinitionService",
+    "AgentDefinitionView",
+    "AgentHandleView",
+    "AgentInteractionView",
+    "AgentReadView",
+    "AgentService",
+    "AgentTreeSnapshot",
+    "AgentWaitResultView",
     "ApplicationStartupReport",
     "ConfigurationFacade",
     "ConfigurationOverview",
@@ -108,4 +131,5 @@ __all__ = [
     "SessionReplay",
     "SessionTrashResult",
     "SessionView",
+    "SpawnAgentRequest",
 ]

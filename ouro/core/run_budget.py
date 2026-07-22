@@ -23,6 +23,38 @@ class RunBudgetPolicy(OuroModel):
     max_output_tokens: int | None = Field(default=None, ge=1)
     max_elapsed_seconds: float | None = Field(default=None, gt=0)
 
+    def constrained_by(self, upper_bound: RunBudgetPolicy) -> RunBudgetPolicy:
+        """Return the pointwise tighter policy without mutating either operand."""
+
+        def tighter[T: int | float](
+            requested: T | None,
+            limit: T | None,
+        ) -> T | None:
+            if requested is None:
+                return limit
+            if limit is None:
+                return requested
+            return min(requested, limit)
+
+        return RunBudgetPolicy(
+            max_model_rounds=tighter(
+                self.max_model_rounds,
+                upper_bound.max_model_rounds,
+            ),
+            max_input_tokens=tighter(
+                self.max_input_tokens,
+                upper_bound.max_input_tokens,
+            ),
+            max_output_tokens=tighter(
+                self.max_output_tokens,
+                upper_bound.max_output_tokens,
+            ),
+            max_elapsed_seconds=tighter(
+                self.max_elapsed_seconds,
+                upper_bound.max_elapsed_seconds,
+            ),
+        )
+
     def exceeded_reason(
         self,
         *,

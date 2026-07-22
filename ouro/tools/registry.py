@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 
+from ouro.core.agents import AGENT_CONTROL_TOOL_NAMES
 from ouro.tools.base import Tool, ToolDefinition
 from ouro.tools.schema import validate_tool_definition
 
@@ -97,9 +98,7 @@ class ToolRegistry:
         return tool
 
     def definitions(self) -> list[ToolDefinition]:
-        return [
-            tool.definition for tool in self._tools.values() if self._is_visible(tool)
-        ]
+        return [tool.definition for tool in self._tools.values() if self._is_visible(tool)]
 
     def names(self) -> list[str]:
         return sorted(name for name, tool in self._tools.items() if self._is_visible(tool))
@@ -116,6 +115,43 @@ class ToolRegistry:
         scoped.freeze()
         return scoped
 
+    def selected(self, names: Iterable[str]) -> ToolRegistry:
+        """Freeze an exact name subset without changing the owning registry."""
+
+        selected_names = tuple(dict.fromkeys(names))
+        missing = [name for name in selected_names if name not in self._tools]
+        if missing:
+            raise KeyError("unknown tools in selected registry: " + ", ".join(missing))
+        selected = ToolRegistry()
+        selected._tools = {name: self._tools[name] for name in selected_names}
+        selected._owners = {
+            name: self._owners[name] for name in selected_names if name in self._owners
+        }
+        selected._active_controller_ids = self._active_controller_ids
+        selected.freeze()
+        return selected
+
+    def overlay(self, tools: Iterable[Tool]) -> ToolRegistry:
+        """Return a frozen per-Run view with product-owned dynamic tools."""
+
+        additions = list(tools)
+        names = [tool.definition.name for tool in additions]
+        if len(names) != len(set(names)):
+            raise ValueError("tool overlay contains duplicate names")
+        for tool in additions:
+            _validate_tool(tool)
+        conflicts = sorted(set(names).intersection(self._tools))
+        if conflicts:
+            raise ValueError(
+                "tool overlay conflicts with registered tools: " + ", ".join(conflicts)
+            )
+        overlaid = ToolRegistry()
+        overlaid._tools = {**self._tools, **{tool.definition.name: tool for tool in additions}}
+        overlaid._owners = dict(self._owners)
+        overlaid._active_controller_ids = self._active_controller_ids
+        overlaid.freeze()
+        return overlaid
+
     def _is_visible(self, tool: Tool) -> bool:
         controller_id = tool.definition.active_when_controller_id
         return (
@@ -127,6 +163,11 @@ class ToolRegistry:
 
 def _validate_tool(tool: Tool) -> None:
     validate_tool_definition(tool.definition)
+    if (
+        tool.definition.name in AGENT_CONTROL_TOOL_NAMES
+        and tool.definition.metadata.get("ouro_agent_control") is not True
+    ):
+        raise ValueError(f"tool name is reserved for OURO Agent control: {tool.definition.name}")
     if tool.definition.resumable is not (tool.resume_handler is not None):
         raise ValueError(
             f"tool resumable contract does not match resume handler: {tool.definition.name}"

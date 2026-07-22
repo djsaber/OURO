@@ -1,0 +1,134 @@
+from __future__ import annotations
+
+from collections.abc import Mapping
+from copy import deepcopy
+from pathlib import Path
+
+from pydantic import Field, ValidationError
+
+from ouro.config.file import JsonConfigFile, atomic_config_update
+from ouro.core.agents import AgentDefinition
+from ouro.core.base import OuroModel
+from ouro.core.errors import ConfigError
+
+MAX_USER_AGENT_DEFINITIONS = 32
+RESERVED_AGENT_IDS = frozenset({"general"})
+
+
+class AgentDefinitionsConfig(OuroModel):
+    revision: int = Field(default=0, ge=0)
+    definitions: tuple[AgentDefinition, ...] = ()
+
+
+class AgentDefinitionsConfigManager:
+    def __init__(self, root: str | Path | None = None) -> None:
+        self._file = JsonConfigFile(root)
+
+    @property
+    def file(self) -> JsonConfigFile:
+        return self._file
+
+    def snapshot(self) -> AgentDefinitionsConfig:
+        raw = self._file.read().get("agents", {})
+        if raw is None:
+            raw = {}
+        if not isinstance(raw, Mapping):
+            raise ConfigError("agents config must be an object")
+        try:
+            config = AgentDefinitionsConfig.model_validate(dict(raw))
+        except ValidationError as exc:
+            raise ConfigError(f"invalid agents config: {exc}") from exc
+        ids = [item.agent_id for item in config.definitions]
+        if len(set(ids)) != len(ids):
+            raise ConfigError("invalid agents config: duplicate agent_id")
+        reserved = sorted(RESERVED_AGENT_IDS.intersection(ids))
+        if reserved:
+            raise ConfigError(
+                "invalid agents config: reserved agent ids cannot be user-defined: "
+                + ", ".join(reserved)
+            )
+        if len(config.definitions) > MAX_USER_AGENT_DEFINITIONS:
+            raise ConfigError(
+                f"invalid agents config: at most {MAX_USER_AGENT_DEFINITIONS} definitions"
+            )
+        return config
+
+    @atomic_config_update
+    def create(
+        self,
+        definition: AgentDefinition,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionsConfig:
+        if definition.agent_id in RESERVED_AGENT_IDS:
+            raise ConfigError(f"agent_id is reserved: {definition.agent_id}")
+        current = self._require_revision(expected_revision)
+        if any(item.agent_id == definition.agent_id for item in current.definitions):
+            raise ConfigError(f"agent definition already exists: {definition.agent_id}")
+        return self._save(
+            AgentDefinitionsConfig(
+                revision=current.revision + 1,
+                definitions=(*current.definitions, definition),
+            )
+        )
+
+    @atomic_config_update
+    def update(
+        self,
+        definition: AgentDefinition,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionsConfig:
+        if definition.agent_id in RESERVED_AGENT_IDS:
+            raise ConfigError(f"builtin agent definition is immutable: {definition.agent_id}")
+        current = self._require_revision(expected_revision)
+        if not any(item.agent_id == definition.agent_id for item in current.definitions):
+            raise ConfigError(f"agent definition not found: {definition.agent_id}")
+        return self._save(
+            AgentDefinitionsConfig(
+                revision=current.revision + 1,
+                definitions=tuple(
+                    definition if item.agent_id == definition.agent_id else item
+                    for item in current.definitions
+                ),
+            )
+        )
+
+    @atomic_config_update
+    def delete(self, agent_id: str, *, expected_revision: int) -> AgentDefinitionsConfig:
+        if agent_id in RESERVED_AGENT_IDS:
+            raise ConfigError(f"builtin agent definition is immutable: {agent_id}")
+        current = self._require_revision(expected_revision)
+        if not any(item.agent_id == agent_id for item in current.definitions):
+            raise ConfigError(f"agent definition not found: {agent_id}")
+        return self._save(
+            AgentDefinitionsConfig(
+                revision=current.revision + 1,
+                definitions=tuple(
+                    item for item in current.definitions if item.agent_id != agent_id
+                ),
+            )
+        )
+
+    def _require_revision(self, expected_revision: int) -> AgentDefinitionsConfig:
+        current = self.snapshot()
+        if current.revision != expected_revision:
+            raise ConfigError(
+                "agents revision conflict: "
+                f"expected {expected_revision}, found {current.revision}"
+            )
+        return current
+
+    def _save(self, config: AgentDefinitionsConfig) -> AgentDefinitionsConfig:
+        raw = deepcopy(self._file.read())
+        raw["agents"] = config.model_dump(mode="json")
+        self._file.write(raw)
+        return config
+
+
+__all__ = [
+    "AgentDefinitionsConfig",
+    "AgentDefinitionsConfigManager",
+    "MAX_USER_AGENT_DEFINITIONS",
+    "RESERVED_AGENT_IDS",
+]
