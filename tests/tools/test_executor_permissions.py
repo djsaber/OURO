@@ -102,7 +102,8 @@ def test_session_approval_mode_overrides_automatic_tool_policy() -> None:
     assert outcome.invocation.permission_mode == "approval"
 
 
-def test_session_auto_mode_overrides_denied_tool_permission() -> None:
+@pytest.mark.parametrize("approval_mode", ["auto", "approval"])
+def test_session_mode_cannot_override_denied_tool_permission(approval_mode) -> None:
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
@@ -114,10 +115,12 @@ def test_session_auto_mode_overrides_denied_tool_permission() -> None:
         arguments={"path": "unused.txt", "content": "content"},
     )
 
-    outcome = executor.preflight(invocation, approval_mode="auto")
+    outcome = executor.preflight(invocation, approval_mode=approval_mode)
 
-    assert outcome.status == "ready"
-    assert outcome.invocation.permission_mode == "auto"
+    assert outcome.status == "completed"
+    assert outcome.invocation.permission_mode == "deny"
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
 
 
 @pytest.mark.parametrize("approval_mode", ["inherit", "auto", "approval", "deny"])
@@ -304,6 +307,28 @@ def test_extension_policy_deny_cannot_be_lowered_by_session_mode() -> None:
     assert outcome.result is not None
     assert outcome.result.structured["error_type"] == "ToolPermissionDenied"
     assert "path is protected" in outcome.result.content
+
+
+def test_delegated_permission_floor_cannot_be_relaxed_by_current_configuration() -> None:
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    executor = ToolExecutor(
+        registry,
+        permission_overrides={"Read": "auto"},
+        permission_floors={"Read": "approval"},
+    )
+    invocation = ToolInvocation(
+        session_id="child",
+        run_id="child_run",
+        tool_name="Read",
+        arguments={"path": "unused.txt"},
+    )
+
+    outcome = executor.preflight(invocation, approval_mode="auto")
+
+    assert outcome.status == "approval_required"
+    assert outcome.invocation.permission_mode == "approval"
 
 
 def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:

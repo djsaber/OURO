@@ -242,6 +242,189 @@ async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy
 
 
 @pytest.mark.asyncio
+async def test_tool_policy_is_rechecked_at_the_execution_boundary(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    tools = ToolRegistry()
+    executed: list[str] = []
+
+    async def guarded_tool(invocation) -> ToolResult:
+        executed.append(invocation.tool_call_id)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="executed",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="GuardedTool",
+                description="Exercise a changing policy.",
+            ),
+            handler=guarded_tool,
+        )
+    )
+    evaluations = 0
+
+    def tighten_after_preflight(_call):
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations == 1:
+            return ToolPolicyDecision()
+        return ToolPolicyDecision(action="deny", reason="permission was revoked")
+
+    policies = ToolPolicyRegistry()
+    policies.replace_owner(
+        "guard",
+        (
+            ToolPolicyRegistration(
+                plugin_id="dev.ouro.guard",
+                policy_id="runtime_revocation",
+                handler=tighten_after_preflight,
+            ),
+        ),
+    )
+    provider = FauxProvider(
+        event_batches=[
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_guarded",
+                        "name": "GuardedTool",
+                        "arguments": {},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="revocation observed"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="guard", provider_id="faux"),
+        ),
+        tools=tools,
+        tool_policies=policies,
+        environment=RuntimeEnvironment(home=home),
+    )
+
+    result = await runtime.run("exercise revocation")
+
+    assert result.run.status == "completed"
+    assert evaluations == 2
+    assert executed == []
+    assert result.tool_results[0].structured["error_type"] == "ToolPermissionDenied"
+    policy_event = next(
+        event
+        for event in store.load_session(result.session.session_id).events
+        if event.event_type == "tool_policy_evaluated"
+    )
+    assert policy_event.payload["phase"] == "execution_boundary"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_execution_boundary_can_park_for_a_new_durable_approval(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    tools = ToolRegistry()
+    executed: list[str] = []
+
+    async def guarded_tool(invocation) -> ToolResult:
+        executed.append(invocation.tool_call_id)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="executed after approval",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ApprovalBoundaryTool",
+                description="Require approval only at the execution boundary.",
+            ),
+            handler=guarded_tool,
+        )
+    )
+    evaluations = 0
+
+    def tighten_after_preflight(_call):
+        nonlocal evaluations
+        evaluations += 1
+        if evaluations == 1:
+            return ToolPolicyDecision()
+        return ToolPolicyDecision(action="require_approval", reason="review now required")
+
+    policies = ToolPolicyRegistry()
+    policies.replace_owner(
+        "guard",
+        (
+            ToolPolicyRegistration(
+                plugin_id="dev.ouro.guard",
+                policy_id="runtime_approval",
+                handler=tighten_after_preflight,
+            ),
+        ),
+    )
+    provider = FauxProvider(
+        event_batches=[
+            [
+                ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "call_approval_boundary",
+                        "name": "ApprovalBoundaryTool",
+                        "arguments": {},
+                    },
+                ),
+                ProviderStreamEvent(type="done"),
+            ],
+            [
+                ProviderStreamEvent(type="text_delta", text="approval observed"),
+                ProviderStreamEvent(type="done"),
+            ],
+        ]
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="guard", provider_id="faux"),
+        ),
+        tools=tools,
+        tool_policies=policies,
+        environment=RuntimeEnvironment(home=home),
+    )
+
+    waiting = await runtime.run("exercise execution-boundary approval")
+
+    assert waiting.run.status == "waiting_approval"
+    assert waiting.run.pending_approval_id is not None
+    assert executed == []
+    completed = await runtime.approve_tool(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        approval_id=waiting.run.pending_approval_id,
+        approved=True,
+    )
+
+    assert completed.run.status == "completed"
+    assert evaluations == 3
+    assert executed == ["call_approval_boundary"]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_runs_keep_their_immutable_plugin_catalog(tmp_path) -> None:
     home = tmp_path / "home"
     store = LocalSessionStore(home)
@@ -791,7 +974,7 @@ async def test_tool_policy_rechecks_user_modified_approval_arguments(tmp_path) -
         event
         for event in events
         if event.event_type == "tool_policy_evaluated"
-        and event.payload.get("phase") == "approval_modification"
+        and event.payload.get("phase") == "execution_boundary"
     )
     assert reevaluation.payload["mode"] == "deny"
 

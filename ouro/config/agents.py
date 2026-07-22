@@ -3,11 +3,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from pathlib import Path
+from typing import Literal, Self
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, model_validator
 
 from ouro.config.file import JsonConfigFile, atomic_config_update
-from ouro.core.agents import AgentDefinition
+from ouro.core.agents import AgentDefinition, AgentSpawnPolicy
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
@@ -15,8 +16,23 @@ MAX_USER_AGENT_DEFINITIONS = 32
 RESERVED_AGENT_IDS = frozenset({"general"})
 
 
+class AgentRuntimeConfig(OuroModel):
+    """Process-start policy for the first-release Agent scheduler."""
+
+    max_depth: Literal[1] = 1
+    max_active_children_per_root: int = Field(default=4, ge=1, le=32)
+    spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
+
+    @model_validator(mode="after")
+    def validate_first_release_policy(self) -> Self:
+        if self.spawn_policy.allowed_lifecycle_bindings != ("bound",):
+            raise ValueError("first-release Agent runtime supports only bound lifecycle")
+        return self
+
+
 class AgentDefinitionsConfig(OuroModel):
     revision: int = Field(default=0, ge=0)
+    runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
     definitions: tuple[AgentDefinition, ...] = ()
 
 
@@ -68,6 +84,7 @@ class AgentDefinitionsConfigManager:
         return self._save(
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
+                runtime=current.runtime,
                 definitions=(*current.definitions, definition),
             )
         )
@@ -87,6 +104,7 @@ class AgentDefinitionsConfigManager:
         return self._save(
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
+                runtime=current.runtime,
                 definitions=tuple(
                     definition if item.agent_id == definition.agent_id else item
                     for item in current.definitions
@@ -104,9 +122,30 @@ class AgentDefinitionsConfigManager:
         return self._save(
             AgentDefinitionsConfig(
                 revision=current.revision + 1,
+                runtime=current.runtime,
                 definitions=tuple(
                     item for item in current.definitions if item.agent_id != agent_id
                 ),
+            )
+        )
+
+    @atomic_config_update
+    def update_runtime(
+        self,
+        runtime: AgentRuntimeConfig,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionsConfig:
+        current = self._require_revision(expected_revision)
+        try:
+            validated = AgentRuntimeConfig.model_validate(runtime.model_dump())
+        except ValueError as exc:
+            raise ConfigError(f"invalid Agent runtime config: {exc}") from exc
+        return self._save(
+            AgentDefinitionsConfig(
+                revision=current.revision + 1,
+                runtime=validated,
+                definitions=current.definitions,
             )
         )
 
@@ -114,8 +153,7 @@ class AgentDefinitionsConfigManager:
         current = self.snapshot()
         if current.revision != expected_revision:
             raise ConfigError(
-                "agents revision conflict: "
-                f"expected {expected_revision}, found {current.revision}"
+                f"agents revision conflict: expected {expected_revision}, found {current.revision}"
             )
         return current
 
@@ -129,6 +167,7 @@ class AgentDefinitionsConfigManager:
 __all__ = [
     "AgentDefinitionsConfig",
     "AgentDefinitionsConfigManager",
+    "AgentRuntimeConfig",
     "MAX_USER_AGENT_DEFINITIONS",
     "RESERVED_AGENT_IDS",
 ]

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from ouro.application.agent_models import (
     AgentDefinitionCatalogView,
     AgentDefinitionDetail,
@@ -15,6 +17,11 @@ from ouro.core.agents import (
     ContextPolicy,
     EffectiveToolRef,
     ToolSelection,
+)
+from ouro.core.approvals import (
+    PermissionMode,
+    SessionApprovalMode,
+    resolve_tool_permission,
 )
 from ouro.core.errors import ConfigError
 from ouro.core.tools import tool_definition_contract_hash
@@ -174,12 +181,32 @@ class AgentDefinitionService:
             for definition in self._candidate_definitions(tools)
         )
 
-    def catalog_snapshot(self, tools: ToolRegistry) -> AgentCatalogSnapshot:
+    def catalog_snapshot(
+        self,
+        tools: ToolRegistry,
+        *,
+        permission_overrides: Mapping[str, PermissionMode] | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
+    ) -> AgentCatalogSnapshot:
         config = self.config.snapshot()
-        return AgentCatalogSnapshot(revision=config.revision, entries=self._entries(tools))
+        return AgentCatalogSnapshot(
+            revision=config.revision,
+            entries=self._entries(
+                tools,
+                permission_overrides=permission_overrides,
+                approval_mode=approval_mode,
+            ),
+        )
 
-    def _entries(self, tools: ToolRegistry) -> tuple[AgentCatalogEntry, ...]:
+    def _entries(
+        self,
+        tools: ToolRegistry,
+        *,
+        permission_overrides: Mapping[str, PermissionMode] | None = None,
+        approval_mode: SessionApprovalMode = "inherit",
+    ) -> tuple[AgentCatalogEntry, ...]:
         config = self.config.snapshot()
+        overrides = permission_overrides or {}
         definitions = (GENERAL_AGENT_DEFINITION, *config.definitions)
         candidates = {
             definition.name: definition for definition in self._candidate_definitions(tools)
@@ -192,15 +219,30 @@ class AgentDefinitionService:
                 else definition.tool_selection.names
             )
             missing = tuple(name for name in selected_names if name not in candidates)
-            effective = tuple(
-                self._effective_tool_ref(tools, candidates[name])
-                for name in selected_names
-                if name in candidates
-            )
+            effective: list[EffectiveToolRef] = []
+            for name in selected_names:
+                if name not in candidates:
+                    continue
+                tool = candidates[name]
+                permission = resolve_tool_permission(
+                    tool.permission_mode,
+                    approval_mode,
+                    permission_control=tool.permission_control,
+                    override=overrides.get(name),
+                )
+                if permission == "deny":
+                    continue
+                effective.append(
+                    self._effective_tool_ref(
+                        tools,
+                        tool,
+                        minimum_permission_mode=permission,
+                    )
+                )
             entries.append(
                 AgentCatalogEntry(
                     definition=definition,
-                    effective_tools=effective,
+                    effective_tools=tuple(effective),
                     missing_tool_names=missing,
                 )
             )
@@ -219,6 +261,8 @@ class AgentDefinitionService:
         cls,
         tools: ToolRegistry,
         definition: ToolDefinition,
+        *,
+        minimum_permission_mode: PermissionMode = "auto",
     ) -> EffectiveToolRef:
         metadata = definition.metadata
         plugin_id = metadata.get("plugin_id")
@@ -229,6 +273,14 @@ class AgentDefinitionService:
             else f"ouro.host/tools/{definition.name}"
         )
         execution_hash = metadata.get("execution_contract_hash")
+        raw_plugin_permissions = metadata.get("plugin_permissions", ())
+        plugin_permissions = (
+            frozenset(item for item in raw_plugin_permissions if isinstance(item, str))
+            if isinstance(raw_plugin_permissions, (list, tuple))
+            else frozenset()
+        )
+        is_shell = isinstance(metadata.get("shell_kind"), str)
+        is_mcp = definition.source == "mcp"
         return EffectiveToolRef(
             public_name=definition.name,
             canonical_tool_id=canonical_id,
@@ -240,6 +292,10 @@ class AgentDefinitionService:
             ),
             source=definition.source,
             effect=definition.effect,
+            minimum_permission_mode=minimum_permission_mode,
+            requires_network=(is_shell or is_mcp or "network.outbound" in plugin_permissions),
+            requires_mcp=is_mcp,
+            requires_external_paths=(is_shell or is_mcp or "process.spawn" in plugin_permissions),
         )
 
     @staticmethod

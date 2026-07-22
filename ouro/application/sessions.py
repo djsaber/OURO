@@ -27,6 +27,7 @@ from ouro.application.session_models import (
     SessionView,
 )
 from ouro.application.session_recovery import SessionRecoveryService
+from ouro.core.agents import DelegationRecord
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.context import ContextView
@@ -39,7 +40,7 @@ from ouro.core.errors import (
 )
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
-from ouro.core.state import SessionRecord, SessionTitleSource
+from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
@@ -224,6 +225,21 @@ class SessionService:
         )
 
     def set_archived(self, session_id: str, archived: bool) -> SessionMutationResult:
+        if archived:
+            session = self._load_snapshot(session_id, recover=False).session
+            if session.session_kind == "primary":
+                active = self._active_or_unresolved_agent_descendants(
+                    self._store.list_delegations(session.root_session_id or session.session_id)
+                )
+                if active:
+                    raise SessionBusyError(
+                        self._agent_descendant_conflict(
+                            session_id,
+                            active,
+                            action="archive",
+                            qualifier="active or unresolved",
+                        )
+                    )
         return self._update_session(session_id, archived=archived)
 
     def set_pinned(self, session_id: str, pinned: bool) -> SessionMutationResult:
@@ -319,6 +335,33 @@ class SessionService:
 
     def trash(self, session_id: str) -> SessionTrashResult:
         snapshot = self._load_snapshot(session_id, recover=False)
+        session = snapshot.session
+        relations = (
+            self._store.list_delegations(session.root_session_id or session.session_id)
+            if session.session_kind == "primary"
+            else []
+        )
+        if relations:
+            raise SessionBusyError(
+                self._agent_descendant_conflict(
+                    session_id,
+                    relations,
+                    action="trash",
+                    qualifier="canonical",
+                )
+            )
+        if session.session_kind == "subagent":
+            owning_relation = self._store.find_delegation_by_child_session(session_id)
+            if owning_relation is None:
+                raise SessionBusyError(
+                    "cannot trash orphan subagent Session "
+                    f"{session_id}; preserve it for relation reconciliation"
+                )
+            raise SessionBusyError(
+                "cannot trash child Session "
+                f"{session_id}; it belongs to Delegation {owning_relation.delegation_id} "
+                f"under root {owning_relation.root_session_id}"
+            )
         resource_ids: list[str] = []
         lock = self._store.acquire_session_lock(session_id, new_id("trash"))
         if lock is None:
@@ -354,6 +397,46 @@ class SessionService:
             trash_id=trash_id,
             diagnostics=tuple(diagnostics),
         )
+
+    @staticmethod
+    def _agent_descendant_conflict(
+        session_id: str,
+        relations: Iterable[DelegationRecord],
+        *,
+        action: str,
+        qualifier: str,
+    ) -> str:
+        relation_list = list(relations)
+        identities = ", ".join(relation.delegation_id for relation in relation_list[:4])
+        suffix = "" if len(relation_list) <= 4 else ", ..."
+        return (
+            f"cannot {action} root Session {session_id}; "
+            f"{len(relation_list)} {qualifier} Agent descendant(s) are in scope "
+            f"({identities}{suffix})"
+        )
+
+    def _active_or_unresolved_agent_descendants(
+        self,
+        relations: Iterable[DelegationRecord],
+    ) -> list[DelegationRecord]:
+        active: list[DelegationRecord] = []
+        for relation in relations:
+            if relation.child_session_id is None or relation.current_child_run_id is None:
+                if relation.spawn_state != "failed":
+                    active.append(relation)
+                continue
+            try:
+                run = self._store.load_run(
+                    relation.child_session_id,
+                    relation.current_child_run_id,
+                )
+            except FileNotFoundError:
+                if relation.spawn_state != "failed":
+                    active.append(relation)
+                continue
+            if run.status in ACTIVE_RUN_STATUSES:
+                active.append(relation)
+        return active
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
         with self._store.session_mutation(source_session_id):

@@ -466,9 +466,7 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path) ->
         execution_contract_hash="execution-dev.ouro.goal",
         claims=[SessionControlClaim(domain="dev.ouro.goal-mode")],
     )
-    session = SessionRecord(
-        controls=SessionControlState(revision=1, activations=[activation])
-    )
+    session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
     store.create_session(session)
     controller = _controller("dev.ouro.goal", "goal", "gen_goal").model_copy(
         update={
@@ -486,9 +484,7 @@ async def test_releasing_controller_cancels_its_queued_continuation(tmp_path) ->
     policy = _policy("dev.ouro.goal", "gen_goal", "continue goal")
     registry.replace_owner(
         "goal",
-        (
-            replace(policy, active_when_controller_id=canonical_controller_id),
-        ),
+        (replace(policy, active_when_controller_id=canonical_controller_id),),
     )
     queue = QueuedInputQueue(store)
 

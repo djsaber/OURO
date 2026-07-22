@@ -74,8 +74,8 @@ class QueuedInput(OuroModel):
             or any(value is not None for value in plugin_attribution)
         ):
             raise ValueError("user queued input cannot carry synthetic-source attribution")
-        if self.source != "user" and self.resource_refs:
-            raise ValueError("synthetic queued input cannot carry user resources")
+        if self.source == "plugin" and self.resource_refs:
+            raise ValueError("plugin queued input cannot carry Host resource references")
         if (self.session_control_controller_id is None) is not (
             self.session_control_activation_id is None
         ):

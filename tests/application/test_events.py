@@ -51,6 +51,35 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_application_event_publish_uses_same_durable_observer_boundary(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Application events")
+    store.create_session(session)
+    seen: list[EventRecord] = []
+    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry(), event_sink=seen.append)
+
+    event = await recorder.publish(
+        session_id=session.session_id,
+        run_id="run_parent",
+        event_type="agent_closed",
+        payload={"delegation_id": "dlg_child"},
+    )
+    with pytest.raises(ValueError, match="child_session_id"):
+        await recorder.publish(
+            session_id=session.session_id,
+            run_id="run_parent",
+            event_type="agent_spawned",
+            payload={"delegation_id": "dlg_invalid"},
+        )
+    await recorder.close()
+
+    assert event.sequence == 1
+    assert store.load_session(session.session_id).events == [event]
+    assert seen == [event]
+
+
+@pytest.mark.asyncio
 async def test_event_observer_retains_hook_registry_resolved_at_publish_time(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

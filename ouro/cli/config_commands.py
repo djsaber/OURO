@@ -7,7 +7,7 @@ from pathlib import Path
 from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.config import QueuedInputConsumptionMode
-from ouro.core.errors import OuroError
+from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
@@ -379,6 +379,76 @@ def show_run_budget_config(
                 f"- max output tokens: {policy.max_output_tokens or 'unlimited'}",
                 f"- max elapsed seconds: {policy.max_elapsed_seconds or 'unlimited'}",
                 f"Config: {policy.config_path}",
+            ]
+        )
+    )
+    return 0
+
+
+def show_agent_runtime_config(
+    *,
+    home: str | Path | None = None,
+    expected_revision: int | None = None,
+    max_depth: int | None = None,
+    max_active_children_per_root: int | None = None,
+    allowed_agent_id_patterns: list[str] | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        facade = ConfigurationFacade(home)
+        has_update = any(
+            value is not None
+            for value in (
+                max_depth,
+                max_active_children_per_root,
+                allowed_agent_id_patterns,
+            )
+        )
+        if has_update and expected_revision is None:
+            raise ConfigError("--expected-revision is required for Agent runtime updates")
+        config = (
+            facade.update_agent_runtime(
+                expected_revision=expected_revision,
+                max_depth=max_depth,
+                max_active_children_per_root=max_active_children_per_root,
+                allowed_agent_id_patterns=(
+                    tuple(allowed_agent_id_patterns)
+                    if allowed_agent_id_patterns is not None
+                    else None
+                ),
+            )
+            if has_update and expected_revision is not None
+            else facade.agent_runtime_config()
+        )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = config.model_dump(exclude={"config_path", "change"}, exclude_none=True)
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": config.config_path,
+                    "agents": public,
+                    "change": (
+                        config.change.model_dump(mode="json") if config.change is not None else None
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+    print(
+        "\n".join(
+            [
+                f"Agent config revision: {config.revision}",
+                f"Max depth: {config.max_depth}",
+                f"Max active children per root: {config.max_active_children_per_root}",
+                "Allowed agent ids: " + ", ".join(config.spawn_policy.allowed_agent_id_patterns),
+                "Root budget: inherited from config run-budget and frozen parent Run.",
+                f"Config: {config.config_path}",
             ]
         )
     )

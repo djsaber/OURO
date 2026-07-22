@@ -323,6 +323,30 @@ class ResourceService:
             for resource_id in unique_ids
         ]
 
+    def copy_references(
+        self,
+        source_session_id: str,
+        target_session_id: str,
+        resource_ids: Iterable[str],
+    ) -> tuple[str, ...]:
+        """Validate and attach immutable references while source reachability is locked."""
+
+        unique_ids = tuple(dict.fromkeys(resource_ids))
+        if not unique_ids:
+            return ()
+        if source_session_id == target_session_id:
+            self.validate_references(source_session_id, unique_ids)
+            return unique_ids
+        with self._sessions.session_mutation(source_session_id):
+            references = self.branch_references(
+                source_session_id,
+                target_session_id,
+                unique_ids,
+            )
+            for reference in references:
+                self._sessions.attach_resource_reference(target_session_id, reference)
+        return unique_ids
+
     def collect_after_session_trash(self, resource_ids: Iterable[str]) -> tuple[str, ...]:
         candidates = [
             resource_id

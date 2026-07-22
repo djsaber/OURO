@@ -48,7 +48,12 @@ from ouro.config.compaction import CompactionConfig
 from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import AgentCatalogSnapshot, AgentWaitResolution, EffectiveToolRef
+from ouro.core.agents import (
+    AgentCatalogSnapshot,
+    AgentWaitResolution,
+    DelegatedConstraints,
+    EffectiveToolRef,
+)
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
@@ -233,6 +238,7 @@ class RuntimeService:
         self._run_agent_catalogs: dict[str, AgentCatalogSnapshot] = {}
         self._run_tool_caps: dict[str, frozenset[str]] = {}
         self._run_tool_refs: dict[str, tuple[EffectiveToolRef, ...]] = {}
+        self._run_delegated_constraints: dict[str, DelegatedConstraints] = {}
 
     def attach_extension_catalog(self, catalog: PluginRuntimeResource) -> None:
         if self._extension_catalog is not None and self._extension_catalog is not catalog:
@@ -343,16 +349,24 @@ class RuntimeService:
 
     def _tool_calls_for_run(self, run_id: str) -> ToolCallCoordinator:
         tools = self._tools_for_run(run_id)
+        delegated = self._run_delegated_constraints.get(run_id)
+        execution_config = self._tool_execution_config
+        if delegated is not None and not delegated.allow_external_paths:
+            execution_config = execution_config.model_copy(update={"workspace_only": True})
         return ToolCallCoordinator(
             executor=ToolExecutor(
                 tools,
                 permission_overrides=self._permission_overrides,
+                permission_floors={
+                    reference.public_name: reference.minimum_permission_mode
+                    for reference in self._run_tool_refs.get(run_id, ())
+                },
             ),
             registry=tools,
             hooks=self._hooks_for_run(run_id),
             events=self.event_recorder,
             runs=self.run_lifecycle,
-            execution_config=self._tool_execution_config,
+            execution_config=execution_config,
             default_workspace=self.default_workspace,
             artifact_root=(
                 str(self.environment.artifact_root)
@@ -711,7 +725,11 @@ class RuntimeService:
             )
             session = snapshot.session
             active_run = maybe_active_run(snapshot.runs)
-            self._validate_model_resource_refs(session, input_resource_refs)
+            self._validate_model_resource_refs(
+                session,
+                input_resource_refs,
+                message_role=("system_synthetic" if _input_attribution is not None else "user"),
+            )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
             ):
@@ -770,7 +788,11 @@ class RuntimeService:
         if run_lock is None:
             snapshot = self.store.load_runtime_session(session.session_id)
             active_run = maybe_active_run(snapshot.runs)
-            self._validate_model_resource_refs(snapshot.session, input_resource_refs)
+            self._validate_model_resource_refs(
+                snapshot.session,
+                input_resource_refs,
+                message_role=("system_synthetic" if _input_attribution is not None else "user"),
+            )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
             ):
@@ -894,6 +916,7 @@ class RuntimeService:
                     session,
                     pending_input.resource_refs,
                     adapter=active_adapter,
+                    message_role=("user" if pending_input.source == "user" else "system_synthetic"),
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             self._restore_run_tool_cap(run)
@@ -982,6 +1005,7 @@ class RuntimeService:
             session_id=run.session_id,
             title=session_input.title,
             queue_mode=session_input.mode,
+            resource_refs=session_input.resource_refs,
             _input_attribution=session_input,
             _prepared_run=run,
         )
@@ -1034,6 +1058,9 @@ class RuntimeService:
                 ),
                 begin_model_round=(
                     self._begin_model_round if self._extension_catalog is not None else None
+                ),
+                shared_budget_reason=(
+                    self._agent_controls.budget_reason if self._agent_controls is not None else None
                 ),
             ),
         )
@@ -1260,6 +1287,7 @@ class RuntimeService:
             session_id=session_id,
             title=session_input.title,
             queue_mode=session_input.mode,
+            resource_refs=session_input.resource_refs,
             _input_attribution=session_input,
         )
 
@@ -1545,9 +1573,9 @@ class RuntimeService:
             metadata["queued_input_id"] = item.queue_id
             metadata["queued_input_mode"] = item.mode
         if item.source != "user":
-            if item.resource_refs:
+            if item.source == "plugin" and item.resource_refs:
                 raise ResourceAttachmentError(
-                    "synthetic session inputs cannot attach user resources"
+                    "plugin session inputs cannot attach Host resource references"
                 )
             if item.source == "host":
                 metadata["host_source_id"] = item.host_source_id
@@ -1569,6 +1597,7 @@ class RuntimeService:
                 prompt=item.prompt,
                 sequence=sequence,
                 metadata=metadata,
+                resource_refs=item.resource_refs,
             )
         return self.run_lifecycle.append_user_message(
             session=session,
@@ -1585,6 +1614,7 @@ class RuntimeService:
         resource_refs: tuple[str, ...],
         *,
         adapter: RuntimeAdapter | None = None,
+        message_role: str = "user",
     ) -> None:
         if not resource_refs:
             return
@@ -1602,6 +1632,7 @@ class RuntimeService:
             session.session_id,
             resource_refs,
             supports_vision=active_adapter.model.supports_vision,
+            message_role=message_role,
         )
 
     @staticmethod
@@ -1974,7 +2005,7 @@ class RuntimeService:
             )
             if abort_result is not None:
                 return abort_result
-            if handling.status in {"waiting_user", "waiting_child"}:
+            if handling.status in {"waiting_approval", "waiting_user", "waiting_child"}:
                 return RunResult(
                     session=session,
                     run=run,
@@ -2150,6 +2181,7 @@ class RuntimeService:
             self._run_agent_catalogs.pop(run.run_id, None)
             self._run_tool_caps.pop(run.run_id, None)
             self._run_tool_refs.pop(run.run_id, None)
+            self._run_delegated_constraints.pop(run.run_id, None)
             if snapshot is not None:
                 snapshot.close()
 
@@ -2159,6 +2191,7 @@ class RuntimeService:
         self._run_agent_catalogs.pop(run_id, None)
         self._run_tool_caps.pop(run_id, None)
         self._run_tool_refs.pop(run_id, None)
+        self._run_delegated_constraints.pop(run_id, None)
         if snapshot is not None:
             snapshot.close()
 
@@ -2174,6 +2207,12 @@ class RuntimeService:
             raise ValueError("run has invalid effective tool references")
         self._run_tool_refs[run.run_id] = tuple(
             EffectiveToolRef.model_validate(item) for item in raw_refs
+        )
+        raw_constraints = run.metadata.get("delegated_constraints", {})
+        if not isinstance(raw_constraints, dict):
+            raise ValueError("run has invalid delegated constraints")
+        self._run_delegated_constraints[run.run_id] = DelegatedConstraints.model_validate(
+            raw_constraints
         )
 
     def _instructions_for_run(self, run: RunRecord) -> str:
@@ -2297,7 +2336,13 @@ class RuntimeService:
             and session.session_kind == "primary"
             and self._agent_definitions is not None
         ):
-            catalog = self._agent_definitions.catalog_snapshot(self._tools_for_run(run.run_id))
+            catalog = self._agent_definitions.catalog_snapshot(
+                self._tools_for_run(run.run_id),
+                permission_overrides=self._permission_overrides,
+                approval_mode=session.approval_mode,
+            )
+            if self._agent_controls is not None:
+                catalog = self._agent_controls.constrain_catalog(catalog)
             update["agent_catalog"] = catalog
             self._run_agent_catalogs[run.run_id] = catalog
         return run.model_copy(update=update)

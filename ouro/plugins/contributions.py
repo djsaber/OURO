@@ -398,6 +398,9 @@ class ContributionCoordinator:
                         "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": declaration.id,
+                        "plugin_permissions": sorted(
+                            permission.id for permission in manifest.permissions
+                        ),
                         "contract_hash": contract_hash,
                     }
                 }
@@ -445,9 +448,7 @@ class ContributionCoordinator:
         source: PluginSource,
         controllers: list[PluginSessionController],
     ) -> tuple[PluginSessionController, ...]:
-        declarations = {
-            item.id: item for item in manifest.contributes.session_controllers
-        }
+        declarations = {item.id: item for item in manifest.contributes.session_controllers}
         actual = _unique_contribution_map(
             "session controller",
             ((controller.controller_id, controller) for controller in controllers),
@@ -456,16 +457,11 @@ class ContributionCoordinator:
         prepared: list[PluginSessionController] = []
         for controller_id, controller in actual.items():
             declaration = declarations[controller_id]
-            declared_claims = tuple(
-                (claim.domain, claim.access) for claim in declaration.claims
-            )
-            actual_claims = tuple(
-                (claim.domain, claim.access) for claim in controller.claims
-            )
+            declared_claims = tuple((claim.domain, claim.access) for claim in declaration.claims)
+            actual_claims = tuple((claim.domain, claim.access) for claim in controller.claims)
             if actual_claims != declared_claims:
                 raise ContributionValidationError(
-                    "session controller claims do not match manifest: "
-                    f"{controller_id}"
+                    f"session controller claims do not match manifest: {controller_id}"
                 )
             prepared.append(
                 bind_plugin_session_controller(
@@ -514,6 +510,9 @@ class ContributionCoordinator:
                         "builtin_contract_hash": owner.builtin_contract_hash,
                         "generation_id": owner.generation_id,
                         "contribution_id": f"mcp:{server_id}:{remote_name}",
+                        "plugin_permissions": sorted(
+                            permission.id for permission in manifest.permissions
+                        ),
                         "contract_hash": contract_hash,
                     },
                 }

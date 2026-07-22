@@ -714,19 +714,12 @@ def _tool_output_from_json(raw: Mapping[str, object]) -> ToolOutput:
                         else None
                     ),
                     replace_activation_ids=tuple(
-                        str(value)
-                        for value in item.get("replace_activation_ids", [])
+                        str(value) for value in item.get("replace_activation_ids", [])
                     ),
                     expected_session_revision=item.get("expected_session_revision"),
-                    expected_activation_revision=item.get(
-                        "expected_activation_revision"
-                    ),
+                    expected_activation_revision=item.get("expected_activation_revision"),
                     payload=item.get("payload"),
-                    reason=(
-                        str(item["reason"])
-                        if item.get("reason") is not None
-                        else None
-                    ),
+                    reason=(str(item["reason"]) if item.get("reason") is not None else None),
                 )
             )
     return ToolOutput(

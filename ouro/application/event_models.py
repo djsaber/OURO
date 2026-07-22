@@ -76,22 +76,38 @@ def project_runtime_event(event: EventRecord) -> RuntimeEventView:
 
 def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> None:
     required = {
-        "model_text_delta": "text",
-        "model_reasoning_delta": "reasoning_content",
-        "tool_call_requested": "tool_call_id",
-        "tool_policy_evaluated": "tool_call_id",
-        "tool_call_started": "tool_call_id",
-        "tool_call_completed": "tool_call_id",
-        "run_status_changed": "to_status",
-        "follow_up_input_queued": "queue_id",
-        "steering_input_queued": "queue_id",
-        "queued_input_consumed": "queue_id",
-        "turn_policy_continued": "turn_id",
-        "run_continuation_resolved": "decision_id",
+        "model_text_delta": ("text",),
+        "model_reasoning_delta": ("reasoning_content",),
+        "tool_call_requested": ("tool_call_id",),
+        "tool_policy_evaluated": ("tool_call_id",),
+        "tool_call_started": ("tool_call_id",),
+        "tool_call_completed": ("tool_call_id",),
+        "run_status_changed": ("to_status",),
+        "follow_up_input_queued": ("queue_id",),
+        "steering_input_queued": ("queue_id",),
+        "queued_input_consumed": ("queue_id",),
+        "turn_policy_continued": ("turn_id",),
+        "run_continuation_resolved": ("decision_id",),
+        "agent_spawned": (
+            "delegation_id",
+            "child_session_id",
+            "child_run_id",
+            "agent_id",
+            "execution_mode",
+        ),
+        "agent_result_ready": (
+            "delegation_id",
+            "child_session_id",
+            "child_run_id",
+            "terminal_status",
+            "delivery_id",
+        ),
+        "agent_result_delivered": ("delegation_id", "delivery_id", "policy"),
+        "agent_closed": ("delegation_id",),
     }
-    field = required.get(event_type)
-    if field is not None and not isinstance(payload.get(field), str):
-        raise ValueError(f"runtime event {event_type} requires string payload field {field}")
+    for field in required.get(event_type, ()):
+        if not isinstance(payload.get(field), str):
+            raise ValueError(f"runtime event {event_type} requires string payload field {field}")
 
 
 def _event_category(event_type: str) -> RuntimeEventCategory:

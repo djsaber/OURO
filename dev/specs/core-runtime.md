@@ -27,11 +27,11 @@ Session 是长期会话容器。关键字段包括：
 
 Run 表示一次可恢复执行。状态集合为：
 
-`queued`、`running`、`waiting_user`、`waiting_approval`、`completed`、`aborted`、`failed`、
+`queued`、`running`、`waiting_user`、`waiting_approval`、`waiting_child`、`completed`、`aborted`、`failed`、
 `paused`、`recoverable`。
 
 运行阶段为：`model_streaming`、`tool_preflight`、`human_interaction`、`tool_execution`、
-`result_commit`。Run 保存模型、usage、活动工具批次、待审批身份、终止请求和错误信息。
+`subagent_join`、`result_commit`。Run 保存模型、usage、活动工具批次、待审批身份、终止请求和错误信息。
 
 ### Message 与 model turn
 
@@ -55,7 +55,7 @@ Run 表示一次可恢复执行。状态集合为：
    模型轮次不得重新加载完整 Session 事件历史。
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
    `ToolCallCoordinator`，最终消息则完成 Run。
-8. waiting 状态通过 approve/reject/AskUser 恢复同一 Run。
+8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
 9. terminal Run 释放 lock、abort signal 和每 Run Hook 隔离状态。
 10. 在 model turn 边界消费 steer 输入；completed Run 先释放 session run lock，再串行启动 follow-up Run。
 
@@ -125,6 +125,16 @@ Host 和插件输入都不能冒充用户，也不能携带用户资源引用。
 审批和 AskUser 恢复属于原 Run 的同一锁事务。恢复后即使 Run 已 completed，也不能在该锁的作用域内递归
 启动 follow-up；后续 Run 必须等恢复入口释放非重入 session run lock 后再取得新的锁。
 
+## 子智能体等待
+
+模型侧 `WaitAgents` 不在工具 handler 内轮询 child。`ToolCallBatchRecord` 的目标调用保存 durable
+`AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
+`RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/tool-call
+identity 解析该调用并恢复同一父 Run；重复结果通知只会命中已经解析的 checkpoint，不创建第二个父 Run。
+
+child 本身仍执行普通 `InnerAgentLoop`、ToolBatch、Approval、AskUser、预算与恢复状态机。父子关系和结果交付由
+application 的 durable Delegation 编排，core 不递归调用 RuntimeService，也不维护另一套 child 执行状态。
+
 ## 取消语义
 
 - abort 首先持久化 Run 的 aborted 状态，再通知进程内 `AbortSignal`。
@@ -137,6 +147,8 @@ Host 和插件输入都不能冒充用户，也不能携带用户资源引用。
 `RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
 它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
 aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 由 SessionStore 在下次启动恢复。
+`waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
+既有 FIFO，不增加第二个 worker pool。
 
 `RuntimeActivitySnapshot` 是 Host-facing 投影：Run、ToolBatch 和 ToolCall 提供 durable 权威状态，模型增量
 及 compaction 事件补足响应中的瞬时阶段。投影必须能从 SessionSnapshot 重建；`Session.status` 继续保持粗粒度，
@@ -161,5 +173,6 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 - `tests/application/test_followups.py`
 - `tests/application/test_queued_input_modes.py`
 - `tests/application/test_events.py`
+- `tests/application/test_agents.py`
 - `tests/providers/test_openai_compatible.py`
 - `tests/architecture/test_boundaries.py`

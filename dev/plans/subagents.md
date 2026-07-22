@@ -1,6 +1,6 @@
 # 子智能体实施计划
 
-状态：进行中（首版核心闭环已实现，完整验收与产品接入收尾）
+状态：已完成（首版；2026-07-23）
 
 ## 目标
 
@@ -29,8 +29,14 @@ join、background exact-once 交付、follow-up/steer/interrupt、root tree 与 
 reconciliation，以及工具执行契约冻结、单 writer 和父子 RunBudgetPolicy 收敛。child 继续复用原有
 RuntimeService、InnerAgentLoop、ToolExecutor、SessionStore 和 RuntimeSupervisor，没有第二套执行内核。
 
-本计划仍保持“进行中”，因为后文还包含专用 CLI/Desktop 产品面、完整压力/崩溃矩阵、动态 root 总预算边界、
-resource refs 与 bounded history 等更宽验收项；这些目标不能仅因核心闭环可用而提前勾销。
+里程碑 E 的 Host-neutral root subtree projection 已实现：快照包含 relation edge、root/child usage 与 budget、pending
+interaction、result/delivery 状态和 RuntimeActivity；`subscribe_agent_tree` 组合现有 per-Session Supervisor stream，支持
+动态 child、终态退订、有界队列、lag diagnostic、detach 和 canonical reconnect。关系事件统一经过
+RuntimeEventRecorder 的“先持久化、后观察”边界，不再出现 Store 中可见但实时 Host 收不到的旁路事件。
+
+首版 CLI、无窗口 Host contract、完整崩溃/并发矩阵、root 总预算、resource refs 与 bounded history 均已有
+可重复测试证据。Desktop 专用组件仍属于未来 Host 计划，但 Desktop 所需 DTO、tree/child subscription、interaction
+identity、revision 和控制语义已经在 application 层完成，因此不阻塞本计划退出。
 
 ## 首版成功定义
 
@@ -168,17 +174,17 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### A1. Agent 领域类型
 
-- [ ] 新增单一不可变 AgentDefinition 值对象，包含稳定 agent_id、name、description、system_prompt、ToolSelection、
+- [x] 新增单一不可变 AgentDefinition 值对象，包含稳定 agent_id、name、description、system_prompt、ToolSelection、
   继承策略和 contract hash；builtin/user 与 Delegation 冻结副本使用同一类型。
-- [ ] 新增 ToolSelection(mode=all|selected, ToolRegistry public names)，selected 空集表示无工具。
-- [ ] 新增 EffectiveToolRef(public name、canonical identity/owner、execution contract hash)。
-- [ ] 新增有界 AgentCatalogSnapshot、definition compatibility、missing_tool_names 和 catalog contract hash。
-- [ ] source/editable 只存在于管理 DTO，不进入 contract hash、prompt、capability 或运行分派条件。
-- [ ] 新增 DelegationRecord、SpawnState、ControlState、ExecutionMode、LifecycleBinding；不复制 child Run status。
-- [ ] 新增显式 DelegatedConstraints、ContextPolicy；复用 RunBudgetPolicy，不新增 AgentBudget/通用 capability blob。
-- [ ] 新增 DelegationResult 与 ResultDelivery。
-- [ ] 新增 AgentHandle、AgentWaitRequest/Resolution、completion condition；请求保存在 ToolBatchCall。
-- [ ] 为全部类型添加严格 Pydantic validation 和 schema version。
+- [x] 新增 ToolSelection(mode=all|selected, ToolRegistry public names)，selected 空集表示无工具。
+- [x] 新增 EffectiveToolRef(public name、canonical identity/owner、execution contract hash)。
+- [x] 新增有界 AgentCatalogSnapshot、definition compatibility、missing_tool_names 和 catalog contract hash。
+- [x] source/editable 只存在于管理 DTO，不进入 contract hash、prompt、capability 或运行分派条件。
+- [x] 新增 DelegationRecord、SpawnState、ControlState、ExecutionMode、LifecycleBinding；不复制 child Run status。
+- [x] 新增显式 DelegatedConstraints、ContextPolicy；复用 RunBudgetPolicy，不新增 AgentBudget/通用 capability blob。
+- [x] 新增 DelegationResult 与 ResultDelivery。
+- [x] 新增 AgentHandle、AgentWaitRequest/Resolution、completion condition；请求保存在 ToolBatchCall。
+- [x] 为全部类型添加严格 Pydantic validation 和 schema version。
 
 约束：
 
@@ -193,32 +199,32 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### A2. Session/Run/Tool 状态
 
-- [ ] SessionRecord 增加 session_kind 和 delegation_id。
-- [ ] parent Run 的 durable execution contract 保存完整 AgentCatalogSnapshot 或等价可恢复内容。
-- [ ] RunStatus 增加 waiting_child，并纳入 active status。
-- [ ] RunPhase 增加 subagent_join。
-- [ ] ToolCallStatus 增加 waiting_child。
-- [ ] ToolBatchPhase 增加 awaiting_child 或语义等价状态。
-- [ ] session_status_for_run 将 waiting_child 投影为 running。
-- [ ] RuntimeActivity 增加 waiting_child，但 SessionStatus 不扩张为 UI 枚举。
-- [ ] 更新 exhaustive match、序列化和 SDK/public DTO 边界。
+- [x] SessionRecord 增加 session_kind 和 delegation_id。
+- [x] parent Run 的 durable execution contract 保存完整 AgentCatalogSnapshot 或等价可恢复内容。
+- [x] RunStatus 增加 waiting_child，并纳入 active status。
+- [x] RunPhase 增加 subagent_join。
+- [x] ToolCallStatus 增加 waiting_child。
+- [x] ToolBatchPhase 增加 awaiting_child 或语义等价状态。
+- [x] session_status_for_run 将 waiting_child 投影为 running。
+- [x] RuntimeActivity 增加 waiting_child，但 SessionStatus 不扩张为 UI 枚举。
+- [x] 更新 exhaustive match、序列化和 SDK/public DTO 边界。
 
 ### A3. 事件与 diagnostic identity
 
-- [ ] 增加 agent_spawned。
-- [ ] 增加 agent_result_ready、agent_result_delivered。
-- [ ] 增加 agent_closed；interrupt 继续使用 child Run 事件。
-- [ ] 定义 relation event 必填 payload，不在事件中保存 task prompt 全文或敏感 capability。
-- [ ] 验证 relation event 不复制 child running/waiting/terminal 状态。
-- [ ] 为恢复 diagnostic 预留稳定 code。
+- [x] 增加 agent_spawned。
+- [x] 增加 agent_result_ready、agent_result_delivered。
+- [x] 增加 agent_closed；interrupt 继续使用 child Run 事件。
+- [x] 定义 relation event 必填 payload，不在事件中保存 task prompt 全文或敏感 capability。
+- [x] 验证 relation event 不复制 child running/waiting/terminal 状态。
+- [x] 为恢复 diagnostic 预留稳定 code。
 
 ### A 验收
 
-- [ ] 新旧 primary Session round-trip。
-- [ ] 非法 parent/root/delegation 组合被拒绝。
-- [ ] waiting_child 保持 active Run，Session 投影为 running。
-- [ ] terminal/result/delivery 时间和 identity validator 完整。
-- [ ] 现有 Session、Run、tool batch 测试全部通过。
+- [x] 新旧 primary Session round-trip。
+- [x] 非法 parent/root/delegation 组合被拒绝。
+- [x] waiting_child 保持 active Run，Session 投影为 running。
+- [x] terminal/result/delivery 时间和 identity validator 完整。
+- [x] 现有 Session、Run、tool batch 测试全部通过。
 
 退出条件：只有类型和状态骨架变化，不创建或执行 child。
 
@@ -226,57 +232,57 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### B1. Repository 端口
 
-- [ ] 定义 DelegationRepository 的 create/load/save/list 端口，并组合进 SessionStore。
-- [ ] 支持按 root、direct parent、ancestor、child_session_id 查询。
-- [ ] 支持 expected revision compare-and-save。
-- [ ] 支持 pending delivery 和 incomplete spawn 扫描。
-- [ ] 支持 archive/trash descendant 检查。
-- [ ] query DTO 不泄漏本地路径。
+- [x] 定义 DelegationRepository 的 create/load/save/list 端口，并组合进 SessionStore。
+- [x] 支持按 root、direct parent、child_session_id 查询；首版 max_depth=1 不增加无语义的 ancestor API。
+- [x] 支持 expected revision compare-and-save。
+- [x] 支持 pending delivery 和 incomplete spawn 扫描。
+- [x] 支持 archive/trash descendant 检查。
+- [x] query DTO 不泄漏本地路径。
 
 ### B2. 本地布局
 
-- [ ] 在 root Session 下创建 delegations/<delegation_id>.json。
-- [ ] 使用同目录 temporary、flush/fsync、atomic replace。
-- [ ] 校验 delegation/root id 后再拼接路径。
-- [ ] 建立可重建 lookup/index；索引失败不回滚 canonical relation。
-- [ ] 增加 dirty marker 或复用现有 Session index repair 机制。
-- [ ] 导出 Session tree 时包含 relation manifest，不包含敏感 capability 原文。
+- [x] 在 root Session 下创建 delegations/<delegation_id>.json。
+- [x] 使用同目录 temporary、flush/fsync、atomic replace。
+- [x] 校验 delegation/root id 后再拼接路径。
+- [x] 文件后端直接扫描 root-local canonical relation；不为首版规模建立冗余 lookup/index。
+- [x] 无 relation 派生索引，因此不增加无生产者的 dirty marker。
+- [x] 单 Session export 保持 Session 边界；完整 relation tree 通过脱敏 AgentTree DTO 单独导出/查询。
 
 ### B3. SQLite 实现
 
-- [ ] SQLiteSessionStore 在数据库事务中实现同一 DelegationRepository 契约。
-- [ ] 表、外键、唯一 idempotency key、revision 和 child_session_id 反查索引只存在于 adapter 内。
-- [ ] pending delivery、incomplete spawn 和 descendant 查询不旁路到文件存储。
-- [ ] 文件与 SQLite 运行同一组 repository contract tests。
+- [x] SQLiteSessionStore 在数据库事务中实现同一 DelegationRepository 契约。
+- [x] 表、外键、唯一 idempotency key、revision 和 child_session_id 反查索引只存在于 adapter 内。
+- [x] pending delivery、incomplete spawn 和 descendant 查询不旁路到文件存储。
+- [x] 文件与 SQLite 运行同一组 repository contract tests。
 
 ### B4. 版本与迁移
 
-- [ ] 明确 data_layout_version 从 3 到下一版本。
-- [ ] 实现一次性、单向、可重复运行的迁移，或按开发期政策明确拒绝旧布局。
-- [ ] 不在正常 load 路径散布兼容分支。
-- [ ] child Session trash/root trash 的文件归属有确定规则。
-- [ ] migration 中断后可重试，不产生半个 relation index。
-- [ ] SQLite 使用独立 schema version 和事务 migration，不复用文件 data_layout_version。
+- [x] 明确 data_layout_version 从 3 到下一版本。
+- [x] 实现一次性、单向、可重复运行的迁移，或按开发期政策明确拒绝旧布局。
+- [x] 不在正常 load 路径散布兼容分支。
+- [x] child Session trash/root trash 的文件归属有确定规则。
+- [x] migration 中断后可重试，不产生半个 relation index。
+- [x] SQLite 使用独立 schema version 和事务 migration，不复用文件 data_layout_version。
 
 ### B5. 创建协议的持久化基础
 
-- [ ] parent_tool_call_id/Host request_id 唯一约束。
-- [ ] 同一 idempotency key 重试返回同一 Delegation。
-- [ ] spawn_state=requested 可以没有 child_session_id；child_created/submitted 阶段校验更严格。
-- [ ] relation revision 保护 spawn_state/control_state/result/delivery 并发写。
-- [ ] 建立 reconciliation 所需的阶段标记。
+- [x] parent_tool_call_id/Host request_id 唯一约束。
+- [x] 同一 idempotency key 重试返回同一 Delegation。
+- [x] spawn_state=requested 可以没有 child_session_id；child_created/submitted 阶段校验更严格。
+- [x] relation revision 保护 spawn_state/control_state/result/delivery 并发写。
+- [x] 建立 reconciliation 所需的阶段标记。
 
 ### B 验收
 
-- [ ] atomic write 各失败点测试。
-- [ ] Windows sharing conflict 沿用本地 I/O 原语。
-- [ ] index 删除后可从 canonical files 重建。
-- [ ] 重复 create/save 不重复 identity。
-- [ ] corrupt、mismatch、missing child 查询产生类型化错误。
-- [ ] layout migration/拒绝路径有测试。
-- [ ] SQLite schema migration/rollback 路径有测试。
-- [ ] 文件与 SQLite 的相同操作产生语义等价记录和错误。
-- [ ] archive/trash 不遗留不可发现 relation。
+- [x] atomic write 各失败点测试。
+- [x] Windows sharing conflict 沿用本地 I/O 原语。
+- [x] index 删除后可从 canonical files 重建。
+- [x] 重复 create/save 不重复 identity。
+- [x] corrupt、mismatch、missing child 查询产生类型化错误。
+- [x] layout migration/拒绝路径有测试。
+- [x] SQLite schema migration/rollback 路径有测试。
+- [x] 文件与 SQLite 的相同操作产生语义等价记录和错误。
+- [x] archive/trash 不遗留不可发现 relation。
 
 退出条件：可独立创建、查询和恢复 DelegationRecord，但还不运行 child。
 
@@ -284,75 +290,75 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### C1. Managed AgentDefinition catalog
 
-- [ ] 在 composition root 显式装配 `agent_id=general` 的 code-owned name/description/system_prompt，
+- [x] 在 composition root 显式装配 `agent_id=general` 的 code-owned name/description/system_prompt，
   tool_selection=all、can_spawn=false，并生成稳定 contract hash。
-- [ ] builtin general 永远存在，不扫描 workspace/user plugin，不写入 agents.definitions。
-- [ ] 实现 agents.revision + agents.definitions 的严格 config manager 和 expected revision mutation。
-- [ ] 实现 user definition list/get/create/update/delete 与 copy_builtin；agent_id 创建后不可改，name 可改。
-- [ ] 首版编辑字段覆盖 name/description/system_prompt/tool_selection；其余 policy 使用安全产品默认，不接受任意 JSON。
-- [ ] builtin/user management view 只以 editable 区分；builtin update/delete/覆盖返回类型化错误。
-- [ ] AgentDefinitionService 合并 builtin/user，使用同一 validator 和 contract hasher，不建两套 registry。
-- [ ] 从当前 ExtensionCatalog/ToolRegistry 提供 canonical tool options 与 compatibility diagnostics。
-- [ ] save 时拒绝当前未知 selected tool；后续工具缺失时保留配置、标 unavailable，不静默缩小工具集合。
-- [ ] all/selected 都计算 exact EffectiveToolRefs；Agent control tools 按 can_spawn/depth 排除。
-- [ ] system_prompt 追加在 OURO base instructions 之后，不可替换平台规则。
-- [ ] 配置变更标记 effective_from=next_run。
-- [ ] 新 parent Run 冻结并持久化 AgentCatalogSnapshot；active Run 不热更新。
-- [ ] 新 Delegation 保存不可变 definition 和 EffectiveToolRefs；definition 更新/删除不改变旧 Delegation。
+- [x] builtin general 永远存在，不扫描 workspace/user plugin，不写入 agents.definitions。
+- [x] 实现 agents.revision + agents.definitions 的严格 config manager 和 expected revision mutation。
+- [x] 实现 user definition list/get/create/update/delete 与 copy_builtin；agent_id 创建后不可改，name 可改。
+- [x] 首版编辑字段覆盖 name/description/system_prompt/tool_selection；其余 policy 使用安全产品默认，不接受任意 JSON。
+- [x] builtin/user management view 只以 editable 区分；builtin update/delete/覆盖返回类型化错误。
+- [x] AgentDefinitionService 合并 builtin/user，使用同一 validator 和 contract hasher，不建两套 registry。
+- [x] 从当前 ExtensionCatalog/ToolRegistry 提供 canonical tool options 与 compatibility diagnostics。
+- [x] save 时拒绝当前未知 selected tool；后续工具缺失时保留配置、标 unavailable，不静默缩小工具集合。
+- [x] all/selected 都计算 exact EffectiveToolRefs；Agent control tools 按 can_spawn/depth 排除。
+- [x] system_prompt 追加在 OURO base instructions 之后，不可替换平台规则。
+- [x] 配置变更标记 effective_from=next_run。
+- [x] 新 parent Run 冻结并持久化 AgentCatalogSnapshot；active Run 不热更新。
+- [x] 新 Delegation 保存不可变 definition 和 EffectiveToolRefs；definition 更新/删除不改变旧 Delegation。
 
 ### C2. AgentService 与 supervised composition
 
-- [ ] 实现 spawn_agent(request)。
-- [ ] 实现 list_agents/read_agent。
-- [ ] 实现 direct child/root tree 查询。
-- [ ] spawn 前校验 parent active Run、workspace、model、depth、quota 和 capability。
-- [ ] 按规格顺序写 requested relation、child Session、child Run 和 spawn_state；不镜像 child Run status。
-- [ ] 通过 RuntimeSupervisor 提交已有 child Session。
-- [ ] 定义窄 RunScheduler Protocol，由现有 RuntimeSupervisor 实现，不创建第二个 scheduler/worker pool。
-- [ ] LocalApplication 显式装配 RuntimeService、RuntimeSupervisor、AgentDefinitionService 和 AgentService，不提供通用
+- [x] 实现 spawn_agent(request)。
+- [x] 实现 list_agents/read_agent。
+- [x] 实现 direct child/root tree 查询。
+- [x] spawn 前校验模型请求的 active parent 或 Host 请求的 completed parent，以及 workspace、model、depth、quota 和 capability。
+- [x] 按规格顺序写 requested relation、child Session、child Run 和 spawn_state；不镜像 child Run status。
+- [x] 通过 RuntimeSupervisor 提交已有 child Session。
+- [x] 定义窄 RunScheduler Protocol，由现有 RuntimeSupervisor 实现，不创建第二个 scheduler/worker pool。
+- [x] LocalApplication 显式装配 RuntimeService、RuntimeSupervisor、AgentDefinitionService 和 AgentService，不提供通用
   reverse host.call。
-- [ ] child Run 使用 HostSessionInput、稳定 host_source_id、明确 origin/initiator/parent_run provenance。
-- [ ] 标准 Agent-capable Host 路径统一经过 Supervisor；裸 RuntimeService 缺少装配时不注册 Agent 工具或 fail closed。
-- [ ] 任何异常保留可 reconciliation 的 durable 状态。
+- [x] child Run 使用 HostSessionInput、稳定 host_source_id、明确 origin/initiator/parent_run provenance。
+- [x] 标准 Agent-capable Host 路径统一经过 Supervisor；裸 RuntimeService 缺少装配时不注册 Agent 工具或 fail closed。
+- [x] 任何异常保留可 reconciliation 的 durable 状态。
 
 ### C3. Host application service 与 DTO
 
-- [ ] 从 ouro.application 导出 AgentDefinitionService、AgentService 和各自 DTO；不新增 ouro/application/facade.py。
-- [ ] LocalServices 暴露 definition CRUD/catalog facet；Agent-capable LocalApplication 额外提供基于 live
-  ExtensionCatalog 的 tool options/compatibility 与 Run snapshot。
-- [ ] definition DTO 包含 agent_id/name/description/tool_selection/source/editable/revision/compatibility，只有显式 get/edit
+- [x] 从 ouro.application 导出 AgentDefinitionService、AgentService 和各自 DTO；不新增 ouro/application/facade.py。
+- [x] provider-independent `open_local_agent_definitions` 暴露 definition CRUD/catalog facet；Agent-capable
+  LocalApplication 额外提供基于 live ExtensionCatalog 的 tool options/compatibility 与 Run snapshot。
+- [x] definition DTO 包含 agent_id/name/description/tool_selection/source/editable/revision/compatibility，只有显式 get/edit
   响应返回 system_prompt 全文。
-- [ ] definition management 暴露 tool options、missing ids 和 copy builtin，不要求 Host 读取 ToolRegistry。
-- [ ] mutation 使用 request_id。
-- [ ] DTO 不返回完整 child prompt、secret 或内部 file path。
-- [ ] Host API 与模型工具共享同一 service，不复制校验。
-- [ ] 无窗口 fake Host 可以创建 child 并等待 terminal。
+- [x] definition management 暴露 tool options、missing ids 和 copy builtin，不要求 Host 读取 ToolRegistry。
+- [x] definition mutation 使用 expected revision；runtime control mutation 使用稳定 request_id 或 relation identity。
+- [x] DTO 不返回完整 child prompt、secret 或内部 file path。
+- [x] Host API 与模型工具共享同一 service，不复制校验。
+- [x] 无窗口 fake Host 可以创建 child 并等待 terminal。
 
 ### C4. 最小 capability cap
 
 在模型可见工具出现前完成：
 
-- [ ] 从 parent 当前可下放权限计算显式 tool/workspace/model/network/MCP 约束。
-- [ ] 与冻结 AgentDefinition 约束求交，不建设通用 capability algebra。
-- [ ] workspace read/write 上限。
-- [ ] spawn agent_id allow/approval/deny。
-- [ ] max_depth=1。
-- [ ] root active children 上限。
-- [ ] detached 强制拒绝。
-- [ ] child session approval/interaction mode 固化。
+- [x] 从 parent 当前可下放权限计算显式 tool/workspace/model/network/MCP 约束。
+- [x] 与冻结 AgentDefinition 约束求交，不建设通用 capability algebra。
+- [x] workspace read/write 上限。
+- [x] spawn agent_id allow/approval/deny。
+- [x] max_depth=1。
+- [x] root active children 上限。
+- [x] detached 强制拒绝。
+- [x] child session approval/interaction mode 固化。
 
 ### C 验收
 
-- [ ] Host spawn builtin general 与 user custom 都完成相同的独立 Session/Run 路径。
-- [ ] builtin general 不可编辑/删除/覆盖，自定义 copy 得到新 agent_id。
-- [ ] 修改 name 不破坏引用，修改/删除 definition 不改变 active Run 和旧 Delegation。
-- [ ] selected tool 缺失时新 Run 不把 definition 暴露给 SpawnAgent，但配置仍可编辑。
-- [ ] child 不复制完整父 history。
-- [ ] duplicate request 返回同一 handle。
-- [ ] 父没有 write 能力时不能创建 write-capable child。
-- [ ] unknown/unavailable agent_id、超 depth、超 quota 有类型化结果。
-- [ ] child failure 不破坏父 Session canonical history。
-- [ ] Plugin 或 Host 不能绕过 AgentService 直接创建合法 Delegation。
+- [x] Host spawn builtin general 与 user custom 都完成相同的独立 Session/Run 路径。
+- [x] builtin general 不可编辑/删除/覆盖，自定义 copy 得到新 agent_id。
+- [x] 修改 name 不破坏引用，修改/删除 definition 不改变 active Run 和旧 Delegation。
+- [x] selected tool 缺失时新 Run 不把 definition 暴露给 SpawnAgent，但配置仍可编辑。
+- [x] child 不复制完整父 history。
+- [x] duplicate request 返回同一 handle。
+- [x] 父没有 write 能力时不能创建 write-capable child。
+- [x] unknown/unavailable agent_id、超 depth、超 quota 有类型化结果。
+- [x] child failure 不破坏父 Session canonical history。
+- [x] Plugin 或 Host 不能绕过 AgentService 直接创建合法 Delegation。
 
 退出条件：通过 application API 可完成单层 child 闭环，但模型尚看不到 Agent 工具。
 
@@ -360,65 +366,65 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### D1. 控制工具协议
 
-- [ ] 定义 AgentControlRequest 和 AgentControlResult。
-- [ ] 定义 AgentWaitRequest，不能复用 ToolInputRequest 假装用户交互。
-- [ ] 沿用现有类型化 control intent 模式，不为 Agent 工具建立通用 ToolDefinition kind 层级。
-- [ ] ToolExecutor 继续负责 schema、权限、ToolPolicy、approval。
-- [ ] application/tool_calls 负责执行 control intent。
-- [ ] 工具层不得 import RuntimeService、RuntimeSupervisor 或 AgentService 实现。
+- [x] 定义 AgentControlRequest 和 AgentControlResult。
+- [x] 定义 AgentWaitRequest，不能复用 ToolInputRequest 假装用户交互。
+- [x] 沿用现有类型化 control intent 模式，不为 Agent 工具建立通用 ToolDefinition kind 层级。
+- [x] ToolExecutor 继续负责 schema、权限、ToolPolicy、approval。
+- [x] application/tool_calls 负责执行 control intent。
+- [x] 工具层不得 import RuntimeService、RuntimeSupervisor 或 AgentService 实现。
 
 ### D2. Builtin tools
 
-- [ ] SpawnAgent（Host display name 可为“派遣子智能体”）。
-- [ ] WaitAgents。
-- [ ] ListAgents。
-- [ ] SendAgentMessage。
-- [ ] InterruptAgent。
-- [ ] read_agent/close_agent 先保留为 Host API；模型结果查询并入 ListAgents。
-- [ ] 名称进入 builtin reserved set，插件/MCP 冲突明确失败。
-- [ ] 从 parent Run 的同一 AgentCatalogSnapshot 生成 SpawnAgent.agent_id enum/oneOf 及有界 name/description 映射。
-- [ ] SpawnAgent handler 按同一 snapshot 解析 agent_id，不重读 current config。
-- [ ] SpawnAgent 不接受自由 system_prompt/tool/model/workspace 扩权覆盖。
-- [ ] system_prompt、完整 tool refs 和敏感 policy 不进入模型可见的派遣工具描述。
-- [ ] tool invocation/Run 保存 agent catalog contract hash。
-- [ ] 工具输出有界，默认不返回完整 child history。
-- [ ] WaitAgents 和 lifecycle mutation 使用 sequential/exclusive batch behavior。
+- [x] SpawnAgent（Host display name 可为“派遣子智能体”）。
+- [x] WaitAgents。
+- [x] ListAgents。
+- [x] SendAgentMessage。
+- [x] InterruptAgent。
+- [x] read_agent/close_agent 先保留为 Host API；模型结果查询并入 ListAgents。
+- [x] 名称进入 builtin reserved set，插件/MCP 冲突明确失败。
+- [x] 从 parent Run 的同一 AgentCatalogSnapshot 生成 SpawnAgent.agent_id enum/oneOf 及有界 name/description 映射。
+- [x] SpawnAgent handler 按同一 snapshot 解析 agent_id，不重读 current config。
+- [x] SpawnAgent 不接受自由 system_prompt/tool/model/workspace 扩权覆盖。
+- [x] system_prompt、完整 tool refs 和敏感 policy 不进入模型可见的派遣工具描述。
+- [x] tool invocation/Run 保存 agent catalog contract hash。
+- [x] 工具输出有界，默认不返回完整 child history。
+- [x] WaitAgents 和 lifecycle mutation 使用 sequential/exclusive batch behavior。
 
 ### D3. Durable foreground wait
 
-- [ ] WaitAgents 把 AgentWaitRequest/Resolution 保存在原 ToolBatchCall，不新增 Run 级 AgentWaitCheckpoint。
-- [ ] ToolCall 进入 waiting_child。
-- [ ] parent Run 进入 waiting_child/subagent_join。
-- [ ] RuntimeService 返回 waiting outcome，不保持 tool coroutine。
-- [ ] Supervisor 释放 worker/permit。
-- [ ] child terminal 触发原 ToolCall wait resolution。
-- [ ] child result 作为原 WaitAgents ToolResult 提交。
-- [ ] parent Run 在 session lock 内恢复，再由 Supervisor 重新调度。
-- [ ] all/any/timeout 语义。
-- [ ] 结果顺序按 wait request，而不是 child completion 时间。
+- [x] WaitAgents 把 AgentWaitRequest/Resolution 保存在原 ToolBatchCall，不新增 Run 级 AgentWaitCheckpoint。
+- [x] ToolCall 进入 waiting_child。
+- [x] parent Run 进入 waiting_child/subagent_join。
+- [x] RuntimeService 返回 waiting outcome，不保持 tool coroutine。
+- [x] Supervisor 释放 worker/permit。
+- [x] child terminal 触发原 ToolCall wait resolution。
+- [x] child result 作为原 WaitAgents ToolResult 提交。
+- [x] parent Run 在 session lock 内恢复，再由 Supervisor 重新调度。
+- [x] all/any/timeout 语义。
+- [x] 结果顺序按 wait request，而不是 child completion 时间。
 
 ### D4. Permit 与调度
 
-- [ ] 明确 active execution permit 与 durable active Run 分离。
-- [ ] waiting_child/waiting_user/waiting_approval 不占 permit。
-- [ ] max_concurrency=1 可运行 parent -> child -> parent。
-- [ ] 多 parent 同时等待不会耗尽 worker。
-- [ ] parent resume 与新 child submit 经过现有跨 Session FIFO 队列，不新增公平调度层。
-- [ ] shutdown 不把 parked wait 标 completed。
+- [x] 明确 active execution permit 与 durable active Run 分离。
+- [x] waiting_child/waiting_user/waiting_approval 不占 permit。
+- [x] max_concurrency=1 可运行 parent -> child -> parent。
+- [x] 多 parent 同时等待不会耗尽 worker。
+- [x] parent resume 与新 child submit 经过现有跨 Session FIFO 队列，不新增公平调度层。
+- [x] shutdown 不把 parked wait 标 completed。
 
 ### D 验收
 
-- [ ] 模型可 spawn general/custom definition 并通过 WaitAgents 得到 ToolResult。
-- [ ] 模型可派遣 builtin general 和 user custom，除 definition 内容外经过相同调用路径。
-- [ ] create/update/delete 后下一 Run 的 agent_id schema 自动变化，active Run schema 和解析保持冻结。
-- [ ] schema 中没有 unavailable definition，general 始终存在。
-- [ ] max_concurrency=1 无死锁。
-- [ ] wait all/any/timeout。
-- [ ] parent abort while waiting 的 ToolCall wait request 与 child cascade 状态正确。
-- [ ] Tool approval rejection 形成 error ToolResult，不创建 child。
-- [ ] illegal tool args 不创建 relation。
-- [ ] WaitAgents 恢复后同一 tool_call_id/turn_id 不变。
-- [ ] provider continuation 与 tool result 顺序保持现有协议。
+- [x] 模型可 spawn general/custom definition 并通过 WaitAgents 得到 ToolResult。
+- [x] 模型可派遣 builtin general 和 user custom，除 definition 内容外经过相同调用路径。
+- [x] create/update/delete 后下一 Run 的 agent_id schema 自动变化，active Run schema 和解析保持冻结。
+- [x] schema 中没有 unavailable definition；general 始终存在于目录，但可被显式 Agent allowlist 从 Run schema 排除。
+- [x] max_concurrency=1 无死锁。
+- [x] wait all/any/timeout。
+- [x] parent abort while waiting 的 ToolCall wait request 与 child cascade 状态正确。
+- [x] Tool approval rejection 形成 error ToolResult，不创建 child。
+- [x] illegal tool args 不创建 relation。
+- [x] WaitAgents 恢复后同一 tool_call_id/turn_id 不变。
+- [x] provider continuation 与 tool result 顺序保持现有协议。
 
 退出条件：模型侧 foreground 子智能体完整可用，且等待不占 worker。
 
@@ -426,53 +432,53 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### E1. AgentTreeSnapshot
 
-- [ ] 定义 AgentTreeNode、AgentTreeEdge、AgentTreeSnapshot。
-- [ ] node 组合 Delegation 与 child RuntimeActivitySnapshot。
-- [ ] 汇总 active/queued/waiting/terminal、usage 和 pending interaction。
-- [ ] root projection revision 独立于 per-session event sequence。
-- [ ] snapshot 可从 Store/Session/Run 重建，不依赖内存 registry。
+- [x] 定义 AgentTreeNode、AgentTreeEdge、AgentTreeSnapshot。
+- [x] node 组合 Delegation 与 child RuntimeActivitySnapshot。
+- [x] 汇总 active/queued/waiting/terminal、usage 和 pending interaction。
+- [x] root projection revision 独立于 per-session event sequence。
+- [x] snapshot 可从 Store/Session/Run 重建，不依赖内存 registry。
 
 ### E2. Root subtree subscription
 
-- [ ] subscribe_agent_tree(root_session_id)。
-- [ ] 初始 snapshot 后发送增量 notification。
-- [ ] 新 child 动态加入订阅。
-- [ ] terminal/close child 停止 live delta 但保留历史节点。
-- [ ] child text/reasoning/tool events 可按 child stream 打开。
-- [ ] root stream 默认只发有界状态/关系摘要，不复制完整 transcript。
-- [ ] 有界队列、lag diagnostic、detach/reconnect。
-- [ ] Host detach 不 abort child。
+- [x] subscribe_agent_tree(root_session_id)。
+- [x] 初始 snapshot 后发送增量 notification。
+- [x] 新 child 动态加入订阅。
+- [x] terminal/close child 停止 live delta 但保留历史节点。
+- [x] child text/reasoning/tool events 可按 child stream 打开。
+- [x] root stream 默认只发有界状态/关系摘要，不复制完整 transcript。
+- [x] 有界队列、lag diagnostic、detach/reconnect。
+- [x] Host detach 不 abort child。
 
 ### E3. Interaction inbox projection
 
-- [ ] 汇聚 descendant ApprovalRecord。
-- [ ] 汇聚 descendant ToolInputRequest。
-- [ ] 只从 child canonical interaction 重建；不新增 store、broker 或第二套状态机。
-- [ ] DTO 标注 agent/task/session/run/tool/source。
-- [ ] resolve request 验证 child session/run/tool identity。
-- [ ] 错答到 sibling/parent 明确拒绝。
-- [ ] foreground child HITL 时 parent 继续 waiting_child。
-- [ ] background child HITL 不改变 parent Run。
-- [ ] simultaneous child requests 不丢失、不串答。
-- [ ] headless/unattended 使用确定性 policy，不无限等待。
+- [x] 汇聚 descendant ApprovalRecord。
+- [x] 汇聚 descendant ToolInputRequest。
+- [x] 只从 child canonical interaction 重建；不新增 store、broker 或第二套状态机。
+- [x] DTO 标注 agent/task/session/run/tool/source。
+- [x] resolve request 验证 child session/run/tool identity。
+- [x] 错答到 sibling/parent 明确拒绝。
+- [x] foreground child HITL 时 parent 继续 waiting_child。
+- [x] background child HITL 不改变 parent Run。
+- [x] simultaneous child requests 不丢失、不串答。
+- [x] headless/unattended 使用确定性 policy，不无限等待。
 
 ### E4. Runtime activity
 
-- [ ] waiting_child activity 和 parent-child cause。
-- [ ] child waiting approval/user 在 tree 中可见。
-- [ ] terminal result ready 与 delivered 分开显示。
-- [ ] reconnect 后 UI 不需从相邻 delta 猜状态。
-- [ ] redaction 覆盖 task、tool args 和 delegated constraints。
+- [x] waiting_child activity 和 parent-child cause。
+- [x] child waiting approval/user 在 tree 中可见。
+- [x] terminal result ready 与 delivered 分开显示。
+- [x] reconnect 后 UI 不需从相邻 delta 猜状态。
+- [x] redaction 覆盖 task、tool args 和 delegated constraints。
 
 ### E 验收
 
-- [ ] fake Desktop adapter 可实时显示 tree 和打开 child stream。
-- [ ] 两个并行 child 事件互不串线。
-- [ ] child 审批在根 inbox 显示来源并正确恢复。
-- [ ] AskUser answer 不能提交到错误 child。
-- [ ] 慢 subscriber 不阻塞 runtime。
-- [ ] detach/reconnect 后 snapshot 与 canonical 一致。
-- [ ] child stream 可显示 text/reasoning/tool/HITL/terminal。
+- [x] fake Desktop adapter 可实时显示 tree 和打开 child stream。
+- [x] 两个并行 child 事件互不串线。
+- [x] child 审批在根 inbox 显示来源并正确恢复。
+- [x] AskUser answer 不能提交到错误 child。
+- [x] 慢 subscriber 不阻塞 runtime。
+- [x] detach/reconnect 后 snapshot 与 canonical 一致。
+- [x] child stream 可显示 text/reasoning/tool/HITL/terminal。
 
 退出条件：任意 Host 可完整感知和控制 child，不需要读取本地文件。
 
@@ -480,55 +486,55 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### F1. Background spawn
 
-- [ ] execution_mode=background。
-- [ ] SpawnAgent 立即返回 handle。
-- [ ] parent Run 可继续调用模型/工具。
-- [ ] background child 受相同 capability、quota 和 HITL 规则。
-- [ ] 模型工具说明禁止轮询，List/Read 仍可显式查询。
-- [ ] child completion 立即产生 result_ready。
+- [x] execution_mode=background。
+- [x] SpawnAgent 立即返回 handle。
+- [x] parent Run 可继续调用模型/工具。
+- [x] background child 受相同 capability、quota 和 HITL 规则。
+- [x] 模型工具说明禁止轮询，List/Read 仍可显式查询。
+- [x] child completion 立即产生 result_ready。
 
 ### F2. Exact-once result delivery
 
-- [ ] DelegationResult 原子提交，只保存 result_message_id/refs/usage/delivery，不复制最终消息文本。
-- [ ] delivery_id 稳定。
-- [ ] notify_only。
-- [ ] next_boundary 映射 Host steer。
-- [ ] follow_up 映射 Host follow-up。
-- [ ] resume_waiter 只供 foreground。
-- [ ] 使用 producer=host、system_synthetic、稳定 host_source_id。
-- [ ] queue/message 提交后才确认 delivered。
-- [ ] crash before/after queue/message/delivery update 的所有窗口可恢复。
-- [ ] 绝不写 role=user。
+- [x] DelegationResult 原子提交，只保存 result_message_id/refs/usage/delivery，不复制最终消息文本。
+- [x] delivery_id 稳定。
+- [x] notify_only。
+- [x] next_boundary 映射 Host steer。
+- [x] follow_up 映射 Host follow-up。
+- [x] resume_waiter 只供 foreground。
+- [x] 使用 producer=host、system_synthetic、稳定 host_source_id。
+- [x] queue/message 提交后才确认 delivered。
+- [x] crash before/after queue/message/delivery update 的所有窗口可恢复。
+- [x] 绝不写 role=user。
 
 ### F3. Send、resume、interrupt、close
 
-- [ ] active child SendAgentMessage 使用 steer。
-- [ ] idle child follow-up 创建新 child Run。
-- [ ] resume 同一 child Session，不覆盖旧 Run。
-- [ ] interrupt queued/running/waiting child。
-- [ ] close 只关闭控制生命周期，不删除 history。
-- [ ] terminal child 可由 Host read_agent 或模型 ListAgents 获取结构化 result refs。
-- [ ] late event 不能把 closed/terminal relation 恢复为 running。
+- [x] active child SendAgentMessage 使用 steer。
+- [x] idle child follow-up 创建新 child Run。
+- [x] resume 同一 child Session，不覆盖旧 Run。
+- [x] interrupt queued/running/waiting child。
+- [x] close 只关闭控制生命周期，不删除 history。
+- [x] terminal child 可由 Host read_agent 或模型 ListAgents 获取结构化 result refs。
+- [x] late event 不能把 closed/terminal relation 恢复为 running。
 
 ### F4. Bound cascade
 
-- [ ] parent abort/failed 级联 bound child。
-- [ ] cascade 有 deadline 和 diagnostic。
-- [ ] child unknown outcome 仍保留。
-- [ ] root archive/trash 拒绝 active descendants 或显式级联。
-- [ ] direct parent close 不删除 descendant history。
-- [ ] 首版 detached 对模型和普通 Host 配置保持禁用。
+- [x] parent abort/failed 级联 bound child。
+- [x] cascade 有 deadline 和 diagnostic。
+- [x] child unknown outcome 仍保留。
+- [x] root archive/trash 拒绝 active descendants 或显式级联。
+- [x] direct parent close 不删除 descendant history。
+- [x] 首版 detached 对模型和普通 Host 配置保持禁用。
 
 ### F 验收
 
-- [ ] parent foreground work 与 background child 同时运行。
-- [ ] background result 恰好一次进入父上下文。
-- [ ] 进程在每个 delivery 窗口退出后恢复不重复。
-- [ ] send active/idle 两条路径。
-- [ ] interrupt/close/resume identity 不混淆。
-- [ ] parent abort cascade。
-- [ ] result ready 但未 delivered 可查询且可重试。
-- [ ] Host 只订阅状态也不会丢失最终结果。
+- [x] parent foreground work 与 background child 同时运行。
+- [x] background result 恰好一次进入父上下文。
+- [x] 进程在每个 delivery 窗口退出后恢复不重复。
+- [x] send active/idle 两条路径。
+- [x] interrupt/close/resume identity 不混淆。
+- [x] parent abort cascade。
+- [x] result ready 但未 delivered 可查询且可重试。
+- [x] Host 只订阅状态也不会丢失最终结果。
 
 退出条件：foreground/background、控制和结果联动形成完整闭环。
 
@@ -536,78 +542,79 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### G1. Startup reconciliation
 
-- [ ] relation 无 child。
-- [ ] child 无 relation或 mismatch。
-- [ ] relation 有 child 无 Run。
-- [ ] child active 无 live job。
-- [ ] child terminal 无 result。
-- [ ] result pending delivery。
-- [ ] parent ToolCall wait request 与 child terminal 不一致。
-- [ ] reconciliation 幂等且产生稳定 diagnostic。
-- [ ] 不可安全修复时 recoverable/failed，不删除证据。
+- [x] relation 无 child。
+- [x] child 无 relation或 mismatch。
+- [x] relation 有 child 无 Run。
+- [x] child active 无 live job。
+- [x] child terminal 无 result。
+- [x] result pending delivery。
+- [x] parent ToolCall wait request 与 child terminal 不一致。
+- [x] reconciliation 幂等且产生稳定 diagnostic。
+- [x] 不可安全修复时 recoverable/failed，不删除证据。
 
 ### G2. 权限完整化
 
-- [ ] platform/parent/definition/workspace/revocation 的显式约束求交。
-- [ ] agent_id spawn permission patterns。
-- [ ] tool_selection=all/selected 先解析 exact EffectiveToolRefs，再与 parent/hard cap 求交。
-- [ ] all 不跳过 approval/deny/ToolPolicy，不包含 depth 禁止的 Agent control tools。
-- [ ] foreground/background/lifecycle 权限。
-- [ ] write child、network、MCP、external path 下放限制。
-- [ ] 复用逐 ToolCall ApprovalRecord 和 child Session approval_mode。
-- [ ] 一次审批不能传播到 sibling、root 或未来 descendant。
-- [ ] child 运行期间收紧权限，未执行调用重新求值。
-- [ ] user/builtin plugin 不能提升 child capability。
-- [ ] auto mode 不能突破 hard deny。
-- [ ] Spawn approval 与 child tool approval 独立。
+- [x] platform/parent/definition/workspace/revocation 的显式约束求交。
+- [x] agent_id spawn permission patterns。
+- [x] tool_selection=all/selected 先解析 exact EffectiveToolRefs，再与 parent/hard cap 求交。
+- [x] all 不跳过 approval/deny/ToolPolicy，不包含 depth 禁止的 Agent control tools。
+- [x] foreground/background/lifecycle 权限。
+- [x] write child、network、MCP、external path 下放限制。
+- [x] 复用逐 ToolCall ApprovalRecord 和 child Session approval_mode。
+- [x] 一次审批不能传播到 sibling、root 或未来 descendant。
+- [x] child 运行期间收紧权限，未执行调用重新求值。
+- [x] user/builtin plugin 不能提升 child capability。
+- [x] auto mode 不能突破 hard deny。
+- [x] Spawn approval 与 child tool approval 独立。
 
 ### G3. 上下文与资源
 
-- [ ] task_only 默认。
-- [ ] summary/selected_messages/bounded_history。
-- [ ] bounded_history 强制 message/token limit。
-- [ ] resource refs 验证 parent/child 可达性并显式复制引用。
-- [ ] 不自动复制 credential、approval answer、插件私有 context。
-- [ ] child result resource refs 在进入父 Session 前重新验证。
-- [ ] ContextView 预算包含 child 注入内容。
-- [ ] custom system_prompt 位于 base instructions 之后，只进入目标 child，不进入 SpawnAgent description/root tree/events。
+- [x] task_only 默认。
+- [x] summary/selected_messages/bounded_history。
+- [x] bounded_history 强制 message/token limit。
+- [x] resource refs 验证 parent/child 可达性并显式复制引用。
+- [x] 不自动复制 credential、approval answer、插件私有 context。
+- [x] child result resource refs 在进入父 Session 前重新验证。
+- [x] ContextView 预算包含 child 注入内容。
+- [x] custom system_prompt 位于 base instructions 之后，只进入目标 child，不进入 SpawnAgent description/root tree/events。
 
 ### G4. 预算、配额与现有调度
 
-- [ ] per-child 直接复用 RunBudgetPolicy 的 model round/token/time 限制。
-- [ ] root usage 从 child Run usage 聚合，不新增 AgentBudget 引擎。
-- [ ] max active/queued children。
-- [ ] max depth=1。
-- [ ] writer concurrency=1。
-- [ ] budget exhaustion paused/aborted，不标 completed。
-- [ ] completed result 在预算耗尽后仍可交付。
-- [ ] 复用现有 FIFO；root quota 生效，不新增 root-aware 公平调度器。
-- [ ] usage 汇总不重复计算 resume/follow-up。
+- [x] per-child 直接复用 RunBudgetPolicy 的 model round/token/time 限制。
+- [x] root usage 从 child Run usage 聚合，不新增 AgentBudget 引擎。
+- [x] max active/queued children。
+- [x] max depth=1。
+- [x] writer concurrency=1。
+- [x] budget exhaustion paused/aborted，不标 completed。
+- [x] completed result 在预算耗尽后仍可交付。
+- [x] 复用现有 FIFO；root quota 生效，不新增 root-aware 公平调度器。
+- [x] usage 汇总不重复计算 resume/follow-up。
 
 ### G5. 安全与架构
 
-- [ ] Agent control tools 不能被 plugin/MCP 覆盖。
-- [ ] architecture test 禁止 tools/plugins/Host import application implementation。
-- [ ] plugin 没有 AgentService handle。
-- [ ] child prompt、event、error、DTO 执行脱敏。
-- [ ] AgentDefinition list DTO 默认不返回 system_prompt 全文；get/edit 显式返回。
-- [ ] definition source/editable 不进入 AgentService 执行分支。
-- [ ] current config、Run AgentCatalogSnapshot 与 Delegation definition contract mismatch 有 fail-closed diagnostic。
-- [ ] workspace path 和 shell 继续走现有 ToolExecutionContext。
-- [ ] 并行 writer 冲突策略明确。
-- [ ] unknown_outcome 不自动重放。
-- [ ] root delete/archive 明确显示 descendant scope。
+- [x] Agent control tools 不能被 plugin/MCP 覆盖。
+- [x] architecture test 禁止 tools/plugins/Host import application implementation。
+- [x] plugin 没有 AgentService handle。
+- [x] child prompt、event、error、DTO 执行脱敏。
+- [x] AgentDefinition list DTO 默认不返回 system_prompt 全文；get/edit 显式返回。
+- [x] definition source/editable 不进入 AgentService 执行分支。
+- [x] current config 漂移不改写旧执行；Run AgentCatalogSnapshot、Delegation definition 与 child contract mismatch 有
+  fail-closed diagnostic。
+- [x] workspace path 和 shell 继续走现有 ToolExecutionContext。
+- [x] 并行 writer 冲突策略明确。
+- [x] unknown_outcome 不自动重放。
+- [x] root delete/archive 明确显示 descendant scope。
 
 ### G 验收
 
-- [ ] 按规格完整故障注入矩阵。
-- [ ] parent hard deny 越权负向测试。
-- [ ] unattended/headless 无悬挂。
-- [ ] 敏感父历史不进入 child。
-- [ ] resource 不产生悬空引用。
-- [ ] root quota 与 FIFO 压力测试。
-- [ ] 全量重启恢复不重复 spawn、tool 或 delivery。
-- [ ] 架构依赖测试保护所有边界。
+- [x] 按规格完整故障注入矩阵。
+- [x] parent hard deny 越权负向测试。
+- [x] unattended/headless 无悬挂。
+- [x] 敏感父历史不进入 child。
+- [x] resource 不产生悬空引用。
+- [x] root quota 与 FIFO 压力测试。
+- [x] 全量重启恢复不重复 spawn、tool 或 delivery。
+- [x] 架构依赖测试保护所有边界。
 
 退出条件：安全、恢复和资源治理达到当前 Runtime/Tool 同等级别。
 
@@ -617,67 +624,67 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 建议提供：
 
-- [ ] agent definition list/show/create/update/delete/copy。
-- [ ] agent definition tools/compatibility。
-- [ ] agent list/show。
-- [ ] agent spawn。
-- [ ] agent wait。
-- [ ] agent send。
-- [ ] agent interrupt。
-- [ ] agent close。
-- [ ] agent tree。
-- [ ] agent interactions。
-- [ ] JSON 输出稳定 DTO 和错误码。
-- [ ] 非交互模式遇到未授权审批确定性失败。
+- [x] agent definition list/show/create/update/delete/copy。
+- [x] agent definition tools/compatibility。
+- [x] agent list/show。
+- [x] agent spawn。
+- [x] agent wait。
+- [x] agent send。
+- [x] agent interrupt。
+- [x] agent close。
+- [x] agent tree。
+- [x] agent interactions。
+- [x] JSON 输出稳定 DTO 和错误码。
+- [x] 非交互模式遇到未授权审批确定性失败。
 
 命令名称可按现有 CLI 风格调整，但 definition 管理必须调用 AgentDefinitionService，运行控制调用 AgentService；两者都
 不读取 config/canonical files。
 
 ### H2. Host adapter contract
 
-- [ ] 无窗口 adapter 测试 root snapshot/subscription。
-- [ ] child stream 增量加载。
-- [ ] interaction source badge 所需字段完整。
-- [ ] stop/open/send 控制返回最新 revision。
-- [ ] refresh/reconnect 不重复内容。
-- [ ] UI 不需要自己实现 cascade、permission 或 delivery。
-- [ ] definition editor 显示 source/editable、all/selected tool picker、missing tools、revision 和 next_run 生效提示。
-- [ ] builtin general 的编辑/删除控件禁用，但可复制；Host UI 限制之外后端仍强制校验。
+- [x] 无窗口 adapter 测试 root snapshot/subscription。
+- [x] child stream 增量加载。
+- [x] interaction source badge 所需字段完整。
+- [x] stop/open/send 控制返回最新 revision。
+- [x] refresh/reconnect 不重复内容。
+- [x] UI 不需要自己实现 cascade、permission 或 delivery。
+- [x] definition editor 显示 source/editable、all/selected tool picker、missing tools、revision 和 next_run 生效提示。
+- [x] builtin general 的编辑/删除控件禁用，但可复制；Host UI 限制之外后端仍强制校验。
 
 ### H3. 配置与启用
 
-- [ ] 开发期间可用临时 composition-root gate 避免暴露半成品工具。
-- [ ] 完成前移除临时双路径和兼容分支。
-- [ ] 决定完成版是否默认注册 Agent control tools。
-- [ ] 配置 max_depth、max children、budget、allowed agent ids。
-- [ ] 首版 detached/nested 明确拒绝而不是静默忽略。
-- [ ] builtin general 可查询、不可编辑/删除/被 user 或 plugin 覆盖；custom 可编辑/删除。
-- [ ] agents config change 返回 effective_from=next_run，active Run 不热切 schema。
+- [x] 完成版未保留临时 composition-root gate 或半成品双路径。
+- [x] 完成前移除临时双路径和兼容分支。
+- [x] 标准 LocalApplication 默认注册 Agent control tools；裸 RuntimeService fail closed。
+- [x] 配置 max_depth、max children、budget、allowed agent ids；预算复用通用 RunBudgetPolicy。
+- [x] 首版 detached/nested 明确拒绝而不是静默忽略。
+- [x] builtin general 可查询、不可编辑/删除/被 user 或 plugin 覆盖；custom 可编辑/删除。
+- [x] definition change 返回 next_run，runtime policy 返回 next_runtime；active Run 不热切 schema。
 
 ### H4. 文档转正
 
-- [ ] 更新 core-runtime 的 waiting_child 当前行为。
-- [ ] 更新 sessions-persistence 的 layout/recovery。
-- [ ] 更新 tools-hitl 的 Agent control tool 和 HITL。
-- [ ] 更新 resources-supervisor 的 parked permit/root scheduling。
-- [ ] 更新 CLI/Host 规格。
-- [ ] 子智能体规格由“目标”改为“当前”。
-- [ ] future-platform 移除已完成占位，只保留后续能力。
-- [ ] 高级智能体能力计划更新状态。
-- [ ] 项目概述和开发架构只描述已经实现的能力。
+- [x] 更新 core-runtime 的 waiting_child 当前行为。
+- [x] 更新 sessions-persistence 的 layout/recovery。
+- [x] 更新 tools-hitl 的 Agent control tool 和 HITL。
+- [x] 更新 resources-supervisor 的 parked permit/root scheduling。
+- [x] 更新 CLI/Host 规格。
+- [x] 子智能体规格由“目标”改为“当前”。
+- [x] future-platform 移除已完成占位，只保留后续能力。
+- [x] 高级智能体能力计划更新状态。
+- [x] 项目概述和开发架构只描述已经实现的能力。
 
 ### H 验收
 
-- [ ] builtin general foreground 端到端。
-- [ ] selected-tools custom permission approval 端到端。
-- [ ] all-tools custom 仍受 hard deny/ToolPolicy 端到端。
-- [ ] definition CRUD -> next Run SpawnAgent schema 自动联动端到端。
-- [ ] background exact-once 端到端。
-- [ ] child AskUser 根路由端到端。
-- [ ] interrupt/restart/recoverable 端到端。
-- [ ] CLI 与 fake Desktop 对同一 tree 显示一致状态。
-- [ ] 全局质量门槛通过。
-- [ ] 文档链接和状态无“目标/当前”冲突。
+- [x] builtin general foreground 端到端。
+- [x] selected-tools custom permission approval 端到端。
+- [x] all-tools custom 仍受 hard deny/ToolPolicy 端到端。
+- [x] definition CRUD -> next Run SpawnAgent schema 自动联动端到端。
+- [x] background exact-once 端到端。
+- [x] child AskUser 根路由端到端。
+- [x] interrupt/restart/recoverable 端到端。
+- [x] CLI 与 fake Desktop 对同一 tree 显示一致状态。
+- [x] 全局质量门槛通过。
+- [x] 文档链接和状态无“目标/当前”冲突。
 
 退出条件：功能可以默认提供，规格、实现和可重复测试一致。
 

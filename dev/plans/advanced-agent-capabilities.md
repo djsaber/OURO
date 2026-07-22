@@ -1,6 +1,6 @@
 # 高级智能体能力计划
 
-状态：未开始
+状态：进行中（工作流 C 子智能体已完成；工作流 A/B 未开始）
 
 ## 目标
 
@@ -67,35 +67,35 @@
 ## 工作流 C：子智能体
 
 规范性契约见[子智能体规格](../specs/subagents.md)，可执行里程碑、故障矩阵与退出条件见
-[子智能体实施计划](subagents.md)。本节只保留高级能力之间的总体集成门槛。
+[子智能体实施计划](subagents.md)。首版已完成并转为当前能力；本节只保留高级能力之间的总体集成记录。
 
 ### C1. 能力与权限
 
-- [ ] 始终提供不可编辑/删除的 builtin general，并允许用户管理 name、description、system_prompt、all/selected tools 的
+- [x] 始终提供不可编辑/删除的 builtin general，并允许用户管理 name、description、system_prompt、all/selected tools 的
   custom AgentDefinition；两者运行时使用同一管道。
-- [ ] agent_id 是稳定 identity；name 只用于展示与模型选择说明。
-- [ ] 子智能体 definition 明确 model、tools、workspace、permissions 和预算。
-- [ ] 权限只能等于或小于父级授权，不能自行提升。
-- [ ] tool_selection=all 只表示 Catalog 候选工具，不跳过 hard deny、approval 或 ToolPolicy。
-- [ ] 每个子任务有独立 Session/Run identity 和 DelegationRecord；不复用 branch lineage 表达委派。
-- [ ] child Run 是执行状态唯一事实源；Delegation 只保存关系、冻结契约和 result delivery。
-- [ ] 文件与 SQLite 后端实现同一 DelegationRepository 契约。
-- [ ] parent Run 冻结 AgentCatalogSnapshot；SpawnAgent agent_id schema 与执行解析使用同一快照，配置从 next_run 生效。
+- [x] agent_id 是稳定 identity；name 只用于展示与模型选择说明。
+- [x] 子智能体 definition 明确 model、tools、workspace、permissions 和预算。
+- [x] 权限只能等于或小于父级授权，不能自行提升。
+- [x] tool_selection=all 只表示 Catalog 候选工具，不跳过 hard deny、approval 或 ToolPolicy。
+- [x] 每个子任务有独立 Session/Run identity 和 DelegationRecord；不复用 branch lineage 表达委派。
+- [x] child Run 是执行状态唯一事实源；Delegation 只保存关系、冻结契约和 result delivery。
+- [x] 文件与 SQLite 后端实现同一 DelegationRepository 契约。
+- [x] parent Run 冻结 AgentCatalogSnapshot；SpawnAgent agent_id schema 与执行解析使用同一快照，配置从 next_run 生效。
 
 ### C2. 并发与结果
 
-- [ ] Supervisor 管理子 Run，不递归持有 RuntimeService 内部状态。
-- [ ] 结果通过 typed DelegationResult、message/resource refs 和 exact-once delivery 归并。
-- [ ] partial、failed、aborted 子任务对父任务有明确策略。
-- [ ] 取消向整个子树传播并有限等待。
-- [ ] Host 可订阅 child 消息流与根 Agent tree，并准确路由 child HITL。
-- [ ] 根 Agent tree 与 interaction inbox 都是可重建 application projection，不形成第二套状态机或 Store。
+- [x] Supervisor 管理子 Run，不递归持有 RuntimeService 内部状态。
+- [x] 结果通过 typed DelegationResult、message/resource refs 和 exact-once delivery 归并。
+- [x] partial、failed、aborted 子任务对父任务有明确策略。
+- [x] 取消向整个子树传播并有限等待。
+- [x] Host 可订阅 child 消息流与根 Agent tree，并准确路由 child HITL。
+- [x] 根 Agent tree 与 interaction inbox 都是可重建 application projection，不形成第二套状态机或 Store。
 
 ### C3. 上下文隔离
 
-- [ ] 子智能体只获得任务所需上下文和资源引用。
-- [ ] 不复制完整父 Session history 作为默认行为。
-- [ ] 返回内容视为不可信协作者输出，仍经过父级验证。
+- [x] 子智能体只获得任务所需上下文和资源引用。
+- [x] 不复制完整父 Session history 作为默认行为。
+- [x] 返回内容视为不可信协作者输出，仍经过父级验证。
 
 ## 测试矩阵
 
@@ -112,7 +112,7 @@
 - 自治失控：预算、权限、并发和用户控制都是强制契约。
 - 任务系统过度设计：只支持当前计划/子任务用例，不预建通用工作流 DSL。
 - 上下文爆炸：资源引用和检索替代完整历史复制。
-- 状态组合复杂：先完成 durable plan，再接子智能体执行。
+- 状态组合复杂：当前 Delegation 与未来 Goal/Task 保持不同 identity；未来只增加显式关联，不重写 Agent 状态机。
 
 ## 退出条件
 

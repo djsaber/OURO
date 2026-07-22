@@ -7,6 +7,7 @@ import pytest
 from ouro.application.configuration import ConfigurationFacade
 from ouro.config import openai_effort_reasoning
 from ouro.core.errors import ConfigError
+from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 
 
@@ -21,6 +22,10 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     assert overview.tool_execution.mode == "sequential"
     assert overview.queued_inputs.consumption_mode == "one_by_one"
     assert overview.run_budget.max_model_rounds is None
+    assert overview.agents.revision == 0
+    assert overview.agents.max_depth == 1
+    assert overview.agents.max_active_children_per_root == 4
+    assert overview.agents.spawn_policy.allowed_agent_id_patterns == ("*",)
     assert overview.compaction.model.has_dedicated_endpoint is False
     assert overview.mcp.servers == []
 
@@ -113,6 +118,11 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     execution = facade.update_tool_execution(mode="parallel", max_concurrency=3)
     queued = facade.update_queued_inputs(consumption_mode="all_at_once")
     budget = facade.update_run_budget(max_model_rounds=8, max_elapsed_seconds=60)
+    agents = facade.update_agent_runtime(
+        expected_revision=0,
+        max_active_children_per_root=2,
+        allowed_agent_id_patterns=("general", "review-*"),
+    )
     compaction = facade.update_compaction_model(
         temperature=0.1,
         max_output_tokens=2048,
@@ -123,6 +133,11 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert execution.mode == "parallel"
     assert queued.consumption_mode == "all_at_once"
     assert budget.max_model_rounds == 8
+    assert agents.revision == 1
+    assert agents.max_active_children_per_root == 2
+    assert agents.spawn_policy.allowed_agent_id_patterns == ("general", "review-*")
+    assert agents.change is not None
+    assert agents.change.effective_from == "next_runtime"
     assert compaction.model.max_output_tokens == 2048
 
     overview = ConfigurationFacade(tmp_path).overview()
@@ -131,7 +146,42 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert overview.tool_execution.max_concurrency == 3
     assert overview.queued_inputs.consumption_mode == "all_at_once"
     assert overview.run_budget.max_elapsed_seconds == 60
+    assert overview.agents.max_active_children_per_root == 2
     assert overview.compaction.model.temperature == 0.1
+
+
+def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    before = facade.agent_runtime_config()
+
+    with pytest.raises(ConfigError, match="invalid Agent runtime config"):
+        facade.update_agent_runtime(expected_revision=0, max_depth=2)
+
+    after = facade.agent_runtime_config()
+    assert after == before
+
+
+@pytest.mark.asyncio
+async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_path) -> None:
+    ConfigurationFacade(tmp_path).update_agent_runtime(
+        expected_revision=0,
+        max_active_children_per_root=1,
+        allowed_agent_id_patterns=("review-*",),
+    )
+
+    async with LocalApplication.build(tmp_path) as application:
+        assert application.agents is not None
+        assert application.agents.max_depth == 1
+        assert application.agents.max_active_children_per_root == 1
+        assert application.agents.spawn_policy.allowed_agent_id_patterns == ("review-*",)
+
+        handle = await application.supervisor.submit("Freeze the configured Agent catalog.")
+        terminal = await application.supervisor.wait(handle)
+        assert terminal.status == "completed"
+        assert terminal.run_id is not None
+        run = application.runtime.store.load_run(handle.session_id, terminal.run_id)
+        assert run.agent_catalog is not None
+        assert run.agent_catalog.entries == ()
 
 
 def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path) -> None:

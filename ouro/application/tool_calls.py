@@ -14,7 +14,12 @@ from ouro.application.session_controls import (
     SessionControlError,
 )
 from ouro.config.tool_execution import ToolExecutionConfig
-from ouro.core.agents import AgentControlRequest, AgentControlResult, AgentWaitRequest
+from ouro.core.agents import (
+    AgentCatalogSnapshot,
+    AgentControlRequest,
+    AgentControlResult,
+    AgentWaitRequest,
+)
 from ouro.core.approvals import ApprovalResolvedBy
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
@@ -24,6 +29,7 @@ from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
 from ouro.core.redaction import redact_text
+from ouro.core.run_budget import RunBudgetReason
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import (
@@ -52,6 +58,14 @@ _AFK_UNATTENDED_REASON = "AFK mode does not wait for user input"
 
 
 class AgentControlExecutor(Protocol):
+    def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot: ...
+
+    def budget_reason(
+        self,
+        run: RunRecord,
+        next_model_round: int,
+    ) -> RunBudgetReason | None: ...
+
     async def execute_control(
         self,
         request: AgentControlRequest,
@@ -297,48 +311,6 @@ class ToolCallCoordinator:
         message_sequence: int,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
-        final_calls: list[ToolBatchCall] = []
-        for call in batch.calls:
-            if (
-                call.status != "ready"
-                or call.invocation is None
-                or call.approval is None
-                or call.approval.status != "modified"
-            ):
-                final_calls.append(call)
-                continue
-            invocation, policy_mode, policy_reason, sequence = await self._evaluate_tool_policies(
-                emitted,
-                sequence,
-                session=session,
-                run=run,
-                invocation=call.invocation,
-                phase="approval_modification",
-            )
-            prepared = self.executor.preflight(
-                invocation,
-                approved=True,
-                policy_mode=policy_mode,
-                policy_reason=policy_reason,
-            )
-            final_calls.append(
-                call.model_copy(
-                    update={
-                        "status": (
-                            "ready"
-                            if prepared.status == "ready"
-                            else (
-                                "failed"
-                                if prepared.result is not None and prepared.result.is_error
-                                else "completed"
-                            )
-                        ),
-                        "invocation": prepared.invocation,
-                        "result": prepared.result,
-                    }
-                )
-            )
-        batch = batch.model_copy(update={"calls": final_calls, "updated_at": utc_now()})
         ready_calls = [call for call in batch.calls if call.status == "ready" and call.invocation]
         batch = batch.model_copy(update={"phase": "executing", "updated_at": utc_now()})
         self.runs.save_batch_state(
@@ -373,6 +345,61 @@ class ToolCallCoordinator:
         checkpoint_lock = asyncio.Lock()
         unattended_resolutions: dict[str, UnattendedResolution] = {}
 
+        async def recheck_before_execute(
+            invocation: ToolInvocation,
+        ) -> ToolExecutionOutcome:
+            nonlocal sequence
+            async with checkpoint_lock:
+                call = next(
+                    (
+                        item
+                        for item in checkpoint_batch.calls
+                        if item.request.id == invocation.tool_call_id
+                    ),
+                    None,
+                )
+                if call is None:
+                    raise ValueError(f"unknown tool call in batch: {invocation.tool_call_id}")
+                (
+                    invocation,
+                    policy_mode,
+                    policy_reason,
+                    sequence,
+                ) = await self._evaluate_tool_policies(
+                    emitted,
+                    sequence,
+                    session=session,
+                    run=run,
+                    invocation=invocation,
+                    phase="execution_boundary",
+                )
+                approval = call.approval
+                approved = approval is not None and approval.status in {
+                    "approved",
+                    "modified",
+                }
+                prepared = self.executor.preflight(
+                    invocation,
+                    approved=approved,
+                    approval_mode=session.approval_mode,
+                    policy_mode=policy_mode,
+                    policy_reason=policy_reason,
+                )
+                if (
+                    prepared.status == "approval_required"
+                    and session.interaction_mode == "unattended"
+                ):
+                    return _interaction_error_outcome(
+                        prepared.invocation,
+                        error_type="ApprovalUnavailable",
+                        error_message=(
+                            "tool permission tightened before execution while the Session "
+                            "was unattended"
+                        ),
+                        structured={"policy_reason": policy_reason},
+                    )
+                return prepared
+
         async def checkpoint_started(invocation: ToolInvocation) -> None:
             nonlocal checkpoint_batch, sequence
             async with checkpoint_lock:
@@ -382,7 +409,9 @@ class ToolCallCoordinator:
                     if item.request.id != invocation.tool_call_id:
                         calls.append(item)
                         continue
-                    started_call = item.model_copy(update={"status": "running"})
+                    started_call = item.model_copy(
+                        update={"status": "running", "invocation": invocation}
+                    )
                     calls.append(started_call)
                 if started_call is None:
                     raise ValueError(f"unknown tool call in batch: {invocation.tool_call_id}")
@@ -434,11 +463,16 @@ class ToolCallCoordinator:
                         checkpoint_calls.append(item)
                         continue
                     result = outcome.result
+                    waiting_for_approval = outcome.status == "approval_required"
                     waiting_for_input = outcome.status == "waiting_user"
                     waiting_for_child = outcome.status == "waiting_child"
                     completed_call = item.model_copy(
                         update={
                             "status": _tool_call_status_for_outcome(outcome),
+                            "invocation": outcome.invocation,
+                            "approval": (
+                                outcome.approval if waiting_for_approval else item.approval
+                            ),
                             "input_request": (
                                 outcome.input_request if waiting_for_input else item.input_request
                             ),
@@ -466,19 +500,31 @@ class ToolCallCoordinator:
                         (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
                         None,
                     )
+                    waiting_approval = next(
+                        (
+                            call
+                            for call in checkpoint_batch.calls
+                            if call.status == "awaiting_approval"
+                        ),
+                        None,
+                    )
                     self.runs.save_batch_state(
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
                         status=(
-                            "waiting_child"
+                            "waiting_approval"
+                            if waiting_approval is not None
+                            else "waiting_child"
                             if waiting_child is not None
                             else "waiting_user"
                             if waiting_user is not None
                             else "running"
                         ),
                         phase=(
-                            "subagent_join"
+                            "human_interaction"
+                            if waiting_approval is not None
+                            else "subagent_join"
                             if waiting_child is not None
                             else "human_interaction"
                             if waiting_user is not None
@@ -511,7 +557,23 @@ class ToolCallCoordinator:
                             "resolver_id": resolution.resolver_id,
                         },
                     )
-                if completed_call is not None and outcome.status == "waiting_user":
+                if completed_call is not None and outcome.status == "approval_required":
+                    assert completed_call.approval is not None
+                    sequence = await self.events.emit(
+                        emitted,
+                        sequence,
+                        session_id=session.session_id,
+                        run_id=run.run_id,
+                        event_type="approval_requested",
+                        payload={
+                            "batch_id": batch.batch_id,
+                            "turn_id": batch.turn_id,
+                            "approval_id": completed_call.approval.approval_id,
+                            "tool_call_id": completed_call.request.id,
+                            "tool_name": completed_call.request.name,
+                        },
+                    )
+                elif completed_call is not None and outcome.status == "waiting_user":
                     assert completed_call.input_request is not None
                     sequence = await self.events.emit(
                         emitted,
@@ -650,9 +712,14 @@ class ToolCallCoordinator:
             max_concurrency=batch.max_concurrency,
             signal=abort_signal,
             context=execution_context,
+            pre_execute=recheck_before_execute,
             resolve_outcome=resolve_outcome,
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
+        )
+        waiting_approval = next(
+            (call for call in checkpoint_batch.calls if call.status == "awaiting_approval"),
+            None,
         )
         waiting_user = next(
             (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
@@ -662,6 +729,35 @@ class ToolCallCoordinator:
             (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
             None,
         )
+        if waiting_approval is not None:
+            waiting_batch = checkpoint_batch.model_copy(
+                update={"phase": "awaiting_interaction", "updated_at": utc_now()}
+            )
+            self.runs.save_batch_state(
+                session=session,
+                run=run,
+                batch=waiting_batch,
+                status="waiting_approval",
+                phase="human_interaction",
+            )
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="run_status_changed",
+                payload={
+                    "to_status": "waiting_approval",
+                    "status": "waiting_approval",
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                },
+            )
+            return ToolBatchHandlingResult(
+                status="waiting_approval",
+                batch=waiting_batch,
+                sequence=sequence,
+            )
         if waiting_child is not None:
             assert waiting_child.agent_wait is not None
             waiting_batch = checkpoint_batch.model_copy(
@@ -862,6 +958,7 @@ class ToolCallCoordinator:
             is_error=control.is_error,
             content=control.content,
             structured=control.structured,
+            resource_refs=list(control.resource_refs),
             ended_at=utc_now() if control.status == "completed" else None,
         )
         if control.status == "waiting_child":
@@ -1516,6 +1613,8 @@ def _tool_input_result_content(answer: object) -> str:
 
 
 def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStatus:
+    if outcome.status == "approval_required":
+        return "awaiting_approval"
     if outcome.status == "waiting_user":
         return "waiting_user"
     if outcome.status == "waiting_child":

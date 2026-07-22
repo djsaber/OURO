@@ -87,7 +87,10 @@ Host 通过 activity 快照和 durable event cursor 重新同步。
 ### 子智能体运行链
 
 子智能体不是另一套 Agent 内核。`AgentDefinitionService` 管理 builtin/custom 能力模板；primary Run 启动时把
-可用 definition、精确工具 identity 和执行契约冻结为 `AgentCatalogSnapshot`。`SpawnAgent` 等 product-owned
+可用 definition、精确工具 identity、最低 permission mode、执行能力和 `AgentSpawnPolicy` 冻结为
+`AgentCatalogSnapshot`。目录先与 agent/model pattern、foreground/background、bound lifecycle 以及
+write/network/MCP/external-path hard cap 求交；`SpawnAgent` 的 schema 和 application handler 使用同一 Run 快照。
+`SpawnAgent` 等 product-owned
 工具只在普通工具校验、权限和审批边界内产生类型化控制请求，真正的 Session/Run/Delegation 写入由
 application 层 `AgentService` 完成。child instance 是独立 `SessionRecord(session_kind="subagent")`，每次执行或
 follow-up 是新的普通 `RunRecord`；`DelegationRecord` 只保存父子关系、冻结能力、结果和交付 identity，不镜像
@@ -100,8 +103,59 @@ Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父
 request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child 和一个 write-capable child；
 child 的工具、workspace、审批与 RunBudgetPolicy 只能从父级能力上限收紧。
 
-Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复时，关系阶段、child Run 终态、未完成结果交付
-和 parked parent wait 都从 durable Session/Run/ToolBatch/Delegation 重建；运行中未知副作用不会被自动重放。
+root 配额不引入第二套调度或预算引擎。AgentService 在 per-root spawn 临界区内原子检查 active/queued child 数和
+单 writer 上限，首版在 relation 创建前拒绝 depth > 1。child 直接复用冻结的 `RunBudgetPolicy`；InnerAgentLoop
+每次 model round durable boundary 先执行本 Run 检查，再由 application callback 聚合 parent Run 与其所有 child
+Session 的 Run usage/model rounds，返回相同 `RunBudgetReason` 并进入现有 paused 路径。聚合以 Run identity 去重，
+所以 child follow-up/resume 各计一次而不会重复计算旧 Run。AgentTree 的 root usage 同样从这些 canonical Run
+聚合。Supervisor 继续使用原跨 Session FIFO；waiting 状态不占 execution permit，已完成 child result 不受后续
+root budget 耗尽影响。
+
+child 上下文沿用 canonical Message/Compaction/ContextView 管道。AgentDefinition 的默认 `context_policy=task_only`；
+`summary` 只读取来源全为纯 user/assistant 文本的 active compaction，`selected_messages` 只读取显式且同父 Session
+可达的消息，`bounded_history` 同时受消息数和 token 上限约束。工具结果、工具参数、reasoning/provider state 和
+system/plugin synthetic context 不会因父子关系自动复制。投影以 untrusted evidence 追加到 child 首条
+`system_synthetic` task；Agent 专用 system prompt 仍位于 base instructions 之后，且两者都进入同一 ContextView
+预算，不进入 SpawnAgent 描述、根树或关系事件。
+
+资源引用同样不隐式继承。ResourceService 在源 Session mutation boundary 内验证不可变内容，再显式附加带来源的
+child 引用；child 输出资源进入 List/Wait/background result 的父 canonical message 前，必须从 child 到 parent
+重新验证并复制引用。Delegation 只保存 message/resource identity 与 digest，不复制父 prompt、资源 blob 或 child
+最终文本。
+
+Agent control names 是 ToolRegistry 的产品保留名称；仅 `source=builtin` 且带 Host marker 的 Run overlay 可注册，
+plugin/MCP 不能通过伪造 metadata 覆盖。AgentService 只属于 application，并由 LocalApplication 组合；tools、plugins、
+SDK 和 CLI command 不直接导入其实现，PluginContext 也不暴露调度 handle。AgentDefinition 的 `source/editable` 只在
+管理 DTO 中存在：list 隐藏 system_prompt，显式 detail/edit 才返回；执行用 Core AgentDefinition 不按来源分支。
+child task 不进入 Delegation 文本、handle、根树或关系事件，application control error 继续经过统一 redaction。
+child shell/path 仍走 ToolExecutionContext；不允许 external paths 时 Runtime 强制 `workspace_only=true`。并行写冲突
+由 per-root 单 write-capable child 配额在 spawn 边界拒绝。
+
+Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复先由现有 Session recovery 把失去 live job 的
+active Run 转为 recoverable，再由 `AgentRecoveryService` 双向核对 child Session、Delegation 和 child Run provenance。
+只有唯一可归属的半提交 child Run 会补齐 relation；identity、冻结 policy 或 definition contract 无法证明一致时，
+relation fail-closed 并产生 Host-neutral startup diagnostic，原 Session/Run/Delegation 证据全部保留且不会自动重放。
+AgentService 随后从 child Run 终态重建缺失结果、重试未完成交付并重新挂接 parked parent wait；这些诊断并入
+`LocalApplication.startup_report`。旧 Delegation 只与 parent Run 冻结目录和 child Run contract 对账；当前可编辑
+Agent config 的正常 next-run 漂移不会改写或阻断历史 child。
+
+Delegation 更新使用 revision compare-and-swap；仓储以类型化 `DelegationRevisionConflictError` 区分并发竞争与真实
+持久化故障。AgentService 为每个 delegation 保留 process-local 生命周期锁，串行化 result finalize/delivery、interrupt、
+follow-up 与 close。结果 CAS 的唯一赢家发布 `agent_result_ready`；竞争失败者只接受同一 child Run 的 canonical 结果，
+delivery CAS 也只接受同一 delivery identity 的已交付赢家，因此 terminal/interrupt 和消息已提交/delivery flag 未提交的
+崩溃窗口不会重复发布、排队或启动父 Run。该锁不替代 durable revision，也不声称提供多进程 active scheduler。
+
+bound parent aborted/failed 时，AgentService 并发中断直接 child，并以统一 deadline 限定等待；超时产生
+`cascade_timeout`，child Run 的未知结果保持原样。根 Session 归档根据 child Run 这一执行事实源拒绝 active 或无法
+判定的 descendant，通用 trash 对任何 canonical descendant 都拒绝，避免文件目录移动或数据库级联删除造成孤儿。
+
+`AgentTreeProjector` 只 join canonical Delegation、Session、Run、ToolBatch 和 RuntimeActivity，生成包含 edge、
+usage/budget、pending interaction 及 result/delivery 状态的有界根树快照。`subscribe_agent_tree` 不建立第二条事件总线，
+而是组合 Supervisor 已有的 per-Session subscription：root relation event 负责动态发现 child，child stream 只用
+activity change 触发树摘要，text/reasoning/tool delta 仍留在各自 Session stream。终态 child 退出 live subscription
+但保留历史节点；慢 Host 收到 lag diagnostic 后按 canonical snapshot/revision 重连，关闭订阅不会取消 child。
+AgentService 产生的关系事件与 Runtime 事件统一经过 `RuntimeEventRecorder` 的先持久化、后观察边界，不能直接写
+Store 绕过 Host/Hook observer。
 
 `RuntimeEventRecorder` 先在线程外持久化事件，再把 Host sink 与观察型 Hook 投递到彼此独立的有界 worker；
 慢观察者不会持有跨 Session 全局锁，也不会回滚 durable event。每个 sink/hook 都有超时和脱敏诊断，关闭
@@ -116,7 +170,8 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 
 队列来源是类型化的 `user | host | plugin`：用户输入写为 `role=user`；OURO Host/Application 输入必须携带稳定
 `host_source_id`；插件输入必须携带完整 Generation/contract attribution。后两者都写为带来源元数据的
-`role=system_synthetic`，不能携带用户资源引用，也不能在消费时退化为用户消息。`RuntimeService.submit_host_input`
+`role=system_synthetic`，也不能在消费时退化为用户消息。插件 synthetic input 不能携带资源；OURO Host input 只可
+携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。`RuntimeService.submit_host_input`
 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence 边界。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
@@ -130,14 +185,17 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 通过 `permission_control` 明确最终权限的控制权，避免用两个可产生非法组合的布尔开关表达同一概念：
 
 - `host` 是默认值。工具定义权限先由用户 `config permissions` 覆盖，再由 Core 的单一策略解析边界计算最终
-  权限：`inherit` 沿用配置权限，`auto` 放行，`approval` 要求审批，`deny` 拒绝；限制性插件
+  权限：`inherit` 沿用配置权限，`auto` 可放宽 auto/approval，`approval` 可收紧 auto，但配置或工具的 hard
+  `deny` 是不可放宽上限；限制性插件
   `tool_policies` 最后只能提高限制。
 - `tool` 表示工具定义拥有最终控制权，只允许 `permission_mode="auto"` 或 `"deny"`。用户覆盖、会话批准模式和
   Host permission override 不参与决策；限制性 `tool_policies` 仍对这类工具评估。它只免受 Host 审批模式干预，
   不能借此逃逸其他编排扩展的工具策略。
 
 `ToolCallCoordinator` 在预检时把会话模式交给 `ToolExecutor`，最终权限和控制权写入 durable
-`ToolInvocation`，因此恢复不依赖当前进程的配置快照。内置、插件和 MCP 工具都通过这一边界。新增会话策略
+`ToolInvocation`。对 child，parent Run 解析出的最低 permission mode 也随 EffectiveToolRef 冻结，后续配置只能收紧。
+每个尚未执行的 invocation 在 handler 启动前再次评估当前 permission 和 ToolPolicy；若变为 deny 则不启动 handler，
+若变为 approval 则回到同一 ToolBatchCall 的 durable approval 状态。内置、插件和 MCP 工具都通过这一边界。新增会话策略
 只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。每个 Tool contract 还显式携带
 `effect = read_only | state_changing | unknown` 和 `batch_behavior = compatible | exclusive`。builtin 与插件
 在定义处声明 effect；MCP 依次采用用户 override、协议 `readOnlyHint` 或 `unknown`，不按名称和描述猜测。
@@ -334,6 +392,7 @@ SessionRepository 拥有，文件实现保存 Session 子记录，SQLite 实现�
 - Endpoint：每个 provider 的 `endpoints`；
 - 工具执行：`tool_execution`；
 - 运行预算：`run_budget`；
+- Agent：`agents.revision`、`agents.definitions` 与 `agents.runtime`；
 - 排队输入：`queued_inputs`；
 - 压缩：`compaction`；
 - Skills：`skills`。
@@ -347,6 +406,13 @@ Endpoint 的 `reasoning.capability/profile` 是同一权威配置的一部分；
 CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command 访问这些分区，包括 MCP；Facade
 只暴露凭据 configured/missing 状态，并报告配置变更的生效范围。所有 JSON 配置 command 在同一跨进程
 文件锁内完成 read-validate-write，避免 CLI/TUI/Desktop 并发修改不同 section 时丢失更新。
+
+`agents` 使用一个 expected revision 保护 definition 与 runtime policy，避免两个 Host editor 交叉覆盖。runtime
+首版只接受 `max_depth=1`、bound lifecycle、正数 max children 和 agent id allowlist；LocalApplication 在 composition
+start 读取，变更从 next runtime 生效。definition 由 AgentDefinitionService 管理并从 next Run 冻结；root budget
+继续读取通用 `run_budget`，child default budget 继续使用 AgentDefinition 的 `RunBudgetPolicy`，不增加 Agent 专用
+预算引擎。allowlist 过滤后没有可用 definition 时，Run overlay 不注册 SpawnAgent，但保留管理既有 child 的其他
+控制工具。
 
 ## CLI 契约
 
@@ -366,6 +432,9 @@ CLI 命令使用资源层级表达职责：
 - `session context` 投影当前上下文长度，`session context --content` 显式读取同一当前统一 Provider 内容；
 - `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
+- `agent definition list/show/tools/create/update/delete/copy` 通过 provider-independent composition 管理定义；
+- `agent list/show/spawn/wait/send/interrupt/close/tree/interactions` 通过 LocalApplication/AgentService 管理 durable child；
+- `config agents` 使用 expected revision 配置首版 depth、root child quota 和 agent id allowlist；
 - `run --resource` 将已导入资源附加到本次输入；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
@@ -373,6 +442,10 @@ CLI 命令使用资源层级表达职责：
 （SessionService、ResourceService、UsageService、RuntimeService、ConfigurationFacade）；不再提供运行期才
 暴露“缺少某项能力”的大转发 façade。MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置、
 完整校验和脱敏公共视图都由 `ConfigurationFacade` 编排。
+Agent CLI 同样不读取 config/canonical 文件，也不导入 AgentService 实现。短生命周期 CLI 从 completed parent Run
+的冻结目录进行 unattended Host spawn，并在进程退出前等待 terminal；模型派遣仍绑定 active parent。长期 Host
+直接保持 LocalApplication 与 subscription，可使用同一 application service 对 active parent 派遣。CLI spawn 固定
+notify-only，避免启动它无法持续拥有交互/subscription 的 parent delivery Run。
 Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
 `mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；
@@ -410,7 +483,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   协作式取消语义；
   worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call`
   分离，对 host-controlled 和 tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
-  审批修改后的最终参数必须重新评估。`permission_control="tool"` 只隔离 Host permission 维度，不隔离插件策略维度。
+  审批修改后的最终参数以及每个尚未执行的调用都必须重新评估。`permission_control="tool"` 只隔离 Host permission
+  维度，不隔离插件策略维度。
 - 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
   `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
   superseded；目标插件在下一 Run 重新评估。

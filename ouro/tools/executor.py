@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
-from ouro.core.approvals import ApprovalRecord, SessionApprovalMode, resolve_tool_permission
+from ouro.core.approvals import (
+    ApprovalRecord,
+    SessionApprovalMode,
+    resolve_tool_permission,
+    restrict_tool_permission,
+)
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import ToolInputResolution
@@ -26,9 +31,11 @@ class ToolExecutor:
         self,
         registry: ToolRegistry,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        permission_floors: Mapping[str, PermissionMode] | None = None,
     ) -> None:
         self.registry = registry
         self.permission_overrides = dict(permission_overrides or {})
+        self.permission_floors = dict(permission_floors or {})
 
     async def execute(
         self,
@@ -85,6 +92,10 @@ class ToolExecutor:
             approval_mode,
             permission_control=tool.definition.permission_control,
             override=self.permission_overrides.get(tool.definition.name),
+        )
+        effective_mode = restrict_tool_permission(
+            effective_mode,
+            self.permission_floors.get(tool.definition.name, "auto"),
         )
         denial_reason: str | None = None
         if policy_mode == "deny":

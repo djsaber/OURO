@@ -17,7 +17,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerOutput,
     PluginSessionControllerRegistry,
 )
-from ouro.sessions import SessionRepository
+from ouro.sessions import SessionStore
 
 
 class SessionControlError(OuroError):
@@ -39,7 +39,7 @@ class SessionControlStaleRevisionError(SessionControlError):
 class SessionControlCoordinator:
     """Host-owned persistence and claim arbitration for plugin Session controllers."""
 
-    def __init__(self, store: SessionRepository) -> None:
+    def __init__(self, store: SessionStore) -> None:
         self.store = store
 
     def force_release(
@@ -193,9 +193,7 @@ class SessionControlCoordinator:
         workspace: str | None,
     ) -> SessionControlTransitionResult:
         assert transition.controller_id is not None
-        canonical_id = (
-            f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
-        )
+        canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
         controller = self._controller_for_transition(
             controllers,
             canonical_id,
@@ -208,8 +206,7 @@ class SessionControlCoordinator:
                 (
                     activation
                     for activation in session.controls.activations
-                    if activation.controller_id == canonical_id
-                    and activation.phase != "failed"
+                    if activation.controller_id == canonical_id and activation.phase != "failed"
                 ),
                 None,
             )
@@ -233,9 +230,7 @@ class SessionControlCoordinator:
                 )
             conflicts = _claim_conflicts(controller.claims, session.controls.activations)
             if conflicts:
-                details = ", ".join(
-                    f"{domain} held by {owner}" for domain, owner in conflicts
-                )
+                details = ", ".join(f"{domain} held by {owner}" for domain, owner in conflicts)
                 raise SessionControlConflictError(
                     f"session control claim conflict for {canonical_id}: {details}"
                 )
@@ -395,8 +390,7 @@ class SessionControlCoordinator:
         )
         if cleanup_error is not None:
             raise SessionControlError(
-                "Session controller was released, but owner cleanup failed: "
-                f"{cleanup_error}"
+                f"Session controller was released, but owner cleanup failed: {cleanup_error}"
             ) from cleanup_error
         data = dict(output.data)
         if cancelled_run_id is not None:
@@ -422,9 +416,7 @@ class SessionControlCoordinator:
         resolving_tool_call_id: str | None,
     ) -> SessionControlTransitionResult:
         assert transition.controller_id is not None
-        canonical_id = (
-            f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
-        )
+        canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
         controller = self._controller_for_transition(
             controllers,
             canonical_id,
@@ -454,9 +446,7 @@ class SessionControlCoordinator:
                     "replace cannot reacquire the same Session controller; use release/acquire"
                 )
             if any(target.phase != "active" for target in targets):
-                raise SessionControlConflictError(
-                    "replace targets must all be in the active phase"
-                )
+                raise SessionControlConflictError("replace targets must all be in the active phase")
             if transition.expected_activation_revision is not None:
                 if len(targets) != 1:
                     raise SessionControlStaleRevisionError(
@@ -468,9 +458,7 @@ class SessionControlCoordinator:
                         f"expected {transition.expected_activation_revision}, "
                         f"found {targets[0].revision}"
                     )
-            target_controllers: list[
-                tuple[SessionControlActivation, PluginSessionController]
-            ] = []
+            target_controllers: list[tuple[SessionControlActivation, PluginSessionController]] = []
             for target in targets:
                 try:
                     target_controller = controllers.get(target.controller_id)
@@ -486,9 +474,7 @@ class SessionControlCoordinator:
                 ignored_activation_ids=replaced_ids,
             )
             if conflicts:
-                details = ", ".join(
-                    f"{domain} held by {owner}" for domain, owner in conflicts
-                )
+                details = ", ".join(f"{domain} held by {owner}" for domain, owner in conflicts)
                 raise SessionControlConflictError(
                     f"session control claim conflict for {canonical_id}: {details}"
                 )
@@ -545,8 +531,7 @@ class SessionControlCoordinator:
             current = _require_activation(session.controls, activation.activation_id)
             if current.phase != "activating":
                 raise SessionControlConflictError(
-                    "replacement activation changed before commit: "
-                    f"{activation.activation_id}"
+                    f"replacement activation changed before commit: {activation.activation_id}"
                 )
             active = current.model_copy(
                 update={
@@ -649,8 +634,7 @@ class SessionControlCoordinator:
     ) -> None:
         if expected is not None and controls.revision != expected:
             raise SessionControlStaleRevisionError(
-                f"session control revision changed: expected {expected}, "
-                f"found {controls.revision}"
+                f"session control revision changed: expected {expected}, found {controls.revision}"
             )
 
     @staticmethod
@@ -679,8 +663,7 @@ class SessionControlCoordinator:
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
             if not any(
-                item.activation_id == activation_id
-                for item in session.controls.activations
+                item.activation_id == activation_id for item in session.controls.activations
             ):
                 return
             controls = _replace_control_state(
@@ -872,9 +855,7 @@ def _require_activation(
     activation_id: str,
 ) -> SessionControlActivation:
     try:
-        return next(
-            item for item in controls.activations if item.activation_id == activation_id
-        )
+        return next(item for item in controls.activations if item.activation_id == activation_id)
     except StopIteration as exc:
         raise SessionControlConflictError(
             f"session controller activation disappeared: {activation_id}"
@@ -895,9 +876,7 @@ def _select_release_activation(
             None,
         )
     assert transition.controller_id is not None
-    canonical_id = (
-        f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
-    )
+    canonical_id = f"{transition.plugin_id}/session_controllers/{transition.controller_id}"
     return next(
         (
             item

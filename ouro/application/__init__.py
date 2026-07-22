@@ -6,12 +6,16 @@ from ouro.application.agent_models import (
     AgentDefinitionDetail,
     AgentDefinitionView,
     AgentHandleView,
+    AgentInteractionSummary,
     AgentInteractionView,
     AgentReadView,
+    AgentTreeEdge,
+    AgentTreeNotification,
     AgentTreeSnapshot,
     AgentWaitResultView,
     SpawnAgentRequest,
 )
+from ouro.application.agent_tree import AgentTreeSubscription
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
@@ -77,10 +81,14 @@ __all__ = [
     "AgentDefinitionService",
     "AgentDefinitionView",
     "AgentHandleView",
+    "AgentInteractionSummary",
     "AgentInteractionView",
     "AgentReadView",
     "AgentService",
+    "AgentTreeEdge",
+    "AgentTreeNotification",
     "AgentTreeSnapshot",
+    "AgentTreeSubscription",
     "AgentWaitResultView",
     "ApplicationStartupReport",
     "ConfigurationFacade",

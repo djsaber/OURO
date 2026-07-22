@@ -119,22 +119,13 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
             title=None,
             source="host",
         )
-    with pytest.raises(ValidationError, match="cannot carry user resources"):
-        queue.enqueue(
-            snapshot=snapshot,
-            prompt="framework input with a user attachment",
-            title=None,
-            source="host",
-            host_source_id="ouro.runtime/recovery",
-            resource_refs=("resource_1",),
-        )
-
     _, queued, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="recover from checkpoint",
         title="Recovery",
         source="host",
         host_source_id="ouro.runtime/recovery",
+        resource_refs=("resource_1",),
     )
     restored = queue.peek(store.load_session(session.session_id))
 
@@ -142,6 +133,7 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
     assert restored is not None
     assert restored.source == "host"
     assert restored.host_source_id == "ouro.runtime/recovery"
+    assert restored.resource_refs == ("resource_1",)
 
 
 def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) -> None:

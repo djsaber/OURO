@@ -7,6 +7,7 @@ from ouro.core.agents import (
     AgentCatalogEntry,
     AgentCatalogSnapshot,
     AgentDefinition,
+    AgentSpawnPolicy,
     AgentWaitRequest,
     DelegationRecord,
     EffectiveToolRef,
@@ -35,6 +36,8 @@ def test_agent_definition_contract_is_stable_and_content_addressed() -> None:
         AgentDefinition.model_validate(
             {**first.model_dump(), "description": "changed", "contract_hash": first.contract_hash}
         )
+    assert "source" not in AgentDefinition.model_fields
+    assert "editable" not in AgentDefinition.model_fields
 
 
 def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
@@ -54,6 +57,27 @@ def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
     assert snapshot.contract_hash
     with pytest.raises(KeyError, match="unknown or unavailable"):
         snapshot.resolve("missing")
+
+
+def test_agent_catalog_rejects_entries_that_exceed_frozen_spawn_policy() -> None:
+    definition = _definition()
+    write_tool = EffectiveToolRef(
+        public_name="Write",
+        canonical_tool_id="builtin/Write",
+        execution_contract_hash="sha256:write",
+        effect="state_changing",
+    )
+
+    with pytest.raises(ValidationError, match="agent_id spawn policy"):
+        AgentCatalogSnapshot(
+            entries=(AgentCatalogEntry(definition=definition),),
+            spawn_policy=AgentSpawnPolicy(allowed_agent_id_patterns=("reader-*",)),
+        )
+    with pytest.raises(ValidationError, match="tool spawn policy"):
+        AgentCatalogSnapshot(
+            entries=(AgentCatalogEntry(definition=definition, effective_tools=(write_tool,)),),
+            spawn_policy=AgentSpawnPolicy(allow_write=False),
+        )
 
 
 def test_subagent_session_requires_explicit_delegation_identity() -> None:

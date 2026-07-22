@@ -111,6 +111,27 @@ def test_lower_layers_do_not_depend_on_application_or_cli() -> None:
     assert violations == []
 
 
+def test_agent_service_is_application_owned_and_not_exposed_to_plugins_or_tools() -> None:
+    assert (APPLICATION_DIR / "agents.py").exists()
+    violations: list[str] = []
+    for directory in ("plugins", "sdk", "tools"):
+        for path in sorted((PROJECT_ROOT / "ouro" / directory).rglob("*.py")):
+            source = path.read_text(encoding="utf-8")
+            tree = ast.parse(source, filename=str(path))
+            if "AgentService" in source:
+                violations.append(f"{path.relative_to(PROJECT_ROOT)} names AgentService")
+            for module in _imported_modules(tree):
+                if module == "ouro.application.agents":
+                    violations.append(f"{path.relative_to(PROJECT_ROOT)} imports {module}")
+
+    for path in sorted((PROJECT_ROOT / "ouro" / "cli").glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        if "ouro.application.agents" in _imported_modules(tree):
+            violations.append(f"{path.relative_to(PROJECT_ROOT)} bypasses LocalApplication")
+
+    assert violations == []
+
+
 def test_shared_local_infrastructure_is_not_owned_by_a_feature_adapter() -> None:
     for relative_path in ("billing/local.py", "config/file.py"):
         path = PROJECT_ROOT / "ouro" / relative_path

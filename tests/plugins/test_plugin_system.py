@@ -3413,11 +3413,7 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
                 "version": "1.0.0",
                 "namespace": "bound",
                 "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
-                "contributes": {
-                    "context_providers": [
-                        {"id": "context", "active_when": "missing"}
-                    ]
-                },
+                "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
             }
         )
 

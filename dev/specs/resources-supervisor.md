@@ -55,6 +55,10 @@ durable 状态转换仍由 `RuntimeService`、`RunLifecycle` 和 `SessionStore` 
 - task 边界异常转换为 diagnostic，不终止其他 Session 的 worker。
 - Supervisor 启动扫描 SessionStore；无 live lock 的中断 Run 由现有恢复机制转为 `recoverable`。
 - 内存 handle 和 registry 只用于当前进程控制，不作为运行事实。
+- AgentService 通过窄 scheduler port 使用 `submit_prepared` 派发已经 durable 创建的 child Run；不会递归进入
+  RuntimeService，也不建立 Agent 专用 worker pool。
+- parent `waiting_child` 立即 park 并释放 permit；child terminal 后以 `resume_agent_wait` 恢复原父 Run。即使
+  `max_concurrency=1`，foreground join 也不会死锁。
 
 ## 订阅、detach、abort 与 shutdown
 
@@ -66,16 +70,23 @@ explicit abort 先通过 RuntimeService 持久化 aborted，再通知进程内�
 - `wait`：在有限时间内等待；超时后释放进程任务，未完成 durable Run 在下次启动恢复；
 - `abort`：显式 abort active Run，再在有限时间内等待资源释放。
 
+Agent root subscription 组合现有 per-Session Supervisor stream。初始值来自 canonical `AgentTreeSnapshot`；新
+child 动态加入，终态 child 退出 live stream 但保留历史节点，慢订阅者收到 lag diagnostic 后用 snapshot revision
+重连。树只投影 bounded status/activity/usage/interaction summary；完整 child text/reasoning/tool delta 仍从 child
+Session stream 按 event cursor 增量读取。关闭树或 child stream 只是 Host detach，不 abort child。
+
 ## CLI 与 Host 边界
 
 CLI 提供 `resource import/list/show/export/remove`，并通过 `run --session ... --resource ...` 将已导入资源附加到
 本次用户输入；Session export 包含无本地路径的资源 manifest。
-Supervisor 只暴露 application API，并由非交互 Host 测试覆盖；当前不提供后台 daemon 命令。
+Supervisor 与 AgentService 只暴露 application API，并由非交互 Host 测试覆盖；CLI/未来 Desktop 不实现
+cascade、permission、delivery 或树状态迁移。当前不提供后台 daemon 命令。
 
 ## 验收证据
 
 - `tests/application/test_resources.py`
 - `tests/application/test_runtime.py`
 - `tests/application/test_supervisor.py`
+- `tests/application/test_agents.py`
 - `tests/cli/test_resource_commands.py`
 - `tests/architecture/test_boundaries.py`

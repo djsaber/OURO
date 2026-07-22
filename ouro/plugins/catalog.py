@@ -473,8 +473,7 @@ def bind_generation_gate(
         turn_policies=tuple(_gated_turn_policy(item, gate) for item in prepared.turn_policies),
         tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
         session_controllers=tuple(
-            _gated_session_controller(item, gate)
-            for item in prepared.session_controllers
+            _gated_session_controller(item, gate) for item in prepared.session_controllers
         ),
     )
 

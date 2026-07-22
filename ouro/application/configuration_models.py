@@ -7,6 +7,7 @@ from pydantic import Field
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.config.provider_models import ProviderProtocol, ProviderType
 from ouro.config.reasoning import EndpointReasoningConfig
+from ouro.core.agents import AgentSpawnPolicy
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
@@ -22,6 +23,7 @@ ConfigurationSection = Literal[
     "compaction",
     "skills",
     "mcp",
+    "agents",
 ]
 ConfigurationEffectiveFrom = Literal["next_request", "next_runtime"]
 CredentialState = Literal["not_required", "configured", "missing"]
@@ -161,6 +163,15 @@ class RunBudgetConfigView(ApplicationDTO):
     max_input_tokens: int | None = None
     max_output_tokens: int | None = None
     max_elapsed_seconds: float | None = None
+    change: ConfigurationChange | None = None
+
+
+class AgentRuntimeConfigView(ApplicationDTO):
+    config_path: str
+    revision: int
+    max_depth: Literal[1]
+    max_active_children_per_root: int
+    spawn_policy: AgentSpawnPolicy
     change: ConfigurationChange | None = None
 
 
@@ -328,6 +339,7 @@ class ConfigurationOverview(ApplicationDTO):
     tool_execution: ToolExecutionConfigView
     queued_inputs: QueuedInputConfigView
     run_budget: RunBudgetConfigView
+    agents: AgentRuntimeConfigView
     compaction: CompactionConfigView
     skills: SkillPolicyView
     mcp: MCPConfigCatalogView

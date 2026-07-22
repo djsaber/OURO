@@ -122,11 +122,7 @@ class RunContinuationRegistry:
         self._registrations = list(snapshot)
 
     def registered(self) -> list[ContinuationPolicyRegistration]:
-        active = (
-            self._active_controller_ids()
-            if self._active_controller_ids is not None
-            else None
-        )
+        active = self._active_controller_ids() if self._active_controller_ids is not None else None
         return sorted(
             (
                 item

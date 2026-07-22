@@ -35,9 +35,7 @@ class PluginCommandResult(OuroModel):
     data: dict[str, Any] = Field(default_factory=dict)
     session_inputs: list[SessionInputRequest] = Field(default_factory=list)
     attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
-    session_control_transitions: list[SessionControlTransitionRequest] = Field(
-        default_factory=list
-    )
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
     attributed_control_transitions: list[AttributedSessionControlTransition] = Field(
         default_factory=list
     )

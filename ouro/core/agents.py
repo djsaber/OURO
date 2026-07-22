@@ -4,11 +4,12 @@ import hashlib
 import json
 import re
 from datetime import datetime
+from fnmatch import fnmatchcase
 from typing import Any, Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
-from ouro.core.approvals import SessionApprovalMode
+from ouro.core.approvals import PermissionMode, SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, OuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.run_budget import RunBudgetPolicy
@@ -111,6 +112,61 @@ class AgentDefinition(OuroModel):
         return _contract_hash(value)
 
 
+class AgentSpawnPolicy(OuroModel):
+    """Explicit platform limits applied before a child is offered or created."""
+
+    allowed_agent_id_patterns: tuple[str, ...] = ("*",)
+    allowed_model_patterns: tuple[str, ...] = ("*",)
+    allowed_execution_modes: tuple[ExecutionMode, ...] = (
+        "foreground",
+        "background",
+    )
+    allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] = ("bound",)
+    allow_write: bool = True
+    allow_network: bool = True
+    allow_mcp: bool = True
+    allow_external_paths: bool = True
+
+    @field_validator("allowed_agent_id_patterns", "allowed_model_patterns")
+    @classmethod
+    def validate_patterns(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(pattern.strip() for pattern in value)
+        if not normalized or any(not pattern for pattern in normalized):
+            raise ValueError("spawn policy patterns must not be empty")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("spawn policy patterns must be unique")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_modes(self) -> Self:
+        for values, name in (
+            (self.allowed_execution_modes, "execution modes"),
+            (self.allowed_lifecycle_bindings, "lifecycle bindings"),
+        ):
+            if not values:
+                raise ValueError(f"spawn policy {name} must not be empty")
+            if len(set(values)) != len(values):
+                raise ValueError(f"spawn policy {name} must be unique")
+        return self
+
+    def allows_agent(self, agent_id: str) -> bool:
+        return any(fnmatchcase(agent_id, pattern) for pattern in self.allowed_agent_id_patterns)
+
+    def allows_model(self, model: str | None) -> bool:
+        if model is None:
+            return True
+        return any(fnmatchcase(model, pattern) for pattern in self.allowed_model_patterns)
+
+    def allows_tool(self, tool: EffectiveToolRef) -> bool:
+        if tool.effect != "read_only" and not self.allow_write:
+            return False
+        if tool.requires_network and not self.allow_network:
+            return False
+        if tool.requires_mcp and not self.allow_mcp:
+            return False
+        return not tool.requires_external_paths or self.allow_external_paths
+
+
 class EffectiveToolRef(OuroModel):
     public_name: str = Field(min_length=1, max_length=128)
     canonical_tool_id: str = Field(min_length=1, max_length=256)
@@ -124,6 +180,10 @@ class EffectiveToolRef(OuroModel):
         "mcp",
     ] = "builtin"
     effect: Literal["read_only", "state_changing", "unknown"] = "unknown"
+    minimum_permission_mode: PermissionMode = "auto"
+    requires_network: bool = False
+    requires_mcp: bool = False
+    requires_external_paths: bool = False
 
 
 class AgentCatalogEntry(OuroModel):
@@ -149,6 +209,7 @@ class AgentCatalogSnapshot(OuroModel):
     schema_version: int = SCHEMA_VERSION
     revision: int = Field(default=0, ge=0)
     entries: tuple[AgentCatalogEntry, ...] = ()
+    spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
     created_at: datetime = Field(default_factory=utc_now)
     contract_hash: str = ""
 
@@ -157,6 +218,13 @@ class AgentCatalogSnapshot(OuroModel):
         ids = [entry.definition.agent_id for entry in self.entries]
         if len(set(ids)) != len(ids):
             raise ValueError("agent catalog contains duplicate agent_id")
+        for entry in self.entries:
+            if not self.spawn_policy.allows_agent(entry.definition.agent_id):
+                raise ValueError("agent catalog exceeds its agent_id spawn policy")
+            if not self.spawn_policy.allows_model(entry.definition.model):
+                raise ValueError("agent catalog exceeds its model spawn policy")
+            if any(not self.spawn_policy.allows_tool(tool) for tool in entry.effective_tools):
+                raise ValueError("agent catalog exceeds its tool spawn policy")
         expected = self.compute_contract_hash()
         if self.contract_hash and self.contract_hash != expected:
             raise ValueError("agent catalog contract hash does not match its content")
@@ -169,6 +237,7 @@ class AgentCatalogSnapshot(OuroModel):
                 "schema_version": self.schema_version,
                 "revision": self.revision,
                 "entries": [entry.model_dump(mode="json") for entry in self.entries],
+                "spawn_policy": self.spawn_policy.model_dump(mode="json"),
             }
         )
 
@@ -237,6 +306,10 @@ class DelegationRecord(OuroModel):
     task_description: str = Field(min_length=1, max_length=500)
     initial_message_id: str | None = None
     prompt_digest: str = Field(min_length=1, max_length=256)
+    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
+    context_resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
+    context_compaction_id: str | None = None
+    context_digest: str | None = Field(default=None, min_length=1, max_length=256)
     execution_mode: ExecutionMode = "background"
     lifecycle_binding: LifecycleBinding = "bound"
     delivery_policy: DeliveryPolicy = "notify_only"
@@ -269,6 +342,12 @@ class DelegationRecord(OuroModel):
                 raise ValueError("delegation result child session does not match relation")
             if self.current_child_run_id != self.result.child_run_id:
                 raise ValueError("delegation result child run does not match relation")
+        for references, label in (
+            (self.context_message_ids, "context message ids"),
+            (self.context_resource_refs, "context resource refs"),
+        ):
+            if len(set(references)) != len(references):
+                raise ValueError(f"delegation {label} must be unique")
         return self
 
 
@@ -321,9 +400,19 @@ class AgentControlRequest(OuroModel):
     message: str | None = Field(default=None, max_length=20_000)
     input_mode: Literal["steer", "follow_up"] = "steer"
     reason: str | None = Field(default=None, max_length=500)
+    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
+    resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
     def validate_action(self) -> Self:
+        for references, label in (
+            (self.context_message_ids, "context message ids"),
+            (self.resource_refs, "resource refs"),
+        ):
+            if any(not item.strip() for item in references):
+                raise ValueError(f"Agent {label} cannot be blank")
+            if len(set(references)) != len(references):
+                raise ValueError(f"Agent {label} must be unique")
         if self.action == "spawn":
             if not self.agent_id or not self.task or not self.task.strip():
                 raise ValueError("spawn control requires agent_id and task")
@@ -349,6 +438,7 @@ class AgentControlResult(OuroModel):
     is_error: bool = False
     content: str = ""
     structured: dict[str, Any] = Field(default_factory=dict)
+    resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
     wait: AgentWaitRequest | None = None
 
     @model_validator(mode="after")
@@ -366,6 +456,7 @@ __all__ = [
     "AgentCatalogSnapshot",
     "AgentDefinition",
     "AgentHandle",
+    "AgentSpawnPolicy",
     "AgentWaitRequest",
     "AgentWaitResolution",
     "ContextPolicy",

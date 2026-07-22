@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-from typing import Literal
+from datetime import datetime
+from typing import Literal, Self
 
-from pydantic import Field
+from pydantic import Field, field_validator, model_validator
 
-from ouro.application.dto import ApplicationDTO
+from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.agents import (
+    ControlState,
     DeliveryPolicy,
+    DeliveryStatus,
     ExecutionMode,
     LifecycleBinding,
     ToolSelection,
 )
+from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunStatus
 
 
@@ -57,9 +61,23 @@ class SpawnAgentRequest(ApplicationDTO):
     execution_mode: ExecutionMode = "background"
     lifecycle_binding: LifecycleBinding = "bound"
     delivery_policy: DeliveryPolicy = "notify_only"
+    unattended: bool = False
+    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
+    resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @field_validator("context_message_ids", "resource_refs")
+    @classmethod
+    def validate_reference_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip() for item in value)
+        if any(not item for item in normalized):
+            raise ValueError("Agent context references cannot be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Agent context references must be unique")
+        return normalized
 
 
 class AgentHandleView(ApplicationDTO):
+    revision: int = Field(ge=0)
     delegation_id: str
     child_session_id: str | None = None
     child_run_id: str | None = None
@@ -68,6 +86,21 @@ class AgentHandleView(ApplicationDTO):
     nickname: str | None = None
     status: str
     execution_mode: ExecutionMode
+    control_state: ControlState
+
+
+class AgentInteractionSummary(ApplicationDTO):
+    kind: Literal["approval", "user_input"]
+    tool_call_id: str
+    tool_name: str
+    request_id: str
+    requested_at: datetime
+
+
+class AgentTreeEdge(ApplicationDTO):
+    delegation_id: str
+    parent_session_id: str
+    child_session_id: str
 
 
 class AgentTreeNode(ApplicationDTO):
@@ -80,7 +113,14 @@ class AgentTreeNode(ApplicationDTO):
     task_description: str
     status: str
     execution_mode: ExecutionMode
+    lifecycle_binding: LifecycleBinding
+    control_state: ControlState
     depth: int
+    usage: dict[str, int | float] = Field(default_factory=dict)
+    budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
+    pending_interactions: tuple[AgentInteractionSummary, ...] = ()
+    result_ready: bool = False
+    delivery_status: DeliveryStatus | None = None
     activity: RuntimeActivitySnapshot | None = None
 
 
@@ -88,9 +128,31 @@ class AgentTreeSnapshot(ApplicationDTO):
     root_session_id: str
     revision: int = Field(ge=0)
     nodes: tuple[AgentTreeNode, ...] = ()
+    edges: tuple[AgentTreeEdge, ...] = ()
+    root_usage: dict[str, int | float] = Field(default_factory=dict)
+    root_budget: RunBudgetPolicy | None = None
+    root_activity: RuntimeActivitySnapshot | None = None
+    waiting_on_delegation_ids: tuple[str, ...] = ()
     active_count: int = Field(default=0, ge=0)
     waiting_count: int = Field(default=0, ge=0)
     terminal_count: int = Field(default=0, ge=0)
+    pending_interaction_count: int = Field(default=0, ge=0)
+
+
+class AgentTreeNotification(ApplicationDTO):
+    kind: Literal["snapshot", "diagnostic"]
+    snapshot: AgentTreeSnapshot | None = None
+    diagnostic: Diagnostic | None = None
+
+    @model_validator(mode="after")
+    def validate_payload(self) -> Self:
+        if self.kind == "snapshot" and self.snapshot is None:
+            raise ValueError("Agent tree snapshot notification requires a snapshot")
+        if self.kind == "diagnostic" and self.diagnostic is None:
+            raise ValueError("Agent tree diagnostic notification requires a diagnostic")
+        if (self.snapshot is None) == (self.diagnostic is None):
+            raise ValueError("Agent tree notification requires exactly one payload")
+        return self
 
 
 class AgentWaitResultView(ApplicationDTO):
@@ -125,9 +187,12 @@ __all__ = [
     "AgentDefinitionView",
     "AgentToolOptionView",
     "AgentHandleView",
+    "AgentInteractionSummary",
     "AgentInteractionView",
     "AgentReadView",
+    "AgentTreeEdge",
     "AgentTreeNode",
+    "AgentTreeNotification",
     "AgentTreeSnapshot",
     "AgentWaitResultView",
     "SpawnAgentRequest",

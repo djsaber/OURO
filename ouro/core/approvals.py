@@ -17,6 +17,23 @@ SESSION_APPROVAL_MODES = cast(
     get_args(SessionApprovalMode),
 )
 
+_PERMISSION_RANK: dict[PermissionMode, int] = {
+    "auto": 0,
+    "approval": 1,
+    "deny": 2,
+}
+
+
+def restrict_tool_permission(
+    permission_mode: PermissionMode,
+    constraint: PermissionMode,
+) -> PermissionMode:
+    """Return the stricter of two permission decisions."""
+
+    if _PERMISSION_RANK[constraint] > _PERMISSION_RANK[permission_mode]:
+        return constraint
+    return permission_mode
+
 
 def resolve_tool_permission(
     permission_mode: PermissionMode,
@@ -34,6 +51,9 @@ def resolve_tool_permission(
             configured_mode = override or permission_mode
         case _ as invalid_control:
             assert_never(invalid_control)
+
+    if configured_mode == "deny":
+        return "deny"
 
     match approval_mode:
         case "inherit":

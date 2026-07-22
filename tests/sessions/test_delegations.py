@@ -11,7 +11,7 @@ from ouro.core.agents import (
     ResultDelivery,
     ToolSelection,
 )
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import DelegationRevisionConflictError, PersistenceError
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 
@@ -56,9 +56,10 @@ def test_delegation_repository_round_trip_and_revision(
 
     assert delegation_store.create_delegation(record) == record
     assert delegation_store.load_delegation(root.session_id, record.delegation_id) == record
-    assert delegation_store.find_delegation_by_idempotency_key(
-        root.session_id, record.idempotency_key
-    ) == record
+    assert (
+        delegation_store.find_delegation_by_idempotency_key(root.session_id, record.idempotency_key)
+        == record
+    )
 
     child = SessionRecord(
         session_id="ses_child",
@@ -79,7 +80,7 @@ def test_delegation_repository_round_trip_and_revision(
     assert saved.revision == 1
     assert delegation_store.find_delegation_by_child_session(child.session_id) == saved
     assert delegation_store.list_delegations(root.session_id) == [saved]
-    with pytest.raises(PersistenceError, match="revision conflict"):
+    with pytest.raises(DelegationRevisionConflictError, match="revision conflict"):
         delegation_store.save_delegation(saved, expected_revision=0)
 
 
@@ -129,4 +130,3 @@ def test_delegation_repository_queries_incomplete_and_pending_delivery(
 
     assert delegation_store.load_incomplete_delegations() == [incomplete]
     assert delegation_store.load_pending_delegation_deliveries() == [ready]
-

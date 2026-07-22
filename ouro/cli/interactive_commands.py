@@ -452,9 +452,7 @@ async def _session_control(
             )
         lines = ["Active Session controllers:"]
         for activation in activations:
-            claims = ", ".join(
-                f"{claim.domain}:{claim.access}" for claim in activation.claims
-            )
+            claims = ", ".join(f"{claim.domain}:{claim.access}" for claim in activation.claims)
             lines.append(
                 f"- {activation.activation_id} {activation.controller_id} "
                 f"[{activation.phase}] claims={claims}"
@@ -473,10 +471,7 @@ async def _session_control(
     if len(selectors) != 1:
         return CommandResult(
             session_id=session_id,
-            output=(
-                "Usage: /control release "
-                "<activation-id|controller-id|--all> [--force]"
-            ),
+            output=("Usage: /control release <activation-id|controller-id|--all> [--force]"),
         )
     activations = runtime.session_control_activations(session_id)
     selector = selectors[0]
@@ -486,8 +481,7 @@ async def _session_control(
         targets = [
             activation
             for activation in activations
-            if activation.activation_id == selector
-            or activation.controller_id == selector
+            if activation.activation_id == selector or activation.controller_id == selector
         ]
     if not targets:
         return CommandResult(

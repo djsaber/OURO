@@ -78,6 +78,7 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     subparsers = parser.add_subparsers(dest="command")
 
     _add_run_parser(subparsers)
+    _add_agent_parser(subparsers)
     _add_session_parser(subparsers)
     _add_resource_parser(subparsers)
     _add_approval_parsers(subparsers)
@@ -89,6 +90,124 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     _add_usage_parser(subparsers)
 
     return parser
+
+
+def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
+    agent = subparsers.add_parser(
+        "agent",
+        help="Manage Agent definitions and durable child Agents",
+    )
+    commands = agent.add_subparsers(dest="agent_command", required=True)
+
+    definition = commands.add_parser("definition", help="Manage Agent definitions")
+    definition_commands = definition.add_subparsers(
+        dest="definition_command",
+        required=True,
+    )
+    for name, help_text in (
+        ("list", "List Agent definitions and compatibility"),
+        ("tools", "List tools selectable by Agent definitions"),
+    ):
+        command = definition_commands.add_parser(name, help=help_text)
+        _add_agent_output_args(command)
+
+    show = definition_commands.add_parser("show", help="Show one Agent definition")
+    show.add_argument("agent_id")
+    _add_agent_output_args(show)
+
+    for name in ("create", "update"):
+        command = definition_commands.add_parser(name, help=f"{name.title()} an Agent definition")
+        command.add_argument("agent_id")
+        command.add_argument("--name", required=True)
+        command.add_argument("--description", required=True)
+        command.add_argument("--system-prompt", required=True)
+        command.add_argument("--all-tools", action="store_true")
+        command.add_argument("--tool", dest="tool_names", action="append", default=[])
+        command.add_argument("--expected-revision", type=int, required=True)
+        _add_agent_output_args(command)
+
+    delete = definition_commands.add_parser("delete", help="Delete a user Agent definition")
+    delete.add_argument("agent_id")
+    delete.add_argument("--expected-revision", type=int, required=True)
+    _add_agent_output_args(delete)
+
+    copy = definition_commands.add_parser("copy", help="Copy a builtin Agent definition")
+    copy.add_argument("agent_id")
+    copy.add_argument("new_agent_id")
+    copy.add_argument("--name", required=True)
+    copy.add_argument("--expected-revision", type=int, required=True)
+    _add_agent_output_args(copy)
+
+    list_agents = commands.add_parser("list", help="List durable child Agents")
+    list_agents.add_argument("root_session_id")
+    list_agents.add_argument("--parent-session-id")
+    _add_agent_output_args(list_agents)
+
+    show_agent = commands.add_parser("show", help="Show one child Agent result")
+    show_agent.add_argument("delegation_id")
+    _add_agent_output_args(show_agent)
+
+    spawn = commands.add_parser(
+        "spawn",
+        help="Run an unattended Host delegation from a completed parent Run",
+    )
+    spawn.add_argument("parent_session_id")
+    spawn.add_argument("parent_run_id")
+    spawn.add_argument("agent_id")
+    spawn.add_argument("task")
+    spawn.add_argument("--description", required=True)
+    spawn.add_argument("--request-id", required=True)
+    spawn.add_argument("--nickname")
+    spawn.add_argument(
+        "--execution-mode",
+        choices=("foreground", "background"),
+        default="background",
+    )
+    spawn.add_argument(
+        "--context-message-id",
+        dest="context_message_ids",
+        action="append",
+        default=[],
+    )
+    spawn.add_argument("--resource-id", dest="resource_ids", action="append", default=[])
+    _add_agent_output_args(spawn)
+
+    wait = commands.add_parser("wait", help="Wait for durable child Agent results")
+    wait.add_argument("delegation_ids", nargs="+")
+    _add_agent_output_args(wait)
+
+    send = commands.add_parser("send", help="Steer or follow up a child Agent")
+    send.add_argument("delegation_id")
+    send.add_argument("message")
+    send.add_argument("--request-id", required=True)
+    send.add_argument("--mode", choices=("steer", "follow_up"), default="steer")
+    _add_agent_output_args(send)
+
+    interrupt = commands.add_parser("interrupt", help="Interrupt a child Agent Run")
+    interrupt.add_argument("delegation_id")
+    interrupt.add_argument("--reason", default="Interrupted by CLI Host")
+    _add_agent_output_args(interrupt)
+
+    close = commands.add_parser("close", help="Close a terminal child Agent control handle")
+    close.add_argument("delegation_id")
+    _add_agent_output_args(close)
+
+    tree = commands.add_parser("tree", help="Show the canonical Agent tree")
+    tree.add_argument("root_session_id")
+    _add_agent_output_args(tree)
+
+    interactions = commands.add_parser(
+        "interactions",
+        help="List pending child Agent interactions",
+    )
+    interactions.add_argument("root_session_id")
+    _add_agent_output_args(interactions)
+
+
+def _add_agent_output_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--home")
+    _add_session_backend_arg(parser)
+    parser.add_argument("--json", action="store_true")
 
 
 def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -714,6 +833,23 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Remove all run soft limits",
     )
     run_budget_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    agents_parser = config_subparsers.add_parser(
+        "agents",
+        help="Inspect or set first-release Agent scheduling limits",
+    )
+    agents_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    agents_parser.add_argument("--expected-revision", type=int)
+    agents_parser.add_argument("--max-depth", type=int)
+    agents_parser.add_argument("--max-children", type=int)
+    agents_parser.add_argument(
+        "--allow-agent",
+        dest="allowed_agent_id_patterns",
+        action="append",
+        default=None,
+        help="Allowed Agent id or glob pattern (repeatable)",
+    )
+    agents_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     compaction_parser = config_subparsers.add_parser(
         "compaction",

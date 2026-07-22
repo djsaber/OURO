@@ -53,6 +53,7 @@ class HostSessionInput(SessionInputRequest):
 
     host_source_id: str = Field(min_length=1)
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
+    resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
     @field_validator("host_source_id")
     @classmethod
@@ -60,6 +61,16 @@ class HostSessionInput(SessionInputRequest):
         normalized = value.strip()
         if not normalized:
             raise ValueError("host session input source id cannot be blank")
+        return normalized
+
+    @field_validator("resource_refs")
+    @classmethod
+    def validate_resource_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip() for item in value)
+        if any(not item for item in normalized):
+            raise ValueError("Host resource references cannot be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Host resource references must be unique")
         return normalized
 
 

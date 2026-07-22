@@ -23,6 +23,7 @@ OURO_HOME/
       events.jsonl
       compactions.jsonl
       runs/<run_id>.json
+      delegations/<delegation_id>.json
       resources/index.json
   resources/
     records/<resource_id>.json
@@ -32,7 +33,8 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 3。不兼容布局必须在初始化时抛出 `MigrationRequiredError`，不能猜测迁移。
+当前 `data_layout_version` 为 4；版本 3 只执行增加 delegation 目录语义的确定性升级。其他不兼容布局必须在
+初始化时抛出 `MigrationRequiredError`，不能猜测迁移。
 
 ## Canonical 数据与投影
 
@@ -42,6 +44,7 @@ Canonical 数据包括：
 - `messages.jsonl`；
 - `events.jsonl`；
 - `runs/*.json`；
+- root Session 下的 `delegations/*.json`；
 - `compactions.jsonl`。
 
 `sessions/index.json` 是可重建查询投影，不属于 canonical transaction。索引更新失败时：
@@ -61,8 +64,13 @@ Canonical 数据包括：
 
 ## SessionStore 契约
 
-端口覆盖：创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、加载、索引、回收站发布以及
-session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，而不只是复制方法签名。
+端口覆盖：创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、Delegation repository、加载、
+索引、回收站发布以及 session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，
+而不只是复制方法签名。
+
+Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
+反向查询和 revision compare-and-swap。文件后端保存 root-local 原子 JSON；SQLite schema version 2 使用
+`delegations` 表和等价索引。CAS 冲突抛出 `DelegationRevisionConflictError`，不能与普通持久化损坏混为一类。
 
 运行热路径使用不含 events 的 `RuntimeSessionSnapshot`；`SessionSnapshot` 是包含完整事件历史的查询与回放
 视图。application 只有在检查、导出、回放或重建活动投影时才能请求完整快照，普通 Run、工具恢复、上下文
@@ -76,6 +84,8 @@ session lock；部署初始化和 catalog 维护不属于该端口。新的后�
 - 锁文件只保存诊断信息，不作为存活事实。
 - 同一 session 的运行、模型切换、分支敏感操作必须尊重 active Run 和 lock。
 - catalog 使用独立锁，不能阻塞 canonical Session 打开。
+- root Session mutation lock 串行化同一 root 的 Delegation 创建、CAS 更新和查询线性化点；process-local
+  Agent 生命周期锁只缩小竞态窗口，不能替代 durable revision。
 
 ## 恢复
 
@@ -94,6 +104,11 @@ session lock；部署初始化和 catalog 维护不属于该端口。新的后�
 无未完成 Run 的常规加载不读取 events；只有检测到需要恢复的中断 Run 时，Store 才加载恢复所需的模型流
 事件。该读取属于冷恢复路径，不能污染后续 Run 的正常成本。
 
+Session/Run 恢复之后，Agent reconciliation 按单向提交阶段核对 Delegation、child Session backlink、child Run
+provenance 和冻结 contract。只有唯一可证明归属的记录才补齐；active child 转 `recoverable`，unknown outcome
+不自动重放。terminal child 可重建缺失的 DelegationResult，pending delivery 通过稳定 delivery identity 对账，
+不会重复写父消息或启动父 Run。无法证明一致的半提交关系 fail-closed，并保留全部 canonical 证据。
+
 ## 会话查询与维护
 
 application 提供：
@@ -104,6 +119,9 @@ application 提供：
 - branch 与 trash。
 
 Host DTO 不暴露 catalog 内部的 `search_text`。
+
+root Session 有 active 或无法判定的 Agent descendant 时不能归档；任何仍有 canonical Delegation 的 root 不能直接
+进入 trash。subagent Session 由 owning Delegation 管理，也不能作为普通独立会话删除，以免形成孤儿关系。
 
 ## Branch
 
@@ -127,4 +145,6 @@ Host DTO 不暴露 catalog 内部的 `search_text`。
 - `tests/sessions/test_local_io.py`
 - `tests/application/test_sessions.py`
 - `tests/application/test_session_models.py`
+- `tests/sessions/test_delegations.py`
+- `tests/application/test_agent_recovery.py`
 - `tests/cli/test_session_commands.py`

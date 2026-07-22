@@ -25,6 +25,8 @@
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
+- SpawnAgent、WaitAgents、ListAgents、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
+  product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
 `ToolExecutionContext` 解析；默认限制在 Session workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录内，
@@ -65,12 +67,26 @@
 - `sequential`：逐个执行，适合有显式顺序或共享副作用的调用。
 - `parallel`：受 `max_concurrency` 限制并发执行。
 - AskUser 和审批会在实际执行前完成 preflight；未解决交互时不启动批次副作用。
+- WaitAgents 使用 exclusive/sequential 批次行为；其调用可进入 durable `waiting_child`，不会在 handler 内占用
+  worker 轮询。
 - 一个调用失败不取消其他已经允许执行的调用；批次结果保留每项状态。
 
 ## AskUser
 
 AskUser 调用进入 `waiting_user`，保存活动批次和问题。用户答案转换为该调用的 ToolResult，随后继续处理
 同一批次。Run id 和 tool call id 必须匹配，不能把答案写入其他 waiting Run。
+
+## Agent 控制与 child HITL
+
+Agent 控制工具的普通 handler 只返回类型化 `AgentControlRequest`，`ToolCallCoordinator` 再把请求交给
+application `AgentService`。tools/core 不导入 AgentService、RuntimeService 或 Supervisor。SpawnAgent 的
+`agent_id` schema、execution mode 与实际解析都来自同一 Run-frozen `AgentCatalogSnapshot`；目录没有可派遣
+definition 时省略 SpawnAgent，而不是生成非法空枚举。控制名称属于产品保留集，plugin/MCP 不能覆盖。
+
+child 工具权限先与 parent 可下放的工具、workspace、network/MCP/external-path hard cap 求交，再应用现有
+auto/approval/deny 与 ToolPolicy。`tool_selection=all` 不绕过 hard deny。child Approval 与 AskUser 仍保存在
+child Run；根 Host 通过包含 delegation/session/run/tool-call/request identity 的 interaction inbox 精确路由，
+错投到 sibling 或 parent 明确拒绝。unattended child 对残余审批和输入请求沿用统一确定性策略，不无限等待。
 
 ## 取消与进程
 
@@ -102,5 +118,7 @@ Hook 失败隔离为 `plugin_hook_failed`，不改变工具的实际结果。
 - `tests/tools/test_executor_permissions.py`
 - `tests/application/test_tool_call_batches.py`
 - `tests/application/test_runtime.py`
+- `tests/application/test_agents.py`
+- `tests/tools/test_builtin_agents.py`
 - `tests/cli/test_approval_commands.py`
 - `tests/cli/test_tool_execution_config_commands.py`

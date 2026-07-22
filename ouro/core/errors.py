@@ -17,6 +17,10 @@ class PersistenceError(OuroError):
     """Local persistence failed."""
 
 
+class DelegationRevisionConflictError(PersistenceError):
+    """A Delegation compare-and-swap lost to a concurrent durable update."""
+
+
 class MigrationRequiredError(PersistenceError):
     """Persisted data cannot be opened without an explicit layout migration."""
 

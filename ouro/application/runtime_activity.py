@@ -230,9 +230,7 @@ def reduce_runtime_activity(
                     "subagent_join" if run_status == "waiting_child" else "human_interaction"
                 )
                 updates["batch_phase"] = (
-                    "awaiting_child"
-                    if run_status == "waiting_child"
-                    else "awaiting_interaction"
+                    "awaiting_child" if run_status == "waiting_child" else "awaiting_interaction"
                 )
             elif run_status in _TERMINAL_ACTIVITY:
                 updates["activity"] = _TERMINAL_ACTIVITY[run_status]

@@ -19,8 +19,8 @@ desktop-host   connectivity-extensions
 |---|---|---|
 | [个人工作流基础](personal-workflow-foundation.md) | ResourceService、RuntimeSupervisor、配置门面 | 当前 Session/Runtime/Config 契约 |
 | [连接与扩展](connectivity-extensions.md) | 插件底层架构收敛（MCP 与首版闭环已完成） | 配置门面、现有 MCP/Supervisor 边界 |
-| [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆、计划与子智能体 | ResourceService、Supervisor 和稳定 Host 控制面 |
-| [子智能体](subagents.md) | 高级智能体能力工作流 C 的详细实现：builtin/custom AgentDefinition 管理与派遣 schema 联动、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
+| [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆与 durable Goal/Task；工作流 C 子智能体已完成 | ResourceService、Supervisor 和稳定 Host 控制面 |
+| [子智能体（已完成）](subagents.md) | 工作流 C 的实现记录：AgentDefinition、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |
 
 ## 使用规则

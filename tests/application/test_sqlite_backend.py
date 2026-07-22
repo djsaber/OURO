@@ -53,6 +53,12 @@ def test_sqlite_sessions_compose_with_local_blob_store(tmp_path) -> None:
     ).model_copy(update={"resource_refs": [imported.resource.resource_id]})
     sessions.append_message(message)
     branch = service.branch(source_session.session_id, message.message_id)
+    copied = service.create(title="SQLite copied references").session
+    resources.copy_references(
+        source_session.session_id,
+        copied.session_id,
+        (imported.resource.resource_id,),
+    )
 
     assert resources.session_resource_ids(source_session.session_id) == (
         imported.resource.resource_id,
@@ -60,6 +66,9 @@ def test_sqlite_sessions_compose_with_local_blob_store(tmp_path) -> None:
     assert resources.session_resource_ids(branch.session.session_id) == (
         imported.resource.resource_id,
     )
+    copied_reference = sessions.load_resource_references(copied.session_id)[0]
+    assert copied_reference.copied_from_session_id == source_session.session_id
+    service.trash(copied.session_id)
     service.trash(branch.session.session_id)
     assert blobs.load_record(imported.resource.resource_id).resource_id == (
         imported.resource.resource_id

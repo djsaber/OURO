@@ -68,6 +68,14 @@ class LocalSessionServices:
     _store: SessionStore = field(repr=False)
 
 
+@dataclass(frozen=True)
+class LocalAgentDefinitionServices:
+    """Definition management facet with the same live Tool catalog as a local Runtime."""
+
+    definitions: AgentDefinitionService
+    tools: ToolRegistry
+
+
 class LocalApplication:
     """Own one local OURO runtime and all process-scoped resources around it."""
 
@@ -90,6 +98,7 @@ class LocalApplication:
         self.agent_definitions = agent_definitions
         self.agents = agents
         self._startup_report = ApplicationStartupReport()
+        self._agent_startup_diagnostics: tuple[Diagnostic, ...] = ()
         self._started = False
         self._closed = False
 
@@ -141,13 +150,20 @@ class LocalApplication:
             session_store=runtime.store,
         )
         runtime.attach_extension_catalog(plugin_runtime)
-        agent_definitions = AgentDefinitionService(AgentDefinitionsConfigManager(configured_home))
+        agent_config = AgentDefinitionsConfigManager(configured_home)
+        configured_agents = agent_config.snapshot()
+        agent_definitions = AgentDefinitionService(agent_config)
         runtime.attach_agent_definitions(agent_definitions)
         supervisor = RuntimeSupervisor(runtime)
         agents = AgentService(
             store=runtime.store,
             definitions=agent_definitions,
             scheduler=supervisor,
+            events=runtime.event_recorder,
+            resources=runtime.resources,
+            spawn_policy=configured_agents.runtime.spawn_policy,
+            max_depth=configured_agents.runtime.max_depth,
+            max_active_children_per_root=(configured_agents.runtime.max_active_children_per_root),
         )
         runtime.attach_agent_controls(agents)
         runtime.add_event_sink(agents.on_runtime_event)
@@ -180,7 +196,7 @@ class LocalApplication:
             self.runtime.reconcile_interrupted_session_controls()
             await self.supervisor.start()
             if self.agents is not None:
-                await self.agents.start()
+                self._agent_startup_diagnostics = await self.agents.start()
         except BaseException:
             with suppress(Exception):
                 await self.mcp.close()
@@ -196,6 +212,7 @@ class LocalApplication:
 
     def _collect_startup_report(self) -> ApplicationStartupReport:
         diagnostics = list(self.plugins.startup_diagnostics() if self.plugins is not None else ())
+        diagnostics.extend(self._agent_startup_diagnostics)
         diagnostics.extend(
             Diagnostic(
                 code="mcp_startup_failed",
@@ -267,6 +284,49 @@ async def open_local_plugins(
         yield service
     finally:
         await runtime.close()
+
+
+@asynccontextmanager
+async def open_local_agent_definitions(
+    home: str | Path | None = None,
+    *,
+    session_backend: SessionBackend | None = None,
+) -> AsyncIterator[LocalAgentDefinitionServices]:
+    """Open definition CRUD without requiring a configured model provider."""
+
+    root = resolve_local_home(home)
+    session_services = build_local_session_services(root, session_backend=session_backend)
+    tools = ToolRegistry()
+    for tool in builtin_tools():
+        tools.register(tool)
+    plugin_runtime, _ = _build_local_plugin_runtime(
+        root,
+        tools=tools,
+        hooks=HookRegistry(),
+        context_providers=ContextProviderRegistry(),
+        compaction=CompactionStrategyRegistry(),
+        continuations=RunContinuationRegistry(),
+        turn_policies=TurnPolicyRegistry(),
+        tool_policies=ToolPolicyRegistry(),
+        session_store=session_services._store,
+    )
+    mcp = MCPRuntimeResource.from_config(root, tools)
+    try:
+        await mcp.start()
+        await plugin_runtime.start()
+        yield LocalAgentDefinitionServices(
+            definitions=AgentDefinitionService(AgentDefinitionsConfigManager(root)),
+            tools=tools,
+        )
+    finally:
+        errors: list[Exception] = []
+        for close in (plugin_runtime.close, mcp.close):
+            try:
+                await close()
+            except Exception as exc:  # noqa: BLE001 - close every owned resource.
+                errors.append(exc)
+        if errors:
+            raise ExceptionGroup("local agent definition services shutdown failed", errors)
 
 
 def build_local_runtime(

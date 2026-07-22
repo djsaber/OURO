@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from ouro.core.base import utc_now
@@ -188,7 +189,14 @@ class SessionRecoveryService:
         if not start_indexes:
             return None
         start_event = run_events[start_indexes[-1]]
-        turn_id = start_event.payload.get("turn_id")
+        payload_turn_id = start_event.payload.get("turn_id")
+        turn_id = (
+            start_event.turn_id
+            if start_event.turn_id is not None
+            else payload_turn_id
+            if isinstance(payload_turn_id, str)
+            else None
+        )
         streamed_events = run_events[start_indexes[-1] + 1 :]
         if any(
             event.event_type
@@ -202,9 +210,10 @@ class SessionRecoveryService:
         ):
             return None
         durable_run_messages = [message for message in messages if message.run_id == run.run_id]
-        if durable_run_messages and (
-            durable_run_messages[-1].role in {"assistant", "tool_result"}
-            and durable_run_messages[-1].created_at >= start_event.created_at
+        if _model_round_is_durable(
+            durable_run_messages,
+            turn_id=turn_id,
+            started_at=start_event.created_at,
         ):
             return None
 
@@ -233,7 +242,7 @@ class SessionRecoveryService:
             role="assistant",
             text=text,
             sequence=len(messages) + 1,
-            turn_id=turn_id if isinstance(turn_id, str) else None,
+            turn_id=turn_id,
         ).model_copy(update={"metadata": metadata, "reasoning_content": reasoning})
         self.store.append_message(message)
         messages.append(message)
@@ -259,6 +268,25 @@ class SessionRecoveryService:
                 },
             )
         )
+
+
+def _model_round_is_durable(
+    messages: list[MessageRecord],
+    *,
+    turn_id: str | None,
+    started_at: datetime,
+) -> bool:
+    durable_messages = [
+        message for message in messages if message.role in {"assistant", "tool_result"}
+    ]
+    if turn_id is not None:
+        return any(message.turn_id == turn_id for message in durable_messages)
+    if not durable_messages:
+        return False
+    # Legacy journals may predate typed turn identities. Preserve their
+    # conservative duplicate-avoidance behavior; current journals use turn_id
+    # and never depend on wall-clock ordering across independent logs.
+    return durable_messages[-1].created_at >= started_at
 
 
 def _reconcile_session_projection(

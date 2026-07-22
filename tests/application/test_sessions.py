@@ -4,6 +4,12 @@ import pytest
 
 from ouro.application.session_models import SessionCatalogQuery
 from ouro.application.sessions import SessionService
+from ouro.core.agents import (
+    AgentDefinition,
+    DelegationRecord,
+    DelegationResult,
+    ResultDelivery,
+)
 from ouro.core.context import ContextBuilder
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
@@ -11,7 +17,7 @@ from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.sessions.layout import DATA_LAYOUT_VERSION
 
 
@@ -489,3 +495,123 @@ def test_trash_rejects_unfinished_session_and_moves_idle_session_atomically(tmp_
 
     assert not (store.sessions_dir / idle.session_id).exists()
     assert (store.trash_sessions_dir / result.trash_id / "session.json").exists()
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_root_archive_and_trash_preserve_agent_descendant_scope(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    root = SessionRecord(session_id="ses_agent_root", title="Agent root")
+    parent = RunRecord(
+        run_id="run_agent_parent",
+        session_id=root.session_id,
+        status="completed",
+    )
+    store.create_session(root)
+    store.save_run(parent)
+    definition = AgentDefinition(
+        agent_id="general",
+        name="General",
+        description="General child agent.",
+    )
+    relation = store.create_delegation(
+        DelegationRecord(
+            delegation_id="dlg_agent_child",
+            idempotency_key="host/agent-child",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id=definition.agent_id,
+            task_description="Preserve descendant history",
+            prompt_digest="sha256:agent-child",
+            definition=definition,
+        )
+    )
+    child = SessionRecord(
+        session_id="ses_agent_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id=relation.delegation_id,
+        status="running",
+        active_run_id="run_agent_child",
+        last_run_id="run_agent_child",
+    )
+    child_run = RunRecord(
+        run_id="run_agent_child",
+        session_id=child.session_id,
+        parent_run_id=parent.run_id,
+        status="running",
+    )
+    store.create_session(child)
+    store.save_run(child_run)
+    relation = store.save_delegation(
+        relation.model_copy(
+            update={
+                "spawn_state": "submitted",
+                "child_session_id": child.session_id,
+                "current_child_run_id": child_run.run_id,
+            }
+        ),
+        expected_revision=relation.revision,
+    )
+
+    relation = store.save_delegation(
+        relation.model_copy(
+            update={
+                "result": DelegationResult(
+                    child_session_id=child.session_id,
+                    child_run_id=child_run.run_id,
+                    terminal_status="completed",
+                    delivery=ResultDelivery(status="skipped"),
+                )
+            }
+        ),
+        expected_revision=relation.revision,
+    )
+    with pytest.raises(SessionBusyError, match="active or unresolved Agent descendant"):
+        sessions.set_archived(root.session_id, True)
+
+    store.save_run(child_run.model_copy(update={"status": "completed"}))
+    store.save_session(child.model_copy(update={"status": "idle", "active_run_id": None}))
+    assert sessions.set_archived(root.session_id, True).session.archived is True
+
+    with pytest.raises(SessionBusyError, match="canonical Agent descendant"):
+        sessions.trash(root.session_id)
+    with pytest.raises(SessionBusyError, match="belongs to Delegation"):
+        sessions.trash(child.session_id)
+
+    assert store.load_session_record(root.session_id).archived is True
+    assert store.load_session_record(child.session_id).session_kind == "subagent"
+    assert store.load_delegation(root.session_id, relation.delegation_id) == relation
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_trash_preserves_orphan_subagent_for_reconciliation(tmp_path, backend: str) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    root = SessionRecord(session_id="ses_orphan_root")
+    child = SessionRecord(
+        session_id="ses_orphan_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_missing",
+    )
+    store.create_session(root)
+    store.create_session(child)
+
+    with pytest.raises(SessionBusyError, match="preserve it for relation reconciliation"):
+        sessions.trash(child.session_id)
+
+    assert store.load_session_record(child.session_id) == child

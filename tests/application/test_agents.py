@@ -7,22 +7,30 @@ import pytest
 from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.agent_models import SpawnAgentRequest
 from ouro.application.agents import AgentService
+from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentControlRequest,
+    AgentSpawnPolicy,
+    ContextPolicy,
     DelegatedConstraints,
     DelegationRecord,
     ToolSelection,
 )
-from ouro.core.errors import SessionBusyError
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context import estimate_message_tokens, estimate_text_tokens
+from ouro.core.errors import ResourceNotFoundError, SessionBusyError
+from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
+from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
-from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
+from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
 
 
 class CapturingChildProvider:
@@ -31,11 +39,13 @@ class CapturingChildProvider:
     def __init__(self) -> None:
         self.system_prompts: list[str] = []
         self.tool_names: list[list[str]] = []
+        self.messages: list[list[object]] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
-        del model, messages
+        del model
         self.system_prompts.append(system_prompt)
         self.tool_names.append([item["name"] for item in (tools or [])])
+        self.messages.append(list(messages))
         yield ProviderStreamEvent(type="text_delta", text="child complete")
         yield ProviderStreamEvent(type="done")
 
@@ -115,6 +125,136 @@ class ForegroundAgentProvider:
         )
 
 
+class ForegroundHitlProvider:
+    provider_id = "foreground-hitl"
+
+    def __init__(self, store: LocalSessionStore) -> None:
+        self.store = store
+        self.root_round = 0
+        self.child_round = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            if self.child_round == 0:
+                self.child_round += 1
+                yield ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "foreground_ask_call",
+                        "name": "AskUser",
+                        "arguments": {"question": "Choose A or B"},
+                    },
+                )
+                yield ProviderStreamEvent(type="done")
+                return
+            yield ProviderStreamEvent(type="text_delta", text="foreground child answered")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "foreground_hitl_spawn",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "general",
+                        "task": "Ask one bounded question.",
+                        "description": "Foreground HITL child",
+                        "execution_mode": "foreground",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 1:
+            self.root_round += 1
+            root = next(
+                session
+                for session in self.store.list_sessions()
+                if session.session_kind == "primary"
+            )
+            delegation = self.store.list_delegations(root.session_id)[0]
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "foreground_hitl_wait",
+                    "name": "WaitAgents",
+                    "arguments": {"delegation_ids": [delegation.delegation_id]},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="foreground parent resumed")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
+class SpawnAndChildApprovalProvider:
+    provider_id = "spawn-child-approval"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.child_round = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            if self.child_round == 0:
+                self.child_round += 1
+                yield ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": "child_danger_call",
+                        "name": "Danger",
+                        "arguments": {},
+                    },
+                )
+                yield ProviderStreamEvent(type="done")
+                return
+            yield ProviderStreamEvent(type="text_delta", text="child approved")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "approved_spawn_call",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "general",
+                        "task": "Exercise an independently approved tool.",
+                        "description": "Approval scope test",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="parent spawn approved")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 class BackgroundFollowUpProvider:
     provider_id = "background"
 
@@ -152,6 +292,60 @@ class BackgroundFollowUpProvider:
             yield ProviderStreamEvent(type="done")
             return
         yield ProviderStreamEvent(type="text_delta", text="parent received follow-up")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
+class NextBoundaryRaceProvider:
+    provider_id = "next-boundary"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.root_blocked = asyncio.Event()
+        self.root_release = asyncio.Event()
+        self.root_messages: list[list[object]] = []
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            yield ProviderStreamEvent(type="text_delta", text="boundary child result")
+            yield ProviderStreamEvent(type="done")
+            return
+        self.root_messages.append(list(messages))
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "next_boundary_spawn",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "reader",
+                        "task": "Finish while the parent model round is active.",
+                        "description": "Next-boundary race",
+                        "execution_mode": "background",
+                        "delivery_policy": "next_boundary",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 1:
+            self.root_round += 1
+            self.root_blocked.set()
+            await self.root_release.wait()
+            yield ProviderStreamEvent(type="text_delta", text="parent reached boundary")
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="parent consumed child result")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -224,6 +418,71 @@ class ApprovalChildProvider:
         )
 
 
+class AskUserChildProvider:
+    provider_id = "ask-child"
+
+    def __init__(self) -> None:
+        self.round = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        if self.round == 0:
+            self.round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "ask_call",
+                    "name": "AskUser",
+                    "arguments": {"question": {"kind": "choice", "items": ["A", "B"]}},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="child received answer")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
+class ConcurrentAskUserProvider:
+    provider_id = "concurrent-ask"
+
+    def __init__(self) -> None:
+        self.initial_calls = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        if self.initial_calls < 2:
+            index = self.initial_calls
+            self.initial_calls += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": f"concurrent_ask_{index}",
+                    "name": "AskUser",
+                    "arguments": {"question": f"Question {index}"},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="concurrent child answered")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 async def _handler(invocation):
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
@@ -248,9 +507,41 @@ def _tools() -> ToolRegistry:
     return registry
 
 
-async def _services(tmp_path):
+def _ask_tools() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="AskUser",
+                description="Ask for structured user input.",
+                parameters_schema={
+                    "type": "object",
+                    "properties": {"question": {}},
+                    "required": ["question"],
+                    "additionalProperties": False,
+                },
+                effect="read_only",
+                execution_mode="sequential",
+                batch_behavior="exclusive",
+                kind="user_input",
+            ),
+            handler=lambda invocation: ToolInputRequest(data=invocation.arguments["question"]),
+        )
+    )
+    return registry
+
+
+async def _services(
+    tmp_path,
+    *,
+    spawn_policy: AgentSpawnPolicy | None = None,
+    context_policy: ContextPolicy | None = None,
+):
     store = LocalSessionStore(tmp_path)
     store.initialize()
+    resource_store = LocalResourceStore(store.root)
+    resource_store.initialize()
+    resources = ResourceService(store=resource_store, sessions=store)
     provider = CapturingChildProvider()
     tools = _tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
@@ -263,6 +554,18 @@ async def _services(tmp_path):
         tools=tools,
         expected_revision=0,
     )
+    if context_policy is not None:
+        configured = definitions.config.snapshot()
+        reader = next(item for item in configured.definitions if item.agent_id == "reader")
+        definitions.config.update(
+            reader.__class__.model_validate(
+                {
+                    **reader.model_dump(mode="python", exclude={"contract_hash"}),
+                    "context_policy": context_policy,
+                }
+            ),
+            expected_revision=configured.revision,
+        )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -271,11 +574,19 @@ async def _services(tmp_path):
         ),
         tools=tools,
         system_prompt="BASE INSTRUCTIONS",
+        resources=resources,
     )
     runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     await supervisor.start()
-    service = AgentService(store=store, definitions=definitions, scheduler=supervisor)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+        resources=resources,
+        spawn_policy=spawn_policy,
+    )
 
     root = SessionRecord(
         session_id="ses_root",
@@ -289,11 +600,71 @@ async def _services(tmp_path):
         session_id=root.session_id,
         status="running",
         model="capture",
-        agent_catalog=definitions.catalog_snapshot(tools),
+        agent_catalog=service.constrain_catalog(definitions.catalog_snapshot(tools)),
     )
     store.create_session(root)
     store.save_run(parent)
     return service, supervisor, store, provider
+
+
+async def _active_child_services(
+    tmp_path,
+    *,
+    cascade_timeout_seconds: float = 5.0,
+    max_active_children_per_root: int = 4,
+):
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = SteeredChildProvider()
+    tools = _tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read while active.",
+        system_prompt="READ ONLY",
+        tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        tools=tools,
+        expected_revision=0,
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="steered", provider_id="steered"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    await supervisor.start()
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+        cascade_timeout_seconds=cascade_timeout_seconds,
+        max_active_children_per_root=max_active_children_per_root,
+    )
+    runtime.attach_agent_controls(service)
+    root = SessionRecord(
+        session_id="ses_steer_root",
+        status="running",
+        active_run_id="run_steer_parent",
+        last_run_id="run_steer_parent",
+        current_model=runtime.current_model().key,
+    )
+    parent = RunRecord(
+        run_id="run_steer_parent",
+        session_id=root.session_id,
+        status="running",
+        model="steered",
+        agent_catalog=definitions.catalog_snapshot(tools),
+    )
+    store.create_session(root)
+    store.save_run(parent)
+    await service.start()
+    return service, supervisor, store, provider, root, parent
 
 
 @pytest.mark.asyncio
@@ -325,7 +696,466 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     assert provider.tool_names == [["Read"]]
     assert provider.system_prompts[0].startswith("BASE INSTRUCTIONS")
     assert provider.system_prompts[0].endswith("CHILD READER INSTRUCTIONS")
-    assert service.agent_tree_snapshot("ses_root").terminal_count == 1
+    tree = service.agent_tree_snapshot("ses_root")
+    assert tree.terminal_count == 1
+    assert tree.pending_interaction_count == 0
+    assert tree.edges[0].delegation_id == handle.delegation_id
+    assert tree.nodes[0].result_ready is True
+    assert tree.nodes[0].delivery_status == "skipped"
+    serialized_tree = tree.model_dump_json()
+    assert "Inspect the repository architecture." not in serialized_tree
+    assert "CHILD READER INSTRUCTIONS" not in serialized_tree
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_task_only_context_excludes_parent_history_and_counts_child_input(
+    tmp_path,
+) -> None:
+    service, supervisor, store, provider = await _services(tmp_path)
+    store.append_message(
+        MessageRecord.text(
+            session_id="ses_root",
+            role="user",
+            text="parent secret must stay isolated",
+            sequence=1,
+        )
+    )
+    store.append_message(
+        MessageRecord.text(
+            session_id="ses_root",
+            role="system_synthetic",
+            text="private plugin context",
+            sequence=2,
+        )
+    )
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/task-only-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect only the requested target.",
+            description="Isolated context",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    initial = provider.messages[0][0]
+    assert "Inspect only the requested target." in initial.text_content
+    assert "parent secret" not in initial.text_content
+    assert "private plugin context" not in initial.text_content
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.context_message_ids == ()
+    assert relation.context_resource_refs == ()
+    context = store.load_latest_context(handle.child_session_id)
+    assert context is not None
+    assert context.metrics.estimated_input_tokens >= estimate_message_tokens(
+        context.source_messages[0]
+    )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_child_task_is_visible_only_in_child_canonical_context(tmp_path) -> None:
+    service, supervisor, store, provider = await _services(tmp_path)
+    sensitive_task = "Inspect the target with api_key=child-task-secret"
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/sensitive-child-task",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task=sensitive_task,
+            description="Inspect a bounded target",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    child = store.load_runtime_session(handle.child_session_id)
+    assert sensitive_task in child.messages[0].text_content
+    assert sensitive_task in provider.messages[0][0].text_content
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    root = store.load_session("ses_root")
+    public_projection = "\n".join(
+        (
+            handle.model_dump_json(),
+            service.agent_tree_snapshot("ses_root").model_dump_json(),
+            relation.model_dump_json(),
+            *(event.model_dump_json() for event in root.events),
+            *(
+                event.model_dump_json()
+                for event in store.load_session(handle.child_session_id).events
+            ),
+        )
+    )
+    assert sensitive_task not in public_projection
+    assert "child-task-secret" not in public_projection
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_selected_context_copies_only_explicit_safe_parent_messages(tmp_path) -> None:
+    service, supervisor, store, provider = await _services(
+        tmp_path,
+        context_policy=ContextPolicy(mode="selected_messages"),
+    )
+    first = MessageRecord.text(
+        session_id="ses_root",
+        role="user",
+        text="selected user evidence",
+        sequence=1,
+    )
+    second = MessageRecord.text(
+        session_id="ses_root",
+        role="assistant",
+        text="selected assistant evidence",
+        sequence=2,
+    )
+    unsafe = MessageRecord.text(
+        session_id="ses_root",
+        role="tool_result",
+        text="approval answer and private tool output",
+        sequence=3,
+    ).model_copy(
+        update={
+            "tool_result": ToolResultReference(
+                tool_call_id="call_private",
+                tool_name="PrivateTool",
+            )
+        }
+    )
+    for message in (first, second, unsafe):
+        store.append_message(message)
+
+    with pytest.raises(ValueError, match="plain user or assistant text"):
+        await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/unsafe-selected-context",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Unsafe selection.",
+                description="Unsafe selection",
+                context_message_ids=(unsafe.message_id,),
+            )
+        )
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/safe-selected-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Use selected evidence.",
+            description="Selected context",
+            context_message_ids=(second.message_id, first.message_id),
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    prompt = provider.messages[0][0].text_content
+    assert "selected user evidence" in prompt
+    assert "selected assistant evidence" in prompt
+    assert "private tool output" not in prompt
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.context_message_ids == (first.message_id, second.message_id)
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bounded_history_enforces_message_and_token_limits(tmp_path) -> None:
+    service, supervisor, store, provider = await _services(
+        tmp_path,
+        context_policy=ContextPolicy(
+            mode="bounded_history",
+            max_messages=2,
+            max_tokens=1_000,
+        ),
+    )
+    messages = [
+        MessageRecord.text(
+            session_id="ses_root",
+            role="user" if index % 2 == 0 else "assistant",
+            text=f"bounded evidence {index}",
+            sequence=index + 1,
+        )
+        for index in range(3)
+    ]
+    for message in messages:
+        store.append_message(message)
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/bounded-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Use recent bounded evidence.",
+            description="Bounded context",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.context_message_ids == (
+        messages[1].message_id,
+        messages[2].message_id,
+    )
+    prompt = provider.messages[0][0].text_content
+    assert "bounded evidence 0" not in prompt
+    encoded = prompt.split("<ouro_delegated_context>", 1)[1].split("</ouro_delegated_context>", 1)[
+        0
+    ]
+    assert estimate_text_tokens(encoded) <= 1_000
+    await service.close()
+    await supervisor.shutdown()
+
+    limited_service, limited_supervisor, limited_store, limited_provider = await _services(
+        tmp_path / "token-limited",
+        context_policy=ContextPolicy(
+            mode="bounded_history",
+            max_messages=10,
+            max_tokens=80,
+        ),
+    )
+    limited_store.append_message(
+        MessageRecord.text(
+            session_id="ses_root",
+            role="user",
+            text="x" * 2_000,
+            sequence=1,
+        )
+    )
+    limited = await limited_service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/token-bounded-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Do not exceed the context budget.",
+            description="Token bounded context",
+        )
+    )
+    await limited_service.wait_agents((limited.delegation_id,))
+    limited_relation = limited_store.load_delegation("ses_root", limited.delegation_id)
+    assert limited_relation.context_message_ids == ()
+    assert "x" * 100 not in limited_provider.messages[0][0].text_content
+    await limited_service.close()
+    await limited_supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_summary_context_uses_only_a_safe_active_compaction(tmp_path) -> None:
+    service, supervisor, store, provider = await _services(
+        tmp_path,
+        context_policy=ContextPolicy(mode="summary"),
+    )
+    source = MessageRecord.text(
+        session_id="ses_root",
+        role="user",
+        text="long safe source text",
+        sequence=1,
+    )
+    store.append_message(source)
+    compaction = CompactionRecord(
+        session_id="ses_root",
+        strategy_id="test.safe",
+        trigger="manual",
+        summary="bounded safe summary",
+        covered_message_ids=[source.message_id],
+        source_digest="sha256:" + "a" * 64,
+    )
+    store.append_compaction(compaction)
+    store.activate_compaction("ses_root", compaction.compaction_id)
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/summary-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Use the safe summary.",
+            description="Summary context",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    prompt = provider.messages[0][0].text_content
+    assert "bounded safe summary" in prompt
+    assert "long safe source text" not in prompt
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.context_compaction_id == compaction.compaction_id
+
+    private = MessageRecord.text(
+        session_id="ses_root",
+        role="system_synthetic",
+        text="private plugin summary source",
+        sequence=2,
+    )
+    store.append_message(private)
+    unsafe_compaction = CompactionRecord(
+        session_id="ses_root",
+        strategy_id="test.unsafe",
+        trigger="manual",
+        summary="summary that could contain private plugin state",
+        covered_message_ids=[private.message_id],
+        source_digest="sha256:" + "b" * 64,
+    )
+    store.append_compaction(unsafe_compaction)
+    store.activate_compaction("ses_root", unsafe_compaction.compaction_id)
+    with pytest.raises(ValueError, match="non-delegable tool or synthetic context"):
+        await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/unsafe-summary-context",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Do not copy private summary state.",
+                description="Unsafe summary context",
+            )
+        )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agent_resources_are_explicitly_copied_and_results_are_revalidated(
+    tmp_path,
+) -> None:
+    service, supervisor, store, provider = await _services(tmp_path)
+    resources = service.resources
+    assert isinstance(resources, ResourceService)
+    source = tmp_path / "parent-evidence.txt"
+    source.write_text("delegated resource contents", encoding="utf-8")
+    imported = resources.import_resource("ses_root", source)
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/resource-context",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect the delegated resource.",
+            description="Resource context",
+            resource_refs=(imported.resource.resource_id,),
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    child_snapshot = store.load_runtime_session(handle.child_session_id)
+    assert child_snapshot.messages[0].resource_refs == [imported.resource.resource_id]
+    assert imported.resource.resource_id in resources.session_resource_ids(handle.child_session_id)
+    assert "delegated resource contents" in provider.messages[0][0].text_content
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.result is not None
+    assert relation.result.resource_refs == ()
+
+    output_source = tmp_path / "child-output.txt"
+    output_source.write_text("child output resource", encoding="utf-8")
+    output = resources.import_resource(handle.child_session_id, output_source)
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.result is not None
+    relation = store.save_delegation(
+        relation.model_copy(
+            update={
+                "result": relation.result.model_copy(
+                    update={"resource_refs": (output.resource.resource_id,)}
+                )
+            }
+        ),
+        expected_revision=relation.revision,
+    )
+    session = store.load_session_record("ses_root")
+    run = store.load_run("ses_root", "run_parent")
+    invocation = ToolInvocation(
+        tool_call_id="list_with_resources",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        tool_name="ListAgents",
+    )
+    listed = await service.execute_control(
+        AgentControlRequest(action="list", request_id="list/resources"),
+        invocation=invocation,
+        session=session,
+        run=run,
+    )
+    assert listed.resource_refs == (output.resource.resource_id,)
+    assert output.resource.resource_id in resources.session_resource_ids("ses_root")
+
+    resources.remove_resource(handle.child_session_id, output.resource.resource_id)
+    with pytest.raises(ResourceNotFoundError, match="not attached"):
+        await service.execute_control(
+            AgentControlRequest(action="list", request_id="list/stale-resources"),
+            invocation=invocation,
+            session=session,
+            run=run,
+        )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_path) -> None:
+    policy = AgentSpawnPolicy(
+        allowed_agent_id_patterns=("reader",),
+        allowed_execution_modes=("foreground",),
+        allow_write=False,
+        allow_network=False,
+        allow_mcp=False,
+        allow_external_paths=False,
+    )
+    service, supervisor, store, _ = await _services(tmp_path, spawn_policy=policy)
+    parent = store.load_run("ses_root", "run_parent")
+    assert parent.agent_catalog is not None
+    assert [entry.definition.agent_id for entry in parent.agent_catalog.entries] == ["reader"]
+    assert [
+        tool.public_name for tool in parent.agent_catalog.resolve("reader").effective_tools
+    ] == ["Read"]
+
+    with pytest.raises(ValueError, match="execution mode is not allowed"):
+        await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/disallowed-background",
+                parent_session_id="ses_root",
+                parent_run_id="run_parent",
+                agent_id="reader",
+                task="Do not start.",
+                description="Disallowed mode",
+                execution_mode="background",
+            )
+        )
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/allowed-foreground",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect within the workspace.",
+            description="Allowed mode",
+            execution_mode="foreground",
+        )
+    )
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.constraints.allow_write is False
+    assert relation.constraints.allow_external_paths is False
+    assert relation.constraints.allowed_tool_names == ("Read",)
+    assert relation.child_session_id is not None
+    assert relation.current_child_run_id is not None
+    child_run = store.load_run(
+        relation.child_session_id,
+        relation.current_child_run_id,
+    )
+    assert child_run.metadata["delegated_constraints"] == relation.constraints.model_dump(
+        mode="json"
+    )
+
     await service.close()
     await supervisor.shutdown()
 
@@ -466,52 +1296,25 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
 
 @pytest.mark.asyncio
 async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    provider = SteeredChildProvider()
-    tools = _tools()
-    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="steered", provider_id="steered"),
-        ),
-        tools=tools,
-    )
-    runtime.attach_agent_definitions(definitions)
-    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    service = AgentService(store=store, definitions=definitions, scheduler=supervisor)
-    await supervisor.start()
-    root = SessionRecord(
-        session_id="ses_steer_root",
-        status="running",
-        active_run_id="run_steer_parent",
-        last_run_id="run_steer_parent",
-        current_model=runtime.current_model().key,
-    )
-    parent = RunRecord(
-        run_id="run_steer_parent",
-        session_id=root.session_id,
-        status="running",
-        model="steered",
-        agent_catalog=definitions.catalog_snapshot(tools),
-    )
-    store.create_session(root)
-    store.save_run(parent)
-    await service.start()
+    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
 
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/steered-child",
             parent_session_id=root.session_id,
             parent_run_id=parent.run_id,
-            agent_id="general",
+            agent_id="reader",
             task="Wait for steering.",
             description="Steering test",
         )
     )
     await asyncio.wait_for(provider.started.wait(), timeout=2)
+    assert child.child_session_id is not None
+    assert child.child_run_id is not None
+    tree_subscription = service.subscribe_agent_tree(root.session_id)
+    assert tree_subscription.initial_snapshot.active_count == 1
+    tree_subscription.close()
+    assert store.load_run(child.child_session_id, child.child_run_id).status == "running"
     steered = await service.send_agent_message(
         child.delegation_id,
         "Use this additional direction.",
@@ -519,10 +1322,10 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
         mode="steer",
     )
     assert steered.child_run_id == child.child_run_id
+    assert steered.revision == store.load_delegation(root.session_id, child.delegation_id).revision
     provider.release.set()
     await service.wait_agents((child.delegation_id,))
 
-    assert child.child_session_id is not None
     snapshot = store.load_runtime_session(child.child_session_id)
     assert len(snapshot.runs) == 1
     steer_messages = [
@@ -533,6 +1336,216 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
     assert len(steer_messages) == 1
     assert steer_messages[0].role == "system_synthetic"
     assert snapshot.messages[-1].text_content == "steered child complete"
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/interrupt-completion-race",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Race completion with an interrupt.",
+            description="Interrupt completion race",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+
+    interrupt = asyncio.create_task(
+        service.interrupt_agent(child.delegation_id, reason="Injected race")
+    )
+    provider.release.set()
+    interrupted, waited = await asyncio.gather(
+        interrupt,
+        service.wait_agents((child.delegation_id,)),
+    )
+
+    relation = store.load_delegation(root.session_id, child.delegation_id)
+    assert relation.result is not None
+    assert relation.result.terminal_status in {"completed", "aborted"}
+    assert interrupted.child_run_id == relation.current_child_run_id
+    assert waited.completed is True
+    result_events = [
+        event
+        for event in store.load_session(root.session_id).events
+        if event.event_type == "agent_result_ready"
+        and event.payload.get("delegation_id") == child.delegation_id
+    ]
+    assert len(result_events) == 1
+    assert result_events[0].payload["child_run_id"] == relation.current_child_run_id
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_path) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/close-active-child",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Remain active until explicitly interrupted.",
+            description="Close active child",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+
+    with pytest.raises(SessionBusyError, match="interrupted before close"):
+        await service.close_agent(child.delegation_id)
+
+    interrupted = await service.interrupt_agent(child.delegation_id)
+    first = await service.close_agent(child.delegation_id)
+    second = await service.close_agent(child.delegation_id)
+
+    assert first.revision > interrupted.revision
+    assert second == first
+    assert store.load_delegation(root.session_id, child.delegation_id).control_state == "closed"
+    close_events = [
+        event
+        for event in store.load_session(root.session_id).events
+        if event.event_type == "agent_closed"
+        and event.payload.get("delegation_id") == child.delegation_id
+    ]
+    assert len(close_events) == 1
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(
+        tmp_path,
+        max_active_children_per_root=2,
+    )
+    active = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/active-before-queued",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Hold the only execution permit.",
+            description="Active child",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    queued = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/queued-interrupt",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Never enter the model loop.",
+            description="Queued child",
+        )
+    )
+    assert queued.child_session_id is not None
+    assert queued.child_run_id is not None
+    assert store.load_run(queued.child_session_id, queued.child_run_id).status == "queued"
+
+    interrupted = await service.interrupt_agent(queued.delegation_id)
+
+    queued_run = store.load_run(queued.child_session_id, queued.child_run_id)
+    queued_relation = store.load_delegation(root.session_id, queued.delegation_id)
+    assert interrupted.status == "aborted"
+    assert queued_run.status == "aborted"
+    assert queued_relation.result is not None
+    assert queued_relation.result.terminal_status == "aborted"
+    assert store.load_runtime_session(queued.child_session_id).messages == []
+
+    provider.release.set()
+    await service.wait_agents((active.delegation_id,))
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_parent_abort_cascades_bound_child_and_preserves_result(tmp_path) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/cascade-child",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Remain active until the parent aborts.",
+            description="Cascade child",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    store.save_run(parent.model_copy(update={"status": "aborted"}))
+
+    await service.on_runtime_event(
+        EventRecord(
+            session_id=root.session_id,
+            run_id=parent.run_id,
+            event_type="run_aborted",
+        )
+    )
+
+    assert child.child_session_id is not None
+    assert child.child_run_id is not None
+    assert store.load_run(child.child_session_id, child.child_run_id).status == "aborted"
+    relation = store.load_delegation(root.session_id, child.delegation_id)
+    assert relation.result is not None
+    assert relation.result.terminal_status == "aborted"
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(
+        tmp_path,
+        cascade_timeout_seconds=0.01,
+    )
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/cascade-timeout-child",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="general",
+            task="Expose a cascade timeout.",
+            description="Cascade timeout child",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+
+    async def blocked_abort(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(supervisor, "abort", blocked_abort)
+    await service.on_runtime_event(
+        EventRecord(
+            session_id=root.session_id,
+            run_id=parent.run_id,
+            event_type="run_failed",
+        )
+    )
+
+    diagnostic = next(
+        event
+        for event in store.load_session(root.session_id).events
+        if event.event_type == "diagnostic" and event.payload.get("code") == "cascade_timeout"
+    )
+    assert diagnostic.payload["delegation_id"] == child.delegation_id
+    assert diagnostic.payload["error_type"] == "TimeoutError"
+    relation = store.load_delegation(root.session_id, child.delegation_id)
+    assert relation.result is None
+    assert child.child_session_id is not None
+    assert child.child_run_id is not None
+    assert store.load_run(child.child_session_id, child.child_run_id).status == "running"
+
+    provider.release.set()
+    await service.wait_agents((child.delegation_id,))
     await service.close()
     await supervisor.shutdown()
 
@@ -567,7 +1580,12 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
     )
     runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    service = AgentService(store=store, definitions=definitions, scheduler=supervisor)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
     await supervisor.start()
     root = SessionRecord(
         session_id="ses_hitl_root",
@@ -607,6 +1625,10 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
     assert interaction.child_session_id == child.child_session_id
     assert interaction.tool_call_id == "danger_call"
     assert store.load_run(root.session_id, parent.run_id).status == "running"
+    tree = service.agent_tree_snapshot(root.session_id)
+    assert tree.pending_interaction_count == 1
+    assert tree.nodes[0].status == "waiting_approval"
+    assert tree.nodes[0].pending_interactions[0].request_id == interaction.request_id
 
     with pytest.raises(ValueError, match="canonical request"):
         await service.resolve_agent_approval(
@@ -633,23 +1655,430 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
 
 
 @pytest.mark.asyncio
-async def test_spawn_rejects_non_active_parent_run(tmp_path) -> None:
+async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = SpawnAndChildApprovalProvider()
+    tools = ToolRegistry()
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Danger",
+                description="Dangerous child operation.",
+                permission_mode="approval",
+                effect="state_changing",
+            ),
+            handler=_handler,
+        )
+    )
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id=provider.provider_id, provider_id=provider.provider_id),
+        ),
+        tools=tools,
+        permission_overrides={"SpawnAgent": "approval"},
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.attach_agent_controls(service)
+    runtime.add_event_sink(service.on_runtime_event)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Delegate with an approved spawn.")
+    parent_waiting = await supervisor.wait(parent_handle)
+    assert parent_waiting.status == "waiting_approval"
+    assert parent_waiting.run_id is not None
+    parent_run = store.load_run(parent_handle.session_id, parent_waiting.run_id)
+    spawn_approval_id = parent_run.pending_approval_id
+    assert spawn_approval_id is not None
+
+    resumed_parent = await supervisor.resolve_tool_approval(
+        session_id=parent_handle.session_id,
+        run_id=parent_waiting.run_id,
+        approval_id=spawn_approval_id,
+        approved=True,
+    )
+    assert (await supervisor.wait(resumed_parent)).status == "completed"
+
+    async with asyncio.timeout(5):
+        while not service.list_agent_interactions(parent_handle.session_id):
+            await asyncio.sleep(0.01)
+    child_interaction = service.list_agent_interactions(parent_handle.session_id)[0]
+    assert child_interaction.tool_name == "Danger"
+    assert child_interaction.request_id != spawn_approval_id
+    assert child_interaction.child_session_id != parent_handle.session_id
+
+    resumed_child = await service.resolve_agent_approval(
+        child_interaction.delegation_id,
+        child_session_id=child_interaction.child_session_id,
+        child_run_id=child_interaction.child_run_id,
+        tool_call_id=child_interaction.tool_call_id,
+        approval_id=child_interaction.request_id,
+        approved=True,
+    )
+    assert (await supervisor.wait(resumed_child)).status == "completed"
+    await service.wait_agents((child_interaction.delegation_id,))
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_background_child_user_input_is_streamed_and_routed_by_exact_identity(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = AskUserChildProvider()
+    tools = _ask_tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="ask-child", provider_id="ask-child"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    await supervisor.start()
+    root = SessionRecord(
+        session_id="ses_ask_root",
+        status="running",
+        active_run_id="run_ask_parent",
+        last_run_id="run_ask_parent",
+        current_model=runtime.current_model().key,
+    )
+    parent = RunRecord(
+        run_id="run_ask_parent",
+        session_id=root.session_id,
+        status="running",
+        model="ask-child",
+        agent_catalog=definitions.catalog_snapshot(tools),
+    )
+    store.create_session(root)
+    store.save_run(parent)
+    subscription = service.subscribe_agent_tree(root.session_id)
+
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/ask-child",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="general",
+            task="Ask for one bounded choice.",
+            description="Structured child input",
+            execution_mode="background",
+        )
+    )
+    async with asyncio.timeout(3):
+        while True:
+            notification = await subscription.get()
+            if (
+                notification.kind == "snapshot"
+                and notification.snapshot is not None
+                and notification.snapshot.pending_interaction_count == 1
+            ):
+                break
+    interaction = service.list_agent_interactions(root.session_id)[0]
+    assert interaction.kind == "user_input"
+    assert store.load_run(root.session_id, parent.run_id).status == "running"
+
+    with pytest.raises(ValueError, match="child identity"):
+        await service.resolve_agent_input(
+            child.delegation_id,
+            child_session_id="ses_sibling",
+            child_run_id=interaction.child_run_id,
+            tool_call_id=interaction.tool_call_id,
+            request_id=interaction.request_id,
+            answer="A",
+        )
+    resumed = await service.resolve_agent_input(
+        child.delegation_id,
+        child_session_id=interaction.child_session_id,
+        child_run_id=interaction.child_run_id,
+        tool_call_id=interaction.tool_call_id,
+        request_id=interaction.request_id,
+        answer="A",
+    )
+    assert (await supervisor.wait(resumed)).status == "completed"
+    await service.wait_agents((child.delegation_id,))
+    assert service.read_agent(child.delegation_id).final_text == "child received answer"
+    subscription.close()
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_child_inputs_remain_isolated(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ConcurrentAskUserProvider()
+    tools = _ask_tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="concurrent-ask", provider_id="concurrent-ask"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    await supervisor.start()
+    root = SessionRecord(
+        session_id="ses_concurrent_ask_root",
+        status="running",
+        active_run_id="run_concurrent_ask_parent",
+        last_run_id="run_concurrent_ask_parent",
+        current_model=runtime.current_model().key,
+    )
+    parent = RunRecord(
+        run_id="run_concurrent_ask_parent",
+        session_id=root.session_id,
+        status="running",
+        model="concurrent-ask",
+        agent_catalog=definitions.catalog_snapshot(tools),
+    )
+    store.create_session(root)
+    store.save_run(parent)
+
+    children = await asyncio.gather(
+        *(
+            service.spawn_agent(
+                SpawnAgentRequest(
+                    request_id=f"host/concurrent-input-{index}",
+                    parent_session_id=root.session_id,
+                    parent_run_id=parent.run_id,
+                    agent_id="general",
+                    task=f"Ask concurrent question {index}.",
+                    description=f"Concurrent input child {index}",
+                )
+            )
+            for index in range(2)
+        )
+    )
+    async with asyncio.timeout(3):
+        while len(service.list_agent_interactions(root.session_id)) != 2:
+            await asyncio.sleep(0.01)
+    interactions = service.list_agent_interactions(root.session_id)
+    interaction_by_session = {item.child_session_id: item for item in interactions}
+    assert set(interaction_by_session) == {child.child_session_id for child in children}
+    first = children[0]
+    second = children[1]
+    assert first.child_session_id is not None
+    assert second.child_session_id is not None
+    first_interaction = interaction_by_session[first.child_session_id]
+    second_interaction = interaction_by_session[second.child_session_id]
+
+    with pytest.raises(ValueError, match="canonical request"):
+        await service.resolve_agent_input(
+            first.delegation_id,
+            child_session_id=first_interaction.child_session_id,
+            child_run_id=first_interaction.child_run_id,
+            tool_call_id=first_interaction.tool_call_id,
+            request_id=second_interaction.request_id,
+            answer="wrong child",
+        )
+    resumed = await asyncio.gather(
+        *(
+            service.resolve_agent_input(
+                child.delegation_id,
+                child_session_id=interaction.child_session_id,
+                child_run_id=interaction.child_run_id,
+                tool_call_id=interaction.tool_call_id,
+                request_id=interaction.request_id,
+                answer=f"answer {index}",
+            )
+            for index, (child, interaction) in enumerate(
+                (
+                    (first, first_interaction),
+                    (second, second_interaction),
+                )
+            )
+        )
+    )
+    assert {
+        status.status
+        for status in await asyncio.gather(*(supervisor.wait(handle) for handle in resumed))
+    } == {"completed"}
+    await service.wait_agents(tuple(child.delegation_id for child in children))
+    assert service.agent_tree_snapshot(root.session_id).terminal_count == 2
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_unattended_child_input_fails_deterministically_without_parking(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = AskUserChildProvider()
+    tools = _ask_tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="unattended-child", provider_id="ask-child"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    await supervisor.start()
+    root = SessionRecord(
+        session_id="ses_unattended_root",
+        status="running",
+        active_run_id="run_unattended_parent",
+        last_run_id="run_unattended_parent",
+        current_model=runtime.current_model().key,
+        interaction_mode="unattended",
+    )
+    parent = RunRecord(
+        run_id="run_unattended_parent",
+        session_id=root.session_id,
+        status="running",
+        model="unattended-child",
+        agent_catalog=definitions.catalog_snapshot(tools),
+    )
+    store.create_session(root)
+    store.save_run(parent)
+
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/unattended-child",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="general",
+            task="Do not park for input.",
+            description="Unattended child",
+        )
+    )
+    async with asyncio.timeout(3):
+        result = await service.wait_agents((child.delegation_id,))
+
+    assert result.completed is True
+    assert service.list_agent_interactions(root.session_id) == ()
+    assert child.child_session_id is not None
+    child_snapshot = store.load_runtime_session(child.child_session_id)
+    assert child_snapshot.session.interaction_mode == "unattended"
+    input_error = next(
+        event
+        for event in store.load_session(child.child_session_id).events
+        if event.event_type == "tool_call_completed" and event.payload.get("tool_name") == "AskUser"
+    )
+    assert input_error.payload["is_error"] is True
+    assert service.read_agent(child.delegation_id).final_text == "child received answer"
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_model_spawn_rejects_non_active_parent_run(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     parent = store.load_run("ses_root", "run_parent")
     store.save_run(parent.model_copy(update={"status": "completed"}))
 
-    with pytest.raises(SessionBusyError, match="parent run is not active"):
+    with pytest.raises(SessionBusyError, match="must be active for model delegation"):
         await service.spawn_agent(
             SpawnAgentRequest(
                 request_id="host/rejected",
                 parent_session_id="ses_root",
                 parent_run_id="run_parent",
+                parent_tool_call_id="call_rejected",
                 agent_id="reader",
                 task="Do not run.",
                 description="Rejected",
             )
         )
 
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_host_spawn_can_use_completed_parent_frozen_catalog(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    parent = store.load_run("ses_root", "run_parent")
+    store.save_run(parent.model_copy(update={"status": "completed"}))
+
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/completed-parent",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Use the completed parent contract.",
+            description="Host delegation",
+            unattended=True,
+        )
+    )
+    waited = await service.wait_agents((child.delegation_id,))
+
+    assert waited.completed is True
+    assert waited.handles[0].status == "completed"
+    assert child.child_session_id is not None
+    assert store.load_session_record(child.child_session_id).interaction_mode == "unattended"
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_tree_projects_missing_child_run_as_recoverable(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    parent = store.load_run("ses_root", "run_parent")
+    assert parent.agent_catalog is not None
+    reader = parent.agent_catalog.resolve("reader")
+    relation = store.create_delegation(
+        DelegationRecord(
+            idempotency_key="host/missing-child-run",
+            root_session_id="ses_root",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            child_session_id="ses_missing_child",
+            current_child_run_id="run_missing_child",
+            agent_id="reader",
+            task_description="Missing child evidence",
+            prompt_digest="sha256:" + "c" * 64,
+            spawn_state="submitted",
+            definition=reader.definition,
+            effective_tools=reader.effective_tools,
+        )
+    )
+
+    tree = service.agent_tree_snapshot("ses_root")
+
+    assert tree.nodes[0].delegation_id == relation.delegation_id
+    assert tree.nodes[0].status == "recoverable"
+    assert tree.nodes[0].activity is None
     await service.close()
     await supervisor.shutdown()
 
@@ -706,6 +2135,136 @@ async def test_spawn_enforces_single_write_capable_child_per_root(tmp_path) -> N
 
 
 @pytest.mark.asyncio
+async def test_root_spawn_quota_is_atomic_and_child_cannot_spawn_nested_agent(
+    tmp_path,
+) -> None:
+    service, supervisor, _, provider, root, parent = await _active_child_services(
+        tmp_path,
+        max_active_children_per_root=1,
+    )
+    outcomes = await asyncio.gather(
+        *(
+            service.spawn_agent(
+                SpawnAgentRequest(
+                    request_id=f"host/quota-{index}",
+                    parent_session_id=root.session_id,
+                    parent_run_id=parent.run_id,
+                    agent_id="general",
+                    task=f"Hold quota slot {index}.",
+                    description=f"Quota child {index}",
+                )
+            )
+            for index in range(2)
+        ),
+        return_exceptions=True,
+    )
+    handles = [item for item in outcomes if not isinstance(item, BaseException)]
+    failures = [item for item in outcomes if isinstance(item, BaseException)]
+    assert len(handles) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], SessionBusyError)
+    assert "active child quota" in str(failures[0])
+    child = handles[0]
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+
+    with pytest.raises(ValueError, match="maximum subagent depth is 1"):
+        await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/nested-child",
+                parent_session_id=child.child_session_id,
+                parent_run_id=child.child_run_id,
+                agent_id="reader",
+                task="Attempt nested delegation.",
+                description="Nested child",
+            )
+        )
+
+    provider.release.set()
+    await service.wait_agents((child.delegation_id,))
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shared_root_budget_pauses_queued_child_and_aggregates_each_run_once(
+    tmp_path,
+) -> None:
+    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    parent = parent.model_copy(
+        update={
+            "metadata": {
+                **parent.metadata,
+                "run_budget": {"max_input_tokens": 10},
+            }
+        }
+    )
+    store.save_run(parent)
+    first = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/root-budget-first",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Complete the already-started work.",
+            description="First budget child",
+        )
+    )
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    second = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/root-budget-second",
+            parent_session_id=root.session_id,
+            parent_run_id=parent.run_id,
+            agent_id="reader",
+            task="Pause before starting when the root budget is gone.",
+            description="Second budget child",
+        )
+    )
+    first_run = store.load_run(first.child_session_id, first.child_run_id)
+    store.save_run(first_run.model_copy(update={"usage": {"input_tokens": 10}}))
+
+    provider.release.set()
+    await service.wait_agents((first.delegation_id, second.delegation_id))
+
+    assert store.load_run(first.child_session_id, first.child_run_id).status == "completed"
+    assert store.load_run(second.child_session_id, second.child_run_id).status == "paused"
+    first_relation = store.load_delegation(root.session_id, first.delegation_id)
+    second_relation = store.load_delegation(root.session_id, second.delegation_id)
+    assert first_relation.result is not None
+    assert first_relation.result.terminal_status == "completed"
+    assert second_relation.result is not None
+    assert second_relation.result.terminal_status == "paused"
+    assert provider.round == 1
+
+    follow_up = RunRecord(
+        session_id=first.child_session_id,
+        parent_run_id=parent.run_id,
+        trigger="subagent_follow_up",
+        status="completed",
+        usage={"input_tokens": 3},
+    )
+    store.save_run(follow_up)
+    tree = service.agent_tree_snapshot(root.session_id)
+    assert tree.root_usage == {"input_tokens": 13}
+    first_node = next(node for node in tree.nodes if node.delegation_id == first.delegation_id)
+    assert first_node.usage == {"input_tokens": 13}
+
+    with pytest.raises(SessionBusyError, match="root input token budget is exhausted"):
+        await service.spawn_agent(
+            SpawnAgentRequest(
+                request_id="host/root-budget-exhausted",
+                parent_session_id=root.session_id,
+                parent_run_id=parent.run_id,
+                agent_id="reader",
+                task="Do not start after exhaustion.",
+                description="Exhausted budget child",
+            )
+        )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_spawn_budget_is_bounded_by_root_remaining_usage(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     parent = store.load_run("ses_root", "run_parent")
@@ -742,6 +2301,115 @@ async def test_spawn_budget_is_bounded_by_root_remaining_usage(tmp_path) -> None
     assert relation.budget.max_input_tokens == 75
     assert relation.budget.max_output_tokens == 30
     await service.wait_agents((handle.delegation_id,))
+    tree = service.agent_tree_snapshot("ses_root")
+    assert tree.root_usage == {"input_tokens": 25, "output_tokens": 10}
+    assert tree.root_budget is not None
+    assert tree.root_budget.max_input_tokens == 100
+    assert tree.nodes[0].budget.max_input_tokens == 75
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tmp_path) -> None:
+    service, supervisor, _, _ = await _services(tmp_path)
+    subscription = service.subscribe_agent_tree("ses_root")
+
+    assert subscription.initial_snapshot.nodes == ()
+    child = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/tree-child",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect the tree projection.",
+            description="Tree projection child",
+        )
+    )
+
+    observed = None
+    async with asyncio.timeout(3):
+        while observed is None:
+            notification = await subscription.get()
+            if (
+                notification.kind == "snapshot"
+                and notification.snapshot is not None
+                and any(
+                    node.delegation_id == child.delegation_id
+                    for node in notification.snapshot.nodes
+                )
+            ):
+                observed = notification.snapshot
+    assert len(observed.edges) == 1
+    assert observed.edges[0].delegation_id == child.delegation_id
+    assert observed.edges[0].parent_session_id == "ses_root"
+    assert observed.edges[0].child_session_id == child.child_session_id
+    assert observed.revision > subscription.initial_snapshot.revision
+
+    subscription.close()
+    await service.wait_agents((child.delegation_id,))
+    assert child.child_session_id is not None
+    child_stream = supervisor.subscribe(child.child_session_id, after_sequence=0)
+    async with asyncio.timeout(3):
+        while True:
+            child_notification = await child_stream.get()
+            if (
+                child_notification.kind == "event"
+                and child_notification.event is not None
+                and child_notification.event.event_type == "model_text_delta"
+            ):
+                assert child_notification.event.session_id == child.child_session_id
+                break
+    child_stream.close()
+    reconnected = service.subscribe_agent_tree("ses_root")
+    assert reconnected.initial_snapshot == service.agent_tree_snapshot("ses_root")
+    assert reconnected.initial_snapshot.terminal_count == 1
+    await service.close_agent(child.delegation_id)
+    async with asyncio.timeout(3):
+        while True:
+            notification = await reconnected.get()
+            if notification.kind == "snapshot" and notification.snapshot is not None:
+                if notification.snapshot.nodes[0].control_state == "closed":
+                    break
+    reconnected.close()
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_slow_root_tree_subscriber_gets_lag_diagnostic(tmp_path) -> None:
+    service, supervisor, _, _ = await _services(tmp_path)
+    subscription = service.subscribe_agent_tree("ses_root", max_buffer=1)
+
+    children = await asyncio.gather(
+        *(
+            service.spawn_agent(
+                SpawnAgentRequest(
+                    request_id=f"host/lag-child-{index}",
+                    parent_session_id="ses_root",
+                    parent_run_id="run_parent",
+                    agent_id="reader",
+                    task=f"Inspect lag path {index}.",
+                    description=f"Lag child {index}",
+                )
+            )
+            for index in range(2)
+        )
+    )
+    await service.wait_agents(tuple(child.delegation_id for child in children))
+    await asyncio.sleep(0)
+
+    notification = await subscription.get()
+    assert notification.kind == "diagnostic"
+    assert notification.diagnostic is not None
+    assert notification.diagnostic.code == "agent_tree_subscription_lagged"
+    tree = service.agent_tree_snapshot("ses_root")
+    assert tree.terminal_count == 2
+    assert {node.delegation_id for node in tree.nodes} == {
+        child.delegation_id for child in children
+    }
+    assert len({node.session_id for node in tree.nodes}) == 2
+    subscription.close()
     await service.close()
     await supervisor.shutdown()
 
@@ -774,7 +2442,12 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
     )
     runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    service = AgentService(store=store, definitions=definitions, scheduler=supervisor)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
     runtime.attach_agent_controls(service)
     await service.start()
 
@@ -838,6 +2511,155 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
 
 
 @pytest.mark.asyncio
+async def test_foreground_child_hitl_keeps_parent_parked_and_single_worker_progresses(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = _ask_tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    provider = ForegroundHitlProvider(store)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="foreground-hitl", provider_id="foreground-hitl"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.attach_agent_controls(service)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Delegate a foreground question.")
+    parked = await supervisor.wait(parent_handle)
+    assert parked.status == "waiting_child"
+    assert parked.run_id is not None
+    root_session_id = parent_handle.session_id
+
+    async with asyncio.timeout(3):
+        while not service.list_agent_interactions(root_session_id):
+            await asyncio.sleep(0.01)
+    interaction = service.list_agent_interactions(root_session_id)[0]
+    assert interaction.kind == "user_input"
+    assert store.load_run(root_session_id, parked.run_id).status == "waiting_child"
+    tree = service.agent_tree_snapshot(root_session_id)
+    assert tree.nodes[0].status == "waiting_user"
+    assert tree.pending_interaction_count == 1
+    assert tree.root_activity is not None
+    assert tree.root_activity.status == "waiting_child"
+    assert tree.waiting_on_delegation_ids == (tree.nodes[0].delegation_id,)
+
+    child_resume = await service.resolve_agent_input(
+        tree.nodes[0].delegation_id,
+        child_session_id=interaction.child_session_id,
+        child_run_id=interaction.child_run_id,
+        tool_call_id=interaction.tool_call_id,
+        request_id=interaction.request_id,
+        answer="A",
+    )
+    assert (await supervisor.wait(child_resume)).status == "completed"
+    async with asyncio.timeout(5):
+        while True:
+            relation = store.list_delegations(root_session_id)[0]
+            if (
+                store.load_run(root_session_id, parked.run_id).status == "completed"
+                and relation.result is not None
+                and relation.result.delivery.status == "delivered"
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+    root_snapshot = store.load_runtime_session(root_session_id)
+    assert root_snapshot.messages[-1].text_content == "foreground parent resumed"
+    relation = store.list_delegations(root_session_id)[0]
+    assert relation.result is not None
+    assert relation.result.delivery.status == "delivered"
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = _tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read bounded evidence.",
+        system_prompt="",
+        tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        tools=tools,
+        expected_revision=0,
+    )
+    provider = NextBoundaryRaceProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="next-boundary", provider_id="next-boundary"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.attach_agent_controls(service)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Start a next-boundary child.")
+    await asyncio.wait_for(provider.root_blocked.wait(), timeout=3)
+    relations = store.list_delegations(parent_handle.session_id)
+    assert len(relations) == 1
+    child = relations[0]
+
+    waited = await service.wait_agents((child.delegation_id,))
+
+    delivered = store.load_delegation(parent_handle.session_id, child.delegation_id)
+    assert waited.completed is True
+    assert delivered.result is not None
+    assert delivered.result.delivery.status == "delivered"
+    assert delivered.result.delivery.target_queue_id == delivered.result.delivery.delivery_id
+    queued = store.load_session_record(parent_handle.session_id).metadata["follow_up_queue"]
+    assert [item["queue_id"] for item in queued] == [delivered.result.delivery.delivery_id]
+
+    provider.root_release.set()
+    parent = await supervisor.wait(parent_handle)
+    assert parent.status == "completed"
+    snapshot = store.load_runtime_session(parent_handle.session_id)
+    delivery_messages = [
+        message
+        for message in snapshot.messages
+        if message.metadata.get("host_source_id")
+        == f"ouro.subagents/results/{delivered.result.delivery.delivery_id}"
+    ]
+    assert len(delivery_messages) == 1
+    assert delivery_messages[0].role == "system_synthetic"
+    assert len(snapshot.runs) == 1
+    assert snapshot.messages[-1].text_content == "parent consumed child result"
+    await service.reconcile()
+    assert len(store.load_runtime_session(parent_handle.session_id).messages) == len(
+        snapshot.messages
+    )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -863,7 +2685,12 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
     )
     runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
-    service = AgentService(store=store, definitions=definitions, scheduler=supervisor)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
     runtime.attach_agent_controls(service)
     await service.start()
 
@@ -898,7 +2725,29 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
     assert delivered_messages[0].role == "system_synthetic"
     assert snapshot.messages[-1].text_content == "parent received follow-up"
 
+    assert relation.result is not None
+    pending_delivery = relation.result.delivery.model_copy(
+        update={
+            "status": "pending",
+            "target_run_id": None,
+            "target_message_id": None,
+            "target_queue_id": None,
+            "delivered_at": None,
+        }
+    )
+    store.save_delegation(
+        relation.model_copy(
+            update={"result": relation.result.model_copy(update={"delivery": pending_delivery})}
+        ),
+        expected_revision=relation.revision,
+    )
     await service.reconcile()
-    assert len(store.load_runs(root_session_id)) == 2
+    reconciled = store.load_runtime_session(root_session_id)
+    repaired = store.load_delegation(root_session_id, relation.delegation_id)
+    assert repaired.result is not None
+    assert repaired.result.delivery.status == "delivered"
+    assert repaired.result.delivery.target_message_id == delivered_messages[0].message_id
+    assert len(reconciled.runs) == 2
+    assert len(reconciled.messages) == len(snapshot.messages)
     await service.close()
     await supervisor.shutdown()

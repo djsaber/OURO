@@ -544,9 +544,7 @@ class WorkerPluginInstance:
             return sdk.SessionControllerOutput(
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
-                owner_state_revision=(
-                    owner_revision if isinstance(owner_revision, int) else None
-                ),
+                owner_state_revision=(owner_revision if isinstance(owner_revision, int) else None),
             )
 
         return handler
@@ -1239,9 +1237,7 @@ def _worker_control_transitions(
 ) -> tuple[sdk.SessionControlTransition, ...]:
     values = raw.get("session_control_transitions", [])
     if not isinstance(values, list):
-        raise WorkerProtocolError(
-            "worker session_control_transitions result must be a list"
-        )
+        raise WorkerProtocolError("worker session_control_transitions result must be a list")
     transitions: list[sdk.SessionControlTransition] = []
     for value in values:
         if not isinstance(value, dict):
@@ -1254,9 +1250,7 @@ def _worker_control_transitions(
                     activation_id=value.get("activation_id"),
                     replace_activation_ids=tuple(value.get("replace_activation_ids", [])),
                     expected_session_revision=value.get("expected_session_revision"),
-                    expected_activation_revision=value.get(
-                        "expected_activation_revision"
-                    ),
+                    expected_activation_revision=value.get("expected_activation_revision"),
                     payload=value.get("payload"),
                     reason=value.get("reason"),
                 )

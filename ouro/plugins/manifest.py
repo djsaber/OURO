@@ -308,19 +308,21 @@ class PluginContributes(OuroModel):
         if len(exposed_names) != len(set(exposed_names)):
             raise ValueError("duplicate tool exposed_name")
         controller_ids = {item.id for item in self.session_controllers}
-        activation_bound = (
-            *self.tools,
-            *self.hooks,
-            *self.context_providers,
-            *self.continuation_policies,
-            *self.turn_policies,
-            *self.tool_policies,
-        )
-        for item in activation_bound:
-            if item.active_when is not None and item.active_when not in controller_ids:
-                raise ValueError(
-                    f"{item.id} references unknown session controller: {item.active_when}"
-                )
+        activation_refs = [
+            (item.id, item.active_when)
+            for items in (
+                self.tools,
+                self.hooks,
+                self.context_providers,
+                self.continuation_policies,
+                self.turn_policies,
+                self.tool_policies,
+            )
+            for item in items
+        ]
+        for item_id, active_when in activation_refs:
+            if active_when is not None and active_when not in controller_ids:
+                raise ValueError(f"{item_id} references unknown session controller: {active_when}")
         return self
 
     def by_kind(self) -> dict[PluginCapability, list[Any]]:

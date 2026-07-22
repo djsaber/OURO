@@ -19,46 +19,11 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
         for entry in catalog.entries
         if entry.available
     ]
-    spawn_schema: dict[str, Any] = {
-        "type": "object",
-        "properties": {
-            "agent_id": {"oneOf": options},
-            "task": {"type": "string", "minLength": 1, "maxLength": 20_000},
-            "description": {"type": "string", "minLength": 1, "maxLength": 500},
-            "nickname": {"type": "string", "minLength": 1, "maxLength": 80},
-            "execution_mode": {
-                "type": "string",
-                "enum": ["foreground", "background"],
-                "default": "background",
-            },
-            "delivery_policy": {
-                "type": "string",
-                "enum": ["notify_only", "next_boundary", "follow_up"],
-                "default": "notify_only",
-            },
-        },
-        "required": ["agent_id", "task", "description"],
-        "additionalProperties": False,
-    }
     metadata = {
         "ouro_agent_control": True,
         "agent_catalog_contract_hash": catalog.contract_hash,
     }
-    return (
-        Tool(
-            definition=ToolDefinition(
-                name="SpawnAgent",
-                display_name="派遣子智能体",
-                description=(
-                    "Create an independent child Agent and return its durable handle immediately. "
-                    "Use WaitAgents when the result is required; do not poll repeatedly."
-                ),
-                parameters_schema=spawn_schema,
-                effect="state_changing",
-                metadata=metadata,
-            ),
-            handler=_spawn,
-        ),
+    controls = (
         Tool(
             definition=ToolDefinition(
                 name="WaitAgents",
@@ -165,6 +130,72 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
             handler=_interrupt,
         ),
     )
+    if not options:
+        return controls
+    return (_spawn_control_tool(catalog, options, metadata), *controls)
+
+
+def _spawn_control_tool(
+    catalog: AgentCatalogSnapshot,
+    options: list[dict[str, str]],
+    metadata: dict[str, object],
+) -> Tool:
+    spawn_schema: dict[str, Any] = {
+        "type": "object",
+        "properties": {
+            "agent_id": {"oneOf": options},
+            "task": {"type": "string", "minLength": 1, "maxLength": 20_000},
+            "description": {"type": "string", "minLength": 1, "maxLength": 500},
+            "nickname": {"type": "string", "minLength": 1, "maxLength": 80},
+            "execution_mode": {
+                "type": "string",
+                "enum": list(catalog.spawn_policy.allowed_execution_modes),
+                "default": (
+                    "background"
+                    if "background" in catalog.spawn_policy.allowed_execution_modes
+                    else catalog.spawn_policy.allowed_execution_modes[0]
+                ),
+            },
+            "delivery_policy": {
+                "type": "string",
+                "enum": ["notify_only", "next_boundary", "follow_up"],
+                "default": "notify_only",
+            },
+            "context_message_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "maxItems": 200,
+                "uniqueItems": True,
+                "description": (
+                    "Explicit parent message IDs for an Agent configured with "
+                    "selected_messages context."
+                ),
+            },
+            "resource_refs": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+                "maxItems": 16,
+                "uniqueItems": True,
+                "description": "Explicit parent Session resources delegated to the child.",
+            },
+        },
+        "required": ["agent_id", "task", "description"],
+        "additionalProperties": False,
+    }
+    return Tool(
+        definition=ToolDefinition(
+            name="SpawnAgent",
+            display_name="派遣子智能体",
+            description=(
+                "Create an independent child Agent and return its durable handle immediately. "
+                "Use WaitAgents when the result is required; do not poll repeatedly."
+            ),
+            parameters_schema=spawn_schema,
+            effect="state_changing",
+            metadata=metadata,
+        ),
+        handler=_spawn,
+    )
 
 
 def _intent_result(invocation: ToolInvocation, request: AgentControlRequest) -> ToolResult:
@@ -192,6 +223,10 @@ def _spawn(invocation: ToolInvocation) -> ToolResult:
             delivery_policy=(
                 "resume_waiter" if execution_mode == "foreground" else delivery_policy
             ),
+            context_message_ids=tuple(
+                str(item) for item in arguments.get("context_message_ids", ())
+            ),
+            resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
         ),
     )
 

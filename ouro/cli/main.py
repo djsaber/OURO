@@ -6,6 +6,7 @@ import json
 import sys
 from collections.abc import Sequence
 
+from ouro.cli.agent_commands import run_agent_command
 from ouro.cli.approval_commands import (
     abort_run_command,
     approve_tool_command,
@@ -14,6 +15,7 @@ from ouro.cli.approval_commands import (
 from ouro.cli.config_commands import (
     clear_system_prompt_config,
     set_system_prompt_config,
+    show_agent_runtime_config,
     show_compaction_config,
     show_permissions_config,
     show_queued_input_config,
@@ -125,6 +127,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _dispatch(args: argparse.Namespace) -> int:
     if args.command == "run":
         return _run_command(args)
+    if args.command == "agent":
+        return asyncio.run(run_agent_command(args))
     if args.command == "session":
         return _session_command(args)
     if args.command == "resource":
@@ -488,6 +492,16 @@ def _config_command(args: argparse.Namespace) -> int:
             max_output_tokens=args.max_output_tokens,
             max_elapsed_seconds=args.max_elapsed_seconds,
             clear=args.clear,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "agents":
+        return show_agent_runtime_config(
+            home=home,
+            expected_revision=args.expected_revision,
+            max_depth=args.max_depth,
+            max_active_children_per_root=args.max_children,
+            allowed_agent_id_patterns=args.allowed_agent_id_patterns,
             json_mode=args.json,
         )
 

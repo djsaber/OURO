@@ -16,7 +16,12 @@ from ouro.core.agents import DelegationRecord
 from ouro.core.base import new_id, utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
-from ouro.core.errors import MigrationRequiredError, PersistenceError, ResourceNotFoundError
+from ouro.core.errors import (
+    DelegationRevisionConflictError,
+    MigrationRequiredError,
+    PersistenceError,
+    ResourceNotFoundError,
+)
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
@@ -192,12 +197,14 @@ class SQLiteSessionStore:
                     self._delegation_row(delegation),
                 )
             except sqlite3.IntegrityError as exc:
-                if self.find_delegation_by_idempotency_key(
-                    delegation.root_session_id, delegation.idempotency_key
-                ) is not None:
+                if (
+                    self.find_delegation_by_idempotency_key(
+                        delegation.root_session_id, delegation.idempotency_key
+                    )
+                    is not None
+                ):
                     raise PersistenceError(
-                        "delegation idempotency key already exists: "
-                        f"{delegation.idempotency_key}"
+                        f"delegation idempotency key already exists: {delegation.idempotency_key}"
                     ) from exc
                 raise PersistenceError(
                     f"delegation already exists or is inconsistent: {delegation.delegation_id}"
@@ -211,15 +218,12 @@ class SQLiteSessionStore:
     ) -> DelegationRecord:
         with self._read_connection() as connection:
             row = connection.execute(
-                "SELECT payload FROM delegations "
-                "WHERE root_session_id = ? AND delegation_id = ?",
+                "SELECT payload FROM delegations WHERE root_session_id = ? AND delegation_id = ?",
                 (root_session_id, delegation_id),
             ).fetchone()
             if row is None:
                 raise FileNotFoundError(delegation_id)
-            return self._validate_model(
-                DelegationRecord, row[0], f"delegation {delegation_id}"
-            )
+            return self._validate_model(DelegationRecord, row[0], f"delegation {delegation_id}")
 
     def save_delegation(
         self,
@@ -228,7 +232,7 @@ class SQLiteSessionStore:
         expected_revision: int,
     ) -> DelegationRecord:
         if delegation.revision != expected_revision:
-            raise PersistenceError(
+            raise DelegationRevisionConflictError(
                 "delegation revision conflict: supplied record does not match expected revision"
             )
         updated = DelegationRecord.model_validate(
@@ -262,9 +266,8 @@ class SQLiteSessionStore:
                 ).fetchone()
                 if exists is None:
                     raise FileNotFoundError(delegation.delegation_id)
-                raise PersistenceError(
-                    "delegation revision conflict: "
-                    f"expected {expected_revision}, found {exists[0]}"
+                raise DelegationRevisionConflictError(
+                    f"delegation revision conflict: expected {expected_revision}, found {exists[0]}"
                 )
         return updated
 
@@ -282,9 +285,7 @@ class SQLiteSessionStore:
         query += " ORDER BY created_at, delegation_id"
         with self._read_connection() as connection:
             self._require_session(connection, root_session_id)
-            return self._load_models(
-                connection, query, tuple(parameters), DelegationRecord
-            )
+            return self._load_models(connection, query, tuple(parameters), DelegationRecord)
 
     def find_delegation_by_child_session(
         self,
@@ -310,16 +311,13 @@ class SQLiteSessionStore:
     ) -> DelegationRecord | None:
         with self._read_connection() as connection:
             row = connection.execute(
-                "SELECT payload FROM delegations "
-                "WHERE root_session_id = ? AND idempotency_key = ?",
+                "SELECT payload FROM delegations WHERE root_session_id = ? AND idempotency_key = ?",
                 (root_session_id, idempotency_key),
             ).fetchone()
             return (
                 None
                 if row is None
-                else self._validate_model(
-                    DelegationRecord, row[0], "delegation by idempotency key"
-                )
+                else self._validate_model(DelegationRecord, row[0], "delegation by idempotency key")
             )
 
     def load_incomplete_delegations(self) -> list[DelegationRecord]:

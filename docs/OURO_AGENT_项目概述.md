@@ -82,6 +82,23 @@ Provider 边界接受的 system prompt、messages 和 tools，并在手动压缩
 Bash 工作目录默认限制在 Session workspace，工具输出由统一边界限长并标记截断。Bash 的工作目录约束不是
 操作系统命令沙箱。
 
+### 子智能体
+
+OURO 当前提供一等、可恢复的单层子智能体能力。系统始终包含不可编辑/删除的 builtin `general`，用户可通过
+AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 all/selected tools 的自定义 definition。
+每个 parent Run 冻结 Agent 目录；模型 `SpawnAgent` schema 与执行解析使用同一快照，active Run 不受后续配置编辑
+影响。标准 LocalApplication 默认装配 Agent control tools；allowlist 无可用 definition 时只省略 SpawnAgent，不生成
+无效工具 schema。
+
+每次派遣创建 durable `DelegationRecord`、独立 child Session 和普通 child Run，继续复用现有模型循环、工具、审批、
+AskUser、资源、预算和恢复。foreground parent 以 `waiting_child` park 并释放 Supervisor permit；background 结果通过
+稳定 delivery identity 进行 notify/next-boundary/follow-up exact-once 交付。root AgentTree、interaction inbox 和
+child event stream 都是 application 投影，Host refresh/detach 不改变 child 生命周期。
+
+首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child 和一个 write-capable child。child 能力
+只能从 parent 的工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
+转 recoverable 并对账半提交 relation/result/delivery，但不会自动重放未知外部副作用。
+
 ### Skills 与扩展框架
 
 OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时按需加载完整内容和资源。当前支持本地发现、
@@ -130,7 +147,8 @@ ResourceService 把本地附件导入为内容寻址的不可变资源。消息�
 RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。Host
 可读取细粒度 activity，区分模型准备、等待响应、各类增量流、工具预检/执行/结果提交、人工交互和压缩。
 Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不同的显式协议。重启后的事实仍来自
-SessionStore，而不是内存 registry。
+SessionStore，而不是内存 registry。Agent child 使用同一 Supervisor 队列；parent `waiting_child` 不占 execution
+permit，也没有第二个 Agent worker pool。
 
 Host 事件由 `RuntimeEventView` 提供稳定类别和常用字段；原始扩展数据统一脱敏。慢 Host sink 与观察型 Hook
 在独立有界 worker 中运行，不能阻塞 durable event 或其他 Session。`LocalApplication` 为 CLI 和未来 TUI/
@@ -142,6 +160,8 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
   生成期间动态预览，完整响应后按调用顺序定稿。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。
 - JSON：stdout 输出稳定机器可读结果，并使用分类退出码。
+- Agent：definition CRUD/tool compatibility，以及 list/show/spawn/wait/send/interrupt/close/tree/interactions；
+  运行命令与未来 Desktop 使用同一 AgentService。
 
 ## 核心概念
 
@@ -185,6 +205,11 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
 
 对 canonical message 前缀生成的持久化摘要投影。压缩记录不修改或删除原消息。
 
+### Delegation
+
+root-scoped 的 durable 父子关系与冻结派遣契约。child Run 是执行状态唯一事实源；Delegation 只保存关系、能力上限、
+result/delivery identity 和 revision，不镜像 running/waiting/terminal 状态。
+
 ## 数据与安全边界
 
 - 所有路径写入受 `OURO_HOME` 或工作区约束；内置工具统一使用 execution context 校验路径和权限。
@@ -205,7 +230,8 @@ metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具
   证明现有 extension point 无法表达 Agent、provider、resource 或 UI 能力时才扩展。Marketplace、签名、publisher
   policy、OS sandbox、项目插件与历史兼容层不在当前范围。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
-- 计划与子智能体：显式任务树、预算、取消、结果归并和用户可见进度。
+- Durable Goal/Task：显式任务依赖、跨 Run 调度、重试和用户可见计划；它可以关联当前 Delegation，但不是
+  子智能体首版的前置条件。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。
 
 未来能力必须复用现有 core/application 契约，不能让 Desktop、插件或协议对象直接接管运行状态。

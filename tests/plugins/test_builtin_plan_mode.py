@@ -566,9 +566,7 @@ async def test_plan_off_cancels_activation_bound_pending_approval(tmp_path) -> N
     assert cancelled.status == "aborted"
     assert cancelled.active_tool_batch is not None
     pending = next(
-        call
-        for call in cancelled.active_tool_batch.calls
-        if call.request.id == "call_exit"
+        call for call in cancelled.active_tool_batch.calls if call.request.id == "call_exit"
     )
     assert pending.status == "aborted"
     assert pending.result is not None
@@ -646,9 +644,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
         approval_mode="auto",
     )
     assert result.run.status == "completed"
-    assert not any(
-        "Plan mode is active" in message.text_content for message in provider.messages
-    )
+    assert not any("Plan mode is active" in message.text_content for message in provider.messages)
     await application.close()
 
 
@@ -678,9 +674,9 @@ async def test_host_control_command_lists_and_releases_plan_without_business_rul
         plugins=application.plugins,
     )
     assert f"{PLUGIN_ID}/session_controllers/mode" in status.output
-    activation_id = store.load_session_record(
-        session.session_id
-    ).controls.activations[0].activation_id
+    activation_id = (
+        store.load_session_record(session.session_id).controls.activations[0].activation_id
+    )
 
     released = await handle_command(
         f"/control release {activation_id}",
@@ -827,9 +823,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     catalog = application.plugin_runtime.snapshot()
     enter = catalog.tools.get("EnterPlanMode")
     exit_plan = catalog.tools.get("ExitPlanMode")
-    controller = catalog.session_controllers.get(
-        "dev.ouro.plan_mode/session_controllers/mode"
-    )
+    controller = catalog.session_controllers.get("dev.ouro.plan_mode/session_controllers/mode")
     context = ToolExecutionContext(workspace=workspace, workspace_only=True)
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"

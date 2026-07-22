@@ -163,9 +163,9 @@ class ToolRegistry:
 
 def _validate_tool(tool: Tool) -> None:
     validate_tool_definition(tool.definition)
-    if (
-        tool.definition.name in AGENT_CONTROL_TOOL_NAMES
-        and tool.definition.metadata.get("ouro_agent_control") is not True
+    if tool.definition.name in AGENT_CONTROL_TOOL_NAMES and (
+        tool.definition.source != "builtin"
+        or tool.definition.metadata.get("ouro_agent_control") is not True
     ):
         raise ValueError(f"tool name is reserved for OURO Agent control: {tool.definition.name}")
     if tool.definition.resumable is not (tool.resume_handler is not None):

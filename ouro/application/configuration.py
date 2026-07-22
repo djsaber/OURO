@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ouro.application.configuration_models import (
+    AgentRuntimeConfigView,
     CompactionConfigView,
     ConfigurationChange,
     ConfigurationOverview,
@@ -48,6 +49,8 @@ from ouro.application.dto import Diagnostic
 from ouro.config import (
     BUILTIN_FAUX_PROVIDER_ID,
     INTEGRATED_PROVIDER_TYPES,
+    AgentDefinitionsConfigManager,
+    AgentRuntimeConfig,
     CompactionConfigManager,
     EndpointReasoningConfig,
     PermissionConfigManager,
@@ -95,6 +98,7 @@ class ConfigurationFacade:
         self.tool_execution = ToolExecutionConfigManager(root)
         self.queued_inputs = QueuedInputConfigManager(root)
         self.run_budget = RunBudgetConfigManager(root)
+        self.agents = AgentDefinitionsConfigManager(root)
         self.compaction = CompactionConfigManager(root)
         self.mcp = MCPConfigStore(root)
         self.skills = SkillManager(root)
@@ -111,6 +115,7 @@ class ConfigurationFacade:
             tool_execution=self.tool_execution_config(),
             queued_inputs=self.queued_input_config(),
             run_budget=self.run_budget_config(),
+            agents=self.agent_runtime_config(),
             compaction=self.compaction_config(),
             skills=self.skill_policy(),
             mcp=self.mcp_catalog(),
@@ -702,6 +707,49 @@ class ConfigurationFacade:
         )
         return self.run_budget_config(
             change=configuration_change("run_budget", "updated", "next_runtime")
+        )
+
+    def agent_runtime_config(
+        self,
+        *,
+        change: ConfigurationChange | None = None,
+    ) -> AgentRuntimeConfigView:
+        snapshot = self.agents.snapshot()
+        return AgentRuntimeConfigView(
+            config_path=str(self.agents.file.path),
+            revision=snapshot.revision,
+            **snapshot.runtime.model_dump(),
+            change=change,
+        )
+
+    def update_agent_runtime(
+        self,
+        *,
+        expected_revision: int,
+        max_depth: int | None = None,
+        max_active_children_per_root: int | None = None,
+        allowed_agent_id_patterns: tuple[str, ...] | None = None,
+    ) -> AgentRuntimeConfigView:
+        current = self.agents.snapshot()
+        policy = current.runtime.spawn_policy
+        if allowed_agent_id_patterns is not None:
+            policy = policy.model_copy(
+                update={"allowed_agent_id_patterns": allowed_agent_id_patterns}
+            )
+        updates: dict[str, object] = {"spawn_policy": policy}
+        if max_depth is not None:
+            updates["max_depth"] = max_depth
+        if max_active_children_per_root is not None:
+            updates["max_active_children_per_root"] = max_active_children_per_root
+        try:
+            runtime = AgentRuntimeConfig.model_validate(
+                current.runtime.model_copy(update=updates).model_dump()
+            )
+        except ValueError as exc:
+            raise ConfigError(f"invalid Agent runtime config: {exc}") from exc
+        self.agents.update_runtime(runtime, expected_revision=expected_revision)
+        return self.agent_runtime_config(
+            change=configuration_change("agents", "runtime_updated", "next_runtime")
         )
 
     def compaction_config(

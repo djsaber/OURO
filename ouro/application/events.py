@@ -4,7 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from inspect import isawaitable, iscoroutinefunction
-from typing import Any
+from typing import Any, Protocol
 
 from ouro.application.event_models import validate_runtime_event_payload
 from ouro.core.context_providers import ContextProviderFailure
@@ -16,6 +16,17 @@ from ouro.sessions import SessionRepository
 
 RuntimeEventSink = Callable[[EventRecord], None | Awaitable[None]]
 HookRegistryResolver = Callable[[str | None], tuple[HookRegistry, Callable[[], None]]]
+
+
+class ApplicationEventPublisher(Protocol):
+    async def publish(
+        self,
+        *,
+        session_id: str,
+        run_id: str | None,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> EventRecord: ...
 
 
 @dataclass
@@ -103,6 +114,28 @@ class RuntimeEventRecorder:
         emitted.append(event)
         self._publish(event, notify_hooks=True)
         return event.sequence
+
+    async def publish(
+        self,
+        *,
+        session_id: str,
+        run_id: str | None,
+        event_type: str,
+        payload: dict[str, Any],
+    ) -> EventRecord:
+        """Persist and publish an application event outside a Run loop transaction."""
+
+        validate_runtime_event_payload(event_type, payload)
+        event = await self._append_ordered_event(
+            EventRecord(
+                session_id=session_id,
+                run_id=run_id,
+                event_type=event_type,
+                payload=payload,
+            )
+        )
+        self._publish(event, notify_hooks=True)
+        return event
 
     async def record_hook_failures(
         self,

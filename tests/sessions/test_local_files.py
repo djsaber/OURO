@@ -468,6 +468,7 @@ def test_recovery_marks_in_flight_unattended_resume_outcome_unknown(tmp_path) ->
 def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
+    collided_at = utc_now()
     session = SessionRecord(title="Tool recovery", status="running")
     run = RunRecord(session_id=session.session_id, status="running", model="faux")
     store.create_session(session)
@@ -484,17 +485,22 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="model_request_started",
             sequence=1,
+            created_at=collided_at,
+            payload={"turn_id": "turn_1"},
         )
     )
     store.append_event(
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="model_text_delta",
             sequence=2,
-            payload={"text": "already durable"},
+            created_at=collided_at,
+            payload={"text": "already durable", "turn_id": "turn_1"},
         )
     )
     assistant = MessageRecord.text(
@@ -503,15 +509,25 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         role="assistant",
         text="already durable",
         sequence=2,
-    ).model_copy(update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]})
+        turn_id="turn_1",
+    ).model_copy(
+        update={
+            "created_at": collided_at,
+            "tool_calls": [ToolCallRequest(id="call_1", name="Read")],
+        }
+    )
     result = MessageRecord.text(
         session_id=session.session_id,
         run_id=run.run_id,
         role="tool_result",
         text="result",
         sequence=3,
+        turn_id="turn_1",
     ).model_copy(
-        update={"tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read")}
+        update={
+            "created_at": collided_at,
+            "tool_result": ToolResultReference(tool_call_id="call_1", tool_name="Read"),
+        }
     )
     store.append_message(assistant)
     store.append_message(result)
@@ -519,25 +535,33 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_1",
             event_type="tool_call_completed",
             sequence=3,
+            created_at=collided_at,
+            payload={"turn_id": "turn_1"},
         )
     )
     store.append_event(
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_2",
             event_type="model_request_started",
             sequence=4,
+            created_at=collided_at,
+            payload={"turn_id": "turn_2"},
         )
     )
     store.append_event(
         EventRecord(
             session_id=session.session_id,
             run_id=run.run_id,
+            turn_id="turn_2",
             event_type="model_text_delta",
             sequence=5,
-            payload={"text": "new partial"},
+            created_at=collided_at,
+            payload={"text": "new partial", "turn_id": "turn_2"},
         )
     )
 
@@ -550,6 +574,7 @@ def test_recovery_uses_only_stream_events_after_latest_durable_tool_round(tmp_pa
         "new partial",
     ]
     assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
+    assert recovered.messages[-1].turn_id == "turn_2"
 
 
 def test_recovery_does_not_duplicate_a_committed_current_tool_round(tmp_path) -> None:

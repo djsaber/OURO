@@ -13,6 +13,7 @@ CLI 是组合根和终端界面适配器。它解析参数、构建 application 
 ouro [interactive]
 ouro run
 ouro session
+ouro agent
 ouro approve | reject | abort
 ouro config
 ouro provider
@@ -77,7 +78,9 @@ Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 
 - `provider endpoint ...` 管理具体 Endpoint；`set` 通过互斥的 `--reasoning-preset` 或
   `--reasoning-config` 声明思考契约；
 - `session ...` 管理持久化会话；
-- `config prompt|permissions|tool-execution|queued-inputs|run-budget|compaction` 管理独立配置分区；
+- `agent definition ...` 管理 builtin/user AgentDefinition 与工具兼容性；
+- `agent list|show|spawn|wait|send|interrupt|close|tree|interactions` 查询和控制 durable child；
+- `config prompt|permissions|tool-execution|queued-inputs|run-budget|agents|compaction` 管理独立配置分区；
 - `skills ...` 管理 Agent Skills；
 - `approve/reject/abort` 恢复或终止 active Run。
 
@@ -86,6 +89,22 @@ Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 
 `run` 与 `config compaction` 使用统一的 `--thinking-mode`、`--thinking-effort` 输入。Host 只构造
 `ReasoningRequest`；能力判断、默认解析和厂商参数编码不进入 CLI。非法的 `disabled + effort` 由统一错误边界
 返回配置退出码 `2`，不得输出 traceback。
+
+## Agent 控制面
+
+definition list/show/tools/create/update/delete/copy 通过 provider-independent 的本地 composition 打开
+`AgentDefinitionService` 与同一 live Tool catalog；CLI 不读取或修改 config JSON。mutation 使用 expected revision，
+builtin general 只可查询或复制，不可编辑、删除或覆盖；目录变更从 next Run 生效。
+
+运行命令统一构建 `LocalApplication` 并调用 `AgentService`。短生命周期 CLI 只能基于 completed parent Run 的冻结
+Agent catalog 发起 Host delegation，child 固定使用 unattended interaction mode；spawn 与 follow-up 在命令进程内
+等待 durable terminal，避免把只存在于即将退出进程的 Supervisor coroutine 宣称为后台 daemon。长期运行 Host 可对
+active parent 使用同一 service 并保持 subscription。模型侧派遣仍只允许当前 active parent Run。
+CLI spawn 固定 `notify_only`；next-boundary/follow-up 可能启动新的 parent Run，只属于能持续拥有 parent
+subscription 与交互策略的长期 Host/模型控制面。
+
+Agent handle JSON 至少包含 delegation/child identity、status、relation revision 和 control state；root tree、interaction
+inbox 与 child stream 都来自 application DTO/cursor。CLI 不自行推断 cascade、permission、delivery 或恢复状态。
 
 ## Home 与覆盖
 
@@ -96,6 +115,8 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 
 - Session 管理命令通过 `ApplicationFacade`。
 - Runtime 命令和当前上下文投影通过 `RuntimeService`。
+- Agent definition 管理通过 `AgentDefinitionService`；Agent 运行控制通过 `LocalApplication.agents` 暴露的
+  `AgentService`。CLI 不导入 AgentService 实现，也不读取 Delegation 文件。
 - Provider、config 和 Skills 命令通过类型化 `ConfigurationFacade`；公开 DTO 不暴露凭据值。
 - CLI 不直接编辑 JSONL、Run 文件或 index。
 
@@ -135,3 +156,5 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 - `tests/cli/test_tool_execution_config_commands.py`
 - `tests/cli/test_run_budget_config_commands.py`
 - `tests/cli/test_queued_inputs_cli.py`
+- `tests/cli/test_agent_commands.py`
+- `tests/application/test_agents.py`

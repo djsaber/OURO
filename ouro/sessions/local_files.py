@@ -14,7 +14,12 @@ from ouro.core.agents import DelegationRecord
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
-from ouro.core.errors import MigrationRequiredError, PersistenceError, ResourceNotFoundError
+from ouro.core.errors import (
+    DelegationRevisionConflictError,
+    MigrationRequiredError,
+    PersistenceError,
+    ResourceNotFoundError,
+)
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
@@ -70,17 +75,16 @@ class LocalSessionStore:
         root_id = delegation.root_session_id
         with self.session_mutation(root_id):
             self._require_session_dir(root_id)
-            if self.find_delegation_by_idempotency_key(
-                root_id, delegation.idempotency_key
-            ) is not None:
+            if (
+                self.find_delegation_by_idempotency_key(root_id, delegation.idempotency_key)
+                is not None
+            ):
                 raise PersistenceError(
                     f"delegation idempotency key already exists: {delegation.idempotency_key}"
                 )
             path = self._delegation_path(root_id, delegation.delegation_id)
             if path.exists():
-                raise PersistenceError(
-                    f"delegation already exists: {delegation.delegation_id}"
-                )
+                raise PersistenceError(f"delegation already exists: {delegation.delegation_id}")
             self._write_model_atomic(path, delegation)
         return delegation
 
@@ -96,9 +100,7 @@ class LocalSessionStore:
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not load delegation {delegation_id}: {exc}"
-                ) from exc
+                raise PersistenceError(f"could not load delegation {delegation_id}: {exc}") from exc
 
     def save_delegation(
         self,
@@ -110,12 +112,12 @@ class LocalSessionStore:
         with self.session_mutation(root_id):
             current = self.load_delegation(root_id, delegation.delegation_id)
             if current.revision != expected_revision:
-                raise PersistenceError(
+                raise DelegationRevisionConflictError(
                     "delegation revision conflict: "
                     f"expected {expected_revision}, found {current.revision}"
                 )
             if delegation.revision != expected_revision:
-                raise PersistenceError(
+                raise DelegationRevisionConflictError(
                     "delegation revision conflict: supplied record does not match expected revision"
                 )
             updated = DelegationRecord.model_validate(
@@ -138,9 +140,7 @@ class LocalSessionStore:
             root_dir = self._require_session_dir(root_session_id)
             records = self._load_delegations_from_dir(root_dir / "delegations")
         if parent_session_id is not None:
-            records = [
-                item for item in records if item.parent_session_id == parent_session_id
-            ]
+            records = [item for item in records if item.parent_session_id == parent_session_id]
         return sorted(records, key=lambda item: (item.created_at, item.delegation_id))
 
     def find_delegation_by_child_session(

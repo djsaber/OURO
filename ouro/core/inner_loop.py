@@ -221,6 +221,14 @@ class ModelRoundBeginner(Protocol):
     ) -> RunRecord: ...
 
 
+class SharedBudgetReasonProvider(Protocol):
+    def __call__(
+        self,
+        run: RunRecord,
+        next_model_round: int,
+    ) -> RunBudgetReason | None: ...
+
+
 @dataclass(frozen=True)
 class TurnCompletionPolicyResult:
     sequence: int
@@ -248,6 +256,7 @@ class InnerLoopPorts:
     consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
     evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
     begin_model_round: ModelRoundBeginner | None = None
+    shared_budget_reason: SharedBudgetReasonProvider | None = None
 
 
 @dataclass
@@ -489,12 +498,15 @@ class InnerAgentLoop:
         next_model_round: int,
     ) -> RunBudgetReason | None:
         elapsed_seconds = max(0.0, (utc_now() - run.started_at).total_seconds())
-        return self.run_budget.exceeded_reason(
+        local_reason = self.run_budget.exceeded_reason(
             next_model_round=next_model_round,
             input_tokens=int(run.usage.get("input_tokens", 0)),
             output_tokens=int(run.usage.get("output_tokens", 0)),
             elapsed_seconds=elapsed_seconds,
         )
+        if local_reason is not None or self.ports.shared_budget_reason is None:
+            return local_reason
+        return self.ports.shared_budget_reason(run, next_model_round)
 
     async def _build_context(
         self,

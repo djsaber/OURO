@@ -124,8 +124,7 @@ class PluginSessionController:
             ) from exc
         except Exception as exc:
             raise PluginSessionControllerError(
-                "session controller failed "
-                f"({type(exc).__name__}): {redact_text(str(exc))}"
+                f"session controller failed ({type(exc).__name__}): {redact_text(str(exc))}"
             ) from exc
         if not isinstance(result, PluginSessionControllerOutput):
             raise PluginSessionControllerError(

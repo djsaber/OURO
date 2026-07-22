@@ -131,16 +131,29 @@ class RunLifecycle:
         prompt: str,
         sequence: int,
         metadata: dict[str, Any],
+        resource_refs: Iterable[str] = (),
     ) -> MessageRecord:
         """Persist extension-produced context without impersonating the user."""
 
+        unique_resource_refs = list(dict.fromkeys(resource_refs))
+        if unique_resource_refs and self._validate_resource_refs is None:
+            raise ValueError(
+                "synthetic message contains resource_refs but no ResourceService is configured"
+            )
+        if self._validate_resource_refs is not None:
+            self._validate_resource_refs(session.session_id, unique_resource_refs)
         message = MessageRecord.text(
             session_id=session.session_id,
             run_id=run.run_id,
             role="system_synthetic",
             text=prompt,
             sequence=sequence,
-        ).model_copy(update={"metadata": dict(metadata)})
+        ).model_copy(
+            update={
+                "metadata": dict(metadata),
+                "resource_refs": unique_resource_refs,
+            }
+        )
         self._append_message(session=session, run=run, message=message)
         return message
 

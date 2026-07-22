@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from ouro.config.agents import AgentDefinitionsConfigManager
-from ouro.core.agents import AgentDefinition, ToolSelection
+from ouro.config.agents import AgentDefinitionsConfigManager, AgentRuntimeConfig
+from ouro.core.agents import AgentDefinition, AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
 
 
@@ -75,3 +75,46 @@ def test_agent_definition_mutation_preserves_other_config_sections(tmp_path) -> 
     AgentDefinitionsConfigManager(tmp_path).create(_definition(), expected_revision=0)
 
     assert json.loads(path.read_text(encoding="utf-8"))["prompts"] == {"system": "keep"}
+
+
+def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path) -> None:
+    manager = AgentDefinitionsConfigManager(tmp_path)
+    initial = manager.snapshot()
+    assert initial.runtime.max_depth == 1
+    assert initial.runtime.max_active_children_per_root == 4
+    assert initial.runtime.spawn_policy.allowed_agent_id_patterns == ("*",)
+
+    created = manager.create(_definition(), expected_revision=0)
+    updated = manager.update_runtime(
+        AgentRuntimeConfig(
+            max_active_children_per_root=2,
+            spawn_policy=AgentSpawnPolicy(
+                allowed_agent_id_patterns=("review*",),
+            ),
+        ),
+        expected_revision=created.revision,
+    )
+
+    assert updated.revision == 2
+    assert updated.definitions == created.definitions
+    assert updated.runtime.max_active_children_per_root == 2
+    assert updated.runtime.spawn_policy.allowed_agent_id_patterns == ("review*",)
+    with pytest.raises(ConfigError, match="revision conflict"):
+        manager.update_runtime(AgentRuntimeConfig(), expected_revision=1)
+
+
+def test_agent_runtime_config_rejects_unsupported_first_release_modes(tmp_path) -> None:
+    manager = AgentDefinitionsConfigManager(tmp_path)
+    path = tmp_path / "config" / "config.json"
+    path.parent.mkdir(parents=True)
+
+    for runtime in (
+        {"max_depth": 2},
+        {"spawn_policy": {"allowed_lifecycle_bindings": ["bound", "detached"]}},
+    ):
+        path.write_text(
+            json.dumps({"agents": {"revision": 0, "runtime": runtime}}),
+            encoding="utf-8",
+        )
+        with pytest.raises(ConfigError, match="invalid agents config"):
+            manager.snapshot()

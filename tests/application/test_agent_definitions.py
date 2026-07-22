@@ -6,7 +6,7 @@ from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.runtime import RuntimeService
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.agents import ToolSelection
+from ouro.core.agents import AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
 from ouro.providers import FauxProvider
@@ -62,6 +62,10 @@ def test_general_and_custom_definitions_share_one_catalog_pipeline(tmp_path) -> 
     assert [item.agent_id for item in created.definitions] == ["general", "reader"]
     assert created.definitions[0].editable is False
     assert created.definitions[1].editable is True
+    assert "system_prompt" not in created.model_dump_json()
+    assert service.get("reader", tools=_registry()).system_prompt == (
+        "Inspect the requested evidence."
+    )
 
     snapshot = service.catalog_snapshot(_registry())
     assert [entry.definition.agent_id for entry in snapshot.entries] == ["general", "reader"]
@@ -69,9 +73,7 @@ def test_general_and_custom_definitions_share_one_catalog_pipeline(tmp_path) -> 
         "Read",
         "Write",
     }
-    assert [item.public_name for item in snapshot.resolve("reader").effective_tools] == [
-        "Read"
-    ]
+    assert [item.public_name for item in snapshot.resolve("reader").effective_tools] == ["Read"]
 
 
 def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(tmp_path) -> None:
@@ -94,6 +96,68 @@ def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(
     assert reader.missing_tool_names == ("Read",)
     with pytest.raises(KeyError, match="unknown or unavailable"):
         service.catalog_snapshot(empty_registry).resolve("reader")
+
+
+@pytest.mark.parametrize("selection_mode", ["all", "selected"])
+def test_catalog_excludes_hard_denied_tools_and_freezes_approval_floor(
+    tmp_path,
+    selection_mode,
+) -> None:
+    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    if selection_mode == "selected":
+        service.create(
+            agent_id="reader",
+            name="Reader",
+            description="Read-only investigation.",
+            system_prompt="Inspect evidence.",
+            tool_selection=ToolSelection(mode="selected", names=("Read", "Write")),
+            tools=_registry(),
+            expected_revision=0,
+        )
+        agent_id = "reader"
+    else:
+        agent_id = "general"
+
+    catalog = service.catalog_snapshot(
+        _registry(),
+        permission_overrides={"Read": "approval", "Write": "deny"},
+        approval_mode="inherit",
+    )
+
+    refs = catalog.resolve(agent_id).effective_tools
+    assert [ref.public_name for ref in refs] == ["Read"]
+    assert refs[0].minimum_permission_mode == "approval"
+
+
+def test_effective_tool_refs_freeze_declared_network_and_process_capabilities(
+    tmp_path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="community__fetch",
+                description="Fetch through a community plugin.",
+                source="third_party_plugin",
+                effect="read_only",
+                metadata={"plugin_permissions": ["network.outbound", "process.spawn"]},
+            ),
+            handler=_handler,
+        )
+    )
+    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+
+    reference = service.catalog_snapshot(registry).resolve("general").effective_tools[0]
+
+    assert reference.requires_network is True
+    assert reference.requires_external_paths is True
+    assert (
+        AgentSpawnPolicy(
+            allow_network=False,
+            allow_external_paths=False,
+        ).allows_tool(reference)
+        is False
+    )
 
 
 def test_builtin_definition_is_immutable_but_can_be_copied(tmp_path) -> None:
@@ -121,18 +185,14 @@ async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
     service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
     runtime = RuntimeService(
         store=store,
-        adapter=RuntimeAdapter(
-            FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")
-        ),
+        adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")),
         tools=_registry(),
     )
     runtime.attach_agent_definitions(service)
 
     first = await runtime.run("first")
     assert first.run.agent_catalog is not None
-    assert [entry.definition.agent_id for entry in first.run.agent_catalog.entries] == [
-        "general"
-    ]
+    assert [entry.definition.agent_id for entry in first.run.agent_catalog.entries] == ["general"]
 
     service.create(
         agent_id="reader",

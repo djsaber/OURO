@@ -66,14 +66,14 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 - 检索结果与上下文预算协同；
 - 防止把工具输出或外部提示自动提升为可信记忆。
 
-### 计划与子智能体
+### Durable Goal/Task
 
 - durable task/goal 记录、状态和预算；
-- 子任务并发、取消、结果归并和失败传播；
-- 工具与模型配额继承；
-- 用户可见的进度与控制入口。
+- ready task 选择、依赖、重试与跨 Run 调度；
+- 与当前 durable Delegation 建立显式关联，不复制 Agent 状态机；
+- 用户可见的计划进度、预算与控制入口。
 
-只有 RuntimeSupervisor 和资源身份稳定后才进入该能力，避免用临时进程和裸文本拼接模拟任务系统。
+子智能体首版已经完成；本阶段只实现尚未提供的通用 Goal/Task，不把 AgentTree 冒充任务系统。
 
 ### SQLite 产品化
 
