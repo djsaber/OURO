@@ -36,7 +36,7 @@ AgentTree/interaction projection。本规格只陈述已经实现并有自动化
 - 宿主进程崩溃后透明复活原 Python coroutine、子进程或未知外部副作用；
 - 通用 DAG、工作流 DSL、长期 Goal/Task 调度器或任意 swarm 语言；
 - 默认复制完整父 Session history；
-- 默认允许多个 child 在共享工作区并发修改相同文件；
+- 为共享工作区写入增加路径锁、单写者配额或自动合并协议；
 - 让 user plugin 直接取得 RuntimeService、RuntimeSupervisor、SessionStore 或 AgentService；
 - 允许模型通过普通工具创建、修改或删除 AgentDefinition；definition 管理由 Host application API 承担；
 - 把子智能体结果或 Host 控制消息伪装为真实用户输入；
@@ -46,7 +46,7 @@ AgentTree/interaction projection。本规格只陈述已经实现并有自动化
 
 ### Agent definition
 
-AgentDefinition 是可选择的能力模板，不是运行实例。它描述稳定 agent_id、说明、指令、模型策略、上下文策略、
+AgentDefinition 是可选择的能力模板，不是运行实例。它描述稳定 agent_id、说明、指令、模型策略、
 工具能力上限、workspace 策略、预算和是否允许继续派遣。
 
 ### Delegation
@@ -139,7 +139,6 @@ Delegation 中的冻结副本；首版不再定义字段近似相同的 AgentDef
 | system_prompt | child 专用指令，不包含父级秘密或未经选择的完整历史 |
 | tool_selection | `all`，或 `selected` + 一组 ToolRegistry public names；selected 允许空集 |
 | model_policy | 固定模型、允许模型集合或 inherit |
-| context_policy | task_only、summary、selected_messages 或显式 bounded_history |
 | workspace_policy | inherit、read_only、workspace_write 或显式隔离工作区 |
 | can_spawn | 是否可创建下一层 child |
 | default_budget | 复用 RunBudgetPolicy 的 model round、token 和 elapsed time 上限 |
@@ -200,7 +199,7 @@ runtime policy 共用一个 expected revision，避免 Host 同时编辑时发�
 `effective_from=next_run`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的 child 默认值
 继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
-首版用户编辑面必须覆盖 name、description、system_prompt 和 tool_selection。model/context/workspace/budget/can_spawn
+首版用户编辑面必须覆盖 name、description、system_prompt 和 tool_selection。model/workspace/budget/can_spawn
 先由产品默认值归一化，只有已有权限模型能安全表达的字段才逐项开放；不接受任意 policy JSON。新增可编辑字段必须进入
 同一 AgentDefinition validator、contract hash、Run snapshot 和 Delegation freeze，不得成为旁路配置。
 
@@ -289,7 +288,7 @@ DelegationRecord 是 canonical record，建议字段如下：
 | identity | delegation_id、schema_version、root_session_id |
 | parent | parent_session_id、parent_run_id、parent_tool_call_id、request_id |
 | child | child_session_id、current_child_run_id、agent_id、agent_contract_hash、nickname |
-| task | description、initial_message_id、prompt_digest、context_policy、selected message/resource refs |
+| task | description、initial_message_id、prompt_digest、显式 resource refs |
 | execution | execution_mode、lifecycle_binding、depth、spawn_state、control_state |
 | policy | frozen AgentDefinition、EffectiveToolRefs、显式 workspace/model 约束、approval_mode、interaction_mode、RunBudgetPolicy |
 | result | terminal child run、result message/resource refs、usage、delivery |
@@ -435,7 +434,7 @@ RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSe
 spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、可重放的提交协议：
 
 1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、并发、预算、
-   compatibility、context refs 和权限。
+   compatibility、显式 resource refs 和权限。
 2. 使用 parent_tool_call_id 或 Host request_id 生成/查找稳定 idempotency key。
 3. 创建 spawn_state=requested 的 DelegationRecord。
 4. 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session。
@@ -461,7 +460,7 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 
 模型侧首版使用最小的 product-owned 内置控制工具：
 
-- SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task/context/execution mode 创建 child；sync 模式
+- SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task、显式 resource refs 和 execution mode 创建 child；sync 模式
   挂起原调用并最终返回 child result，async 模式立即返回 AgentHandle 并自动交付结果；Host 可显示为“派遣子智能体”；
 - ListAgents：列出当前 root 或 direct children 的有界状态，并可返回已完成 child 的有界结果引用；
 - SendAgentMessage：向 child active Run steer，或为 idle child 创建 follow-up；
@@ -546,24 +545,21 @@ identity 的 delivered 状态时按幂等成功收敛，其他版本冲突继续
 ## 上下文隔离与结果契约
 
 child 初始任务完整文本只保存为 child 的第一条 canonical user message，并携带稳定 `delegation_id` provenance。Delegation 保存
-initial_message_id 与 prompt_digest，不复制 prompt。child 默认只获得：
+initial_message_id 与 prompt_digest，不复制 prompt。child 的文本上下文只包含：
 
-- task prompt 与 description；
-- AgentDefinition instructions；
+- OURO platform/base system instructions；
+- 冻结的 AgentDefinition system_prompt；
+- SpawnAgent task。
+
+此外，child 的运行环境获得：
+
 - workspace 与模型策略；
-- 显式选择的 message summaries；
-- 显式授权且属于目标 Session 可达范围的 resource refs；
+- 显式授权且属于父 Session 可达范围的 resource refs；
 - 必需的项目规则、Skills 和工具 contract。
 
-默认 context_policy 为 task_only。完整父 history 不作为默认值。bounded_history 必须显式配置消息上限和 token
-预算；secret、credential、approval answer 和未选择的 system/plugin context 不因 parent relation 自动复制。
-
-当前实现把上下文选择收敛为 child 首条 canonical `user` message 的一次性安全投影，而不建立第二套
-context engine：`task_only` 不读取父历史；`summary` 只接受 active CompactionRecord，且其 covered messages 必须
-全部为可委派的纯 user/assistant 文本；`selected_messages` 要求显式、同父 Session 可达的 message ids；
-`bounded_history` 只从可委派文本中按时间选择，并同时执行 `max_messages` 与 `max_tokens`。tool result、assistant
-tool call、reasoning/provider continuation、system/plugin synthetic message 均不进入投影。投影作为不可信 evidence
-标记后进入 child，完整文本只存于 child；Delegation 只保存来源 ids、compaction id、resource refs 和 digest。
+父 Session history、CompactionRecord、tool result、assistant tool call、reasoning/provider continuation 和
+system/plugin synthetic message 均不投影到 child。模型工具与 Host API 都不接受 canonical message ids；主智能体必须
+在 task 中显式写出 child 完成任务所需的文本上下文。这样只有一条派遣语义，不建立第二套上下文选择、摘要或消息引用协议。
 
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
@@ -626,7 +622,7 @@ workspace-only 执行上下文。
 - lifecycle binding（当前只允许 bound）；
 - max_depth；
 - root/direct child 数；
-- write-capable AgentDefinition；
+- 是否允许向 child 下放写工具；
 - 可下放的 shell、network、MCP 和 external path 能力。
 
 Spawn approval 与 child 后续工具 approval 是不同请求。批准 spawn 不等于批准 child 的危险工具。
@@ -708,7 +704,6 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 - max_depth=1；
 - max_active_children_per_root=4；
 - detached 默认禁用；
-- 并行 writer 默认禁用或限制为 1；
 - child budget 必须小于等于 root 剩余预算。
 
 首版每个 child 直接复用现有 RunBudgetPolicy，至少覆盖：
@@ -719,8 +714,9 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 另外只增加小型 root delegation quota，覆盖 active/queued child 数和 nested depth，并从 child Run usage 聚合 root usage。
 首版不新增 AgentBudget 类型或预算执行引擎；tool call 数等新维度应先进入通用 RunBudgetPolicy，再由 child 复用。
 
-当前实现对同一 root 的 spawn 临界区串行执行 idempotency、active/queued 数量和单 writer 检查，防止并行
-SpawnAgent 越过配额；深度在创建任何 relation 前固定拒绝大于 1。每个 child Run 继续直接读取冻结的
+当前实现对同一 root 的 spawn 临界区串行执行 idempotency 和 active/queued 数量检查，防止并行
+SpawnAgent 越过总量配额；深度在创建任何 relation 前固定拒绝大于 1。工具权限和 effect 不参与调度，
+write-capable child 与 read-only child 使用同一并发计数。每个 child Run 继续直接读取冻结的
 `RunBudgetPolicy`。此外，InnerAgentLoop 在普通 model round durable boundary 调用 application 提供的共享预算
 检查；AgentService 从 parent Run 与其 Delegation 对应的每个 child Session/Run 聚合 usage 和 model round，按 root
 policy 返回同一 `RunBudgetReason`。因此并发 child 在下一个边界进入现有 `paused` 路径，已完成结果不被改写。
@@ -820,7 +816,8 @@ AgentDefinition、contract hash 或 AgentService 分支；list 不返回 system_
 child task 完整文本只存在 child canonical message 和目标 child ContextView；Delegation、handle、root tree、关系
 event 与工具 schema 只包含 digest、稳定 identity 或安全 description。application control error 经过现有 redaction
 边界。child shell/path 继续使用 ToolExecutionContext；delegated external-path cap 会强制 `workspace_only=true`。
-并行写冲突由 per-root 单 write-capable child quota 预防，不在工具名或路径上增加猜测式锁。
+并行写冲突不在 spawn 边界预测或阻止；工具执行失败作为标准 ToolResult 返回触发 child 自然调整，不增加工具名、
+路径锁或 writer quota。
 
 ## 错误、恢复与诊断
 
@@ -925,7 +922,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - headless/unattended 不悬挂测试；
 - parent hard deny 不可被 child/auto/plugin 放宽的负向测试；
 - child 逐调用审批不传播到 sibling/root 的负向测试；
-- child context 不默认复制完整父 history 与敏感信息测试；
+- child 文本上下文严格只含 base/AgentDefinition instructions 与 task，不读取父 history/compaction 测试；
 - root subscription 重连、lag 和 snapshot 重建测试；
 - Host detach 不终止 child 测试；
 - unknown_outcome 不自动重放测试；

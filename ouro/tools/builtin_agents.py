@@ -118,16 +118,6 @@ def _spawn_control_tool(
                     else catalog.spawn_policy.allowed_execution_modes[0]
                 ),
             },
-            "context_message_ids": {
-                "type": "array",
-                "items": {"type": "string", "minLength": 1},
-                "maxItems": 200,
-                "uniqueItems": True,
-                "description": (
-                    "Explicit parent message IDs for an Agent configured with "
-                    "selected_messages context."
-                ),
-            },
             "resource_refs": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
@@ -177,9 +167,6 @@ def _spawn(invocation: ToolInvocation) -> ToolResult:
             description=str(arguments["description"]),
             nickname=_optional_string(arguments.get("nickname")),
             execution_mode=execution_mode,
-            context_message_ids=tuple(
-                str(item) for item in arguments.get("context_message_ids", ())
-            ),
             resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
         ),
     )

@@ -37,6 +37,7 @@ def test_spawn_schema_uses_the_run_frozen_execution_modes() -> None:
         "default": "async",
     }
     assert "delivery_policy" not in spawn.definition.parameters_schema["properties"]
+    assert "context_message_ids" not in spawn.definition.parameters_schema["properties"]
 
 
 def test_spawn_schema_defaults_to_synchronous_dispatch() -> None:

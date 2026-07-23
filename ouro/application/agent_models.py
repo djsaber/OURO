@@ -60,17 +60,16 @@ class SpawnAgentRequest(ApplicationDTO):
     execution_mode: ExecutionMode = "sync"
     lifecycle_binding: LifecycleBinding = "bound"
     unattended: bool = False
-    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
-    @field_validator("context_message_ids", "resource_refs")
+    @field_validator("resource_refs")
     @classmethod
     def validate_reference_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         normalized = tuple(item.strip() for item in value)
         if any(not item for item in normalized):
-            raise ValueError("Agent context references cannot be blank")
+            raise ValueError("Agent resource references cannot be blank")
         if len(set(normalized)) != len(normalized):
-            raise ValueError("Agent context references must be unique")
+            raise ValueError("Agent resource references must be unique")
         return normalized
 
 

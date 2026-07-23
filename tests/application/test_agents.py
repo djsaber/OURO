@@ -17,16 +17,14 @@ from ouro.core.agents import (
     AgentControlRequest,
     AgentDefinition,
     AgentSpawnPolicy,
-    ContextPolicy,
     DelegatedConstraints,
     DelegationRecord,
     ToolSelection,
 )
-from ouro.core.compaction import CompactionRecord
-from ouro.core.context import estimate_message_tokens, estimate_text_tokens
+from ouro.core.context import estimate_message_tokens
 from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
@@ -498,7 +496,6 @@ async def _services(
     tmp_path,
     *,
     spawn_policy: AgentSpawnPolicy | None = None,
-    context_policy: ContextPolicy | None = None,
 ):
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -517,18 +514,6 @@ async def _services(
         tools=tools,
         expected_revision=0,
     )
-    if context_policy is not None:
-        configured = definitions.config.snapshot()
-        reader = next(item for item in configured.definitions if item.agent_id == "reader")
-        definitions.config.update(
-            reader.__class__.model_validate(
-                {
-                    **reader.model_dump(mode="python", exclude={"contract_hash"}),
-                    "context_policy": context_policy,
-                }
-            ),
-            expected_revision=configured.revision,
-        )
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -693,7 +678,7 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_task_only_context_excludes_parent_history_and_counts_child_input(
+async def test_child_context_contains_only_task_and_counts_child_input(
     tmp_path,
 ) -> None:
     service, supervisor, store, provider = await _services(tmp_path)
@@ -727,12 +712,11 @@ async def test_task_only_context_excludes_parent_history_and_counts_child_input(
     await service.wait_agents((handle.delegation_id,))
 
     initial = provider.messages[0][0]
-    assert "Inspect only the requested target." in initial.text_content
+    assert initial.text_content == "Inspect only the requested target."
     assert "parent secret" not in initial.text_content
     assert "private plugin context" not in initial.text_content
     relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.context_message_ids == ()
-    assert relation.context_resource_refs == ()
+    assert relation.task_resource_refs == ()
     context = store.load_latest_context(handle.child_session_id)
     assert context is not None
     assert context.metrics.estimated_input_tokens >= estimate_message_tokens(
@@ -777,232 +761,6 @@ async def test_child_task_is_visible_only_in_child_canonical_context(tmp_path) -
     )
     assert sensitive_task not in public_projection
     assert "child-task-secret" not in public_projection
-    await service.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_selected_context_copies_only_explicit_safe_parent_messages(tmp_path) -> None:
-    service, supervisor, store, provider = await _services(
-        tmp_path,
-        context_policy=ContextPolicy(mode="selected_messages"),
-    )
-    first = MessageRecord.text(
-        session_id="ses_root",
-        role="user",
-        text="selected user evidence",
-        sequence=1,
-    )
-    second = MessageRecord.text(
-        session_id="ses_root",
-        role="assistant",
-        text="selected assistant evidence",
-        sequence=2,
-    )
-    unsafe = MessageRecord.text(
-        session_id="ses_root",
-        role="tool_result",
-        text="approval answer and private tool output",
-        sequence=3,
-    ).model_copy(
-        update={
-            "tool_result": ToolResultReference(
-                tool_call_id="call_private",
-                tool_name="PrivateTool",
-            )
-        }
-    )
-    for message in (first, second, unsafe):
-        store.append_message(message)
-
-    with pytest.raises(ValueError, match="plain user or assistant text"):
-        await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="host/unsafe-selected-context",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                agent_id="reader",
-                task="Unsafe selection.",
-                description="Unsafe selection",
-                context_message_ids=(unsafe.message_id,),
-            )
-        )
-
-    handle = await service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/safe-selected-context",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task="Use selected evidence.",
-            description="Selected context",
-            context_message_ids=(second.message_id, first.message_id),
-        )
-    )
-    await service.wait_agents((handle.delegation_id,))
-
-    prompt = provider.messages[0][0].text_content
-    assert "selected user evidence" in prompt
-    assert "selected assistant evidence" in prompt
-    assert "private tool output" not in prompt
-    relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.context_message_ids == (first.message_id, second.message_id)
-    await service.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_bounded_history_enforces_message_and_token_limits(tmp_path) -> None:
-    service, supervisor, store, provider = await _services(
-        tmp_path,
-        context_policy=ContextPolicy(
-            mode="bounded_history",
-            max_messages=2,
-            max_tokens=1_000,
-        ),
-    )
-    messages = [
-        MessageRecord.text(
-            session_id="ses_root",
-            role="user" if index % 2 == 0 else "assistant",
-            text=f"bounded evidence {index}",
-            sequence=index + 1,
-        )
-        for index in range(3)
-    ]
-    for message in messages:
-        store.append_message(message)
-
-    handle = await service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/bounded-context",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task="Use recent bounded evidence.",
-            description="Bounded context",
-        )
-    )
-    await service.wait_agents((handle.delegation_id,))
-
-    relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.context_message_ids == (
-        messages[1].message_id,
-        messages[2].message_id,
-    )
-    prompt = provider.messages[0][0].text_content
-    assert "bounded evidence 0" not in prompt
-    encoded = prompt.split("<ouro_delegated_context>", 1)[1].split("</ouro_delegated_context>", 1)[
-        0
-    ]
-    assert estimate_text_tokens(encoded) <= 1_000
-    await service.close()
-    await supervisor.shutdown()
-
-    limited_service, limited_supervisor, limited_store, limited_provider = await _services(
-        tmp_path / "token-limited",
-        context_policy=ContextPolicy(
-            mode="bounded_history",
-            max_messages=10,
-            max_tokens=80,
-        ),
-    )
-    limited_store.append_message(
-        MessageRecord.text(
-            session_id="ses_root",
-            role="user",
-            text="x" * 2_000,
-            sequence=1,
-        )
-    )
-    limited = await limited_service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/token-bounded-context",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task="Do not exceed the context budget.",
-            description="Token bounded context",
-        )
-    )
-    await limited_service.wait_agents((limited.delegation_id,))
-    limited_relation = limited_store.load_delegation("ses_root", limited.delegation_id)
-    assert limited_relation.context_message_ids == ()
-    assert "x" * 100 not in limited_provider.messages[0][0].text_content
-    await limited_service.close()
-    await limited_supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_summary_context_uses_only_a_safe_active_compaction(tmp_path) -> None:
-    service, supervisor, store, provider = await _services(
-        tmp_path,
-        context_policy=ContextPolicy(mode="summary"),
-    )
-    source = MessageRecord.text(
-        session_id="ses_root",
-        role="user",
-        text="long safe source text",
-        sequence=1,
-    )
-    store.append_message(source)
-    compaction = CompactionRecord(
-        session_id="ses_root",
-        strategy_id="test.safe",
-        trigger="manual",
-        summary="bounded safe summary",
-        covered_message_ids=[source.message_id],
-        source_digest="sha256:" + "a" * 64,
-    )
-    store.append_compaction(compaction)
-    store.activate_compaction("ses_root", compaction.compaction_id)
-
-    handle = await service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/summary-context",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task="Use the safe summary.",
-            description="Summary context",
-        )
-    )
-    await service.wait_agents((handle.delegation_id,))
-
-    prompt = provider.messages[0][0].text_content
-    assert "bounded safe summary" in prompt
-    assert "long safe source text" not in prompt
-    relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.context_compaction_id == compaction.compaction_id
-
-    private = MessageRecord.text(
-        session_id="ses_root",
-        role="system_synthetic",
-        text="private plugin summary source",
-        sequence=2,
-    )
-    store.append_message(private)
-    unsafe_compaction = CompactionRecord(
-        session_id="ses_root",
-        strategy_id="test.unsafe",
-        trigger="manual",
-        summary="summary that could contain private plugin state",
-        covered_message_ids=[private.message_id],
-        source_digest="sha256:" + "b" * 64,
-    )
-    store.append_compaction(unsafe_compaction)
-    store.activate_compaction("ses_root", unsafe_compaction.compaction_id)
-    with pytest.raises(ValueError, match="non-delegable tool or synthetic context"):
-        await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="host/unsafe-summary-context",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                agent_id="reader",
-                task="Do not copy private summary state.",
-                description="Unsafe summary context",
-            )
-        )
     await service.close()
     await supervisor.shutdown()
 
@@ -2009,7 +1767,7 @@ async def test_tree_projects_missing_child_run_as_recoverable(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_enforces_single_write_capable_child_per_root(tmp_path) -> None:
+async def test_spawn_quota_does_not_depend_on_child_tool_effects(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     tools = _tools()
     service.definitions.create(
@@ -2042,19 +1800,22 @@ async def test_spawn_enforces_single_write_capable_child_per_root(tmp_path) -> N
         )
     )
 
-    with pytest.raises(SessionBusyError, match="write-capable child quota"):
-        await service.spawn_agent(
-            SpawnAgentRequest(
-                request_id="host/second-writer",
-                parent_session_id="ses_root",
-                parent_run_id="run_parent",
-                agent_id="writer",
-                task="Write concurrently.",
-                description="Second writer",
-            )
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/second-writer",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="writer",
+            task="Write concurrently.",
+            description="Second writer",
         )
+    )
 
-    assert len(store.list_delegations("ses_root")) == 1
+    relations = store.list_delegations("ses_root")
+    assert len(relations) == 2
+    spawned = next(item for item in relations if item.delegation_id == handle.delegation_id)
+    assert spawned.constraints.allow_write is True
+    await service.wait_agents((handle.delegation_id,))
     await service.close()
     await supervisor.shutdown()
 

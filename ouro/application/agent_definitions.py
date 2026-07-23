@@ -14,7 +14,6 @@ from ouro.core.agents import (
     AgentCatalogEntry,
     AgentCatalogSnapshot,
     AgentDefinition,
-    ContextPolicy,
     EffectiveToolRef,
     ToolSelection,
 )
@@ -36,7 +35,6 @@ GENERAL_AGENT_DEFINITION = AgentDefinition(
         "a concise result with evidence, verification, and unresolved questions."
     ),
     tool_selection=ToolSelection(mode="all"),
-    context_policy=ContextPolicy(mode="task_only"),
     can_spawn=False,
 )
 
@@ -126,7 +124,6 @@ class AgentDefinitionService:
             description=description,
             system_prompt=system_prompt,
             tool_selection=tool_selection,
-            context_policy=current.context_policy,
             model=current.model,
             can_spawn=current.can_spawn,
             default_budget=current.default_budget,

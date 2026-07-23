@@ -100,7 +100,7 @@ sync 使用原 SpawnAgent ToolBatchCall 中的 durable `AgentWaitRequest`：父 
 Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。async 复用 Host synthetic input
 队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
 保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
-request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child 和一个 write-capable child；
+request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child；
 child 的工具、workspace、审批与 RunBudgetPolicy 只能从父级能力上限收紧。
 
 循环交互 CLI 作为长期运行 Host，在 sync parent 返回 `waiting_child` 后不会把它当成终态。它先建立现有
@@ -108,33 +108,35 @@ AgentTree 订阅，再消费 AgentService 的 root interaction inbox，展示 ch
 并用完整 child identity 路由批准、拒绝、参数修改、终止或回答。决议提交后继续由 canonical subscription 驱动，
 直到原父 Run 恢复或终止；CLI 不读取 child Store、不轮询，也不建立第二套审批状态机。
 
-root 配额不引入第二套调度或预算引擎。AgentService 在 per-root spawn 临界区内原子检查 active/queued child 数和
-单 writer 上限，首版在 relation 创建前拒绝 depth > 1。child 直接复用冻结的 `RunBudgetPolicy`；InnerAgentLoop
+root 配额不引入第二套调度或预算引擎。AgentService 在 per-root spawn 临界区内原子检查 active/queued child 数，
+首版在 relation 创建前拒绝 depth > 1。工具 effect 与权限不参与调度配额；child 直接复用冻结的
+`RunBudgetPolicy`；InnerAgentLoop
 每次 model round durable boundary 先执行本 Run 检查，再由 application callback 聚合 parent Run 与其所有 child
 Session 的 Run usage/model rounds，返回相同 `RunBudgetReason` 并进入现有 paused 路径。聚合以 Run identity 去重，
 所以 child follow-up/resume 各计一次而不会重复计算旧 Run。AgentTree 的 root usage 同样从这些 canonical Run
 聚合。Supervisor 继续使用原跨 Session FIFO；waiting 状态不占 execution permit，已完成 child result 不受后续
 root budget 耗尽影响。
 
-child 上下文沿用 canonical Message/Compaction/ContextView 管道。AgentDefinition 的默认 `context_policy=task_only`；
-`summary` 只读取来源全为纯 user/assistant 文本的 active compaction，`selected_messages` 只读取显式且同父 Session
-可达的消息，`bounded_history` 同时受消息数和 token 上限约束。工具结果、工具参数、reasoning/provider state 和
-system/plugin synthetic context 不会因父子关系自动复制。投影以 untrusted evidence 追加到 child 首条
-`user` task；Agent 专用 system prompt 仍位于 base instructions 之后，且两者都进入同一 ContextView
-预算，不进入 SpawnAgent 描述、根树或关系事件。
+child 不继承或投影父 Session 的消息、压缩摘要、工具结果、reasoning/provider state 或
+system/plugin synthetic context，也不接受 canonical message id。它的文本上下文固定由 OURO
+platform/base system instructions、冻结的 `AgentDefinition.system_prompt` 和 `SpawnAgent.task` 组成：
+前两者形成 system instructions，task 作为 child 第一条 canonical `user` message。主智能体负责在 task
+中提供完成委派所需的全部文本上下文；Agent 专用 system prompt 与 task 都进入 child 自己的 ContextView
+预算，但不进入 SpawnAgent 描述、根树或关系事件。
 
 资源引用同样不隐式继承。ResourceService 在源 Session mutation boundary 内验证不可变内容，再显式附加带来源的
 child 引用；child 输出资源进入 List、sync SpawnAgent result 或 async result 的父 canonical message 前，必须从 child 到 parent
-重新验证并复制引用。Delegation 只保存 message/resource identity 与 digest，不复制父 prompt、资源 blob 或 child
-最终文本。
+重新验证并复制引用。Delegation 只保存 child 初始 message identity、task digest 和显式 resource identity，
+不复制父 prompt、资源 blob 或 child 最终文本。
 
 Agent control names 是 ToolRegistry 的产品保留名称；仅 `source=builtin` 且带 Host marker 的 Run overlay 可注册，
 plugin/MCP 不能通过伪造 metadata 覆盖。AgentService 只属于 application，并由 LocalApplication 组合；tools、plugins、
 SDK 和 CLI command 不直接导入其实现，PluginContext 也不暴露调度 handle。AgentDefinition 的 `source/editable` 只在
 管理 DTO 中存在：list 隐藏 system_prompt，显式 detail/edit 才返回；执行用 Core AgentDefinition 不按来源分支。
 child task 不进入 Delegation 文本、handle、根树或关系事件，application control error 继续经过统一 redaction。
-child shell/path 仍走 ToolExecutionContext；不允许 external paths 时 Runtime 强制 `workspace_only=true`。并行写冲突
-由 per-root 单 write-capable child 配额在 spawn 边界拒绝。
+child shell/path 仍走 ToolExecutionContext；不允许 external paths 时 Runtime 强制 `workspace_only=true`。多个
+write-capable child 可在总 active child 配额内并发；写工具冲突作为各 child 的普通 ToolResult 返回，由各自模型
+在现有循环中调整，不把工具权限提升为调度概念。
 
 Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复先由现有 Session recovery 把失去 live job 的
 active Run 转为 recoverable，再由 `AgentRecoveryService` 双向核对 child Session、Delegation 和 child Run provenance。

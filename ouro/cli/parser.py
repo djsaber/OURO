@@ -158,12 +158,6 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     spawn.add_argument("--description", required=True)
     spawn.add_argument("--request-id", required=True)
     spawn.add_argument("--nickname")
-    spawn.add_argument(
-        "--context-message-id",
-        dest="context_message_ids",
-        action="append",
-        default=[],
-    )
     spawn.add_argument("--resource-id", dest="resource_ids", action="append", default=[])
     _add_agent_output_args(spawn)
 

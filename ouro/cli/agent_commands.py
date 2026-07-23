@@ -126,7 +126,6 @@ async def _runtime_command(args: argparse.Namespace) -> tuple[dict[str, Any], st
                     description=args.description,
                     nickname=args.nickname,
                     execution_mode="sync",
-                    context_message_ids=tuple(args.context_message_ids),
                     resource_refs=tuple(args.resource_ids),
                     unattended=True,
                 )

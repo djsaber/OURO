@@ -97,8 +97,9 @@ child event stream 都是 application 投影，Host refresh/detach 不改变 chi
 循环交互 Host 在 sync parent 等待 child 时直接消费该 interaction inbox，可批准、拒绝或修改 child 工具调用，
 也可回答 child AskUser；所有决议都按 child session/run/tool call/request identity 精确路由，完成后继续原父 Run。
 
-首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child 和一个 write-capable child。child 能力
-只能从 parent 的工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
+首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child。工具 effect 与权限不参与并发调度；
+多个 write-capable child 可同时运行，工具冲突通过普通失败结果回到各自模型。child 能力只能从 parent 的
+工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
 转 recoverable 并对账半提交 relation/result/delivery，但不会自动重放未知外部副作用。
 
 ### Skills 与扩展框架

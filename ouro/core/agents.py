@@ -16,7 +16,6 @@ from ouro.core.run_budget import RunBudgetPolicy
 
 AgentSource = Literal["builtin", "user"]
 ToolSelectionMode = Literal["all", "selected"]
-ContextMode = Literal["task_only", "summary", "selected_messages", "bounded_history"]
 ExecutionMode = Literal["sync", "async"]
 LifecycleBinding = Literal["bound", "detached"]
 SpawnState = Literal["requested", "child_created", "submitted", "failed"]
@@ -67,24 +66,6 @@ class ToolSelection(OuroModel):
         return self
 
 
-class ContextPolicy(OuroModel):
-    mode: ContextMode = "task_only"
-    max_messages: int | None = Field(default=None, ge=1, le=200)
-    max_tokens: int | None = Field(default=None, ge=1, le=200_000)
-
-    @model_validator(mode="after")
-    def validate_bounds(self) -> Self:
-        if self.mode == "bounded_history" and (
-            self.max_messages is None or self.max_tokens is None
-        ):
-            raise ValueError("bounded_history requires max_messages and max_tokens")
-        if self.mode != "bounded_history" and (
-            self.max_messages is not None or self.max_tokens is not None
-        ):
-            raise ValueError("history bounds are only valid for bounded_history")
-        return self
-
-
 class AgentDefinition(OuroModel):
     schema_version: int = SCHEMA_VERSION
     agent_id: str
@@ -92,7 +73,6 @@ class AgentDefinition(OuroModel):
     description: str = Field(min_length=1, max_length=500)
     system_prompt: str = Field(default="", max_length=20_000)
     tool_selection: ToolSelection = Field(default_factory=ToolSelection)
-    context_policy: ContextPolicy = Field(default_factory=ContextPolicy)
     model: str | None = None
     can_spawn: bool = False
     default_budget: RunBudgetPolicy = Field(default_factory=RunBudgetPolicy)
@@ -309,10 +289,7 @@ class DelegationRecord(OuroModel):
     task_description: str = Field(min_length=1, max_length=500)
     initial_message_id: str | None = None
     prompt_digest: str = Field(min_length=1, max_length=256)
-    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
-    context_resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
-    context_compaction_id: str | None = None
-    context_digest: str | None = Field(default=None, min_length=1, max_length=256)
+    task_resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
     execution_mode: ExecutionMode = "sync"
     lifecycle_binding: LifecycleBinding = "bound"
     delivery_policy: DeliveryPolicy = "notify_only"
@@ -354,12 +331,8 @@ class DelegationRecord(OuroModel):
                 raise ValueError("delegation result child session does not match relation")
             if self.current_child_run_id != self.result.child_run_id:
                 raise ValueError("delegation result child run does not match relation")
-        for references, label in (
-            (self.context_message_ids, "context message ids"),
-            (self.context_resource_refs, "context resource refs"),
-        ):
-            if len(set(references)) != len(references):
-                raise ValueError(f"delegation {label} must be unique")
+        if len(set(self.task_resource_refs)) != len(self.task_resource_refs):
+            raise ValueError("delegation task resource refs must be unique")
         return self
 
 
@@ -408,19 +381,14 @@ class AgentControlRequest(OuroModel):
     message: str | None = Field(default=None, max_length=20_000)
     input_mode: Literal["steer", "follow_up"] = "steer"
     reason: str | None = Field(default=None, max_length=500)
-    context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
     @model_validator(mode="after")
     def validate_action(self) -> Self:
-        for references, label in (
-            (self.context_message_ids, "context message ids"),
-            (self.resource_refs, "resource refs"),
-        ):
-            if any(not item.strip() for item in references):
-                raise ValueError(f"Agent {label} cannot be blank")
-            if len(set(references)) != len(references):
-                raise ValueError(f"Agent {label} must be unique")
+        if any(not item.strip() for item in self.resource_refs):
+            raise ValueError("Agent resource refs cannot be blank")
+        if len(set(self.resource_refs)) != len(self.resource_refs):
+            raise ValueError("Agent resource refs must be unique")
         if self.action == "spawn":
             if not self.agent_id or not self.task or not self.task.strip():
                 raise ValueError("spawn control requires agent_id and task")
@@ -462,7 +430,6 @@ __all__ = [
     "AgentSpawnPolicy",
     "AgentWaitRequest",
     "AgentWaitResolution",
-    "ContextPolicy",
     "DelegatedConstraints",
     "DelegationRecord",
     "DelegationResult",

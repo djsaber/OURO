@@ -38,6 +38,7 @@ def test_agent_definition_contract_is_stable_and_content_addressed() -> None:
         )
     assert "source" not in AgentDefinition.model_fields
     assert "editable" not in AgentDefinition.model_fields
+    assert "context_policy" not in AgentDefinition.model_fields
 
 
 def test_agent_catalog_snapshot_freezes_definition_and_tool_contract() -> None:
@@ -118,6 +119,8 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         definition=definition,
     )
     assert requested.child_session_id is None
+    assert "context_message_ids" not in DelegationRecord.model_fields
+    assert "context_compaction_id" not in DelegationRecord.model_fields
 
     with pytest.raises(ValidationError, match="child identity"):
         requested.model_copy(update={"spawn_state": "child_created"}).__class__.model_validate(

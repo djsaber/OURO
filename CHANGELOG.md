@@ -39,6 +39,12 @@ This project records user-visible and framework-contract changes in this file.
   ToolCall with the child result, while `SpawnAgent(async)` returns a handle and automatically
   delivers the result at the next safe boundary. The model-facing `WaitAgents` tool and configurable
   delivery policy were removed.
+- Subagent scheduling now limits only the number of active children per root; tool effects and write
+  capability no longer create a separate writer quota. Concurrent write failures flow back as
+  ordinary tool results so each child can adapt.
+- `SpawnAgent` no longer accepts canonical message ids or projects parent history and compaction
+  summaries. A child's text context is its frozen AgentDefinition system prompt plus the
+  parent-generated task, under the OURO platform instructions.
 - Session approval policy now resolves Host-controlled permissions uniformly for built-in, plugin,
   and MCP tools: `inherit` uses the tool mode, while `auto`, `approval`, and `deny` apply globally.
 - Trusted plugin tool permissions now use the same semantics as built-ins without source-based

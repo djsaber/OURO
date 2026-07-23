@@ -26,7 +26,7 @@
 当前代码已经完成不依赖专用 UI 的首版框架闭环：builtin/custom AgentDefinition 与 Run 级冻结目录、
 Local/SQLite durable Delegation、独立 child Session/Run、Host AgentService、模型控制工具、sync durable
 join、async exact-once 交付、follow-up/steer/interrupt、root tree 与 HITL 汇聚路由、bound cascade、启动
-reconciliation，以及工具执行契约冻结、单 writer 和父子 RunBudgetPolicy 收敛。child 继续复用原有
+reconciliation，以及工具执行契约冻结和父子 RunBudgetPolicy 收敛。child 继续复用原有
 RuntimeService、InnerAgentLoop、ToolExecutor、SessionStore 和 RuntimeSupervisor，没有第二套执行内核。
 
 里程碑 E 的 Host-neutral root subtree projection 已实现：快照包含 relation edge、root/child usage 与 budget、pending
@@ -60,7 +60,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 8. child interaction 保存在 child，根 Host 只做汇聚投影和准确路由。
 9. 权限先求 hard capability intersection，再应用 auto/approval/deny。
 10. async result 使用 Host system_synthetic provenance 和 exact-once delivery。
-11. 首版 max_depth=1、bound 默认、detached 禁用、并行 writer 限制为 1。
+11. 首版 max_depth=1、bound 默认、detached 禁用；并发只受 root active child 总量限制。
 12. 首版不承诺崩溃后自动重启旧 child 执行。
 13. child Run 是执行状态唯一权威；Delegation 不镜像 running/waiting/terminal 状态。
 14. SpawnAgent(sync) 的 durable 请求保存在原 ToolBatchCall，不新增重复 Run checkpoint。
@@ -181,7 +181,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] 新增有界 AgentCatalogSnapshot、definition compatibility、missing_tool_names 和 catalog contract hash。
 - [x] source/editable 只存在于管理 DTO，不进入 contract hash、prompt、capability 或运行分派条件。
 - [x] 新增 DelegationRecord、SpawnState、ControlState、ExecutionMode、LifecycleBinding；不复制 child Run status。
-- [x] 新增显式 DelegatedConstraints、ContextPolicy；复用 RunBudgetPolicy，不新增 AgentBudget/通用 capability blob。
+- [x] 新增显式 DelegatedConstraints；复用 RunBudgetPolicy，不新增 AgentBudget/通用 capability blob。
 - [x] 新增 DelegationResult 与 ResultDelivery。
 - [x] 新增 AgentHandle、AgentWaitRequest/Resolution、completion condition；请求保存在 ToolBatchCall。
 - [x] 为全部类型添加严格 Pydantic validation 和 schema version。
@@ -567,9 +567,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### G3. 上下文与资源
 
-- [x] task_only 默认。
-- [x] summary/selected_messages/bounded_history。
-- [x] bounded_history 强制 message/token limit。
+- [x] child 文本上下文固定为 base instructions、AgentDefinition system_prompt 与 SpawnAgent task。
+- [x] SpawnAgent 不接受 canonical message ids，父 history/compaction 不投影到 child。
 - [x] resource refs 验证 parent/child 可达性并显式复制引用。
 - [x] 不自动复制 credential、approval answer、插件私有 context。
 - [x] child result resource refs 在进入父 Session 前重新验证。
@@ -599,7 +598,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] current config 漂移不改写旧执行；Run AgentCatalogSnapshot、Delegation definition 与 child contract mismatch 有
   fail-closed diagnostic。
 - [x] workspace path 和 shell 继续走现有 ToolExecutionContext。
-- [x] 并行 writer 冲突策略明确。
+- [x] 并行写冲突通过标准工具失败结果回到 child，不与调度配额耦合。
 - [x] unknown_outcome 不自动重放。
 - [x] root delete/archive 明确显示 descendant scope。
 
@@ -836,7 +835,8 @@ agent_id/name/description；集中限制 definition 数量和字段长度。
 
 风险：复制父历史或回灌 child 中间日志使主上下文膨胀。
 
-控制：task_only 默认、显式选取 context、根 tree 只投影状态、父上下文只接收结构化结果。
+控制：child 文本上下文固定为 base/AgentDefinition instructions 与 task，不提供父消息选择或摘要投影；根 tree
+只投影状态，父上下文只接收结构化结果。
 
 ### 插件耦合
 
