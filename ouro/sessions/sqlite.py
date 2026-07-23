@@ -29,6 +29,7 @@ from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.catalog import (
+    catalog_entry_from_session,
     catalog_entry_from_snapshot,
     sort_catalog_entries,
 )
@@ -289,12 +290,15 @@ class SQLiteSessionStore:
 
     def find_delegation_by_child_session(
         self,
+        root_session_id: str,
         child_session_id: str,
     ) -> DelegationRecord | None:
         with self._read_connection() as connection:
+            self._require_session(connection, root_session_id)
             row = connection.execute(
-                "SELECT payload FROM delegations WHERE child_session_id = ?",
-                (child_session_id,),
+                "SELECT payload FROM delegations "
+                "WHERE root_session_id = ? AND child_session_id = ?",
+                (root_session_id, child_session_id),
             ).fetchone()
             return (
                 None
@@ -318,27 +322,6 @@ class SQLiteSessionStore:
                 None
                 if row is None
                 else self._validate_model(DelegationRecord, row[0], "delegation by idempotency key")
-            )
-
-    def load_incomplete_delegations(self) -> list[DelegationRecord]:
-        with self._read_connection() as connection:
-            return self._load_models(
-                connection,
-                "SELECT payload FROM delegations "
-                "WHERE spawn_state NOT IN ('submitted', 'failed') "
-                "ORDER BY created_at, delegation_id",
-                (),
-                DelegationRecord,
-            )
-
-    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]:
-        with self._read_connection() as connection:
-            return self._load_models(
-                connection,
-                "SELECT payload FROM delegations WHERE delivery_status = 'pending' "
-                "ORDER BY created_at, delegation_id",
-                (),
-                DelegationRecord,
             )
 
     def create_session_snapshot(
@@ -374,27 +357,62 @@ class SQLiteSessionStore:
             if cursor.rowcount == 0:
                 raise FileNotFoundError(session.session_id)
 
-    def trash_session(self, session_id: str) -> str:
-        with self.session_mutation(session_id):
-            snapshot = self.load_session(session_id)
-            references = self.load_resource_references(session_id)
+    def trash_session_tree(
+        self,
+        root_session_id: str,
+        session_ids: tuple[str, ...],
+    ) -> str:
+        _validated_record_id(root_session_id, kind="session")
+        normalized = tuple(dict.fromkeys(session_ids))
+        if not normalized:
+            raise ValueError("session tree cannot be empty")
+        for session_id in normalized:
+            _validated_record_id(session_id, kind="session")
+        with self.session_mutation(root_session_id):
+            connection = self._transaction_connection()
+            for session_id in normalized:
+                self._require_session(connection, session_id)
             trash_id = new_id("trash")
             payload = json.dumps(
                 {
-                    "snapshot": snapshot.model_dump(mode="json"),
-                    "resource_references": [
-                        reference.model_dump(mode="json") for reference in references
-                    ],
+                    "schema_version": 1,
+                    "root_session_id": root_session_id,
+                    "session_ids": list(normalized),
+                    "records": {
+                        table: self._raw_trash_tree_rows(
+                            connection,
+                            table,
+                            session_ids=(
+                                (root_session_id,)
+                                if table == "delegations"
+                                else normalized
+                            ),
+                            key=("root_session_id" if table == "delegations" else "session_id"),
+                        )
+                        for table in (
+                            "sessions",
+                            "messages",
+                            "events",
+                            "runs",
+                            "compactions",
+                            "latest_contexts",
+                            "resource_references",
+                            "delegations",
+                        )
+                    },
                 },
                 ensure_ascii=False,
             )
-            connection = self._transaction_connection()
             connection.execute(
                 "INSERT INTO trashed_sessions(trash_id, session_id, trashed_at, payload) "
                 "VALUES(?, ?, ?, ?)",
-                (trash_id, session_id, str(utc_now()), payload),
+                (trash_id, root_session_id, str(utc_now()), payload),
             )
-            connection.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
+            placeholders = ", ".join("?" for _ in normalized)
+            connection.execute(
+                f"DELETE FROM sessions WHERE session_id IN ({placeholders})",  # noqa: S608
+                normalized,
+            )
             return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
@@ -737,14 +755,36 @@ class SQLiteSessionStore:
     def _build_catalog(self) -> SessionIndex:
         entries = []
         for session in self.list_sessions():
-            snapshot = self.load_runtime_session(session.session_id)
-            entries.append(
-                catalog_entry_from_snapshot(
-                    snapshot,
-                    resource_count=len(self.load_resource_references(session.session_id)),
+            try:
+                snapshot = self.load_runtime_session(session.session_id)
+            except PersistenceError:
+                entries.append(catalog_entry_from_session(session, health="corrupt"))
+            else:
+                entries.append(
+                    catalog_entry_from_snapshot(
+                        snapshot,
+                        resource_count=len(self.load_resource_references(session.session_id)),
+                    )
                 )
-            )
         return SessionIndex(sessions=sort_catalog_entries(entries))
+
+    @staticmethod
+    def _raw_trash_tree_rows(
+        connection: sqlite3.Connection,
+        table: str,
+        *,
+        session_ids: tuple[str, ...],
+        key: str,
+    ) -> dict[str, object]:
+        placeholders = ", ".join("?" for _ in session_ids)
+        cursor = connection.execute(
+            f"SELECT * FROM {table} WHERE {key} IN ({placeholders})",  # noqa: S608
+            session_ids,
+        )
+        return {
+            "columns": [item[0] for item in cursor.description],
+            "rows": [list(row) for row in cursor.fetchall()],
+        }
 
     def _load_page(
         self,

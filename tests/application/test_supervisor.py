@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -8,7 +9,8 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.supervisor_models import ShutdownPolicy
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.errors import SessionBusyError
+from ouro.core.agents import AgentCatalogSnapshot
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
@@ -128,6 +130,38 @@ async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
 
     await supervisor.shutdown()
     assert resource.closed is True
+
+
+@pytest.mark.asyncio
+async def test_supervisor_quarantines_incompatible_runtime_without_blocking_startup(
+    tmp_path,
+) -> None:
+    runtime = _runtime(tmp_path, FauxProvider())
+    session = SessionRecord(title="Old runtime")
+    run = RunRecord(
+        session_id=session.session_id,
+        run_id="run_old_contract",
+        status="completed",
+        agent_catalog=AgentCatalogSnapshot(),
+    )
+    runtime.store.create_session(session)
+    runtime.store.save_run(run)
+    payload = json.loads(run.model_dump_json())
+    payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
+    run_path = (
+        runtime.store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
+    )
+    run_path.write_text(json.dumps(payload), encoding="utf-8")
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+
+    started = await supervisor.start()
+
+    assert [item.code for item in started.diagnostics] == ["session_runtime_incompatible"]
+    with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+        await supervisor.submit("must remain strict", session_id=session.session_id)
+    handle = await supervisor.submit("new session still works")
+    assert (await supervisor.wait(handle)).status == "completed"
+    await supervisor.shutdown()
 
 
 @pytest.mark.asyncio

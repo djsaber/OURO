@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import json
+import sqlite3
+
 import pytest
 
 from ouro.application.session_models import SessionCatalogQuery
 from ouro.application.sessions import SessionService
 from ouro.core.agents import (
+    AgentCatalogSnapshot,
     AgentDefinition,
     DelegationRecord,
     DelegationResult,
@@ -481,20 +486,136 @@ def test_replay_is_a_sorted_read_only_event_projection(tmp_path) -> None:
     ]
 
 
-def test_trash_rejects_unfinished_session_and_moves_idle_session_atomically(tmp_path) -> None:
+def test_trash_discards_unfinished_durable_run_and_moves_session_tree_atomically(
+    tmp_path,
+) -> None:
     store, sessions = _service(tmp_path)
-    idle = sessions.create(title="Idle").session
     running = SessionRecord(title="Running", status="running", active_run_id="run_active")
     store.create_session(running)
     store.save_run(RunRecord(session_id=running.session_id, run_id="run_active", status="running"))
 
-    with pytest.raises(SessionBusyError, match="unfinished work"):
-        sessions.trash(running.session_id)
+    result = sessions.trash(running.session_id)
 
-    result = sessions.trash(idle.session_id)
+    assert result.session_ids == (running.session_id,)
+    assert not (store.sessions_dir / running.session_id).exists()
+    assert (
+        store.trash_sessions_dir
+        / result.trash_id
+        / "sessions"
+        / running.session_id
+        / "session.json"
+    ).exists()
 
-    assert not (store.sessions_dir / idle.session_id).exists()
-    assert (store.trash_sessions_dir / result.trash_id / "session.json").exists()
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    session = SessionRecord(title="Old runtime")
+    run = RunRecord(
+        session_id=session.session_id,
+        run_id="run_old_contract",
+        status="completed",
+        agent_catalog=AgentCatalogSnapshot(),
+    )
+    store.create_session(session)
+    store.save_run(run)
+    payload = json.loads(run.model_dump_json())
+    payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
+    if backend == "files":
+        run_path = store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
+        run_path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        with sqlite3.connect(store.database) as connection:
+            connection.execute(
+                "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
+                (json.dumps(payload), session.session_id, run.run_id),
+            )
+
+    with pytest.raises(PersistenceError, match="agent catalog contract hash"):
+        store.load_runtime_session(session.session_id)
+
+    result = sessions.trash(session.session_id)
+
+    assert result.session_ids == (session.session_id,)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(session.session_id)
+
+
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backend) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    root = SessionRecord(session_id="ses_old_root")
+    child = SessionRecord(
+        session_id="ses_old_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_old_contract",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    relation = store.create_delegation(
+        DelegationRecord(
+            delegation_id=child.delegation_id,
+            idempotency_key="old/delegation",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            parent_run_id="run_old_parent",
+            agent_id="general",
+            task_description="Old child",
+            prompt_digest="sha256:old-child",
+            definition=AgentDefinition(
+                agent_id="general",
+                name="General",
+                description="Old child",
+            ),
+        )
+    )
+    payload = relation.model_dump(mode="json")
+    payload.update(
+        {
+            "parent_tool_call_id": "call_old",
+            "execution_mode": "async",
+            "delivery_policy": "notify_only",
+        }
+    )
+    if backend == "files":
+        relation_path = (
+            store.sessions_dir
+            / root.session_id
+            / "delegations"
+            / f"{relation.delegation_id}.json"
+        )
+        relation_path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        with sqlite3.connect(store.database) as connection:
+            connection.execute(
+                "UPDATE delegations SET payload = ? WHERE delegation_id = ?",
+                (json.dumps(payload), relation.delegation_id),
+            )
+
+    with pytest.raises(PersistenceError, match="async child requires next_boundary"):
+        store.list_delegations(root.session_id)
+
+    result = sessions.trash(root.session_id)
+
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(root.session_id)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(child.session_id)
+    assert set(result.session_ids) == {root.session_id, child.session_id}
 
 
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
@@ -581,18 +702,97 @@ def test_root_archive_and_trash_preserve_agent_descendant_scope(tmp_path, backen
     store.save_session(child.model_copy(update={"status": "idle", "active_run_id": None}))
     assert sessions.set_archived(root.session_id, True).session.archived is True
 
-    with pytest.raises(SessionBusyError, match="canonical Agent descendant"):
-        sessions.trash(root.session_id)
-    with pytest.raises(SessionBusyError, match="belongs to Delegation"):
-        sessions.trash(child.session_id)
+    result = sessions.trash(child.session_id)
 
-    assert store.load_session_record(root.session_id).archived is True
-    assert store.load_session_record(child.session_id).session_kind == "subagent"
-    assert store.load_delegation(root.session_id, relation.delegation_id) == relation
+    assert set(result.session_ids) == {root.session_id, child.session_id}
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(root.session_id)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(child.session_id)
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
-def test_trash_preserves_orphan_subagent_for_reconciliation(tmp_path, backend: str) -> None:
+def test_trash_tree_refuses_concurrent_live_owner_without_partial_removal(
+    tmp_path,
+    backend: str,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    root = SessionRecord(session_id="ses_live_root")
+    child = SessionRecord(
+        session_id="ses_live_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_live_child",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    live_lock = store.acquire_session_lock(child.session_id, "run_live")
+    assert live_lock is not None
+
+    try:
+        with pytest.raises(SessionBusyError, match="live runtime owns"):
+            sessions.trash(root.session_id)
+    finally:
+        live_lock.release()
+
+    assert {record.session_id for record in store.list_sessions()} == {
+        root.session_id,
+        child.session_id,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+async def test_stop_and_trash_aborts_live_tree_before_atomic_removal(
+    tmp_path,
+    backend: str,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    root = SessionRecord(
+        session_id="ses_running_root",
+        status="running",
+        active_run_id="run_running_root",
+        last_run_id="run_running_root",
+    )
+    run = RunRecord(
+        run_id="run_running_root",
+        session_id=root.session_id,
+        status="running",
+    )
+    store.create_session(root)
+    store.save_run(run)
+    live_lock = store.acquire_session_lock(root.session_id, run.run_id)
+    assert live_lock is not None
+
+    async def release_after_abort() -> None:
+        while store.load_run(root.session_id, run.run_id).status != "aborted":
+            await asyncio.sleep(0.01)
+        live_lock.release()
+
+    owner = asyncio.create_task(release_after_abort())
+    result = await sessions.stop_and_trash(root.session_id)
+    await owner
+
+    assert result.session_ids == (root.session_id,)
+    with pytest.raises(FileNotFoundError):
+        store.load_session_record(root.session_id)
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_trash_orphan_subagent_removes_its_complete_root_tree(tmp_path, backend: str) -> None:
     store = (
         LocalSessionStore(tmp_path / "files")
         if backend == "files"
@@ -611,7 +811,7 @@ def test_trash_preserves_orphan_subagent_for_reconciliation(tmp_path, backend: s
     store.create_session(root)
     store.create_session(child)
 
-    with pytest.raises(SessionBusyError, match="preserve it for relation reconciliation"):
-        sessions.trash(child.session_id)
+    result = sessions.trash(child.session_id)
 
-    assert store.load_session_record(child.session_id) == child
+    assert set(result.session_ids) == {root.session_id, child.session_id}
+    assert store.list_sessions() == []

@@ -30,7 +30,7 @@ from ouro.application.supervisor_models import (
 )
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
-from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
+from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
@@ -193,8 +193,30 @@ class RuntimeSupervisor:
                 await resource.start()
                 self._started_resources.append(resource)
             recovered: list[RuntimeStatusSnapshot] = []
+            diagnostics: list[Diagnostic] = []
             for session in self.store.list_sessions():
-                snapshot = self.runtime.session_recovery.recover_runtime(session.session_id)
+                try:
+                    snapshot = self.runtime.session_recovery.recover_runtime(session.session_id)
+                except PersistenceError as exc:
+                    diagnostics.append(
+                        Diagnostic(
+                            code="session_runtime_incompatible",
+                            severity="warning",
+                            component="runtime.recovery",
+                            message=(
+                                f"Session {session.session_id} was excluded from runtime recovery "
+                                f"because its persisted execution data is incompatible: {exc}"
+                            ),
+                            session_id=session.session_id,
+                            recoverable=True,
+                            suggested_action=(
+                                "Inspect the retained data or remove the session with "
+                                f"`ouro session remove {session.session_id}`."
+                            ),
+                            metadata={"error_type": type(exc).__name__},
+                        )
+                    )
+                    continue
                 for run in snapshot.runs:
                     if run.status == "recoverable":
                         recovered.append(
@@ -216,7 +238,10 @@ class RuntimeSupervisor:
             self._started_resources.clear()
             raise
         self._started = True
-        return SupervisorStartResult(recovered=tuple(recovered))
+        return SupervisorStartResult(
+            recovered=tuple(recovered),
+            diagnostics=tuple(diagnostics),
+        )
 
     async def submit(
         self,

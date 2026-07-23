@@ -78,7 +78,13 @@ def test_delegation_repository_round_trip_and_revision(
     saved = delegation_store.save_delegation(updated, expected_revision=0)
 
     assert saved.revision == 1
-    assert delegation_store.find_delegation_by_child_session(child.session_id) == saved
+    assert (
+        delegation_store.find_delegation_by_child_session(
+            root.session_id,
+            child.session_id,
+        )
+        == saved
+    )
     assert delegation_store.list_delegations(root.session_id) == [saved]
     with pytest.raises(DelegationRevisionConflictError, match="revision conflict"):
         delegation_store.save_delegation(saved, expected_revision=0)
@@ -97,7 +103,7 @@ def test_delegation_repository_enforces_idempotency_key(
         delegation_store.create_delegation(duplicate)
 
 
-def test_delegation_repository_queries_incomplete_and_pending_delivery(
+def test_delegation_repository_lists_one_root(
     delegation_store: SessionStore,
 ) -> None:
     root = SessionRecord(session_id="ses_root")
@@ -128,5 +134,4 @@ def test_delegation_repository_queries_incomplete_and_pending_delivery(
     )
     delegation_store.create_delegation(ready)
 
-    assert delegation_store.load_incomplete_delegations() == [incomplete]
-    assert delegation_store.load_pending_delegation_deliveries() == [ready]
+    assert delegation_store.list_delegations(root.session_id) == [incomplete, ready]

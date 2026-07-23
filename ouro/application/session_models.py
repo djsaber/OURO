@@ -260,4 +260,5 @@ class SessionReplay(ApplicationDTO):
 class SessionTrashResult(ApplicationDTO):
     session_id: str
     trash_id: str
+    session_ids: tuple[str, ...]
     diagnostics: tuple[Diagnostic, ...] = ()

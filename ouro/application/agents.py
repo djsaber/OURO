@@ -51,7 +51,7 @@ from ouro.core.agents import (
 )
 from ouro.core.base import utc_now
 from ouro.core.context import estimate_text_tokens
-from ouro.core.errors import DelegationRevisionConflictError, SessionBusyError
+from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
@@ -342,8 +342,8 @@ class AgentService:
         waiter.add_done_callback(partial(self._wait_finished, wait_id=wait.wait_id))
 
     async def start(self) -> tuple[Diagnostic, ...]:
-        await self.scheduler.start()
-        return await self.reconcile()
+        started = await self.scheduler.start()
+        return (*started.diagnostics, *(await self.reconcile()))
 
     async def close(self) -> None:
         self._closed = True
@@ -985,13 +985,22 @@ class AgentService:
             if relation.result is None and child_run.status not in ACTIVE_RUN_STATUSES:
                 diagnostics.append(self._missing_result_diagnostic(relation, child_run))
                 await self._finalize_result(relation.delegation_id)
-        for relation in self.store.load_pending_delegation_deliveries():
+        pending_deliveries = [
+            relation
+            for relation in self._all_relations()
+            if relation.result is not None
+            and relation.result.delivery.status == "pending"
+        ]
+        for relation in pending_deliveries:
             if self.recovery.relation_is_consistent(relation):
                 await self._deliver_result(relation)
         for session in self.store.list_sessions():
             if session.session_kind != "primary" or session.active_run_id is None:
                 continue
-            run = self.store.load_run(session.session_id, session.active_run_id)
+            try:
+                run = self.store.load_run(session.session_id, session.active_run_id)
+            except PersistenceError:
+                continue
             batch = run.active_tool_batch
             if run.status != "waiting_child" or batch is None:
                 continue
@@ -1904,17 +1913,26 @@ class AgentService:
         """Recheck a shared root budget at each ordinary model boundary."""
 
         del next_model_round
-        relation = self.store.find_delegation_by_child_session(run.session_id)
-        if relation is not None:
+        session = self.store.load_session_record(run.session_id)
+        if session.session_kind == "subagent":
+            root_session_id = session.root_session_id
+            if root_session_id is None:
+                raise PersistenceError(
+                    f"subagent Session {session.session_id} has no root Session"
+                )
+            relation = self.store.find_delegation_by_child_session(
+                root_session_id,
+                run.session_id,
+            )
+            if relation is None:
+                raise PersistenceError(
+                    f"subagent Session {session.session_id} has no delegation relation"
+                )
             parent_run = self.store.load_run(
                 relation.parent_session_id,
                 relation.parent_run_id,
             )
-            root_session_id = relation.root_session_id
         else:
-            session = self.store.load_session_record(run.session_id)
-            if session.session_kind != "primary":
-                return None
             parent_run = self.store.load_run(run.session_id, run.run_id)
             root_session_id = session.root_session_id or session.session_id
         state = self._root_budget_state(root_session_id, parent_run)
@@ -2028,7 +2046,10 @@ class AgentService:
             if session.session_kind == "primary"
         }
         for root_id in sorted(roots):
-            relations.extend(self.store.list_delegations(root_id))
+            try:
+                relations.extend(self.store.list_delegations(root_id))
+            except PersistenceError:
+                continue
         return relations
 
     def _completion_event(self, delegation_id: str) -> asyncio.Event:

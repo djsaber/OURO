@@ -69,7 +69,8 @@ Canonical 数据包括：
 而不只是复制方法签名。
 
 Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
-反向查询和 revision compare-and-swap。文件后端保存 root-local 原子 JSON；SQLite schema version 2 使用
+反向查询和 revision compare-and-swap。所有 Delegation 查询必须携带 root identity；单个 Session 的运行路径不得
+扫描其他 root，历史 root 的不兼容记录只能使该 root fail-closed，不能污染新 Session。文件后端保存 root-local 原子 JSON；SQLite schema version 2 使用
 `delegations` 表和等价索引。CAS 冲突抛出 `DelegationRevisionConflictError`，不能与普通持久化损坏混为一类。
 
 运行热路径使用不含 events 的 `RuntimeSessionSnapshot`；`SessionSnapshot` 是包含完整事件历史的查询与回放
@@ -120,8 +121,9 @@ application 提供：
 
 Host DTO 不暴露 catalog 内部的 `search_text`。
 
-root Session 有 active 或无法判定的 Agent descendant 时不能归档；任何仍有 canonical Delegation 的 root 不能直接
-进入 trash。subagent Session 由 owning Delegation 管理，也不能作为普通独立会话删除，以免形成孤儿关系。
+root Session 有 active 或无法判定的 Agent descendant 时不能归档。trash 与归档语义不同：删除任意 root 或 subagent
+都会先通过 `SessionRecord.parent_session_id` 解析 owning primary 和传递 subagent scope，再删除完整根树。该路径不得
+通过 Run 或 Delegation 反推删除 scope；不兼容的旧执行记录不能恢复执行，但必须仍可被生命周期管理。
 
 ## Branch
 
@@ -133,8 +135,11 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档；�
 
 ## 回收站
 
-删除使用 staging 后原子发布到 `trash/sessions/<trash_id>`。发布失败必须回滚到原 Session，或明确报告
-数据保留位置。初始化负责完成可判定安全的中断发布。
+删除先对整树中确有 live owner 的 Run 复用 canonical abort transition，等待运行方观察 durable abort 并释放锁；
+超时则 fail-closed，不越过仍在写入的 owner。持久化为 running/waiting 但没有 live owner 的旧 Run 直接随树封存。
+随后按稳定顺序取得整树全部 Run 锁。Local backend 使用 tree staging 后原子发布到
+`trash/sessions/<trash_id>/sessions/<session_id>`；SQLite backend 在一个事务中封存原始 rows 并删除整树。发布失败
+必须回滚全部 Session，或明确报告数据保留位置。初始化负责完成可判定安全的中断 tree publish。
 
 发布 trash 后，ResourceService 对该 Session 原引用执行可达性清理；共享资源仍被其他活动 Session 引用时
 不得删除。清理失败只形成可重试 diagnostic，不破坏已经完成的 trash 事务。

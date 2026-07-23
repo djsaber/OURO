@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from ouro.application.session_recovery import SessionRecoveryService
@@ -741,7 +744,7 @@ def test_create_session_cleans_staging_when_publish_preparation_fails(
     assert list(store.sessions_dir.glob("*.staging")) == []
 
 
-def test_trash_session_rolls_back_when_staging_preparation_fails(
+def test_trash_session_tree_rolls_back_when_staging_preparation_fails(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -759,31 +762,84 @@ def test_trash_session_rolls_back_when_staging_preparation_fails(
     monkeypatch.setattr(store, "_write_json_atomic", fail_trash_manifest)
 
     with pytest.raises(PersistenceError, match="injected"):
-        store.trash_session(session.session_id)
+        store.trash_session_tree(session.session_id, (session.session_id,))
 
     assert (store.sessions_dir / session.session_id / "session.json").exists()
     assert list(store.trash_sessions_dir.glob(".*.staging")) == []
 
 
-def test_initialize_finishes_interrupted_trash_publish(tmp_path) -> None:
+def test_trash_session_tree_rolls_back_every_session_when_a_child_move_fails(
+    monkeypatch,
+    tmp_path,
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Interrupted trash")
-    store.create_session(session)
-    staging_dir = store.trash_sessions_dir / ".trash_recovery.staging"
-    staging_dir.mkdir()
-    (store.sessions_dir / session.session_id).replace(staging_dir / "session")
+    root = SessionRecord(session_id="ses_rollback_root")
+    child = SessionRecord(
+        session_id="ses_rollback_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_rollback_child",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    child_dir = store.sessions_dir / child.session_id
+    original_replace = Path.replace
+
+    def fail_child_move(path: Path, target: Path) -> Path:
+        if path == child_dir and target.name == child.session_id:
+            raise OSError("injected child move failure")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_child_move)
+
+    with pytest.raises(PersistenceError, match="injected child move failure"):
+        store.trash_session_tree(
+            root.session_id,
+            (root.session_id, child.session_id),
+        )
+
+    assert (store.sessions_dir / root.session_id / "session.json").exists()
+    assert (store.sessions_dir / child.session_id / "session.json").exists()
+    assert list(store.trash_sessions_dir.glob(".*.staging")) == []
+
+
+def test_initialize_finishes_interrupted_session_tree_trash_publish(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    root = SessionRecord(session_id="ses_tree_root")
+    child = SessionRecord(
+        session_id="ses_tree_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_tree_child",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    staging_dir = store.trash_sessions_dir / ".trash_tree_recovery.staging"
+    staged_sessions = staging_dir / "sessions"
+    staged_sessions.mkdir(parents=True)
+    (store.sessions_dir / root.session_id).replace(staged_sessions / root.session_id)
     (staging_dir / "trash.json").write_text(
-        '{"trash_id":"trash_recovery","session_id":"'
-        f'{session.session_id}","trashed_at":"2026-07-11T00:00:00Z"}}\n',
+        json.dumps(
+            {
+                "trash_id": "trash_tree_recovery",
+                "root_session_id": root.session_id,
+                "session_ids": [root.session_id, child.session_id],
+                "trashed_at": "2026-07-23T00:00:00Z",
+            }
+        ),
         encoding="utf-8",
     )
 
     LocalSessionStore(tmp_path).initialize()
 
-    target = store.trash_sessions_dir / "trash_recovery"
-    assert (target / "session.json").exists()
-    assert (target / "trash.json").exists()
+    target = store.trash_sessions_dir / "trash_tree_recovery" / "sessions"
+    assert (target / root.session_id / "session.json").exists()
+    assert (target / child.session_id / "session.json").exists()
+    assert store.list_sessions() == []
     assert not staging_dir.exists()
 
 

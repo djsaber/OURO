@@ -278,6 +278,11 @@ uv run ouro resource remove <session_id> <resource_id> --home ./.ouro-dev --forc
 uv run ouro run --session <session_id> --resource <text_resource_id> "Use this context"
 ```
 
+`session remove` resolves the owning primary Session and moves its complete subagent tree to one
+trash entry. It first requests canonical abort for genuinely live Runs and waits for their locks,
+then acquires the complete tree lock set and discards stale unfinished records. Tree scope never
+depends on deserializing historical Run or Delegation records.
+
 模型附件当前支持有大小上限的 UTF-8 文本/JSON/XML，以及 vision Endpoint 上的 PNG、JPEG、GIF、WebP。
 PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
 

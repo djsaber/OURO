@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -354,15 +355,24 @@ def remove_session(
     session_backend: SessionBackend | None = None,
 ) -> int:
     try:
+        sessions = _sessions(home, session_backend)
+        root_session_id, session_ids = sessions.trash_scope(session_id)
         if not force:
-            confirm = input(f"Move session {session_id} to trash? [y/N] ").strip().lower()
+            preview = ", ".join(session_ids[:4])
+            if len(session_ids) > 4:
+                preview += ", ..."
+            confirm = input(
+                "Move the complete Session tree "
+                f"{root_session_id} ({len(session_ids)} Session(s): {preview}) to trash "
+                "and discard unfinished runs? [y/N] "
+            ).strip().lower()
             if confirm not in {"y", "yes"}:
                 if json_mode:
                     print(json.dumps({"status": "cancelled"}, ensure_ascii=False))
                 else:
                     print("Cancelled.")
                 return 0
-        result = _sessions(home, session_backend).trash(session_id)
+        result = asyncio.run(sessions.stop_and_trash(session_id))
     except OuroError as exc:
         _print_error(exc, json_mode=json_mode)
         return error_exit_code(exc)
@@ -373,12 +383,20 @@ def remove_session(
     if json_mode:
         print(
             json.dumps(
-                {"status": "ok", "removed": session_id, "trash_id": result.trash_id},
+                {
+                    "status": "ok",
+                    "removed": list(result.session_ids),
+                    "root_session_id": result.session_id,
+                    "trash_id": result.trash_id,
+                },
                 ensure_ascii=False,
             )
         )
     else:
-        print(f"Session removed to trash: {session_id}")
+        print(
+            "Session tree removed to trash: "
+            f"{result.session_id} ({len(result.session_ids)} Session(s))"
+        )
     return 0
 
 

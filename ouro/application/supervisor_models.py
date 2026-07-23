@@ -115,3 +115,4 @@ class RuntimeNotification(ApplicationDTO):
 
 class SupervisorStartResult(ApplicationDTO):
     recovered: tuple[RuntimeStatusSnapshot, ...] = ()
+    diagnostics: tuple[Diagnostic, ...] = ()

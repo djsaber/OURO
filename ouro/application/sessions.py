@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from datetime import datetime
+from time import monotonic
 from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
+from ouro.application.runs import abort_run_state
 from ouro.application.session_history import (
     copy_branch_messages,
     project_replay_frames,
@@ -41,7 +44,7 @@ from ouro.core.errors import (
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord, SessionTitleSource
-from ouro.sessions import SessionIndexEntry, SessionSnapshot, SessionStore
+from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
     from ouro.application.resources import ResourceService
@@ -333,50 +336,116 @@ class SessionService:
                 ),
             )
 
-    def trash(self, session_id: str) -> SessionTrashResult:
-        snapshot = self._load_snapshot(session_id, recover=False)
-        session = snapshot.session
-        relations = (
-            self._store.list_delegations(session.root_session_id or session.session_id)
-            if session.session_kind == "primary"
-            else []
-        )
-        if relations:
-            raise SessionBusyError(
-                self._agent_descendant_conflict(
-                    session_id,
-                    relations,
-                    action="trash",
-                    qualifier="canonical",
-                )
+    def trash_scope(self, session_id: str) -> tuple[str, tuple[str, ...]]:
+        root_session_id, records = self._trash_scope_records(session_id)
+        return root_session_id, tuple(record.session_id for record in records)
+
+    async def stop_and_trash(
+        self,
+        session_id: str,
+        *,
+        timeout_seconds: float = 10.0,
+    ) -> SessionTrashResult:
+        """Cooperatively stop live Runs in one Session tree, then trash it atomically."""
+
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+        _, records = self._trash_scope_records(session_id)
+        live_records = [
+            record
+            for record in reversed(records)
+            if self._store.is_session_locked(record.session_id)
+        ]
+        for record in live_records:
+            abort_run_state(
+                self._store,
+                session_id=record.session_id,
+                run_id=record.active_run_id,
+                reason="Session tree removal requested",
             )
-        if session.session_kind == "subagent":
-            owning_relation = self._store.find_delegation_by_child_session(session_id)
-            if owning_relation is None:
+        deadline = monotonic() + timeout_seconds
+        while live_records:
+            live_records = [
+                record
+                for record in live_records
+                if self._store.is_session_locked(record.session_id)
+            ]
+            if not live_records:
+                break
+            if monotonic() >= deadline:
+                identities = ", ".join(record.session_id for record in live_records)
                 raise SessionBusyError(
-                    "cannot trash orphan subagent Session "
-                    f"{session_id}; preserve it for relation reconciliation"
+                    "timed out waiting for live Session Runs to stop before removal: "
+                    f"{identities}"
                 )
-            raise SessionBusyError(
-                "cannot trash child Session "
-                f"{session_id}; it belongs to Delegation {owning_relation.delegation_id} "
-                f"under root {owning_relation.root_session_id}"
-            )
-        resource_ids: list[str] = []
-        lock = self._store.acquire_session_lock(session_id, new_id("trash"))
-        if lock is None:
-            raise SessionBusyError(f"session already has an active run: {session_id}")
+            await asyncio.sleep(0.05)
+        return self.trash(session_id)
+
+    def trash(self, session_id: str) -> SessionTrashResult:
+        root_session_id, records = self._trash_scope_records(session_id)
+        session_ids = tuple(record.session_id for record in records)
+        active_session_ids = tuple(
+            record.session_id
+            for record in records
+            if record.status in {"running", "waiting_approval", "waiting_user"}
+            or record.active_run_id is not None
+        )
+        locks: list[SessionLock] = []
+        lock_owner = new_id("trash_tree")
         try:
-            with self._store.session_mutation(session_id):
-                session = self._load_snapshot(session_id, recover=False).session
-                if session.status in {"running", "waiting_approval", "waiting_user"}:
-                    raise SessionBusyError(f"session has unfinished work: {session_id}")
-                if self._resources is not None:
-                    resource_ids = list(self._resources.session_resource_ids(session_id))
-                trash_id = self._store.trash_session(session_id)
+            for record in records:
+                lock = self._store.acquire_session_lock(record.session_id, lock_owner)
+                if lock is None:
+                    raise SessionBusyError(
+                        "cannot remove Session tree while a live runtime owns "
+                        f"{record.session_id}"
+                    )
+                locks.append(lock)
+
+            resource_ids: list[str] = []
+            diagnostics: list[Diagnostic] = []
+            if self._resources is not None:
+                for record in records:
+                    try:
+                        resource_ids.extend(
+                            self._resources.session_resource_ids(record.session_id)
+                        )
+                    except PersistenceError as exc:
+                        diagnostics.append(
+                            Diagnostic(
+                                code="session_resource_index_incompatible",
+                                severity="warning",
+                                component="sessions.lifecycle",
+                                message=(
+                                    "Resource references could not be inspected before the "
+                                    f"Session was moved to trash: {exc}"
+                                ),
+                                session_id=record.session_id,
+                                recoverable=True,
+                                suggested_action="Run resource garbage collection later.",
+                            )
+                        )
+            trash_id = self._store.trash_session_tree(root_session_id, session_ids)
         finally:
-            lock.release()
-        diagnostics = list(self._refresh_index_diagnostics(session_id))
+            for lock in reversed(locks):
+                lock.release()
+
+        for removed_session_id in session_ids:
+            diagnostics.extend(self._refresh_index_diagnostics(removed_session_id))
+        if active_session_ids:
+            diagnostics.append(
+                Diagnostic(
+                    code="unfinished_session_tree_trashed",
+                    severity="warning",
+                    component="sessions.lifecycle",
+                    message=(
+                        "Unfinished durable runs were discarded with the removed Session tree."
+                    ),
+                    session_id=root_session_id,
+                    recoverable=False,
+                    metadata={"session_ids": list(active_session_ids)},
+                )
+            )
         if self._resources is not None and resource_ids:
             try:
                 self._resources.collect_after_session_trash(resource_ids)
@@ -387,16 +456,77 @@ class SessionService:
                         severity="warning",
                         component="resources.gc",
                         message=f"resource collection deferred ({type(exc).__name__})",
-                        session_id=snapshot.session.session_id,
+                        session_id=root_session_id,
                         recoverable=True,
                         suggested_action="Retry resource garbage collection.",
                     )
                 )
         return SessionTrashResult(
-            session_id=session_id,
+            session_id=root_session_id,
             trash_id=trash_id,
+            session_ids=session_ids,
             diagnostics=tuple(diagnostics),
         )
+
+    def _trash_scope_records(
+        self,
+        session_id: str,
+    ) -> tuple[str, tuple[SessionRecord, ...]]:
+        try:
+            requested = self._store.load_session_record(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+        all_records = {record.session_id: record for record in self._store.list_sessions()}
+        root = requested if requested.session_kind == "primary" else None
+        ancestor = requested
+        visited = {requested.session_id}
+        while root is None and ancestor.parent_session_id is not None:
+            parent = all_records.get(ancestor.parent_session_id)
+            if parent is None or parent.session_id in visited:
+                break
+            visited.add(parent.session_id)
+            if parent.session_kind == "primary":
+                root = parent
+                break
+            ancestor = parent
+        if root is None:
+            candidate = all_records.get(requested.root_session_id or "")
+            if candidate is not None and candidate.session_kind == "primary":
+                root = candidate
+
+        root_session_id = (
+            root.session_id
+            if root is not None
+            else requested.root_session_id or requested.session_id
+        )
+        scoped_ids = {root.session_id if root is not None else requested.session_id}
+        changed = True
+        while changed:
+            changed = False
+            for record in all_records.values():
+                if (
+                    record.session_kind == "subagent"
+                    and record.parent_session_id in scoped_ids
+                    and record.session_id not in scoped_ids
+                ):
+                    scoped_ids.add(record.session_id)
+                    changed = True
+        if root is None:
+            scoped_ids.update(
+                record.session_id
+                for record in all_records.values()
+                if record.session_kind == "subagent"
+                and record.root_session_id == root_session_id
+            )
+        scoped_ids.add(requested.session_id)
+        records = [all_records[record_id] for record_id in scoped_ids]
+        records.sort(
+            key=lambda record: (
+                record.session_id != root_session_id,
+                record.session_id,
+            )
+        )
+        return root_session_id, tuple(records)
 
     @staticmethod
     def _agent_descendant_conflict(

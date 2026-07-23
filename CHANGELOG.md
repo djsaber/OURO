@@ -80,6 +80,13 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Isolate incompatible persisted Run and Delegation records during startup recovery so one old
+  Session cannot prevent OURO from launching. Runtime execution remains strict, while Session
+  removal now resolves and atomically trashes the complete root/subagent tree without deserializing
+  Run or Delegation journals for scope. Genuinely live Runs receive the canonical abort transition
+  before lock acquisition; stale unfinished records are discarded with the tree.
+- Scope child-to-delegation lookup to its owning root and remove global Delegation scan ports, so an
+  incompatible historical Agent record cannot fail a model turn in a newly created Session.
 - Check plugin durable-generation references from Run records only, via a dedicated
   `load_runs` store port, instead of loading complete Session snapshots; plugin lifecycle
   operations no longer read (or fail on) unrelated Session journals.

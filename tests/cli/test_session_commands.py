@@ -7,6 +7,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.cli.main import main
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.compaction import (
     CompactionArtifact,
     CompactionPolicy,
@@ -124,7 +125,71 @@ def test_session_remove_with_force(tmp_path, capsys) -> None:
     assert "removed" in captured.out
     store = LocalSessionStore(tmp_path)
     assert not (store.sessions_dir / run_payload["session_id"]).exists()
-    assert any((path / "session.json").exists() for path in store.trash_sessions_dir.iterdir())
+    assert any(
+        (path / "sessions" / run_payload["session_id"] / "session.json").exists()
+        for path in store.trash_sessions_dir.iterdir()
+    )
+
+
+def test_session_remove_child_cascades_old_incompatible_agent_tree(tmp_path, capsys) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    root = SessionRecord(session_id="ses_old_root")
+    child = SessionRecord(
+        session_id="ses_old_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_old",
+    )
+    store.create_session(root)
+    store.create_session(child)
+    relation = store.create_delegation(
+        DelegationRecord(
+            delegation_id="dlg_old",
+            idempotency_key="old/remove",
+            root_session_id=root.session_id,
+            parent_session_id=root.session_id,
+            parent_run_id="run_old",
+            agent_id="general",
+            task_description="Old child",
+            prompt_digest="sha256:old",
+            definition=AgentDefinition(
+                agent_id="general",
+                name="General",
+                description="Old child",
+            ),
+        )
+    )
+    payload = relation.model_dump(mode="json")
+    payload["execution_mode"] = "foreground"
+    relation_path = (
+        store.sessions_dir
+        / root.session_id
+        / "delegations"
+        / f"{relation.delegation_id}.json"
+    )
+    relation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    code = main(
+        [
+            "session",
+            "remove",
+            child.session_id,
+            "--home",
+            str(tmp_path),
+            "--force",
+            "--json",
+        ]
+    )
+    result = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert set(result["removed"]) == {root.session_id, child.session_id}
+    assert store.list_sessions() == []
+    trash_root = store.trash_sessions_dir / result["trash_id"] / "sessions"
+    assert (trash_root / root.session_id / "session.json").exists()
+    assert (trash_root / child.session_id / "session.json").exists()
 
 
 def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:

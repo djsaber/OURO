@@ -400,10 +400,9 @@ DelegationRepository 作为后端中立端口组合进现有 SessionStore，至�
 - create/load/save delegation；
 - list direct children、descendants 和 root tree；
 - compare-and-save revision；
-- load pending result deliveries；
-- load incomplete spawn records；
+- 按 root 列举 Delegation，并由 application 在单个 root 内筛选 pending delivery 或 incomplete spawn；
 - archive/trash 前检查 active descendants；
-- 按 child_session_id 反查 Delegation。
+- 按 `(root_session_id, child_session_id)` 反查 Delegation；禁止在单次 Session 执行路径中扫描其他 root。
 
 LocalSessionStore 的 Delegation JSON 使用同目录临时文件、flush/fsync 和原子 replace。索引可以重建，不是
 canonical transaction。SQLiteSessionStore 必须在数据库事务中实现同一端口、identity、revision 和查询语义；
@@ -698,9 +697,9 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 
 - bound：父 Run aborted/failed 时默认 interrupt 未 terminal child，并有限等待；
 - detached：当前不执行此分支；请求在创建 relation 前失败；
-- 根 Session archive/trash 时不得留下 active descendant；必须拒绝或显式级联；
+- 根 Session archive 时不得留下 active descendant；trash 必须在取得全部 live Run 锁后显式级联完整 subagent tree；
 - direct parent close 不删除 descendant history；
-- root delete 的范围必须在 Host 确认中明确显示。
+- root delete 的范围必须在 Host 确认中明确显示，且 lifecycle 路径不得依赖 Run/Delegation 反序列化。
 
 ## 并发、深度与预算
 

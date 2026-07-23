@@ -4,6 +4,7 @@ from collections.abc import Iterable
 
 from ouro.application.dto import Diagnostic
 from ouro.core.agents import DelegationRecord
+from ouro.core.errors import PersistenceError
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import SessionStore
 
@@ -16,8 +17,8 @@ class AgentRecoveryService:
 
     def reconcile(self) -> tuple[Diagnostic, ...]:
         sessions = {session.session_id: session for session in self.store.list_sessions()}
-        relations = self._all_relations(sessions.values())
-        diagnostics = self._audit_child_backlinks(sessions.values(), relations)
+        relations, diagnostics = self._load_relations(sessions.values())
+        diagnostics.extend(self._audit_child_backlinks(sessions.values(), relations))
         for relation in relations:
             diagnostics.extend(self._reconcile_relation(relation, sessions))
         return tuple(diagnostics)
@@ -34,7 +35,7 @@ class AgentRecoveryService:
                 relation.parent_session_id,
                 relation.parent_run_id,
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, PersistenceError):
             return False
         return (
             self._catalog_mismatch(relation, parent_run) is None
@@ -54,6 +55,8 @@ class AgentRecoveryService:
             )
         except FileNotFoundError:
             parent_run = None
+        except PersistenceError as exc:
+            return [self._incompatible_runtime_diagnostic(relation, exc)]
         catalog_mismatch = self._catalog_mismatch(relation, parent_run)
         if catalog_mismatch is not None:
             self._fail_relation(relation, "agent_catalog_contract_unavailable")
@@ -89,7 +92,16 @@ class AgentRecoveryService:
                 )
             ]
 
-        runs = self.store.load_runs(child.session_id)
+        try:
+            runs = self.store.load_runs(child.session_id)
+        except PersistenceError as exc:
+            return [
+                self._incompatible_runtime_diagnostic(
+                    relation,
+                    exc,
+                    session_id=child.session_id,
+                )
+            ]
         if relation.current_child_run_id is None:
             candidates = [run for run in runs if self._run_mismatch_code(relation, run) is None]
             if len(candidates) != 1:
@@ -346,19 +358,67 @@ class AgentRecoveryService:
             },
         )
 
-    def _all_relations(
+    @staticmethod
+    def _incompatible_runtime_diagnostic(
+        relation: DelegationRecord,
+        error: PersistenceError,
+        *,
+        session_id: str | None = None,
+    ) -> Diagnostic:
+        return Diagnostic(
+            code="session_runtime_incompatible",
+            severity="warning",
+            component="application.agent_recovery",
+            message=(
+                "Agent relation recovery skipped incompatible persisted execution data: "
+                f"{error}"
+            ),
+            session_id=session_id or relation.parent_session_id,
+            resource_id=relation.delegation_id,
+            recoverable=True,
+            suggested_action=(
+                "Inspect the retained data or remove the incompatible root Session explicitly."
+            ),
+            metadata={
+                "root_session_id": relation.root_session_id,
+                "child_session_id": relation.child_session_id,
+                "error_type": type(error).__name__,
+            },
+        )
+
+    def _load_relations(
         self,
         sessions: Iterable[SessionRecord],
-    ) -> list[DelegationRecord]:
+    ) -> tuple[list[DelegationRecord], list[Diagnostic]]:
         relations: list[DelegationRecord] = []
+        diagnostics: list[Diagnostic] = []
         root_ids = sorted(
             session.session_id
             for session in sessions
             if session.session_kind == "primary" and session.root_session_id == session.session_id
         )
         for root_id in root_ids:
-            relations.extend(self.store.list_delegations(root_id))
-        return relations
+            try:
+                relations.extend(self.store.list_delegations(root_id))
+            except PersistenceError as exc:
+                diagnostics.append(
+                    Diagnostic(
+                        code="session_runtime_incompatible",
+                        severity="warning",
+                        component="application.agent_recovery",
+                        message=(
+                            "Agent relation recovery skipped incompatible persisted data "
+                            f"for root Session {root_id}: {exc}"
+                        ),
+                        session_id=root_id,
+                        recoverable=True,
+                        suggested_action=(
+                            "Inspect the retained data or remove the incompatible root Session."
+                        ),
+                        metadata={"error_type": type(exc).__name__},
+                    )
+                )
+        return relations, diagnostics
 
 
 __all__ = ["AgentRecoveryService"]

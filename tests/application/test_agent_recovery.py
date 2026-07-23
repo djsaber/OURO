@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 
 import pytest
@@ -390,6 +391,32 @@ async def test_local_application_reports_agent_recovery_diagnostics(tmp_path) ->
         ).spawn_state
         == "failed"
     )
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_local_application_starts_with_incompatible_delegation_record(tmp_path) -> None:
+    application = LocalApplication.build(tmp_path, session_backend="files")
+    root = _create_root(application.runtime.store)
+    relation = application.runtime.store.create_delegation(_relation(root))
+    payload = relation.model_dump(mode="json")
+    payload["execution_mode"] = "background"
+    relation_path = (
+        application.runtime.store.sessions_dir
+        / root.session_id
+        / "delegations"
+        / f"{relation.delegation_id}.json"
+    )
+    relation_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    await application.start()
+
+    assert "session_runtime_incompatible" in {
+        item.code for item in application.startup_report.diagnostics
+    }
+    result = await application.runtime.run("new independent Session")
+    assert result.run.status == "completed"
+    assert result.session.session_id != root.session_id
     await application.close()
 
 

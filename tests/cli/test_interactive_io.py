@@ -616,11 +616,11 @@ async def test_interactive_output_summarizes_mcp_connection_records() -> None:
     assert "● Broken [broken] · failed · process exited" in rendered
 
 
-async def test_interactive_output_surfaces_plugin_startup_diagnostics() -> None:
+async def test_interactive_output_surfaces_application_startup_diagnostics() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
 
-    await output.report_plugin_startup(
+    await output.report_startup_diagnostics(
         ApplicationStartupReport(
             diagnostics=(
                 Diagnostic(
@@ -629,6 +629,14 @@ async def test_interactive_output_surfaces_plugin_startup_diagnostics() -> None:
                     component="plugins",
                     message="plugin state was unreadable and has been quarantined",
                     suggested_action="Inspect state.invalid-1.json and reinstall any plugin.",
+                ),
+                Diagnostic(
+                    code="session_runtime_incompatible",
+                    severity="warning",
+                    component="runtime.recovery",
+                    message="old session execution data was rejected",
+                    session_id="ses_old",
+                    suggested_action="Remove the old session.",
                 ),
                 Diagnostic(
                     code="mcp_startup_failed",
@@ -642,7 +650,9 @@ async def test_interactive_output_surfaces_plugin_startup_diagnostics() -> None:
     )
 
     rendered = "".join(outputs)
-    assert "Plugins · 1 startup issue(s)" in rendered
+    assert "Startup · 2 issue(s)" in rendered
     assert "● plugin-state · plugin state was unreadable and has been quarantined" in rendered
     assert "→ Inspect state.invalid-1.json and reinstall any plugin." in rendered
+    assert "● ses_old · old session execution data was rejected" in rendered
+    assert "→ Remove the old session." in rendered
     assert "unrelated MCP startup diagnostic" not in rendered

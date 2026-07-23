@@ -68,16 +68,12 @@ class SessionRepository(Protocol):
     ) -> list[DelegationRecord]: ...
 
     def find_delegation_by_child_session(
-        self, child_session_id: str
+        self, root_session_id: str, child_session_id: str
     ) -> DelegationRecord | None: ...
 
     def find_delegation_by_idempotency_key(
         self, root_session_id: str, idempotency_key: str
     ) -> DelegationRecord | None: ...
-
-    def load_incomplete_delegations(self) -> list[DelegationRecord]: ...
-
-    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]: ...
 
     def create_session_snapshot(
         self,
@@ -88,7 +84,11 @@ class SessionRepository(Protocol):
 
     def save_session(self, session: SessionRecord) -> None: ...
 
-    def trash_session(self, session_id: str) -> str: ...
+    def trash_session_tree(
+        self,
+        root_session_id: str,
+        session_ids: tuple[str, ...],
+    ) -> str: ...
 
     def append_message(self, message: MessageRecord) -> None: ...
 

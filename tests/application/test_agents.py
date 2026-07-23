@@ -15,6 +15,7 @@ from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import (
     AgentControlRequest,
+    AgentDefinition,
     AgentSpawnPolicy,
     ContextPolicy,
     DelegatedConstraints,
@@ -23,7 +24,7 @@ from ouro.core.agents import (
 )
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import estimate_message_tokens, estimate_text_tokens
-from ouro.core.errors import ResourceNotFoundError, SessionBusyError
+from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
@@ -2230,6 +2231,47 @@ async def test_spawn_budget_is_bounded_by_root_remaining_usage(tmp_path) -> None
     assert tree.root_budget is not None
     assert tree.root_budget.max_input_tokens == 100
     assert tree.nodes[0].budget.max_input_tokens == 75
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_primary_budget_check_does_not_scan_unrelated_delegations(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    unrelated = SessionRecord(session_id="ses_corrupt_history")
+    store.create_session(unrelated)
+    relation = store.create_delegation(
+        DelegationRecord(
+            delegation_id="dlg_corrupt_history",
+            idempotency_key="old/background",
+            root_session_id=unrelated.session_id,
+            parent_session_id=unrelated.session_id,
+            parent_run_id="run_old",
+            agent_id="reader",
+            task_description="Old incompatible delegation",
+            prompt_digest="sha256:old",
+            definition=AgentDefinition(
+                agent_id="reader",
+                name="Reader",
+                description="Old reader",
+            ),
+        )
+    )
+    relation_path = (
+        store.sessions_dir
+        / unrelated.session_id
+        / "delegations"
+        / f"{relation.delegation_id}.json"
+    )
+    payload = relation.model_dump(mode="json")
+    payload["execution_mode"] = "background"
+    relation_path.write_text(json.dumps(payload), encoding="utf-8")
+    parent = store.load_run("ses_root", "run_parent")
+
+    assert service.budget_reason(parent, 1) is None
+    with pytest.raises(PersistenceError, match="execution_mode"):
+        store.list_delegations(unrelated.session_id)
+
     await service.close()
     await supervisor.shutdown()
 

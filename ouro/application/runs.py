@@ -776,6 +776,48 @@ def find_run(runs: list[RunRecord], run_id: str) -> RunRecord:
     raise KeyError(f"unknown run: {run_id}")
 
 
+def abort_run_state(
+    store: SessionStore,
+    *,
+    session_id: str,
+    run_id: str | None = None,
+    reason: str,
+) -> tuple[SessionRecord, RunRecord, bool]:
+    """Persist the canonical terminal state used by every Run abort initiator."""
+
+    with store.session_mutation(session_id):
+        snapshot = store.load_runtime_session(session_id)
+        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
+        if run.status not in ACTIVE_RUN_STATUSES:
+            return snapshot.session, run, False
+        now = utc_now()
+        metadata = clear_pending_metadata(run.metadata)
+        metadata["abort_reason"] = reason
+        aborted_run = run.model_copy(
+            update={
+                "status": "aborted",
+                "ended_at": now,
+                "pending_approval_id": None,
+                "abort_requested": True,
+                "error": reason,
+                "metadata": metadata,
+            }
+        )
+        idle_session = snapshot.session.model_copy(
+            update={
+                "status": "idle",
+                "active_run_id": None,
+                "updated_at": now,
+                "last_activity_at": now,
+                "last_run_id": aborted_run.run_id,
+            }
+        )
+        store.save_run(aborted_run)
+        store.save_session(idle_session)
+    store.refresh_catalog(idle_session.session_id)
+    return idle_session, aborted_run, True
+
+
 def _message_cache_key(message: MessageRecord) -> tuple[str, str] | None:
     if message.role == "assistant" and message.turn_id is not None:
         return ("assistant_tools" if message.tool_calls else "assistant", message.turn_id)

@@ -4,7 +4,7 @@ import json
 import os
 import re
 import shutil
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import TypeVar
 
@@ -145,11 +145,12 @@ class LocalSessionStore:
 
     def find_delegation_by_child_session(
         self,
+        root_session_id: str,
         child_session_id: str,
     ) -> DelegationRecord | None:
         _validated_record_id(child_session_id, kind="session")
-        for path in sorted(self.sessions_dir.glob("*/delegations/*.json")):
-            record = self._load_delegation_path(path)
+        root_dir = self._require_session_dir(root_session_id)
+        for record in self._load_delegations_from_dir(root_dir / "delegations"):
             if record.child_session_id == child_session_id:
                 return record
         return None
@@ -164,20 +165,6 @@ class LocalSessionStore:
             if record.idempotency_key == idempotency_key:
                 return record
         return None
-
-    def load_incomplete_delegations(self) -> list[DelegationRecord]:
-        return [
-            item
-            for item in self._all_delegations()
-            if item.spawn_state not in {"submitted", "failed"}
-        ]
-
-    def load_pending_delegation_deliveries(self) -> list[DelegationRecord]:
-        return [
-            item
-            for item in self._all_delegations()
-            if item.result is not None and item.result.delivery.status == "pending"
-        ]
 
     def create_session_snapshot(
         self,
@@ -232,57 +219,78 @@ class LocalSessionStore:
             session_dir = self._require_session_dir(session.session_id)
             self._write_model_atomic(session_dir / "session.json", session)
 
-    def trash_session(self, session_id: str) -> str:
-        with self.session_mutation(session_id):
-            return self._trash_session(session_id)
+    def trash_session_tree(
+        self,
+        root_session_id: str,
+        session_ids: tuple[str, ...],
+    ) -> str:
+        _validated_record_id(root_session_id, kind="session")
+        normalized = tuple(dict.fromkeys(session_ids))
+        if not normalized:
+            raise ValueError("session tree cannot be empty")
+        with ExitStack() as stack:
+            for session_id in sorted(normalized):
+                _validated_record_id(session_id, kind="session")
+                stack.enter_context(self.session_mutation(session_id))
+            return self._trash_session_tree(root_session_id, normalized)
 
-    def _trash_session(self, session_id: str) -> str:
-        session_dir = self._session_dir(session_id)
-        if not session_dir.exists():
-            raise FileNotFoundError(session_dir)
+    def _trash_session_tree(
+        self,
+        root_session_id: str,
+        session_ids: tuple[str, ...],
+    ) -> str:
+        for session_id in session_ids:
+            self._require_session_dir(session_id)
         trash_id = new_id("trash")
         staging_dir = self.trash_sessions_dir / f".{trash_id}.staging"
-        staged_session = staging_dir / "session"
-        staged_manifest = staging_dir / "trash.json"
+        staged_sessions = staging_dir / "sessions"
         target_dir = self.trash_sessions_dir / trash_id
+        moved: list[str] = []
         try:
-            staging_dir.mkdir(parents=True)
+            staged_sessions.mkdir(parents=True)
             self._write_json_atomic(
-                staged_manifest,
+                staging_dir / "trash.json",
                 {
                     "trash_id": trash_id,
-                    "session_id": session_id,
+                    "root_session_id": root_session_id,
+                    "session_ids": list(session_ids),
                     "trashed_at": utc_now(),
                 },
             )
-            session_dir.replace(staged_session)
-            staged_manifest.replace(staged_session / "trash.json")
-            staged_session.replace(target_dir)
-            staging_dir.rmdir()
+            for session_id in session_ids:
+                self._session_dir(session_id).replace(staged_sessions / session_id)
+                moved.append(session_id)
+            staging_dir.replace(target_dir)
         except (OSError, PersistenceError) as exc:
-            if target_dir.exists() and not session_dir.exists():
-                with suppress(OSError):
-                    shutil.rmtree(staging_dir)
+            if target_dir.exists() and all(
+                not self._session_dir(session_id).exists() for session_id in session_ids
+            ):
                 return trash_id
-            rollback_error: OSError | None = None
-            if staged_session.exists() and not session_dir.exists():
+            retained_at = target_dir if target_dir.exists() else staging_dir
+            retained_sessions = retained_at / "sessions"
+            rollback_errors: list[str] = []
+            for session_id in reversed(moved):
+                source = retained_sessions / session_id
+                target = self._session_dir(session_id)
+                if not source.exists() or target.exists():
+                    continue
                 try:
-                    with suppress(OSError):
-                        (staged_session / "trash.json").unlink()
-                    staged_session.replace(session_dir)
+                    source.replace(target)
                 except OSError as rollback_exc:
-                    rollback_error = rollback_exc
-            if rollback_error is None:
+                    rollback_errors.append(f"{session_id}: {rollback_exc}")
+            if not rollback_errors:
                 with suppress(OSError):
-                    shutil.rmtree(staging_dir)
+                    shutil.rmtree(retained_at)
             else:
                 raise PersistenceError(
-                    f"could not publish trash entry for session {session_id}; "
-                    f"data retained at {staging_dir}: {rollback_error}"
+                    f"could not publish trash tree for root session {root_session_id}; "
+                    f"data retained at {retained_at}: {'; '.join(rollback_errors)}"
                 ) from exc
             if isinstance(exc, PersistenceError):
                 raise
-            raise PersistenceError(f"could not move session {session_id} to trash: {exc}") from exc
+            raise PersistenceError(
+                f"could not move session tree {root_session_id} to trash: {exc}"
+            ) from exc
         return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
@@ -655,12 +663,6 @@ class LocalSessionStore:
         validated = _validated_record_id(delegation_id, kind="delegation")
         return root_dir / "delegations" / f"{validated}.json"
 
-    def _all_delegations(self) -> list[DelegationRecord]:
-        return [
-            self._load_delegation_path(path)
-            for path in sorted(self.sessions_dir.glob("*/delegations/*.json"))
-        ]
-
     def _load_delegations_from_dir(self, directory: Path) -> list[DelegationRecord]:
         return [self._load_delegation_path(path) for path in sorted(directory.glob("*.json"))]
 
@@ -708,26 +710,45 @@ class LocalSessionStore:
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):
-            staged_session = staging_dir / "session"
-            staged_manifest = staging_dir / "trash.json"
-            published_manifest = staged_session / "trash.json"
-            if not staged_session.is_dir() or not (
-                staged_manifest.is_file() or published_manifest.is_file()
-            ):
-                continue
+            tree_manifest = staging_dir / "trash.json"
+            staged_sessions = staging_dir / "sessions"
+            if tree_manifest.is_file() and staged_sessions.is_dir():
+                self._recover_trash_tree_staging(staging_dir, tree_manifest, staged_sessions)
+
+    def _recover_trash_tree_staging(
+        self,
+        staging_dir: Path,
+        manifest_path: Path,
+        staged_sessions: Path,
+    ) -> None:
+        try:
+            raw = json.loads(manifest_path.read_text("utf-8"))
+            session_ids = raw["session_ids"]
+            if not isinstance(session_ids, list) or not session_ids:
+                raise ValueError("trash tree manifest has no session ids")
+            normalized = tuple(
+                _validated_record_id(str(session_id), kind="session")
+                for session_id in session_ids
+            )
+            for session_id in normalized:
+                staged = staged_sessions / session_id
+                if staged.exists():
+                    continue
+                source = self._session_dir(session_id)
+                if not source.exists():
+                    raise FileNotFoundError(
+                        f"session {session_id} is absent from both active and staged storage"
+                    )
+                source.replace(staged)
             target_name = staging_dir.name.removeprefix(".").removesuffix(".staging")
             target_dir = self.trash_sessions_dir / target_name
             if target_dir.exists():
-                continue
-            try:
-                if staged_manifest.exists():
-                    staged_manifest.replace(published_manifest)
-                staged_session.replace(target_dir)
-                staging_dir.rmdir()
-            except OSError as exc:
-                raise PersistenceError(
-                    f"could not recover staged trash entry {staging_dir}: {exc}"
-                ) from exc
+                raise FileExistsError(target_dir)
+            staging_dir.replace(target_dir)
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise PersistenceError(
+                f"could not recover staged trash tree {staging_dir}: {exc}"
+            ) from exc
 
     def _lock_path(self, session_id: str) -> Path:
         validated = _validated_record_id(session_id, kind="session")

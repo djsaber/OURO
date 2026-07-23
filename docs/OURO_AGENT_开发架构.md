@@ -138,6 +138,8 @@ child shell/path 仍走 ToolExecutionContext；不允许 external paths 时 Runt
 
 Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复先由现有 Session recovery 把失去 live job 的
 active Run 转为 recoverable，再由 `AgentRecoveryService` 双向核对 child Session、Delegation 和 child Run provenance。
+Delegation 是 root-local 聚合：运行中的 child 归属查询必须同时携带 `root_session_id`，主 Session 热路径不查询
+Delegation；全局恢复逐 root 隔离持久化错误，任一旧 root 的不兼容记录不得传播到其他 Session。
 只有唯一可归属的半提交 child Run 会补齐 relation；identity、冻结 policy 或 definition contract 无法证明一致时，
 relation fail-closed 并产生 Host-neutral startup diagnostic，原 Session/Run/Delegation 证据全部保留且不会自动重放。
 AgentService 随后从 child Run 终态重建缺失结果、重试未完成交付并重新挂接 parked parent wait；这些诊断并入
@@ -152,7 +154,10 @@ delivery CAS 也只接受同一 delivery identity 的已交付赢家，因此 te
 
 bound parent aborted/failed 时，AgentService 并发中断直接 child，并以统一 deadline 限定等待；超时产生
 `cascade_timeout`，child Run 的未知结果保持原样。根 Session 归档根据 child Run 这一执行事实源拒绝 active 或无法
-判定的 descendant，通用 trash 对任何 canonical descendant 都拒绝，避免文件目录移动或数据库级联删除造成孤儿。
+判定的 descendant。Session trash 是显式的根树生命周期操作：根据 `SessionRecord.parent_session_id` 解析根与全部
+subagent；对确有 live owner 的 Run 先复用 canonical abort state transition 并等待其释放锁，再取得整树锁，由存储
+后端一次发布到同一 trash entry。删除 scope 不从 Run/Delegation 反推，因此被严格执行契约拒绝且没有 live owner 的
+旧记录仍可删除，也不会留下 canonical orphan；live owner 未在 deadline 内退出则 fail-closed。
 
 `AgentTreeProjector` 只 join canonical Delegation、Session、Run、ToolBatch 和 RuntimeActivity，生成包含 edge、
 usage/budget、pending interaction 及 result/delivery 状态的有界根树快照。`subscribe_agent_tree` 不建立第二条事件总线，

@@ -62,7 +62,7 @@ async def run_interactive(
             await output.start_mcp_connection(owned_application.mcp.startup_configs)
             await owned_application.start()
             await output.finish_mcp_connection(owned_application.mcp.startup_records)
-            await output.report_plugin_startup(owned_application.startup_report)
+            await output.report_startup_diagnostics(owned_application.startup_report)
         except OuroError as exc:
             await output.close()
             if owned_application is not None:

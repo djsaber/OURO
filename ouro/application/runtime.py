@@ -29,7 +29,7 @@ from ouro.application.run_continuations import RunContinuationService
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
-    clear_pending_metadata,
+    abort_run_state,
     find_active_run,
     find_run,
     maybe_active_run,
@@ -1239,35 +1239,14 @@ class RuntimeService:
         has_active_owner = signal is not None
         if signal is not None:
             signal.abort(reason)
-        with self.store.session_mutation(session_id):
-            snapshot = self.store.load_runtime_session(session_id)
-            run = find_run(snapshot.runs, run.run_id)
-            if run.status not in ACTIVE_RUN_STATUSES:
-                return RunResult(session=snapshot.session, run=run)
-            metadata = clear_pending_metadata(run.metadata)
-            metadata["abort_reason"] = reason
-            run = run.model_copy(
-                update={
-                    "status": "aborted",
-                    "ended_at": utc_now(),
-                    "pending_approval_id": None,
-                    "abort_requested": True,
-                    "error": reason,
-                    "metadata": metadata,
-                }
-            )
-            session = snapshot.session.model_copy(
-                update={
-                    "status": "idle",
-                    "active_run_id": None,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "last_run_id": run.run_id,
-                }
-            )
-            self.store.save_run(run)
-            self.store.save_session(session)
-        self.store.refresh_catalog(session.session_id)
+        session, run, changed = abort_run_state(
+            self.store,
+            session_id=session_id,
+            run_id=run.run_id,
+            reason=reason,
+        )
+        if not changed:
+            return RunResult(session=session, run=run)
         await self.event_recorder.emit(
             emitted,
             self.store.latest_event_sequence(session_id),

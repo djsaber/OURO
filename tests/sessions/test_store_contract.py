@@ -253,6 +253,29 @@ def test_session_store_exclusive_run_lock(session_store: SessionStore) -> None:
     assert not session_store.is_session_locked(session.session_id)
 
 
+def test_session_store_trashes_complete_tree_without_loading_domain_records(
+    session_store: SessionStore,
+) -> None:
+    root = SessionRecord(session_id="ses_tree_root")
+    child = SessionRecord(
+        session_id="ses_tree_child",
+        session_kind="subagent",
+        root_session_id=root.session_id,
+        parent_session_id=root.session_id,
+        delegation_id="dlg_tree_child",
+    )
+    session_store.create_session(root)
+    session_store.create_session(child)
+
+    trash_id = session_store.trash_session_tree(
+        root.session_id,
+        (root.session_id, child.session_id),
+    )
+
+    assert trash_id.startswith("trash_")
+    assert session_store.list_sessions() == []
+
+
 def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:
     session = SessionRecord(title="Catalog")
     session_store.create_session(session)
@@ -260,7 +283,10 @@ def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:
     catalog = session_store.read_catalog()
     assert [entry.session_id for entry in catalog.sessions] == [session.session_id]
 
-    trash_id = session_store.trash_session(session.session_id)
+    trash_id = session_store.trash_session_tree(
+        session.session_id,
+        (session.session_id,),
+    )
     assert trash_id.startswith("trash_")
     assert session_store.list_sessions() == []
     with pytest.raises(FileNotFoundError):

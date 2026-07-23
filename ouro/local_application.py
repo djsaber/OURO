@@ -98,6 +98,7 @@ class LocalApplication:
         self.agent_definitions = agent_definitions
         self.agents = agents
         self._startup_report = ApplicationStartupReport()
+        self._runtime_startup_diagnostics: tuple[Diagnostic, ...] = ()
         self._agent_startup_diagnostics: tuple[Diagnostic, ...] = ()
         self._started = False
         self._closed = False
@@ -194,7 +195,8 @@ class LocalApplication:
             if self.plugin_runtime is not None:
                 await self.plugin_runtime.start()
             self.runtime.reconcile_interrupted_session_controls()
-            await self.supervisor.start()
+            supervisor_start = await self.supervisor.start()
+            self._runtime_startup_diagnostics = supervisor_start.diagnostics
             if self.agents is not None:
                 self._agent_startup_diagnostics = await self.agents.start()
         except BaseException:
@@ -212,6 +214,7 @@ class LocalApplication:
 
     def _collect_startup_report(self) -> ApplicationStartupReport:
         diagnostics = list(self.plugins.startup_diagnostics() if self.plugins is not None else ())
+        diagnostics.extend(self._runtime_startup_diagnostics)
         diagnostics.extend(self._agent_startup_diagnostics)
         diagnostics.extend(
             Diagnostic(
