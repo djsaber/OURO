@@ -159,11 +159,6 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     spawn.add_argument("--request-id", required=True)
     spawn.add_argument("--nickname")
     spawn.add_argument(
-        "--execution-mode",
-        choices=("foreground", "background"),
-        default="background",
-    )
-    spawn.add_argument(
         "--context-message-id",
         dest="context_message_ids",
         action="append",

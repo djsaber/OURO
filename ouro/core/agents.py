@@ -17,21 +17,27 @@ from ouro.core.run_budget import RunBudgetPolicy
 AgentSource = Literal["builtin", "user"]
 ToolSelectionMode = Literal["all", "selected"]
 ContextMode = Literal["task_only", "summary", "selected_messages", "bounded_history"]
-ExecutionMode = Literal["foreground", "background"]
+ExecutionMode = Literal["sync", "async"]
 LifecycleBinding = Literal["bound", "detached"]
 SpawnState = Literal["requested", "child_created", "submitted", "failed"]
 ControlState = Literal["open", "closed"]
-DeliveryPolicy = Literal["notify_only", "next_boundary", "follow_up", "resume_waiter"]
+DeliveryPolicy = Literal["notify_only", "next_boundary", "resume_waiter"]
 DeliveryStatus = Literal["pending", "delivered", "skipped", "failed"]
 WaitCompletionCondition = Literal["all", "any"]
 WaitState = Literal["pending", "resolved"]
-AgentControlAction = Literal["spawn", "wait", "list", "send", "interrupt"]
+AgentControlAction = Literal["spawn", "list", "send", "interrupt"]
 AgentControlStatus = Literal["completed", "waiting_child"]
 
 _AGENT_ID = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
 AGENT_CONTROL_TOOL_NAMES = frozenset(
-    {"SpawnAgent", "WaitAgents", "ListAgents", "SendAgentMessage", "InterruptAgent"}
+    {"SpawnAgent", "ListAgents", "SendAgentMessage", "InterruptAgent"}
 )
+
+
+def delivery_policy_for_execution_mode(execution_mode: ExecutionMode) -> DeliveryPolicy:
+    """Return the one valid result-delivery policy for a dispatch mode."""
+
+    return "resume_waiter" if execution_mode == "sync" else "next_boundary"
 
 
 def _contract_hash(value: object) -> str:
@@ -117,10 +123,7 @@ class AgentSpawnPolicy(OuroModel):
 
     allowed_agent_id_patterns: tuple[str, ...] = ("*",)
     allowed_model_patterns: tuple[str, ...] = ("*",)
-    allowed_execution_modes: tuple[ExecutionMode, ...] = (
-        "foreground",
-        "background",
-    )
+    allowed_execution_modes: tuple[ExecutionMode, ...] = ("sync", "async")
     allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] = ("bound",)
     allow_write: bool = True
     allow_network: bool = True
@@ -310,7 +313,7 @@ class DelegationRecord(OuroModel):
     context_resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
     context_compaction_id: str | None = None
     context_digest: str | None = Field(default=None, min_length=1, max_length=256)
-    execution_mode: ExecutionMode = "background"
+    execution_mode: ExecutionMode = "sync"
     lifecycle_binding: LifecycleBinding = "bound"
     delivery_policy: DeliveryPolicy = "notify_only"
     depth: int = Field(default=1, ge=1, le=32)
@@ -333,6 +336,15 @@ class DelegationRecord(OuroModel):
             raise ValueError("delegation agent_id must match frozen definition")
         if self.lifecycle_binding == "detached":
             raise ValueError("detached child is not supported in the first release")
+        expected_delivery = (
+            "notify_only"
+            if self.parent_tool_call_id is None
+            else delivery_policy_for_execution_mode(self.execution_mode)
+        )
+        if self.delivery_policy != expected_delivery:
+            raise ValueError(
+                f"{self.execution_mode} child requires {expected_delivery} result delivery"
+            )
         if self.spawn_state in {"child_created", "submitted"} and self.child_session_id is None:
             raise ValueError("child identity is required after child creation")
         if self.spawn_state == "submitted" and self.current_child_run_id is None:
@@ -391,12 +403,8 @@ class AgentControlRequest(OuroModel):
     task: str | None = Field(default=None, max_length=20_000)
     description: str | None = Field(default=None, max_length=500)
     nickname: str | None = Field(default=None, max_length=80)
-    execution_mode: ExecutionMode = "background"
-    delivery_policy: DeliveryPolicy = "notify_only"
+    execution_mode: ExecutionMode = "sync"
     delegation_id: str | None = None
-    delegation_ids: tuple[str, ...] = ()
-    completion_condition: WaitCompletionCondition = "all"
-    timeout_seconds: float | None = Field(default=None, ge=0, le=86_400)
     message: str | None = Field(default=None, max_length=20_000)
     input_mode: Literal["steer", "follow_up"] = "steer"
     reason: str | None = Field(default=None, max_length=500)
@@ -418,11 +426,6 @@ class AgentControlRequest(OuroModel):
                 raise ValueError("spawn control requires agent_id and task")
             if not self.description or not self.description.strip():
                 raise ValueError("spawn control requires description")
-        elif self.action == "wait":
-            if not self.delegation_ids:
-                raise ValueError("wait control requires delegation_ids")
-            if len(set(self.delegation_ids)) != len(self.delegation_ids):
-                raise ValueError("wait delegation_ids must be unique")
         elif self.action in {"send", "interrupt"}:
             if not self.delegation_id:
                 raise ValueError(f"{self.action} control requires delegation_id")
@@ -466,4 +469,5 @@ __all__ = [
     "EffectiveToolRef",
     "ResultDelivery",
     "ToolSelection",
+    "delivery_policy_for_execution_mode",
 ]

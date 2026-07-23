@@ -323,8 +323,11 @@ class RuntimeSupervisor:
         """Schedule continuation of one parked parent Run."""
 
         await self.start()
-        if session_id in self._jobs_by_session:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
+        await self._await_parked_session(
+            session_id,
+            run_id=run_id,
+            expected_status="waiting_child",
+        )
         run = self.store.load_run(session_id, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
@@ -349,22 +352,25 @@ class RuntimeSupervisor:
         """Route synthetic Agent traffic through the supervised Host boundary."""
 
         await self.start()
-        durable = self.store.load_runtime_session(session_id)
-        active = maybe_active_run(durable.runs)
-        if active is not None:
-            await self.runtime.submit_host_input(session_input, session_id=session_id)
-            return None
-        if session_id in self._jobs_by_session:
-            raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        handle = RunHandle(session_id=session_id)
-        job = _RunJob(
-            handle=handle,
-            prompt=session_input.prompt,
-            title=session_input.title,
-            session_input=session_input,
-        )
-        self._enqueue_job(job)
-        return handle
+        while True:
+            durable = self.store.load_runtime_session(session_id)
+            active = maybe_active_run(durable.runs)
+            if active is not None:
+                await self.runtime.submit_host_input(session_input, session_id=session_id)
+                return None
+            finishing_job = self._jobs_by_session.get(session_id)
+            if finishing_job is not None:
+                await finishing_job.done.wait()
+                continue
+            handle = RunHandle(session_id=session_id)
+            job = _RunJob(
+                handle=handle,
+                prompt=session_input.prompt,
+                title=session_input.title,
+                session_input=session_input,
+            )
+            self._enqueue_job(job)
+            return handle
 
     async def resolve_tool_approval(
         self,

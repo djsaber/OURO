@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -59,17 +60,16 @@ class CapturingChildProvider:
         )
 
 
-class ForegroundAgentProvider:
-    provider_id = "foreground"
+class SyncAgentProvider:
+    provider_id = "sync"
 
-    def __init__(self, store: LocalSessionStore) -> None:
-        self.store = store
+    def __init__(self) -> None:
         self.root_round = 0
         self.root_tool_schemas: list[list[dict[str, object]]] = []
         self.child_tool_names: list[str] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
-        del model, system_prompt, messages
+        del model, system_prompt
         definitions = list(tools or [])
         names = [item["name"] for item in definitions]
         if "SpawnAgent" not in names:
@@ -90,26 +90,8 @@ class ForegroundAgentProvider:
                         "agent_id": "reader",
                         "task": "Inspect the architecture.",
                         "description": "Inspect architecture",
-                        "execution_mode": "foreground",
+                        "execution_mode": "sync",
                     },
-                },
-            )
-            yield ProviderStreamEvent(type="done")
-            return
-        if self.root_round == 1:
-            self.root_round += 1
-            root = next(
-                session
-                for session in self.store.list_sessions()
-                if session.session_kind == "primary"
-            )
-            delegation = self.store.list_delegations(root.session_id)[0]
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
-                    "id": "wait_call",
-                    "name": "WaitAgents",
-                    "arguments": {"delegation_ids": [delegation.delegation_id]},
                 },
             )
             yield ProviderStreamEvent(type="done")
@@ -126,11 +108,10 @@ class ForegroundAgentProvider:
         )
 
 
-class ForegroundHitlProvider:
-    provider_id = "foreground-hitl"
+class SyncHitlProvider:
+    provider_id = "sync-hitl"
 
-    def __init__(self, store: LocalSessionStore) -> None:
-        self.store = store
+    def __init__(self) -> None:
         self.root_round = 0
         self.child_round = 0
 
@@ -143,14 +124,14 @@ class ForegroundHitlProvider:
                 yield ProviderStreamEvent(
                     type="tool_call",
                     tool_call={
-                        "id": "foreground_ask_call",
+                        "id": "sync_ask_call",
                         "name": "AskUser",
                         "arguments": {"question": "Choose A or B"},
                     },
                 )
                 yield ProviderStreamEvent(type="done")
                 return
-            yield ProviderStreamEvent(type="text_delta", text="foreground child answered")
+            yield ProviderStreamEvent(type="text_delta", text="sync child answered")
             yield ProviderStreamEvent(type="done")
             return
 
@@ -159,37 +140,19 @@ class ForegroundHitlProvider:
             yield ProviderStreamEvent(
                 type="tool_call",
                 tool_call={
-                    "id": "foreground_hitl_spawn",
+                    "id": "sync_hitl_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
                         "agent_id": "general",
                         "task": "Ask one bounded question.",
-                        "description": "Foreground HITL child",
-                        "execution_mode": "foreground",
+                        "description": "Sync HITL child",
+                        "execution_mode": "sync",
                     },
                 },
             )
             yield ProviderStreamEvent(type="done")
             return
-        if self.root_round == 1:
-            self.root_round += 1
-            root = next(
-                session
-                for session in self.store.list_sessions()
-                if session.session_kind == "primary"
-            )
-            delegation = self.store.list_delegations(root.session_id)[0]
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
-                    "id": "foreground_hitl_wait",
-                    "name": "WaitAgents",
-                    "arguments": {"delegation_ids": [delegation.delegation_id]},
-                },
-            )
-            yield ProviderStreamEvent(type="done")
-            return
-        yield ProviderStreamEvent(type="text_delta", text="foreground parent resumed")
+        yield ProviderStreamEvent(type="text_delta", text="sync parent resumed")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -256,8 +219,8 @@ class SpawnAndChildApprovalProvider:
         )
 
 
-class BackgroundFollowUpProvider:
-    provider_id = "background"
+class AsyncFollowUpProvider:
+    provider_id = "async"
 
     def __init__(self) -> None:
         self.root_round = 0
@@ -266,7 +229,7 @@ class BackgroundFollowUpProvider:
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
-            yield ProviderStreamEvent(type="text_delta", text="background child result")
+            yield ProviderStreamEvent(type="text_delta", text="async child result")
             yield ProviderStreamEvent(type="done")
             return
         if self.root_round == 0:
@@ -274,14 +237,13 @@ class BackgroundFollowUpProvider:
             yield ProviderStreamEvent(
                 type="tool_call",
                 tool_call={
-                    "id": "background_spawn",
+                    "id": "async_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
                         "agent_id": "reader",
                         "task": "Inspect later.",
-                        "description": "Background inspection",
-                        "execution_mode": "background",
-                        "delivery_policy": "follow_up",
+                        "description": "Async inspection",
+                        "execution_mode": "async",
                     },
                 },
             )
@@ -332,8 +294,7 @@ class NextBoundaryRaceProvider:
                         "agent_id": "reader",
                         "task": "Finish while the parent model round is active.",
                         "description": "Next-boundary race",
-                        "execution_mode": "background",
-                        "delivery_policy": "next_boundary",
+                        "execution_mode": "async",
                     },
                 },
             )
@@ -1125,7 +1086,7 @@ async def test_agent_resources_are_explicitly_copied_and_results_are_revalidated
 async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_path) -> None:
     policy = AgentSpawnPolicy(
         allowed_agent_id_patterns=("reader",),
-        allowed_execution_modes=("foreground",),
+        allowed_execution_modes=("sync",),
         allow_write=False,
         allow_network=False,
         allow_mcp=False,
@@ -1142,25 +1103,25 @@ async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_p
     with pytest.raises(ValueError, match="execution mode is not allowed"):
         await service.spawn_agent(
             SpawnAgentRequest(
-                request_id="host/disallowed-background",
+                request_id="host/disallowed-async",
                 parent_session_id="ses_root",
                 parent_run_id="run_parent",
                 agent_id="reader",
                 task="Do not start.",
                 description="Disallowed mode",
-                execution_mode="background",
+                execution_mode="async",
             )
         )
 
     handle = await service.spawn_agent(
         SpawnAgentRequest(
-            request_id="host/allowed-foreground",
+            request_id="host/allowed-sync",
             parent_session_id="ses_root",
             parent_run_id="run_parent",
             agent_id="reader",
             task="Inspect within the workspace.",
             description="Allowed mode",
-            execution_mode="foreground",
+            execution_mode="sync",
         )
     )
     relation = store.load_delegation("ses_root", handle.delegation_id)
@@ -1203,74 +1164,6 @@ async def test_duplicate_spawn_request_returns_same_delegation(tmp_path) -> None
         len([session for session in store.list_sessions() if session.session_kind == "subagent"])
         == 1
     )
-    await service.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_wait_control_supports_any_and_immediate_timeout(tmp_path) -> None:
-    service, supervisor, store, _ = await _services(tmp_path)
-    completed = await service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/completed-for-any",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task="Complete first.",
-            description="Completed child",
-        )
-    )
-    await service.wait_agents((completed.delegation_id,))
-    completed_relation = store.list_delegations("ses_root")[0]
-    pending = DelegationRecord(
-        idempotency_key="host/pending-for-any",
-        root_session_id="ses_root",
-        parent_session_id="ses_root",
-        parent_run_id="run_parent",
-        agent_id=completed_relation.agent_id,
-        task_description="Pending child",
-        prompt_digest="sha256:" + "b" * 64,
-        definition=completed_relation.definition,
-        effective_tools=completed_relation.effective_tools,
-    )
-    pending = store.create_delegation(pending)
-    session = store.load_session_record("ses_root")
-    run = store.load_run("ses_root", "run_parent")
-    invocation = ToolInvocation(
-        tool_call_id="wait_semantics",
-        session_id=session.session_id,
-        run_id=run.run_id,
-        tool_name="WaitAgents",
-    )
-
-    any_result = await service.execute_control(
-        AgentControlRequest(
-            action="wait",
-            request_id="wait/any",
-            delegation_ids=(completed.delegation_id, pending.delegation_id),
-            completion_condition="any",
-        ),
-        invocation=invocation,
-        session=session,
-        run=run,
-    )
-    timeout_result = await service.execute_control(
-        AgentControlRequest(
-            action="wait",
-            request_id="wait/timeout",
-            delegation_ids=(completed.delegation_id, pending.delegation_id),
-            completion_condition="all",
-            timeout_seconds=0,
-        ),
-        invocation=invocation,
-        session=session,
-        run=run,
-    )
-
-    assert any_result.status == "completed"
-    assert any_result.structured["reason"] == "condition_met"
-    assert timeout_result.status == "completed"
-    assert timeout_result.structured["reason"] == "timeout"
     await service.close()
     await supervisor.shutdown()
 
@@ -1633,8 +1526,7 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
             agent_id="general",
             task="Request approval.",
             description="HITL test",
-            execution_mode="foreground",
-            delivery_policy="resume_waiter",
+            execution_mode="sync",
         )
     )
 
@@ -1732,7 +1624,7 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
         approval_id=spawn_approval_id,
         approved=True,
     )
-    assert (await supervisor.wait(resumed_parent)).status == "completed"
+    assert (await supervisor.wait(resumed_parent)).status == "waiting_child"
 
     async with asyncio.timeout(5):
         while not service.list_agent_interactions(parent_handle.session_id):
@@ -1752,12 +1644,15 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
     )
     assert (await supervisor.wait(resumed_child)).status == "completed"
     await service.wait_agents((child_interaction.delegation_id,))
+    async with asyncio.timeout(5):
+        while store.load_run(parent_handle.session_id, parent_waiting.run_id).status != "completed":
+            await asyncio.sleep(0.01)
     await service.close()
     await supervisor.shutdown()
 
 
 @pytest.mark.asyncio
-async def test_background_child_user_input_is_streamed_and_routed_by_exact_identity(
+async def test_async_child_user_input_is_streamed_and_routed_by_exact_identity(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -1808,7 +1703,7 @@ async def test_background_child_user_input_is_streamed_and_routed_by_exact_ident
             agent_id="general",
             task="Ask for one bounded choice.",
             description="Structured child input",
-            execution_mode="background",
+            execution_mode="async",
         )
     )
     async with asyncio.timeout(3):
@@ -2444,8 +2339,10 @@ async def test_slow_root_tree_subscriber_gets_lag_diagnostic(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_foreground_join_releases_single_worker_and_resumes_original_run(
+@pytest.mark.parametrize("max_concurrency", [1, 2])
+async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
     tmp_path,
+    max_concurrency: int,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -2460,17 +2357,17 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
         tools=tools,
         expected_revision=0,
     )
-    provider = ForegroundAgentProvider(store)
+    provider = SyncAgentProvider()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
             provider,
-            ModelMetadata(model_id="foreground", provider_id="foreground"),
+            ModelMetadata(model_id="sync", provider_id="sync"),
         ),
         tools=tools,
     )
     runtime.attach_agent_definitions(definitions)
-    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=max_concurrency)
     service = AgentService(
         store=store,
         definitions=definitions,
@@ -2498,17 +2395,24 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
 
     parent_run = store.load_run(root_session_id, parent_run_id)
     snapshot = store.load_runtime_session(root_session_id)
-    wait_messages = [
+    spawn_result_messages = [
         message
         for message in snapshot.messages
         if message.role == "tool_result"
         and message.tool_result is not None
-        and message.tool_result.tool_name == "WaitAgents"
+        and message.tool_result.tool_name == "SpawnAgent"
     ]
     assert parent_run.status == "completed"
     assert parent_run.run_id == parent_run_id
-    assert wait_messages[0].tool_result is not None
-    assert wait_messages[0].tool_result.tool_call_id == "wait_call"
+    assert len(spawn_result_messages) == 1
+    assert spawn_result_messages[0].tool_result is not None
+    assert spawn_result_messages[0].tool_result.tool_call_id == "spawn_call"
+    spawn_result = json.loads(spawn_result_messages[0].text_content)
+    assert spawn_result["handle"]["delegation_id"] == store.list_delegations(
+        root_session_id
+    )[0].delegation_id
+    assert spawn_result["result"]["terminal_status"] == "completed"
+    assert spawn_result["result"]["final_text"] == "child evidence"
     assert snapshot.messages[-1].text_content == "parent resumed"
     assert provider.child_tool_names == ["Read"]
     spawn_definition = next(
@@ -2530,6 +2434,12 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
     events = store.load_session(root_session_id).events
     assert [event.event_type for event in events].count("agent_wait_requested") == 1
     assert [event.event_type for event in events].count("agent_wait_resolved") == 1
+    assert [
+        event.payload["tool_call_id"]
+        for event in events
+        if event.event_type == "tool_call_completed"
+        and event.payload.get("tool_name") == "SpawnAgent"
+    ] == ["spawn_call"]
     relation = store.list_delegations(root_session_id)[0]
     assert relation.result is not None
     assert relation.result.delivery.status == "delivered"
@@ -2540,19 +2450,19 @@ async def test_foreground_join_releases_single_worker_and_resumes_original_run(
 
 
 @pytest.mark.asyncio
-async def test_foreground_child_hitl_keeps_parent_parked_and_single_worker_progresses(
+async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _ask_tools()
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    provider = ForegroundHitlProvider(store)
+    provider = SyncHitlProvider()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
             provider,
-            ModelMetadata(model_id="foreground-hitl", provider_id="foreground-hitl"),
+            ModelMetadata(model_id="sync-hitl", provider_id="sync-hitl"),
         ),
         tools=tools,
     )
@@ -2567,7 +2477,7 @@ async def test_foreground_child_hitl_keeps_parent_parked_and_single_worker_progr
     runtime.attach_agent_controls(service)
     await service.start()
 
-    parent_handle = await supervisor.submit("Delegate a foreground question.")
+    parent_handle = await supervisor.submit("Delegate a synchronous question.")
     parked = await supervisor.wait(parent_handle)
     assert parked.status == "waiting_child"
     assert parked.run_id is not None
@@ -2607,7 +2517,7 @@ async def test_foreground_child_hitl_keeps_parent_parked_and_single_worker_progr
             await asyncio.sleep(0.01)
 
     root_snapshot = store.load_runtime_session(root_session_id)
-    assert root_snapshot.messages[-1].text_content == "foreground parent resumed"
+    assert root_snapshot.messages[-1].text_content == "sync parent resumed"
     relation = store.list_delegations(root_session_id)[0]
     assert relation.result is not None
     assert relation.result.delivery.status == "delivered"
@@ -2689,7 +2599,7 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
 
 
 @pytest.mark.asyncio
-async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
+async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     tools = _tools()
@@ -2703,12 +2613,12 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
         tools=tools,
         expected_revision=0,
     )
-    provider = BackgroundFollowUpProvider()
+    provider = AsyncFollowUpProvider()
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
             provider,
-            ModelMetadata(model_id="background", provider_id="background"),
+            ModelMetadata(model_id="async", provider_id="async"),
         ),
         tools=tools,
     )
@@ -2723,7 +2633,7 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
     runtime.attach_agent_controls(service)
     await service.start()
 
-    parent_handle = await supervisor.submit("Start background work.")
+    parent_handle = await supervisor.submit("Start async work.")
     initial = await supervisor.wait(parent_handle)
     assert initial.status == "completed"
     root_session_id = parent_handle.session_id
@@ -2740,7 +2650,8 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
 
     relation = store.list_delegations(root_session_id)[0]
     assert relation.result is not None
-    assert relation.result.delivery.policy == "follow_up"
+    assert relation.execution_mode == "async"
+    assert relation.result.delivery.policy == "next_boundary"
     assert relation.result.delivery.target_run_id is not None
     snapshot = store.load_runtime_session(root_session_id)
     assert len(snapshot.runs) == 2
@@ -2753,6 +2664,19 @@ async def test_background_follow_up_delivery_is_exact_once(tmp_path) -> None:
     assert len(delivered_messages) == 1
     assert delivered_messages[0].role == "system_synthetic"
     assert snapshot.messages[-1].text_content == "parent received follow-up"
+    spawn_results = [
+        message
+        for message in snapshot.messages
+        if message.tool_result is not None
+        and message.tool_result.tool_name == "SpawnAgent"
+        and message.tool_result.tool_call_id == "async_spawn"
+    ]
+    assert len(spawn_results) == 1
+    assert "handle" in json.loads(spawn_results[0].text_content)
+    assert not any(
+        event.event_type == "agent_wait_requested"
+        for event in store.load_session(root_session_id).events
+    )
 
     assert relation.result is not None
     pending_delivery = relation.result.delivery.model_copy(

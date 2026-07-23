@@ -35,6 +35,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Subagent dispatch now uses one model tool: `SpawnAgent(sync)` durably resolves the original
+  ToolCall with the child result, while `SpawnAgent(async)` returns a handle and automatically
+  delivers the result at the next safe boundary. The model-facing `WaitAgents` tool and configurable
+  delivery policy were removed.
 - Session approval policy now resolves Host-controlled permissions uniformly for built-in, plugin,
   and MCP tools: `inherit` uses the tool mode, while `auto`, `approval`, and `deny` apply globally.
 - Trusted plugin tool permissions now use the same semantics as built-ins without source-based

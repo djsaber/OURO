@@ -19,7 +19,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
   以及分组汇总、审计式修改和选择性重置。
 - Read、Write、Edit、Bash、AskUser 内置工具；AskUser 与插件工具可用同一 opaque JSON 协议挂起 Run 并接收结构化回答。
 - 一等子智能体：builtin general 与用户 AgentDefinition、Run-frozen 派遣目录、durable Delegation/独立 child
-  Session/Run、foreground/background、exact-once 结果交付、HITL 根路由、bound 级联、恢复对账、AgentTree
+  Session/Run、sync/async、exact-once 结果交付、HITL 根路由、bound 级联、恢复对账、AgentTree
   subscription，以及 definition/runtime 控制 CLI；首版固定单层并复用现有工具、权限、预算和 Supervisor。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、

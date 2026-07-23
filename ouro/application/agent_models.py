@@ -9,7 +9,6 @@ from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.agents import (
     ControlState,
-    DeliveryPolicy,
     DeliveryStatus,
     ExecutionMode,
     LifecycleBinding,
@@ -58,9 +57,8 @@ class SpawnAgentRequest(ApplicationDTO):
     description: str = Field(min_length=1, max_length=500)
     nickname: str | None = Field(default=None, max_length=80)
     parent_tool_call_id: str | None = None
-    execution_mode: ExecutionMode = "background"
+    execution_mode: ExecutionMode = "sync"
     lifecycle_binding: LifecycleBinding = "bound"
-    delivery_policy: DeliveryPolicy = "notify_only"
     unattended: bool = False
     context_message_ids: tuple[str, ...] = Field(default=(), max_length=200)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)

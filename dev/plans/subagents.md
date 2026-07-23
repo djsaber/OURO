@@ -11,8 +11,8 @@
 - durable DelegationRecord；
 - 单层 child Session/Run；
 - Host API 与模型内置控制工具；
-- foreground spawn + wait；
-- background spawn + exact-once result delivery；
+- sync SpawnAgent durable join；
+- async SpawnAgent + exact-once automatic result delivery；
 - root AgentTreeSnapshot、消息流和 interaction inbox；
 - child approval/AskUser；
 - 显式 capability constraints、复用 RunBudgetPolicy、root quota 和取消；
@@ -24,8 +24,8 @@
 ## 当前实现基线
 
 当前代码已经完成不依赖专用 UI 的首版框架闭环：builtin/custom AgentDefinition 与 Run 级冻结目录、
-Local/SQLite durable Delegation、独立 child Session/Run、Host AgentService、模型控制工具、foreground durable
-join、background exact-once 交付、follow-up/steer/interrupt、root tree 与 HITL 汇聚路由、bound cascade、启动
+Local/SQLite durable Delegation、独立 child Session/Run、Host AgentService、模型控制工具、sync durable
+join、async exact-once 交付、follow-up/steer/interrupt、root tree 与 HITL 汇聚路由、bound cascade、启动
 reconciliation，以及工具执行契约冻结、单 writer 和父子 RunBudgetPolicy 收敛。child 继续复用原有
 RuntimeService、InnerAgentLoop、ToolExecutor、SessionStore 和 RuntimeSupervisor，没有第二套执行内核。
 
@@ -52,18 +52,18 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 1. child instance 等于 Session，child execution 等于 Run。
 2. Delegation 与 Session branch 是不同关系。
-3. spawn 底层始终非阻塞；foreground 是 durable wait。
+3. spawn 底层始终非阻塞；sync 是原 SpawnAgent ToolCall 上的 durable wait。
 4. AgentService 属于 application，不属于插件；不新增大一统 application facade。
 5. 模型使用 product-owned 内置控制工具；工具不直接递归 RuntimeService。
 6. child 复用现有 InnerAgentLoop、ToolExecutor、Approval、AskUser 和 SessionStore。
 7. waiting_child 不占 Supervisor execution permit。
 8. child interaction 保存在 child，根 Host 只做汇聚投影和准确路由。
 9. 权限先求 hard capability intersection，再应用 auto/approval/deny。
-10. background result 使用 Host system_synthetic provenance 和 exact-once delivery。
+10. async result 使用 Host system_synthetic provenance 和 exact-once delivery。
 11. 首版 max_depth=1、bound 默认、detached 禁用、并行 writer 限制为 1。
 12. 首版不承诺崩溃后自动重启旧 child 执行。
 13. child Run 是执行状态唯一权威；Delegation 不镜像 running/waiting/terminal 状态。
-14. WaitAgents 的 durable 请求保存在现有 ToolBatchCall，不新增重复 Run checkpoint。
+14. SpawnAgent(sync) 的 durable 请求保存在原 ToolBatchCall，不新增重复 Run checkpoint。
 15. DelegationRepository 同时由 LocalSessionStore 和 SQLiteSessionStore 实现并通过同一契约测试。
 16. 标准 Agent-capable Host 统一经 RuntimeSupervisor；裸 RuntimeService 不暴露不可执行的 Agent 工具。
 17. agent_id 是稳定 identity，name 只用于展示；builtin/user definition 只在 editable 管理属性上不同。
@@ -119,7 +119,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
     C. Application 编排与 Host API
             |
             v
-    D. 内置控制工具与 foreground join
+    D. 内置控制工具与 sync join
             |
             v
     E. Root 事件树与 HITL
@@ -376,7 +376,6 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 ### D2. Builtin tools
 
 - [x] SpawnAgent（Host display name 可为“派遣子智能体”）。
-- [x] WaitAgents。
 - [x] ListAgents。
 - [x] SendAgentMessage。
 - [x] InterruptAgent。
@@ -388,19 +387,19 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] system_prompt、完整 tool refs 和敏感 policy 不进入模型可见的派遣工具描述。
 - [x] tool invocation/Run 保存 agent catalog contract hash。
 - [x] 工具输出有界，默认不返回完整 child history。
-- [x] WaitAgents 和 lifecycle mutation 使用 sequential/exclusive batch behavior。
+- [x] lifecycle mutation 使用 sequential/exclusive batch behavior；SpawnAgent 保持兼容批次语义。
 
-### D3. Durable foreground wait
+### D3. Durable sync wait
 
-- [x] WaitAgents 把 AgentWaitRequest/Resolution 保存在原 ToolBatchCall，不新增 Run 级 AgentWaitCheckpoint。
+- [x] SpawnAgent(sync) 把 AgentWaitRequest/Resolution 保存在原 ToolBatchCall，不新增 Run 级 AgentWaitCheckpoint。
 - [x] ToolCall 进入 waiting_child。
 - [x] parent Run 进入 waiting_child/subagent_join。
 - [x] RuntimeService 返回 waiting outcome，不保持 tool coroutine。
 - [x] Supervisor 释放 worker/permit。
 - [x] child terminal 触发原 ToolCall wait resolution。
-- [x] child result 作为原 WaitAgents ToolResult 提交。
+- [x] child result 作为原 SpawnAgent ToolResult 提交。
 - [x] parent Run 在 session lock 内恢复，再由 Supervisor 重新调度。
-- [x] all/any/timeout 语义。
+- [x] Host `wait_agents()` 保留多 handle 等待；模型侧每个 sync Spawn 只等待自己的 child。
 - [x] 结果顺序按 wait request，而不是 child completion 时间。
 
 ### D4. Permit 与调度
@@ -414,7 +413,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### D 验收
 
-- [x] 模型可 spawn general/custom definition 并通过 WaitAgents 得到 ToolResult。
+- [x] 模型可 spawn general/custom definition 并通过同一 SpawnAgent 调用得到 ToolResult。
 - [x] 模型可派遣 builtin general 和 user custom，除 definition 内容外经过相同调用路径。
 - [x] create/update/delete 后下一 Run 的 agent_id schema 自动变化，active Run schema 和解析保持冻结。
 - [x] schema 中没有 unavailable definition；general 始终存在于目录，但可被显式 Agent allowlist 从 Run schema 排除。
@@ -423,10 +422,10 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] parent abort while waiting 的 ToolCall wait request 与 child cascade 状态正确。
 - [x] Tool approval rejection 形成 error ToolResult，不创建 child。
 - [x] illegal tool args 不创建 relation。
-- [x] WaitAgents 恢复后同一 tool_call_id/turn_id 不变。
+- [x] SpawnAgent(sync) 恢复后同一 tool_call_id/turn_id 不变。
 - [x] provider continuation 与 tool result 顺序保持现有协议。
 
-退出条件：模型侧 foreground 子智能体完整可用，且等待不占 worker。
+退出条件：模型侧 sync 子智能体完整可用，且等待不占 worker。
 
 ## 里程碑 E：Root 事件树、消息流与 HITL
 
@@ -457,8 +456,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] DTO 标注 agent/task/session/run/tool/source。
 - [x] resolve request 验证 child session/run/tool identity。
 - [x] 错答到 sibling/parent 明确拒绝。
-- [x] foreground child HITL 时 parent 继续 waiting_child。
-- [x] background child HITL 不改变 parent Run。
+- [x] sync child HITL 时 parent 继续 waiting_child。
+- [x] async child HITL 不改变 parent Run。
 - [x] simultaneous child requests 不丢失、不串答。
 - [x] headless/unattended 使用确定性 policy，不无限等待。
 
@@ -484,12 +483,12 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ## 里程碑 F：Background、结果交付与生命周期
 
-### F1. Background spawn
+### F1. Async spawn
 
-- [x] execution_mode=background。
+- [x] execution_mode=async。
 - [x] SpawnAgent 立即返回 handle。
 - [x] parent Run 可继续调用模型/工具。
-- [x] background child 受相同 capability、quota 和 HITL 规则。
+- [x] async child 受相同 capability、quota 和 HITL 规则。
 - [x] 模型工具说明禁止轮询，List/Read 仍可显式查询。
 - [x] child completion 立即产生 result_ready。
 
@@ -497,10 +496,9 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 - [x] DelegationResult 原子提交，只保存 result_message_id/refs/usage/delivery，不复制最终消息文本。
 - [x] delivery_id 稳定。
-- [x] notify_only。
-- [x] next_boundary 映射 Host steer。
-- [x] follow_up 映射 Host follow-up。
-- [x] resume_waiter 只供 foreground。
+- [x] Host 直接派遣使用 notify_only。
+- [x] async 固定 next_boundary，在 active parent 映射 Host steer、idle parent 创建后续 Run。
+- [x] resume_waiter 只供 sync。
 - [x] 使用 producer=host、system_synthetic、稳定 host_source_id。
 - [x] queue/message 提交后才确认 delivered。
 - [x] crash before/after queue/message/delivery update 的所有窗口可恢复。
@@ -527,8 +525,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### F 验收
 
-- [x] parent foreground work 与 background child 同时运行。
-- [x] background result 恰好一次进入父上下文。
+- [x] parent work 与 async child 同时运行。
+- [x] async result 恰好一次进入父上下文。
 - [x] 进程在每个 delivery 窗口退出后恢复不重复。
 - [x] send active/idle 两条路径。
 - [x] interrupt/close/resume identity 不混淆。
@@ -536,7 +534,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] result ready 但未 delivered 可查询且可重试。
 - [x] Host 只订阅状态也不会丢失最终结果。
 
-退出条件：foreground/background、控制和结果联动形成完整闭环。
+退出条件：sync/async、控制和结果联动形成完整闭环。
 
 ## 里程碑 G：恢复、权限、预算与安全加固
 
@@ -558,7 +556,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] agent_id spawn permission patterns。
 - [x] tool_selection=all/selected 先解析 exact EffectiveToolRefs，再与 parent/hard cap 求交。
 - [x] all 不跳过 approval/deny/ToolPolicy，不包含 depth 禁止的 Agent control tools。
-- [x] foreground/background/lifecycle 权限。
+- [x] sync/async/lifecycle 权限。
 - [x] write child、network、MCP、external path 下放限制。
 - [x] 复用逐 ToolCall ApprovalRecord 和 child Session approval_mode。
 - [x] 一次审批不能传播到 sibling、root 或未来 descendant。
@@ -650,7 +648,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] UI 不需要自己实现 cascade、permission 或 delivery。
 - [x] definition editor 显示 source/editable、all/selected tool picker、missing tools、revision 和 next_run 生效提示。
 - [x] builtin general 的编辑/删除控件禁用，但可复制；Host UI 限制之外后端仍强制校验。
-- [x] Interactive 在 foreground parent `waiting_child` 时通过 root inbox 完成 child 工具审批和 AskUser，并继续等待原父 Run。
+- [x] Interactive 在 sync parent `waiting_child` 时通过 root inbox 完成 child 工具审批和 AskUser，并继续等待原父 Run。
 
 ### H3. 配置与启用
 
@@ -676,11 +674,11 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### H 验收
 
-- [x] builtin general foreground 端到端。
+- [x] builtin general sync 端到端。
 - [x] selected-tools custom permission approval 端到端。
 - [x] all-tools custom 仍受 hard deny/ToolPolicy 端到端。
 - [x] definition CRUD -> next Run SpawnAgent schema 自动联动端到端。
-- [x] background exact-once 端到端。
+- [x] async exact-once 端到端。
 - [x] child AskUser 根路由端到端。
 - [x] interrupt/restart/recoverable 端到端。
 - [x] CLI 与 fake Desktop 对同一 tree 显示一致状态。
@@ -694,8 +692,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 ### 正常路径
 
 - Host spawn、模型 SpawnAgent；
-- foreground wait all/any；
-- background notify/next-boundary/follow-up；
+- sync SpawnAgent durable join；
+- async next-boundary 自动交付；
 - child stream；
 - child follow-up/resume；
 - completed result/read/close。
@@ -719,7 +717,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 - max_concurrency=1；
 - 多 root、多 child；
-- parent 与 background child 并行；
+- parent 与 async child 并行；
 - 多 child 同时完成；
 - 多 child 同时 approval/AskUser；
 - duplicate spawn request；
@@ -892,11 +890,11 @@ agent_id/name/description；集中限制 definition 数量和字段长度。
 - builtin/user 只在 editable 管理属性上不同，运行时使用同一 AgentDefinition 与 spawn pipeline。
 - SpawnAgent agent_id schema 与执行解析来自同一 durable AgentCatalogSnapshot，配置从 next_run 生效。
 - all/selected tool selection 都不能突破父级权限、depth 或现有 ToolPolicy。
-- foreground/background 使用同一 spawn 原语。
+- sync/async 使用同一 spawn 原语。
 - waiting parent 不占 execution permit。
 - child stream、root tree 和 HITL 可由任意 Host 使用。
 - 权限、workspace、预算不超过父级上限。
-- background result exact-once。
+- async result exact-once。
 - resume context 不伪装 execution resurrection。
 - restart、cancel、failure 不产生重复执行、孤儿 child 或悬空 resource。
 - 插件和前端均未获得 Runtime/Supervisor 内部控制权。

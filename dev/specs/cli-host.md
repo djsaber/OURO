@@ -62,7 +62,7 @@ connected/failed 状态、transport 和工具数量。MCP manager/resource 只�
 Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 Host 错误边界；类型化 application 错误应
 显示后继续输入循环，并保留已经返回的 durable Session identity，不得以 traceback 终止整个 Host。
 
-foreground parent 返回 `waiting_child` 时，Interactive 不把它渲染为停止，也不把后续 stdin 当成新的根消息。
+sync parent 返回 `waiting_child` 时，Interactive 不把它渲染为停止，也不把后续 stdin 当成新的根消息。
 Host 先订阅 `AgentService.subscribe_agent_tree`，再读取 root interaction inbox；发现 child approval 或 AskUser 后显示
 agent/delegation 来源及有界参数摘要或完整 input request，并携带原 child session/run/tool call/request identity 调用
 `resolve_agent_approval` 或 `resolve_agent_input`。提交后继续依赖订阅唤醒并从 canonical root Run 重建状态，直到父 Run
@@ -107,8 +107,8 @@ builtin general 只可查询或复制，不可编辑、删除或覆盖；目录�
 Agent catalog 发起 Host delegation，child 固定使用 unattended interaction mode；spawn 与 follow-up 在命令进程内
 等待 durable terminal，避免把只存在于即将退出进程的 Supervisor coroutine 宣称为后台 daemon。长期运行 Host 可对
 active parent 使用同一 service 并保持 subscription。模型侧派遣仍只允许当前 active parent Run。
-CLI spawn 固定 `notify_only`；next-boundary/follow-up 可能启动新的 parent Run，只属于能持续拥有 parent
-subscription 与交互策略的长期 Host/模型控制面。
+CLI spawn 是同步 Host delegation：命令等待 durable terminal 后退出，结果只更新 Host 投影。模型侧 async
+SpawnAgent 的 next-boundary 自动投递只属于能持续拥有 parent subscription 与交互策略的长期 Host/模型控制面。
 
 Agent handle JSON 至少包含 delegation/child identity、status、relation revision 和 control state；root tree、interaction
 inbox 与 child stream 都来自 application DTO/cursor。CLI 不自行推断 cascade、permission、delivery 或恢复状态。

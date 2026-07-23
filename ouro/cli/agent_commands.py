@@ -125,11 +125,7 @@ async def _runtime_command(args: argparse.Namespace) -> tuple[dict[str, Any], st
                     task=args.task,
                     description=args.description,
                     nickname=args.nickname,
-                    execution_mode=args.execution_mode,
-                    # A short-lived CLI must not start an interactive parent delivery
-                    # Run that it cannot own after process exit. Long-lived Hosts and
-                    # model control tools retain the complete delivery policy surface.
-                    delivery_policy="notify_only",
+                    execution_mode="sync",
                     context_message_ids=tuple(args.context_message_ids),
                     resource_refs=tuple(args.resource_ids),
                     unattended=True,

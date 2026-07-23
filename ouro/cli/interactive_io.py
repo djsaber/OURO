@@ -160,13 +160,19 @@ async def _follow_waiting_children(
     try:
         while True:
             current = _durable_run_result(runtime, root_session_id, root_run_id)
-            if current.run.status != "waiting_child":
+            # Resolving a synchronous SpawnAgent schedules the same durable parent Run. Its
+            # queued/running states are continuation progress, not Host boundaries.
+            if current.run.status not in {"queued", "running", "waiting_child"}:
                 return current
 
-            pending = tuple(
-                interaction
-                for interaction in agents.list_agent_interactions(root_session_id)
-                if _interaction_identity(interaction) not in resolved_requests
+            pending = (
+                tuple(
+                    interaction
+                    for interaction in agents.list_agent_interactions(root_session_id)
+                    if _interaction_identity(interaction) not in resolved_requests
+                )
+                if current.run.status == "waiting_child"
+                else ()
             )
             for interaction in pending:
                 resolved = await _resolve_child_interaction(

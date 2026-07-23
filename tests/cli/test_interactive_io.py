@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
-from ouro.cli.interactive_io import InteractiveOutput
+from ouro.cli.interactive_io import InteractiveOutput, _follow_waiting_children
 from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
+from ouro.core.results import RunResult
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
 
@@ -20,6 +24,70 @@ def _event(
         sequence=sequence,
         payload={"turn_id": "turn_1", **payload},
     )
+
+
+async def test_waiting_child_follower_ignores_running_continuation_state() -> None:
+    session = SessionRecord(session_id="ses_root")
+    waiting = RunRecord(session_id=session.session_id, run_id="run_root", status="waiting_child")
+
+    class SequencedStore:
+        def __init__(self) -> None:
+            self.index = 0
+            self.runs = (
+                waiting,
+                waiting.model_copy(update={"status": "running"}),
+                waiting.model_copy(update={"status": "completed"}),
+            )
+
+        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
+            assert session_id == session.session_id
+            return SimpleNamespace(
+                session=session,
+                runs=(self.runs[self.index],),
+                messages=(),
+            )
+
+    store = SequencedStore()
+
+    class Subscription:
+        def __init__(self) -> None:
+            self.closed = False
+            self.get_count = 0
+
+        async def get(self) -> object:
+            self.get_count += 1
+            store.index += 1
+            return object()
+
+        def close(self) -> None:
+            self.closed = True
+
+    subscription = Subscription()
+
+    class AgentHost:
+        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+            assert root_session_id == session.session_id
+            return subscription
+
+        def list_agent_interactions(self, root_session_id: str) -> tuple[()]:
+            assert root_session_id == session.session_id
+            return ()
+
+    output = InteractiveOutput(lambda _text: None)
+    resolved = await _follow_waiting_children(
+        RunResult(session=session, run=waiting),
+        runtime=SimpleNamespace(store=store),
+        agents=AgentHost(),
+        input_func=lambda _prompt: "",
+        output_func=lambda _text: None,
+        output=output,
+    )
+
+    assert resolved is not None
+    assert resolved.run.status == "completed"
+    assert subscription.get_count == 2
+    assert subscription.closed is True
+    await output.close()
 
 
 async def test_interactive_output_reports_preparation_and_model_wait_durations() -> None:

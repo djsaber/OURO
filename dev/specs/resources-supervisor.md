@@ -58,7 +58,7 @@ durable 状态转换仍由 `RuntimeService`、`RunLifecycle` 和 `SessionStore` 
 - AgentService 通过窄 scheduler port 使用 `submit_prepared` 派发已经 durable 创建的 child Run；不会递归进入
   RuntimeService，也不建立 Agent 专用 worker pool。
 - parent `waiting_child` 立即 park 并释放 permit；child terminal 后以 `resume_agent_wait` 恢复原父 Run。即使
-  `max_concurrency=1`，foreground join 也不会死锁。
+  `max_concurrency=1`，sync join 也不会死锁。
 
 ## 订阅、detach、abort 与 shutdown
 

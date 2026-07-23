@@ -48,11 +48,10 @@ class CapturingProvider:
         yield ProviderStreamEvent(type="done")
 
 
-class ForegroundChildInteractionProvider:
-    provider_id = "foreground-child-interaction"
+class SyncChildInteractionProvider:
+    provider_id = "sync-child-interaction"
 
-    def __init__(self, store: LocalSessionStore, *, mode: str, target: Path | None = None) -> None:
-        self.store = store
+    def __init__(self, *, mode: str, target: Path | None = None) -> None:
         self.mode = mode
         self.target = target
         self.root_round = 0
@@ -103,26 +102,8 @@ class ForegroundChildInteractionProvider:
                         "agent_id": "general",
                         "task": "Request one host interaction.",
                         "description": "Interactive child",
-                        "execution_mode": "foreground",
+                        "execution_mode": "sync",
                     },
-                },
-            )
-            yield ProviderStreamEvent(type="done")
-            return
-        if self.root_round == 1:
-            self.root_round += 1
-            root = next(
-                session
-                for session in self.store.list_sessions()
-                if session.session_kind == "primary"
-            )
-            delegation = self.store.list_delegations(root.session_id)[0]
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
-                    "id": "wait_child",
-                    "name": "WaitAgents",
-                    "arguments": {"delegation_ids": [delegation.delegation_id]},
                 },
             )
             yield ProviderStreamEvent(type="done")
@@ -157,19 +138,23 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
     )
 
 
-def _agent_runtime(tmp_path, provider: ForegroundChildInteractionProvider) -> RuntimeService:
+def _agent_runtime(
+    tmp_path,
+    store: LocalSessionStore,
+    provider: SyncChildInteractionProvider,
+) -> RuntimeService:
     registry = ToolRegistry()
     for tool in builtin_tools():
         registry.register(tool)
     return RuntimeService(
-        store=provider.store,
+        store=store,
         adapter=RuntimeAdapter(
             provider,
             ModelMetadata(model_id="agent-hitl", provider_id=provider.provider_id),
         ),
         tools=registry,
         default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, provider.store.sessions_dir),
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
 
 
@@ -820,15 +805,15 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
     assert "Using notes.md." in outputs
 
 
-async def test_interactive_approves_foreground_child_tool_and_resumes_parent(
+async def test_interactive_approves_sync_child_tool_and_resumes_parent(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     target = tmp_path / "child-approved.txt"
-    provider = ForegroundChildInteractionProvider(store, mode="approval", target=target)
-    runtime = _agent_runtime(tmp_path, provider)
+    provider = SyncChildInteractionProvider(mode="approval", target=target)
+    runtime = _agent_runtime(tmp_path, store, provider)
 
     def fake_runtime(*args, event_sink=None, **kwargs):
         del args, kwargs
@@ -854,16 +839,20 @@ async def test_interactive_approves_foreground_child_tool_and_resumes_parent(
     )
     assert "parent resumed after child" in outputs
     assert "Run stopped with status: waiting_child" not in outputs
+    assert "Run stopped with status: running" not in outputs
+    assert "child interaction resolved" not in outputs
+    assert not any(output.startswith("● Write ·") for output in outputs)
+    assert sum(output.startswith("● Response started") for output in outputs) == 2
 
 
-async def test_interactive_answers_foreground_child_question_and_resumes_parent(
+async def test_interactive_answers_sync_child_question_and_resumes_parent(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    provider = ForegroundChildInteractionProvider(store, mode="question")
-    runtime = _agent_runtime(tmp_path, provider)
+    provider = SyncChildInteractionProvider(mode="question")
+    runtime = _agent_runtime(tmp_path, store, provider)
 
     def fake_runtime(*args, event_sink=None, **kwargs):
         del args, kwargs
@@ -888,6 +877,10 @@ async def test_interactive_answers_foreground_child_question_and_resumes_parent(
     )
     assert "parent resumed after child" in outputs
     assert "Run stopped with status: waiting_child" not in outputs
+    assert "Run stopped with status: running" not in outputs
+    assert "child interaction resolved" not in outputs
+    assert not any(output.startswith("● AskUser ·") for output in outputs)
+    assert sum(output.startswith("● Response started") for output in outputs) == 2
 
 
 async def test_interactive_aborts_waiting_user(tmp_path) -> None:

@@ -130,8 +130,8 @@ identity 的持久化项均按无效项移除。
 
 ## 子智能体等待
 
-模型侧 `WaitAgents` 不在工具 handler 内轮询 child。`ToolCallBatchRecord` 的目标调用保存 durable
-`AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
+模型侧 `SpawnAgent(execution_mode=sync)` 不在工具 handler 内轮询 child。原 SpawnAgent 所在
+`ToolCallBatchRecord` 保存 durable `AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
 `RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/tool-call
 identity 解析该调用并恢复同一父 Run；重复结果通知只会命中已经解析的 checkpoint，不创建第二个父 Run。
 

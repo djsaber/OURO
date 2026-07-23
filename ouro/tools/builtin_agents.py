@@ -26,44 +26,6 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
     controls = (
         Tool(
             definition=ToolDefinition(
-                name="WaitAgents",
-                description=(
-                    "Wait durably for one or more child Agents. The parent releases its runtime "
-                    "worker while waiting and resumes with the results."
-                ),
-                parameters_schema={
-                    "type": "object",
-                    "properties": {
-                        "delegation_ids": {
-                            "type": "array",
-                            "items": {"type": "string", "minLength": 1},
-                            "minItems": 1,
-                            "maxItems": 32,
-                            "uniqueItems": True,
-                        },
-                        "completion_condition": {
-                            "type": "string",
-                            "enum": ["all", "any"],
-                            "default": "all",
-                        },
-                        "timeout_seconds": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 86_400,
-                        },
-                    },
-                    "required": ["delegation_ids"],
-                    "additionalProperties": False,
-                },
-                effect="read_only",
-                execution_mode="sequential",
-                batch_behavior="exclusive",
-                metadata=metadata,
-            ),
-            handler=_wait,
-        ),
-        Tool(
-            definition=ToolDefinition(
                 name="ListAgents",
                 description=(
                     "List direct child Agents and bounded terminal result references. "
@@ -151,15 +113,10 @@ def _spawn_control_tool(
                 "type": "string",
                 "enum": list(catalog.spawn_policy.allowed_execution_modes),
                 "default": (
-                    "background"
-                    if "background" in catalog.spawn_policy.allowed_execution_modes
+                    "sync"
+                    if "sync" in catalog.spawn_policy.allowed_execution_modes
                     else catalog.spawn_policy.allowed_execution_modes[0]
                 ),
-            },
-            "delivery_policy": {
-                "type": "string",
-                "enum": ["notify_only", "next_boundary", "follow_up"],
-                "default": "notify_only",
             },
             "context_message_ids": {
                 "type": "array",
@@ -187,8 +144,9 @@ def _spawn_control_tool(
             name="SpawnAgent",
             display_name="派遣子智能体",
             description=(
-                "Create an independent child Agent and return its durable handle immediately. "
-                "Use WaitAgents when the result is required; do not poll repeatedly."
+                "Dispatch an independent child Agent. In sync mode this call completes only "
+                "after the child finishes and returns its result. In async mode it returns a "
+                "durable handle immediately and the result is delivered automatically."
             ),
             parameters_schema=spawn_schema,
             effect="state_changing",
@@ -208,8 +166,7 @@ def _intent_result(invocation: ToolInvocation, request: AgentControlRequest) -> 
 
 def _spawn(invocation: ToolInvocation) -> ToolResult:
     arguments = invocation.arguments
-    execution_mode = arguments.get("execution_mode", "background")
-    delivery_policy = arguments.get("delivery_policy", "notify_only")
+    execution_mode = arguments.get("execution_mode", "sync")
     return _intent_result(
         invocation,
         AgentControlRequest(
@@ -220,31 +177,12 @@ def _spawn(invocation: ToolInvocation) -> ToolResult:
             description=str(arguments["description"]),
             nickname=_optional_string(arguments.get("nickname")),
             execution_mode=execution_mode,
-            delivery_policy=(
-                "resume_waiter" if execution_mode == "foreground" else delivery_policy
-            ),
             context_message_ids=tuple(
                 str(item) for item in arguments.get("context_message_ids", ())
             ),
             resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
         ),
     )
-
-
-def _wait(invocation: ToolInvocation) -> ToolResult:
-    arguments = invocation.arguments
-    return _intent_result(
-        invocation,
-        AgentControlRequest(
-            action="wait",
-            request_id=_request_id(invocation),
-            delegation_ids=tuple(str(item) for item in arguments["delegation_ids"]),
-            completion_condition=arguments.get("completion_condition", "all"),
-            timeout_seconds=arguments.get("timeout_seconds"),
-        ),
-    )
-
-
 def _list(invocation: ToolInvocation) -> ToolResult:
     return _intent_result(
         invocation,

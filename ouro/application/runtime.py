@@ -1923,7 +1923,7 @@ class RuntimeService:
             calls = [
                 call.model_copy(
                     update={
-                        "status": "completed",
+                        "status": "failed" if result.is_error else "completed",
                         "agent_wait": resolved_wait,
                         "result": result,
                     }
@@ -1948,6 +1948,22 @@ class RuntimeService:
                     "tool_call_id": tool_call_id,
                     "wait_id": resolved_wait.wait_id,
                     "resolution": resolution.model_dump(mode="json"),
+                },
+            )
+            sequence = await self.event_recorder.emit(
+                emitted,
+                sequence,
+                session_id=session_id,
+                run_id=run_id,
+                event_type="tool_call_completed",
+                payload={
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                    "tool_call_id": result.tool_call_id,
+                    "tool_name": result.tool_name,
+                    "status": "failed" if result.is_error else "completed",
+                    "is_error": result.is_error,
+                    "source_index": waiting_call.request.source_index,
                 },
             )
             resumed = await self._continue_resolved_batch(

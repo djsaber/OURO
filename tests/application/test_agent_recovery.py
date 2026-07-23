@@ -422,9 +422,14 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
         calls=[
             ToolBatchCall(
                 request=ToolCallRequest(
-                    id="call_wait",
-                    name="WaitAgents",
-                    arguments={"delegation_ids": ["dlg_missing"]},
+                    id="call_spawn",
+                    name="SpawnAgent",
+                    arguments={
+                        "agent_id": "general",
+                        "task": "Inspect the repository.",
+                        "description": "Inspect repository",
+                        "execution_mode": "sync",
+                    },
                 ),
                 status="waiting_child",
                 agent_wait=wait,

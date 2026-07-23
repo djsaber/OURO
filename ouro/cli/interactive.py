@@ -4,6 +4,7 @@ import asyncio
 from contextlib import suppress
 from pathlib import Path
 
+from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
@@ -21,6 +22,7 @@ from ouro.cli.run import (
 )
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
+from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.results import RunResult
 from ouro.core.session_controls import AttributedSessionInput
@@ -53,10 +55,10 @@ async def run_interactive(
                 home,
                 provider_options=provider_options,
                 system_prompt=system_prompt,
-                event_sink=output.handle_event,
                 session_backend=session_backend,
             )
             owned_application = LocalApplication.from_runtime(runtime, home=home)
+            runtime.add_event_sink(_primary_session_event_sink(runtime, output))
             await output.start_mcp_connection(owned_application.mcp.startup_configs)
             await owned_application.start()
             await output.finish_mcp_connection(owned_application.mcp.startup_records)
@@ -77,7 +79,7 @@ async def run_interactive(
                 await runtime.close()
             raise
     else:
-        runtime.add_event_sink(output.handle_event)
+        runtime.add_event_sink(_primary_session_event_sink(runtime, output))
 
     try:
         return await _run_interactive_session(
@@ -326,3 +328,23 @@ class _PrefetchedInput:
 def _interactive_title(prompt: str) -> str:
     normalized = " ".join(prompt.split())
     return normalized[:60] if normalized else "New session"
+
+
+def _primary_session_event_sink(
+    runtime: RuntimeService,
+    output: InteractiveOutput,
+) -> RuntimeEventSink:
+    """Limit the terminal transcript to primary Session execution events."""
+
+    visible_sessions: dict[str, bool] = {}
+
+    async def handle_event(event: EventRecord) -> None:
+        visible = visible_sessions.get(event.session_id)
+        if visible is None:
+            session = runtime.store.load_session_record(event.session_id)
+            visible = session.session_kind == "primary"
+            visible_sessions[event.session_id] = visible
+        if visible:
+            await output.handle_event(event)
+
+    return handle_event

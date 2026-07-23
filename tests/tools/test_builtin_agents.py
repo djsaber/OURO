@@ -23,7 +23,7 @@ def test_spawn_schema_uses_the_run_frozen_execution_modes() -> None:
                 )
             ),
         ),
-        spawn_policy=AgentSpawnPolicy(allowed_execution_modes=("foreground",)),
+        spawn_policy=AgentSpawnPolicy(allowed_execution_modes=("async",)),
     )
 
     spawn = next(
@@ -33,8 +33,33 @@ def test_spawn_schema_uses_the_run_frozen_execution_modes() -> None:
 
     assert execution_mode == {
         "type": "string",
-        "enum": ["foreground"],
-        "default": "foreground",
+        "enum": ["async"],
+        "default": "async",
+    }
+    assert "delivery_policy" not in spawn.definition.parameters_schema["properties"]
+
+
+def test_spawn_schema_defaults_to_synchronous_dispatch() -> None:
+    catalog = AgentCatalogSnapshot(
+        entries=(
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="general",
+                    name="General",
+                    description="General child.",
+                )
+            ),
+        )
+    )
+
+    spawn = next(
+        tool for tool in agent_control_tools(catalog) if tool.definition.name == "SpawnAgent"
+    )
+
+    assert spawn.definition.parameters_schema["properties"]["execution_mode"] == {
+        "type": "string",
+        "enum": ["sync", "async"],
+        "default": "sync",
     }
 
 
@@ -42,7 +67,7 @@ def test_empty_agent_catalog_omits_only_spawn_control() -> None:
     names = [tool.definition.name for tool in agent_control_tools(AgentCatalogSnapshot())]
 
     assert "SpawnAgent" not in names
-    assert names == ["WaitAgents", "ListAgents", "SendAgentMessage", "InterruptAgent"]
+    assert names == ["ListAgents", "SendAgentMessage", "InterruptAgent"]
 
 
 @pytest.mark.parametrize("source", ["third_party_plugin", "mcp"])

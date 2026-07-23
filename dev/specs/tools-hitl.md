@@ -25,7 +25,7 @@
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
-- SpawnAgent、WaitAgents、ListAgents、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
+- SpawnAgent、ListAgents、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
   product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过
@@ -67,8 +67,8 @@
 - `sequential`：逐个执行，适合有显式顺序或共享副作用的调用。
 - `parallel`：受 `max_concurrency` 限制并发执行。
 - AskUser 和审批会在实际执行前完成 preflight；未解决交互时不启动批次副作用。
-- WaitAgents 使用 exclusive/sequential 批次行为；其调用可进入 durable `waiting_child`，不会在 handler 内占用
-  worker 轮询。
+- SpawnAgent(sync) 可进入 durable `waiting_child`，不会在 handler 内占用 worker 轮询；async 调用仍可与其他兼容
+  工具共同执行。
 - 一个调用失败不取消其他已经允许执行的调用；批次结果保留每项状态。
 
 ## AskUser

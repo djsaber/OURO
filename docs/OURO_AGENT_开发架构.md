@@ -88,7 +88,7 @@ Host 通过 activity 快照和 durable event cursor 重新同步。
 
 子智能体不是另一套 Agent 内核。`AgentDefinitionService` 管理 builtin/custom 能力模板；primary Run 启动时把
 可用 definition、精确工具 identity、最低 permission mode、执行能力和 `AgentSpawnPolicy` 冻结为
-`AgentCatalogSnapshot`。目录先与 agent/model pattern、foreground/background、bound lifecycle 以及
+`AgentCatalogSnapshot`。目录先与 agent/model pattern、sync/async、bound lifecycle 以及
 write/network/MCP/external-path hard cap 求交；`SpawnAgent` 的 schema 和 application handler 使用同一 Run 快照。
 `SpawnAgent` 等 product-owned
 工具只在普通工具校验、权限和审批边界内产生类型化控制请求，真正的 Session/Run/Delegation 写入由
@@ -96,14 +96,14 @@ application 层 `AgentService` 完成。child instance 是独立 `SessionRecord(
 follow-up 是新的普通 `RunRecord`；`DelegationRecord` 只保存父子关系、冻结能力、结果和交付 identity，不镜像
 child Run 的运行状态。
 
-foreground 使用原 ToolBatchCall 中的 durable `AgentWaitRequest`：父 Run 进入 `waiting_child/subagent_join` 后释放
-Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。background 复用 Host synthetic input
-队列，以稳定 delivery/queue identity 实现 next-boundary 或 follow-up 的一次性交付。child Approval/AskUser 始终
+sync 使用原 SpawnAgent ToolBatchCall 中的 durable `AgentWaitRequest`：父 Run 进入 `waiting_child/subagent_join` 后释放
+Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。async 复用 Host synthetic input
+队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
 保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
 request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child 和一个 write-capable child；
 child 的工具、workspace、审批与 RunBudgetPolicy 只能从父级能力上限收紧。
 
-循环交互 CLI 作为长期运行 Host，在 foreground parent 返回 `waiting_child` 后不会把它当成终态。它先建立现有
+循环交互 CLI 作为长期运行 Host，在 sync parent 返回 `waiting_child` 后不会把它当成终态。它先建立现有
 AgentTree 订阅，再消费 AgentService 的 root interaction inbox，展示 child 来源及有界工具参数预览或提问数据，
 并用完整 child identity 路由批准、拒绝、参数修改、终止或回答。决议提交后继续由 canonical subscription 驱动，
 直到原父 Run 恢复或终止；CLI 不读取 child Store、不轮询，也不建立第二套审批状态机。
@@ -124,7 +124,7 @@ system/plugin synthetic context 不会因父子关系自动复制。投影以 un
 预算，不进入 SpawnAgent 描述、根树或关系事件。
 
 资源引用同样不隐式继承。ResourceService 在源 Session mutation boundary 内验证不可变内容，再显式附加带来源的
-child 引用；child 输出资源进入 List/Wait/background result 的父 canonical message 前，必须从 child 到 parent
+child 引用；child 输出资源进入 List、sync SpawnAgent result 或 async result 的父 canonical message 前，必须从 child 到 parent
 重新验证并复制引用。Delegation 只保存 message/resource identity 与 digest，不复制父 prompt、资源 blob 或 child
 最终文本。
 

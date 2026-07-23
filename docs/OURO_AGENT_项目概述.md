@@ -91,10 +91,10 @@ AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 a
 无效工具 schema。
 
 每次派遣创建 durable `DelegationRecord`、独立 child Session 和普通 child Run，继续复用现有模型循环、工具、审批、
-AskUser、资源、预算和恢复。foreground parent 以 `waiting_child` park 并释放 Supervisor permit；background 结果通过
-稳定 delivery identity 进行 notify/next-boundary/follow-up exact-once 交付。root AgentTree、interaction inbox 和
+AskUser、资源、预算和恢复。sync parent 以 `waiting_child` park 并释放 Supervisor permit；async 结果通过
+稳定 delivery identity 在 next-boundary 自动进行 exact-once 交付。root AgentTree、interaction inbox 和
 child event stream 都是 application 投影，Host refresh/detach 不改变 child 生命周期。
-循环交互 Host 在 foreground parent 等待 child 时直接消费该 interaction inbox，可批准、拒绝或修改 child 工具调用，
+循环交互 Host 在 sync parent 等待 child 时直接消费该 interaction inbox，可批准、拒绝或修改 child 工具调用，
 也可回答 child AskUser；所有决议都按 child session/run/tool call/request identity 精确路由，完成后继续原父 Run。
 
 首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child 和一个 write-capable child。child 能力
@@ -159,7 +159,7 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 ### 运行界面
 
 - Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互；工具名称及参数分片在模型
-  生成期间动态预览，完整响应后按调用顺序定稿；foreground 子智能体的审批和提问通过 root interaction inbox
+  生成期间动态预览，完整响应后按调用顺序定稿；sync 子智能体的审批和提问通过 root interaction inbox
   在同一输入循环中处理。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。
 - JSON：stdout 输出稳定机器可读结果，并使用分类退出码。

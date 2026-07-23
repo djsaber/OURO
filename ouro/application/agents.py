@@ -5,7 +5,6 @@ import hashlib
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import timedelta
 from functools import partial
 from typing import Literal, Protocol, cast
 
@@ -48,6 +47,7 @@ from ouro.core.agents import (
     DelegationRecord,
     DelegationResult,
     ResultDelivery,
+    delivery_policy_for_execution_mode,
 )
 from ouro.core.base import utc_now
 from ouro.core.context import estimate_text_tokens
@@ -251,17 +251,23 @@ class AgentService:
                     description=request.description,
                     nickname=request.nickname,
                     execution_mode=request.execution_mode,
-                    delivery_policy=request.delivery_policy,
                     context_message_ids=request.context_message_ids,
                     resource_refs=request.resource_refs,
                 )
             )
+            if request.execution_mode == "sync":
+                return AgentControlResult(
+                    status="waiting_child",
+                    wait=AgentWaitRequest(
+                        delegation_ids=(handle.delegation_id,),
+                        completion_condition="all",
+                    ),
+                )
+            structured = {"handle": handle.model_dump(mode="json")}
             return AgentControlResult(
-                content=json.dumps(handle.model_dump(mode="json"), ensure_ascii=False),
-                structured={"handle": handle.model_dump(mode="json")},
+                content=json.dumps(structured, ensure_ascii=False),
+                structured=structured,
             )
-        if request.action == "wait":
-            return self._prepare_wait(request, session=session, run=run)
         if request.action == "list":
             return self._list_control(session)
         if request.action == "send":
@@ -317,6 +323,8 @@ class AgentService:
             or call.agent_wait != wait
         ):
             raise ValueError("parent Agent wait was not durably parked")
+        if call.request.name != "SpawnAgent" or len(wait.delegation_ids) != 1:
+            raise ValueError("durable Agent wait must belong to one synchronous SpawnAgent call")
         if wait.wait_id in self._armed_wait_ids:
             return
         self._armed_wait_ids.add(wait.wait_id)
@@ -325,6 +333,7 @@ class AgentService:
                 session_id=session.session_id,
                 run_id=run.run_id,
                 tool_call_id=tool_call_id,
+                tool_name=call.request.name,
                 wait=wait,
             ),
             name=f"ouro-agent-wait-{wait.wait_id}",
@@ -487,7 +496,11 @@ class AgentService:
             context_digest=initial_context.digest,
             execution_mode=request.execution_mode,
             lifecycle_binding=request.lifecycle_binding,
-            delivery_policy=request.delivery_policy,
+            delivery_policy=(
+                "notify_only"
+                if request.parent_tool_call_id is None
+                else delivery_policy_for_execution_mode(request.execution_mode)
+            ),
             depth=1,
             definition=entry.definition,
             effective_tools=entry.effective_tools,
@@ -1222,11 +1235,10 @@ class AgentService:
             return await self._record_delivery(relation, **existing_target)
 
         host_source_id = f"ouro.subagents/results/{result.delivery.delivery_id}"
-        mode: Literal["steer", "follow_up"] = "steer" if policy == "next_boundary" else "follow_up"
         handle = await self.scheduler.route_host_input(
             HostSessionInput(
                 prompt=self._delivery_prompt(relation),
-                mode=mode,
+                mode="steer",
                 host_source_id=host_source_id,
                 queue_id=result.delivery.delivery_id,
                 resource_refs=parent_resource_refs,
@@ -1239,10 +1251,14 @@ class AgentService:
                 target_queue_id=result.delivery.delivery_id,
             )
         settled = await self.scheduler.wait(handle)
+        delivered = self._load_by_id(relation.delegation_id)
+        existing_target = self._existing_delivery_target(delivered)
+        if existing_target is not None:
+            return await self._record_delivery(delivered, **existing_target)
         if settled.status == "failed" or settled.run_id is None:
-            return relation
+            return delivered
         return await self._record_delivery(
-            self._load_by_id(relation.delegation_id),
+            delivered,
             target_run_id=settled.run_id,
         )
 
@@ -1334,51 +1350,6 @@ class AgentService:
         )
         return updated
 
-    def _prepare_wait(
-        self,
-        request: AgentControlRequest,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-    ) -> AgentControlResult:
-        relations = tuple(
-            self._require_parent(delegation_id, session.session_id)
-            for delegation_id in request.delegation_ids
-        )
-        terminal_ids = tuple(
-            relation.delegation_id for relation in relations if self._is_terminal(relation)
-        )
-        condition_met = (
-            len(terminal_ids) == len(relations)
-            if request.completion_condition == "all"
-            else bool(terminal_ids)
-        )
-        if condition_met:
-            return self._wait_result(
-                request.delegation_ids,
-                reason="condition_met",
-                wait_id=None,
-                parent_session_id=session.session_id,
-            )
-        if request.timeout_seconds == 0:
-            return self._wait_result(
-                request.delegation_ids,
-                reason="timeout",
-                wait_id=None,
-                parent_session_id=session.session_id,
-            )
-        deadline = (
-            utc_now() + timedelta(seconds=request.timeout_seconds)
-            if request.timeout_seconds is not None
-            else None
-        )
-        wait = AgentWaitRequest(
-            delegation_ids=request.delegation_ids,
-            completion_condition=request.completion_condition,
-            deadline=deadline,
-        )
-        return AgentControlResult(status="waiting_child", wait=wait)
-
     def _list_control(self, session: SessionRecord) -> AgentControlResult:
         relations = self.store.list_delegations(
             session.root_session_id or session.session_id,
@@ -1417,6 +1388,7 @@ class AgentService:
         session_id: str,
         run_id: str,
         tool_call_id: str,
+        tool_name: str,
         wait: AgentWaitRequest,
     ) -> None:
         reason: Literal["condition_met", "timeout", "interrupted"]
@@ -1471,13 +1443,15 @@ class AgentService:
             resolved_delegation_ids=resolved_ids,
             reason=reason,
         )
+        for delegation_id in resolution.resolved_delegation_ids:
+            await self._finalize_result(delegation_id)
         resource_refs = self._copy_result_resources_to_parent(
             (self._load_by_id(item) for item in resolution.resolved_delegation_ids),
             parent_session_id=session_id,
         )
-        result = self._wait_tool_result(
+        result = self._spawn_tool_result(
             tool_call_id=tool_call_id,
-            wait=wait,
+            tool_name=tool_name,
             resolution=resolution,
             resource_refs=resource_refs,
         )
@@ -1491,78 +1465,63 @@ class AgentService:
             )
         except (FileNotFoundError, SessionBusyError, ValueError):
             return
-        resumed = await self.scheduler.wait(handle)
-        if resumed.status != "failed":
+        await self.scheduler.wait(handle)
+        if self._tool_result_is_committed(
+            session_id=session_id,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+        ):
             for delegation_id in resolution.resolved_delegation_ids:
                 await self._mark_waiter_delivery(delegation_id, target_run_id=run_id)
 
-    def _wait_result(
-        self,
-        delegation_ids: tuple[str, ...],
-        *,
-        reason: Literal["condition_met", "timeout"],
-        wait_id: str | None,
-        parent_session_id: str,
-    ) -> AgentControlResult:
-        structured = self._wait_structured(delegation_ids, reason=reason, wait_id=wait_id)
-        resource_refs = self._copy_result_resources_to_parent(
-            (self._load_by_id(item) for item in delegation_ids),
-            parent_session_id=parent_session_id,
-        )
-        return AgentControlResult(
-            content=json.dumps(structured, ensure_ascii=False),
-            structured=structured,
-            resource_refs=resource_refs,
-        )
-
-    def _wait_tool_result(
+    def _spawn_tool_result(
         self,
         *,
         tool_call_id: str,
-        wait: AgentWaitRequest,
+        tool_name: str,
         resolution: AgentWaitResolution,
         resource_refs: tuple[str, ...],
     ) -> ToolResult:
-        structured = self._wait_structured(
-            wait.delegation_ids,
-            reason=resolution.reason,
-            wait_id=wait.wait_id,
-        )
+        if len(resolution.resolved_delegation_ids) != 1:
+            raise ValueError("synchronous SpawnAgent must resolve exactly one child")
+        relation = self._load_by_id(resolution.resolved_delegation_ids[0])
+        if relation.result is None:
+            raise ValueError("synchronous SpawnAgent child has no terminal result")
+        detail = self.read_agent(relation.delegation_id)
+        structured = {
+            "handle": self._handle(relation).model_dump(mode="json"),
+            "result": {
+                "terminal_status": relation.result.terminal_status,
+                "result_message_id": relation.result.result_message_id,
+                "resource_refs": list(relation.result.resource_refs),
+                "usage": relation.result.usage,
+                "final_text": detail.final_text[:8_000],
+            },
+        }
         return ToolResult(
             tool_call_id=tool_call_id,
-            tool_name="WaitAgents",
+            tool_name=tool_name,
+            is_error=relation.result.terminal_status != "completed",
             content=json.dumps(structured, ensure_ascii=False),
             structured=structured,
             resource_refs=list(resource_refs),
             ended_at=utc_now(),
         )
 
-    def _wait_structured(
+    def _tool_result_is_committed(
         self,
-        delegation_ids: tuple[str, ...],
         *,
-        reason: str,
-        wait_id: str | None,
-    ) -> dict[str, object]:
-        agents: list[dict[str, object]] = []
-        for delegation_id in delegation_ids:
-            relation = self._load_by_id(delegation_id)
-            item: dict[str, object] = {"handle": self._handle(relation).model_dump(mode="json")}
-            if relation.result is not None:
-                detail = self.read_agent(relation.delegation_id)
-                item["result"] = {
-                    "terminal_status": relation.result.terminal_status,
-                    "result_message_id": relation.result.result_message_id,
-                    "resource_refs": list(relation.result.resource_refs),
-                    "usage": relation.result.usage,
-                    "final_text": detail.final_text[:8_000],
-                }
-            agents.append(item)
-        return {
-            "wait_id": wait_id,
-            "reason": reason,
-            "agents": agents,
-        }
+        session_id: str,
+        run_id: str,
+        tool_call_id: str,
+    ) -> bool:
+        snapshot = self.store.load_runtime_session(session_id)
+        return any(
+            message.run_id == run_id
+            and message.tool_result is not None
+            and message.tool_result.tool_call_id == tool_call_id
+            for message in snapshot.messages
+        )
 
     def _copy_result_resources_to_parent(
         self,

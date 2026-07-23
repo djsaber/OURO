@@ -9,7 +9,7 @@
 application service/DTO 直接操作；CLI、Desktop、API 或其他 Host 不拥有子智能体业务状态机。
 
 当前实现已经完成首版框架闭环：Run 冻结 AgentDefinition 目录、durable Delegation、独立 child Session/Run、
-Host/CLI 与模型控制面、foreground/background、durable join、exact-once 结果交付、HITL 路由、取消级联、恢复协调、
+Host/CLI 与模型控制面、sync/async、durable join、exact-once 结果交付、HITL 路由、取消级联、恢复协调、
 显式 spawn/capability 权限求交、执行边界动态撤销、共享预算上限，以及可重建且可动态订阅的 root
 AgentTree/interaction projection。本规格只陈述已经实现并有自动化证据的首版语义；延后能力集中列在文末，不能
 从当前闭环外推。
@@ -17,7 +17,7 @@ AgentTree/interaction projection。本规格只陈述已经实现并有自动化
 ## 设计目标
 
 - 子智能体复用现有 Session、Run、Message、Event、ToolBatch、Approval、AskUser 和恢复语义。
-- 同一套非阻塞 spawn 原语覆盖前台等待、后台运行、并行派遣和后续批量编排。
+- 同一套非阻塞 spawn 原语覆盖同步等待、异步运行、并行派遣和后续批量编排。
 - 父子委派具有 durable identity、明确来源、权限上限、预算和结果交付状态。
 - child 的完整消息与工具流可独立订阅；根 Host 可展示有界的整棵 Agent 活动树。
 - Host detach、进程退出、审批等待和失败不会伪造完成、重复副作用或丢失 canonical 状态。
@@ -79,11 +79,11 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
    或排队 Host synthetic input。
 5. user plugin 和 builtin plugin 都不得直接持有 RuntimeService、SessionStore、Supervisor 或可变 Agent registry。
 6. 同一 child Session 同时最多一个 active Run；根 Session 与不同 child Session 可并发运行。
-7. foreground 等待是 spawn 后的 durable join，不是另一套执行路径。
+7. sync 等待是 spawn 后的 durable join，不是另一套执行路径。
 8. waiting child、waiting approval 和 waiting user 不占用模型/工具执行 permit。
 9. Delegation、child Session、child Run、result delivery 和 interaction 都有可重建的 durable identity。
 10. child terminal 状态不能由 UI、内存 task、进程退出码或缺失事件单独推断。
-11. background result 必须保留 Host/Agent provenance，不能写成 role=user。
+11. async result 必须保留 Host/Agent provenance，不能写成 role=user。
 12. 权限求值先应用不可突破的 capability cap，再应用 auto/approval/deny。
 13. 恢复不得自动重放 running 或 unknown_outcome 的 child 工具调用。
 14. Host 只能通过 application service/DTO 订阅和控制 child，不直接读取 delegation 文件。
@@ -97,7 +97,7 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
 
     Model or Host
           |
-          | Spawn / Wait / Send / Interrupt / Close / List
+          | Spawn(sync|async) / Send / Interrupt / Close / List
           v
     application AgentService
           |
@@ -297,12 +297,12 @@ DelegationRecord 是 canonical record，建议字段如下：
 
 execution_mode：
 
-- foreground：父 Run 建立 durable wait，child terminal 后恢复父 Run；
-- background：spawn 返回后父 Run 可继续，child 结果按 delivery policy 交付。
+- sync：原 SpawnAgent ToolCall 建立 durable wait，child terminal 后恢复父 Run；
+- async：SpawnAgent 立即返回 handle，父 Run 可继续，child 结果自动在安全边界交付。
 
 lifecycle_binding：
 
-- bound：父 Run aborted/failed 或 root 生命周期关闭时按规则级联 child；父正常完成后 background child 可继续；默认值；
+- bound：父 Run aborted/failed 或 root 生命周期关闭时按规则级联 child；父正常完成后 async child 可继续；默认值；
 - detached：保留的领域取值；当前首版在 config、Host request 和模型请求三个边界都明确拒绝。
 
 Delegation 不保存一套与 child Run 同步变化的执行状态机。关系自身只保存：
@@ -364,7 +364,8 @@ RunStatus 增加 waiting_child，并纳入 active Run 集合。RunPhase 增加 s
 session_status_for_run 将 waiting_child 映射为 running，保持 SessionStatus 的粗粒度，不把子智能体 UI 状态扩张进
 SessionStatus。
 
-WaitAgents 返回类型化 AgentWaitRequest，并把请求与解析结果保存在发起等待的现有 ToolBatchCall 上，至少包含：
+SpawnAgent(sync) 在 application 层产生类型化 AgentWaitRequest，并把请求与解析结果保存在原 SpawnAgent
+ToolBatchCall 上，至少包含：
 
 - wait_id；
 - delegation ids；
@@ -461,9 +462,8 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 
 模型侧首版使用最小的 product-owned 内置控制工具：
 
-- SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task/context/execution mode 创建 child，并立即返回
-  AgentHandle；Host 可显示为“派遣子智能体”；
-- WaitAgents：等待一个或多个 child，必要时挂起原父 Run；
+- SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task/context/execution mode 创建 child；sync 模式
+  挂起原调用并最终返回 child result，async 模式立即返回 AgentHandle 并自动交付结果；Host 可显示为“派遣子智能体”；
 - ListAgents：列出当前 root 或 direct children 的有界状态，并可返回已完成 child 的有界结果引用；
 - SendAgentMessage：向 child active Run steer，或为 idle child 创建 follow-up；
 - InterruptAgent：中断当前 child Run；
@@ -487,53 +487,49 @@ read_agent 和 close_agent 首版保留为 AgentService/Host API。模型可通�
 - event 与 result commit。
 
 控制工具不直接持有 RuntimeService。工具定义产生类型化 AgentControlRequest，由 application
-AgentService 执行。WaitAgents 返回类型化 AgentWaitRequest，使 ToolCall/Run 进入 durable
+AgentService 执行。SpawnAgent(sync) 由 AgentService 返回类型化 AgentWaitRequest，使原 ToolCall/Run 进入 durable
 waiting_child；不得用一个长生命周期 Tool handler coroutine 占住 worker。
 
 Host 可通过 AgentService 调用相同控制语义，不需要伪造模型 ToolCall。Host request 必须有 request_id、
 actor/provenance 和相同 capability 检查。
 
-## Foreground 执行
+## Sync 执行
 
-foreground 是以下组合：
+sync 是以下组合：
 
-1. SpawnAgent 返回 handle。
-2. 父模型调用 WaitAgents，或 convenience Agent tool 在 application 层展开为 spawn + wait。
-3. WaitAgents 的 ToolCall 进入 waiting_child，父 Run 进入 waiting_child/subagent_join。
+1. 父模型调用 SpawnAgent(execution_mode=sync)。
+2. application 使用统一 spawn 原语创建 child，但不向模型提交中间 handle ToolResult。
+3. 原 SpawnAgent ToolCall 进入 waiting_child，父 Run 进入 waiting_child/subagent_join。
 4. RuntimeService 返回 durable waiting outcome，Supervisor worker/permit 被释放。
-5. child terminal 后，application 在父 Session lock 内解析 checkpoint。
-6. child result 作为原 WaitAgents ToolResult 提交到原 tool batch。
+5. child terminal 后，application 先固化 DelegationResult，再在父 Session lock 内解析 checkpoint。
+6. `handle + result` 作为原 SpawnAgent、原 tool_call_id 的 ToolResult 提交到原 tool batch。
 7. 父 Run 重新进入 running，并由 Supervisor 重新调度后续模型轮次。
 
 即使 max_concurrency=1，该流程也不得死锁。waiting child 不计入 active execution permits，但仍计入 active Run 和
 root budget。
 
-父等待多个 child 时：
+底层 AgentWaitRequest 继续保留可持久化的集合与完成条件，以支持恢复和未来 application 编排；当前每个模型侧
+SpawnAgent(sync) 只等待自己创建的一个 delegation。Host 的 `wait_agents()` 可等待多个 handle，但不暴露为模型工具。
 
-- all：全部 terminal 后恢复，结果保持请求顺序；
-- any：首个满足条件的 child 后恢复，其余 child 按 lifecycle policy 继续或取消；
-- timeout：只返回已完成结果和未完成 handles，不把未完成 child 标为 completed。
+## Async 执行与结果联动
 
-## Background 执行与结果联动
-
-background spawn 成功后立即返回 handle。父 Run 不进入 waiting_child。
+async spawn 成功后立即返回 handle。父 Run 不进入 waiting_child。
 
 child terminal 时：
 
 1. 原子保存 DelegationResult 和 delivery_status=pending。
 2. 发布 agent_result_ready。
 3. 立即更新 AgentTreeSnapshot。
-4. 根据 delivery policy 决定是否进入父上下文。
+4. 以 next_boundary 策略自动进入父上下文。
 5. canonical message/queue 已提交后，将 delivery 标为 delivered。
 
-DeliveryPolicy：
+DeliveryPolicy 是 application 内部持久化事实，不是模型参数：
 
-- notify_only：只更新 Host，父模型显式 ListAgents/WaitAgents 获取；
-- next_boundary：父 Run active 时以 Host steer 在安全 turn 边界交付；
-- follow_up：父 Run terminal/idle 后创建 Host-origin follow-up；
-- resume_waiter：只用于 foreground wait。
+- notify_only：Host 直接派遣使用，只更新 Host 投影；
+- next_boundary：async 使用；父 Run active 时以 Host steer 在安全 turn 边界交付，父已 idle 时创建 Host-origin Run；
+- resume_waiter：只用于 sync 原 ToolCall 恢复。
 
-next_boundary/follow_up 应复用现有 durable queued input：
+next_boundary 应复用现有 durable queued input：
 
 - producer=host；
 - host_source_id=ouro.subagents/<delegation_id>；
@@ -573,7 +569,7 @@ tool call、reasoning/provider continuation、system/plugin synthetic message �
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
 delegated-task user message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
-child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 List/Wait 或 background delivery
+child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 List、sync ToolResult 或 async delivery
 进入父 Session 前，再从 child 到 parent 执行同样的可达性验证和显式引用复制，随后才写入父 canonical message。
 
 child final result 建议结构化包含：
@@ -627,7 +623,7 @@ workspace-only 执行上下文。
 创建 child 本身是独立权限，至少控制：
 
 - 允许的 agent_id pattern；
-- foreground/background；
+- sync/async；
 - lifecycle binding（当前只允许 bound）；
 - max_depth；
 - root/direct child 数；
@@ -656,7 +652,7 @@ application 提供 root interaction inbox projection，将所有 descendant pend
 ApprovalRecord/ToolInputRequest 构造的可重建查询视图，不是新的 canonical store、broker 或状态机。每项至少显示：
 
 - agent_id、name、nickname、task description；
-- foreground/background；
+- sync/async；
 - child session/run/tool call；
 - tool、参数摘要、workspace 和影响；
 - requested_at。
@@ -664,8 +660,8 @@ ApprovalRecord/ToolInputRequest 构造的可重建查询视图，不是新的 ca
 Host 回答必须携带原 child session_id、run_id、tool_call_id/request_id。application 在 child Session lock 内验证后
 恢复该 child Run；答案不能写入父 Run 或其他 waiting child。
 
-foreground child 等 HITL 时，父 Run 继续保持 waiting_child。background child 等 HITL 时，父 Run 不被阻塞。
-长期运行的 Interactive Host 在 foreground parent `waiting_child` 期间消费同一 root inbox：先建立 AgentTree 订阅，
+sync child 等 HITL 时，父 Run 继续保持 waiting_child。async child 等 HITL 时，父 Run 不被阻塞。
+长期运行的 Interactive Host 在 sync parent `waiting_child` 期间消费同一 root inbox：先建立 AgentTree 订阅，
 再读取 interaction projection，提交 exact-identity 决议后由订阅等待 child/parent durable 状态变化。Host 只缓存本次
 已提交的 request identity 以避免短暂重复提示，不缓存或推断 canonical pending 状态；interaction DTO 只给出有界参数
 预览，完整 ToolInvocation 仍留在 child Run。
@@ -922,8 +918,8 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 - SQLiteSessionStore delegation 事务、revision、索引和 schema migration 测试；
 - 两个后端共享的 DelegationRepository contract tests；
 - spawn 每个崩溃窗口的 reconciliation 测试；
-- max_concurrency=1 的 foreground join 无死锁测试；
-- background result exact-once delivery 测试；
+- max_concurrency=1 的 sync join 无死锁测试；
+- async result exact-once delivery 测试；
 - child resume 创建新 Run、旧 Run 不被覆盖测试；
 - parent abort 的 bound cascade 与 detached 明确拒绝测试；
 - child approval/AskUser root routing 与错配拒绝测试；
