@@ -103,6 +103,11 @@ Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父
 request_id 精确路由。首版限制单层、bound lifecycle、每 root 最多四个 active child 和一个 write-capable child；
 child 的工具、workspace、审批与 RunBudgetPolicy 只能从父级能力上限收紧。
 
+循环交互 CLI 作为长期运行 Host，在 foreground parent 返回 `waiting_child` 后不会把它当成终态。它先建立现有
+AgentTree 订阅，再消费 AgentService 的 root interaction inbox，展示 child 来源及有界工具参数预览或提问数据，
+并用完整 child identity 路由批准、拒绝、参数修改、终止或回答。决议提交后继续由 canonical subscription 驱动，
+直到原父 Run 恢复或终止；CLI 不读取 child Store、不轮询，也不建立第二套审批状态机。
+
 root 配额不引入第二套调度或预算引擎。AgentService 在 per-root spawn 临界区内原子检查 active/queued child 数和
 单 writer 上限，首版在 relation 创建前拒绝 depth > 1。child 直接复用冻结的 `RunBudgetPolicy`；InnerAgentLoop
 每次 model round durable boundary 先执行本 Run 检查，再由 application callback 聚合 parent Run 与其所有 child

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from typing import Final, Protocol
@@ -19,6 +20,7 @@ from ouro.core.agents import DelegationRecord
 from ouro.core.errors import SessionNotFoundError
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.sessions import SessionStore
 
 _CLOSED: Final = object()
@@ -31,6 +33,7 @@ _RELATION_EVENT_TYPES = frozenset(
     }
 )
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "aborted", "paused", "recoverable"})
+_MAX_INTERACTION_ARGUMENT_PREVIEW = 240
 
 
 class RuntimeSubscriptionPort(Protocol):
@@ -153,7 +156,13 @@ class AgentTreeProjector:
     def interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:
         interactions: list[AgentInteractionView] = []
         for relation in self.store.list_delegations(root_session_id):
-            for summary in self._interaction_summaries(relation):
+            batch = self._current_child_batch(relation)
+            if batch is None:
+                continue
+            for call in batch.calls:
+                summary = self._interaction_summary(call, batch)
+                if summary is None:
+                    continue
                 assert relation.child_session_id is not None
                 assert relation.current_child_run_id is not None
                 interactions.append(
@@ -169,6 +178,14 @@ class AgentTreeProjector:
                         tool_name=summary.tool_name,
                         request_id=summary.request_id,
                         requested_at=summary.requested_at.isoformat(),
+                        arguments_preview=_arguments_preview(
+                            call.invocation.arguments
+                            if call.invocation is not None
+                            else call.request.arguments
+                        ),
+                        input_request=(
+                            call.input_request.data if call.input_request is not None else None
+                        ),
                     )
                 )
         return tuple(interactions)
@@ -256,41 +273,59 @@ class AgentTreeProjector:
         self,
         relation: DelegationRecord,
     ) -> tuple[AgentInteractionSummary, ...]:
-        if relation.child_session_id is None or relation.current_child_run_id is None:
+        batch = self._current_child_batch(relation)
+        if batch is None:
             return ()
+        return tuple(
+            summary
+            for call in batch.calls
+            if (summary := self._interaction_summary(call, batch)) is not None
+        )
+
+    def _current_child_batch(
+        self,
+        relation: DelegationRecord,
+    ) -> ToolCallBatchRecord | None:
+        if relation.child_session_id is None or relation.current_child_run_id is None:
+            return None
         try:
             run = self.store.load_run(
                 relation.child_session_id,
                 relation.current_child_run_id,
             )
         except FileNotFoundError:
-            return ()
-        batch = run.active_tool_batch
-        if batch is None:
-            return ()
-        interactions: list[AgentInteractionSummary] = []
-        for call in batch.calls:
-            if call.status == "awaiting_approval" and call.approval is not None:
-                interactions.append(
-                    AgentInteractionSummary(
-                        kind="approval",
-                        tool_call_id=call.request.id,
-                        tool_name=call.request.name,
-                        request_id=call.approval.approval_id,
-                        requested_at=call.approval.requested_at,
-                    )
-                )
-            elif call.status == "waiting_user" and call.input_request is not None:
-                interactions.append(
-                    AgentInteractionSummary(
-                        kind="user_input",
-                        tool_call_id=call.request.id,
-                        tool_name=call.request.name,
-                        request_id=f"{batch.batch_id}/{call.request.id}",
-                        requested_at=batch.updated_at,
-                    )
-                )
-        return tuple(interactions)
+            return None
+        return run.active_tool_batch
+
+    @staticmethod
+    def _interaction_summary(
+        call: ToolBatchCall,
+        batch: ToolCallBatchRecord,
+    ) -> AgentInteractionSummary | None:
+        if call.status == "awaiting_approval" and call.approval is not None:
+            return AgentInteractionSummary(
+                kind="approval",
+                tool_call_id=call.request.id,
+                tool_name=call.request.name,
+                request_id=call.approval.approval_id,
+                requested_at=call.approval.requested_at,
+            )
+        if call.status == "waiting_user" and call.input_request is not None:
+            return AgentInteractionSummary(
+                kind="user_input",
+                tool_call_id=call.request.id,
+                tool_name=call.request.name,
+                request_id=f"{batch.batch_id}/{call.request.id}",
+                requested_at=batch.updated_at,
+            )
+        return None
+
+
+def _arguments_preview(arguments: dict[str, object]) -> str:
+    preview = json.dumps(arguments, ensure_ascii=False)
+    if len(preview) > _MAX_INTERACTION_ARGUMENT_PREVIEW:
+        return preview[: _MAX_INTERACTION_ARGUMENT_PREVIEW - 1] + "…"
+    return preview
 
 
 class AgentTreeSubscription(AsyncIterator[AgentTreeNotification]):

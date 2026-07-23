@@ -665,6 +665,10 @@ Host 回答必须携带原 child session_id、run_id、tool_call_id/request_id�
 恢复该 child Run；答案不能写入父 Run 或其他 waiting child。
 
 foreground child 等 HITL 时，父 Run 继续保持 waiting_child。background child 等 HITL 时，父 Run 不被阻塞。
+长期运行的 Interactive Host 在 foreground parent `waiting_child` 期间消费同一 root inbox：先建立 AgentTree 订阅，
+再读取 interaction projection，提交 exact-identity 决议后由订阅等待 child/parent durable 状态变化。Host 只缓存本次
+已提交的 request identity 以避免短暂重复提示，不缓存或推断 canonical pending 状态；interaction DTO 只给出有界参数
+预览，完整 ToolInvocation 仍留在 child Run。
 
 无可交互 Host 时：
 

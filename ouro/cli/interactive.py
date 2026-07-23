@@ -9,6 +9,7 @@ from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_commands import handle_command
 from ouro.cli.interactive_io import (
+    AgentInteractionHost,
     InputFunc,
     InteractiveOutput,
     OutputFunc,
@@ -87,6 +88,7 @@ async def run_interactive(
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
             plugins=(owned_application.plugins if owned_application is not None else plugins),
+            agents=(owned_application.agents if owned_application is not None else None),
         )
     finally:
         await output.close()
@@ -105,6 +107,7 @@ async def _run_interactive_session(
     approval_mode: SessionApprovalMode,
     interaction_mode: SessionInteractionMode,
     plugins: PluginService | None = None,
+    agents: AgentInteractionHost | None = None,
 ) -> int:
     session_id: str | None = None
     current_approval_mode = approval_mode
@@ -123,6 +126,7 @@ async def _run_interactive_session(
                     input_func=input_func,
                     output_func=output_func,
                     output=output,
+                    agents=agents,
                 )
                 current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
                 current_interaction_mode = runtime.store.load_session_record(
@@ -147,7 +151,9 @@ async def _run_interactive_session(
         if plugin_run_task is not None and plugin_run_task.done():
             try:
                 result = plugin_run_task.result()
-                consumes_line = result.run.status in {"waiting_approval", "waiting_user"}
+                consumes_line = result.run.status in {"waiting_approval", "waiting_user"} or (
+                    result.run.status == "waiting_child" and agents is not None
+                )
                 session_id = await handle_run_result(
                     result,
                     runtime=runtime,
@@ -156,6 +162,7 @@ async def _run_interactive_session(
                     ),
                     output_func=output_func,
                     output=output,
+                    agents=agents,
                 )
                 current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
                 current_interaction_mode = runtime.store.load_session_record(
@@ -256,6 +263,7 @@ async def _run_interactive_session(
                 input_func=input_func,
                 output_func=output_func,
                 output=output,
+                agents=agents,
             )
             current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
             current_interaction_mode = runtime.store.load_session_record(

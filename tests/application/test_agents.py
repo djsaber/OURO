@@ -402,7 +402,7 @@ class ApprovalChildProvider:
                 tool_call={
                     "id": "danger_call",
                     "name": "Danger",
-                    "arguments": {},
+                    "arguments": {"command": "x" * 500},
                 },
             )
             yield ProviderStreamEvent(type="done")
@@ -1645,6 +1645,10 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
     assert interaction.delegation_id == child.delegation_id
     assert interaction.child_session_id == child.child_session_id
     assert interaction.tool_call_id == "danger_call"
+    assert len(interaction.arguments_preview) == 240
+    assert interaction.arguments_preview.startswith('{"command": "xxxx')
+    assert interaction.arguments_preview.endswith("…")
+    assert interaction.input_request is None
     assert store.load_run(root.session_id, parent.run_id).status == "running"
     tree = service.agent_tree_snapshot(root.session_id)
     assert tree.pending_interaction_count == 1
@@ -1818,6 +1822,10 @@ async def test_background_child_user_input_is_streamed_and_routed_by_exact_ident
                 break
     interaction = service.list_agent_interactions(root.session_id)[0]
     assert interaction.kind == "user_input"
+    assert interaction.arguments_preview == (
+        '{"question": {"kind": "choice", "items": ["A", "B"]}}'
+    )
+    assert interaction.input_request == {"kind": "choice", "items": ["A", "B"]}
     assert store.load_run(root.session_id, parent.run_id).status == "running"
 
     with pytest.raises(ValueError, match="child identity"):

@@ -62,6 +62,13 @@ connected/failed 状态、transport 和工具数量。MCP manager/resource 只�
 Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 Host 错误边界；类型化 application 错误应
 显示后继续输入循环，并保留已经返回的 durable Session identity，不得以 traceback 终止整个 Host。
 
+foreground parent 返回 `waiting_child` 时，Interactive 不把它渲染为停止，也不把后续 stdin 当成新的根消息。
+Host 先订阅 `AgentService.subscribe_agent_tree`，再读取 root interaction inbox；发现 child approval 或 AskUser 后显示
+agent/delegation 来源及有界参数摘要或完整 input request，并携带原 child session/run/tool call/request identity 调用
+`resolve_agent_approval` 或 `resolve_agent_input`。提交后继续依赖订阅唤醒并从 canonical root Run 重建状态，直到父 Run
+离开 `waiting_child`；不得轮询、直接恢复 child Runtime，或在 CLI 保存第二份 pending 状态。订阅在交互完成、EOF、
+异常和 Host 退出时关闭。
+
 ### Print
 
 `run --print` 输出 reasoning 渲染和最终文本，适合人工 shell 使用。未显式选择模式时 `run` 默认 Print。

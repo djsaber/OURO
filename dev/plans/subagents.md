@@ -650,6 +650,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] UI 不需要自己实现 cascade、permission 或 delivery。
 - [x] definition editor 显示 source/editable、all/selected tool picker、missing tools、revision 和 next_run 生效提示。
 - [x] builtin general 的编辑/删除控件禁用，但可复制；Host UI 限制之外后端仍强制校验。
+- [x] Interactive 在 foreground parent `waiting_child` 时通过 root inbox 完成 child 工具审批和 AskUser，并继续等待原父 Run。
 
 ### H3. 配置与启用
 

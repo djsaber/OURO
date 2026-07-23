@@ -94,6 +94,8 @@ AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 a
 AskUser、资源、预算和恢复。foreground parent 以 `waiting_child` park 并释放 Supervisor permit；background 结果通过
 稳定 delivery identity 进行 notify/next-boundary/follow-up exact-once 交付。root AgentTree、interaction inbox 和
 child event stream 都是 application 投影，Host refresh/detach 不改变 child 生命周期。
+循环交互 Host 在 foreground parent 等待 child 时直接消费该 interaction inbox，可批准、拒绝或修改 child 工具调用，
+也可回答 child AskUser；所有决议都按 child session/run/tool call/request identity 精确路由，完成后继续原父 Run。
 
 首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child 和一个 write-capable child。child 能力
 只能从 parent 的工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
@@ -157,7 +159,8 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 ### 运行界面
 
 - Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互；工具名称及参数分片在模型
-  生成期间动态预览，完整响应后按调用顺序定稿。
+  生成期间动态预览，完整响应后按调用顺序定稿；foreground 子智能体的审批和提问通过 root interaction inbox
+  在同一输入循环中处理。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。
 - JSON：stdout 输出稳定机器可读结果，并使用分类退出码。
 - Agent：definition CRUD/tool compatibility，以及 list/show/spawn/wait/send/interrupt/close/tree/interactions；

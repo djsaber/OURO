@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Self
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, JsonValue, field_validator, model_validator
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
@@ -172,6 +172,8 @@ class AgentInteractionView(ApplicationDTO):
     tool_name: str
     request_id: str
     requested_at: str
+    arguments_preview: str = ""
+    input_request: JsonValue = None
 
 
 class AgentReadView(ApplicationDTO):

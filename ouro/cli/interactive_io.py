@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import JsonValue
 
+from ouro.application.agent_models import AgentInteractionView, AgentTreeNotification
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
 from ouro.cli.plan_confirmation import (
@@ -13,11 +14,58 @@ from ouro.cli.plan_confirmation import (
     collect_plan_confirmation,
     parse_builtin_plan_confirmation,
 )
+from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.core.tool_batches import ToolBatchCall
 
 InputFunc = Callable[[str], str]
 _MAX_APPROVAL_ARGUMENT_PREVIEW = 240
+
+
+class AgentTreeSubscriptionPort(Protocol):
+    async def get(self) -> AgentTreeNotification: ...
+
+    def close(self) -> None: ...
+
+
+class AgentInteractionHost(Protocol):
+    def subscribe_agent_tree(self, root_session_id: str) -> AgentTreeSubscriptionPort: ...
+
+    def list_agent_interactions(
+        self,
+        root_session_id: str,
+    ) -> tuple[AgentInteractionView, ...]: ...
+
+    async def resolve_agent_approval(
+        self,
+        delegation_id: str,
+        *,
+        child_session_id: str,
+        child_run_id: str,
+        tool_call_id: str,
+        approval_id: str,
+        approved: bool,
+        reason: str = "User rejected",
+        arguments_override: dict[str, object] | None = None,
+    ) -> object: ...
+
+    async def resolve_agent_input(
+        self,
+        delegation_id: str,
+        *,
+        child_session_id: str,
+        child_run_id: str,
+        tool_call_id: str,
+        request_id: str,
+        answer: JsonValue,
+    ) -> object: ...
+
+    async def interrupt_agent(
+        self,
+        delegation_id: str,
+        *,
+        reason: str = "Agent interrupted",
+    ) -> object: ...
 
 
 async def handle_run_result(
@@ -27,6 +75,7 @@ async def handle_run_result(
     input_func: InputFunc,
     output_func: OutputFunc,
     output: InteractiveOutput,
+    agents: AgentInteractionHost | None = None,
 ) -> str:
     current = result
     while True:
@@ -58,6 +107,19 @@ async def handle_run_result(
                 return current.session.session_id
             current = resolved
             continue
+        if current.run.status == "waiting_child" and agents is not None:
+            resolved = await _follow_waiting_children(
+                current,
+                runtime=runtime,
+                agents=agents,
+                input_func=input_func,
+                output_func=output_func,
+                output=output,
+            )
+            if resolved is None:
+                return current.session.session_id
+            current = resolved
+            continue
         if current.run.status == "failed":
             await output.finish_run(current.run.run_id)
             output_func(f"Run failed: {current.run.error or 'unknown error'}")
@@ -80,6 +142,231 @@ async def handle_run_result(
             return current.session.session_id
         output_func(f"Run stopped with status: {current.run.status}")
         return current.session.session_id
+
+
+async def _follow_waiting_children(
+    result: RunResult,
+    *,
+    runtime: RuntimeService,
+    agents: AgentInteractionHost,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> RunResult | None:
+    root_session_id = result.session.session_id
+    root_run_id = result.run.run_id
+    subscription = agents.subscribe_agent_tree(root_session_id)
+    resolved_requests: set[tuple[str, str, str]] = set()
+    try:
+        while True:
+            current = _durable_run_result(runtime, root_session_id, root_run_id)
+            if current.run.status != "waiting_child":
+                return current
+
+            pending = tuple(
+                interaction
+                for interaction in agents.list_agent_interactions(root_session_id)
+                if _interaction_identity(interaction) not in resolved_requests
+            )
+            for interaction in pending:
+                resolved = await _resolve_child_interaction(
+                    interaction,
+                    agents=agents,
+                    input_func=input_func,
+                    output_func=output_func,
+                    output=output,
+                )
+                if not resolved:
+                    return None
+                resolved_requests.add(_interaction_identity(interaction))
+            if pending:
+                continue
+
+            try:
+                await subscription.get()
+            except StopAsyncIteration as exc:
+                raise OuroError(
+                    "Agent interaction subscription closed while the parent Run is waiting"
+                ) from exc
+    finally:
+        subscription.close()
+
+
+async def _resolve_child_interaction(
+    interaction: AgentInteractionView,
+    *,
+    agents: AgentInteractionHost,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> bool:
+    if interaction.kind == "approval":
+        return await _resolve_child_approval(
+            interaction,
+            agents=agents,
+            input_func=input_func,
+            output_func=output_func,
+            output=output,
+        )
+    return await _resolve_child_question(
+        interaction,
+        agents=agents,
+        input_func=input_func,
+        output_func=output_func,
+        output=output,
+    )
+
+
+async def _resolve_child_approval(
+    interaction: AgentInteractionView,
+    *,
+    agents: AgentInteractionHost,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> bool:
+    await output.suspend_tools_for_prompt()
+    output_func(_child_approval_request(interaction))
+    while True:
+        try:
+            choice = (
+                input_func("Approve child tool? [y]es/[n]o/[m]odify/[a]bort child: ")
+                .strip()
+                .lower()
+            )
+        except EOFError:
+            output_func("")
+            return False
+
+        if choice in {"y", "yes"}:
+            await _route_child_approval(interaction, agents=agents, approved=True)
+            return True
+        if choice in {"", "n", "no"}:
+            reason = _input_optional(input_func, output_func, "Reason: ") or "User rejected"
+            await _route_child_approval(
+                interaction,
+                agents=agents,
+                approved=False,
+                reason=reason,
+            )
+            return True
+        if choice in {"a", "/abort", "abort"}:
+            await agents.interrupt_agent(
+                interaction.delegation_id,
+                reason="User aborted child agent",
+            )
+            return True
+        if choice in {"m", "modify"}:
+            override = _input_json_object(input_func, output_func, "Arguments JSON: ")
+            if override is not None:
+                await _route_child_approval(
+                    interaction,
+                    agents=agents,
+                    approved=True,
+                    arguments_override=override,
+                )
+                return True
+            continue
+        output_func("Choose y, n, m, or a.")
+
+
+async def _route_child_approval(
+    interaction: AgentInteractionView,
+    *,
+    agents: AgentInteractionHost,
+    approved: bool,
+    reason: str = "User rejected",
+    arguments_override: dict[str, object] | None = None,
+) -> None:
+    await agents.resolve_agent_approval(
+        interaction.delegation_id,
+        child_session_id=interaction.child_session_id,
+        child_run_id=interaction.child_run_id,
+        tool_call_id=interaction.tool_call_id,
+        approval_id=interaction.request_id,
+        approved=approved,
+        reason=reason,
+        arguments_override=arguments_override,
+    )
+
+
+async def _resolve_child_question(
+    interaction: AgentInteractionView,
+    *,
+    agents: AgentInteractionHost,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> bool:
+    await output.suspend_tools_for_prompt()
+    question = (
+        _format_user_input_request(interaction.input_request)
+        if interaction.input_request is not None
+        else "Please provide the requested information."
+    )
+    output_func(f"Question from child agent {_child_agent_label(interaction)}: {question}")
+    try:
+        answer = input_func("Answer child agent: ")
+    except EOFError:
+        output_func("")
+        return False
+    if answer.strip().lower() in {"/abort", "abort"}:
+        await agents.interrupt_agent(
+            interaction.delegation_id,
+            reason="User aborted child agent",
+        )
+        return True
+    await agents.resolve_agent_input(
+        interaction.delegation_id,
+        child_session_id=interaction.child_session_id,
+        child_run_id=interaction.child_run_id,
+        tool_call_id=interaction.tool_call_id,
+        request_id=interaction.request_id,
+        answer=_decode_user_answer(answer),
+    )
+    return True
+
+
+def _durable_run_result(
+    runtime: RuntimeService,
+    session_id: str,
+    run_id: str,
+) -> RunResult:
+    snapshot = runtime.store.load_runtime_session(session_id)
+    run = next((item for item in snapshot.runs if item.run_id == run_id), None)
+    if run is None:
+        raise OuroError(f"Run not found while waiting for child agents: {run_id}")
+    final_text = next(
+        (
+            message.text_content
+            for message in reversed(snapshot.messages)
+            if message.run_id == run_id and message.role == "assistant"
+        ),
+        "",
+    )
+    return RunResult(session=snapshot.session, run=run, final_text=final_text)
+
+
+def _interaction_identity(interaction: AgentInteractionView) -> tuple[str, str, str]:
+    return (
+        interaction.delegation_id,
+        interaction.child_run_id,
+        interaction.request_id,
+    )
+
+
+def _child_approval_request(interaction: AgentInteractionView) -> str:
+    tool_name = _single_line(interaction.tool_name)
+    invocation = (
+        f"{tool_name}({interaction.arguments_preview})"
+        if interaction.arguments_preview
+        else tool_name
+    )
+    return f"Child agent {_child_agent_label(interaction)} approval required: {invocation}"
+
+
+def _child_agent_label(interaction: AgentInteractionView) -> str:
+    return f"{_single_line(interaction.agent_name)} ({_single_line(interaction.delegation_id)})"
 
 
 async def _resolve_approval(

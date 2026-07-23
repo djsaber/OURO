@@ -13,7 +13,7 @@ from ouro.cli.run import RuntimeProviderOptions, build_default_runtime, run_json
 from ouro.config import openai_effort_reasoning
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import PersistenceError
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningRequest
 from ouro.mcp import MCPConfigStore, MCPServerConfig
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT
@@ -48,6 +48,97 @@ class CapturingProvider:
         yield ProviderStreamEvent(type="done")
 
 
+class ForegroundChildInteractionProvider:
+    provider_id = "foreground-child-interaction"
+
+    def __init__(self, store: LocalSessionStore, *, mode: str, target: Path | None = None) -> None:
+        self.store = store
+        self.mode = mode
+        self.target = target
+        self.root_round = 0
+        self.child_round = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            if self.child_round == 0:
+                self.child_round += 1
+                if self.mode == "approval":
+                    assert self.target is not None
+                    yield ProviderStreamEvent(
+                        type="tool_call",
+                        tool_call={
+                            "id": "child_write",
+                            "name": "Write",
+                            "arguments": {
+                                "path": str(self.target),
+                                "content": "written by child",
+                            },
+                        },
+                    )
+                else:
+                    yield ProviderStreamEvent(
+                        type="tool_call",
+                        tool_call={
+                            "id": "child_question",
+                            "name": "AskUser",
+                            "arguments": {"question": "Choose A or B"},
+                        },
+                    )
+                yield ProviderStreamEvent(type="done")
+                return
+            yield ProviderStreamEvent(type="text_delta", text="child interaction resolved")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "spawn_child",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "general",
+                        "task": "Request one host interaction.",
+                        "description": "Interactive child",
+                        "execution_mode": "foreground",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 1:
+            self.root_round += 1
+            root = next(
+                session
+                for session in self.store.list_sessions()
+                if session.session_kind == "primary"
+            )
+            delegation = self.store.list_delegations(root.session_id)[0]
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "wait_child",
+                    "name": "WaitAgents",
+                    "arguments": {"delegation_ids": [delegation.delegation_id]},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="parent resumed after child")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 def _runtime(tmp_path, event_batches) -> RuntimeService:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -63,6 +154,22 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
         tools=registry,
         default_workspace=tmp_path,
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+
+
+def _agent_runtime(tmp_path, provider: ForegroundChildInteractionProvider) -> RuntimeService:
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    return RuntimeService(
+        store=provider.store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="agent-hitl", provider_id=provider.provider_id),
+        ),
+        tools=registry,
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, provider.store.sessions_dir),
     )
 
 
@@ -711,6 +818,76 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
     assert code == 0
     assert "Question: Which file?" in outputs
     assert "Using notes.md." in outputs
+
+
+async def test_interactive_approves_foreground_child_tool_and_resumes_parent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "child-approved.txt"
+    provider = ForegroundChildInteractionProvider(store, mode="approval", target=target)
+    runtime = _agent_runtime(tmp_path, provider)
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        del args, kwargs
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    inputs = iter(["test child approval", "y", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert target.read_text(encoding="utf-8") == "written by child"
+    assert any(
+        output.startswith("Child agent General") and "approval required: Write(" in output
+        for output in outputs
+    )
+    assert "parent resumed after child" in outputs
+    assert "Run stopped with status: waiting_child" not in outputs
+
+
+async def test_interactive_answers_foreground_child_question_and_resumes_parent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ForegroundChildInteractionProvider(store, mode="question")
+    runtime = _agent_runtime(tmp_path, provider)
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        del args, kwargs
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    inputs = iter(["test child question", "A", "/exit"])
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert any(
+        output.startswith("Question from child agent General") and "Choose A or B" in output
+        for output in outputs
+    )
+    assert "parent resumed after child" in outputs
+    assert "Run stopped with status: waiting_child" not in outputs
 
 
 async def test_interactive_aborts_waiting_user(tmp_path) -> None:
