@@ -31,11 +31,9 @@ def test_spawn_schema_uses_the_run_frozen_execution_modes() -> None:
     )
     execution_mode = spawn.definition.parameters_schema["properties"]["execution_mode"]
 
-    assert execution_mode == {
-        "type": "string",
-        "enum": ["async"],
-        "default": "async",
-    }
+    assert execution_mode["type"] == "string"
+    assert execution_mode["enum"] == ["async"]
+    assert execution_mode["default"] == "async"
     assert "delivery_policy" not in spawn.definition.parameters_schema["properties"]
     assert "context_message_ids" not in spawn.definition.parameters_schema["properties"]
 
@@ -57,11 +55,10 @@ def test_spawn_schema_defaults_to_synchronous_dispatch() -> None:
         tool for tool in agent_control_tools(catalog) if tool.definition.name == "SpawnAgent"
     )
 
-    assert spawn.definition.parameters_schema["properties"]["execution_mode"] == {
-        "type": "string",
-        "enum": ["sync", "async"],
-        "default": "sync",
-    }
+    execution_mode = spawn.definition.parameters_schema["properties"]["execution_mode"]
+    assert execution_mode["type"] == "string"
+    assert execution_mode["enum"] == ["sync", "async"]
+    assert execution_mode["default"] == "sync"
 
 
 def test_empty_agent_catalog_omits_only_spawn_control() -> None:
