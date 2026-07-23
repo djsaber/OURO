@@ -15,7 +15,7 @@ from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 QUEUED_INPUTS_KEY = "follow_up_queue"
 
 QueuedInputMode = SessionInputMode
-QueuedInputSource = Literal["user", "host", "plugin"]
+QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
 
 
 class QueuedInput(OuroModel):
@@ -27,6 +27,7 @@ class QueuedInput(OuroModel):
     queued_at: datetime = Field(default_factory=utc_now)
     source: QueuedInputSource = "user"
     host_source_id: str | None = None
+    delegation_id: str | None = None
     plugin_id: str | None = None
     contribution_id: str | None = None
     generation_id: str | None = None
@@ -55,6 +56,10 @@ class QueuedInput(OuroModel):
             self.session_control_controller_id,
             self.session_control_activation_id,
         )
+        if self.source == "delegation" and not self.delegation_id:
+            raise ValueError("delegated task input requires a delegation id")
+        if self.source != "delegation" and self.delegation_id is not None:
+            raise ValueError("only delegated task input can carry a delegation id")
         if self.source == "plugin" and (
             not self.plugin_id
             or not self.contribution_id
@@ -64,6 +69,11 @@ class QueuedInput(OuroModel):
             raise ValueError("plugin queued input requires complete extension attribution")
         if self.source == "plugin" and self.host_source_id is not None:
             raise ValueError("plugin queued input cannot carry Host attribution")
+        if self.source == "delegation" and (
+            self.host_source_id is not None
+            or any(value is not None for value in plugin_attribution)
+        ):
+            raise ValueError("delegated task input cannot carry Host or plugin attribution")
         if self.source == "host":
             if not self.host_source_id:
                 raise ValueError("Host queued input requires a source id")
@@ -106,6 +116,7 @@ class QueuedInputQueue:
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
         host_source_id: str | None = None,
+        delegation_id: str | None = None,
         plugin_id: str | None = None,
         contribution_id: str | None = None,
         generation_id: str | None = None,
@@ -123,6 +134,7 @@ class QueuedInputQueue:
             resource_refs=resource_refs,
             source=source,
             host_source_id=host_source_id,
+            delegation_id=delegation_id,
             plugin_id=plugin_id,
             contribution_id=contribution_id,
             generation_id=generation_id,
@@ -253,7 +265,7 @@ class QueuedInputQueue:
         if raw_mode not in {"follow_up", "steer"}:
             return None
         raw_source = item.get("source")
-        if raw_source not in {"user", "host", "plugin"}:
+        if raw_source not in {"user", "host", "plugin", "delegation"}:
             return None
         if raw_source == "plugin" and not all(
             isinstance(item.get(field), str) and bool(item.get(field))
@@ -267,6 +279,10 @@ class QueuedInputQueue:
             return None
         if raw_source == "host" and not (
             isinstance(item.get("host_source_id"), str) and bool(item.get("host_source_id"))
+        ):
+            return None
+        if raw_source == "delegation" and not (
+            isinstance(item.get("delegation_id"), str) and bool(item.get("delegation_id"))
         ):
             return None
         raw_resource_refs = item.get("resource_refs", ())
@@ -287,6 +303,11 @@ class QueuedInputQueue:
                 host_source_id=(
                     item.get("host_source_id")
                     if isinstance(item.get("host_source_id"), str)
+                    else None
+                ),
+                delegation_id=(
+                    item.get("delegation_id")
+                    if isinstance(item.get("delegation_id"), str)
                     else None
                 ),
                 plugin_id=(

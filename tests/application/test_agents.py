@@ -28,6 +28,7 @@ from ouro.core.messages import MessageRecord, ToolResultReference
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolInvocation
+from ouro.providers.anthropic_codec import messages_to_anthropic
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, ToolResult
@@ -690,12 +691,32 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
     assert child.session_kind == "subagent"
     assert child.root_session_id == "ses_root"
     assert child.parent_session_id == "ses_root"
+    child_run = store.load_run(child.session_id, handle.child_run_id)
+    assert child_run.origin == "delegation"
+    assert child_run.initiator_id == f"ouro.subagents/{handle.delegation_id}"
     messages = store.load_runtime_session(child.session_id).messages
-    assert messages[0].role == "system_synthetic"
-    assert messages[0].metadata["host_source_id"].startswith("ouro.subagents/")
+    assert messages[0].role == "user"
+    assert messages[0].metadata == {
+        "session_input_source": "delegation",
+        "session_input_mode": "follow_up",
+        "delegation_id": handle.delegation_id,
+    }
+    assert provider.messages[0][0].role == "user"
     assert provider.tool_names == [["Read"]]
     assert provider.system_prompts[0].startswith("BASE INSTRUCTIONS")
     assert provider.system_prompts[0].endswith("CHILD READER INSTRUCTIONS")
+    anthropic_system, anthropic_messages = messages_to_anthropic(
+        provider.messages[0],
+        system_prompt=provider.system_prompts[0],
+        supports_vision=False,
+        provider_id="capture",
+        model_id="capture",
+        include_continuation=False,
+    )
+    assert anthropic_system.endswith("CHILD READER INSTRUCTIONS")
+    assert [message["role"] for message in anthropic_messages] == ["user"]
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.initial_message_id == messages[0].message_id
     tree = service.agent_tree_snapshot("ses_root")
     assert tree.terminal_count == 1
     assert tree.pending_interaction_count == 0

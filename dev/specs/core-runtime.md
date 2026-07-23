@@ -110,10 +110,13 @@ active Run 期间的新输入写入 Session metadata 中的 durable 队列，每
 - `host`：OURO Host/Application 产生的输入，必须携带稳定 `host_source_id`，持久化为
   `role=system_synthetic`；
 - `plugin`：插件产生的输入，必须携带完整 plugin/contribution/generation/contract provenance，持久化为
-  `role=system_synthetic`。
+  `role=system_synthetic`；
+- `delegation`：只允许专用 `DelegatedTaskInput` 启动已准备好的 child Run，必须携带 `delegation_id`，
+  持久化为 `role=user`。
 
-Host 和插件输入都不能冒充用户，也不能携带用户资源引用。未知来源、Host 来源缺少 source id、插件来源缺少完整
-执行归属的持久化项均按无效项移除。
+Host 和插件输入都不能冒充用户，也不能携带用户资源引用。delegation 输入可携带 Spawn 时已验证并复制到 child
+Session 的资源引用。未知来源、Host 来源缺少 source id、插件来源缺少完整执行归属、delegation 来源缺少 relation
+identity 的持久化项均按无效项移除。
 
 工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，

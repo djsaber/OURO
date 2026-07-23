@@ -81,6 +81,7 @@ from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
+    DelegatedTaskInput,
     HostSessionInput,
     SessionControlActivation,
     SessionControlTransitionResult,
@@ -688,7 +689,9 @@ class RuntimeService:
         resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
-        _input_attribution: AttributedSessionInput | HostSessionInput | None = None,
+        _input_attribution: (
+            AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None
+        ) = None,
         _prepared_run: RunRecord | None = None,
     ) -> RunResult:
         if approval_mode is not None and approval_mode not in SESSION_APPROVAL_MODES:
@@ -697,13 +700,19 @@ class RuntimeService:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         if initial_model is not None and session_id is not None:
             raise ValueError("initial_model can only be set when creating a session")
+        if isinstance(_input_attribution, DelegatedTaskInput) and _prepared_run is None:
+            raise ValueError("delegated task input requires a prepared child run")
         if _prepared_run is not None:
             if session_id is None or _prepared_run.session_id != session_id:
                 raise ValueError("prepared run must target the supplied existing session")
             if _prepared_run.status != "queued":
                 raise ValueError("prepared run must be queued")
-            if not isinstance(_input_attribution, HostSessionInput):
-                raise ValueError("prepared run requires HostSessionInput attribution")
+            if not isinstance(_input_attribution, HostSessionInput | DelegatedTaskInput):
+                raise ValueError("prepared run requires Host or delegated-task attribution")
+            if isinstance(_input_attribution, DelegatedTaskInput) and (
+                _prepared_run.metadata.get("delegation_id") != _input_attribution.delegation_id
+            ):
+                raise ValueError("prepared child run does not match delegated task identity")
         input_resource_refs = tuple(dict.fromkeys(resource_refs or ()))
         if input_resource_refs and session_id is None:
             raise ResourceAttachmentError(
@@ -728,7 +737,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 session,
                 input_resource_refs,
-                message_role=("system_synthetic" if _input_attribution is not None else "user"),
+                message_role=_input_message_role(_input_attribution),
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -748,6 +757,11 @@ class RuntimeService:
                     attribution=_input_attribution,
                 )
                 return RunResult(session=queued_session, run=active_run, events=queued_events)
+        if isinstance(_input_attribution, DelegatedTaskInput) and (
+            session.session_kind != "subagent"
+            or session.delegation_id != _input_attribution.delegation_id
+        ):
+            raise ValueError("delegated task input must target its child Session")
         emitted: list[EventRecord] = []
 
         queued_synthetic_input = next(
@@ -791,7 +805,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 snapshot.session,
                 input_resource_refs,
-                message_role=("system_synthetic" if _input_attribution is not None else "user"),
+                message_role=_input_message_role(_input_attribution),
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -889,6 +903,11 @@ class RuntimeService:
                         if isinstance(_input_attribution, HostSessionInput)
                         else None
                     ),
+                    delegation_id=(
+                        _input_attribution.delegation_id
+                        if isinstance(_input_attribution, DelegatedTaskInput)
+                        else None
+                    ),
                     plugin_id=(
                         _input_attribution.plugin_id if _input_attribution is not None else None
                     )
@@ -916,7 +935,11 @@ class RuntimeService:
                     session,
                     pending_input.resource_refs,
                     adapter=active_adapter,
-                    message_role=("user" if pending_input.source == "user" else "system_synthetic"),
+                    message_role=(
+                        "user"
+                        if pending_input.source in {"user", "delegation"}
+                        else "system_synthetic"
+                    ),
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             self._restore_run_tool_cap(run)
@@ -996,9 +1019,9 @@ class RuntimeService:
     async def run_prepared(
         self,
         run: RunRecord,
-        session_input: HostSessionInput,
+        session_input: HostSessionInput | DelegatedTaskInput,
     ) -> RunResult:
-        """Execute an already durable queued Run with attributed Host input."""
+        """Execute an already durable queued Run with typed input attribution."""
 
         return await self.run(
             session_input.prompt,
@@ -1300,7 +1323,7 @@ class RuntimeService:
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
-        attribution: AttributedSessionInput | HostSessionInput | None = None,
+        attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
     ) -> tuple[SessionRecord, list[EventRecord]]:
         session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
@@ -1312,6 +1335,9 @@ class RuntimeService:
             source=_attributed_input_source(attribution) if attribution is not None else "user",
             host_source_id=(
                 attribution.host_source_id if isinstance(attribution, HostSessionInput) else None
+            ),
+            delegation_id=(
+                attribution.delegation_id if isinstance(attribution, DelegatedTaskInput) else None
             ),
             plugin_id=(
                 attribution.plugin_id if isinstance(attribution, AttributedSessionInput) else None
@@ -1351,6 +1377,7 @@ class RuntimeService:
                 "resource_refs": list(queued_input.resource_refs),
                 "source": queued_input.source,
                 "host_source_id": queued_input.host_source_id,
+                "delegation_id": queued_input.delegation_id,
                 "plugin_id": queued_input.plugin_id,
                 "contribution_id": queued_input.contribution_id,
             },
@@ -1569,10 +1596,14 @@ class RuntimeService:
             "session_input_source": item.source,
             "session_input_mode": item.mode,
         }
+        if item.source == "delegation":
+            metadata["delegation_id"] = item.delegation_id
+            if item.caused_by_run_id is not None:
+                metadata["caused_by_run_id"] = item.caused_by_run_id
         if is_queued:
             metadata["queued_input_id"] = item.queue_id
             metadata["queued_input_mode"] = item.mode
-        if item.source != "user":
+        if item.source in {"host", "plugin"}:
             if item.source == "plugin" and item.resource_refs:
                 raise ResourceAttachmentError(
                     "plugin session inputs cannot attach Host resource references"
@@ -2429,17 +2460,31 @@ class RuntimeService:
 
 
 def _attributed_input_source(
-    attribution: AttributedSessionInput | HostSessionInput,
+    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput,
 ) -> QueuedInputSource:
-    return "host" if isinstance(attribution, HostSessionInput) else "plugin"
+    if isinstance(attribution, HostSessionInput):
+        return "host"
+    if isinstance(attribution, DelegatedTaskInput):
+        return "delegation"
+    return "plugin"
 
 
 def _attributed_input_initiator(
-    attribution: AttributedSessionInput | HostSessionInput,
+    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput,
 ) -> str:
     if isinstance(attribution, HostSessionInput):
         return attribution.host_source_id
+    if isinstance(attribution, DelegatedTaskInput):
+        return f"ouro.subagents/{attribution.delegation_id}"
     return attribution.plugin_id
+
+
+def _input_message_role(
+    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None,
+) -> str:
+    if attribution is None or isinstance(attribution, DelegatedTaskInput):
+        return "user"
+    return "system_synthetic"
 
 
 def _queued_input_initiator(item: QueuedInput | None) -> str | None:
@@ -2449,6 +2494,8 @@ def _queued_input_initiator(item: QueuedInput | None) -> str | None:
         return item.host_source_id
     if item.source == "plugin":
         return item.continuation_decision_id or item.plugin_id
+    if item.source == "delegation" and item.delegation_id is not None:
+        return f"ouro.subagents/{item.delegation_id}"
     return None
 
 

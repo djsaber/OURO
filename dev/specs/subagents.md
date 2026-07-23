@@ -426,9 +426,9 @@ RuntimeService -> AgentService -> RuntimeSupervisor -> RuntimeService 的实现�
   或在缺少 AgentService/RunScheduler 时 fail closed；
 - CLI、Desktop 和未来 API 复用同一 supervised composition，不各自创建 Agent 调度路径。
 
-RuntimeSupervisor.submit/job 必须支持 HostSessionInput attribution。child 初始任务使用稳定
-host_source_id=ouro.subagents/<delegation_id>，以 role=system_synthetic 进入 child canonical history；不得调用没有
-attribution 的 runtime.run(prompt) 将委派任务写成真实用户消息。
+RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSessionInput`。child 初始任务携带稳定
+`delegation_id` provenance，并以 `role=user` 进入 child canonical history；不得调用裸 `runtime.run(prompt)` 丢失
+委派身份。普通 Host/插件输入仍为 `role=system_synthetic`，不能借委派入口伪装用户消息。
 
 ## Spawn 提交协议与幂等
 
@@ -441,7 +441,7 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 4. 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session。
 5. 将 child_session_id 写回 Delegation，并推进 spawn_state=child_created。
 6. 创建 child queued Run，并写 current_child_run_id。
-7. 通过 RuntimeSupervisor 提交已存在 child Session 的 Run，并传递 HostSessionInput attribution。
+7. 通过 RuntimeSupervisor 提交已存在 child Session 的 Run，并传递 `DelegatedTaskInput` attribution。
 8. 推进 spawn_state=submitted 并发布 agent_spawned；queued/running 从 child Run 投影。
 
 任一步骤重试时必须复用已有 identity。不得因 Host 超时、模型重试或恢复重复创建 child。
@@ -550,7 +550,7 @@ identity 的 delivered 状态时按幂等成功收敛，其他版本冲突继续
 
 ## 上下文隔离与结果契约
 
-child 初始任务完整文本只保存为 child 的第一条 canonical system_synthetic message。Delegation 保存
+child 初始任务完整文本只保存为 child 的第一条 canonical user message，并携带稳定 `delegation_id` provenance。Delegation 保存
 initial_message_id 与 prompt_digest，不复制 prompt。child 默认只获得：
 
 - task prompt 与 description；
@@ -563,7 +563,7 @@ initial_message_id 与 prompt_digest，不复制 prompt。child 默认只获得�
 默认 context_policy 为 task_only。完整父 history 不作为默认值。bounded_history 必须显式配置消息上限和 token
 预算；secret、credential、approval answer 和未选择的 system/plugin context 不因 parent relation 自动复制。
 
-当前实现把上下文选择收敛为 child 首条 canonical `system_synthetic` message 的一次性安全投影，而不建立第二套
+当前实现把上下文选择收敛为 child 首条 canonical `user` message 的一次性安全投影，而不建立第二套
 context engine：`task_only` 不读取父历史；`summary` 只接受 active CompactionRecord，且其 covered messages 必须
 全部为可委派的纯 user/assistant 文本；`selected_messages` 要求显式、同父 Session 可达的 message ids；
 `bounded_history` 只从可委派文本中按时间选择，并同时执行 `max_messages` 与 `max_tokens`。tool result、assistant
@@ -572,7 +572,7 @@ tool call、reasoning/provider continuation、system/plugin synthetic message �
 
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
-Host message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
+delegated-task user message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
 child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 List/Wait 或 background delivery
 进入父 Session 前，再从 child 到 parent 执行同样的可达性验证和显式引用复制，随后才写入父 canonical message。
 

@@ -115,7 +115,7 @@ child 上下文沿用 canonical Message/Compaction/ContextView 管道。AgentDef
 `summary` 只读取来源全为纯 user/assistant 文本的 active compaction，`selected_messages` 只读取显式且同父 Session
 可达的消息，`bounded_history` 同时受消息数和 token 上限约束。工具结果、工具参数、reasoning/provider state 和
 system/plugin synthetic context 不会因父子关系自动复制。投影以 untrusted evidence 追加到 child 首条
-`system_synthetic` task；Agent 专用 system prompt 仍位于 base instructions 之后，且两者都进入同一 ContextView
+`user` task；Agent 专用 system prompt 仍位于 base instructions 之后，且两者都进入同一 ContextView
 预算，不进入 SpawnAgent 描述、根树或关系事件。
 
 资源引用同样不隐式继承。ResourceService 在源 Session mutation boundary 内验证不可变内容，再显式附加带来源的
@@ -168,8 +168,9 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 用户输入请求恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
-队列来源是类型化的 `user | host | plugin`：用户输入写为 `role=user`；OURO Host/Application 输入必须携带稳定
-`host_source_id`；插件输入必须携带完整 Generation/contract attribution。后两者都写为带来源元数据的
+队列来源是类型化的 `user | host | plugin | delegation`：用户输入写为 `role=user`；专用 `DelegatedTaskInput`
+携带稳定 `delegation_id`，也写为 `role=user`，但只允许启动已准备好的 child Run。OURO Host/Application 输入必须携带
+稳定 `host_source_id`；插件输入必须携带完整 Generation/contract attribution。后两者都写为带来源元数据的
 `role=system_synthetic`，也不能在消费时退化为用户消息。插件 synthetic input 不能携带资源；OURO Host input 只可
 携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。`RuntimeService.submit_host_input`
 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence 边界。

@@ -23,7 +23,7 @@ RunStatus = Literal[
     "paused",
     "recoverable",
 ]
-RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin"]
+RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin", "delegation"]
 HookEvent = Literal[
     "after_run",
     "after_context_build",

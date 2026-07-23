@@ -33,7 +33,7 @@ from ouro.core.base import utc_now
 from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
-from ouro.core.session_controls import HostSessionInput
+from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 
@@ -54,7 +54,7 @@ class _RunJob:
     prompt: str
     title: str | None
     prepared_run: RunRecord | None = None
-    host_input: HostSessionInput | None = None
+    session_input: HostSessionInput | DelegatedTaskInput | None = None
     agent_wait_resolution: AgentWaitResolution | None = None
     agent_wait_result: ToolResult | None = None
     agent_wait_tool_call_id: str | None = None
@@ -267,7 +267,7 @@ class RuntimeSupervisor:
     async def submit_prepared(
         self,
         run: RunRecord,
-        session_input: HostSessionInput,
+        session_input: HostSessionInput | DelegatedTaskInput,
     ) -> RunHandle:
         """Schedule one already persisted queued Run without changing its identity."""
 
@@ -291,7 +291,7 @@ class RuntimeSupervisor:
             prompt=session_input.prompt,
             title=session_input.title,
             prepared_run=run,
-            host_input=session_input,
+            session_input=session_input,
         )
         self._jobs_by_session[session_id] = job
         self._jobs_by_handle[handle.handle_id] = job
@@ -361,7 +361,7 @@ class RuntimeSupervisor:
             handle=handle,
             prompt=session_input.prompt,
             title=session_input.title,
-            host_input=session_input,
+            session_input=session_input,
         )
         self._enqueue_job(job)
         return handle
@@ -788,14 +788,15 @@ class RuntimeSupervisor:
                             result=job.agent_wait_result,
                         )
                     elif job.prepared_run is not None:
-                        assert job.host_input is not None
+                        assert job.session_input is not None
                         job.result = await self.runtime.run_prepared(
                             job.prepared_run,
-                            job.host_input,
+                            job.session_input,
                         )
-                    elif job.host_input is not None:
+                    elif job.session_input is not None:
+                        assert isinstance(job.session_input, HostSessionInput)
                         job.result = await self.runtime.submit_host_input(
-                            job.host_input,
+                            job.session_input,
                             session_id=job.handle.session_id,
                         )
                     else:

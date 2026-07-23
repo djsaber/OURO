@@ -55,7 +55,7 @@ from ouro.core.errors import DelegationRevisionConflictError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
-from ouro.core.session_controls import HostSessionInput
+from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolInvocation, ToolResult
@@ -66,7 +66,9 @@ class RunScheduler(Protocol):
     async def start(self) -> SupervisorStartResult: ...
 
     async def submit_prepared(
-        self, run: RunRecord, session_input: HostSessionInput
+        self,
+        run: RunRecord,
+        session_input: HostSessionInput | DelegatedTaskInput,
     ) -> RunHandle: ...
 
     async def wait(self, handle: RunHandle) -> RuntimeStatusSnapshot: ...
@@ -536,7 +538,7 @@ class AgentService:
         run = RunRecord(
             session_id=child.session_id,
             status="queued",
-            origin="host",
+            origin="delegation",
             parent_run_id=parent_run.run_id,
             initiator_id=f"ouro.subagents/{delegation.delegation_id}",
             trigger="subagent",
@@ -574,15 +576,15 @@ class AgentService:
             delegation.model_copy(update={"current_child_run_id": run.run_id}),
             expected_revision=delegation.revision,
         )
-        host_input = HostSessionInput(
+        delegated_input = DelegatedTaskInput(
             prompt=initial_context.prompt,
             mode="follow_up",
             title=request.nickname or entry.definition.name,
-            host_source_id=f"ouro.subagents/{delegation.delegation_id}",
+            delegation_id=delegation.delegation_id,
             resource_refs=initial_context.resource_refs,
         )
         try:
-            handle = await self.scheduler.submit_prepared(run, host_input)
+            handle = await self.scheduler.submit_prepared(run, delegated_input)
         except BaseException as exc:
             latest = self._load_by_id(delegation.delegation_id)
             self.store.save_delegation(
@@ -1126,7 +1128,16 @@ class AgentService:
         if run is None or run.status in ACTIVE_RUN_STATUSES:
             return relation
         messages = [item for item in snapshot.messages if item.run_id == run.run_id]
-        first_input = next((item for item in messages if item.role == "system_synthetic"), None)
+        first_input = next(
+            (
+                item
+                for item in messages
+                if item.role == "user"
+                and item.metadata.get("session_input_source") == "delegation"
+                and item.metadata.get("delegation_id") == relation.delegation_id
+            ),
+            None,
+        )
         result_message = next(
             (item for item in reversed(messages) if item.role == "assistant"), None
         )

@@ -317,7 +317,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] 定义窄 RunScheduler Protocol，由现有 RuntimeSupervisor 实现，不创建第二个 scheduler/worker pool。
 - [x] LocalApplication 显式装配 RuntimeService、RuntimeSupervisor、AgentDefinitionService 和 AgentService，不提供通用
   reverse host.call。
-- [x] child Run 使用 HostSessionInput、稳定 host_source_id、明确 origin/initiator/parent_run provenance。
+- [x] child Run 使用 DelegatedTaskInput、稳定 delegation_id、明确 origin/initiator/parent_run provenance；task 为 user role。
 - [x] 标准 Agent-capable Host 路径统一经过 Supervisor；裸 RuntimeService 缺少装配时不注册 Agent 工具或 fail closed。
 - [x] 任何异常保留可 reconciliation 的 durable 状态。
 

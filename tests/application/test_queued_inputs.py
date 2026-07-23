@@ -136,6 +136,37 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
     assert restored.resource_refs == ("resource_1",)
 
 
+def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Delegated task queue")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    snapshot = store.load_session(session.session_id)
+
+    with pytest.raises(ValidationError, match="requires a delegation id"):
+        queue.enqueue(
+            snapshot=snapshot,
+            prompt="Inspect the target.",
+            title=None,
+            source="delegation",
+        )
+
+    queued_session, queued, _ = queue.enqueue(
+        snapshot=snapshot,
+        prompt="Inspect the target.",
+        title=None,
+        source="delegation",
+        delegation_id="dlg_task",
+    )
+    restored = queue.peek(store.load_session(queued_session.session_id))
+
+    assert queued.delegation_id == "dlg_task"
+    assert restored is not None
+    assert restored.source == "delegation"
+    assert restored.delegation_id == "dlg_task"
+
+
 def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

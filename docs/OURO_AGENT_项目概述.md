@@ -189,8 +189,8 @@ generation-frozen continuation checkpoint。
 
 会话的 canonical 对话记录。工具请求使用 `tool_calls`，工具结果关联使用 `tool_result`；两者不隐藏在
 metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具续接状态使用路由绑定的
-`provider_continuation`。插件产生的会话输入使用 `system_synthetic` 与 provenance metadata，只有用户输入使用
-`user` role。
+`provider_continuation`。插件和普通 Host 产生的会话输入使用 `system_synthetic` 与 provenance metadata；直接用户输入
+以及携带 `delegation_id` 的子智能体初始 task 使用 `user` role。
 
 ### Event
 

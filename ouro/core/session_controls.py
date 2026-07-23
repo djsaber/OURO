@@ -74,6 +74,37 @@ class HostSessionInput(SessionInputRequest):
         return normalized
 
 
+class DelegatedTaskInput(SessionInputRequest):
+    """The user-role task that starts one prepared child Agent Run.
+
+    Delegation provenance is application-owned and durable, but it must not
+    change the model role of the task supplied through ``SpawnAgent``. General
+    Host and plugin inputs remain synthetic; only this narrow boundary creates
+    an attributed user message for a child Session.
+    """
+
+    delegation_id: str = Field(min_length=1, max_length=128)
+    resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
+
+    @field_validator("delegation_id")
+    @classmethod
+    def validate_delegation_id(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("delegated task identity cannot be blank")
+        return normalized
+
+    @field_validator("resource_refs")
+    @classmethod
+    def validate_resource_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        normalized = tuple(item.strip() for item in value)
+        if any(not item for item in normalized):
+            raise ValueError("delegated task resource references cannot be blank")
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("delegated task resource references must be unique")
+        return normalized
+
+
 class SessionControlClaim(OuroModel):
     """One declared Session resource claim used for activation-time arbitration."""
 
@@ -228,6 +259,7 @@ class SessionControlTransitionResult(OuroModel):
 __all__ = [
     "AttributedSessionInput",
     "AttributedSessionControlTransition",
+    "DelegatedTaskInput",
     "HostSessionInput",
     "SessionControlAccess",
     "SessionControlActivation",
