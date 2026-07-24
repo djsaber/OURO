@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -20,6 +21,21 @@ from ouro.core.tool_batches import ToolBatchCall
 
 InputFunc = Callable[[str], str]
 _MAX_APPROVAL_ARGUMENT_PREVIEW = 240
+
+
+class PrefetchedInput:
+    """Present one already-read terminal line before falling back to the real input."""
+
+    def __init__(self, value: str, fallback: InputFunc) -> None:
+        self._value: str | None = value
+        self._fallback = fallback
+
+    def __call__(self, prompt: str) -> str:
+        if self._value is not None:
+            value = self._value
+            self._value = None
+            return value
+        return self._fallback(prompt)
 
 
 class AgentTreeSubscriptionPort(Protocol):
@@ -68,6 +84,91 @@ class AgentInteractionHost(Protocol):
     ) -> object: ...
 
 
+async def read_interactive_input(
+    prompt: str,
+    *,
+    root_session_id: str | None,
+    agents: AgentInteractionHost | None,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> str:
+    """Read the primary prompt while keeping background subagents observable."""
+
+    if agents is None or root_session_id is None:
+        return await _read_input(input_func, prompt)
+
+    subscription = agents.subscribe_agent_tree(root_session_id)
+    input_task = asyncio.create_task(
+        _read_input(input_func, prompt),
+        name=f"ouro-terminal-input-{root_session_id}",
+    )
+    notification_task: asyncio.Task[AgentTreeNotification] | None = None
+    try:
+        while True:
+            pending = agents.list_agent_interactions(root_session_id)
+            if pending and not input_task.done():
+                interaction = pending[0]
+                await _announce_subagent_interaction(
+                    interaction,
+                    output_func=output_func,
+                    output=output,
+                )
+                prefetched = PrefetchedInput(await input_task, input_func)
+                if not await _resolve_subagent_interaction(
+                    interaction,
+                    agents=agents,
+                    input_func=prefetched,
+                    output_func=output_func,
+                    output=output,
+                    announce=False,
+                ):
+                    raise EOFError
+                if not await _resolve_pending_subagent_interactions(
+                    root_session_id,
+                    agents=agents,
+                    input_func=input_func,
+                    output_func=output_func,
+                    output=output,
+                ):
+                    raise EOFError
+                input_task = asyncio.create_task(
+                    _read_input(input_func, prompt),
+                    name=f"ouro-terminal-input-{root_session_id}",
+                )
+                continue
+            if input_task.done():
+                return input_task.result()
+
+            notification_task = asyncio.create_task(
+                subscription.get(),
+                name=f"ouro-subagent-notification-{root_session_id}",
+            )
+            done, _ = await asyncio.wait(
+                (input_task, notification_task),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if input_task in done:
+                notification_task.cancel()
+                await asyncio.gather(notification_task, return_exceptions=True)
+                notification_task = None
+                return input_task.result()
+            try:
+                notification_task.result()
+            except StopAsyncIteration:
+                return await input_task
+            finally:
+                notification_task = None
+    finally:
+        if notification_task is not None:
+            notification_task.cancel()
+            await asyncio.gather(notification_task, return_exceptions=True)
+        if not input_task.done():
+            input_task.cancel()
+            await asyncio.gather(input_task, return_exceptions=True)
+        subscription.close()
+
+
 async def handle_run_result(
     result: RunResult,
     *,
@@ -108,7 +209,7 @@ async def handle_run_result(
             current = resolved
             continue
         if current.run.status == "waiting_child" and agents is not None:
-            resolved = await _follow_waiting_children(
+            resolved = await _follow_waiting_subagents(
                 current,
                 runtime=runtime,
                 agents=agents,
@@ -144,7 +245,7 @@ async def handle_run_result(
         return current.session.session_id
 
 
-async def _follow_waiting_children(
+async def _follow_waiting_subagents(
     result: RunResult,
     *,
     runtime: RuntimeService,
@@ -165,91 +266,155 @@ async def _follow_waiting_children(
             if current.run.status not in {"queued", "running", "waiting_child"}:
                 return current
 
-            pending = (
-                tuple(
-                    interaction
-                    for interaction in agents.list_agent_interactions(root_session_id)
-                    if _interaction_identity(interaction) not in resolved_requests
-                )
-                if current.run.status == "waiting_child"
-                else ()
+            pending = tuple(
+                interaction
+                for interaction in agents.list_agent_interactions(root_session_id)
+                if _interaction_identity(interaction) not in resolved_requests
             )
-            for interaction in pending:
-                resolved = await _resolve_child_interaction(
-                    interaction,
+            if current.run.status == "waiting_child" and pending:
+                if not await _resolve_pending_subagent_interactions(
+                    root_session_id,
                     agents=agents,
                     input_func=input_func,
                     output_func=output_func,
                     output=output,
-                )
-                if not resolved:
+                    resolved_requests=resolved_requests,
+                ):
                     return None
-                resolved_requests.add(_interaction_identity(interaction))
-            if pending:
                 continue
 
             try:
                 await subscription.get()
             except StopAsyncIteration as exc:
                 raise OuroError(
-                    "Agent interaction subscription closed while the parent Run is waiting"
+                    "Subagent interaction subscription closed while the parent Run is waiting"
                 ) from exc
     finally:
         subscription.close()
 
 
-async def _resolve_child_interaction(
+async def _resolve_pending_subagent_interactions(
+    root_session_id: str,
+    *,
+    agents: AgentInteractionHost,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+    resolved_requests: set[tuple[str, str, str]] | None = None,
+) -> bool:
+    resolved = resolved_requests if resolved_requests is not None else set()
+    while True:
+        pending = tuple(
+            interaction
+            for interaction in agents.list_agent_interactions(root_session_id)
+            if _interaction_identity(interaction) not in resolved
+        )
+        if not pending:
+            return True
+        for interaction in pending:
+            identity = _interaction_identity(interaction)
+            try:
+                handled = await _resolve_subagent_interaction(
+                    interaction,
+                    agents=agents,
+                    input_func=input_func,
+                    output_func=output_func,
+                    output=output,
+                )
+            except ValueError:
+                current = {
+                    _interaction_identity(item)
+                    for item in agents.list_agent_interactions(root_session_id)
+                }
+                if identity not in current:
+                    resolved.add(identity)
+                    continue
+                raise
+            if not handled:
+                return False
+            resolved.add(identity)
+
+
+async def _resolve_subagent_interaction(
     interaction: AgentInteractionView,
     *,
     agents: AgentInteractionHost,
     input_func: InputFunc,
     output_func: OutputFunc,
     output: InteractiveOutput,
+    announce: bool = True,
 ) -> bool:
     if interaction.kind == "approval":
-        return await _resolve_child_approval(
+        return await _resolve_subagent_approval(
             interaction,
             agents=agents,
             input_func=input_func,
             output_func=output_func,
             output=output,
+            announce=announce,
         )
-    return await _resolve_child_question(
+    return await _resolve_subagent_question(
         interaction,
         agents=agents,
         input_func=input_func,
         output_func=output_func,
         output=output,
+        announce=announce,
     )
 
 
-async def _resolve_child_approval(
+async def _announce_subagent_interaction(
+    interaction: AgentInteractionView,
+    *,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+) -> None:
+    await output.suspend_tools_for_prompt()
+    if interaction.kind == "approval":
+        output_func(_subagent_approval_request(interaction))
+        output_func("Respond at the current prompt with y, n, m, or a.")
+        return
+    question = (
+        _format_user_input_request(interaction.input_request)
+        if interaction.input_request is not None
+        else "Please provide the requested information."
+    )
+    output_func(f"Question from subagent {_subagent_label(interaction)}: {question}")
+    output_func("Respond at the current prompt with the subagent answer.")
+
+
+async def _resolve_subagent_approval(
     interaction: AgentInteractionView,
     *,
     agents: AgentInteractionHost,
     input_func: InputFunc,
     output_func: OutputFunc,
     output: InteractiveOutput,
+    announce: bool,
 ) -> bool:
-    await output.suspend_tools_for_prompt()
-    output_func(_child_approval_request(interaction))
+    if announce:
+        await output.suspend_tools_for_prompt()
+        output_func(_subagent_approval_request(interaction))
     while True:
         try:
             choice = (
-                input_func("Approve child tool? [y]es/[n]o/[m]odify/[a]bort child: ")
-                .strip()
-                .lower()
-            )
+                await _read_input(
+                    input_func,
+                    "Approve subagent tool? [y]es/[n]o/[m]odify/[a]bort subagent: ",
+                )
+            ).strip().lower()
         except EOFError:
             output_func("")
             return False
 
         if choice in {"y", "yes"}:
-            await _route_child_approval(interaction, agents=agents, approved=True)
+            await _route_subagent_approval(interaction, agents=agents, approved=True)
             return True
         if choice in {"", "n", "no"}:
-            reason = _input_optional(input_func, output_func, "Reason: ") or "User rejected"
-            await _route_child_approval(
+            reason = (
+                await _input_optional(input_func, output_func, "Reason: ")
+            ) or "User rejected"
+            await _route_subagent_approval(
                 interaction,
                 agents=agents,
                 approved=False,
@@ -259,13 +424,17 @@ async def _resolve_child_approval(
         if choice in {"a", "/abort", "abort"}:
             await agents.interrupt_agent(
                 interaction.delegation_id,
-                reason="User aborted child agent",
+                reason="User aborted subagent",
             )
             return True
         if choice in {"m", "modify"}:
-            override = _input_json_object(input_func, output_func, "Arguments JSON: ")
+            override = await _input_json_object(
+                input_func,
+                output_func,
+                "Arguments JSON: ",
+            )
             if override is not None:
-                await _route_child_approval(
+                await _route_subagent_approval(
                     interaction,
                     agents=agents,
                     approved=True,
@@ -276,7 +445,7 @@ async def _resolve_child_approval(
         output_func("Choose y, n, m, or a.")
 
 
-async def _route_child_approval(
+async def _route_subagent_approval(
     interaction: AgentInteractionView,
     *,
     agents: AgentInteractionHost,
@@ -296,30 +465,33 @@ async def _route_child_approval(
     )
 
 
-async def _resolve_child_question(
+async def _resolve_subagent_question(
     interaction: AgentInteractionView,
     *,
     agents: AgentInteractionHost,
     input_func: InputFunc,
     output_func: OutputFunc,
     output: InteractiveOutput,
+    announce: bool,
 ) -> bool:
-    await output.suspend_tools_for_prompt()
+    if announce:
+        await output.suspend_tools_for_prompt()
     question = (
         _format_user_input_request(interaction.input_request)
         if interaction.input_request is not None
         else "Please provide the requested information."
     )
-    output_func(f"Question from child agent {_child_agent_label(interaction)}: {question}")
+    if announce:
+        output_func(f"Question from subagent {_subagent_label(interaction)}: {question}")
     try:
-        answer = input_func("Answer child agent: ")
+        answer = await _read_input(input_func, "Answer subagent: ")
     except EOFError:
         output_func("")
         return False
     if answer.strip().lower() in {"/abort", "abort"}:
         await agents.interrupt_agent(
             interaction.delegation_id,
-            reason="User aborted child agent",
+            reason="User aborted subagent",
         )
         return True
     await agents.resolve_agent_input(
@@ -341,7 +513,7 @@ def _durable_run_result(
     snapshot = runtime.store.load_runtime_session(session_id)
     run = next((item for item in snapshot.runs if item.run_id == run_id), None)
     if run is None:
-        raise OuroError(f"Run not found while waiting for child agents: {run_id}")
+        raise OuroError(f"Run not found while waiting for subagents: {run_id}")
     final_text = next(
         (
             message.text_content
@@ -361,17 +533,17 @@ def _interaction_identity(interaction: AgentInteractionView) -> tuple[str, str, 
     )
 
 
-def _child_approval_request(interaction: AgentInteractionView) -> str:
+def _subagent_approval_request(interaction: AgentInteractionView) -> str:
     tool_name = _single_line(interaction.tool_name)
     invocation = (
         f"{tool_name}({interaction.arguments_preview})"
         if interaction.arguments_preview
         else tool_name
     )
-    return f"Child agent {_child_agent_label(interaction)} approval required: {invocation}"
+    return f"Subagent {_subagent_label(interaction)} approval required: {invocation}"
 
 
-def _child_agent_label(interaction: AgentInteractionView) -> str:
+def _subagent_label(interaction: AgentInteractionView) -> str:
     return f"{_single_line(interaction.agent_name)} ({_single_line(interaction.delegation_id)})"
 
 
@@ -389,7 +561,9 @@ async def _resolve_approval(
 
     while True:
         try:
-            choice = input_func("Approve? [y]es/[n]o/[m]odify: ").strip().lower()
+            choice = (
+                await _read_input(input_func, "Approve? [y]es/[n]o/[m]odify: ")
+            ).strip().lower()
         except EOFError:
             output_func("")
             return None
@@ -401,7 +575,9 @@ async def _resolve_approval(
                 approved=True,
             )
         if choice in {"", "n", "no"}:
-            reason = _input_optional(input_func, output_func, "Reason: ") or "User rejected"
+            reason = (
+                await _input_optional(input_func, output_func, "Reason: ")
+            ) or "User rejected"
             return await runtime.approve_tool(
                 session_id=result.session.session_id,
                 run_id=result.run.run_id,
@@ -414,7 +590,11 @@ async def _resolve_approval(
                 run_id=result.run.run_id,
             )
         if choice in {"m", "modify"}:
-            override = _input_json_object(input_func, output_func, "Arguments JSON: ")
+            override = await _input_json_object(
+                input_func,
+                output_func,
+                "Arguments JSON: ",
+            )
             if override is not None:
                 return await runtime.approve_tool(
                     session_id=result.session.session_id,
@@ -449,7 +629,8 @@ async def _resolve_user_question(
         output_func(f"Invalid plan confirmation request: {exc}")
         request = None
     if request is not None:
-        collected = collect_plan_confirmation(
+        collected = await asyncio.to_thread(
+            collect_plan_confirmation,
             request,
             input_func=input_func,
             output_func=output_func,
@@ -470,7 +651,7 @@ async def _resolve_user_question(
 
     output_func(f"Question: {_pending_question(result)}")
     try:
-        answer = input_func("Answer: ")
+        answer = await _read_input(input_func, "Answer: ")
     except EOFError:
         output_func("")
         return None
@@ -554,9 +735,17 @@ def _decode_user_answer(answer: str) -> JsonValue:
         return answer
 
 
-def _input_optional(input_func: InputFunc, output_func: OutputFunc, prompt: str) -> str:
+async def _read_input(input_func: InputFunc, prompt: str) -> str:
+    return await asyncio.to_thread(input_func, prompt)
+
+
+async def _input_optional(
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    prompt: str,
+) -> str:
     try:
-        return input_func(prompt).strip()
+        return (await _read_input(input_func, prompt)).strip()
     except EOFError:
         output_func("")
         return ""
@@ -566,13 +755,13 @@ def _single_line(value: str) -> str:
     return value.replace("\r", "\\r").replace("\n", "\\n")
 
 
-def _input_json_object(
+async def _input_json_object(
     input_func: InputFunc,
     output_func: OutputFunc,
     prompt: str,
 ) -> dict[str, object] | None:
     try:
-        raw = input_func(prompt)
+        raw = await _read_input(input_func, prompt)
     except EOFError:
         output_func("")
         return None

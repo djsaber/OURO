@@ -17,10 +17,9 @@ RESERVED_AGENT_IDS = frozenset({"general"})
 
 
 class AgentRuntimeConfig(OuroModel):
-    """Process-start policy for the first-release Agent scheduler."""
+    """Process-start policy for first-release subagent dispatch."""
 
     max_depth: Literal[1] = 1
-    max_active_children_per_root: int = Field(default=4, ge=1, le=32)
     spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
 
     @model_validator(mode="after")

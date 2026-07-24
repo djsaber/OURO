@@ -14,7 +14,9 @@ from ouro.cli.interactive_io import (
     InputFunc,
     InteractiveOutput,
     OutputFunc,
+    PrefetchedInput,
     handle_run_result,
+    read_interactive_input,
 )
 from ouro.cli.run import (
     RuntimeProviderOptions,
@@ -138,13 +140,14 @@ async def _run_interactive_session(
                 output_func(f"Error: {exc}")
             plugin_run_task = None
         try:
-            if plugin_run_task is None:
-                raw_line = input_func(f"{_CYAN}ouro>{_RESET} ")
-            else:
-                raw_line = await asyncio.to_thread(
-                    input_func,
-                    f"{_CYAN}ouro>{_RESET} ",
-                )
+            raw_line = await read_interactive_input(
+                f"{_CYAN}ouro>{_RESET} ",
+                root_session_id=_interaction_root_session_id(runtime, session_id),
+                agents=agents,
+                input_func=input_func,
+                output_func=output_func,
+                output=output,
+            )
         except EOFError:
             await _stop_plugin_run(runtime, plugin_run_task, session_id)
             output_func("")
@@ -160,7 +163,7 @@ async def _run_interactive_session(
                     result,
                     runtime=runtime,
                     input_func=(
-                        _PrefetchedInput(raw_line, input_func) if consumes_line else input_func
+                        PrefetchedInput(raw_line, input_func) if consumes_line else input_func
                     ),
                     output_func=output_func,
                     output=output,
@@ -312,22 +315,19 @@ async def _stop_plugin_run(
         return
 
 
-class _PrefetchedInput:
-    def __init__(self, value: str, fallback: InputFunc) -> None:
-        self._value: str | None = value
-        self._fallback = fallback
-
-    def __call__(self, prompt: str) -> str:
-        if self._value is not None:
-            value = self._value
-            self._value = None
-            return value
-        return self._fallback(prompt)
-
-
 def _interactive_title(prompt: str) -> str:
     normalized = " ".join(prompt.split())
     return normalized[:60] if normalized else "New session"
+
+
+def _interaction_root_session_id(
+    runtime: RuntimeService,
+    session_id: str | None,
+) -> str | None:
+    if session_id is None:
+        return None
+    session = runtime.store.load_session_record(session_id)
+    return session.root_session_id or session.session_id
 
 
 def _primary_session_event_sink(

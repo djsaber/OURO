@@ -159,13 +159,10 @@ class AgentService:
         resources: AgentResourcePort | None = None,
         spawn_policy: AgentSpawnPolicy | None = None,
         max_depth: int = 1,
-        max_active_children_per_root: int = 4,
         cascade_timeout_seconds: float = 5.0,
     ) -> None:
         if max_depth != 1:
             raise ValueError("first-release AgentService supports only max_depth=1")
-        if max_active_children_per_root < 1:
-            raise ValueError("max_active_children_per_root must be positive")
         if cascade_timeout_seconds <= 0:
             raise ValueError("cascade_timeout_seconds must be positive")
         self.store = store
@@ -175,7 +172,6 @@ class AgentService:
         self.resources = resources
         self.spawn_policy = spawn_policy or AgentSpawnPolicy()
         self.max_depth = max_depth
-        self.max_active_children_per_root = max_active_children_per_root
         self.cascade_timeout_seconds = cascade_timeout_seconds
         self.recovery = AgentRecoveryService(store)
         self._run_handles: dict[str, RunHandle] = {}
@@ -438,7 +434,7 @@ class AgentService:
         if parent_session.session_kind == "subagent":
             raise ValueError(f"maximum subagent depth is {self.max_depth}")
         if request.lifecycle_binding != "bound":
-            raise ValueError("detached child is not supported in the first release")
+            raise ValueError("detached subagent is not supported in the first release")
         existing = self.store.find_delegation_by_idempotency_key(
             parent_session.root_session_id or parent_session.session_id,
             request.request_id,
@@ -450,11 +446,14 @@ class AgentService:
         assert parent_run.agent_catalog is not None
         policy = parent_run.agent_catalog.spawn_policy
         if request.execution_mode not in policy.allowed_execution_modes:
-            raise ValueError(f"child execution mode is not allowed: {request.execution_mode}")
+            raise ValueError(
+                f"subagent execution mode is not allowed: {request.execution_mode}"
+            )
         if request.lifecycle_binding not in policy.allowed_lifecycle_bindings:
-            raise ValueError(f"child lifecycle binding is not allowed: {request.lifecycle_binding}")
+            raise ValueError(
+                f"subagent lifecycle binding is not allowed: {request.lifecycle_binding}"
+            )
         root_id = parent_session.root_session_id or parent_session.session_id
-        self._require_root_quota(root_id)
         budget = self._effective_child_budget(
             root_session_id=root_id,
             parent_run=parent_run,
@@ -491,11 +490,7 @@ class AgentService:
             definition=entry.definition,
             effective_tools=entry.effective_tools,
             constraints=DelegatedConstraints(
-                allowed_tool_names=tuple(tool.public_name for tool in entry.effective_tools),
                 workspace=parent_session.workspace,
-                allow_write=any(tool.effect != "read_only" for tool in entry.effective_tools),
-                allow_network=any(tool.requires_network for tool in entry.effective_tools),
-                allow_mcp=any(tool.requires_mcp for tool in entry.effective_tools),
                 allow_external_paths=policy.allow_external_paths,
             ),
             approval_mode=parent_session.approval_mode,
@@ -1478,10 +1473,10 @@ class AgentService:
         resource_refs: tuple[str, ...],
     ) -> ToolResult:
         if len(resolution.resolved_delegation_ids) != 1:
-            raise ValueError("synchronous SpawnAgent must resolve exactly one child")
+            raise ValueError("synchronous SpawnAgent must resolve exactly one subagent")
         relation = self._load_by_id(resolution.resolved_delegation_ids[0])
         if relation.result is None:
-            raise ValueError("synchronous SpawnAgent child has no terminal result")
+            raise ValueError("synchronous SpawnAgent subagent has no terminal result")
         detail = self.read_agent(relation.delegation_id)
         structured = {
             "handle": self._handle(relation).model_dump(mode="json"),
@@ -1634,7 +1629,7 @@ class AgentService:
                             tool_call_id=call.request.id,
                             tool_name=call.request.name,
                             is_error=True,
-                            content="Parent Run terminated while waiting for child Agents.",
+                            content="Parent Run terminated while waiting for subagents.",
                             structured={"interrupted": True},
                             ended_at=utc_now(),
                         ),
@@ -1661,19 +1656,6 @@ class AgentService:
         if parent_run.agent_catalog is None:
             raise ValueError("parent Run has no frozen Agent catalog")
         return parent_run.agent_catalog.resolve(agent_id)
-
-    def _require_root_quota(
-        self,
-        root_session_id: str,
-    ) -> None:
-        active_relations = [
-            relation
-            for relation in self.store.list_delegations(root_session_id)
-            if not self._is_terminal(relation)
-        ]
-        active = len(active_relations)
-        if active >= self.max_active_children_per_root:
-            raise SessionBusyError("root active child quota is exhausted")
 
     def _effective_child_budget(
         self,

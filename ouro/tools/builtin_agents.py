@@ -31,7 +31,8 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                     "List direct subagents spawned from the current Session/Run, "
                     "including their status, terminal status, and bounded result summaries.\n\n"
                     "Use this for:\n"
-                    "- Inspecting the state of async subagents after receiving an agent_result_ready event.\n"
+                    "- Inspecting the state of async subagents after receiving an "
+                    "agent_result_ready event.\n"
                     "- Checking which subagents have finished before deciding the next step.\n"
                     "- Retrieving final_text or resource_refs from completed subagents.\n\n"
                     "Do not use this for tight polling; async results are delivered automatically "
@@ -52,12 +53,15 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
             definition=ToolDefinition(
                 name="SendAgentMessage",
                 description=(
-                    "Send a message to a subagent. The behavior depends on the subagent's state:\n\n"
-                    "- Active subagent (has a running Run): the message must use mode='steer' and is routed "
+                    "Send a message to a subagent. The behavior depends on its state:\n\n"
+                    "- Active subagent (has a running Run): the message must use "
+                    "mode='steer' and is routed "
                     "into the current Run as a host input for real-time guidance.\n"
-                    "- Idle/terminal subagent (no active Run): the message must use mode='follow_up' and "
+                    "- Idle/terminal subagent (no active Run): the message must use "
+                    "mode='follow_up' and "
                     "starts a new Run continuing the same subagent Session.\n\n"
-                    "Default mode is 'steer'. Only use 'follow_up' when the subagent has finished its "
+                    "Default mode is 'steer'. Only use 'follow_up' when the subagent "
+                    "has finished its "
                     "current Run and you want to resume it with a new Run."
                 ),
                 parameters_schema={
@@ -89,8 +93,6 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                     "additionalProperties": False,
                 },
                 effect="state_changing",
-                execution_mode="sequential",
-                batch_behavior="exclusive",
                 metadata=metadata,
             ),
             handler=_send,
@@ -125,8 +127,6 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                     "additionalProperties": False,
                 },
                 effect="state_changing",
-                execution_mode="sequential",
-                batch_behavior="exclusive",
                 metadata=metadata,
             ),
             handler=_interrupt,
@@ -158,7 +158,8 @@ def _spawn_control_tool(
                 "minLength": 1,
                 "maxLength": 20_000,
                 "description": (
-                    "Self-contained task instruction for the subagent. Include all context it needs; "
+                    "Self-contained task instruction for the subagent. Include all "
+                    "context it needs; "
                     "the subagent starts without access to the current conversation."
                 ),
             },
@@ -183,8 +184,9 @@ def _spawn_control_tool(
                     else catalog.spawn_policy.allowed_execution_modes[0]
                 ),
                 "description": (
-                    "'sync' blocks until the subagent finishes and returns its result as the tool result. "
-                    "'async' returns a durable handle immediately; the result is delivered automatically "
+                    "'sync' blocks until the subagent finishes and returns its result "
+                    "as the tool result. 'async' returns a durable handle immediately; "
+                    "the result is delivered automatically "
                     "as a steer HostInput at the next parent model boundary."
                 ),
             },
@@ -209,15 +211,18 @@ def _spawn_control_tool(
             description=(
                 "Dispatch an independent subagent to perform a task.\n\n"
                 "Execution modes:\n"
-                "- 'sync': Blocks until the subagent finishes. The tool result contains the subagent's handle "
+                "- 'sync': Blocks until the subagent finishes. The tool result contains "
+                "the subagent's handle "
                 "and final result.\n"
-                "- 'async': Returns a durable handle immediately. The subagent runs in the background and "
-                "the result is delivered automatically as a steer HostInput at the next parent model boundary.\n\n"
+                "- 'async': Returns a durable handle immediately. The subagent runs in "
+                "the background and the result is delivered automatically as a steer "
+                "HostInput at the next parent model boundary.\n\n"
                 "Important limits for the current release:\n"
                 "- Subagent nesting depth is 1; a subagent cannot spawn further subagents.\n"
-                "- At most one write-capable subagent can be active at the same time.\n"
-                "- Total active subagents per root Session is limited (default 4).\n\n"
-                "Provide a self-contained task because the subagent starts without prior conversation context."
+                "- Subagents use the ordinary runtime scheduler; tool permissions do not limit "
+                "dispatch concurrency.\n\n"
+                "Provide a self-contained task because the subagent starts without prior "
+                "conversation context."
             ),
             parameters_schema=spawn_schema,
             effect="state_changing",

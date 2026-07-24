@@ -62,12 +62,14 @@ connected/failed 状态、transport 和工具数量。MCP manager/resource 只�
 Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 Host 错误边界；类型化 application 错误应
 显示后继续输入循环，并保留已经返回的 durable Session identity，不得以 traceback 终止整个 Host。
 
-sync parent 返回 `waiting_child` 时，Interactive 不把它渲染为停止，也不把后续 stdin 当成新的根消息。
-Host 先订阅 `AgentService.subscribe_agent_tree`，再读取 root interaction inbox；发现 child approval 或 AskUser 后显示
-agent/delegation 来源及有界参数摘要或完整 input request，并携带原 child session/run/tool call/request identity 调用
-`resolve_agent_approval` 或 `resolve_agent_input`。提交后继续依赖订阅唤醒并从 canonical root Run 重建状态，直到父 Run
-离开 `waiting_child`；不得轮询、直接恢复 child Runtime，或在 CLI 保存第二份 pending 状态。订阅在交互完成、EOF、
-异常和 Host 退出时关闭。
+Interactive 的 stdin 读取必须通过非阻塞 async 边界执行，并与
+`AgentService.subscribe_agent_tree` 同时等待。root interaction inbox 出现 subagent approval 或 AskUser 时，Host
+显示 agent/delegation 来源及有界参数摘要或完整 input request，把当前输入行作为该 interaction 的回答，并携带原
+child session/run/tool call/request identity 调用 `resolve_agent_approval` 或 `resolve_agent_input`。sync parent
+返回 `waiting_child` 时，Interactive 不把它渲染为停止，决议后继续等待原父 Run；async subagent 的 interaction
+同样由主窗口处理，但不改变父 Run 生命周期。CLI 只渲染 primary agent 行动轨迹与 subagent HITL 提示，
+不展开 subagent 回复或工具调用。Host 不得轮询、直接恢复 subagent Runtime，或保存第二份 pending 状态；订阅在
+交互完成、EOF、异常和 Host 退出时关闭。
 
 ### Print
 
@@ -86,7 +88,7 @@ agent/delegation 来源及有界参数摘要或完整 input request，并携带�
   `--reasoning-config` 声明思考契约；
 - `session ...` 管理持久化会话；
 - `agent definition ...` 管理 builtin/user AgentDefinition 与工具兼容性；
-- `agent list|show|spawn|wait|send|interrupt|close|tree|interactions` 查询和控制 durable child；
+- `agent list|show|spawn|wait|send|interrupt|close|tree|interactions` 查询和控制 durable subagent；
 - `config prompt|permissions|tool-execution|queued-inputs|run-budget|agents|compaction` 管理独立配置分区；
 - `skills ...` 管理 Agent Skills；
 - `approve/reject/abort` 恢复或终止 active Run。
@@ -110,8 +112,9 @@ active parent 使用同一 service 并保持 subscription。模型侧派遣仍�
 CLI spawn 是同步 Host delegation：命令等待 durable terminal 后退出，结果只更新 Host 投影。模型侧 async
 SpawnAgent 的 next-boundary 自动投递只属于能持续拥有 parent subscription 与交互策略的长期 Host/模型控制面。
 
-Agent handle JSON 至少包含 delegation/child identity、status、relation revision 和 control state；root tree、interaction
-inbox 与 child stream 都来自 application DTO/cursor。CLI 不自行推断 cascade、permission、delivery 或恢复状态。
+Agent handle JSON 至少包含 delegation/subagent identity、status、relation revision 和 control state；root tree、
+interaction inbox 与 subagent stream 都来自 application DTO/cursor。CLI 不自行推断 cascade、permission、
+delivery 或恢复状态。
 
 ## Home 与覆盖
 

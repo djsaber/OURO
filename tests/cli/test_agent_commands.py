@@ -274,10 +274,9 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
     assert code == 0
     assert initial["agents"]["revision"] == 0  # type: ignore[index]
     assert initial["agents"]["max_depth"] == 1  # type: ignore[index]
-    assert initial["agents"]["max_active_children_per_root"] == 4  # type: ignore[index]
 
     code, missing_revision = _json_command(
-        ["config", "agents", "--max-children", "2", "--home", home, "--json"],
+        ["config", "agents", "--allow-agent", "general", "--home", home, "--json"],
         capsys,
     )
     assert code == 2
@@ -290,8 +289,6 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
             "agents",
             "--expected-revision",
             "0",
-            "--max-children",
-            "2",
             "--allow-agent",
             "general",
             "--allow-agent",
@@ -304,7 +301,6 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
     )
     assert code == 0
     assert updated["agents"]["revision"] == 1  # type: ignore[index]
-    assert updated["agents"]["max_active_children_per_root"] == 2  # type: ignore[index]
     assert updated["agents"]["spawn_policy"]["allowed_agent_id_patterns"] == [  # type: ignore[index]
         "general",
         "review-*",

@@ -39,9 +39,15 @@ This project records user-visible and framework-contract changes in this file.
   ToolCall with the child result, while `SpawnAgent(async)` returns a handle and automatically
   delivers the result at the next safe boundary. The model-facing `WaitAgents` tool and configurable
   delivery policy were removed.
-- Subagent scheduling now limits only the number of active children per root; tool effects and write
-  capability no longer create a separate writer quota. Concurrent write failures flow back as
-  ordinary tool results so each child can adapt.
+- Subagent dispatch no longer has a root active-child quota or a write-capability quota. Every
+  validated spawn enters the ordinary RuntimeSupervisor scheduler, whose shared concurrency limit
+  and FIFO determine execution; concurrent write failures remain ordinary tool results.
+- Interactive terminal input no longer blocks the async runtime. The root interaction inbox routes
+  sync and async subagent approvals/questions through the main window, while the terminal renders
+  only the primary agent trajectory and keeps subagent replies/tool calls in their own streams.
+- Delegation constraints now persist only independent runtime constraints such as workspace and
+  external-path access; effective tool references remain the single source for tool, write,
+  network, and MCP capability.
 - `SpawnAgent` no longer accepts canonical message ids or projects parent history and compaction
   summaries. A child's text context is its frozen AgentDefinition system prompt plus the
   parent-generated task, under the OURO platform instructions.

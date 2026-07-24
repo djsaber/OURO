@@ -68,6 +68,17 @@ def test_empty_agent_catalog_omits_only_spawn_control() -> None:
     assert names == ["ListAgents", "SendAgentMessage", "InterruptAgent"]
 
 
+def test_agent_controls_use_ordinary_tool_batch_scheduling() -> None:
+    controls = {
+        tool.definition.name: tool.definition
+        for tool in agent_control_tools(AgentCatalogSnapshot())
+    }
+
+    for name in ("SendAgentMessage", "InterruptAgent"):
+        assert controls[name].execution_mode == "inherit"
+        assert controls[name].batch_behavior == "compatible"
+
+
 @pytest.mark.parametrize("source", ["third_party_plugin", "mcp"])
 def test_plugin_and_mcp_cannot_spoof_reserved_agent_control_tools(source) -> None:
     registry = ToolRegistry()

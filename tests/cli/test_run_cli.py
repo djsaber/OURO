@@ -1,7 +1,10 @@
 import json
 import sys
+import threading
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
+
+import pytest
 
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.configuration import ConfigurationFacade
@@ -48,31 +51,38 @@ class CapturingProvider:
         yield ProviderStreamEvent(type="done")
 
 
-class SyncChildInteractionProvider:
-    provider_id = "sync-child-interaction"
+class SubagentInteractionProvider:
+    provider_id = "subagent-interaction"
 
-    def __init__(self, *, mode: str, target: Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        mode: Literal["approval", "question"],
+        execution_mode: Literal["sync", "async"] = "sync",
+        target: Path | None = None,
+    ) -> None:
         self.mode = mode
+        self.execution_mode = execution_mode
         self.target = target
         self.root_round = 0
-        self.child_round = 0
+        self.subagent_round = 0
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
         del model, system_prompt, messages
         names = [item["name"] for item in (tools or [])]
         if "SpawnAgent" not in names:
-            if self.child_round == 0:
-                self.child_round += 1
+            if self.subagent_round == 0:
+                self.subagent_round += 1
                 if self.mode == "approval":
                     assert self.target is not None
                     yield ProviderStreamEvent(
                         type="tool_call",
                         tool_call={
-                            "id": "child_write",
+                            "id": "subagent_write",
                             "name": "Write",
                             "arguments": {
                                 "path": str(self.target),
-                                "content": "written by child",
+                                "content": "written by subagent",
                             },
                         },
                     )
@@ -80,14 +90,14 @@ class SyncChildInteractionProvider:
                     yield ProviderStreamEvent(
                         type="tool_call",
                         tool_call={
-                            "id": "child_question",
+                            "id": "subagent_question",
                             "name": "AskUser",
                             "arguments": {"question": "Choose A or B"},
                         },
                     )
                 yield ProviderStreamEvent(type="done")
                 return
-            yield ProviderStreamEvent(type="text_delta", text="child interaction resolved")
+            yield ProviderStreamEvent(type="text_delta", text="subagent interaction resolved")
             yield ProviderStreamEvent(type="done")
             return
 
@@ -96,19 +106,32 @@ class SyncChildInteractionProvider:
             yield ProviderStreamEvent(
                 type="tool_call",
                 tool_call={
-                    "id": "spawn_child",
+                    "id": "spawn_subagent",
                     "name": "SpawnAgent",
                     "arguments": {
                         "agent_id": "general",
                         "task": "Request one host interaction.",
-                        "description": "Interactive child",
-                        "execution_mode": "sync",
+                        "description": "Interactive subagent",
+                        "execution_mode": self.execution_mode,
                     },
                 },
             )
             yield ProviderStreamEvent(type="done")
             return
-        yield ProviderStreamEvent(type="text_delta", text="parent resumed after child")
+        if self.execution_mode == "async" and self.root_round == 1:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="text_delta",
+                text="parent continued after subagent dispatch",
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        text = (
+            "parent resumed after subagent"
+            if self.execution_mode == "sync"
+            else "parent received subagent result"
+        )
+        yield ProviderStreamEvent(type="text_delta", text=text)
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -141,7 +164,7 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
 def _agent_runtime(
     tmp_path,
     store: LocalSessionStore,
-    provider: SyncChildInteractionProvider,
+    provider: SubagentInteractionProvider,
 ) -> RuntimeService:
     registry = ToolRegistry()
     for tool in builtin_tools():
@@ -805,14 +828,14 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
     assert "Using notes.md." in outputs
 
 
-async def test_interactive_approves_sync_child_tool_and_resumes_parent(
+async def test_interactive_approves_sync_subagent_tool_and_resumes_parent(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    target = tmp_path / "child-approved.txt"
-    provider = SyncChildInteractionProvider(mode="approval", target=target)
+    target = tmp_path / "subagent-approved.txt"
+    provider = SubagentInteractionProvider(mode="approval", target=target)
     runtime = _agent_runtime(tmp_path, store, provider)
 
     def fake_runtime(*args, event_sink=None, **kwargs):
@@ -822,7 +845,7 @@ async def test_interactive_approves_sync_child_tool_and_resumes_parent(
         return runtime
 
     monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
-    inputs = iter(["test child approval", "y", "/exit"])
+    inputs = iter(["test subagent approval", "y", "/exit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -832,26 +855,26 @@ async def test_interactive_approves_sync_child_tool_and_resumes_parent(
     )
 
     assert code == 0
-    assert target.read_text(encoding="utf-8") == "written by child"
+    assert target.read_text(encoding="utf-8") == "written by subagent"
     assert any(
-        output.startswith("Child agent General") and "approval required: Write(" in output
+        output.startswith("Subagent General") and "approval required: Write(" in output
         for output in outputs
     )
-    assert "parent resumed after child" in outputs
+    assert "parent resumed after subagent" in outputs
     assert "Run stopped with status: waiting_child" not in outputs
     assert "Run stopped with status: running" not in outputs
-    assert "child interaction resolved" not in outputs
+    assert "subagent interaction resolved" not in outputs
     assert not any(output.startswith("● Write ·") for output in outputs)
     assert sum(output.startswith("● Response started") for output in outputs) == 2
 
 
-async def test_interactive_answers_sync_child_question_and_resumes_parent(
+async def test_interactive_answers_sync_subagent_question_and_resumes_parent(
     tmp_path,
     monkeypatch,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    provider = SyncChildInteractionProvider(mode="question")
+    provider = SubagentInteractionProvider(mode="question")
     runtime = _agent_runtime(tmp_path, store, provider)
 
     def fake_runtime(*args, event_sink=None, **kwargs):
@@ -861,7 +884,7 @@ async def test_interactive_answers_sync_child_question_and_resumes_parent(
         return runtime
 
     monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
-    inputs = iter(["test child question", "A", "/exit"])
+    inputs = iter(["test subagent question", "A", "/exit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -872,15 +895,99 @@ async def test_interactive_answers_sync_child_question_and_resumes_parent(
 
     assert code == 0
     assert any(
-        output.startswith("Question from child agent General") and "Choose A or B" in output
+        output.startswith("Question from subagent General") and "Choose A or B" in output
         for output in outputs
     )
-    assert "parent resumed after child" in outputs
+    assert "parent resumed after subagent" in outputs
     assert "Run stopped with status: waiting_child" not in outputs
     assert "Run stopped with status: running" not in outputs
-    assert "child interaction resolved" not in outputs
+    assert "subagent interaction resolved" not in outputs
     assert not any(output.startswith("● AskUser ·") for output in outputs)
     assert sum(output.startswith("● Response started") for output in outputs) == 2
+
+
+@pytest.mark.parametrize(
+    ("mode", "answer"),
+    [
+        ("approval", "y"),
+        ("question", "A"),
+    ],
+)
+async def test_interactive_routes_async_subagent_hitl_without_rendering_trajectory(
+    tmp_path,
+    monkeypatch,
+    mode: Literal["approval", "question"],
+    answer: str,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "async-subagent-approved.txt" if mode == "approval" else None
+    provider = SubagentInteractionProvider(
+        mode=mode,
+        execution_mode="async",
+        target=target,
+    )
+    runtime = _agent_runtime(tmp_path, store, provider)
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        del args, kwargs
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    interaction_announced = threading.Event()
+    result_rendered = threading.Event()
+    outputs: list[str] = []
+    input_count = 0
+
+    def output_func(text: str) -> None:
+        outputs.append(text)
+        if (
+            mode == "approval"
+            and text.startswith("Subagent General")
+            and "approval required: Write(" in text
+        ):
+            interaction_announced.set()
+        if (
+            mode == "question"
+            and text.startswith("Question from subagent General")
+            and "Choose A or B" in text
+        ):
+            interaction_announced.set()
+        if text == "parent received subagent result":
+            result_rendered.set()
+
+    def input_func(_prompt: str) -> str:
+        nonlocal input_count
+        input_count += 1
+        if input_count == 1:
+            return f"test async subagent {mode}"
+        if input_count == 2:
+            assert interaction_announced.wait(timeout=5)
+            return answer
+        if input_count == 3:
+            assert result_rendered.wait(timeout=5)
+            return "/exit"
+        raise EOFError
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=input_func,
+        output_func=output_func,
+    )
+
+    assert code == 0
+    if target is not None:
+        assert target.read_text(encoding="utf-8") == "written by subagent"
+    assert interaction_announced.is_set()
+    assert "parent continued after subagent dispatch" in outputs
+    assert "parent received subagent result" in outputs
+    assert "subagent interaction resolved" not in outputs
+    assert not any(output.startswith("● Write ·") for output in outputs)
+    assert not any(output.startswith("● AskUser ·") for output in outputs)
+    assert "Run stopped with status: waiting_child" not in outputs
+    assert "Run stopped with status: running" not in outputs
 
 
 async def test_interactive_aborts_waiting_user(tmp_path) -> None:

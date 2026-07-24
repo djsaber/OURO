@@ -727,7 +727,6 @@ class ConfigurationFacade:
         *,
         expected_revision: int,
         max_depth: int | None = None,
-        max_active_children_per_root: int | None = None,
         allowed_agent_id_patterns: tuple[str, ...] | None = None,
     ) -> AgentRuntimeConfigView:
         current = self.agents.snapshot()
@@ -739,8 +738,6 @@ class ConfigurationFacade:
         updates: dict[str, object] = {"spawn_policy": policy}
         if max_depth is not None:
             updates["max_depth"] = max_depth
-        if max_active_children_per_root is not None:
-            updates["max_active_children_per_root"] = max_active_children_per_root
         try:
             runtime = AgentRuntimeConfig.model_validate(
                 current.runtime.model_copy(update=updates).model_dump()

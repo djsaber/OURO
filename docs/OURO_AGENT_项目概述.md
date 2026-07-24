@@ -90,15 +90,17 @@ AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 a
 影响。标准 LocalApplication 默认装配 Agent control tools；allowlist 无可用 definition 时只省略 SpawnAgent，不生成
 无效工具 schema。
 
-每次派遣创建 durable `DelegationRecord`、独立 child Session 和普通 child Run，继续复用现有模型循环、工具、审批、
-AskUser、资源、预算和恢复。sync parent 以 `waiting_child` park 并释放 Supervisor permit；async 结果通过
-稳定 delivery identity 在 next-boundary 自动进行 exact-once 交付。root AgentTree、interaction inbox 和
-child event stream 都是 application 投影，Host refresh/detach 不改变 child 生命周期。
-循环交互 Host 在 sync parent 等待 child 时直接消费该 interaction inbox，可批准、拒绝或修改 child 工具调用，
-也可回答 child AskUser；所有决议都按 child session/run/tool call/request identity 精确路由，完成后继续原父 Run。
+每次派遣创建 durable `DelegationRecord`、独立 subagent Session 和普通 subagent Run，继续复用现有模型循环、
+工具、审批、AskUser、资源、预算和恢复。sync parent 以 `waiting_child` park 并释放 Supervisor permit；async
+结果通过稳定 delivery identity 在 next-boundary 自动进行 exact-once 交付。root AgentTree、interaction inbox 和
+subagent event stream 都是 application 投影，Host refresh/detach 不改变 subagent 生命周期。
+循环交互 Host 在主终端等待输入时持续消费该 interaction inbox，因此 sync 与 async subagent 的工具审批和
+AskUser 都可在主窗口处理；所有决议都按 subagent session/run/tool call/request identity 精确路由。终端仅渲染
+主智能体行动轨迹和 subagent HITL 提示，不展开 subagent 回复或工具调用。
 
-首版固定 `max_depth=1`、bound lifecycle、每 root 默认最多四个 active child。工具 effect 与权限不参与并发调度；
-多个 write-capable child 可同时运行，工具冲突通过普通失败结果回到各自模型。child 能力只能从 parent 的
+首版固定 `max_depth=1` 和 bound lifecycle，但不设置 subagent 专用 active/queued 配额。每个合法派遣都提交
+现有 RuntimeSupervisor，实际并发与排队由其通用并发上限和 FIFO 决定。工具 effect 与权限不参与并发调度；
+多个 write-capable subagent 可同时运行，工具冲突通过普通失败结果回到各自模型。subagent 能力只能从 parent 的
 工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
 转 recoverable 并对账半提交 relation/result/delivery，但不会自动重放未知外部副作用。
 
@@ -150,7 +152,7 @@ ResourceService 把本地附件导入为内容寻址的不可变资源。消息�
 RuntimeSupervisor 在进程内为多个 Session 提供 FIFO 调度、全局并发限制、状态快照和有界事件订阅。Host
 可读取细粒度 activity，区分模型准备、等待响应、各类增量流、工具预检/执行/结果提交、人工交互和压缩。
 Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不同的显式协议。重启后的事实仍来自
-SessionStore，而不是内存 registry。Agent child 使用同一 Supervisor 队列；parent `waiting_child` 不占 execution
+SessionStore，而不是内存 registry。subagent 使用同一 Supervisor 队列；parent `waiting_child` 不占 execution
 permit，也没有第二个 Agent worker pool。
 
 Host 事件由 `RuntimeEventView` 提供稳定类别和常用字段；原始扩展数据统一脱敏。慢 Host sink 与观察型 Hook
@@ -160,8 +162,8 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 ### 运行界面
 
 - Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互；工具名称及参数分片在模型
-  生成期间动态预览，完整响应后按调用顺序定稿；sync 子智能体的审批和提问通过 root interaction inbox
-  在同一输入循环中处理。
+  生成期间动态预览，完整响应后按调用顺序定稿；sync/async 子智能体的审批和提问通过 root interaction
+  inbox 在同一非阻塞输入循环中处理，终端只展开主智能体行动轨迹。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。
 - JSON：stdout 输出稳定机器可读结果，并使用分类退出码。
 - Agent：definition CRUD/tool compatibility，以及 list/show/spawn/wait/send/interrupt/close/tree/interactions；

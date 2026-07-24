@@ -191,13 +191,13 @@ AgentDefinitionService 提供 list/get/create/update/delete/copy_builtin 和 com
 AgentDefinitionConfigManager 复用 JsonConfigFile 的跨进程锁、read-validate-write 和原子 replace。mutation 接受
 expected revision，避免 Desktop/CLI 并发编辑丢失更新。
 
-同一 `agents` 分区还保存首版 composition 配置：`runtime.max_depth=1`、
-`runtime.max_active_children_per_root=4` 和 `runtime.spawn_policy.allowed_agent_id_patterns=("*",)`。definition 与
-runtime policy 共用一个 expected revision，避免 Host 同时编辑时发生交叉覆盖。max depth 只能为 1，lifecycle
-只能为 bound；配置 detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication` 在 composition start
-读取，变更报告 `effective_from=next_runtime`；definition 内容仍由每个新 parent Run 冻结并报告
-`effective_from=next_run`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的 child 默认值
-继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
+同一 `agents` 分区还保存首版 composition 配置：`runtime.max_depth=1` 和
+`runtime.spawn_policy.allowed_agent_id_patterns=("*",)`。definition 与 runtime policy 共用一个 expected
+revision，避免 Host 同时编辑时发生交叉覆盖。max depth 只能为 1，lifecycle 只能为 bound；配置
+detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication` 在 composition start 读取，变更报告
+`effective_from=next_runtime`；definition 内容仍由每个新 parent Run 冻结并报告
+`effective_from=next_run`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的
+subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
 首版用户编辑面必须覆盖 name、description、system_prompt 和 tool_selection。model/workspace/budget/can_spawn
 先由产品默认值归一化，只有已有权限模型能安全表达的字段才逐项开放；不接受任意 policy JSON。新增可编辑字段必须进入
@@ -433,7 +433,7 @@ RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSe
 
 spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、可重放的提交协议：
 
-1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、并发、预算、
+1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、预算、
    compatibility、显式 resource refs 和权限。
 2. 使用 parent_tool_call_id 或 Host request_id 生成/查找稳定 idempotency key。
 3. 创建 spawn_state=requested 的 DelegationRecord。
@@ -599,10 +599,11 @@ child final result 建议结构化包含：
 - auto 只跳过 ask，不扩大 candidate capability；
 - tool-controlled permission 继续不可被 Session 模式绕过。
 
-首版不引入通用 capability algebra、规则语言或新的权限引擎。上述求交使用显式字段实现：允许的工具/命令、
-workspace read/write、network/MCP、external path、model、depth 和 child 数量，并在每次实际工具调用时继续进入
-现有 permission/ToolPolicy 边界。Delegation 只保存恢复所需的明确约束和冻结 AgentDefinition，不保存一份可与
-当前权限漂移的通用 capability blob。
+首版不引入通用 capability algebra、规则语言或新的权限引擎。允许的工具、命令、network/MCP 和最低权限模式
+已经由冻结的 `EffectiveToolRefs` 完整表达；Delegation constraints 只保存 workspace 与 external path 这类不能由
+工具引用独立表达、且恢复时确实需要的运行约束。实际工具调用继续进入现有 permission/ToolPolicy 边界，不再复制
+`allowed_tool_names`、`allow_write`、`allow_network` 或 `allow_mcp` 等可由冻结目录推导的字段，也不保存可与当前
+权限漂移的通用 capability blob。工具能力不参与 subagent 派遣并发决策。
 
 父 Agent 只能下放自己拥有的能力。AgentDefinition、child Session 配置、一次审批、插件 ToolPolicy 或模型请求都不能
 扩大父 capability。
@@ -655,11 +656,13 @@ ApprovalRecord/ToolInputRequest 构造的可重建查询视图，不是新的 ca
 Host 回答必须携带原 child session_id、run_id、tool_call_id/request_id。application 在 child Session lock 内验证后
 恢复该 child Run；答案不能写入父 Run 或其他 waiting child。
 
-sync child 等 HITL 时，父 Run 继续保持 waiting_child。async child 等 HITL 时，父 Run 不被阻塞。
-长期运行的 Interactive Host 在 sync parent `waiting_child` 期间消费同一 root inbox：先建立 AgentTree 订阅，
-再读取 interaction projection，提交 exact-identity 决议后由订阅等待 child/parent durable 状态变化。Host 只缓存本次
-已提交的 request identity 以避免短暂重复提示，不缓存或推断 canonical pending 状态；interaction DTO 只给出有界参数
-预览，完整 ToolInvocation 仍留在 child Run。
+sync subagent 等 HITL 时，父 Run 继续保持 waiting_child；async subagent 等 HITL 时，父 Run 不被阻塞。长期运行的
+Interactive Host 始终消费同一 root inbox：读取主终端输入时保持事件循环可运行，并同时等待 AgentTree 通知；
+subagent interaction 先到达时，当前输入行成为该审批或提问的回答，处理完 pending interaction 后再建立新的主提示。
+sync 路径继续等待原父 Run 恢复，async 路径不改变父 Run 生命周期。Host 只缓存本次已提交的 request identity 以避免
+短暂重复提示，不缓存或推断 canonical pending 状态；interaction DTO 只给出有界参数预览，完整 ToolInvocation
+仍留在 subagent Run。当前终端只渲染主智能体行动轨迹与 subagent HITL 提示，不渲染 subagent 回复或工具调用；
+完整 subagent stream 保留给 Desktop 等树形 Host。
 
 无可交互 Host 时：
 
@@ -702,24 +705,25 @@ active child 必须先 interrupt 或达到 terminal/recoverable；不能以 clos
 默认目标配置：
 
 - max_depth=1；
-- max_active_children_per_root=4；
 - detached 默认禁用；
-- child budget 必须小于等于 root 剩余预算。
+- subagent budget 必须小于等于 root 剩余预算。
 
-首版每个 child 直接复用现有 RunBudgetPolicy，至少覆盖：
+首版每个 subagent 直接复用现有 RunBudgetPolicy，至少覆盖：
 
-- 每 child model round/input/output token；
+- 每 subagent model round/input/output token；
 - elapsed time；
 
-另外只增加小型 root delegation quota，覆盖 active/queued child 数和 nested depth，并从 child Run usage 聚合 root usage。
-首版不新增 AgentBudget 类型或预算执行引擎；tool call 数等新维度应先进入通用 RunBudgetPolicy，再由 child 复用。
+OURO 不增加 subagent 专用 active/queued 配额。每个通过派遣策略、深度、预算和幂等校验的 SpawnAgent 都创建
+durable relation 并提交现有 RuntimeSupervisor；实际同时执行数量与排队顺序由 Supervisor 的通用
+`max_concurrency` 和 FIFO 决定。深度在创建任何 relation 前固定拒绝大于 1。工具权限、effect 和 write capability
+不参与派遣或调度；并行写冲突作为普通 ToolResult 回到各 subagent，由模型在原循环内调整。同一 Delegation 的
+结果固化、投递、中断、follow-up 和 close 继续由 application lifecycle lock 与 repository CAS 串行化，不通过
+工具 batch 的 `exclusive` 属性建立第二把调度锁。
 
-当前实现对同一 root 的 spawn 临界区串行执行 idempotency 和 active/queued 数量检查，防止并行
-SpawnAgent 越过总量配额；深度在创建任何 relation 前固定拒绝大于 1。工具权限和 effect 不参与调度，
-write-capable child 与 read-only child 使用同一并发计数。每个 child Run 继续直接读取冻结的
-`RunBudgetPolicy`。此外，InnerAgentLoop 在普通 model round durable boundary 调用 application 提供的共享预算
-检查；AgentService 从 parent Run 与其 Delegation 对应的每个 child Session/Run 聚合 usage 和 model round，按 root
-policy 返回同一 `RunBudgetReason`。因此并发 child 在下一个边界进入现有 `paused` 路径，已完成结果不被改写。
+每个 subagent Run 继续直接读取冻结的 `RunBudgetPolicy`。此外，InnerAgentLoop 在普通 model round durable
+boundary 调用 application 提供的共享预算检查；AgentService 从 parent Run 与其 Delegation 对应的每个 subagent
+Session/Run 聚合 usage 和 model round，按 root policy 返回同一 `RunBudgetReason`。因此并发 subagent 在下一个
+边界进入现有 `paused` 路径，已完成结果不被改写。
 聚合以 `(session_id, run_id)` 去重，resume/follow-up 新 Run 各计一次；AgentTree 使用相同 Run 粒度展示 root/node
 usage。Supervisor 仍使用原全局 FIFO 与 execution permits，未增加 root-aware scheduler。
 
@@ -731,8 +735,8 @@ root budget 耗尽时：
 - 不把预算停止标为成功。
 
 Supervisor 的执行 permit 只覆盖实际 model/tool work。waiting_child、waiting_user、waiting_approval 不占 permit。
-首版复用现有跨 Session FIFO，并用 root active/queued child quota 限流；不为尚未观察到的第二种调度策略新增公平
-调度器。只有出现可复现饥饿或第二种 Supervisor 后端时，才单独演进调度策略端口。
+首版只复用现有跨 Session FIFO 和通用并发上限，不增加 root-aware 限流或公平调度器。只有出现可复现饥饿或
+第二种 Supervisor 后端时，才单独演进调度策略端口。
 
 ## 事件与前端投影
 

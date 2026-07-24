@@ -17,7 +17,6 @@ from ouro.core.agents import (
     AgentControlRequest,
     AgentDefinition,
     AgentSpawnPolicy,
-    DelegatedConstraints,
     DelegationRecord,
     ToolSelection,
 )
@@ -555,11 +554,10 @@ async def _services(
     return service, supervisor, store, provider
 
 
-async def _active_child_services(
+async def _active_subagent_services(
     tmp_path,
     *,
     cascade_timeout_seconds: float = 5.0,
-    max_active_children_per_root: int = 4,
 ):
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -592,7 +590,6 @@ async def _active_child_services(
         scheduler=supervisor,
         events=runtime.event_recorder,
         cascade_timeout_seconds=cascade_timeout_seconds,
-        max_active_children_per_root=max_active_children_per_root,
     )
     runtime.attach_agent_controls(service)
     root = SessionRecord(
@@ -884,9 +881,7 @@ async def test_spawn_uses_run_frozen_agent_mode_and_tool_capability_policy(tmp_p
         )
     )
     relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.constraints.allow_write is False
     assert relation.constraints.allow_external_paths is False
-    assert relation.constraints.allowed_tool_names == ("Read",)
     assert relation.child_session_id is not None
     assert relation.current_child_run_id is not None
     child_run = store.load_run(
@@ -969,7 +964,7 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
 
 @pytest.mark.asyncio
 async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
 
     child = await service.spawn_agent(
         SpawnAgentRequest(
@@ -1015,7 +1010,7 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
 
 @pytest.mark.asyncio
 async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/interrupt-completion-race",
@@ -1056,7 +1051,7 @@ async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) 
 
 @pytest.mark.asyncio
 async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/close-active-child",
@@ -1092,10 +1087,7 @@ async def test_close_rejects_active_child_and_is_idempotent_after_interrupt(tmp_
 
 @pytest.mark.asyncio
 async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(
-        tmp_path,
-        max_active_children_per_root=2,
-    )
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     active = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/active-before-queued",
@@ -1139,7 +1131,7 @@ async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) ->
 
 @pytest.mark.asyncio
 async def test_parent_abort_cascades_bound_child_and_preserves_result(tmp_path) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
             request_id="host/cascade-child",
@@ -1176,7 +1168,7 @@ async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
     tmp_path,
     monkeypatch,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(
         tmp_path,
         cascade_timeout_seconds=0.01,
     )
@@ -1767,106 +1759,43 @@ async def test_tree_projects_missing_child_run_as_recoverable(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_quota_does_not_depend_on_child_tool_effects(tmp_path) -> None:
-    service, supervisor, store, _ = await _services(tmp_path)
-    tools = _tools()
-    service.definitions.create(
-        agent_id="writer",
-        name="Writer",
-        description="Modify bounded workspace state.",
-        system_prompt="WRITE ONLY WHEN REQUIRED",
-        tool_selection=ToolSelection(mode="selected", names=("Write",)),
-        tools=tools,
-        expected_revision=1,
-    )
-    parent = store.load_run("ses_root", "run_parent")
-    parent = parent.model_copy(
-        update={"agent_catalog": service.definitions.catalog_snapshot(tools)}
-    )
-    store.save_run(parent)
-    reader = parent.agent_catalog.resolve("reader")
-    store.create_delegation(
-        DelegationRecord(
-            idempotency_key="host/existing-writer",
-            root_session_id="ses_root",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="reader",
-            task_description="Existing write-capable work.",
-            prompt_digest="sha256:" + "a" * 64,
-            definition=reader.definition,
-            effective_tools=reader.effective_tools,
-            constraints=DelegatedConstraints(allow_write=True),
-        )
-    )
-
-    handle = await service.spawn_agent(
-        SpawnAgentRequest(
-            request_id="host/second-writer",
-            parent_session_id="ses_root",
-            parent_run_id="run_parent",
-            agent_id="writer",
-            task="Write concurrently.",
-            description="Second writer",
-        )
-    )
-
-    relations = store.list_delegations("ses_root")
-    assert len(relations) == 2
-    spawned = next(item for item in relations if item.delegation_id == handle.delegation_id)
-    assert spawned.constraints.allow_write is True
-    await service.wait_agents((handle.delegation_id,))
-    await service.close()
-    await supervisor.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_root_spawn_quota_is_atomic_and_child_cannot_spawn_nested_agent(
+async def test_concurrent_spawns_are_scheduled_and_subagent_cannot_spawn_nested_agent(
     tmp_path,
 ) -> None:
-    service, supervisor, _, provider, root, parent = await _active_child_services(
-        tmp_path,
-        max_active_children_per_root=1,
-    )
-    outcomes = await asyncio.gather(
+    service, supervisor, _, provider, root, parent = await _active_subagent_services(tmp_path)
+    handles = await asyncio.gather(
         *(
             service.spawn_agent(
                 SpawnAgentRequest(
-                    request_id=f"host/quota-{index}",
+                    request_id=f"host/concurrent-{index}",
                     parent_session_id=root.session_id,
                     parent_run_id=parent.run_id,
                     agent_id="general",
-                    task=f"Hold quota slot {index}.",
-                    description=f"Quota child {index}",
+                    task=f"Run concurrent task {index}.",
+                    description=f"Concurrent subagent {index}",
                 )
             )
             for index in range(2)
         ),
-        return_exceptions=True,
     )
-    handles = [item for item in outcomes if not isinstance(item, BaseException)]
-    failures = [item for item in outcomes if isinstance(item, BaseException)]
-    assert len(handles) == 1
-    assert len(failures) == 1
-    assert isinstance(failures[0], SessionBusyError)
-    assert "active child quota" in str(failures[0])
-    child = handles[0]
+    assert len(handles) == 2
+    assert len({handle.delegation_id for handle in handles}) == 2
     await asyncio.wait_for(provider.started.wait(), timeout=2)
 
     with pytest.raises(ValueError, match="maximum subagent depth is 1"):
         await service.spawn_agent(
             SpawnAgentRequest(
-                request_id="host/nested-child",
-                parent_session_id=child.child_session_id,
-                parent_run_id=child.child_run_id,
+                request_id="host/nested-subagent",
+                parent_session_id=handles[0].child_session_id,
+                parent_run_id=handles[0].child_run_id,
                 agent_id="reader",
                 task="Attempt nested delegation.",
-                description="Nested child",
+                description="Nested subagent",
             )
         )
 
     provider.release.set()
-    await service.wait_agents((child.delegation_id,))
+    await service.wait_agents(tuple(handle.delegation_id for handle in handles))
     await service.close()
     await supervisor.shutdown()
 
@@ -1875,7 +1804,7 @@ async def test_root_spawn_quota_is_atomic_and_child_cannot_spawn_nested_agent(
 async def test_shared_root_budget_pauses_queued_child_and_aggregates_each_run_once(
     tmp_path,
 ) -> None:
-    service, supervisor, store, provider, root, parent = await _active_child_services(tmp_path)
+    service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     parent = parent.model_copy(
         update={
             "metadata": {
@@ -2226,7 +2155,7 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         {
             "const": "general",
             "title": "General",
-            "description": "A general-purpose child agent for a bounded delegated task.",
+            "description": "A general-purpose subagent for a bounded delegated task.",
         },
         {
             "const": "reader",

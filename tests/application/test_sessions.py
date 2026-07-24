@@ -638,7 +638,7 @@ def test_root_archive_and_trash_preserve_agent_descendant_scope(tmp_path, backen
     definition = AgentDefinition(
         agent_id="general",
         name="General",
-        description="General child agent.",
+        description="General subagent.",
     )
     relation = store.create_delegation(
         DelegationRecord(

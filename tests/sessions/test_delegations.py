@@ -31,7 +31,7 @@ def _record(root: SessionRecord, *, suffix: str = "one") -> DelegationRecord:
     definition = AgentDefinition(
         agent_id="general",
         name="General",
-        description="General child agent.",
+        description="General subagent.",
         tool_selection=ToolSelection(mode="selected", names=()),
     )
     return DelegationRecord(

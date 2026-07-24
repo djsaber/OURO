@@ -95,7 +95,7 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
 def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     agent = subparsers.add_parser(
         "agent",
-        help="Manage Agent definitions and durable child Agents",
+        help="Manage Agent definitions and durable subagents",
     )
     commands = agent.add_subparsers(dest="agent_command", required=True)
 
@@ -138,12 +138,12 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     copy.add_argument("--expected-revision", type=int, required=True)
     _add_agent_output_args(copy)
 
-    list_agents = commands.add_parser("list", help="List durable child Agents")
+    list_agents = commands.add_parser("list", help="List durable subagents")
     list_agents.add_argument("root_session_id")
     list_agents.add_argument("--parent-session-id")
     _add_agent_output_args(list_agents)
 
-    show_agent = commands.add_parser("show", help="Show one child Agent result")
+    show_agent = commands.add_parser("show", help="Show one subagent result")
     show_agent.add_argument("delegation_id")
     _add_agent_output_args(show_agent)
 
@@ -161,23 +161,23 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     spawn.add_argument("--resource-id", dest="resource_ids", action="append", default=[])
     _add_agent_output_args(spawn)
 
-    wait = commands.add_parser("wait", help="Wait for durable child Agent results")
+    wait = commands.add_parser("wait", help="Wait for durable subagent results")
     wait.add_argument("delegation_ids", nargs="+")
     _add_agent_output_args(wait)
 
-    send = commands.add_parser("send", help="Steer or follow up a child Agent")
+    send = commands.add_parser("send", help="Steer or follow up a subagent")
     send.add_argument("delegation_id")
     send.add_argument("message")
     send.add_argument("--request-id", required=True)
     send.add_argument("--mode", choices=("steer", "follow_up"), default="steer")
     _add_agent_output_args(send)
 
-    interrupt = commands.add_parser("interrupt", help="Interrupt a child Agent Run")
+    interrupt = commands.add_parser("interrupt", help="Interrupt a subagent Run")
     interrupt.add_argument("delegation_id")
     interrupt.add_argument("--reason", default="Interrupted by CLI Host")
     _add_agent_output_args(interrupt)
 
-    close = commands.add_parser("close", help="Close a terminal child Agent control handle")
+    close = commands.add_parser("close", help="Close a terminal subagent control handle")
     close.add_argument("delegation_id")
     _add_agent_output_args(close)
 
@@ -187,7 +187,7 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
 
     interactions = commands.add_parser(
         "interactions",
-        help="List pending child Agent interactions",
+        help="List pending subagent interactions",
     )
     interactions.add_argument("root_session_id")
     _add_agent_output_args(interactions)
@@ -825,12 +825,11 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
 
     agents_parser = config_subparsers.add_parser(
         "agents",
-        help="Inspect or set first-release Agent scheduling limits",
+        help="Inspect or set first-release subagent policy",
     )
     agents_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     agents_parser.add_argument("--expected-revision", type=int)
     agents_parser.add_argument("--max-depth", type=int)
-    agents_parser.add_argument("--max-children", type=int)
     agents_parser.add_argument(
         "--allow-agent",
         dest="allowed_agent_id_patterns",

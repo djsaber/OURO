@@ -3,7 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
-from ouro.cli.interactive_io import InteractiveOutput, _follow_waiting_children
+from ouro.cli.interactive_io import InteractiveOutput, _follow_waiting_subagents
 from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
@@ -74,7 +74,7 @@ async def test_waiting_child_follower_ignores_running_continuation_state() -> No
             return ()
 
     output = InteractiveOutput(lambda _text: None)
-    resolved = await _follow_waiting_children(
+    resolved = await _follow_waiting_subagents(
         RunResult(session=session, run=waiting),
         runtime=SimpleNamespace(store=store),
         agents=AgentHost(),

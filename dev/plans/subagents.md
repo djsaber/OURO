@@ -15,7 +15,7 @@
 - async SpawnAgent + exact-once automatic result delivery；
 - root AgentTreeSnapshot、消息流和 interaction inbox；
 - child approval/AskUser；
-- 显式 capability constraints、复用 RunBudgetPolicy、root quota 和取消；
+- 显式 capability constraints、复用 RunBudgetPolicy、通用 Supervisor 调度和取消；
 - 重启 reconciliation 与负向测试。
 
 本计划是[高级智能体能力计划](advanced-agent-capabilities.md)工作流 C 的详细执行计划。两者冲突时，以子智能体
@@ -311,7 +311,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] 实现 spawn_agent(request)。
 - [x] 实现 list_agents/read_agent。
 - [x] 实现 direct child/root tree 查询。
-- [x] spawn 前校验模型请求的 active parent 或 Host 请求的 completed parent，以及 workspace、model、depth、quota 和 capability。
+- [x] spawn 前校验模型请求的 active parent 或 Host 请求的 completed parent，以及 workspace、model、depth、budget 和 capability。
 - [x] 按规格顺序写 requested relation、child Session、child Run 和 spawn_state；不镜像 child Run status。
 - [x] 通过 RuntimeSupervisor 提交已有 child Session。
 - [x] 定义窄 RunScheduler Protocol，由现有 RuntimeSupervisor 实现，不创建第二个 scheduler/worker pool。
@@ -343,7 +343,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] workspace read/write 上限。
 - [x] spawn agent_id allow/approval/deny。
 - [x] max_depth=1。
-- [x] root active children 上限。
+- [x] 工具能力不参与派遣并发；合法派遣统一提交现有 Supervisor。
 - [x] detached 强制拒绝。
 - [x] child session approval/interaction mode 固化。
 
@@ -356,7 +356,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] child 不复制完整父 history。
 - [x] duplicate request 返回同一 handle。
 - [x] 父没有 write 能力时不能创建 write-capable child。
-- [x] unknown/unavailable agent_id、超 depth、超 quota 有类型化结果。
+- [x] unknown/unavailable agent_id、超 depth、预算不足有类型化结果。
 - [x] child failure 不破坏父 Session canonical history。
 - [x] Plugin 或 Host 不能绕过 AgentService 直接创建合法 Delegation。
 
@@ -488,7 +488,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] execution_mode=async。
 - [x] SpawnAgent 立即返回 handle。
 - [x] parent Run 可继续调用模型/工具。
-- [x] async child 受相同 capability、quota 和 HITL 规则。
+- [x] async child 受相同 capability、通用调度和 HITL 规则。
 - [x] 模型工具说明禁止轮询，List/Read 仍可显式查询。
 - [x] child completion 立即产生 result_ready。
 
@@ -584,7 +584,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] writer concurrency=1。
 - [x] budget exhaustion paused/aborted，不标 completed。
 - [x] completed result 在预算耗尽后仍可交付。
-- [x] 复用现有 FIFO；root quota 生效，不新增 root-aware 公平调度器。
+- [x] 复用现有 FIFO 与通用并发上限；全部合法派遣进入调度，不新增 root-aware 公平调度器。
 - [x] usage 汇总不重复计算 resume/follow-up。
 
 ### G5. 安全与架构
@@ -609,7 +609,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] unattended/headless 无悬挂。
 - [x] 敏感父历史不进入 child。
 - [x] resource 不产生悬空引用。
-- [x] root quota 与 FIFO 压力测试。
+- [x] 并发派遣接受语义与 FIFO 压力测试。
 - [x] 全量重启恢复不重复 spawn、tool 或 delivery。
 - [x] 架构依赖测试保护所有边界。
 
@@ -647,14 +647,15 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] UI 不需要自己实现 cascade、permission 或 delivery。
 - [x] definition editor 显示 source/editable、all/selected tool picker、missing tools、revision 和 next_run 生效提示。
 - [x] builtin general 的编辑/删除控件禁用，但可复制；Host UI 限制之外后端仍强制校验。
-- [x] Interactive 在 sync parent `waiting_child` 时通过 root inbox 完成 child 工具审批和 AskUser，并继续等待原父 Run。
+- [x] Interactive 以非阻塞输入持续消费 root inbox；sync/async subagent 的工具审批和 AskUser 都由主窗口处理，
+  sync 继续等待原父 Run，终端不展开 subagent 行动轨迹。
 
 ### H3. 配置与启用
 
 - [x] 完成版未保留临时 composition-root gate 或半成品双路径。
 - [x] 完成前移除临时双路径和兼容分支。
 - [x] 标准 LocalApplication 默认注册 Agent control tools；裸 RuntimeService fail closed。
-- [x] 配置 max_depth、max children、budget、allowed agent ids；预算复用通用 RunBudgetPolicy。
+- [x] 配置 max_depth、budget、allowed agent ids；预算复用通用 RunBudgetPolicy，并发复用 Supervisor 通用配置。
 - [x] 首版 detached/nested 明确拒绝而不是静默忽略。
 - [x] builtin general 可查询、不可编辑/删除/被 user 或 plugin 覆盖；custom 可编辑/删除。
 - [x] definition change 返回 next_run，runtime policy 返回 next_runtime；active Run 不热切 schema。

@@ -170,7 +170,6 @@ class AgentRuntimeConfigView(ApplicationDTO):
     config_path: str
     revision: int
     max_depth: Literal[1]
-    max_active_children_per_root: int
     spawn_policy: AgentSpawnPolicy
     change: ConfigurationChange | None = None
 

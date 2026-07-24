@@ -232,11 +232,7 @@ class AgentCatalogSnapshot(OuroModel):
 
 
 class DelegatedConstraints(OuroModel):
-    allowed_tool_names: tuple[str, ...] = ()
     workspace: str | None = None
-    allow_write: bool = False
-    allow_network: bool = False
-    allow_mcp: bool = False
     allow_external_paths: bool = False
 
 

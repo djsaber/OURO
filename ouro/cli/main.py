@@ -500,7 +500,6 @@ def _config_command(args: argparse.Namespace) -> int:
             home=home,
             expected_revision=args.expected_revision,
             max_depth=args.max_depth,
-            max_active_children_per_root=args.max_children,
             allowed_agent_id_patterns=args.allowed_agent_id_patterns,
             json_mode=args.json,
         )

@@ -81,13 +81,11 @@ def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path)
     manager = AgentDefinitionsConfigManager(tmp_path)
     initial = manager.snapshot()
     assert initial.runtime.max_depth == 1
-    assert initial.runtime.max_active_children_per_root == 4
     assert initial.runtime.spawn_policy.allowed_agent_id_patterns == ("*",)
 
     created = manager.create(_definition(), expected_revision=0)
     updated = manager.update_runtime(
         AgentRuntimeConfig(
-            max_active_children_per_root=2,
             spawn_policy=AgentSpawnPolicy(
                 allowed_agent_id_patterns=("review*",),
             ),
@@ -97,7 +95,6 @@ def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path)
 
     assert updated.revision == 2
     assert updated.definitions == created.definitions
-    assert updated.runtime.max_active_children_per_root == 2
     assert updated.runtime.spawn_policy.allowed_agent_id_patterns == ("review*",)
     with pytest.raises(ConfigError, match="revision conflict"):
         manager.update_runtime(AgentRuntimeConfig(), expected_revision=1)

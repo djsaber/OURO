@@ -29,7 +29,7 @@ from ouro.tools import ToolDefinition, ToolRegistry
 GENERAL_AGENT_DEFINITION = AgentDefinition(
     agent_id="general",
     name="General",
-    description="A general-purpose child agent for a bounded delegated task.",
+    description="A general-purpose subagent for a bounded delegated task.",
     system_prompt=(
         "Work independently on the delegated task. Use only the available tools and return "
         "a concise result with evidence, verification, and unresolved questions."

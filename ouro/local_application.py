@@ -164,7 +164,6 @@ class LocalApplication:
             resources=runtime.resources,
             spawn_policy=configured_agents.runtime.spawn_policy,
             max_depth=configured_agents.runtime.max_depth,
-            max_active_children_per_root=(configured_agents.runtime.max_active_children_per_root),
         )
         runtime.attach_agent_controls(agents)
         runtime.add_event_sink(agents.on_runtime_event)

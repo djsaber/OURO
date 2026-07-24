@@ -75,7 +75,7 @@ class HostSessionInput(SessionInputRequest):
 
 
 class DelegatedTaskInput(SessionInputRequest):
-    """The user-role task that starts one prepared child Agent Run.
+    """The user-role task that starts one prepared subagent Run.
 
     Delegation provenance is application-owned and durable, but it must not
     change the model role of the task supplied through ``SpawnAgent``. General

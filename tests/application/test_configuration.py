@@ -24,7 +24,6 @@ def test_configuration_overview_exposes_typed_defaults(tmp_path) -> None:
     assert overview.run_budget.max_model_rounds is None
     assert overview.agents.revision == 0
     assert overview.agents.max_depth == 1
-    assert overview.agents.max_active_children_per_root == 4
     assert overview.agents.spawn_policy.allowed_agent_id_patterns == ("*",)
     assert overview.compaction.model.has_dedicated_endpoint is False
     assert overview.mcp.servers == []
@@ -120,7 +119,6 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     budget = facade.update_run_budget(max_model_rounds=8, max_elapsed_seconds=60)
     agents = facade.update_agent_runtime(
         expected_revision=0,
-        max_active_children_per_root=2,
         allowed_agent_id_patterns=("general", "review-*"),
     )
     compaction = facade.update_compaction_model(
@@ -134,7 +132,6 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert queued.consumption_mode == "all_at_once"
     assert budget.max_model_rounds == 8
     assert agents.revision == 1
-    assert agents.max_active_children_per_root == 2
     assert agents.spawn_policy.allowed_agent_id_patterns == ("general", "review-*")
     assert agents.change is not None
     assert agents.change.effective_from == "next_runtime"
@@ -146,7 +143,6 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert overview.tool_execution.max_concurrency == 3
     assert overview.queued_inputs.consumption_mode == "all_at_once"
     assert overview.run_budget.max_elapsed_seconds == 60
-    assert overview.agents.max_active_children_per_root == 2
     assert overview.compaction.model.temperature == 0.1
 
 
@@ -165,14 +161,12 @@ def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) 
 async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_path) -> None:
     ConfigurationFacade(tmp_path).update_agent_runtime(
         expected_revision=0,
-        max_active_children_per_root=1,
         allowed_agent_id_patterns=("review-*",),
     )
 
     async with LocalApplication.build(tmp_path) as application:
         assert application.agents is not None
         assert application.agents.max_depth == 1
-        assert application.agents.max_active_children_per_root == 1
         assert application.agents.spawn_policy.allowed_agent_id_patterns == ("review-*",)
 
         handle = await application.supervisor.submit("Freeze the configured Agent catalog.")

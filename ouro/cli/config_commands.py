@@ -390,7 +390,6 @@ def show_agent_runtime_config(
     home: str | Path | None = None,
     expected_revision: int | None = None,
     max_depth: int | None = None,
-    max_active_children_per_root: int | None = None,
     allowed_agent_id_patterns: list[str] | None = None,
     json_mode: bool = False,
 ) -> int:
@@ -400,7 +399,6 @@ def show_agent_runtime_config(
             value is not None
             for value in (
                 max_depth,
-                max_active_children_per_root,
                 allowed_agent_id_patterns,
             )
         )
@@ -410,7 +408,6 @@ def show_agent_runtime_config(
             facade.update_agent_runtime(
                 expected_revision=expected_revision,
                 max_depth=max_depth,
-                max_active_children_per_root=max_active_children_per_root,
                 allowed_agent_id_patterns=(
                     tuple(allowed_agent_id_patterns)
                     if allowed_agent_id_patterns is not None
@@ -445,7 +442,6 @@ def show_agent_runtime_config(
             [
                 f"Agent config revision: {config.revision}",
                 f"Max depth: {config.max_depth}",
-                f"Max active children per root: {config.max_active_children_per_root}",
                 "Allowed agent ids: " + ", ".join(config.spawn_policy.allowed_agent_id_patterns),
                 "Root budget: inherited from config run-budget and frozen parent Run.",
                 f"Config: {config.config_path}",

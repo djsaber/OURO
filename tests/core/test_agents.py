@@ -21,7 +21,7 @@ def _definition(agent_id: str = "general") -> AgentDefinition:
     return AgentDefinition(
         agent_id=agent_id,
         name="General",
-        description="General-purpose child agent.",
+        description="General-purpose subagent.",
         system_prompt="Work independently and report a concise result.",
         tool_selection=ToolSelection(mode="selected", names=("Read",)),
     )
