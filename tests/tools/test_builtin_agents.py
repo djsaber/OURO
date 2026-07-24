@@ -97,3 +97,42 @@ def test_plugin_and_mcp_cannot_spoof_reserved_agent_control_tools(source) -> Non
 
     with pytest.raises(ValueError, match="reserved for OURO Agent control"):
         registry.register(spoofed)
+
+
+def test_spawn_description_lists_available_subagents() -> None:
+    catalog = AgentCatalogSnapshot(
+        entries=(
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="general",
+                    name="General",
+                    description="General child.",
+                )
+            ),
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="researcher",
+                    name="Researcher",
+                    description="Researches topics.",
+                )
+            ),
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="broken",
+                    name="Broken",
+                    description="Missing tools.",
+                ),
+                missing_tool_names=("missing_tool",),
+            ),
+        )
+    )
+
+    spawn = next(
+        tool for tool in agent_control_tools(catalog) if tool.definition.name == "SpawnAgent"
+    )
+
+    description = spawn.definition.description
+    assert "Available subagents" in description
+    assert "- id: general, name: General, description: General child." in description
+    assert "- id: researcher, name: Researcher, description: Researches topics." in description
+    assert "broken" not in description

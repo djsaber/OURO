@@ -204,12 +204,18 @@ def _spawn_control_tool(
         "required": ["agent_id", "task", "description"],
         "additionalProperties": False,
     }
+    available_agents = "\n".join(
+        f"- id: {option['const']}, name: {option['title']}, description: {option['description']}"
+        for option in options
+    )
     return Tool(
         definition=ToolDefinition(
             name="SpawnAgent",
             display_name="派遣子智能体",
             description=(
                 "Dispatch an independent subagent to perform a task.\n\n"
+                "Available subagents (configured and enabled in the frozen Agent catalog):\n"
+                f"{available_agents}\n\n"
                 "Execution modes:\n"
                 "- 'sync': Blocks until the subagent finishes. The tool result contains "
                 "the subagent's handle "
