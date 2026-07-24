@@ -462,7 +462,6 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 
 - SpawnAgent：按 agent_id 选择 Run-frozen AgentDefinition，携带 task、显式 resource refs 和 execution mode 创建 child；sync 模式
   挂起原调用并最终返回 child result，async 模式立即返回 AgentHandle 并自动交付结果；Host 可显示为“派遣子智能体”；
-- ListAgents：列出当前 root 或 direct children 的有界状态，并可返回已完成 child 的有界结果引用；
 - SendAgentMessage：向 child active Run steer，或为 idle child 创建 follow-up；
 - InterruptAgent：中断当前 child Run；
 
@@ -472,8 +471,8 @@ SpawnAgent 不接受 system_prompt、tool_selection、model/workspace capability
 联动和权限审计会被绕过。若未来允许 per-dispatch override，只能提供明确、可求交且进入 Delegation contract hash 的
 收窄字段。
 
-read_agent 和 close_agent 首版保留为 AgentService/Host API。模型可通过 ListAgents 获取有界结果，不为相同查询或
-管理动作增加 ReadAgent/CloseAgent；只有出现独立模型用例后才增加新的模型工具。
+list_agents、read_agent 和 close_agent 保留为 AgentService/Host API，供 Host/UI 读取子智能体状态与有界结果；
+模型不持有状态查询工具，async 结果由框架在安全边界主动交付。只有出现独立模型用例后才增加新的模型工具。
 
 这些工具继续经过普通 ToolExecutor：
 
@@ -564,7 +563,7 @@ system/plugin synthetic message 均不投影到 child。模型工具与 Host API
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源
 Session mutation boundary 时重新验证不可变内容并把带 `copied_from_session_id` 的引用附加到 child。child 初始
 delegated-task user message 携带这些引用，因而资源内容和 Agent 专用 system prompt 一并进入正常 ContextView token 预算。
-child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 List、sync ToolResult 或 async delivery
+child 结果只收集 assistant/tool-result 输出引用，不回显初始输入引用；结果经 Host list、sync ToolResult 或 async delivery
 进入父 Session 前，再从 child 到 parent 执行同样的可达性验证和显式引用复制，随后才写入父 canonical message。
 
 child final result 建议结构化包含：

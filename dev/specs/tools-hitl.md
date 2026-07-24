@@ -25,7 +25,7 @@
 - 命令行工具：启动时检测宿主可执行 shell，仅暴露一个与实际执行方言同名的工具；Windows 依次选择
   PowerShell 7、Windows PowerShell、Command Prompt，POSIX 系统依次选择 Bash、POSIX sh；
 - AskUser：暂停 Run 并请求用户输入。
-- SpawnAgent、ListAgents、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
+- SpawnAgent、SendAgentMessage、InterruptAgent：从 parent Run 冻结目录投影的
   product-owned Agent 控制工具；只在标准 Agent-capable composition 中出现。
 
 写入、编辑和命令行工具默认可由权限配置要求审批。Read/Write/Edit 的路径和命令行工具的工作目录统一经过

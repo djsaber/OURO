@@ -248,7 +248,7 @@ class AgentService:
                 )
             structured = {"handle": handle.model_dump(mode="json")}
             return AgentControlResult(
-                content=json.dumps(structured, ensure_ascii=False),
+                content=_async_spawn_content(handle),
                 structured=structured,
             )
         if request.action == "list":
@@ -1255,19 +1255,11 @@ class AgentService:
     def _delivery_prompt(self, relation: DelegationRecord) -> str:
         assert relation.result is not None
         detail = self.read_agent(relation.delegation_id)
-        payload = {
-            "kind": "agent_result",
-            "delegation_id": relation.delegation_id,
-            "agent_id": relation.agent_id,
-            "agent_name": relation.definition.name,
-            "child_session_id": relation.child_session_id,
-            "child_run_id": relation.current_child_run_id,
-            "terminal_status": relation.result.terminal_status,
-            "result_message_id": relation.result.result_message_id,
-            "resource_refs": list(relation.result.resource_refs),
-            "final_text": detail.final_text[:8_000],
-        }
-        return json.dumps(payload, ensure_ascii=False)
+        return _subagent_result_content(
+            self._handle(relation),
+            relation,
+            detail.final_text[:8_000],
+        )
 
     def _existing_delivery_target(
         self,
@@ -1478,8 +1470,9 @@ class AgentService:
         if relation.result is None:
             raise ValueError("synchronous SpawnAgent subagent has no terminal result")
         detail = self.read_agent(relation.delegation_id)
+        handle = self._handle(relation)
         structured = {
-            "handle": self._handle(relation).model_dump(mode="json"),
+            "handle": handle.model_dump(mode="json"),
             "result": {
                 "terminal_status": relation.result.terminal_status,
                 "result_message_id": relation.result.result_message_id,
@@ -1492,7 +1485,7 @@ class AgentService:
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             is_error=relation.result.terminal_status != "completed",
-            content=json.dumps(structured, ensure_ascii=False),
+            content=_subagent_result_content(handle, relation, detail.final_text[:8_000]),
             structured=structured,
             resource_refs=list(resource_refs),
             ended_at=utc_now(),
@@ -1855,6 +1848,42 @@ class AgentService:
     def _wait_finished(self, task: asyncio.Task[None], wait_id: str) -> None:
         self._watchers.discard(task)
         self._armed_wait_ids.discard(wait_id)
+
+
+def _async_spawn_content(handle: AgentHandleView) -> str:
+    """Render the model-facing Markdown result of an asynchronous SpawnAgent call."""
+
+    return (
+        "## Subagent Dispatched (Async)\n\n"
+        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
+        f"- **Delegation ID**: `{handle.delegation_id}`\n"
+        f"- **Status**: {handle.status}\n\n"
+        "The subagent is now running in the background. It will proactively push "
+        "a notification with its result when it completes; do not poll for its status."
+    )
+
+
+def _subagent_result_content(
+    handle: AgentHandleView,
+    relation: DelegationRecord,
+    final_text: str,
+) -> str:
+    """Render the model-facing Markdown result shared by sync SpawnAgent results
+    and async subagent result deliveries."""
+
+    assert relation.result is not None
+    lines = [
+        "## Subagent Result",
+        "",
+        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)",
+        f"- **Delegation ID**: `{handle.delegation_id}`",
+        f"- **Status**: {relation.result.terminal_status}",
+    ]
+    if relation.result.resource_refs:
+        refs = ", ".join(f"`{ref}`" for ref in relation.result.resource_refs)
+        lines.append(f"- **Resources**: {refs}")
+    lines.extend(["", "### Final Output", "", final_text or "(no final output)"])
+    return "\n".join(lines)
 
 
 __all__ = ["AgentService", "RunScheduler"]

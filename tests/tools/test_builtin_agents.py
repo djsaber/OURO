@@ -65,7 +65,25 @@ def test_empty_agent_catalog_omits_only_spawn_control() -> None:
     names = [tool.definition.name for tool in agent_control_tools(AgentCatalogSnapshot())]
 
     assert "SpawnAgent" not in names
-    assert names == ["ListAgents", "SendAgentMessage", "InterruptAgent"]
+    assert names == ["SendAgentMessage", "InterruptAgent"]
+
+
+def test_list_agents_is_not_projected_as_a_model_tool() -> None:
+    catalog = AgentCatalogSnapshot(
+        entries=(
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="general",
+                    name="General",
+                    description="General child.",
+                )
+            ),
+        )
+    )
+
+    names = [tool.definition.name for tool in agent_control_tools(catalog)]
+
+    assert names == ["SpawnAgent", "SendAgentMessage", "InterruptAgent"]
 
 
 def test_agent_controls_use_ordinary_tool_batch_scheduling() -> None:

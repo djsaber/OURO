@@ -26,31 +26,6 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
     controls = (
         Tool(
             definition=ToolDefinition(
-                name="ListAgents",
-                description=(
-                    "List direct subagents spawned from the current Session/Run, "
-                    "including their status, terminal status, and bounded result summaries.\n\n"
-                    "Use this for:\n"
-                    "- Inspecting the state of async subagents after receiving an "
-                    "agent_result_ready event.\n"
-                    "- Checking which subagents have finished before deciding the next step.\n"
-                    "- Retrieving final_text or resource_refs from completed subagents.\n\n"
-                    "Do not use this for tight polling; async results are delivered automatically "
-                    "as a steer HostInput at the next parent model boundary."
-                ),
-                parameters_schema={
-                    "$schema": "https://json-schema.org/draft/2020-12/schema",
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-                effect="read_only",
-                metadata=metadata,
-            ),
-            handler=_list,
-        ),
-        Tool(
-            definition=ToolDefinition(
                 name="SendAgentMessage",
                 description=(
                     "Send a message to a subagent. The behavior depends on its state:\n\n"
@@ -261,11 +236,6 @@ def _spawn(invocation: ToolInvocation) -> ToolResult:
             execution_mode=execution_mode,
             resource_refs=tuple(str(item) for item in arguments.get("resource_refs", ())),
         ),
-    )
-def _list(invocation: ToolInvocation) -> ToolResult:
-    return _intent_result(
-        invocation,
-        AgentControlRequest(action="list", request_id=_request_id(invocation)),
     )
 
 

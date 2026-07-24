@@ -130,7 +130,7 @@ platform/base system instructions、冻结的 `AgentDefinition.system_prompt` �
 预算，但不进入 SpawnAgent 描述、根树或关系事件。
 
 资源引用同样不隐式继承。ResourceService 在源 Session mutation boundary 内验证不可变内容，再显式附加带来源的
-child 引用；child 输出资源进入 List、sync SpawnAgent result 或 async result 的父 canonical message 前，必须从 child 到 parent
+child 引用；child 输出资源进入 Host list、sync SpawnAgent result 或 async result 的父 canonical message 前，必须从 child 到 parent
 重新验证并复制引用。Delegation 只保存 child 初始 message identity、task digest 和显式 resource identity，
 不复制父 prompt、资源 blob 或 child 最终文本。
 

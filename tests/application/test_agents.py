@@ -2139,12 +2139,14 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
     assert len(spawn_result_messages) == 1
     assert spawn_result_messages[0].tool_result is not None
     assert spawn_result_messages[0].tool_result.tool_call_id == "spawn_call"
-    spawn_result = json.loads(spawn_result_messages[0].text_content)
-    assert spawn_result["handle"]["delegation_id"] == store.list_delegations(
-        root_session_id
-    )[0].delegation_id
-    assert spawn_result["result"]["terminal_status"] == "completed"
-    assert spawn_result["result"]["final_text"] == "child evidence"
+    spawn_content = spawn_result_messages[0].text_content
+    delegation = store.list_delegations(root_session_id)[0]
+    assert "## Subagent Result" in spawn_content
+    assert f"**Delegation ID**: `{delegation.delegation_id}`" in spawn_content
+    assert "**Status**: completed" in spawn_content
+    assert "child evidence" in spawn_content
+    assert delegation.child_session_id not in spawn_content
+    assert delegation.current_child_run_id not in spawn_content
     assert snapshot.messages[-1].text_content == "parent resumed"
     assert provider.child_tool_names == ["Read"]
     spawn_definition = next(
@@ -2395,6 +2397,13 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     ]
     assert len(delivered_messages) == 1
     assert delivered_messages[0].role == "system_synthetic"
+    delivered_content = delivered_messages[0].text_content
+    assert "## Subagent Result" in delivered_content
+    assert f"**Delegation ID**: `{relation.delegation_id}`" in delivered_content
+    assert "**Status**: completed" in delivered_content
+    assert "async child result" in delivered_content
+    assert relation.child_session_id not in delivered_content
+    assert relation.current_child_run_id not in delivered_content
     assert snapshot.messages[-1].text_content == "parent received follow-up"
     spawn_results = [
         message
@@ -2404,7 +2413,12 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         and message.tool_result.tool_call_id == "async_spawn"
     ]
     assert len(spawn_results) == 1
-    assert "handle" in json.loads(spawn_results[0].text_content)
+    async_content = spawn_results[0].text_content
+    assert "## Subagent Dispatched (Async)" in async_content
+    assert f"**Delegation ID**: `{relation.delegation_id}`" in async_content
+    assert "proactively push a notification" in async_content
+    assert relation.child_session_id not in async_content
+    assert relation.current_child_run_id not in async_content
     assert not any(
         event.event_type == "agent_wait_requested"
         for event in store.load_session(root_session_id).events
