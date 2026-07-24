@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,6 +94,12 @@ class InteractiveOutput:
         self.tool_call_keys: dict[tuple[str, str], tuple[str, str, int]] = {}
         self.active_tool_calls: dict[tuple[str, str], tuple[str, str, int]] = {}
         self.wait_timing: _WaitTiming | None = None
+        # Serializes terminal writes between the background event sink and a
+        # foreground prompt lease so a draining event never renders over an open
+        # prompt. Animation tasks are paused (not locked) via prompt_scope.
+        self._terminal_lock = asyncio.Lock()
+        self._prompt_depth = 0
+        self._deferred_events: list[EventRecord] = []
 
     async def start_waiting(
         self,
@@ -184,10 +192,30 @@ class InteractiveOutput:
         self.tool_call_keys.clear()
         self.active_tool_calls.clear()
         self.wait_timing = None
+        self._prompt_depth = 0
+        self._deferred_events.clear()
 
     async def handle_event(self, event: EventRecord) -> None:
         if event.run_id is None:
             return
+        # Acquire terminal ownership before deciding to render or defer. The render
+        # body below contains awaits, so a top-of-function check alone could let an
+        # in-flight render resume after a prompt has taken the terminal. The lock
+        # makes the render/defer decision and the render itself atomic against
+        # prompt_scope's handoff.
+        async with self._terminal_lock:
+            if self._prompt_depth > 0:
+                # A foreground prompt owns the terminal; buffer transcript events
+                # and replay them in sequence once the lease is released so spinner
+                # frames never overwrite an open prompt line.
+                self._deferred_events.append(event)
+                return
+            await self._render_event(event)
+
+    async def _render_event(self, event: EventRecord) -> None:
+        # handle_event guarantees a bound run before dispatching here; restate it so
+        # the render body can treat run_id as present.
+        assert event.run_id is not None
         if event.event_type == "run_started":
             if event.payload.get("kind") == "compaction":
                 return
@@ -324,10 +352,49 @@ class InteractiveOutput:
         self.streamed_text = False
         return True
 
-    async def suspend_tools_for_prompt(self) -> None:
-        """Keep tool state while freeing the cursor for an interactive prompt."""
+    @asynccontextmanager
+    async def prompt_scope(self) -> AsyncIterator[None]:
+        """Lease exclusive ownership of the terminal for a foreground prompt.
 
-        await self.tool_lines.suspend()
+        On entry the lease pauses every animated region and marks the terminal
+        busy so concurrently arriving transcript events are buffered instead of
+        written. On exit the buffered events are replayed in sequence and any
+        still-live status region is redrawn, so a paused spinner or tool row
+        resumes exactly where it left off. Re-entrant: nested prompts share one
+        lease and only the outermost scope replays and restores.
+        """
+
+        first = self._prompt_depth == 0
+        if first:
+            # Hold the terminal lock only to flip the lease and pause animations.
+            # Any in-flight render finishes before we acquire it; afterwards the
+            # raised depth routes new events to the buffer.
+            async with self._terminal_lock:
+                self._prompt_depth += 1
+                await self.status_line.suspend()
+                await self.tool_lines.suspend()
+                self._end_streamed_content_line()
+        else:
+            self._prompt_depth += 1
+        try:
+            yield
+        finally:
+            if self._prompt_depth == 1:
+                async with self._terminal_lock:
+                    await self._replay_deferred_events()
+                    await self.status_line.resume()
+                    await self.tool_lines.resume()
+                    self._prompt_depth = 0
+            else:
+                self._prompt_depth -= 1
+
+    async def _replay_deferred_events(self) -> None:
+        # Called while holding the terminal lock, so no concurrent handle_event
+        # can append; a single drain pass renders the buffer in sequence order.
+        pending = self._deferred_events
+        self._deferred_events = []
+        for event in pending:
+            await self._render_event(event)
 
     async def _transition_waiting(
         self,

@@ -82,6 +82,47 @@ async def test_timed_status_updates_elapsed_seconds_with_animation() -> None:
     assert any("Waiting · model response · 2.4s" in item for item in outputs)
 
 
+async def test_status_line_suspend_retains_status_and_resume_redraws() -> None:
+    outputs: list[str] = []
+    status = TerminalStatusLine(outputs.append, animated=True)
+
+    await status.start_timed("model_wait", "Waiting · model response")
+    await status.suspend()
+
+    # Suspend stops animation and erases the line but keeps the logical status.
+    assert outputs[-1].endswith("\x1b[2K")
+    assert status.semantic == "model_wait"
+    assert status.active is True
+
+    outputs.clear()
+    await status.resume()
+    frames = [item for item in outputs if "Waiting · model response" in item]
+    assert frames, "resume must redraw the retained status"
+    await status.clear()
+
+
+async def test_status_line_resume_without_suspend_is_noop() -> None:
+    outputs: list[str] = []
+    status = TerminalStatusLine(outputs.append, animated=True)
+
+    await status.resume()
+    assert outputs == []
+
+
+async def test_status_region_suspend_and_resume_redraws_live_rows() -> None:
+    outputs: list[str] = []
+    region = TerminalStatusRegion(outputs.append, animated=True)
+
+    await region.upsert("call_1", "tool_execution", "Read · running")
+    await region.suspend()
+    assert region.active is True
+
+    outputs.clear()
+    await region.resume()
+    assert any("Read · running" in item for item in outputs)
+    await region.clear()
+
+
 async def test_nonanimated_region_emits_each_status_once_when_committed() -> None:
     outputs: list[str] = []
     region = TerminalStatusRegion(outputs.append, animated=False)

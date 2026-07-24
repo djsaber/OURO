@@ -106,6 +106,7 @@ class TerminalStatusLine:
         self._elapsed_started_at: float | None = None
         self._frame_index = 0
         self._animation_task: asyncio.Task[None] | None = None
+        self._suspended = False
 
     @property
     def active(self) -> bool:
@@ -126,7 +127,7 @@ class TerminalStatusLine:
         *,
         timed: bool,
     ) -> None:
-        if self.semantic == semantic:
+        if self.semantic == semantic and not self._suspended:
             self.message = _status_text(message, self._message_limit)
             self._elapsed_started_at = self._clock() if timed else None
             if self.animated:
@@ -167,8 +168,41 @@ class TerminalStatusLine:
         self.message = ""
         self._elapsed_started_at = None
         self._frame_index = 0
+        self._suspended = False
         if had_status and self.animated:
             self._write(f"\r{_CLEAR_LINE}")
+
+    async def suspend(self) -> None:
+        """Stop animating and erase the line while retaining the logical status.
+
+        Unlike ``clear``, the semantic/message/elapsed baseline survive so ``resume``
+        can restore the same status once a foreground prompt releases the terminal.
+        """
+
+        task = self._animation_task
+        self._animation_task = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        if self.semantic is not None:
+            self._suspended = True
+            if self.animated:
+                self._write(f"\r{_CLEAR_LINE}")
+
+    async def resume(self) -> None:
+        """Redraw and re-animate a status previously paused by ``suspend``."""
+
+        if not self._suspended or self.semantic is None:
+            self._suspended = False
+            return
+        self._suspended = False
+        self._render_frame()
+        if self.animated:
+            self._animation_task = asyncio.create_task(
+                self._animate(),
+                name=f"ouro-spinner-{self.semantic}",
+            )
 
     async def _animate(self) -> None:
         try:
@@ -283,6 +317,15 @@ class TerminalStatusRegion:
 
         await self._stop_animation()
         self._erase_visible_rows()
+
+    async def resume(self) -> None:
+        """Redraw rows retained by ``suspend`` and re-animate any still-live row."""
+
+        if not self._rows or not self.animated:
+            return
+        self._render_rows()
+        if any(row.tone is None for row in self._rows.values()):
+            self._ensure_animation()
 
     async def commit(self) -> None:
         """Leave one stable output row per key and release the region."""

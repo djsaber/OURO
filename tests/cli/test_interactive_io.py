@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from ouro.application.agent_models import AgentInteractionView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
-from ouro.cli.interactive_io import InteractiveOutput, _follow_waiting_subagents
+from ouro.cli.interactive_io import InteractionCoordinator, InteractiveOutput
 from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
@@ -23,6 +24,52 @@ def _event(
         event_type=event_type,
         sequence=sequence,
         payload={"turn_id": "turn_1", **payload},
+    )
+
+
+def _coordinator(
+    *,
+    runtime: object,
+    output: InteractiveOutput,
+    agents: object | None,
+    input_func=lambda _prompt: "",
+    output_func=lambda _text: None,
+    prompt_func=lambda _prompt: None,
+) -> InteractionCoordinator:
+    return InteractionCoordinator(
+        runtime=runtime,  # type: ignore[arg-type]
+        output=output,
+        input_func=input_func,
+        output_func=output_func,
+        prompt_func=prompt_func,
+        agents=agents,  # type: ignore[arg-type]
+    )
+
+
+def _subagent_interaction(
+    *,
+    kind: str = "approval",
+    delegation_id: str = "dlg_1",
+    child_run_id: str = "run_child",
+    request_id: str = "apr_1",
+    tool_name: str = "PowerShell",
+    arguments_preview: str = '{"command": "Get-Date"}',
+    input_request: object = None,
+) -> AgentInteractionView:
+    return AgentInteractionView(
+        kind=kind,  # type: ignore[arg-type]
+        delegation_id=delegation_id,
+        agent_id="agt_1",
+        agent_name="General",
+        task_description="demo",
+        child_session_id="ses_child",
+        child_run_id=child_run_id,
+        tool_call_id="call_1",
+        tool_name=tool_name,
+        request_id=request_id,
+        requested_at="2026-01-01T00:00:00Z",
+        arguments_preview=arguments_preview,
+        input_request=input_request,
     )
 
 
@@ -74,19 +121,88 @@ async def test_waiting_child_follower_ignores_running_continuation_state() -> No
             return ()
 
     output = InteractiveOutput(lambda _text: None)
-    resolved = await _follow_waiting_subagents(
-        RunResult(session=session, run=waiting),
+    coordinator = _coordinator(
         runtime=SimpleNamespace(store=store),
-        agents=AgentHost(),
-        input_func=lambda _prompt: "",
-        output_func=lambda _text: None,
         output=output,
+        agents=AgentHost(),
+    )
+    resolved = await coordinator._follow_waiting_subagents(
+        RunResult(session=session, run=waiting),
+        lambda _prompt: "",
     )
 
     assert resolved is not None
     assert resolved.run.status == "completed"
     assert subscription.get_count == 2
+    await coordinator.aclose()
     assert subscription.closed is True
+    await output.close()
+
+
+async def test_follower_resolves_pending_subagent_while_parent_still_waiting() -> None:
+    session = SessionRecord(session_id="ses_root")
+    waiting = RunRecord(session_id=session.session_id, run_id="run_root", status="waiting_child")
+
+    class SequencedStore:
+        def __init__(self) -> None:
+            self.index = 0
+            # waiting_child (pending surfaced) -> completed after the approval routes.
+            self.runs = (
+                waiting,
+                waiting.model_copy(update={"status": "completed"}),
+            )
+
+        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                session=session,
+                runs=(self.runs[self.index],),
+                messages=(),
+            )
+
+    store = SequencedStore()
+    interaction = _subagent_interaction()
+
+    class Subscription:
+        def close(self) -> None: ...
+
+    class AgentHost:
+        def __init__(self) -> None:
+            self.approved: list[bool] = []
+
+        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+            return Subscription()
+
+        def list_agent_interactions(
+            self, root_session_id: str
+        ) -> tuple[AgentInteractionView, ...]:
+            return (interaction,) if store.index == 0 else ()
+
+        async def resolve_agent_approval(self, delegation_id: str, *, approved: bool, **_: object):
+            self.approved.append(approved)
+            store.index = 1  # parent resumes and completes once the approval is routed.
+            return object()
+
+    outputs: list[str] = []
+    host = AgentHost()
+    output = InteractiveOutput(outputs.append)
+    coordinator = _coordinator(
+        runtime=SimpleNamespace(store=store),
+        output=output,
+        agents=host,
+        input_func=lambda _prompt: "y",
+        output_func=outputs.append,
+    )
+
+    resolved = await coordinator._follow_waiting_subagents(
+        RunResult(session=session, run=waiting),
+        lambda _prompt: "y",
+    )
+
+    assert resolved is not None
+    assert resolved.run.status == "completed"
+    assert host.approved == [True]
+    assert any("approval required" in line for line in outputs)
+    await coordinator.aclose()
     await output.close()
 
 
@@ -656,3 +772,167 @@ async def test_interactive_output_surfaces_application_startup_diagnostics() -> 
     assert "● ses_old · old session execution data was rejected" in rendered
     assert "→ Remove the old session." in rendered
     assert "unrelated MCP startup diagnostic" not in rendered
+
+
+async def test_parallel_subagent_interactions_resolve_without_prompt_corruption() -> None:
+    """Reproduce the parallel-subagent bug: two independent children are blocked,
+
+    one on a question and one on an approval, while the parent is ``waiting_child``.
+    Answering the first child emits a transcript event (as its run resumes), which
+    previously raced the second child's approval prompt on the terminal and left it
+    stuck. Both interactions must now be surfaced and resolved in order, oldest
+    first, and every prompt must own the terminal through a prompt lease.
+    """
+
+    session = SessionRecord(session_id="ses_root")
+    waiting = RunRecord(session_id=session.session_id, run_id="run_root", status="waiting_child")
+
+    class SequencedStore:
+        def __init__(self) -> None:
+            # Parent stays waiting_child until both children resolve, then completes.
+            self.completed = False
+
+        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
+            status = "completed" if self.completed else "waiting_child"
+            return SimpleNamespace(
+                session=session,
+                runs=(waiting.model_copy(update={"status": status}),),
+                messages=(),
+            )
+
+    store = SequencedStore()
+    question = _subagent_interaction(
+        kind="user_input",
+        delegation_id="dlg_q",
+        child_run_id="run_q",
+        request_id="req_q",
+        input_request="What is your favorite language?",
+    )
+    approval = _subagent_interaction(
+        kind="approval",
+        delegation_id="dlg_a",
+        child_run_id="run_a",
+        request_id="apr_a",
+    )
+    outputs: list[str] = []
+
+    class Subscription:
+        def close(self) -> None: ...
+
+    class AgentHost:
+        def __init__(self) -> None:
+            self.answered: list[str] = []
+            self.approved: list[bool] = []
+
+        def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
+            return Subscription()
+
+        def list_agent_interactions(
+            self, root_session_id: str
+        ) -> tuple[AgentInteractionView, ...]:
+            pending: list[AgentInteractionView] = []
+            if "dlg_q" not in self.answered:
+                pending.append(question)
+            if not self.approved:
+                pending.append(approval)
+            return tuple(pending)
+
+        async def resolve_agent_input(self, delegation_id: str, *, answer: object, **_: object):
+            self.answered.append(delegation_id)
+            # The answered child resumes and streams; this event previously
+            # corrupted the still-open approval prompt line.
+            await output.handle_event(_event(99, "model_request_started", {}))
+            return object()
+
+        async def resolve_agent_approval(self, delegation_id: str, *, approved: bool, **_: object):
+            self.approved.append(approved)
+            store.completed = True  # both children resolved; parent joins and completes
+            return object()
+
+    host = AgentHost()
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+    answers = iter(["python", "y"])
+    coordinator = _coordinator(
+        runtime=SimpleNamespace(store=store),
+        output=output,
+        agents=host,
+        input_func=lambda _prompt: next(answers),
+        output_func=outputs.append,
+    )
+
+    resolved = await coordinator._follow_waiting_subagents(
+        RunResult(session=session, run=waiting),
+        lambda _prompt: next(answers),
+    )
+
+    assert resolved is not None
+    assert resolved.run.status == "completed"
+    assert host.answered == ["dlg_q"]
+    assert host.approved == [True]
+    rendered = "".join(outputs)
+    assert "Question from subagent" in rendered
+    assert "approval required" in rendered
+    # The transcript event emitted mid-resolution was buffered, not written between
+    # the announcement and the approval prompt.
+    await coordinator.aclose()
+    await output.close()
+
+
+async def test_prompt_scope_defers_transcript_events_until_lease_released() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+
+    async with output.prompt_scope():
+        # A model turn that starts while the prompt owns the terminal must not
+        # write anything; the event is buffered.
+        await output.handle_event(_event(1, "model_request_started", {}))
+        await output.handle_event(_event(2, "model_text_delta", {"text": "Hello"}))
+        assert outputs == []
+        assert output.status_line.message == ""
+
+    # Released: buffered events replay in order, so the streamed text lands after.
+    assert "Hello" in "".join(outputs)
+    await output.close()
+
+
+async def test_prompt_scope_is_reentrant_and_only_outer_scope_replays() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+
+    async with output.prompt_scope():
+        async with output.prompt_scope():
+            await output.handle_event(_event(1, "model_text_delta", {"text": "inner"}))
+        # Leaving the inner scope must not replay while the outer lease is held.
+        assert "inner" not in "".join(outputs)
+    assert "inner" in "".join(outputs)
+    await output.close()
+
+
+async def test_prompt_scope_resumes_suspended_spinner_when_no_event_supersedes() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=True),
+    )
+
+    await output.start_waiting("Waiting · model response")
+    assert output.status_line.active is True
+
+    async with output.prompt_scope():
+        # Suspending erases the visible spinner line but retains its logical status.
+        assert any(item.endswith("\x1b[2K") for item in outputs)
+        assert output.status_line.semantic == "model_wait"
+
+    # After release the spinner is redrawn and still animating.
+    assert output.status_line.active is True
+    assert any("Waiting · model response" in item for item in outputs)
+    await output.close()
