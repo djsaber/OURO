@@ -658,9 +658,11 @@ Host 回答必须携带原 child session_id、run_id、tool_call_id/request_id�
 
 sync subagent 等 HITL 时，父 Run 继续保持 waiting_child；async subagent 等 HITL 时，父 Run 不被阻塞。长期运行的
 Interactive Host 始终消费同一 root inbox：读取主终端输入时保持事件循环可运行，并同时等待 AgentTree 通知；
-subagent interaction 先到达时，当前输入行成为该审批或提问的回答，处理完 pending interaction 后再建立新的主提示。
-sync 路径继续等待原父 Run 恢复，async 路径不改变父 Run 生命周期。Host 只缓存本次已提交的 request identity 以避免
-短暂重复提示，不缓存或推断 canonical pending 状态；interaction DTO 只给出有界参数预览，完整 ToolInvocation
+终端以单一行读取协调器拥有 stdin。subagent interaction 先到达时，Host 把当前提示重定向为审批或提问提示，
+由同一个 reader 接收答案，不建立会竞争 stdin 的第二个读取；AskUser 空行不构成回答。处理完 pending interaction
+后再建立新的主提示。sync 路径继续等待原父 Run 恢复，async 路径不改变父 Run 生命周期。Host 只缓存本次已提交的
+request identity，以覆盖 application 接收决议与 canonical inbox 投影收敛之间的短暂窗口；identity 已消失时把旧
+通知视为 stale，不缓存或推断 canonical pending 状态。interaction DTO 只给出有界参数预览，完整 ToolInvocation
 仍留在 subagent Run。当前终端只渲染主智能体行动轨迹与 subagent HITL 提示，不渲染 subagent 回复或工具调用；
 完整 subagent stream 保留给 Desktop 等树形 Host。
 

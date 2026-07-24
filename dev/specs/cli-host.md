@@ -62,14 +62,17 @@ connected/failed 状态、transport 和工具数量。MCP manager/resource 只�
 Run 启动、审批/AskUser 恢复和恢复后的 Session 刷新处于同一个 Host 错误边界；类型化 application 错误应
 显示后继续输入循环，并保留已经返回的 durable Session identity，不得以 traceback 终止整个 Host。
 
-Interactive 的 stdin 读取必须通过非阻塞 async 边界执行，并与
-`AgentService.subscribe_agent_tree` 同时等待。root interaction inbox 出现 subagent approval 或 AskUser 时，Host
-显示 agent/delegation 来源及有界参数摘要或完整 input request，把当前输入行作为该 interaction 的回答，并携带原
-child session/run/tool call/request identity 调用 `resolve_agent_approval` 或 `resolve_agent_input`。sync parent
+Interactive 的 stdin 读取必须由单一行读取协调器通过非阻塞 async 边界执行，并与
+`AgentService.subscribe_agent_tree` 同时等待。同一时刻只能有一个底层 stdin reader；root interaction inbox 出现
+subagent approval 或 AskUser 时，Host 显示 agent/delegation 来源及有界参数摘要或完整 input request，把当前提示
+重定向为该 interaction 的回答提示，并由同一个 reader 接收答案，不得通过第二个 `input()` 与主提示竞争。
+AskUser 的空行不是有效答案，Host 必须继续等待明确输入。决议携带原 child session/run/tool call/request identity
+调用 `resolve_agent_approval` 或 `resolve_agent_input`。sync parent
 返回 `waiting_child` 时，Interactive 不把它渲染为停止，决议后继续等待原父 Run；async subagent 的 interaction
 同样由主窗口处理，但不改变父 Run 生命周期。CLI 只渲染 primary agent 行动轨迹与 subagent HITL 提示，
-不展开 subagent 回复或工具调用。Host 不得轮询、直接恢复 subagent Runtime，或保存第二份 pending 状态；订阅在
-交互完成、EOF、异常和 Host 退出时关闭。
+不展开 subagent 回复或工具调用。Host 只在一次输入协调周期内记住已提交的 request identity，避免 application
+接收决议与 canonical inbox 投影收敛之间的短暂重复提示；不得据此保存或推断第二份 pending 状态。Host 不得轮询、
+直接恢复 subagent Runtime；订阅在交互完成、EOF、异常和 Host 退出时关闭。
 
 ### Print
 

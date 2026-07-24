@@ -45,6 +45,10 @@ This project records user-visible and framework-contract changes in this file.
 - Interactive terminal input no longer blocks the async runtime. The root interaction inbox routes
   sync and async subagent approvals/questions through the main window, while the terminal renders
   only the primary agent trajectory and keeps subagent replies/tool calls in their own streams.
+- Interactive stdin now has one line-reader owner. A newly arrived subagent interaction redirects
+  that reader to an explicit answer prompt instead of starting a competing read; blank AskUser
+  answers are rejected, and submitted request identities are suppressed until the canonical inbox
+  projection catches up.
 - Delegation constraints now persist only independent runtime constraints such as workspace and
   external-path access; effective tool references remain the single source for tool, write,
   network, and MCP capability.

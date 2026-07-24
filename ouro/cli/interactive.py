@@ -9,9 +9,9 @@ from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive_commands import handle_command
+from ouro.cli.interactive_input import InputFunc, PromptFunc, write_terminal_prompt
 from ouro.cli.interactive_io import (
     AgentInteractionHost,
-    InputFunc,
     InteractiveOutput,
     OutputFunc,
     PrefetchedInput,
@@ -47,8 +47,12 @@ async def run_interactive(
     plugins: PluginService | None = None,
     input_func: InputFunc = input,
     output_func: OutputFunc = print,
+    prompt_func: PromptFunc | None = None,
 ) -> int:
     output = InteractiveOutput(output_func)
+    resolved_prompt_func = prompt_func or (
+        write_terminal_prompt if input_func is input and output_func is print else output_func
+    )
     owned_application: LocalApplication | None = None
     owns_runtime = runtime is None
     if runtime is None:
@@ -88,6 +92,7 @@ async def run_interactive(
             runtime,
             output=output,
             input_func=input_func,
+            prompt_func=resolved_prompt_func,
             output_func=output_func,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
@@ -107,6 +112,7 @@ async def _run_interactive_session(
     *,
     output: InteractiveOutput,
     input_func: InputFunc,
+    prompt_func: PromptFunc,
     output_func: OutputFunc,
     approval_mode: SessionApprovalMode,
     interaction_mode: SessionInteractionMode,
@@ -145,6 +151,7 @@ async def _run_interactive_session(
                 root_session_id=_interaction_root_session_id(runtime, session_id),
                 agents=agents,
                 input_func=input_func,
+                prompt_func=prompt_func,
                 output_func=output_func,
                 output=output,
             )
@@ -152,6 +159,9 @@ async def _run_interactive_session(
             await _stop_plugin_run(runtime, plugin_run_task, session_id)
             output_func("")
             return 0
+        except OuroError as exc:
+            output_func(f"Error: {exc}")
+            continue
 
         if plugin_run_task is not None and plugin_run_task.done():
             try:

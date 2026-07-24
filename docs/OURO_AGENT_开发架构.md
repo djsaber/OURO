@@ -103,10 +103,12 @@ Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父
 request_id 精确路由。首版限制单层和 bound lifecycle；subagent 的工具、workspace、审批与
 RunBudgetPolicy 只能从父级能力上限收紧。
 
-循环交互 CLI 作为长期运行 Host，主提示输入通过线程边界接入 async 循环，并与 AgentTree subscription 同时等待。
-因此 sync parent 处于 `waiting_child` 时可在原 Run 内继续，async subagent 在父 Run 已完成或继续运行时也能把
-Approval/AskUser 投影到同一主窗口。CLI 用完整 child identity 路由批准、拒绝、参数修改、终止或回答，但只渲染
-主智能体行动轨迹与 subagent HITL 提示；subagent text/reasoning/tool stream 保留在其 canonical Run，供 Desktop
+循环交互 CLI 作为长期运行 Host，用单一行读取协调器把 stdin 经线程边界接入 async 循环，并与 AgentTree
+subscription 同时等待。底层始终只有一个阻塞 reader；interaction 到达时只重定向当前提示，由原 reader 接收
+明确答案，AskUser 空行继续等待。因此 sync parent 处于 `waiting_child` 时可在原 Run 内继续，async subagent 在
+父 Run 已完成或继续运行时也能把 Approval/AskUser 投影到同一主窗口。CLI 用完整 child identity 路由批准、拒绝、
+参数修改、终止或回答，并在 application 决议与 canonical inbox 投影收敛的短暂窗口内去重已提交 identity；只渲染
+主智能体行动轨迹与 subagent HITL 提示。subagent text/reasoning/tool stream 保留在其 canonical Run，供 Desktop
 等树形 Host 按需展开。CLI 不读取 child Store、不轮询，也不建立第二套审批状态机。
 
 AgentService 不设置 root active/queued subagent 配额。每个通过派遣策略、深度、预算与幂等校验的请求都建立

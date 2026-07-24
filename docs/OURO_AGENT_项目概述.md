@@ -95,8 +95,10 @@ AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 a
 结果通过稳定 delivery identity 在 next-boundary 自动进行 exact-once 交付。root AgentTree、interaction inbox 和
 subagent event stream 都是 application 投影，Host refresh/detach 不改变 subagent 生命周期。
 循环交互 Host 在主终端等待输入时持续消费该 interaction inbox，因此 sync 与 async subagent 的工具审批和
-AskUser 都可在主窗口处理；所有决议都按 subagent session/run/tool call/request identity 精确路由。终端仅渲染
-主智能体行动轨迹和 subagent HITL 提示，不展开 subagent 回复或工具调用。
+AskUser 都可在主窗口处理。终端只有一个行读取所有者；interaction 到达时将当前提示重定向为明确的回答提示，
+不会启动第二个 stdin reader，AskUser 空行也不会被提交。所有决议都按 subagent session/run/tool call/request
+identity 精确路由，并覆盖决议提交与 canonical inbox 投影收敛之间的短暂重复通知。终端仅渲染主智能体行动轨迹
+和 subagent HITL 提示，不展开 subagent 回复或工具调用。
 
 首版固定 `max_depth=1` 和 bound lifecycle，但不设置 subagent 专用 active/queued 配额。每个合法派遣都提交
 现有 RuntimeSupervisor，实际并发与排队由其通用并发上限和 FIFO 决定。工具 effect 与权限不参与并发调度；

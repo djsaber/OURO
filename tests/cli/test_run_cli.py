@@ -1,6 +1,8 @@
 import json
+import queue
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -143,6 +145,80 @@ class SubagentInteractionProvider:
         )
 
 
+class ConcurrentSubagentQuestionProvider:
+    provider_id = "concurrent-subagent-interaction"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+        self.completed_subagents: set[str] = set()
+        self.children_completed = threading.Event()
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            task = " ".join(str(getattr(message, "text_content", "")) for message in messages)
+            key = "A" if "Question A task" in task else "B"
+            answered = any(
+                getattr(getattr(message, "tool_result", None), "tool_name", None) == "AskUser"
+                for message in messages
+            )
+            if not answered:
+                yield ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": f"subagent_question_{key.lower()}",
+                        "name": "AskUser",
+                        "arguments": {"question": f"Question {key}?"},
+                    },
+                )
+                yield ProviderStreamEvent(type="done")
+                return
+            self.completed_subagents.add(key)
+            if self.completed_subagents == {"A", "B"}:
+                self.children_completed.set()
+            yield ProviderStreamEvent(
+                type="text_delta",
+                text=f"subagent {key} interaction resolved",
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            for key in ("A", "B"):
+                yield ProviderStreamEvent(
+                    type="tool_call",
+                    tool_call={
+                        "id": f"spawn_subagent_{key.lower()}",
+                        "name": "SpawnAgent",
+                        "arguments": {
+                            "agent_id": "general",
+                            "task": f"Question {key} task",
+                            "description": f"Concurrent question {key}",
+                            "nickname": f"Agent-{key}",
+                            "execution_mode": "async",
+                        },
+                    },
+                )
+            yield ProviderStreamEvent(type="done")
+            return
+        self.root_round += 1
+        yield ProviderStreamEvent(
+            type="text_delta",
+            text=f"parent concurrent round {self.root_round}",
+        )
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 def _runtime(tmp_path, event_batches) -> RuntimeService:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -164,7 +240,7 @@ def _runtime(tmp_path, event_batches) -> RuntimeService:
 def _agent_runtime(
     tmp_path,
     store: LocalSessionStore,
-    provider: SubagentInteractionProvider,
+    provider: Any,
 ) -> RuntimeService:
     registry = ToolRegistry()
     for tool in builtin_tools():
@@ -988,6 +1064,152 @@ async def test_interactive_routes_async_subagent_hitl_without_rendering_trajecto
     assert not any(output.startswith("● AskUser ·") for output in outputs)
     assert "Run stopped with status: waiting_child" not in outputs
     assert "Run stopped with status: running" not in outputs
+
+
+async def test_interactive_does_not_submit_empty_async_subagent_answer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = SubagentInteractionProvider(mode="question", execution_mode="async")
+    runtime = _agent_runtime(tmp_path, store, provider)
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        del args, kwargs
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    interaction_announced = threading.Event()
+    answer_prompted = threading.Event()
+    result_rendered = threading.Event()
+    outputs: list[str] = []
+    input_count = 0
+
+    def output_func(text: str) -> None:
+        outputs.append(text)
+        if text.startswith("Question from subagent General"):
+            interaction_announced.set()
+        if text == "Answer subagent: ":
+            answer_prompted.set()
+        if text == "parent received subagent result":
+            result_rendered.set()
+
+    def input_func(_prompt: str) -> str:
+        nonlocal input_count
+        input_count += 1
+        if input_count == 1:
+            return "test async subagent empty answer"
+        if input_count == 2:
+            assert answer_prompted.wait(timeout=5)
+            return ""
+        if input_count == 3:
+            return "A"
+        if input_count == 4:
+            assert result_rendered.wait(timeout=5)
+            return "/exit"
+        raise EOFError
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=input_func,
+        output_func=output_func,
+    )
+
+    assert code == 0
+    root = next(session for session in store.list_sessions() if session.session_kind == "primary")
+    relation = store.list_delegations(root.session_id)[0]
+    assert relation.child_session_id is not None
+    resolved_answers = [
+        event.payload["answer"]
+        for event in store.load_session(relation.child_session_id).events
+        if event.event_type == "ask_user_resolved"
+    ]
+    assert resolved_answers == ["A"]
+    assert interaction_announced.is_set()
+    assert any("cannot be empty" in output.lower() for output in outputs)
+    assert sum(output.startswith("Question from subagent General") for output in outputs) == 1
+
+
+async def test_interactive_resolves_concurrent_async_subagent_questions_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ConcurrentSubagentQuestionProvider()
+    runtime = _agent_runtime(tmp_path, store, provider)
+
+    def fake_runtime(*args, event_sink=None, **kwargs):
+        del args, kwargs
+        if event_sink is not None:
+            runtime.add_event_sink(event_sink)
+        return runtime
+
+    monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
+    announced_questions: queue.Queue[str] = queue.Queue()
+    outputs: list[str] = []
+    input_count = 0
+
+    def output_func(text: str) -> None:
+        outputs.append(text)
+        if text.startswith("Question from subagent"):
+            if "Question A?" in text:
+                announced_questions.put("A")
+            elif "Question B?" in text:
+                announced_questions.put("B")
+
+    def input_func(_prompt: str) -> str:
+        nonlocal input_count
+        input_count += 1
+        if input_count == 1:
+            return "test concurrent async subagent questions"
+        if input_count in {2, 3}:
+            key = announced_questions.get(timeout=5)
+            return f"answer-{key}"
+        if input_count == 4:
+            assert provider.children_completed.wait(timeout=5)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                roots = [
+                    session
+                    for session in store.list_sessions()
+                    if session.session_kind == "primary"
+                ]
+                if roots:
+                    relations = store.list_delegations(roots[0].session_id)
+                    if len(relations) == 2 and all(item.result is not None for item in relations):
+                        return "/exit"
+                time.sleep(0.01)
+            raise AssertionError("concurrent subagent results were not finalized")
+        raise EOFError
+
+    code = await run_interactive(
+        home=tmp_path,
+        input_func=input_func,
+        output_func=output_func,
+    )
+
+    assert code == 0
+    root = next(session for session in store.list_sessions() if session.session_kind == "primary")
+    relations = store.list_delegations(root.session_id)
+    assert len(relations) == 2
+    for relation in relations:
+        assert relation.child_session_id is not None
+        assert relation.nickname is not None
+        key = relation.nickname.removeprefix("Agent-")
+        resolved_answers = [
+            event.payload["answer"]
+            for event in store.load_session(relation.child_session_id).events
+            if event.event_type == "ask_user_resolved"
+        ]
+        assert resolved_answers == [f"answer-{key}"]
+    assert sum("Question A?" in output for output in outputs) == 1
+    assert sum("Question B?" in output for output in outputs) == 1
+    assert not any(output.startswith("Error:") for output in outputs)
+    assert not any(output.startswith("● AskUser ·") for output in outputs)
 
 
 async def test_interactive_aborts_waiting_user(tmp_path) -> None:

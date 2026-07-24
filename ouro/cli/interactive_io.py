@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import JsonValue
 
 from ouro.application.agent_models import AgentInteractionView, AgentTreeNotification
 from ouro.application.runtime import RuntimeService
+from ouro.cli.interactive_input import InputFunc, InteractiveInput, PromptFunc
 from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
 from ouro.cli.plan_confirmation import (
     PlanConfirmationControl,
@@ -19,7 +19,6 @@ from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.core.tool_batches import ToolBatchCall
 
-InputFunc = Callable[[str], str]
 _MAX_APPROVAL_ARGUMENT_PREVIEW = 240
 
 
@@ -90,55 +89,74 @@ async def read_interactive_input(
     root_session_id: str | None,
     agents: AgentInteractionHost | None,
     input_func: InputFunc,
+    prompt_func: PromptFunc,
     output_func: OutputFunc,
     output: InteractiveOutput,
 ) -> str:
     """Read the primary prompt while keeping background subagents observable."""
 
     if agents is None or root_session_id is None:
-        return await _read_input(input_func, prompt)
+        return await InteractiveInput(input_func, prompt_func).read(prompt)
 
     subscription = agents.subscribe_agent_tree(root_session_id)
-    input_task = asyncio.create_task(
-        _read_input(input_func, prompt),
-        name=f"ouro-terminal-input-{root_session_id}",
-    )
+    terminal_input = InteractiveInput(input_func, prompt_func)
+    resolved_requests: set[tuple[str, str, str]] = set()
+    input_task: asyncio.Task[str] | None = None
     notification_task: asyncio.Task[AgentTreeNotification] | None = None
     try:
+        if not await _resolve_pending_subagent_interactions(
+            root_session_id,
+            agents=agents,
+            input_func=input_func,
+            output_func=output_func,
+            output=output,
+            resolved_requests=resolved_requests,
+        ):
+            raise EOFError
+        input_task = terminal_input.begin(prompt)
         while True:
-            pending = agents.list_agent_interactions(root_session_id)
+            pending = tuple(
+                interaction
+                for interaction in agents.list_agent_interactions(root_session_id)
+                if _interaction_identity(interaction) not in resolved_requests
+            )
             if pending and not input_task.done():
                 interaction = pending[0]
+                identity = _interaction_identity(interaction)
+                terminal_input.break_prompt()
                 await _announce_subagent_interaction(
                     interaction,
                     output_func=output_func,
                     output=output,
                 )
-                prefetched = PrefetchedInput(await input_task, input_func)
-                if not await _resolve_subagent_interaction(
+                terminal_input.replace_prompt(_subagent_input_prompt(interaction))
+                answer = await terminal_input.finish(input_task)
+                resolution = await _resolve_current_subagent_interaction(
                     interaction,
                     agents=agents,
-                    input_func=prefetched,
+                    root_session_id=root_session_id,
+                    input_func=input_func,
                     output_func=output_func,
                     output=output,
                     announce=False,
-                ):
+                    initial_response=answer,
+                )
+                if resolution == "eof":
                     raise EOFError
+                resolved_requests.add(identity)
                 if not await _resolve_pending_subagent_interactions(
                     root_session_id,
                     agents=agents,
                     input_func=input_func,
                     output_func=output_func,
                     output=output,
+                    resolved_requests=resolved_requests,
                 ):
                     raise EOFError
-                input_task = asyncio.create_task(
-                    _read_input(input_func, prompt),
-                    name=f"ouro-terminal-input-{root_session_id}",
-                )
+                input_task = terminal_input.begin(prompt)
                 continue
             if input_task.done():
-                return input_task.result()
+                return await terminal_input.finish(input_task)
 
             notification_task = asyncio.create_task(
                 subscription.get(),
@@ -152,18 +170,18 @@ async def read_interactive_input(
                 notification_task.cancel()
                 await asyncio.gather(notification_task, return_exceptions=True)
                 notification_task = None
-                return input_task.result()
+                return await terminal_input.finish(input_task)
             try:
                 notification_task.result()
             except StopAsyncIteration:
-                return await input_task
+                return await terminal_input.finish(input_task)
             finally:
                 notification_task = None
     finally:
         if notification_task is not None:
             notification_task.cancel()
             await asyncio.gather(notification_task, return_exceptions=True)
-        if not input_task.done():
+        if input_task is not None and not input_task.done():
             input_task.cancel()
             await asyncio.gather(input_task, return_exceptions=True)
         subscription.close()
@@ -311,28 +329,55 @@ async def _resolve_pending_subagent_interactions(
         )
         if not pending:
             return True
-        for interaction in pending:
-            identity = _interaction_identity(interaction)
-            try:
-                handled = await _resolve_subagent_interaction(
-                    interaction,
-                    agents=agents,
-                    input_func=input_func,
-                    output_func=output_func,
-                    output=output,
-                )
-            except ValueError:
-                current = {
-                    _interaction_identity(item)
-                    for item in agents.list_agent_interactions(root_session_id)
-                }
-                if identity not in current:
-                    resolved.add(identity)
-                    continue
-                raise
-            if not handled:
-                return False
-            resolved.add(identity)
+        interaction = pending[0]
+        identity = _interaction_identity(interaction)
+        resolution = await _resolve_current_subagent_interaction(
+            interaction,
+            agents=agents,
+            root_session_id=root_session_id,
+            input_func=input_func,
+            output_func=output_func,
+            output=output,
+        )
+        if resolution == "eof":
+            return False
+        resolved.add(identity)
+
+
+async def _resolve_current_subagent_interaction(
+    interaction: AgentInteractionView,
+    *,
+    agents: AgentInteractionHost,
+    root_session_id: str,
+    input_func: InputFunc,
+    output_func: OutputFunc,
+    output: InteractiveOutput,
+    announce: bool = True,
+    initial_response: str | None = None,
+) -> Literal["resolved", "stale", "eof"]:
+    identity = _interaction_identity(interaction)
+    try:
+        handled = await _resolve_subagent_interaction(
+            interaction,
+            agents=agents,
+            input_func=input_func,
+            output_func=output_func,
+            output=output,
+            announce=announce,
+            initial_response=initial_response,
+        )
+    except ValueError as exc:
+        current = {
+            _interaction_identity(item)
+            for item in agents.list_agent_interactions(root_session_id)
+        }
+        if identity not in current:
+            return "stale"
+        raise OuroError(
+            "Could not resolve subagent interaction "
+            f"{interaction.delegation_id}/{interaction.request_id}: {exc}"
+        ) from exc
+    return "resolved" if handled else "eof"
 
 
 async def _resolve_subagent_interaction(
@@ -343,6 +388,7 @@ async def _resolve_subagent_interaction(
     output_func: OutputFunc,
     output: InteractiveOutput,
     announce: bool = True,
+    initial_response: str | None = None,
 ) -> bool:
     if interaction.kind == "approval":
         return await _resolve_subagent_approval(
@@ -352,6 +398,7 @@ async def _resolve_subagent_interaction(
             output_func=output_func,
             output=output,
             announce=announce,
+            initial_response=initial_response,
         )
     return await _resolve_subagent_question(
         interaction,
@@ -360,6 +407,7 @@ async def _resolve_subagent_interaction(
         output_func=output_func,
         output=output,
         announce=announce,
+        initial_response=initial_response,
     )
 
 
@@ -372,7 +420,6 @@ async def _announce_subagent_interaction(
     await output.suspend_tools_for_prompt()
     if interaction.kind == "approval":
         output_func(_subagent_approval_request(interaction))
-        output_func("Respond at the current prompt with y, n, m, or a.")
         return
     question = (
         _format_user_input_request(interaction.input_request)
@@ -380,7 +427,6 @@ async def _announce_subagent_interaction(
         else "Please provide the requested information."
     )
     output_func(f"Question from subagent {_subagent_label(interaction)}: {question}")
-    output_func("Respond at the current prompt with the subagent answer.")
 
 
 async def _resolve_subagent_approval(
@@ -391,18 +437,21 @@ async def _resolve_subagent_approval(
     output_func: OutputFunc,
     output: InteractiveOutput,
     announce: bool,
+    initial_response: str | None,
 ) -> bool:
     if announce:
         await output.suspend_tools_for_prompt()
         output_func(_subagent_approval_request(interaction))
     while True:
         try:
-            choice = (
-                await _read_input(
+            raw_choice = initial_response
+            initial_response = None
+            if raw_choice is None:
+                raw_choice = await _read_input(
                     input_func,
                     "Approve subagent tool? [y]es/[n]o/[m]odify/[a]bort subagent: ",
                 )
-            ).strip().lower()
+            choice = raw_choice.strip().lower()
         except EOFError:
             output_func("")
             return False
@@ -410,7 +459,7 @@ async def _resolve_subagent_approval(
         if choice in {"y", "yes"}:
             await _route_subagent_approval(interaction, agents=agents, approved=True)
             return True
-        if choice in {"", "n", "no"}:
+        if choice in {"n", "no"}:
             reason = (
                 await _input_optional(input_func, output_func, "Reason: ")
             ) or "User rejected"
@@ -473,6 +522,7 @@ async def _resolve_subagent_question(
     output_func: OutputFunc,
     output: InteractiveOutput,
     announce: bool,
+    initial_response: str | None,
 ) -> bool:
     if announce:
         await output.suspend_tools_for_prompt()
@@ -483,11 +533,18 @@ async def _resolve_subagent_question(
     )
     if announce:
         output_func(f"Question from subagent {_subagent_label(interaction)}: {question}")
-    try:
-        answer = await _read_input(input_func, "Answer subagent: ")
-    except EOFError:
-        output_func("")
-        return False
+    while True:
+        try:
+            answer = initial_response
+            initial_response = None
+            if answer is None:
+                answer = await _read_input(input_func, "Answer subagent: ")
+        except EOFError:
+            output_func("")
+            return False
+        if answer.strip():
+            break
+        output_func("Subagent answer cannot be empty.")
     if answer.strip().lower() in {"/abort", "abort"}:
         await agents.interrupt_agent(
             interaction.delegation_id,
@@ -545,6 +602,12 @@ def _subagent_approval_request(interaction: AgentInteractionView) -> str:
 
 def _subagent_label(interaction: AgentInteractionView) -> str:
     return f"{_single_line(interaction.agent_name)} ({_single_line(interaction.delegation_id)})"
+
+
+def _subagent_input_prompt(interaction: AgentInteractionView) -> str:
+    if interaction.kind == "approval":
+        return "Approve subagent tool? [y]es/[n]o/[m]odify/[a]bort subagent: "
+    return "Answer subagent: "
 
 
 async def _resolve_approval(
