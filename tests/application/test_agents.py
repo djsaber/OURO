@@ -1009,6 +1009,55 @@ async def test_active_child_message_uses_steer_without_new_run(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_send_control_result_is_markdown_without_internal_ids(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/send-format",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect once.",
+            description="Send format",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+    assert handle.child_session_id is not None
+
+    session = store.load_session_record("ses_root")
+    run = store.load_run("ses_root", "run_parent")
+    invocation = ToolInvocation(
+        tool_call_id="send_format",
+        session_id=session.session_id,
+        run_id=run.run_id,
+        tool_name="SendAgentMessage",
+    )
+    result = await service.execute_control(
+        AgentControlRequest(
+            action="send",
+            request_id="send/format",
+            delegation_id=handle.delegation_id,
+            message="Inspect again.",
+            input_mode="follow_up",
+        ),
+        invocation=invocation,
+        session=session,
+        run=run,
+    )
+
+    assert "## Message Sent to Subagent" in result.content
+    assert f"**Delegation ID**: `{handle.delegation_id}`" in result.content
+    assert "proactively push a notification" in result.content
+    assert handle.child_session_id not in result.content
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.current_child_run_id is not None
+    assert relation.current_child_run_id not in result.content
+    assert result.structured["handle"]["child_session_id"] == handle.child_session_id
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) -> None:
     service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(

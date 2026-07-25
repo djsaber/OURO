@@ -41,10 +41,10 @@ This project records user-visible and framework-contract changes in this file.
   delivery policy were removed.
 - The model-facing `ListAgents` polling tool was removed. Subagent results are pushed to the
   parent automatically, while subagent state remains available to Hosts through the retained
-  `AgentService` list/read interfaces for future UI use. `SpawnAgent` tool results and the
-  async completion delivery are now concise Markdown instead of JSON — internal run/session
-  ids stay in the structured payload — and the async dispatch result states that the subagent
-  proactively pushes a notification when it completes.
+  `AgentService` list/read interfaces for future UI use. `SpawnAgent` and `SendAgentMessage`
+  tool results and the async completion delivery are now concise Markdown instead of JSON —
+  internal run/session ids stay in the structured payload — and the async results state that
+  the subagent proactively pushes a notification when it completes.
 - Subagent dispatch no longer has a root active-child quota or a write-capability quota. Every
   validated spawn enters the ordinary RuntimeSupervisor scheduler, whose shared concurrency limit
   and FIFO determine execution; concurrent write failures remain ordinary tool results.

@@ -264,7 +264,7 @@ class AgentService:
                 parent_session_id=session.session_id,
             )
             return AgentControlResult(
-                content=json.dumps(handle.model_dump(mode="json"), ensure_ascii=False),
+                content=_send_agent_message_content(handle),
                 structured={"handle": handle.model_dump(mode="json")},
             )
         assert request.action == "interrupt"
@@ -1884,6 +1884,19 @@ def _subagent_result_content(
         lines.append(f"- **Resources**: {refs}")
     lines.extend(["", "### Final Output", "", final_text or "(no final output)"])
     return "\n".join(lines)
+
+
+def _send_agent_message_content(handle: AgentHandleView) -> str:
+    """Render the model-facing Markdown result of a SendAgentMessage call."""
+
+    return (
+        "## Message Sent to Subagent\n\n"
+        f"- **Agent**: {handle.agent_name} (`{handle.agent_id}`)\n"
+        f"- **Delegation ID**: `{handle.delegation_id}`\n"
+        f"- **Status**: {handle.status}\n\n"
+        "Your message has been delivered to the subagent. It will proactively push "
+        "a notification with its result when it completes; do not poll for its status."
+    )
 
 
 __all__ = ["AgentService", "RunScheduler"]
