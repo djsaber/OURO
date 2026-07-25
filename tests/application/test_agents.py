@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 
@@ -253,6 +254,81 @@ class AsyncFollowUpProvider:
             yield ProviderStreamEvent(type="done")
             return
         yield ProviderStreamEvent(type="text_delta", text="parent received follow-up")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
+def _delegation_id_from(messages) -> str:
+    for message in messages:
+        text = str(getattr(message, "text_content", ""))
+        match = re.search(r"\*\*Delegation ID\*\*: `(dlg_[^`]+)`", text)
+        if match:
+            return match.group(1)
+    raise AssertionError("delegation id missing from parent context")
+
+
+class AsyncSendAfterDeliveryProvider:
+    """Parent messages the just-delivered subagent from the delivery-created Run."""
+
+    provider_id = "async-send-after-delivery"
+
+    def __init__(self) -> None:
+        self.root_round = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt
+        names = [item["name"] for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            yield ProviderStreamEvent(type="text_delta", text="child result")
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "async_spawn",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "reader",
+                        "task": "Inspect.",
+                        "description": "Async inspection",
+                        "execution_mode": "async",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 1:
+            self.root_round += 1
+            yield ProviderStreamEvent(type="text_delta", text="parent initial complete")
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 2:
+            self.root_round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "send_after_delivery",
+                    "name": "SendAgentMessage",
+                    "arguments": {
+                        "delegation_id": _delegation_id_from(messages),
+                        "message": "Follow up on the result.",
+                        "mode": "follow_up",
+                    },
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        self.root_round += 1
+        yield ProviderStreamEvent(type="text_delta", text="parent settled")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -2497,5 +2573,75 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     assert repaired.result.delivery.target_message_id == delivered_messages[0].message_id
     assert len(reconciled.runs) == 2
     assert len(reconciled.messages) == len(snapshot.messages)
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = _tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    definitions.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read bounded evidence.",
+        system_prompt="",
+        tool_selection=ToolSelection(mode="selected", names=("Read",)),
+        tools=tools,
+        expected_revision=0,
+    )
+    provider = AsyncSendAfterDeliveryProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="async", provider_id="async"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.attach_agent_controls(service)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Start async work.")
+    initial = await supervisor.wait(parent_handle)
+    assert initial.status == "completed"
+    root_session_id = parent_handle.session_id
+    async with asyncio.timeout(10):
+        while True:
+            snapshot = store.load_runtime_session(root_session_id)
+            relations = store.list_delegations(root_session_id)
+            if (
+                len(snapshot.runs) == 3
+                and all(run.status == "completed" for run in snapshot.runs)
+                and relations
+                and relations[0].result is not None
+                and relations[0].result.delivery.status == "delivered"
+            ):
+                break
+            await asyncio.sleep(0.01)
+
+    snapshot = store.load_runtime_session(root_session_id)
+    send_results = [
+        message
+        for message in snapshot.messages
+        if message.tool_result is not None
+        and message.tool_result.tool_name == "SendAgentMessage"
+    ]
+    assert len(send_results) == 1
+    assert not send_results[0].tool_result.is_error
+    relation = store.list_delegations(root_session_id)[0]
+    assert relation.child_session_id is not None
+    child_snapshot = store.load_runtime_session(relation.child_session_id)
+    assert len(child_snapshot.runs) == 2
     await service.close()
     await supervisor.shutdown()

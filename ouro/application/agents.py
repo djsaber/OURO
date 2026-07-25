@@ -182,6 +182,7 @@ class AgentService:
         self._tree_subscriptions: set[AgentTreeSubscription] = set()
         self._spawn_locks: dict[str, asyncio.Lock] = {}
         self._result_locks: dict[str, asyncio.Lock] = {}
+        self._inflight_delivery_ids: set[str] = set()
         self._closed = False
 
     def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot:
@@ -399,7 +400,8 @@ class AgentService:
                 self._run_handles.get(relation.delegation_id) or durable.child_session_id,
                 reason=f"Bound parent Run {parent_run_id} terminated",
             )
-            await self._finalize_result_serialized(relation.delegation_id)
+            relation = await self._finalize_result_serialized(relation.delegation_id)
+        await self._deliver_result(relation)
 
     async def spawn_agent(self, request: SpawnAgentRequest) -> AgentHandleView:
         if self._closed:
@@ -691,8 +693,9 @@ class AgentService:
                 raise ValueError("delegation has no child Session")
             handle = self._run_handles.get(delegation_id)
             await self.scheduler.abort(handle or relation.child_session_id, reason=reason)
-            await self._finalize_result_serialized(delegation_id)
-            return self._handle(self._load_by_id(delegation_id))
+            relation = await self._finalize_result_serialized(delegation_id)
+        await self._deliver_result(relation)
+        return self._handle(self._load_by_id(delegation_id))
 
     async def send_agent_message(
         self,
@@ -1110,7 +1113,8 @@ class AgentService:
     async def _finalize_result(self, delegation_id: str) -> DelegationRecord:
         lock = self._result_locks.setdefault(delegation_id, asyncio.Lock())
         async with lock:
-            return await self._finalize_result_serialized(delegation_id)
+            relation = await self._finalize_result_serialized(delegation_id)
+        return await self._deliver_result(relation)
 
     async def _finalize_result_serialized(
         self,
@@ -1118,7 +1122,7 @@ class AgentService:
     ) -> DelegationRecord:
         relation = self._load_by_id(delegation_id)
         if relation.result is not None:
-            return await self._deliver_result_serialized(relation)
+            return relation
         if not self.recovery.relation_is_consistent(relation):
             return relation
         if relation.child_session_id is None or relation.current_child_run_id is None:
@@ -1186,7 +1190,7 @@ class AgentService:
                 or updated.result.child_run_id != run.run_id
             ):
                 raise
-            return await self._deliver_result_serialized(updated)
+            return updated
         await self.events.publish(
             session_id=updated.root_session_id,
             run_id=updated.parent_run_id,
@@ -1199,58 +1203,66 @@ class AgentService:
                 "delivery_id": result.delivery.delivery_id,
             },
         )
-        return await self._deliver_result_serialized(updated)
+        return updated
 
     async def _deliver_result(self, relation: DelegationRecord) -> DelegationRecord:
+        """Deliver one pending result without holding the delegation lock across waits.
+
+        The Run consuming this delivery may re-enter AgentService for the same
+        delegation (SendAgentMessage/InterruptAgent), so the per-delegation lock
+        only guards bounded critical sections. The in-flight marker keeps
+        concurrent watcher/reconcile deliveries exact-once.
+        """
+
         lock = self._result_locks.setdefault(relation.delegation_id, asyncio.Lock())
         async with lock:
-            return await self._deliver_result_serialized(self._load_by_id(relation.delegation_id))
-
-    async def _deliver_result_serialized(
-        self,
-        relation: DelegationRecord,
-    ) -> DelegationRecord:
-        result = relation.result
-        if result is None or result.delivery.status != "pending":
-            return relation
-        policy = result.delivery.policy
-        if policy in {"notify_only", "resume_waiter"}:
-            return relation
-        parent_resource_refs = self._copy_result_resources_to_parent(
-            (relation,),
-            parent_session_id=relation.parent_session_id,
-        )
-        existing_target = self._existing_delivery_target(relation)
-        if existing_target is not None:
-            return await self._record_delivery(relation, **existing_target)
-
-        host_source_id = f"ouro.subagents/results/{result.delivery.delivery_id}"
-        handle = await self.scheduler.route_host_input(
-            HostSessionInput(
-                prompt=self._delivery_prompt(relation),
-                mode="steer",
-                host_source_id=host_source_id,
-                queue_id=result.delivery.delivery_id,
-                resource_refs=parent_resource_refs,
-            ),
-            session_id=relation.parent_session_id,
-        )
-        if handle is None:
-            return await self._record_delivery(
-                self._load_by_id(relation.delegation_id),
-                target_queue_id=result.delivery.delivery_id,
+            relation = self._load_by_id(relation.delegation_id)
+            result = relation.result
+            if result is None or result.delivery.status != "pending":
+                return relation
+            if result.delivery.policy in {"notify_only", "resume_waiter"}:
+                return relation
+            if relation.delegation_id in self._inflight_delivery_ids:
+                return relation
+            parent_resource_refs = self._copy_result_resources_to_parent(
+                (relation,),
+                parent_session_id=relation.parent_session_id,
             )
-        settled = await self.scheduler.wait(handle)
-        delivered = self._load_by_id(relation.delegation_id)
-        existing_target = self._existing_delivery_target(delivered)
-        if existing_target is not None:
-            return await self._record_delivery(delivered, **existing_target)
-        if settled.status == "failed" or settled.run_id is None:
-            return delivered
-        return await self._record_delivery(
-            delivered,
-            target_run_id=settled.run_id,
-        )
+            existing_target = self._existing_delivery_target(relation)
+            if existing_target is not None:
+                return await self._record_delivery(relation, **existing_target)
+            self._inflight_delivery_ids.add(relation.delegation_id)
+        try:
+            handle = await self.scheduler.route_host_input(
+                HostSessionInput(
+                    prompt=self._delivery_prompt(relation),
+                    mode="steer",
+                    host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
+                    queue_id=result.delivery.delivery_id,
+                    resource_refs=parent_resource_refs,
+                ),
+                session_id=relation.parent_session_id,
+            )
+            if handle is None:
+                async with lock:
+                    return await self._record_delivery(
+                        self._load_by_id(relation.delegation_id),
+                        target_queue_id=result.delivery.delivery_id,
+                    )
+            settled = await self.scheduler.wait(handle)
+            async with lock:
+                delivered = self._load_by_id(relation.delegation_id)
+                existing_target = self._existing_delivery_target(delivered)
+                if existing_target is not None:
+                    return await self._record_delivery(delivered, **existing_target)
+                if settled.status == "failed" or settled.run_id is None:
+                    return delivered
+                return await self._record_delivery(
+                    delivered,
+                    target_run_id=settled.run_id,
+                )
+        finally:
+            self._inflight_delivery_ids.discard(relation.delegation_id)
 
     def _delivery_prompt(self, relation: DelegationRecord) -> str:
         assert relation.result is not None

@@ -102,6 +102,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Fix a deadlock where an async subagent result delivery held the per-delegation lock while
+  waiting for the parent Run it had created: when that Run messaged the same subagent, the
+  `SendAgentMessage` call blocked on the same lock and the parent Run never settled, leaving
+  the tool call stuck in running. Result finalization now holds the lock only for bounded
+  critical sections, delivery routing and Run waits happen outside it, and an in-flight
+  guard keeps watcher/reconcile deliveries exactly-once.
 - Isolate incompatible persisted Run and Delegation records during startup recovery so one old
   Session cannot prevent OURO from launching. Runtime execution remains strict, while Session
   removal now resolves and atomically trashes the complete root/subagent tree without deserializing
