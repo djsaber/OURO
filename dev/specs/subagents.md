@@ -524,7 +524,8 @@ DeliveryPolicy 是 application 内部持久化事实，不是模型参数：
 
 - notify_only：Host 直接派遣使用，只更新 Host 投影；
 - next_boundary：async 使用；父 Run active 时以 Host steer 在安全 turn 边界交付，父已 idle 时创建 Host-origin Run；
-- resume_waiter：只用于 sync 原 ToolCall 恢复。
+- resume_waiter：只用于 sync 原 ToolCall 恢复；每个结果的策略在结果固化时按当时状态确定：首个结果沿用派遣时
+  冻结的策略，sync 派遣后续 follow_up Run 的结果在父 Run 未 aborted/failed 时按 next_boundary 交付。
 
 next_boundary 应复用现有 durable queued input：
 

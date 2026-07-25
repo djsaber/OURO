@@ -102,6 +102,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Fixed
 
+- Follow-up Runs of synchronously dispatched subagents now reach the parent context. Each
+  result's delivery policy is chosen at finalization time: the first result keeps the
+  spawn-time contract (a parked synchronous SpawnAgent resumes its ToolCall), while later
+  follow-up results push at the next safe boundary unless the parent Run is aborted/failed.
+  Previously these follow-up results stayed pending forever and never reached the parent.
 - Fix a deadlock where an async subagent result delivery held the per-delegation lock while
   waiting for the parent Run it had created: when that Run messaged the same subagent, the
   `SendAgentMessage` call blocked on the same lock and the parent Run never settled, leaving

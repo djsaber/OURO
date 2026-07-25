@@ -45,6 +45,7 @@ from ouro.core.agents import (
     DelegatedConstraints,
     DelegationRecord,
     DelegationResult,
+    DeliveryPolicy,
     ResultDelivery,
     delivery_policy_for_execution_mode,
 )
@@ -1148,6 +1149,10 @@ class AgentService:
         result_message = next(
             (item for item in reversed(messages) if item.role == "assistant"), None
         )
+        policy = self._result_delivery_policy(
+            relation,
+            is_first_result=len(snapshot.runs) == 1,
+        )
         result = DelegationResult(
             child_session_id=relation.child_session_id,
             child_run_id=run.run_id,
@@ -1166,8 +1171,8 @@ class AgentService:
             ),
             usage=dict(run.usage),
             delivery=ResultDelivery(
-                policy=relation.delivery_policy,
-                status=("skipped" if relation.delivery_policy == "notify_only" else "pending"),
+                policy=policy,
+                status=("skipped" if policy == "notify_only" else "pending"),
             ),
         )
         try:
@@ -1204,6 +1209,27 @@ class AgentService:
             },
         )
         return updated
+
+    def _result_delivery_policy(
+        self,
+        relation: DelegationRecord,
+        *,
+        is_first_result: bool,
+    ) -> DeliveryPolicy:
+        """Choose one result's delivery policy from the state at finalization time.
+
+        The first result keeps the spawn-time contract: a synchronous SpawnAgent
+        resolves its parked ToolCall. Results from later follow-up Runs have no
+        waiter, so they push to the parent at the next safe boundary unless the
+        parent Run is already aborted/failed.
+        """
+
+        if relation.delivery_policy != "resume_waiter" or is_first_result:
+            return relation.delivery_policy
+        parent_run = self.store.load_run(relation.parent_session_id, relation.parent_run_id)
+        if parent_run.status in {"aborted", "failed"}:
+            return "resume_waiter"
+        return "next_boundary"
 
     async def _deliver_result(self, relation: DelegationRecord) -> DelegationRecord:
         """Deliver one pending result without holding the delegation lock across waits.

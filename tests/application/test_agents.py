@@ -1134,6 +1134,92 @@ async def test_send_control_result_is_markdown_without_internal_ids(tmp_path) ->
 
 
 @pytest.mark.asyncio
+async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/sync-follow-up",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="sync_spawn_call",
+            agent_id="reader",
+            task="Inspect once.",
+            description="Sync follow-up delivery",
+            execution_mode="sync",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.result is not None
+    assert relation.result.delivery.policy == "resume_waiter"
+    assert relation.result.delivery.status == "pending"
+
+    await service.send_agent_message(
+        handle.delegation_id,
+        "Inspect again.",
+        request_id="host/sync-follow-up-1",
+        mode="follow_up",
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.result is not None
+    assert relation.result.delivery.policy == "next_boundary"
+    assert relation.result.delivery.status == "delivered"
+    delivered = [
+        message
+        for message in store.load_runtime_session("ses_root").messages
+        if message.metadata.get("host_source_id")
+        == f"ouro.subagents/results/{relation.result.delivery.delivery_id}"
+    ]
+    assert len(delivered) == 1
+    assert delivered[0].role == "system_synthetic"
+    assert "## Subagent Result" in delivered[0].text_content
+    assert "child complete" in delivered[0].text_content
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_sync_follow_up_result_stays_pending_after_parent_abort(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/sync-abort-follow-up",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            parent_tool_call_id="sync_spawn_call",
+            agent_id="reader",
+            task="Inspect once.",
+            description="Sync abort follow-up",
+            execution_mode="sync",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+    parent = store.load_run("ses_root", "run_parent")
+    store.save_run(parent.model_copy(update={"status": "aborted"}))
+
+    await service.send_agent_message(
+        handle.delegation_id,
+        "Inspect again.",
+        request_id="host/sync-abort-follow-up-1",
+        mode="follow_up",
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.result is not None
+    assert relation.result.delivery.policy == "resume_waiter"
+    assert relation.result.delivery.status == "pending"
+    assert not any(
+        message.role == "system_synthetic"
+        for message in store.load_runtime_session("ses_root").messages
+    )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) -> None:
     service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
