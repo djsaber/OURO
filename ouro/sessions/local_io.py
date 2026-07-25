@@ -10,8 +10,8 @@ from time import sleep
 from ouro.core.base import OuroModel
 from ouro.core.errors import PersistenceError
 
-_WINDOWS_REPLACE_RETRY_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
-_WINDOWS_TRANSIENT_REPLACE_ERRORS = frozenset({5, 32})
+_WINDOWS_TRANSIENT_IO_DELAYS = (0.01, 0.02, 0.04, 0.08, 0.16, 0.32)
+_WINDOWS_TRANSIENT_SHARING_ERRORS = frozenset({5, 32})
 
 
 def write_model_atomic(path: Path, model: OuroModel) -> None:
@@ -46,18 +46,37 @@ def write_text_atomic(path: Path, text: str) -> None:
                 temp_path.unlink()
 
 
+def read_text_atomic(path: Path) -> str:
+    """Read one atomically replaced UTF-8 file, tolerating bounded Windows sharing races."""
+
+    for delay in (*_WINDOWS_TRANSIENT_IO_DELAYS, None):
+        try:
+            return path.read_text("utf-8")
+        except OSError as exc:
+            if delay is None or not _is_transient_windows_sharing_error(exc):
+                raise
+            sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def _replace_with_retry(source: Path, target: Path) -> None:
     """Atomically replace ``target``, tolerating bounded Windows sharing races."""
 
-    for delay in (*_WINDOWS_REPLACE_RETRY_DELAYS, None):
+    for delay in (*_WINDOWS_TRANSIENT_IO_DELAYS, None):
         try:
             source.replace(target)
             return
         except OSError as exc:
-            if delay is None or not _is_transient_windows_replace_error(exc):
+            if delay is None or not _is_transient_windows_sharing_error(exc):
                 raise
             sleep(delay)
 
 
-def _is_transient_windows_replace_error(exc: OSError) -> bool:
-    return getattr(exc, "winerror", None) in _WINDOWS_TRANSIENT_REPLACE_ERRORS
+def _is_transient_windows_sharing_error(exc: OSError) -> bool:
+    # Delete-pending/sharing races surface either as Win32 codes (5/32) or as a
+    # CRT-mapped PermissionError without a winerror (errno 13); both are transient
+    # around an atomic replace and settle within the bounded retry window.
+    winerror = getattr(exc, "winerror", None)
+    if winerror is not None:
+        return winerror in _WINDOWS_TRANSIENT_SHARING_ERRORS
+    return isinstance(exc, PermissionError)

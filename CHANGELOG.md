@@ -108,6 +108,10 @@ This project records user-visible and framework-contract changes in this file.
   the tool call stuck in running. Result finalization now holds the lock only for bounded
   critical sections, delivery routing and Run waits happen outside it, and an in-flight
   guard keeps watcher/reconcile deliveries exactly-once.
+- Harden the local store read path against Windows sharing races: reads of atomically
+  replaced session, run, delegation, and resource JSON now retry transient
+  `PermissionError`/sharing-violation failures within a bounded window, mirroring the
+  existing write-side replace tolerance.
 - Isolate incompatible persisted Run and Delegation records during startup recovery so one old
   Session cannot prevent OURO from launching. Runtime execution remains strict, while Session
   removal now resolves and atomically trashes the complete root/subagent tree without deserializing

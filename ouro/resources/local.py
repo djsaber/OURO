@@ -24,7 +24,7 @@ from ouro.core.resources import (
     ResourceRecord,
     ResourceSource,
 )
-from ouro.sessions.local_io import write_json_atomic, write_model_atomic
+from ouro.sessions.local_io import read_text_atomic, write_json_atomic, write_model_atomic
 from ouro.sessions.locks import SessionRunLock
 
 _RESOURCE_ID = re.compile(r"res_[0-9a-f]{64}\Z")
@@ -96,7 +96,7 @@ class LocalResourceStore:
         resource_id = _validated_resource_id(resource_id)
         path = self.records_dir / f"{resource_id}.json"
         try:
-            record = ResourceRecord.model_validate_json(path.read_text("utf-8"))
+            record = ResourceRecord.model_validate_json(read_text_atomic(path))
         except FileNotFoundError as exc:
             raise ResourceNotFoundError(f"resource not found: {resource_id}") from exc
         except (OSError, ValidationError, ValueError) as exc:
@@ -288,7 +288,7 @@ class LocalResourceStore:
         records: list[ResourceRecord] = []
         for path in sorted(self.records_dir.glob("res_*.json")):
             try:
-                records.append(ResourceRecord.model_validate_json(path.read_text("utf-8")))
+                records.append(ResourceRecord.model_validate_json(read_text_atomic(path)))
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(f"could not scan resource record {path}: {exc}") from exc
         return records

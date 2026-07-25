@@ -29,7 +29,7 @@ from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
-from ouro.sessions.local_io import write_json_atomic, write_model_atomic
+from ouro.sessions.local_io import read_text_atomic, write_json_atomic, write_model_atomic
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 
 _STREAM_DELTA_EVENT_TYPES = {
@@ -96,7 +96,7 @@ class LocalSessionStore:
         with self.session_mutation(root_session_id):
             path = self._delegation_path(root_session_id, delegation_id)
             try:
-                return DelegationRecord.model_validate_json(path.read_text("utf-8"))
+                return DelegationRecord.model_validate_json(read_text_atomic(path))
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -341,7 +341,7 @@ class LocalSessionStore:
             if not path.exists():
                 return None
             try:
-                return ContextSnapshotRecord.model_validate_json(path.read_text("utf-8"))
+                return ContextSnapshotRecord.model_validate_json(read_text_atomic(path))
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load latest context for session {session_id}: {exc}"
@@ -402,7 +402,7 @@ class LocalSessionStore:
         session_dir = self._require_session_dir(session_id)
         try:
             runs = [
-                RunRecord.model_validate_json(path.read_text("utf-8"))
+                RunRecord.model_validate_json(read_text_atomic(path))
                 for path in sorted((session_dir / "runs").glob("*.json"))
             ]
         except (OSError, ValidationError, ValueError) as exc:
@@ -466,7 +466,7 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             path = self._session_dir(session_id) / "session.json"
             try:
-                return SessionRecord.model_validate_json(path.read_text("utf-8"))
+                return SessionRecord.model_validate_json(read_text_atomic(path))
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -540,7 +540,7 @@ class LocalSessionStore:
             validated_run_id = _validated_record_id(run_id, kind="run")
             path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
             try:
-                return RunRecord.model_validate_json(path.read_text("utf-8"))
+                return RunRecord.model_validate_json(read_text_atomic(path))
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -552,7 +552,7 @@ class LocalSessionStore:
         records: list[SessionRecord] = []
         for session_json in sorted(self.sessions_dir.glob("*/session.json")):
             try:
-                records.append(SessionRecord.model_validate_json(session_json.read_text("utf-8")))
+                records.append(SessionRecord.model_validate_json(read_text_atomic(session_json)))
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load session record {session_json}: {exc}"
@@ -562,7 +562,7 @@ class LocalSessionStore:
     def load_resource_references(self, session_id: str) -> list[SessionResourceReference]:
         path = self._resource_reference_path(session_id)
         try:
-            return SessionResourceReferences.model_validate_json(path.read_text("utf-8")).resources
+            return SessionResourceReferences.model_validate_json(read_text_atomic(path)).resources
         except FileNotFoundError:
             raise
         except (OSError, ValidationError, ValueError) as exc:
@@ -603,7 +603,7 @@ class LocalSessionStore:
         for path in self.sessions_dir.glob("*/resources/index.json"):
             try:
                 references = SessionResourceReferences.model_validate_json(
-                    path.read_text("utf-8")
+                    read_text_atomic(path)
                 ).resources
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
@@ -669,7 +669,7 @@ class LocalSessionStore:
     @staticmethod
     def _load_delegation_path(path: Path) -> DelegationRecord:
         try:
-            return DelegationRecord.model_validate_json(path.read_text("utf-8"))
+            return DelegationRecord.model_validate_json(read_text_atomic(path))
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load delegation {path}: {exc}") from exc
 
@@ -688,7 +688,7 @@ class LocalSessionStore:
             self._write_model_atomic(self._layout_path, DataLayoutManifest())
             return
         try:
-            manifest = DataLayoutManifest.model_validate_json(self._layout_path.read_text("utf-8"))
+            manifest = DataLayoutManifest.model_validate_json(read_text_atomic(self._layout_path))
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(
                 f"could not load data layout manifest {self._layout_path}: {exc}"
@@ -722,7 +722,7 @@ class LocalSessionStore:
         staged_sessions: Path,
     ) -> None:
         try:
-            raw = json.loads(manifest_path.read_text("utf-8"))
+            raw = json.loads(read_text_atomic(manifest_path))
             session_ids = raw["session_ids"]
             if not isinstance(session_ids, list) or not session_ids:
                 raise ValueError("trash tree manifest has no session ids")

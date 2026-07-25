@@ -1208,7 +1208,7 @@ async def test_interactive_resolves_concurrent_async_subagent_questions_once(
         assert resolved_answers == [f"answer-{key}"]
     assert sum("Question A?" in output for output in outputs) == 1
     assert sum("Question B?" in output for output in outputs) == 1
-    assert not any(output.startswith("Error:") for output in outputs)
+    assert not any(output.startswith("Error:") for output in outputs), "\n".join(outputs)
     assert not any(output.startswith("● AskUser ·") for output in outputs)
 
 
