@@ -441,7 +441,7 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    wait = AgentWaitRequest(delegation_ids=("dlg_missing",))
+    wait = AgentWaitRequest(delegation_id="dlg_missing")
     batch = ToolCallBatchRecord(
         turn_id="turn_parent",
         assistant_message_id="msg_parent",

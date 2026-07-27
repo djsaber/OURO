@@ -102,6 +102,15 @@ class LocalSessionStore:
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(f"could not load delegation {delegation_id}: {exc}") from exc
 
+    def load_delegation_by_id(self, delegation_id: str) -> DelegationRecord:
+        validated = _validated_record_id(delegation_id, kind="delegation")
+        paths = list(self.sessions_dir.glob(f"*/delegations/{validated}.json"))
+        if not paths:
+            raise FileNotFoundError(delegation_id)
+        if len(paths) != 1:
+            raise PersistenceError(f"delegation identity is not globally unique: {delegation_id}")
+        return self._load_delegation_path(paths[0])
+
     def save_delegation(
         self,
         delegation: DelegationRecord,
@@ -727,8 +736,7 @@ class LocalSessionStore:
             if not isinstance(session_ids, list) or not session_ids:
                 raise ValueError("trash tree manifest has no session ids")
             normalized = tuple(
-                _validated_record_id(str(session_id), kind="session")
-                for session_id in session_ids
+                _validated_record_id(str(session_id), kind="session") for session_id in session_ids
             )
             for session_id in normalized:
                 staged = staged_sessions / session_id

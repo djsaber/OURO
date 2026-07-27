@@ -367,12 +367,13 @@ SpawnAgent(sync) 在 application 层产生类型化 AgentWaitRequest，并把请
 ToolBatchCall 上，至少包含：
 
 - wait_id；
-- delegation ids；
-- completion_condition：all 或 any；
-- timeout/deadline；
+- delegation_id；
 - state：pending 或 resolved；
-- resolved delegation ids；
+- resolved delegation id；
 - resolution reason 和 resolved_at。
+
+一个同步 SpawnAgent ToolCall 只创建并等待一个 Delegation。Host 批量等待是独立的查询便利接口，不扩张 durable
+ToolCall 协议；在出现真实的多子任务 join 产品语义前，不预留 all/any、集合或 deadline 状态。
 
 ToolBatchCall 已经携带 tool call、batch 和 turn identity，不得在 Run 上再建立一份重复这些 identity 的
 AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run，不创建假的用户 Run。
@@ -436,10 +437,12 @@ spawn 不是跨多个 Session 文件的单一原子写，因此采用 durable、
 1. 从 parent Run 的 AgentCatalogSnapshot 按 agent_id 解析 definition，并校验 parent Session/Run、depth、预算、
    compatibility、显式 resource refs 和权限。
 2. 使用 parent_tool_call_id 或 Host request_id 生成/查找稳定 idempotency key。
-3. 创建 spawn_state=requested 的 DelegationRecord。
-4. 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session。
-5. 将 child_session_id 写回 Delegation，并推进 spawn_state=child_created。
-6. 创建 child queued Run，并写 current_child_run_id。
+3. 创建 spawn_state=requested 的 DelegationRecord，并在第一次写入前预留稳定的 child_session_id 与
+   current_child_run_id。
+4. 按预留 identity 创建带 session_kind=subagent、root/parent/delegation identity 的 child Session；重试时若已存在，
+   校验其 backlink、策略与 workspace，而不是另建 child。
+5. 推进 spawn_state=child_created。
+6. 按预留 identity 创建 child queued Run；重试时复用并修复 Session projection，不创建第二个 Run。
 7. 通过 RuntimeSupervisor 提交已存在 child Session 的 Run，并传递 `DelegatedTaskInput` attribution。
 8. 推进 spawn_state=submitted 并发布 agent_spawned；queued/running 从 child Run 投影。
 
@@ -505,8 +508,8 @@ sync 是以下组合：
 即使 max_concurrency=1，该流程也不得死锁。waiting child 不计入 active execution permits，但仍计入 active Run 和
 root budget。
 
-底层 AgentWaitRequest 继续保留可持久化的集合与完成条件，以支持恢复和未来 application 编排；当前每个模型侧
-SpawnAgent(sync) 只等待自己创建的一个 delegation。Host 的 `wait_agents()` 可等待多个 handle，但不暴露为模型工具。
+底层 AgentWaitRequest 精确表达当前产品语义：一个同步 SpawnAgent 只等待自己创建的一个 delegation。Host 的
+`wait_agents()` 可等待多个 handle，但它不是模型工具，也不进入 ToolCall 的 durable join 协议。
 
 ## Async 执行与结果联动
 
@@ -518,7 +521,8 @@ child terminal 时：
 2. 发布 agent_result_ready。
 3. 立即更新 AgentTreeSnapshot。
 4. 以 next_boundary 策略自动进入父上下文。
-5. canonical message/queue 已提交后，将 delivery 标为 delivered。
+5. Host input queue 已持久接收并返回稳定 `HostInputReceipt` 后，将 delivery 标为 delivered；父模型何时消费该 queue
+   item 是后续独立调度，不阻塞结果交付事务。
 
 DeliveryPolicy 是 application 内部持久化事实，不是模型参数：
 
@@ -533,6 +537,9 @@ next_boundary 应复用现有 durable queued input：
 - host_source_id=ouro.subagents/<delegation_id>；
 - role=system_synthetic；
 - queue id 与 delivery_id 稳定关联；
+
+`submit_host_input` 只负责持久接收并返回 receipt，`consume_host_input` 才把已接收项推进普通 Run 路径。异步 child
+结果不得等待整个父 Run 完成后才确认 delivery，也不得用进程内 future 代替 queue identity 的去重与恢复。
 - 内容包含 child/delegation/run provenance；
 - 不携带未经父 Session 验证的用户 resource refs。
 

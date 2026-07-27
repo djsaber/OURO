@@ -262,7 +262,7 @@ def _approval_mode_command(
 ) -> CommandResult:
     if not value:
         mode = (
-            runtime.store.load_session_record(session_id).approval_mode
+            runtime.sessions.open(session_id, recover=False).session.approval_mode
             if session_id is not None
             else current_mode
         )
@@ -290,7 +290,7 @@ def _afk_command(
     value: str,
 ) -> CommandResult:
     if session_id is not None:
-        session = runtime.store.load_session_record(session_id)
+        session = runtime.sessions.open(session_id, recover=False).session
         approval_mode = session.approval_mode
         interaction_mode = session.interaction_mode
     enabled = approval_mode == "auto" and interaction_mode == "unattended"

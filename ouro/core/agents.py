@@ -22,15 +22,12 @@ SpawnState = Literal["requested", "child_created", "submitted", "failed"]
 ControlState = Literal["open", "closed"]
 DeliveryPolicy = Literal["notify_only", "next_boundary", "resume_waiter"]
 DeliveryStatus = Literal["pending", "delivered", "skipped", "failed"]
-WaitCompletionCondition = Literal["all", "any"]
 WaitState = Literal["pending", "resolved"]
-AgentControlAction = Literal["spawn", "list", "send", "interrupt"]
+AgentControlAction = Literal["spawn", "send", "interrupt"]
 AgentControlStatus = Literal["completed", "waiting_child"]
 
 _AGENT_ID = re.compile(r"[a-z][a-z0-9_.-]{0,63}\Z")
-AGENT_CONTROL_TOOL_NAMES = frozenset(
-    {"SpawnAgent", "ListAgents", "SendAgentMessage", "InterruptAgent"}
-)
+AGENT_CONTROL_TOOL_NAMES = frozenset({"SpawnAgent", "SendAgentMessage", "InterruptAgent"})
 
 
 def delivery_policy_for_execution_mode(execution_mode: ExecutionMode) -> DeliveryPolicy:
@@ -341,25 +338,32 @@ class AgentHandle(OuroModel):
 
 
 class AgentWaitResolution(OuroModel):
-    resolved_delegation_ids: tuple[str, ...] = ()
-    reason: Literal["condition_met", "timeout", "interrupted"]
+    resolved_delegation_id: str | None = None
+    reason: Literal["condition_met", "interrupted"]
     resolved_at: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_resolution(self) -> Self:
+        if self.reason == "condition_met" and self.resolved_delegation_id is None:
+            raise ValueError("completed Agent wait requires a resolved delegation")
+        return self
 
 
 class AgentWaitRequest(OuroModel):
     wait_id: str = Field(default_factory=lambda: new_id("wait"))
-    delegation_ids: tuple[str, ...] = Field(min_length=1, max_length=32)
-    completion_condition: WaitCompletionCondition = "all"
-    deadline: datetime | None = None
+    delegation_id: str = Field(min_length=1, max_length=128)
     state: WaitState = "pending"
     resolution: AgentWaitResolution | None = None
 
     @model_validator(mode="after")
     def validate_wait(self) -> Self:
-        if len(set(self.delegation_ids)) != len(self.delegation_ids):
-            raise ValueError("delegation ids in a wait request must be unique")
         if (self.state == "resolved") is not (self.resolution is not None):
             raise ValueError("resolved wait state and resolution must agree")
+        if self.resolution is not None and self.resolution.resolved_delegation_id not in {
+            None,
+            self.delegation_id,
+        }:
+            raise ValueError("Agent wait resolution must reference its requested delegation")
         return self
 
 

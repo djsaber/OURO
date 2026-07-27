@@ -56,6 +56,7 @@ from ouro.application.session_models import (
 from ouro.application.sessions import SessionService, SessionTitleGenerator
 from ouro.application.supervisor import RuntimeSubscription, RuntimeSupervisor
 from ouro.application.supervisor_models import (
+    HostInputReceipt,
     RunHandle,
     RuntimeActivity,
     RuntimeActivitySnapshot,
@@ -93,6 +94,7 @@ __all__ = [
     "ApplicationStartupReport",
     "ConfigurationFacade",
     "ConfigurationOverview",
+    "HostInputReceipt",
     "MCPConfigCatalogView",
     "MCPConnectionCheckView",
     "MCPServerConfigView",

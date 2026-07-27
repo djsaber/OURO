@@ -85,6 +85,11 @@ class AgentControlExecutor(Protocol):
         wait: AgentWaitRequest,
     ) -> None: ...
 
+    async def settle_terminal_run(self, run: RunRecord) -> None:
+        """Settle subagent lifecycle work caused by a durable Run terminal state."""
+
+        ...
+
 
 def _optional_text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
@@ -604,10 +609,7 @@ class ToolCallCoordinator:
                             "turn_id": batch.turn_id,
                             "tool_call_id": completed_call.request.id,
                             "wait_id": completed_call.agent_wait.wait_id,
-                            "delegation_ids": list(completed_call.agent_wait.delegation_ids),
-                            "completion_condition": (
-                                completed_call.agent_wait.completion_condition
-                            ),
+                            "delegation_id": completed_call.agent_wait.delegation_id,
                         },
                     )
                 elif completed_call is not None and completed_call.result is not None:

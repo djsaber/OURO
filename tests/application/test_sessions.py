@@ -50,6 +50,27 @@ def test_session_create_and_rename_persist_explicit_identity_and_title_state(tmp
     assert reloaded.title_locked == renamed.session.title_locked
 
 
+def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Run result").session
+    run = RunRecord(session_id=session.session_id, status="completed")
+    store.save_run(run)
+    store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            run_id=run.run_id,
+            role="assistant",
+            text="done",
+            sequence=1,
+        )
+    )
+
+    result = sessions.run_result(session.session_id, run.run_id)
+
+    assert result.run == run
+    assert result.final_text == "done"
+
+
 def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Context digest").session
@@ -593,10 +614,7 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
     )
     if backend == "files":
         relation_path = (
-            store.sessions_dir
-            / root.session_id
-            / "delegations"
-            / f"{relation.delegation_id}.json"
+            store.sessions_dir / root.session_id / "delegations" / f"{relation.delegation_id}.json"
         )
         relation_path.write_text(json.dumps(payload), encoding="utf-8")
     else:

@@ -86,13 +86,10 @@ async def test_waiting_child_follower_ignores_running_continuation_state() -> No
                 waiting.model_copy(update={"status": "completed"}),
             )
 
-        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
+        def run_result(self, session_id: str, run_id: str) -> RunResult:
             assert session_id == session.session_id
-            return SimpleNamespace(
-                session=session,
-                runs=(self.runs[self.index],),
-                messages=(),
-            )
+            assert run_id == waiting.run_id
+            return RunResult(session=session, run=self.runs[self.index])
 
     store = SequencedStore()
 
@@ -122,7 +119,7 @@ async def test_waiting_child_follower_ignores_running_continuation_state() -> No
 
     output = InteractiveOutput(lambda _text: None)
     coordinator = _coordinator(
-        runtime=SimpleNamespace(store=store),
+        runtime=SimpleNamespace(sessions=store),
         output=output,
         agents=AgentHost(),
     )
@@ -152,12 +149,10 @@ async def test_follower_resolves_pending_subagent_while_parent_still_waiting() -
                 waiting.model_copy(update={"status": "completed"}),
             )
 
-        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
-            return SimpleNamespace(
-                session=session,
-                runs=(self.runs[self.index],),
-                messages=(),
-            )
+        def run_result(self, session_id: str, run_id: str) -> RunResult:
+            assert session_id == session.session_id
+            assert run_id == waiting.run_id
+            return RunResult(session=session, run=self.runs[self.index])
 
     store = SequencedStore()
     interaction = _subagent_interaction()
@@ -172,9 +167,7 @@ async def test_follower_resolves_pending_subagent_while_parent_still_waiting() -
         def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
             return Subscription()
 
-        def list_agent_interactions(
-            self, root_session_id: str
-        ) -> tuple[AgentInteractionView, ...]:
+        def list_agent_interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:
             return (interaction,) if store.index == 0 else ()
 
         async def resolve_agent_approval(self, delegation_id: str, *, approved: bool, **_: object):
@@ -186,7 +179,7 @@ async def test_follower_resolves_pending_subagent_while_parent_still_waiting() -
     host = AgentHost()
     output = InteractiveOutput(outputs.append)
     coordinator = _coordinator(
-        runtime=SimpleNamespace(store=store),
+        runtime=SimpleNamespace(sessions=store),
         output=output,
         agents=host,
         input_func=lambda _prompt: "y",
@@ -792,12 +785,13 @@ async def test_parallel_subagent_interactions_resolve_without_prompt_corruption(
             # Parent stays waiting_child until both children resolve, then completes.
             self.completed = False
 
-        def load_runtime_session(self, session_id: str) -> SimpleNamespace:
+        def run_result(self, session_id: str, run_id: str) -> RunResult:
+            assert session_id == session.session_id
+            assert run_id == waiting.run_id
             status = "completed" if self.completed else "waiting_child"
-            return SimpleNamespace(
+            return RunResult(
                 session=session,
-                runs=(waiting.model_copy(update={"status": status}),),
-                messages=(),
+                run=waiting.model_copy(update={"status": status}),
             )
 
     store = SequencedStore()
@@ -827,9 +821,7 @@ async def test_parallel_subagent_interactions_resolve_without_prompt_corruption(
         def subscribe_agent_tree(self, root_session_id: str) -> Subscription:
             return Subscription()
 
-        def list_agent_interactions(
-            self, root_session_id: str
-        ) -> tuple[AgentInteractionView, ...]:
+        def list_agent_interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:
             pending: list[AgentInteractionView] = []
             if "dlg_q" not in self.answered:
                 pending.append(question)
@@ -856,7 +848,7 @@ async def test_parallel_subagent_interactions_resolve_without_prompt_corruption(
     )
     answers = iter(["python", "y"])
     coordinator = _coordinator(
-        runtime=SimpleNamespace(store=store),
+        runtime=SimpleNamespace(sessions=store),
         output=output,
         agents=host,
         input_func=lambda _prompt: next(answers),

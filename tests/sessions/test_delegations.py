@@ -56,6 +56,7 @@ def test_delegation_repository_round_trip_and_revision(
 
     assert delegation_store.create_delegation(record) == record
     assert delegation_store.load_delegation(root.session_id, record.delegation_id) == record
+    assert delegation_store.load_delegation_by_id(record.delegation_id) == record
     assert (
         delegation_store.find_delegation_by_idempotency_key(root.session_id, record.idempotency_key)
         == record

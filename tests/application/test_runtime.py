@@ -566,6 +566,7 @@ async def test_runtime_pauses_at_configured_soft_round_budget(tmp_path) -> None:
     snapshot = store.load_session(result.session.session_id)
 
     assert result.run.status == "paused"
+    assert result.run.model_round_count == 1
     assert result.session.status == "idle"
     assert result.run.metadata["pause"]["reason"] == "model_rounds"
     assert store.read_catalog().sessions[0].status == "paused"
@@ -1442,6 +1443,7 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
     assert snapshot.messages[2].tool_result.tool_call_id == "call_1"
     assert snapshot.messages[2].text_content == "1\timportant notes"
     assert [event.event_type for event in snapshot.events].count("model_request_started") == 2
+    assert result.run.model_round_count == 2
 
 
 @pytest.mark.asyncio
@@ -1816,7 +1818,8 @@ async def test_stream_deltas_do_not_rewrite_session_or_run_snapshots(
     assert result.run.status == "completed"
     assert result.final_text == "".join(f"t{index}" for index in range(30))
     assert session_writes == 4
-    assert run_writes == 2
+    # Run creation, one durable model-round boundary, and terminal commit.
+    assert run_writes == 3
     assert aggregate_loads <= 10
 
 

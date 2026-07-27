@@ -138,12 +138,10 @@ async def _run_interactive_session(
                 try:
                     result = plugin_run_task.result()
                     session_id = await coordinator.resolve_run(result)
-                    current_approval_mode = runtime.store.load_session_record(
-                        session_id
-                    ).approval_mode
-                    current_interaction_mode = runtime.store.load_session_record(
-                        session_id
-                    ).interaction_mode
+                    current_approval_mode, current_interaction_mode = _session_policies(
+                        runtime,
+                        session_id,
+                    )
                 except OuroError as exc:
                     output_func(f"Error: {exc}")
                 plugin_run_task = None
@@ -170,12 +168,10 @@ async def _run_interactive_session(
                         result,
                         prefetched_line=raw_line if consumes_line else None,
                     )
-                    current_approval_mode = runtime.store.load_session_record(
-                        session_id
-                    ).approval_mode
-                    current_interaction_mode = runtime.store.load_session_record(
-                        session_id
-                    ).interaction_mode
+                    current_approval_mode, current_interaction_mode = _session_policies(
+                        runtime,
+                        session_id,
+                    )
                     plugin_run_task = None
                     if consumes_line:
                         continue
@@ -266,10 +262,10 @@ async def _run_interactive_session(
                 ):
                     continue
                 session_id = await coordinator.resolve_run(result)
-                current_approval_mode = runtime.store.load_session_record(session_id).approval_mode
-                current_interaction_mode = runtime.store.load_session_record(
-                    session_id
-                ).interaction_mode
+                current_approval_mode, current_interaction_mode = _session_policies(
+                    runtime,
+                    session_id,
+                )
             except OuroError as exc:
                 await output.close()
                 output_func(f"Error: {exc}")
@@ -324,8 +320,15 @@ def _interaction_root_session_id(
 ) -> str | None:
     if session_id is None:
         return None
-    session = runtime.store.load_session_record(session_id)
-    return session.root_session_id or session.session_id
+    return runtime.sessions.open(session_id, recover=False).session.root_session_id
+
+
+def _session_policies(
+    runtime: RuntimeService,
+    session_id: str,
+) -> tuple[SessionApprovalMode, SessionInteractionMode]:
+    session = runtime.sessions.open(session_id, recover=False).session
+    return session.approval_mode, session.interaction_mode
 
 
 def _primary_session_event_sink(
@@ -339,7 +342,7 @@ def _primary_session_event_sink(
     async def handle_event(event: EventRecord) -> None:
         visible = visible_sessions.get(event.session_id)
         if visible is None:
-            session = runtime.store.load_session_record(event.session_id)
+            session = runtime.sessions.open(event.session_id, recover=False).session
             visible = session.session_kind == "primary"
             visible_sessions[event.session_id] = visible
         if visible:

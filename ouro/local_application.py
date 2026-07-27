@@ -166,7 +166,6 @@ class LocalApplication:
             max_depth=configured_agents.runtime.max_depth,
         )
         runtime.attach_agent_controls(agents)
-        runtime.add_event_sink(agents.on_runtime_event)
         return cls(
             runtime,
             build_local_mcp_runtime(runtime, home=home),

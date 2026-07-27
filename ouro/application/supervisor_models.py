@@ -56,6 +56,14 @@ class RunHandle(ApplicationDTO):
     submitted_at: datetime = Field(default_factory=utc_now)
 
 
+class HostInputReceipt(ApplicationDTO):
+    """Durable acceptance identity for one Host-owned Session input."""
+
+    session_id: str
+    queue_id: str
+    accepted_at: datetime = Field(default_factory=utc_now)
+
+
 class RuntimeStatusSnapshot(ApplicationDTO):
     handle: RunHandle | None = None
     session_id: str

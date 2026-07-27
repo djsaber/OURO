@@ -9,6 +9,7 @@ from ouro.core.agents import (
     AgentDefinition,
     AgentSpawnPolicy,
     AgentWaitRequest,
+    AgentWaitResolution,
     DelegationRecord,
     EffectiveToolRef,
     ToolSelection,
@@ -128,9 +129,19 @@ def test_delegation_spawn_phases_validate_child_identity() -> None:
         )
 
 
-def test_agent_wait_request_requires_unique_delegations() -> None:
-    with pytest.raises(ValidationError, match="unique"):
-        AgentWaitRequest(delegation_ids=("dlg_one", "dlg_one"))
+def test_agent_wait_request_targets_one_delegation() -> None:
+    wait = AgentWaitRequest(delegation_id="dlg_one")
+
+    assert wait.delegation_id == "dlg_one"
+    with pytest.raises(ValidationError, match="requested delegation"):
+        AgentWaitRequest(
+            delegation_id="dlg_one",
+            state="resolved",
+            resolution=AgentWaitResolution(
+                resolved_delegation_id="dlg_other",
+                reason="condition_met",
+            ),
+        )
 
 
 def test_delegated_budget_intersection_cannot_expand_parent_limit() -> None:

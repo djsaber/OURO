@@ -83,6 +83,7 @@ class SessionCatalogEntry(ApplicationDTO):
 
 class SessionView(ApplicationDTO):
     session_id: str
+    session_kind: Literal["primary", "subagent"] = "primary"
     root_session_id: str
     parent_session_id: str | None = None
     forked_from_message_id: str | None = None
@@ -112,6 +113,7 @@ class SessionView(ApplicationDTO):
     def from_record(cls, session: SessionRecord) -> SessionView:
         return cls(
             session_id=session.session_id,
+            session_kind=session.session_kind,
             root_session_id=session.root_session_id or session.session_id,
             parent_session_id=session.parent_session_id,
             forked_from_message_id=session.forked_from_message_id,

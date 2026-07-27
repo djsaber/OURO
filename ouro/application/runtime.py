@@ -42,6 +42,7 @@ from ouro.application.session_models import (
 )
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
+from ouro.application.supervisor_models import HostInputReceipt
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.application.usage import UsageService
 from ouro.config.compaction import CompactionConfig
@@ -62,7 +63,13 @@ from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.context_snapshots import context_view_digest
 from ouro.core.continuations import RunContinuationRegistry
-from ouro.core.errors import CompactionError, ConfigError, ResourceAttachmentError, SessionBusyError
+from ouro.core.errors import (
+    CompactionError,
+    ConfigError,
+    PersistenceError,
+    ResourceAttachmentError,
+    SessionBusyError,
+)
 from ouro.core.events import EventRecord
 from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import (
@@ -747,7 +754,7 @@ class RuntimeService:
                     approval_mode=approval_mode,
                     interaction_mode=interaction_mode,
                 )
-                queued_session, queued_events = await self._queue_input(
+                queued_session, _, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
@@ -815,7 +822,7 @@ class RuntimeService:
                     approval_mode=approval_mode,
                     interaction_mode=interaction_mode,
                 )
-                queued_session, queued_events = await self._queue_input(
+                queued_session, _, queued_events = await self._queue_input(
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
@@ -846,7 +853,7 @@ class RuntimeService:
                     approval_mode=approval_mode,
                     interaction_mode=interaction_mode,
                 )
-                queued_session, queued_events = await self._queue_input(
+                queued_session, _, queued_events = await self._queue_input(
                     snapshot=locked_snapshot,
                     active_run=locked_active_run,
                     prompt=prompt,
@@ -1082,6 +1089,7 @@ class RuntimeService:
                 begin_model_round=(
                     self._begin_model_round if self._extension_catalog is not None else None
                 ),
+                commit_model_request=self._commit_model_request,
                 shared_budget_reason=(
                     self._agent_controls.budget_reason if self._agent_controls is not None else None
                 ),
@@ -1257,6 +1265,7 @@ class RuntimeService:
         )
         result = RunResult(session=session, run=run, events=emitted)
         if has_active_owner:
+            await self._settle_terminal_run(run)
             return result
         return await self._finalize_run_boundary(result, drain_queued_inputs=False)
 
@@ -1280,30 +1289,76 @@ class RuntimeService:
         self,
         session_input: HostSessionInput,
         *,
-        session_id: str | None,
-    ) -> RunResult:
-        """Submit an OURO-owned synthetic input through the canonical Run boundary."""
+        session_id: str,
+    ) -> HostInputReceipt:
+        """Durably accept an OURO-owned synthetic input without awaiting execution."""
 
-        return await self.run(
-            session_input.prompt,
-            session_id=session_id,
+        snapshot = self._load_runtime_snapshot(
+            session_id,
+            recover=not self._is_session_run_locked(session_id),
+        )
+        self._validate_model_resource_refs(
+            snapshot.session,
+            session_input.resource_refs,
+            message_role="system_synthetic",
+        )
+        _, queued_input, _ = await self._queue_input(
+            snapshot=snapshot,
+            active_run=maybe_active_run(snapshot.runs),
+            prompt=session_input.prompt,
             title=session_input.title,
-            queue_mode=session_input.mode,
+            mode=session_input.mode,
             resource_refs=session_input.resource_refs,
-            _input_attribution=session_input,
+            attribution=session_input,
+        )
+        return HostInputReceipt(
+            session_id=session_id,
+            queue_id=queued_input.queue_id,
+            accepted_at=queued_input.queued_at,
+        )
+
+    async def consume_host_input(self, receipt: HostInputReceipt) -> RunResult:
+        """Consume a previously accepted Host input through the ordinary Run path."""
+
+        snapshot = self._load_runtime_snapshot(
+            receipt.session_id,
+            recover=not self._is_session_run_locked(receipt.session_id),
+        )
+        active = maybe_active_run(snapshot.runs)
+        if active is not None:
+            return RunResult(session=snapshot.session, run=active)
+        pending = self._pending_queued_inputs(snapshot)
+        if pending:
+            return await self.run(
+                pending[0].prompt,
+                session_id=receipt.session_id,
+                title=pending[0].title,
+                _queued_inputs=pending,
+            )
+        for message in snapshot.messages:
+            if (
+                message.metadata.get("queued_input_id") == receipt.queue_id
+                and message.run_id is not None
+            ):
+                return RunResult(
+                    session=self.store.load_session_record(receipt.session_id),
+                    run=self.store.load_run(receipt.session_id, message.run_id),
+                )
+        raise PersistenceError(
+            f"accepted Host input is missing from queue and canonical history: {receipt.queue_id}"
         )
 
     async def _queue_input(
         self,
         *,
         snapshot: RuntimeSessionSnapshot,
-        active_run: RunRecord,
+        active_run: RunRecord | None,
         prompt: str,
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
-    ) -> tuple[SessionRecord, list[EventRecord]]:
+    ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         session, queued_input, queue_size = self.queued_inputs.enqueue(
             snapshot=snapshot,
             prompt=prompt,
@@ -1336,33 +1391,46 @@ class RuntimeService:
                 if isinstance(attribution, AttributedSessionInput)
                 else None
             ),
-            caused_by_run_id=(active_run.run_id if attribution is not None else None),
+            caused_by_run_id=(
+                active_run.run_id if active_run is not None and attribution is not None else None
+            ),
         )
         emitted: list[EventRecord] = []
-        sequence = await self.event_recorder.emit(
-            emitted,
-            self.store.latest_event_sequence(session.session_id),
-            session_id=session.session_id,
-            run_id=active_run.run_id,
-            event_type=(
-                "follow_up_input_queued"
-                if queued_input.mode == "follow_up"
-                else "steering_input_queued"
-            ),
-            payload={
-                "queue_id": queued_input.queue_id,
-                "mode": queued_input.mode,
-                "queue_size": queue_size,
-                "resource_refs": list(queued_input.resource_refs),
-                "source": queued_input.source,
-                "host_source_id": queued_input.host_source_id,
-                "delegation_id": queued_input.delegation_id,
-                "plugin_id": queued_input.plugin_id,
-                "contribution_id": queued_input.contribution_id,
-            },
+        event_type = (
+            "follow_up_input_queued"
+            if queued_input.mode == "follow_up"
+            else "steering_input_queued"
         )
-        del sequence
-        return session, emitted
+        payload = {
+            "queue_id": queued_input.queue_id,
+            "mode": queued_input.mode,
+            "queue_size": queue_size,
+            "resource_refs": list(queued_input.resource_refs),
+            "source": queued_input.source,
+            "host_source_id": queued_input.host_source_id,
+            "delegation_id": queued_input.delegation_id,
+            "plugin_id": queued_input.plugin_id,
+            "contribution_id": queued_input.contribution_id,
+        }
+        if active_run is None:
+            emitted.append(
+                await self.event_recorder.publish(
+                    session_id=session.session_id,
+                    run_id=None,
+                    event_type=event_type,
+                    payload=payload,
+                )
+            )
+        else:
+            await self.event_recorder.emit(
+                emitted,
+                self.store.latest_event_sequence(session.session_id),
+                session_id=session.session_id,
+                run_id=active_run.run_id,
+                event_type=event_type,
+                payload=payload,
+            )
+        return session, queued_input, emitted
 
     async def _drain_queued_input_queue(self, session_id: str) -> None:
         while True:
@@ -1372,20 +1440,9 @@ class RuntimeService:
             )
             if maybe_active_run(snapshot.runs) is not None:
                 return
-            limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
-            queued = self.queued_inputs.eligible(snapshot, limit=limit)
-            if not queued:
-                return
-            pending = [
-                item
-                for item in queued
-                if not self._queued_input_is_durable(snapshot.messages, item.queue_id)
-            ]
-            for item in queued:
-                if item not in pending:
-                    self.queued_inputs.acknowledge(snapshot, item.queue_id)
+            pending = self._pending_queued_inputs(snapshot)
             if not pending:
-                continue
+                return
             result = await self.run(
                 pending[0].prompt,
                 session_id=session_id,
@@ -1395,6 +1452,19 @@ class RuntimeService:
             )
             if result.run.status != "completed":
                 return
+
+    def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
+        limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
+        queued = self.queued_inputs.eligible(snapshot, limit=limit)
+        pending = [
+            item
+            for item in queued
+            if not self._queued_input_is_durable(snapshot.messages, item.queue_id)
+        ]
+        for item in queued:
+            if item not in pending:
+                self.queued_inputs.acknowledge(snapshot, item.queue_id)
+        return pending
 
     async def _consume_turn_boundary_inputs(
         self,
@@ -2128,6 +2198,7 @@ class RuntimeService:
         run = result.run
         if run.status not in ACTIVE_RUN_STATUSES:
             try:
+                await self._settle_terminal_run(run)
                 continuation_service = RunContinuationService(
                     store=self.store,
                     registry=self._continuations_for_run(run.run_id),
@@ -2197,6 +2268,19 @@ class RuntimeService:
         if drain_queued_inputs and run.status == "completed":
             await self._drain_queued_input_queue(run.session_id)
         return updated
+
+    async def _settle_terminal_run(self, run: RunRecord) -> None:
+        """Run product semantics after the terminal record is durable.
+
+        Agent lifecycle settlement is part of the Runtime boundary, not an
+        observational event callback. The operation is intentionally idempotent:
+        an explicit abort may settle here and then pass through the ordinary Run
+        finalizer again when its active owner unwinds.
+        """
+
+        if run.status in ACTIVE_RUN_STATUSES or self._agent_controls is None:
+            return
+        await self._agent_controls.settle_terminal_run(run)
 
     def _finish_run_hooks(self, run: RunRecord) -> None:
         self.run_lifecycle.finish_run(run)
@@ -2270,6 +2354,20 @@ class RuntimeService:
         if run.kind == "agent" and snapshot is not None:
             update["continuation"] = self._continuation_checkpoint(run, snapshot)
         updated = run.model_copy(update=update)
+        self.store.save_run(updated)
+        return updated
+
+    def _commit_model_request(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        model_round: int,
+    ) -> RunRecord:
+        """Persist one provider request after context preparation succeeds."""
+
+        del session, model_round
+        updated = run.model_copy(update={"model_round_count": run.model_round_count + 1})
         self.store.save_run(updated)
         return updated
 

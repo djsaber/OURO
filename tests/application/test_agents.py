@@ -22,8 +22,7 @@ from ouro.core.agents import (
     ToolSelection,
 )
 from ouro.core.context import estimate_message_tokens
-from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
-from ouro.core.events import EventRecord
+from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
@@ -839,7 +838,7 @@ async def test_child_task_is_visible_only_in_child_canonical_context(tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_agent_resources_are_explicitly_copied_and_results_are_revalidated(
+async def test_agent_task_resources_are_explicitly_copied(
     tmp_path,
 ) -> None:
     service, supervisor, store, provider = await _services(tmp_path)
@@ -869,47 +868,6 @@ async def test_agent_resources_are_explicitly_copied_and_results_are_revalidated
     relation = store.load_delegation("ses_root", handle.delegation_id)
     assert relation.result is not None
     assert relation.result.resource_refs == ()
-
-    output_source = tmp_path / "child-output.txt"
-    output_source.write_text("child output resource", encoding="utf-8")
-    output = resources.import_resource(handle.child_session_id, output_source)
-    relation = store.load_delegation("ses_root", handle.delegation_id)
-    assert relation.result is not None
-    relation = store.save_delegation(
-        relation.model_copy(
-            update={
-                "result": relation.result.model_copy(
-                    update={"resource_refs": (output.resource.resource_id,)}
-                )
-            }
-        ),
-        expected_revision=relation.revision,
-    )
-    session = store.load_session_record("ses_root")
-    run = store.load_run("ses_root", "run_parent")
-    invocation = ToolInvocation(
-        tool_call_id="list_with_resources",
-        session_id=session.session_id,
-        run_id=run.run_id,
-        tool_name="ListAgents",
-    )
-    listed = await service.execute_control(
-        AgentControlRequest(action="list", request_id="list/resources"),
-        invocation=invocation,
-        session=session,
-        run=run,
-    )
-    assert listed.resource_refs == (output.resource.resource_id,)
-    assert output.resource.resource_id in resources.session_resource_ids("ses_root")
-
-    resources.remove_resource(handle.child_session_id, output.resource.resource_id)
-    with pytest.raises(ResourceNotFoundError, match="not attached"):
-        await service.execute_control(
-            AgentControlRequest(action="list", request_id="list/stale-resources"),
-            invocation=invocation,
-            session=session,
-            run=run,
-        )
     await service.close()
     await supervisor.shutdown()
 
@@ -994,6 +952,130 @@ async def test_duplicate_spawn_request_returns_same_delegation(tmp_path) -> None
         len([session for session in store.list_sessions() if session.session_kind == "subagent"])
         == 1
     )
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_retry_resumes_reserved_child_identity_after_create_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    request = SpawnAgentRequest(
+        request_id="host/replay-child-create",
+        parent_session_id="ses_root",
+        parent_run_id="run_parent",
+        agent_id="reader",
+        task="Inspect after a storage retry.",
+        description="Replay child creation",
+    )
+    original_create_session = store.create_session
+    failed = False
+
+    def fail_first_child_create(session: SessionRecord) -> None:
+        nonlocal failed
+        if session.session_kind == "subagent" and not failed:
+            failed = True
+            raise PersistenceError("injected child create failure")
+        original_create_session(session)
+
+    monkeypatch.setattr(store, "create_session", fail_first_child_create)
+    with pytest.raises(PersistenceError, match="injected child create failure"):
+        await service.spawn_agent(request)
+
+    reserved = store.list_delegations("ses_root")[0]
+    assert reserved.spawn_state == "requested"
+    assert reserved.child_session_id is not None
+    assert reserved.current_child_run_id is not None
+    monkeypatch.setattr(store, "create_session", original_create_session)
+
+    handle = await service.spawn_agent(request)
+    waited = await service.wait_agents((handle.delegation_id,))
+
+    replayed = store.load_delegation("ses_root", handle.delegation_id)
+    assert handle.delegation_id == reserved.delegation_id
+    assert replayed.child_session_id == reserved.child_session_id
+    assert replayed.current_child_run_id == reserved.current_child_run_id
+    assert waited.completed is True
+    assert len(store.list_delegations("ses_root")) == 1
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_retry_resubmits_same_queued_run_after_scheduler_failure(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    request = SpawnAgentRequest(
+        request_id="host/replay-submit",
+        parent_session_id="ses_root",
+        parent_run_id="run_parent",
+        agent_id="reader",
+        task="Inspect after a scheduler retry.",
+        description="Replay scheduler submission",
+    )
+    original_submit = supervisor.submit_prepared
+    failed = False
+
+    async def fail_first_submit(run: RunRecord, session_input) -> object:
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise RuntimeError("injected scheduler failure")
+        return await original_submit(run, session_input)
+
+    monkeypatch.setattr(supervisor, "submit_prepared", fail_first_submit)
+    with pytest.raises(RuntimeError, match="injected scheduler failure"):
+        await service.spawn_agent(request)
+
+    failed_relation = store.list_delegations("ses_root")[0]
+    assert failed_relation.spawn_state == "failed"
+    assert failed_relation.child_session_id is not None
+    assert failed_relation.current_child_run_id is not None
+    assert (
+        store.load_run(
+            failed_relation.child_session_id,
+            failed_relation.current_child_run_id,
+        ).status
+        == "queued"
+    )
+    monkeypatch.setattr(supervisor, "submit_prepared", original_submit)
+
+    handle = await service.spawn_agent(request)
+    waited = await service.wait_agents((handle.delegation_id,))
+
+    replayed = store.load_delegation("ses_root", handle.delegation_id)
+    assert replayed.child_session_id == failed_relation.child_session_id
+    assert replayed.current_child_run_id == failed_relation.current_child_run_id
+    assert replayed.spawn_state == "submitted"
+    assert waited.completed is True
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_spawn_retry_rejects_changed_request_for_same_idempotency_key(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    request = SpawnAgentRequest(
+        request_id="host/replay-mismatch",
+        parent_session_id="ses_root",
+        parent_run_id="run_parent",
+        agent_id="reader",
+        task="Inspect the original target.",
+        description="Original request",
+    )
+    first = await service.spawn_agent(request)
+
+    with pytest.raises(ValueError, match="different durable request"):
+        await service.spawn_agent(
+            request.model_copy(update={"task": "Inspect a different target."})
+        )
+
+    await service.wait_agents((first.delegation_id,))
+    assert len(store.list_delegations("ses_root")) == 1
     await service.close()
     await supervisor.shutdown()
 
@@ -1166,6 +1248,13 @@ async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
     assert relation.result is not None
     assert relation.result.delivery.policy == "next_boundary"
     assert relation.result.delivery.status == "delivered"
+    async with asyncio.timeout(5):
+        while not any(
+            message.metadata.get("host_source_id")
+            == f"ouro.subagents/results/{relation.result.delivery.delivery_id}"
+            for message in store.load_runtime_session("ses_root").messages
+        ):
+            await asyncio.sleep(0.01)
     delivered = [
         message
         for message in store.load_runtime_session("ses_root").messages
@@ -1354,14 +1443,10 @@ async def test_parent_abort_cascades_bound_child_and_preserves_result(tmp_path) 
         )
     )
     await asyncio.wait_for(provider.started.wait(), timeout=2)
-    store.save_run(parent.model_copy(update={"status": "aborted"}))
-
-    await service.on_runtime_event(
-        EventRecord(
-            session_id=root.session_id,
-            run_id=parent.run_id,
-            event_type="run_aborted",
-        )
+    await supervisor.runtime.abort_run(
+        session_id=root.session_id,
+        run_id=parent.run_id,
+        reason="Parent aborted during child execution",
     )
 
     assert child.child_session_id is not None
@@ -1399,12 +1484,10 @@ async def test_bound_cascade_timeout_emits_diagnostic_and_keeps_unknown_child(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(supervisor, "abort", blocked_abort)
-    await service.on_runtime_event(
-        EventRecord(
-            session_id=root.session_id,
-            run_id=parent.run_id,
-            event_type="run_failed",
-        )
+    await supervisor.runtime.abort_run(
+        session_id=root.session_id,
+        run_id=parent.run_id,
+        reason="Parent aborted while child cascade is blocked",
     )
 
     diagnostic = next(
@@ -1569,7 +1652,6 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
         events=runtime.event_recorder,
     )
     runtime.attach_agent_controls(service)
-    runtime.add_event_sink(service.on_runtime_event)
     await service.start()
 
     parent_handle = await supervisor.submit("Delegate with an approved spawn.")
@@ -2137,6 +2219,43 @@ async def test_spawn_budget_is_bounded_by_root_remaining_usage(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_root_model_round_budget_uses_durable_run_counters(tmp_path) -> None:
+    service, supervisor, store, _ = await _services(tmp_path)
+    parent = store.load_run("ses_root", "run_parent")
+    parent = parent.model_copy(
+        update={
+            "model_round_count": 2,
+            "metadata": {
+                **parent.metadata,
+                "run_budget": {"max_model_rounds": 3},
+            },
+        }
+    )
+    store.save_run(parent)
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/round-budget",
+            parent_session_id="ses_root",
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Use the final shared model round.",
+            description="Final model round",
+        )
+    )
+    relation = store.load_delegation("ses_root", handle.delegation_id)
+    assert relation.budget.max_model_rounds == 1
+
+    await service.wait_agents((handle.delegation_id,))
+    child = store.load_run(handle.child_session_id, handle.child_run_id)
+    assert child.model_round_count == 1
+    assert service.budget_reason(parent, 1) == "model_rounds"
+
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_primary_budget_check_does_not_scan_unrelated_delegations(tmp_path) -> None:
     service, supervisor, store, _ = await _services(tmp_path)
     unrelated = SessionRecord(session_id="ses_corrupt_history")
@@ -2159,10 +2278,7 @@ async def test_primary_budget_check_does_not_scan_unrelated_delegations(tmp_path
         )
     )
     relation_path = (
-        store.sessions_dir
-        / unrelated.session_id
-        / "delegations"
-        / f"{relation.delegation_id}.json"
+        store.sessions_dir / unrelated.session_id / "delegations" / f"{relation.delegation_id}.json"
     )
     payload = relation.model_dump(mode="json")
     payload["execution_mode"] = "background"
@@ -2231,6 +2347,23 @@ async def test_root_tree_subscription_adds_children_and_reconnects_from_store(tm
     reconnected = service.subscribe_agent_tree("ses_root")
     assert reconnected.initial_snapshot == service.agent_tree_snapshot("ses_root")
     assert reconnected.initial_snapshot.terminal_count == 1
+    initial_revision = reconnected.initial_snapshot.revision
+    await service.send_agent_message(
+        child.delegation_id,
+        "Inspect one follow-up for the live tree.",
+        request_id="host/tree-follow-up",
+        mode="follow_up",
+    )
+    async with asyncio.timeout(3):
+        while True:
+            notification = await reconnected.get()
+            if (
+                notification.kind == "snapshot"
+                and notification.snapshot is not None
+                and notification.snapshot.revision > initial_revision
+            ):
+                break
+    await service.wait_agents((child.delegation_id,))
     await service.close_agent(child.delegation_id)
     async with asyncio.timeout(3):
         while True:
@@ -2471,6 +2604,70 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
 
 
 @pytest.mark.asyncio
+async def test_parent_abort_resolves_sync_wait_and_cascades_waiting_child(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = _ask_tools()
+    definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            SyncHitlProvider(),
+            ModelMetadata(model_id="sync-hitl", provider_id="sync-hitl"),
+        ),
+        tools=tools,
+    )
+    runtime.attach_agent_definitions(definitions)
+    supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
+    service = AgentService(
+        store=store,
+        definitions=definitions,
+        scheduler=supervisor,
+        events=runtime.event_recorder,
+    )
+    runtime.attach_agent_controls(service)
+    await service.start()
+
+    parent_handle = await supervisor.submit("Delegate a synchronous question.")
+    parked = await supervisor.wait(parent_handle)
+    assert parked.status == "waiting_child"
+    assert parked.run_id is not None
+    async with asyncio.timeout(3):
+        while not service.list_agent_interactions(parent_handle.session_id):
+            await asyncio.sleep(0.01)
+
+    await runtime.abort_run(
+        session_id=parent_handle.session_id,
+        run_id=parked.run_id,
+        reason="Abort the parked parent",
+    )
+
+    parent = store.load_run(parent_handle.session_id, parked.run_id)
+    assert parent.status == "aborted"
+    assert parent.active_tool_batch is not None
+    spawn_call = parent.active_tool_batch.calls[0]
+    assert spawn_call.status == "aborted"
+    assert spawn_call.agent_wait is not None
+    assert spawn_call.agent_wait.state == "resolved"
+    assert spawn_call.agent_wait.resolution is not None
+    assert spawn_call.agent_wait.resolution.reason == "interrupted"
+    assert spawn_call.agent_wait.resolution.resolved_delegation_id is None
+
+    relation = store.list_delegations(parent_handle.session_id)[0]
+    assert relation.child_session_id is not None
+    assert relation.current_child_run_id is not None
+    assert (
+        store.load_run(relation.child_session_id, relation.current_child_run_id).status == "aborted"
+    )
+    async with asyncio.timeout(3):
+        while service._armed_wait_ids:  # noqa: SLF001 - verifies waiter lifecycle cleanup.
+            await asyncio.sleep(0.01)
+
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -2597,7 +2794,17 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
     assert relation.result is not None
     assert relation.execution_mode == "async"
     assert relation.result.delivery.policy == "next_boundary"
-    assert relation.result.delivery.target_run_id is not None
+    assert relation.result.delivery.target_queue_id == relation.result.delivery.delivery_id
+    async with asyncio.timeout(5):
+        while True:
+            snapshot = store.load_runtime_session(root_session_id)
+            if (
+                len(snapshot.runs) == 2
+                and snapshot.runs[-1].status == "completed"
+                and snapshot.messages[-1].text_content == "parent received follow-up"
+            ):
+                break
+            await asyncio.sleep(0.01)
     snapshot = store.load_runtime_session(root_session_id)
     assert len(snapshot.runs) == 2
     delivered_messages = [
@@ -2720,8 +2927,7 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
     send_results = [
         message
         for message in snapshot.messages
-        if message.tool_result is not None
-        and message.tool_result.tool_name == "SendAgentMessage"
+        if message.tool_result is not None and message.tool_result.tool_name == "SendAgentMessage"
     ]
     assert len(send_results) == 1
     assert not send_results[0].tool_result.is_error

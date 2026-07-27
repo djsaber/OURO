@@ -166,7 +166,7 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
     first_task = asyncio.create_task(runtime.run("initial"))
     session = await _active_session(store)
     await asyncio.wait_for(provider.first_started.wait(), timeout=1)
-    queued = await runtime.submit_host_input(
+    receipt = await runtime.submit_host_input(
         HostSessionInput(
             prompt="Recover from the durable checkpoint.",
             mode="follow_up",
@@ -176,8 +176,11 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
         session_id=session.session_id,
     )
 
-    assert queued.events[-1].payload["source"] == "host"
-    assert queued.events[-1].payload["host_source_id"] == "ouro.runtime/recovery"
+    queued_event = store.load_session(session.session_id).events[-1]
+    assert receipt.session_id == session.session_id
+    assert queued_event.payload["queue_id"] == receipt.queue_id
+    assert queued_event.payload["source"] == "host"
+    assert queued_event.payload["host_source_id"] == "ouro.runtime/recovery"
     provider.release_first.set()
     await asyncio.wait_for(first_task, timeout=2)
 

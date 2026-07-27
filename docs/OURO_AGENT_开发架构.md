@@ -98,7 +98,8 @@ child Run 的运行状态。
 
 sync 使用原 SpawnAgent ToolBatchCall 中的 durable `AgentWaitRequest`：父 Run 进入 `waiting_child/subagent_join` 后释放
 Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。async 复用 Host synthetic input
-队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
+队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；Host input 持久接收后返回 receipt，模型消费由后续普通
+Run 调度独立完成。父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
 保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
 request_id 精确路由。首版限制单层和 bound lifecycle；subagent 的工具、workspace、审批与
 RunBudgetPolicy 只能从父级能力上限收紧。
@@ -117,7 +118,8 @@ durable relation 并提交现有 RuntimeSupervisor；Supervisor 的通用 `max_c
 生命周期竞争由 AgentService 的 per-delegation lock 与 repository CAS 收敛，控制工具无需声明 batch exclusive。
 subagent 直接复用冻结的 `RunBudgetPolicy`；InnerAgentLoop
 每次 model round durable boundary 先执行本 Run 检查，再由 application callback 聚合 parent Run 与其所有 child
-Session 的 Run usage/model rounds，返回相同 `RunBudgetReason` 并进入现有 paused 路径。聚合以 Run identity 去重，
+Session 的 Run usage/model rounds，返回相同 `RunBudgetReason` 并进入现有 paused 路径。模型轮次是 RunRecord 的
+持久累计字段，不通过反复扫描 `model_request_started` 事件计算；聚合以 Run identity 去重，
 所以 child follow-up/resume 各计一次而不会重复计算旧 Run。AgentTree 的 root usage 同样从这些 canonical Run
 聚合。Supervisor 继续使用原跨 Session FIFO；waiting 状态不占 execution permit，已完成 child result 不受后续
 root budget 耗尽影响。

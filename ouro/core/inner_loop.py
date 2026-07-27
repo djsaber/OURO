@@ -221,6 +221,16 @@ class ModelRoundBeginner(Protocol):
     ) -> RunRecord: ...
 
 
+class ModelRequestCommitter(Protocol):
+    def __call__(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        model_round: int,
+    ) -> RunRecord: ...
+
+
 class SharedBudgetReasonProvider(Protocol):
     def __call__(
         self,
@@ -256,6 +266,7 @@ class InnerLoopPorts:
     consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
     evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
     begin_model_round: ModelRoundBeginner | None = None
+    commit_model_request: ModelRequestCommitter | None = None
     shared_budget_reason: SharedBudgetReasonProvider | None = None
 
 
@@ -360,7 +371,6 @@ class InnerAgentLoop:
                     run=state.run,
                     model_round=model_round,
                 )
-
             round_state = _RoundState()
             try:
                 context = await self._build_context(
@@ -382,6 +392,12 @@ class InnerAgentLoop:
                 )
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
+            if self.ports.commit_model_request is not None:
+                state.run = self.ports.commit_model_request(
+                    session=state.session,
+                    run=state.run,
+                    model_round=model_round,
+                )
             await self._start_round(state, model_round, round_state.turn_id, context)
             terminal_result = await self._consume_provider_stream(
                 state=state,
@@ -499,7 +515,7 @@ class InnerAgentLoop:
     ) -> RunBudgetReason | None:
         elapsed_seconds = max(0.0, (utc_now() - run.started_at).total_seconds())
         local_reason = self.run_budget.exceeded_reason(
-            next_model_round=next_model_round,
+            next_model_round=max(next_model_round, run.model_round_count + 1),
             input_tokens=int(run.usage.get("input_tokens", 0)),
             output_tokens=int(run.usage.get("output_tokens", 0)),
             elapsed_seconds=elapsed_seconds,

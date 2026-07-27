@@ -169,6 +169,18 @@ def test_cli_application_commands_use_local_composition_boundary() -> None:
         assert not any(module.startswith(forbidden) for module in modules)
 
 
+def test_interactive_cli_does_not_reach_through_runtime_to_session_store() -> None:
+    violations: list[str] = []
+    for filename in ("interactive.py", "interactive_commands.py", "interactive_io.py"):
+        path = PROJECT_ROOT / "ouro" / "cli" / filename
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if _attribute_path(node) in {"runtime.store", "self._runtime.store"}:
+                violations.append(f"{path.relative_to(PROJECT_ROOT)} reaches RuntimeService.store")
+
+    assert violations == []
+
+
 def test_plugin_local_composition_is_not_owned_by_application_service() -> None:
     application_plugins = ast.parse((APPLICATION_DIR / "plugins.py").read_text(encoding="utf-8"))
     application_imports = _imported_modules(application_plugins)
@@ -213,3 +225,15 @@ def _imported_modules(tree: ast.AST) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             modules.append(node.module)
     return modules
+
+
+def _attribute_path(node: ast.AST) -> str | None:
+    parts: list[str] = []
+    current = node
+    while isinstance(current, ast.Attribute):
+        parts.append(current.attr)
+        current = current.value
+    if isinstance(current, ast.Name):
+        parts.append(current.id)
+        return ".".join(reversed(parts))
+    return None

@@ -320,7 +320,7 @@ class InteractionCoordinator:
         root_run_id = result.run.run_id
         subscription = self._subscription_for(root_session_id)
         while True:
-            current = _durable_run_result(self._runtime, root_session_id, root_run_id)
+            current = self._runtime.sessions.run_result(root_session_id, root_run_id)
             if current.run.status not in _PARENT_CONTINUATION_STATUSES:
                 return current
 
@@ -358,9 +358,12 @@ class InteractionCoordinator:
         return self._subscription
 
     def _pending_interactions(self, root_session_id: str) -> tuple[AgentInteractionView, ...]:
+        interactions = self._host.list_agent_interactions(root_session_id)
+        canonical_identities = {_interaction_identity(interaction) for interaction in interactions}
+        self._resolved.intersection_update(canonical_identities)
         return tuple(
             interaction
-            for interaction in self._host.list_agent_interactions(root_session_id)
+            for interaction in interactions
             if _interaction_identity(interaction) not in self._resolved
         )
 
@@ -591,8 +594,10 @@ class InteractionCoordinator:
             while True:
                 try:
                     choice = (
-                        await _read_input(input_func, "Approve? [y]es/[n]o/[m]odify: ")
-                    ).strip().lower()
+                        (await _read_input(input_func, "Approve? [y]es/[n]o/[m]odify: "))
+                        .strip()
+                        .lower()
+                    )
                 except EOFError:
                     self._output_func("")
                     return None
@@ -692,34 +697,12 @@ class InteractionCoordinator:
             )
 
 
-def _durable_run_result(
-    runtime: RuntimeService,
-    session_id: str,
-    run_id: str,
-) -> RunResult:
-    snapshot = runtime.store.load_runtime_session(session_id)
-    run = next((item for item in snapshot.runs if item.run_id == run_id), None)
-    if run is None:
-        raise OuroError(f"Run not found while waiting for subagents: {run_id}")
-    final_text = next(
-        (
-            message.text_content
-            for message in reversed(snapshot.messages)
-            if message.run_id == run_id and message.role == "assistant"
-        ),
-        "",
-    )
-    return RunResult(session=snapshot.session, run=run, final_text=final_text)
-
-
 def _paused_run_message(result: RunResult) -> str:
     pause = result.run.metadata.get("pause") or {}
     reason = pause.get("reason") if isinstance(pause, dict) else None
     kind = pause.get("kind") if isinstance(pause, dict) else None
     boundary = (
-        "for context maintenance"
-        if kind == "context_maintenance"
-        else "at a soft budget boundary"
+        "for context maintenance" if kind == "context_maintenance" else "at a soft budget boundary"
     )
     return f"Run paused {boundary}: {reason or 'configured limit'}"
 

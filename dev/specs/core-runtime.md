@@ -134,6 +134,7 @@ identity 的持久化项均按无效项移除。
 `ToolCallBatchRecord` 保存 durable `AgentWaitRequest`，父 Run 进入 `waiting_child/subagent_join`，`RuntimeService` 把 waiting outcome 交还
 `RuntimeSupervisor` 并释放 execution permit。child 终态后，application 按原 parent session/run/tool-call
 identity 解析该调用并恢复同一父 Run；重复结果通知只会命中已经解析的 checkpoint，不创建第二个父 Run。
+每个同步 SpawnAgent 的 wait 只引用它创建的一个 Delegation；Host 批量等待不进入该持久协议。
 
 child 本身仍执行普通 `InnerAgentLoop`、ToolBatch、Approval、AskUser、预算与恢复状态机。父子关系和结果交付由
 application 的 durable Delegation 编排，core 不递归调用 RuntimeService，也不维护另一套 child 执行状态。
@@ -166,7 +167,8 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 
 - 配置、持久化和 session lock 错误必须保持类型化异常。
 - Provider 失败转换为模型流 error event，再由 inner loop 结束 Run。
-- Hook 和 Host event sink 失败隔离为 diagnostic/event，不破坏 durable Run。
+- Hook 和 Host event sink 失败隔离为 diagnostic/event，不破坏 durable Run。父子终态级联、等待解析与结果固化属于
+  `RuntimeService` 的显式 terminal semantic boundary，不得挂在观察型 event sink 上。
 - 工具失败作为 `ToolResult` 回灌模型；协调器自身失败才结束 Run。
 
 ## 验收证据

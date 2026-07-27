@@ -20,6 +20,7 @@ from ouro.application.runtime_activity import (
     runtime_activity_for_status,
 )
 from ouro.application.supervisor_models import (
+    HostInputReceipt,
     RunHandle,
     RuntimeActivitySnapshot,
     RuntimeNotification,
@@ -55,6 +56,7 @@ class _RunJob:
     title: str | None
     prepared_run: RunRecord | None = None
     session_input: HostSessionInput | DelegatedTaskInput | None = None
+    host_input_receipt: HostInputReceipt | None = None
     agent_wait_resolution: AgentWaitResolution | None = None
     agent_wait_result: ToolResult | None = None
     agent_wait_tool_call_id: str | None = None
@@ -373,29 +375,24 @@ class RuntimeSupervisor:
         session_input: HostSessionInput,
         *,
         session_id: str,
-    ) -> RunHandle | None:
-        """Route synthetic Agent traffic through the supervised Host boundary."""
+    ) -> HostInputReceipt:
+        """Durably accept synthetic Host traffic and schedule idle consumption."""
 
         await self.start()
-        while True:
-            durable = self.store.load_runtime_session(session_id)
-            active = maybe_active_run(durable.runs)
-            if active is not None:
-                await self.runtime.submit_host_input(session_input, session_id=session_id)
-                return None
-            finishing_job = self._jobs_by_session.get(session_id)
-            if finishing_job is not None:
-                await finishing_job.done.wait()
-                continue
-            handle = RunHandle(session_id=session_id)
-            job = _RunJob(
+        receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)
+        durable = self.store.load_runtime_session(session_id)
+        if maybe_active_run(durable.runs) is not None or session_id in self._jobs_by_session:
+            return receipt
+        handle = RunHandle(session_id=session_id)
+        self._enqueue_job(
+            _RunJob(
                 handle=handle,
-                prompt=session_input.prompt,
-                title=session_input.title,
-                session_input=session_input,
+                prompt="",
+                title=None,
+                host_input_receipt=receipt,
             )
-            self._enqueue_job(job)
-            return handle
+        )
+        return receipt
 
     async def resolve_tool_approval(
         self,
@@ -824,12 +821,8 @@ class RuntimeSupervisor:
                             job.prepared_run,
                             job.session_input,
                         )
-                    elif job.session_input is not None:
-                        assert isinstance(job.session_input, HostSessionInput)
-                        job.result = await self.runtime.submit_host_input(
-                            job.session_input,
-                            session_id=job.handle.session_id,
-                        )
+                    elif job.host_input_receipt is not None:
+                        job.result = await self.runtime.consume_host_input(job.host_input_receipt)
                     else:
                         job.result = await self.runtime.run(
                             job.prompt,

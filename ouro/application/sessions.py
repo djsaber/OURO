@@ -7,7 +7,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Protocol
 
 from ouro.application.dto import Diagnostic
-from ouro.application.runs import abort_run_state
+from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_history import (
     copy_branch_messages,
     project_replay_frames,
@@ -43,6 +43,7 @@ from ouro.core.errors import (
 )
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
@@ -120,6 +121,24 @@ class SessionService:
             active_compaction=self._store.load_active_compaction(session_id),
             diagnostics=diagnostics,
         )
+
+    def run_result(self, session_id: str, run_id: str) -> RunResult:
+        """Read one durable Run without exposing SessionStore to Hosts."""
+
+        snapshot = self._store.load_runtime_session(session_id)
+        try:
+            run = find_run(snapshot.runs, run_id)
+        except KeyError as exc:
+            raise PersistenceError(f"Run not found: {run_id}") from exc
+        final_text = next(
+            (
+                message.text_content
+                for message in reversed(snapshot.messages)
+                if message.run_id == run_id and message.role == "assistant"
+            ),
+            "",
+        )
+        return RunResult(session=snapshot.session, run=run, final_text=final_text)
 
     def context_status(self, session_id: str) -> SessionContextStatus | None:
         self._require_session(session_id)
@@ -375,8 +394,7 @@ class SessionService:
             if monotonic() >= deadline:
                 identities = ", ".join(record.session_id for record in live_records)
                 raise SessionBusyError(
-                    "timed out waiting for live Session Runs to stop before removal: "
-                    f"{identities}"
+                    f"timed out waiting for live Session Runs to stop before removal: {identities}"
                 )
             await asyncio.sleep(0.05)
         return self.trash(session_id)
@@ -397,8 +415,7 @@ class SessionService:
                 lock = self._store.acquire_session_lock(record.session_id, lock_owner)
                 if lock is None:
                     raise SessionBusyError(
-                        "cannot remove Session tree while a live runtime owns "
-                        f"{record.session_id}"
+                        f"cannot remove Session tree while a live runtime owns {record.session_id}"
                     )
                 locks.append(lock)
 
@@ -407,9 +424,7 @@ class SessionService:
             if self._resources is not None:
                 for record in records:
                     try:
-                        resource_ids.extend(
-                            self._resources.session_resource_ids(record.session_id)
-                        )
+                        resource_ids.extend(self._resources.session_resource_ids(record.session_id))
                     except PersistenceError as exc:
                         diagnostics.append(
                             Diagnostic(
@@ -515,8 +530,7 @@ class SessionService:
             scoped_ids.update(
                 record.session_id
                 for record in all_records.values()
-                if record.session_kind == "subagent"
-                and record.root_session_id == root_session_id
+                if record.session_kind == "subagent" and record.root_session_id == root_session_id
             )
         scoped_ids.add(requested.session_id)
         records = [all_records[record_id] for record_id in scoped_ids]

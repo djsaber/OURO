@@ -226,6 +226,16 @@ class SQLiteSessionStore:
                 raise FileNotFoundError(delegation_id)
             return self._validate_model(DelegationRecord, row[0], f"delegation {delegation_id}")
 
+    def load_delegation_by_id(self, delegation_id: str) -> DelegationRecord:
+        with self._read_connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM delegations WHERE delegation_id = ?",
+                (delegation_id,),
+            ).fetchone()
+            if row is None:
+                raise FileNotFoundError(delegation_id)
+            return self._validate_model(DelegationRecord, row[0], f"delegation {delegation_id}")
+
     def save_delegation(
         self,
         delegation: DelegationRecord,
@@ -383,9 +393,7 @@ class SQLiteSessionStore:
                             connection,
                             table,
                             session_ids=(
-                                (root_session_id,)
-                                if table == "delegations"
-                                else normalized
+                                (root_session_id,) if table == "delegations" else normalized
                             ),
                             key=("root_session_id" if table == "delegations" else "session_id"),
                         )

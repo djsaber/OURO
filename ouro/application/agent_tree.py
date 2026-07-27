@@ -84,6 +84,7 @@ class AgentTreeProjector:
         terminal_count = 0
         pending_interaction_count = 0
         revision = self.store.latest_event_sequence(root_session_id)
+        root_usage = dict(root_run.usage) if root_run is not None else {}
 
         for relation in relations:
             revision += relation.revision + 1
@@ -102,6 +103,10 @@ class AgentTreeProjector:
                 active_count += 1
             interactions = self._interaction_summaries(relation)
             pending_interaction_count += len(interactions)
+            usage = self._delegation_usage(relation)
+            if root_run is not None and relation.parent_run_id == root_run.run_id:
+                for key, value in usage.items():
+                    root_usage[key] = root_usage.get(key, 0) + value
             try:
                 activity = self.runtime.activity(relation.child_session_id)
             except (FileNotFoundError, KeyError, SessionNotFoundError):
@@ -120,7 +125,7 @@ class AgentTreeProjector:
                     lifecycle_binding=relation.lifecycle_binding,
                     control_state=relation.control_state,
                     depth=relation.depth,
-                    usage=self._delegation_usage(relation),
+                    usage=usage,
                     budget=relation.budget,
                     pending_interactions=interactions,
                     result_ready=relation.result is not None,
@@ -143,7 +148,7 @@ class AgentTreeProjector:
             revision=revision,
             nodes=tuple(nodes),
             edges=tuple(edges),
-            root_usage=self._root_usage(root_run, relations),
+            root_usage=root_usage,
             root_budget=root_budget,
             root_activity=root_activity,
             waiting_on_delegation_ids=self._waiting_delegation_ids(root_run),
@@ -194,9 +199,7 @@ class AgentTreeProjector:
         return tuple(
             relation.child_session_id
             for relation in self.store.list_delegations(root_session_id)
-            if relation.child_session_id is not None
-            and relation.control_state == "open"
-            and delegation_status(self.store, relation) not in _TERMINAL_STATUSES
+            if relation.child_session_id is not None and relation.control_state == "open"
         )
 
     def latest_sequence(self, session_id: str) -> int:
@@ -224,10 +227,9 @@ class AgentTreeProjector:
             return ()
         return tuple(
             dict.fromkeys(
-                delegation_id
+                call.agent_wait.delegation_id
                 for call in run.active_tool_batch.calls
                 if call.status == "waiting_child" and call.agent_wait is not None
-                for delegation_id in call.agent_wait.delegation_ids
             )
         )
 
@@ -242,31 +244,6 @@ class AgentTreeProjector:
         for run in runs:
             for key, value in run.usage.items():
                 usage[key] = usage.get(key, 0) + value
-        return usage
-
-    def _root_usage(
-        self,
-        root_run: RunRecord | None,
-        relations: list[DelegationRecord],
-    ) -> dict[str, int | float]:
-        if root_run is None:
-            return {}
-        usage = dict(root_run.usage)
-        seen_runs = {(root_run.session_id, root_run.run_id)}
-        for relation in relations:
-            if relation.parent_run_id != root_run.run_id or relation.child_session_id is None:
-                continue
-            try:
-                runs = self.store.load_runs(relation.child_session_id)
-            except FileNotFoundError:
-                continue
-            for run in runs:
-                identity = (run.session_id, run.run_id)
-                if identity in seen_runs:
-                    continue
-                seen_runs.add(identity)
-                for key, value in run.usage.items():
-                    usage[key] = usage.get(key, 0) + value
         return usage
 
     def _interaction_summaries(
