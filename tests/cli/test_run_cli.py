@@ -38,6 +38,31 @@ def _expected_builtin_tool_names() -> list[str]:
     return sorted(names)
 
 
+def _ask_user_arguments(
+    question: str,
+    *,
+    question_id: str = "choice",
+    header: str = "Choice",
+    options: tuple[str, ...] = ("A", "B"),
+) -> dict[str, object]:
+    return {
+        "questions": [
+            {
+                "id": question_id,
+                "header": header,
+                "question": question,
+                "options": [
+                    {
+                        "label": label,
+                        "description": f"Choose {label}.",
+                    }
+                    for label in options
+                ],
+            }
+        ]
+    }
+
+
 class CapturingProvider:
     provider_id = "capture"
 
@@ -94,7 +119,7 @@ class SubagentInteractionProvider:
                         tool_call={
                             "id": "subagent_question",
                             "name": "AskUser",
-                            "arguments": {"question": "Choose A or B"},
+                            "arguments": _ask_user_arguments("Choose A or B?"),
                         },
                     )
                 yield ProviderStreamEvent(type="done")
@@ -169,7 +194,10 @@ class ConcurrentSubagentQuestionProvider:
                     tool_call={
                         "id": f"subagent_question_{key.lower()}",
                         "name": "AskUser",
-                        "arguments": {"question": f"Question {key}?"},
+                        "arguments": _ask_user_arguments(
+                            f"Question {key}?",
+                            question_id=f"question_{key.lower()}",
+                        ),
                     },
                 )
                 yield ProviderStreamEvent(type="done")
@@ -879,7 +907,12 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
                     tool_call={
                         "id": "ask_1",
                         "name": "AskUser",
-                        "arguments": {"question": "Which file?"},
+                        "arguments": _ask_user_arguments(
+                            "Which file?",
+                            question_id="file",
+                            header="File",
+                            options=("notes.md", "README.md"),
+                        ),
                     },
                 ),
                 ProviderStreamEvent(type="done"),
@@ -900,7 +933,7 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
     )
 
     assert code == 0
-    assert "Question: Which file?" in outputs
+    assert any("Question · File\nWhich file?" in output for output in outputs)
     assert "Using notes.md." in outputs
 
 
@@ -1092,7 +1125,7 @@ async def test_interactive_does_not_submit_empty_async_subagent_answer(
         outputs.append(text)
         if text.startswith("Question from subagent General"):
             interaction_announced.set()
-        if text == "Answer subagent: ":
+        if text.startswith("Select [1-"):
             answer_prompted.set()
         if text == "parent received subagent result":
             result_rendered.set()
@@ -1127,7 +1160,7 @@ async def test_interactive_does_not_submit_empty_async_subagent_answer(
         for event in store.load_session(relation.child_session_id).events
         if event.event_type == "ask_user_resolved"
     ]
-    assert resolved_answers == ["A"]
+    assert resolved_answers == [{"answers": {"choice": ["A"]}}]
     assert interaction_announced.is_set()
     assert any("cannot be empty" in output.lower() for output in outputs)
     assert sum(output.startswith("Question from subagent General") for output in outputs) == 1
@@ -1205,7 +1238,9 @@ async def test_interactive_resolves_concurrent_async_subagent_questions_once(
             for event in store.load_session(relation.child_session_id).events
             if event.event_type == "ask_user_resolved"
         ]
-        assert resolved_answers == [f"answer-{key}"]
+        assert resolved_answers == [
+            {"answers": {f"question_{key.lower()}": [f"answer-{key}"]}}
+        ]
     assert sum("Question A?" in output for output in outputs) == 1
     assert sum("Question B?" in output for output in outputs) == 1
     assert not any(output.startswith("Error:") for output in outputs), "\n".join(outputs)
@@ -1222,7 +1257,12 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
                     tool_call={
                         "id": "ask_1",
                         "name": "AskUser",
-                        "arguments": {"question": "Which file?"},
+                        "arguments": _ask_user_arguments(
+                            "Which file?",
+                            question_id="file",
+                            header="File",
+                            options=("notes.md", "README.md"),
+                        ),
                     },
                 ),
                 ProviderStreamEvent(type="done"),
@@ -1239,7 +1279,7 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
     )
 
     assert code == 0
-    assert "Question: Which file?" in outputs
+    assert any("Question · File\nWhich file?" in output for output in outputs)
     assert "Run aborted: User aborted" in outputs
 
 

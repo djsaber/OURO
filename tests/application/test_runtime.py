@@ -2029,7 +2029,25 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
                             tool_call={
                                 "id": "ask_1",
                                 "name": "AskUser",
-                                "arguments": {"question": "Which file?"},
+                                "arguments": {
+                                    "questions": [
+                                        {
+                                            "id": "file",
+                                            "header": "File",
+                                            "question": "Which file?",
+                                            "options": [
+                                                {
+                                                    "label": "notes.md (Recommended)",
+                                                    "description": "Use the notes file.",
+                                                },
+                                                {
+                                                    "label": "README.md",
+                                                    "description": "Use the readme file.",
+                                                },
+                                            ],
+                                        }
+                                    ]
+                                },
                             },
                         ),
                         ProviderStreamEvent(type="done"),
@@ -2049,7 +2067,7 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     resumed = await runtime.answer_user(
         session_id=pending.session.session_id,
         run_id=pending.run.run_id,
-        answer="notes.md",
+        answer={"answers": {"file": ["notes.md"]}},
     )
     snapshot = store.load_session(pending.session.session_id)
 
@@ -2059,7 +2077,7 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
     assert snapshot.messages[1].role == "assistant"
     assert snapshot.messages[1].tool_calls[0].name == "AskUser"
     assert snapshot.messages[2].role == "tool_result"
-    assert snapshot.messages[2].text_content == "notes.md"
+    assert snapshot.messages[2].text_content == '{"answers":{"file":["notes.md"]}}'
     assert snapshot.messages[-1].text_content == "I will use notes.md."
     ask_user_resolved = next(
         event for event in snapshot.events if event.event_type == "ask_user_resolved"
@@ -2143,7 +2161,25 @@ async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_
                             tool_call={
                                 "id": "ask_1",
                                 "name": "AskUser",
-                                "arguments": {"question": "Which file?"},
+                                "arguments": {
+                                    "questions": [
+                                        {
+                                            "id": "file",
+                                            "header": "File",
+                                            "question": "Which file?",
+                                            "options": [
+                                                {
+                                                    "label": "notes.md (Recommended)",
+                                                    "description": "Use the notes file.",
+                                                },
+                                                {
+                                                    "label": "README.md",
+                                                    "description": "Use the readme file.",
+                                                },
+                                            ],
+                                        }
+                                    ]
+                                },
                             },
                         ),
                         ProviderStreamEvent(type="done"),
@@ -2168,7 +2204,7 @@ async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_
     resumed = await runtime.answer_user(
         session_id=waiting.session.session_id,
         run_id=waiting.run.run_id,
-        answer="notes.md",
+        answer={"answers": {"file": ["notes.md"]}},
     )
     snapshot = store.load_session(waiting.session.session_id)
 

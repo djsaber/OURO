@@ -257,19 +257,43 @@ def test_rejected_result_is_tool_error() -> None:
 @pytest.mark.asyncio
 async def test_ask_user_returns_waiting_state() -> None:
     executor = ToolExecutor(_registry())
+    arguments = {
+        "questions": [
+            {
+                "id": "file",
+                "header": "File",
+                "question": "Which file?",
+                "options": [
+                    {
+                        "label": "notes.md (Recommended)",
+                        "description": "Use the existing notes file.",
+                    },
+                    {
+                        "label": "README.md",
+                        "description": "Use the project readme instead.",
+                    },
+                ],
+            }
+        ]
+    }
 
     outcome = await executor.execute(
         ToolInvocation(
             session_id="ses_1",
             run_id="run_1",
             tool_name="AskUser",
-            arguments={"question": "Which file?"},
+            arguments=arguments,
         ),
         approval_mode="approval",
     )
 
     assert outcome.status == "waiting_user"
-    assert outcome.question == "Which file?"
+    assert outcome.question is None
+    assert outcome.input_request is not None
+    assert outcome.input_request.data == {
+        "type": "ask_user",
+        "questions": [{**arguments["questions"][0], "multi_select": False}],
+    }
 
 
 @pytest.mark.asyncio

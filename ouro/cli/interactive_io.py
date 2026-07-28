@@ -8,6 +8,12 @@ from pydantic import JsonValue
 
 from ouro.application.agent_models import AgentInteractionView, AgentTreeNotification
 from ouro.application.runtime import RuntimeService
+from ouro.cli.ask_user import (
+    AskUserControl,
+    ask_user_answer_prompt,
+    collect_ask_user_answers,
+    render_ask_user_question,
+)
 from ouro.cli.interactive_input import InputFunc, InteractiveInput, PromptFunc
 from ouro.cli.interactive_output import InteractiveOutput, OutputFunc
 from ouro.cli.plan_confirmation import (
@@ -18,6 +24,7 @@ from ouro.cli.plan_confirmation import (
 from ouro.core.errors import OuroError
 from ouro.core.results import RunResult
 from ouro.core.tool_batches import ToolBatchCall
+from ouro.tools.builtin_ask_user import parse_builtin_ask_user_request
 
 _MAX_APPROVAL_ARGUMENT_PREVIEW = 240
 
@@ -456,6 +463,21 @@ class InteractionCoordinator:
         if interaction.kind == "approval":
             self._output_func(_subagent_approval_request(interaction))
             return
+        request = (
+            parse_builtin_ask_user_request(interaction.tool_name, interaction.input_request)
+            if interaction.input_request is not None
+            else None
+        )
+        if request is not None:
+            rendered = render_ask_user_question(
+                request.questions[0],
+                index=0,
+                total=len(request.questions),
+            )
+            self._output_func(
+                f"Question from subagent {_subagent_label(interaction)}:\n{rendered}"
+            )
+            return
         question = (
             _format_user_input_request(interaction.input_request)
             if interaction.input_request is not None
@@ -534,6 +556,38 @@ class InteractionCoordinator:
         async with self._output.prompt_scope():
             if announce:
                 self._announce_subagent(interaction)
+            request = (
+                parse_builtin_ask_user_request(interaction.tool_name, interaction.input_request)
+                if interaction.input_request is not None
+                else None
+            )
+            if request is not None:
+                collected = await asyncio.to_thread(
+                    collect_ask_user_answers,
+                    request,
+                    input_func=input_func,
+                    output_func=self._output_func,
+                    initial_response=initial_response,
+                    first_question_rendered=True,
+                )
+                if collected is AskUserControl.EOF:
+                    self._output_func("")
+                    return False
+                if collected is AskUserControl.ABORT:
+                    await self._host.interrupt_agent(
+                        interaction.delegation_id,
+                        reason="User aborted subagent",
+                    )
+                    return True
+                await self._host.resolve_agent_input(
+                    interaction.delegation_id,
+                    child_session_id=interaction.child_session_id,
+                    child_run_id=interaction.child_run_id,
+                    tool_call_id=interaction.tool_call_id,
+                    request_id=interaction.request_id,
+                    answer=collected,
+                )
+                return True
             while True:
                 try:
                     answer = initial_response
@@ -679,6 +733,39 @@ class InteractionCoordinator:
                     answer=collected,
                 )
 
+            try:
+                ask_user_request = (
+                    parse_builtin_ask_user_request(
+                        waiting_call.request.name,
+                        waiting_call.input_request.data,
+                    )
+                    if waiting_call is not None and waiting_call.input_request is not None
+                    else None
+                )
+            except ValueError as exc:
+                self._output_func(f"Invalid AskUser request: {exc}")
+                ask_user_request = None
+            if ask_user_request is not None:
+                ask_user_answer = await asyncio.to_thread(
+                    collect_ask_user_answers,
+                    ask_user_request,
+                    input_func=input_func,
+                    output_func=self._output_func,
+                )
+                if ask_user_answer is AskUserControl.EOF:
+                    self._output_func("")
+                    return None
+                if ask_user_answer is AskUserControl.ABORT:
+                    return await self._runtime.abort_run(
+                        session_id=result.session.session_id,
+                        run_id=result.run.run_id,
+                    )
+                return await self._runtime.answer_user(
+                    session_id=result.session.session_id,
+                    run_id=result.run.run_id,
+                    answer=ask_user_answer,
+                )
+
             self._output_func(f"Question: {_pending_question(result)}")
             try:
                 answer = await _read_input(input_func, "Answer: ")
@@ -732,6 +819,13 @@ def _subagent_label(interaction: AgentInteractionView) -> str:
 def _subagent_input_prompt(interaction: AgentInteractionView) -> str:
     if interaction.kind == "approval":
         return "Approve subagent tool? [y]es/[n]o/[m]odify/[a]bort subagent: "
+    request = (
+        parse_builtin_ask_user_request(interaction.tool_name, interaction.input_request)
+        if interaction.input_request is not None
+        else None
+    )
+    if request is not None:
+        return ask_user_answer_prompt(request.questions[0])
     return "Answer subagent: "
 
 
