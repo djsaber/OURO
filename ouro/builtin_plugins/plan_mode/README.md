@@ -159,7 +159,9 @@ Plan rejected by user. Plan mode remains active.
 ## 核心设计
 
 1. 正常对话时，EnterPlanMode 调用决策交给 LLM；
-2. 指定计划模式时（`/plan`），命令只请求 Host 激活 controller；下一条用户消息触发模型 Run 时，绑定
+2. 插件启用期间，`EnterPlanMode` 和 `ExitPlanMode` 始终出现在模型工具列表中，工具集合不随模式切换而变化；
+   `ExitPlanMode` 在非计划模式下由自身状态契约返回明确错误，并用独立的 `interaction_controller=mode` 声明等待审批
+   归属。指定计划模式时（`/plan`），命令只请求 Host 激活 controller；下一条用户消息触发模型 Run 时，绑定
    `active_when=mode` 的 Context Provider 才注入脚手架消息；
 3. 处于计划模式时，每轮用户消息前面都要注入脚手架消息，加强对 LLM 引导；
 4. 同一会话内多次开启计划模式，每次计划模式的 PLAN_FILE_PATH 指向不同文件，可用时间后缀方式；
@@ -177,8 +179,9 @@ Plan rejected by user. Plan mode remains active.
 PLAN_FILE_PATH: {OURO_HOME}/artifacts/dev.ouro.plan_mode/sessions/{session_id}/plans/plan_xxx.md
 
 > Plan 不改变也不控制智能体主循环。Host 只认识通用 Session Controller、claim、transition 和模型轮次 activation
-> snapshot；Plan 私有状态负责计划文件与审批业务。脚手架、Tool Policy 和 ExitPlanMode 通过 `active_when=mode`
-> 启停，EnterPlanMode 始终保留为进入入口。Host 不包含 Plan/Goal 冲突特例。
+> snapshot；Plan 私有状态负责计划文件与审批业务。只有脚手架和 Tool Policy 通过 `active_when=mode` 启停；
+> EnterPlanMode 和 ExitPlanMode 在插件启用期间始终可见，由工具自身校验状态。Exit 的 pending interaction 通过独立的
+> `interaction_controller=mode` 绑定 controller 生命周期。Host 不包含 Plan/Goal 冲突特例。
 
 ## 计划确认交互契约
 

@@ -198,7 +198,8 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
       "id": "finish",
       "exposed_name": "FinishMode",
       "description": "Finish the active mode.",
-      "active_when": "mode"
+      "resumable": true,
+      "interaction_controller": "mode"
     }]
   }
 }
@@ -207,7 +208,9 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
 同一 claim domain 的排他 controller 会在 activate 前得到确定冲突；插件不能用 `replace` 抢占其他 owner。为用户提供
 友好的 `off` 命令，但它仍应返回 release transition。Host 的 `/control status` 与 `/control release ... [--force]`
 不依赖具体插件命令，可在 owner 故障时撤销 gate。`active_when` 由 Host 按模型轮次快照执行，回调不应再次用私有
-`phase` 决定是否应用权限策略。
+`phase` 决定是否应用权限策略。需要常驻模型工具列表的进入、查询和退出工具不要声明 `active_when`；resumable 工具若
+产生应随 controller 释放而取消的等待交互，应改用独立的 `interaction_controller` 声明其生命周期归属。工具可见性与
+pending interaction 归属是两个独立契约。
 
 ## 5. Catalog、owner 与 durable contract
 

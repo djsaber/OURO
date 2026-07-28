@@ -168,6 +168,10 @@ Host 在分发前检查本轮 Run control snapshot，只调用对应 activation 
 通常正是进入、查询和退出 controller 的入口；Tool 只有显式声明 `active_when` 时才按轮次隐藏。Command 不做激活隐藏，
 确保 status/off 控制面始终可达。
 
+工具可见性不承担 pending interaction 的生命周期归属。常驻可见的 resumable Tool 可独立声明
+`interaction_controller=<session-controller-local-id>`；Host 将其等待交互绑定到该 controller，在 release 时明确取消，
+但不会据此裁剪模型工具列表。只有真正不应在非激活阶段出现的工具才使用 `active_when`。
+
 ## 7. 组合与冲突
 
 Session Controller 不取代现有 contribution 规则：
@@ -207,7 +211,8 @@ Plan 是首个迁移样例，但不获得 Host 特权：
 2. plan scaffold Context 与 plan Tool Policy 绑定 `active_when`；
 3. `/plan` 返回 acquire intent，不直接提前激活；
 4. `/plan off` 返回 release intent；重复关闭幂等；
-5. `EnterPlanMode` 与 `ExitPlanMode` 通过相同 transition 协议进入/离开；
+5. `EnterPlanMode` 与 `ExitPlanMode` 始终可见，并通过相同 transition 协议进入/离开；Exit 的等待审批用
+   `interaction_controller` 独立绑定 mode 生命周期；
 6. `/plan off` 在 active 和 awaiting approval 阶段都可用，不要求计划文件存在或非空；
 7. off 不删除 artifact、不表示批准、不创建实施 Run；
 8. awaiting approval 被关闭时，pending request 得到明确 cancellation，旧 resume 不能重新激活；
@@ -233,8 +238,8 @@ Plan 是首个迁移样例，但不获得 Host 特权：
 2. SDK、Manifest、worker、contribution inventory、contract 和 Catalog 全链路 Session Controller；
 3. Command/Tool transition commit、acquire/release/同 owner replace 与 revision/contract 校验；
 4. Tool、Context、Tool Policy、Turn Policy、Continuation、observational Hook 的 `active_when` 和模型轮次 durable
-   snapshot；
-5. builtin Plan 迁移、`/plan off`、审批/AFK 回归与 activation-bound pending interaction 取消；
+   snapshot，以及 resumable Tool 独立的 `interaction_controller` 生命周期绑定；
+5. builtin Plan 迁移、稳定工具列表、`/plan off`、审批/AFK 回归与 controller-owned pending interaction 取消；
 6. Host `/control status|release|release --all [--force]` 管理面；
 7. 启动期 interrupted phase fail-closed，以及未知业务插件同域冲突、异域组合、replace 和双存储测试。
 

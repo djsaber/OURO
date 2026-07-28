@@ -714,6 +714,7 @@ def _worker_tools(
             resume_handler=(instance._tool_resume_handler(item.id) if item.resumable else None),
             supports_unattended=item.supports_unattended,
             active_when=item.active_when,
+            interaction_controller=item.interaction_controller,
         )
         for item in instance.manifest.contributes.tools
         if item.id in available.get("tools", set())

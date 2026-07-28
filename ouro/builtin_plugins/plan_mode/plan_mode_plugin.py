@@ -186,7 +186,7 @@ class PlanModePlugin:
                     effect="state_changing",
                     batch_behavior="exclusive",
                     supports_unattended=True,
-                    active_when="mode",
+                    interaction_controller="mode",
                 ),
             ],
             commands=[

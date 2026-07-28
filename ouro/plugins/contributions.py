@@ -368,9 +368,10 @@ class ContributionCoordinator:
                 or tool.definition.resumable != declaration.resumable
                 or tool.definition.supports_unattended != declaration.supports_unattended
                 or tool.definition.active_when_controller_id != declaration.active_when
+                or tool.definition.interaction_controller_id != declaration.interaction_controller
             ):
                 raise ContributionValidationError(
-                    f"tool permission contract does not match manifest: {declaration.exposed_name}"
+                    f"tool contract does not match manifest: {declaration.exposed_name}"
                 )
             definition = tool.definition.model_copy(
                 update={
@@ -383,9 +384,13 @@ class ContributionCoordinator:
                     "batch_behavior": declaration.batch_behavior,
                     "resumable": declaration.resumable,
                     "supports_unattended": declaration.supports_unattended,
-                    "active_when_controller_id": _canonical_active_when(
+                    "active_when_controller_id": _canonical_controller_id(
                         manifest.plugin_id,
                         declaration.active_when,
+                    ),
+                    "interaction_controller_id": _canonical_controller_id(
+                        manifest.plugin_id,
+                        declaration.interaction_controller,
                     ),
                 }
             )
@@ -573,7 +578,7 @@ class ContributionCoordinator:
                     hook_id=hook_id,
                     owner=owner.key,
                     generation_id=owner.generation_id,
-                    active_when_controller_id=_canonical_active_when(
+                    active_when_controller_id=_canonical_controller_id(
                         manifest.plugin_id,
                         declaration.active_when,
                     ),
@@ -602,7 +607,7 @@ class ContributionCoordinator:
                 failure_mode=declarations[provider.provider_id].failure_mode,
                 owner=owner.key,
                 generation_id=owner.generation_id,
-                active_when_controller_id=_canonical_active_when(
+                active_when_controller_id=_canonical_controller_id(
                     manifest.plugin_id,
                     declarations[provider.provider_id].active_when,
                 ),
@@ -677,7 +682,7 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
-                active_when_controller_id=_canonical_active_when(
+                active_when_controller_id=_canonical_controller_id(
                     manifest.plugin_id,
                     declarations[policy.policy_id].active_when,
                 ),
@@ -705,7 +710,7 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
-                active_when_controller_id=_canonical_active_when(
+                active_when_controller_id=_canonical_controller_id(
                     manifest.plugin_id,
                     declarations[policy.policy_id].active_when,
                 ),
@@ -733,7 +738,7 @@ class ContributionCoordinator:
                 timeout_seconds=declarations[policy.policy_id].timeout_seconds,
                 owner=owner.key,
                 generation_id=owner.generation_id,
-                active_when_controller_id=_canonical_active_when(
+                active_when_controller_id=_canonical_controller_id(
                     manifest.plugin_id,
                     declarations[policy.policy_id].active_when,
                 ),
@@ -1159,7 +1164,7 @@ def _missing_optional(
     )
 
 
-def _canonical_active_when(plugin_id: str, controller_id: str | None) -> str | None:
+def _canonical_controller_id(plugin_id: str, controller_id: str | None) -> str | None:
     if controller_id is None:
         return None
     return f"{plugin_id}/session_controllers/{controller_id}"

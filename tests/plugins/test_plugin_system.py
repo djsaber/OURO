@@ -2800,7 +2800,7 @@ def create_plugin(context): return Plugin()
 
     assert (await service.enable("dev.ouro.tool_permission")).status == "failed"
     assert any(
-        "tool permission contract does not match manifest" in item.message
+        "tool contract does not match manifest" in item.message
         for item in service.diagnostics("dev.ouro.tool_permission")
     )
     await runtime.close()
@@ -3461,6 +3461,31 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
                 "namespace": "bound",
                 "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
                 "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
+            }
+        )
+
+
+def test_native_manifest_rejects_unknown_interaction_controller() -> None:
+    with pytest.raises(ValueError, match="unknown session controller"):
+        PluginManifest.model_validate(
+            {
+                "schema_version": 2,
+                "plugin_id": "dev.ouro.bound",
+                "name": "Bound",
+                "version": "1.0.0",
+                "namespace": "bound",
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "contributes": {
+                    "tools": [
+                        {
+                            "id": "finish",
+                            "exposed_name": "FinishMode",
+                            "description": "Finish the active mode.",
+                            "resumable": True,
+                            "interaction_controller": "missing",
+                        }
+                    ]
+                },
             }
         )
 

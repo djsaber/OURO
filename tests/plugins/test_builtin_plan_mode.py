@@ -295,9 +295,9 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert len(scaffolds) == 3
     assert all(message.role == "system_synthetic" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
-    assert "EnterPlanMode" in first_provider.tool_names[0]
-    assert "ExitPlanMode" not in first_provider.tool_names[0]
-    assert "ExitPlanMode" in first_provider.tool_names[1]
+    assert all(
+        {"EnterPlanMode", "ExitPlanMode"} <= tool_names for tool_names in first_provider.tool_names
+    )
     waiting_call = next(
         call for call in waiting.run.active_tool_batch.calls if call.request.id == "call_exit"
     )
@@ -319,7 +319,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
 
     assert completed.run.status == "completed"
     assert completed.final_text == "Plan approved; ready to implement."
-    assert "ExitPlanMode" not in final_provider.tool_names
+    assert {"EnterPlanMode", "ExitPlanMode"} <= final_provider.tool_names
     completed_snapshot = second_store.load_runtime_session(completed.session.session_id)
     exit_result = next(
         message
@@ -823,6 +823,11 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     catalog = application.plugin_runtime.snapshot()
     enter = catalog.tools.get("EnterPlanMode")
     exit_plan = catalog.tools.get("ExitPlanMode")
+    assert enter.definition.active_when_controller_id is None
+    assert exit_plan.definition.active_when_controller_id is None
+    assert exit_plan.definition.interaction_controller_id == (
+        "dev.ouro.plan_mode/session_controllers/mode"
+    )
     assert enter.definition.description.startswith("Use this tool before")
     assert "Do not call it" in enter.definition.description
     assert exit_plan.definition.description.startswith("Use this tool only after")

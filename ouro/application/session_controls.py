@@ -713,7 +713,7 @@ class SessionControlCoordinator:
         activation_id: str,
         exclude_tool_call_id: str | None = None,
     ) -> str | None:
-        """Abort a waiting Run whose pending tool is activation-bound to this controller."""
+        """Abort a waiting Run whose pending interaction belongs to this controller."""
 
         cancelled_run_id: str | None = None
         with self.store.session_mutation(session_id):
@@ -730,7 +730,7 @@ class SessionControlCoordinator:
                 if call.status == "waiting_user"
                 and call.request.id != exclude_tool_call_id
                 and call.invocation is not None
-                and call.invocation.active_when_controller_id == controller_id
+                and call.invocation.interaction_controller_id == controller_id
             ]
             if not owned:
                 return None

@@ -133,14 +133,17 @@ class ToolContributionSpec(OuroModel):
     resumable: bool = False
     supports_unattended: bool = False
     active_when: str | None = None
+    interaction_controller: str | None = None
     optional: bool = False
 
     @model_validator(mode="after")
-    def validate_permission_control(self) -> ToolContributionSpec:
+    def validate_tool_contract(self) -> ToolContributionSpec:
         if self.permission_control == "tool" and self.permission_mode == "approval":
             raise ValueError("tool-controlled permission must be auto or deny")
         if self.supports_unattended and not self.resumable:
             raise ValueError("unattended tool input handling requires a resumable tool")
+        if self.interaction_controller is not None and not self.resumable:
+            raise ValueError("interaction controller binding requires a resumable tool")
         return self
 
     @field_validator("id")
@@ -148,9 +151,9 @@ class ToolContributionSpec(OuroModel):
     def _validate_id(cls, value: str) -> str:
         return _validate_local_id(value)
 
-    @field_validator("active_when")
+    @field_validator("active_when", "interaction_controller")
     @classmethod
-    def _validate_active_when(cls, value: str | None) -> str | None:
+    def _validate_controller_reference(cls, value: str | None) -> str | None:
         return _validate_local_id(value) if value is not None else None
 
     @field_validator("exposed_name")
@@ -308,7 +311,7 @@ class PluginContributes(OuroModel):
         if len(exposed_names) != len(set(exposed_names)):
             raise ValueError("duplicate tool exposed_name")
         controller_ids = {item.id for item in self.session_controllers}
-        activation_refs = [
+        controller_refs = [
             (item.id, item.active_when)
             for items in (
                 self.tools,
@@ -320,9 +323,12 @@ class PluginContributes(OuroModel):
             )
             for item in items
         ]
-        for item_id, active_when in activation_refs:
-            if active_when is not None and active_when not in controller_ids:
-                raise ValueError(f"{item_id} references unknown session controller: {active_when}")
+        controller_refs.extend((item.id, item.interaction_controller) for item in self.tools)
+        for item_id, controller_ref in controller_refs:
+            if controller_ref is not None and controller_ref not in controller_ids:
+                raise ValueError(
+                    f"{item_id} references unknown session controller: {controller_ref}"
+                )
         return self
 
     def by_kind(self) -> dict[PluginCapability, list[Any]]:

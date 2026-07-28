@@ -59,3 +59,12 @@ def test_tool_must_be_resumable_to_support_unattended_resolution() -> None:
             description="Invalid capability declaration.",
             supports_unattended=True,
         )
+
+
+def test_tool_must_be_resumable_to_bind_a_pending_interaction_to_a_controller() -> None:
+    with pytest.raises(ValidationError, match="interaction controller binding requires"):
+        ToolDefinition(
+            name="Invalid",
+            description="Invalid interaction ownership declaration.",
+            interaction_controller_id="dev.example/session_controllers/mode",
+        )

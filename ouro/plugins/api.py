@@ -588,6 +588,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             resumable=contribution.resume_handler is not None,
             supports_unattended=contribution.supports_unattended,
             active_when_controller_id=contribution.active_when,
+            interaction_controller_id=contribution.interaction_controller,
             metadata={"sdk_contribution_id": contribution.id},
         ),
         handler=handler,

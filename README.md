@@ -29,8 +29,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
   候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
   通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
   Host-owned 工具执行上下文与限制性 tool policy 实现 plan mode、危险命令确认和受保护路径等通用扩展；
-  Session Controller 通过声明式 control claim 仲裁长期模式，支持模型轮次级 `active_when`、`/control` 逃生口和
-  activation-bound pending interaction 取消；Host 不包含 Plan/Goal 冲突特例。
+  Session Controller 通过声明式 control claim 仲裁长期模式，分别支持模型轮次级 `active_when` 可见性、
+  `interaction_controller` 等待交互归属、`/control` 逃生口和 pending interaction 取消；Host 不包含 Plan/Goal 冲突特例。
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见

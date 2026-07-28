@@ -49,14 +49,17 @@ class ToolDefinition(OuroModel):
     resumable: bool = False
     supports_unattended: bool = False
     active_when_controller_id: str | None = None
+    interaction_controller_id: str | None = None
     kind: ToolKind = "standard"
     metadata: Metadata = MetadataField
 
     @model_validator(mode="after")
-    def validate_permission_control(self) -> Self:
+    def validate_tool_contract(self) -> Self:
         _validate_permission_control(self.permission_mode, self.permission_control)
         if self.supports_unattended and not self.resumable:
             raise ValueError("unattended tool input handling requires a resumable tool")
+        if self.interaction_controller_id is not None and not self.resumable:
+            raise ValueError("interaction controller binding requires a resumable tool")
         return self
 
 
@@ -101,6 +104,7 @@ class ToolInvocation(OuroModel):
     contract_hash: str | None = None
     execution_contract_hash: str | None = None
     active_when_controller_id: str | None = None
+    interaction_controller_id: str | None = None
     tool_policy_ids: list[str] = Field(default_factory=list)
     tool_policy_reason: str | None = None
 

@@ -1351,6 +1351,9 @@ class ToolCallCoordinator:
             active_when_controller_id=(
                 definition.active_when_controller_id if definition is not None else None
             ),
+            interaction_controller_id=(
+                definition.interaction_controller_id if definition is not None else None
+            ),
         )
         sequence = await self.events.emit(
             emitted,

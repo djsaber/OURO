@@ -235,6 +235,7 @@ class ToolContribution:
     resume_handler: ToolResumeHandler | None = None
     supports_unattended: bool = False
     active_when: str | None = None
+    interaction_controller: str | None = None
 
 
 ToolPolicyAction = Literal["ignore", "require_approval", "deny"]
