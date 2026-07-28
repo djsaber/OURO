@@ -105,6 +105,7 @@ class InteractiveOutput:
         self._restore_prompt_status = True
         self._transient_depth = 0
         self._deferred_events: list[EventRecord] = []
+        self._closed = False
 
     async def start_waiting(
         self,
@@ -184,6 +185,23 @@ class InteractiveOutput:
                 self._write(f"    → {_truncate(_single_line(item.suggested_action), 140)}\n")
 
     async def close(self) -> None:
+        """Permanently stop this projection and release its terminal regions."""
+
+        async with self._terminal_lock:
+            if self._closed:
+                return
+            self._closed = True
+            await self._reset()
+
+    async def reset(self) -> None:
+        """Clear current visual state while keeping the projection reusable."""
+
+        async with self._terminal_lock:
+            if self._closed:
+                return
+            await self._reset()
+
+    async def _reset(self) -> None:
         self.transient_region.clear()
         await self.status_line.clear()
         await self.tool_lines.clear()
@@ -212,6 +230,8 @@ class InteractiveOutput:
         # makes the render/defer decision and the render itself atomic against
         # prompt_scope's handoff.
         async with self._terminal_lock:
+            if self._closed:
+                return
             if self._prompt_depth > 0:
                 # A foreground prompt owns the terminal; buffer transcript events
                 # and replay them in sequence once the lease is released so spinner

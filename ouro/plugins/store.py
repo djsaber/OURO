@@ -195,7 +195,7 @@ class PluginPackageStore:
         if not self.audit_path.exists():
             return []
         events: list[PluginAuditEvent] = []
-        for line in self.audit_path.read_text(encoding="utf-8").splitlines():
+        for line in self.audit_path.read_text(encoding="utf-8").split("\n"):
             if line.strip():
                 events.append(PluginAuditEvent.model_validate_json(line))
         return events[-limit:]

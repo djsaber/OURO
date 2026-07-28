@@ -815,7 +815,10 @@ class LocalSessionStore:
         if not path.exists():
             return []
         try:
-            return [line for line in path.read_text("utf-8").splitlines() if line.strip()]
+            # JSON Lines defines LF as the record delimiter. ``str.splitlines``
+            # also treats valid JSON string content such as U+2028/U+2029 as a
+            # boundary and would split one durable record in the middle.
+            return [line for line in path.read_text("utf-8").split("\n") if line.strip()]
         except OSError as exc:
             raise PersistenceError(f"could not read {path}: {exc}") from exc
 
@@ -884,7 +887,7 @@ def _read_last_nonempty_line(path: Path, *, chunk_size: int = 8192) -> str:
             position -= read_size
             file.seek(position)
             buffer = file.read(read_size) + buffer
-            lines = buffer.splitlines()
+            lines = buffer.split(b"\n")
             if position > 0 and len(lines) <= 1:
                 continue
             for raw in reversed(lines):

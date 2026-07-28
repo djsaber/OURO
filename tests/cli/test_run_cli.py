@@ -888,6 +888,16 @@ async def test_interactive_keeps_running_when_approval_resume_fails(
         ],
     )
 
+    original_drain = runtime.event_recorder.drain
+    drain_calls = 0
+
+    async def observed_drain() -> None:
+        nonlocal drain_calls
+        drain_calls += 1
+        await original_drain()
+
+    monkeypatch.setattr(runtime.event_recorder, "drain", observed_drain)
+
     async def fail_approval_resume(**kwargs):
         del kwargs
         raise PersistenceError("approval resume failed")
@@ -895,17 +905,27 @@ async def test_interactive_keeps_running_when_approval_resume_fails(
     monkeypatch.setattr(runtime, "approve_tool", fail_approval_resume)
     inputs = iter(["write file", "n", "", "/exit"])
     outputs: list[str] = []
+    drains_before_error: list[int] = []
+
+    def collect_output(text: str) -> None:
+        if text == "Error: approval resume failed":
+            drains_before_error.append(drain_calls)
+        outputs.append(text)
 
     code = await run_interactive(
         runtime=runtime,
         input_func=lambda _prompt: next(inputs),
-        output_func=outputs.append,
+        output_func=collect_output,
     )
+    await original_drain()
 
     assert code == 0
+    assert drains_before_error == [1]
     assert not target.exists()
     assert any(output.startswith("Approval required: Write(") for output in outputs)
     assert "Error: approval resume failed" in outputs
+    error_index = outputs.index("Error: approval resume failed")
+    assert not any("Waiting" in output for output in outputs[error_index + 1 :])
 
 
 async def test_interactive_open_waiting_session_drains_follow_up_after_rejection(tmp_path) -> None:

@@ -98,6 +98,7 @@ async def run_interactive(
             agents=(owned_application.agents if owned_application is not None else None),
         )
     finally:
+        await runtime.drain_events()
         await output.close()
         if owned_application is not None:
             await owned_application.close()
@@ -143,7 +144,7 @@ async def _run_interactive_session(
                         session_id,
                     )
                 except OuroError as exc:
-                    output_func(f"Error: {exc}")
+                    await _report_runtime_error(runtime, output, output_func, exc)
                 plugin_run_task = None
             try:
                 raw_line = await coordinator.read_prompt(
@@ -155,7 +156,7 @@ async def _run_interactive_session(
                 output_func("")
                 return 0
             except OuroError as exc:
-                output_func(f"Error: {exc}")
+                await _report_runtime_error(runtime, output, output_func, exc)
                 continue
 
             if plugin_run_task is not None and plugin_run_task.done():
@@ -176,7 +177,7 @@ async def _run_interactive_session(
                     if consumes_line:
                         continue
                 except OuroError as exc:
-                    output_func(f"Error: {exc}")
+                    await _report_runtime_error(runtime, output, output_func, exc)
                     plugin_run_task = None
 
             line = raw_line.strip()
@@ -202,7 +203,7 @@ async def _run_interactive_session(
                         interaction_mode=current_interaction_mode,
                     )
                 except OuroError as exc:
-                    output_func(f"Error: {exc}")
+                    await _report_runtime_error(runtime, output, output_func, exc)
                     continue
                 session_id = command_result.session_id
                 if command_result.approval_mode is not None:
@@ -267,11 +268,23 @@ async def _run_interactive_session(
                     session_id,
                 )
             except OuroError as exc:
-                await output.close()
-                output_func(f"Error: {exc}")
+                await _report_runtime_error(runtime, output, output_func, exc)
                 continue
     finally:
         await coordinator.aclose()
+
+
+async def _report_runtime_error(
+    runtime: RuntimeService,
+    output: InteractiveOutput,
+    output_func: OutputFunc,
+    error: OuroError,
+) -> None:
+    """Render an error after all earlier lifecycle events have settled."""
+
+    await runtime.drain_events()
+    await output.reset()
+    output_func(f"Error: {error}")
 
 
 async def _submit_plugin_inputs(

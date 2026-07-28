@@ -109,7 +109,7 @@ class LocalUsageLedger:
                 return self._cached_events, self._cached_entries
             events: list[UsageLedgerEvent] = []
             for line_number, line in enumerate(
-                self.journal_path.read_text("utf-8").splitlines(),
+                self.journal_path.read_text("utf-8").split("\n"),
                 start=1,
             ):
                 if not line.strip():

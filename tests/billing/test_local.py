@@ -69,6 +69,16 @@ def test_local_usage_ledger_rejects_conflicting_ids(tmp_path) -> None:
         ledger.record(_entry(0).model_copy(update={"input_tokens": 99}))
 
 
+def test_local_usage_ledger_preserves_unicode_line_separators_in_notes(tmp_path) -> None:
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    note = "first\u2028second\u2029third"
+
+    ledger.reset(UsageFilter(), note=note)
+
+    assert LocalUsageLedger(tmp_path).list_events()[0].note == note
+
+
 def test_local_usage_ledger_serializes_concurrent_writers(tmp_path) -> None:
     def write(index: int) -> None:
         ledger = LocalUsageLedger(tmp_path)

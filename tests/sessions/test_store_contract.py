@@ -95,6 +95,24 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     assert has_more is True
 
 
+def test_session_store_preserves_unicode_line_separators_inside_messages(
+    session_store: SessionStore,
+) -> None:
+    session = SessionRecord(title="Unicode separators")
+    text = "first\u2028second\u2029third"
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="assistant",
+        text=text,
+        sequence=1,
+    )
+
+    session_store.create_session_snapshot(session, [message])
+
+    assert session_store.load_runtime_session(session.session_id).messages == [message]
+    assert session_store.load_messages_page(session.session_id) == ([message], None)
+
+
 def test_session_store_replaces_latest_context_atomically(session_store: SessionStore) -> None:
     session = SessionRecord(title="Context")
     message = MessageRecord.text(session_id=session.session_id, role="user", text="hello")

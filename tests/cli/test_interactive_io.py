@@ -898,6 +898,26 @@ async def test_prompt_scope_defers_transcript_events_until_lease_released() -> N
     await output.close()
 
 
+async def test_output_reset_is_reusable_and_close_rejects_late_events() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+
+    await output.start_waiting()
+    await output.reset()
+    assert output.status_line.active is False
+
+    await output.handle_event(_event(1, "model_text_delta", {"text": "continued"}))
+    assert "continued" in "".join(outputs)
+
+    await output.close()
+    rendered_after_close = "".join(outputs)
+    await output.handle_event(_event(2, "model_text_delta", {"text": "late"}))
+    assert "".join(outputs) == rendered_after_close
+
+
 async def test_prompt_scope_is_reentrant_and_only_outer_scope_replays() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(

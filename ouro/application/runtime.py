@@ -391,6 +391,11 @@ class RuntimeService:
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
 
+    async def drain_events(self) -> None:
+        """Wait until every event observer has processed the published prefix."""
+
+        await self.event_recorder.drain()
+
     def session_control_activations(
         self,
         session_id: str,

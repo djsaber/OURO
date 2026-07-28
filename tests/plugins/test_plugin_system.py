@@ -51,6 +51,7 @@ from ouro.plugins.manifest import PluginContributes, PluginManifest
 from ouro.plugins.mcp import PluginMCPResource
 from ouro.plugins.models import (
     InstalledPlugin,
+    PluginAuditEvent,
     PluginGenerationRecord,
     PluginStateDocument,
     create_configuration_revision,
@@ -411,6 +412,16 @@ def test_boot_recovery_quarantines_unreadable_state_instead_of_raising(tmp_path)
     # Recovery heals the document: strict reads see an empty registry again.
     assert not store.state_path.exists()
     assert store.read_state() == PluginStateDocument()
+
+
+def test_plugin_audit_preserves_unicode_line_separators(tmp_path) -> None:
+    store = PluginPackageStore(tmp_path / "home")
+    detail = "first\u2028second\u2029third"
+    event = PluginAuditEvent(action="test", detail=detail)
+
+    store.append_audit(event)
+
+    assert store.audit_events() == [event]
 
 
 def test_boot_recovery_passes_through_a_readable_state(tmp_path) -> None:
