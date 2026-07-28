@@ -9,7 +9,11 @@ from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.session_controls import SessionControlState
+from ouro.core.session_controls import (
+    SessionControlState,
+    SessionControlTransitionRequest,
+    SessionInputMode,
+)
 from ouro.core.tool_batches import ToolCallBatchRecord
 
 RunStatus = Literal[
@@ -99,11 +103,43 @@ class RunContinuationControllerRef(OuroModel):
         return f"{self.plugin_id}/continuation_policies/{self.policy_id}"
 
 
+class RunContinuationSettlementPlan(OuroModel):
+    """Durable policy decision staged without process-local generation identity."""
+
+    plugin_id: str
+    policy_id: str
+    execution_contract_hash: str
+    contract_hash: str
+    action: Literal["continue", "complete", "pause", "fail"]
+    prompt: str | None = None
+    mode: SessionInputMode = "follow_up"
+    title: str | None = None
+    reason: str | None = None
+    state_revision: int | None = Field(default=None, ge=0)
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(
+        default_factory=list
+    )
+
+    @model_validator(mode="after")
+    def validate_action_payload(self) -> Self:
+        if self.action == "continue":
+            if self.prompt is None or not self.prompt.strip():
+                raise ValueError("continue settlement plan requires a non-empty prompt")
+            if self.session_control_transitions:
+                raise ValueError(
+                    "continue settlement plan cannot contain Session control transitions"
+                )
+        elif self.prompt is not None:
+            raise ValueError(f"{self.action} settlement plan cannot contain a prompt")
+        return self
+
+
 class RunContinuationCheckpoint(OuroModel):
     decision_id: str = Field(default_factory=lambda: new_id("decision"))
     queue_id: str = Field(default_factory=lambda: new_id("queued"))
     state: RunContinuationState = "pending"
     controllers: list[RunContinuationControllerRef] = Field(default_factory=list)
+    settlement_plan: RunContinuationSettlementPlan | None = None
     action: Literal["continue", "complete", "pause", "fail"] | None = None
     selected_controller_id: str | None = None
     reason: str | None = None

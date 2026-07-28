@@ -193,6 +193,7 @@ class LocalApplication:
             if self.plugin_runtime is not None:
                 await self.plugin_runtime.start()
             self.runtime.reconcile_interrupted_session_controls()
+            await self.runtime.reconcile_pending_run_continuations()
             supervisor_start = await self.supervisor.start()
             self._runtime_startup_diagnostics = supervisor_start.diagnostics
             if self.agents is not None:

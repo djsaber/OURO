@@ -856,6 +856,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert replayed_enter.session_control_transitions == entered.session_control_transitions
     activated = await controller.activate(
         session_id=session_id,
+        session_kind="primary",
         activation_id="activation_plan_1",
         payload={"activation_tool_call_id": "call_enter"},
         workspace=str(workspace),
@@ -958,6 +959,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert accepted.session_control_transitions[0].action == "release"
     await controller.deactivate(
         session_id=session_id,
+        session_kind="primary",
         activation_id="activation_plan_1",
         reason="test_accepted",
         workspace=str(workspace),
@@ -968,6 +970,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     assert isinstance(next_activation, ToolResult)
     activated_again = await controller.activate(
         session_id=session_id,
+        session_kind="primary",
         activation_id="activation_plan_2",
         payload={"activation_tool_call_id": "call_enter_2"},
         workspace=str(workspace),

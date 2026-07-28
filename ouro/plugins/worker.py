@@ -15,6 +15,7 @@ from typing import Any
 
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.plugins.manifest import PluginManifest
+from ouro.plugins.package import PLUGIN_API_VERSION
 from ouro.plugins.paths import portable_relative_path
 from ouro.sdk.plugins import v1 as sdk
 
@@ -314,7 +315,7 @@ class WorkerPluginInstance:
             "initialize",
             {
                 "protocol_version": self.manifest.runtime.protocol,
-                "plugin_api": "1.1",
+                "plugin_api": PLUGIN_API_VERSION,
                 "plugin_id": self.manifest.plugin_id,
                 "package_digest": self.package_digest,
                 "grants": sorted(self.permissions),
@@ -530,6 +531,7 @@ class WorkerPluginInstance:
                     "contribution_id": identity,
                     "call": {
                         "session_id": call.session_id,
+                        "session_kind": call.session_kind,
                         "activation_id": call.activation_id,
                         "controller_id": call.controller_id,
                         "action": call.action,
@@ -609,6 +611,7 @@ class WorkerPluginInstance:
                 title=(str(result["title"]) if result.get("title") is not None else None),
                 reason=(str(result["reason"]) if result.get("reason") is not None else None),
                 state_revision=revision,
+                session_control_transitions=tuple(_worker_control_transitions(result)),
             )
 
         return handler
@@ -1169,6 +1172,7 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "title", str, method, allow_none=True)
         _require_optional_type(result, "reason", str, method, allow_none=True)
         _require_optional_type(result, "state_revision", int, method, allow_none=True)
+        _worker_control_transitions(result)
         return
     if method == "tool_policy.call":
         action = result.get("action", "ignore")

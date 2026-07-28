@@ -7,7 +7,7 @@
   "namespace": "worker_tool",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "^1.1.0"
+    "plugin_api": "^1.2.0"
   },
   "runtime": {
     "kind": "worker",
@@ -15,7 +15,7 @@
       "{python}",
       "./worker.py"
     ],
-    "protocol": "1.1"
+    "protocol": "1.2"
   },
   "contributes": {
     "tools": [

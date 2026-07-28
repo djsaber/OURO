@@ -27,11 +27,13 @@ from ouro.core.session_controls import (
     SessionControlActivation,
     SessionControlClaim,
     SessionControlState,
+    SessionControlTransitionRequest,
     SessionInputRequest,
 )
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
+    RunContinuationSettlementPlan,
     RunRecord,
     SessionRecord,
 )
@@ -41,6 +43,11 @@ from ouro.plugins.registry import (
     PluginCommandError,
     PluginCommandRegistry,
     PluginCommandResult,
+)
+from ouro.plugins.session_controllers import (
+    PluginSessionController,
+    PluginSessionControllerOutput,
+    PluginSessionControllerRegistry,
 )
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.tools import ToolRegistry
@@ -420,6 +427,401 @@ async def test_continuation_conflict_pauses_without_choosing_by_priority(tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("run_status", ["aborted", "failed", "paused", "recoverable"])
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+@pytest.mark.parametrize("decision_action", ["pause", "fail"])
+async def test_abnormal_terminal_policy_can_pause_and_release_exact_control(
+    tmp_path,
+    run_status,
+    backend,
+    decision_action,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / run_status)
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / f"{run_status}.sqlite3")
+    )
+    store.initialize()
+    plugin_id = "dev.example.mode"
+    canonical_controller_id = f"{plugin_id}/session_controllers/mode"
+    activation = _activation(plugin_id, "mode")
+    session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-mode").model_copy(
+        update={
+            "active_when_controller_id": canonical_controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status=run_status,
+        error="terminal error",
+        continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
+    )
+    store.save_run(run)
+    outcomes = []
+    lifecycle_calls = []
+    release_payload = {"status": decision_action, "report": f"Run ended as {run_status}"}
+
+    def decide(outcome):
+        outcomes.append(outcome)
+        return ContinuationDecision(
+            action=decision_action,
+            reason=f"terminal_run_{decision_action}",
+            session_control_transitions=[
+                SessionControlTransitionRequest(
+                    action="release",
+                    controller_id="mode",
+                    payload=release_payload,
+                )
+            ],
+        )
+
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "mode-policy",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=plugin_id,
+                policy_id="boundary",
+                handler=decide,
+                generation_id="gen-mode",
+                execution_contract_hash=controller_ref.execution_contract_hash,
+                contract_hash=controller_ref.contract_hash,
+                active_when_controller_id=canonical_controller_id,
+            ),
+        ),
+    )
+    controllers = _session_controller_registry(
+        plugin_id,
+        controller_ref.execution_contract_hash,
+        lifecycle_calls,
+    )
+    service = RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+        session_controllers=controllers,
+    )
+
+    first = await service.settle(session_id=session.session_id, run_id=run.run_id)
+    second = await service.settle(session_id=session.session_id, run_id=run.run_id)
+
+    assert [outcome.status for outcome in outcomes] == [run_status]
+    assert first.settled is True
+    assert second.settled is False
+    assert first.run.continuation is not None
+    assert first.run.continuation.action == decision_action
+    assert first.run.continuation.settlement_plan is not None
+    assert first.run.continuation.settlement_plan.action == decision_action
+    assert store.load_session_record(session.session_id).controls.activations == []
+    assert len(lifecycle_calls) == 1
+    assert lifecycle_calls[0].action == "deactivate"
+    assert lifecycle_calls[0].payload == release_payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_mode", "error_type"),
+    [
+        ("unavailable", "ContinuationPolicyUnavailable"),
+        ("exception", "RuntimeError"),
+        ("timeout", "TimeoutError"),
+    ],
+)
+async def test_bound_policy_failure_force_releases_only_its_exact_activation(
+    tmp_path,
+    failure_mode,
+    error_type,
+) -> None:
+    store = LocalSessionStore(tmp_path / failure_mode)
+    store.initialize()
+    plugin_id = "dev.example.owner"
+    activation = _activation(plugin_id, "mode")
+    survivor = _activation("dev.example.survivor", "mode")
+    session = SessionRecord(
+        controls=SessionControlState(revision=1, activations=[activation, survivor])
+    )
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-owner").model_copy(
+        update={
+            "active_when_controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    if failure_mode != "unavailable":
+        if failure_mode == "timeout":
+
+            async def fail(_outcome):
+                await asyncio.sleep(0.05)
+                return ContinuationDecision()
+
+            timeout_seconds = 0.001
+        else:
+
+            def fail(_outcome):
+                raise RuntimeError("owner failed")
+
+            timeout_seconds = 1.0
+        registry.replace_owner(
+            "owner",
+            (
+                ContinuationPolicyRegistration(
+                    plugin_id=plugin_id,
+                    policy_id="boundary",
+                    handler=fail,
+                    timeout_seconds=timeout_seconds,
+                    generation_id="gen-owner",
+                    execution_contract_hash=controller_ref.execution_contract_hash,
+                    contract_hash=controller_ref.contract_hash,
+                    active_when_controller_id=activation.controller_id,
+                ),
+            ),
+        )
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    remaining = store.load_session_record(session.session_id).controls.activations
+    assert settlement.run.continuation is not None
+    assert settlement.run.continuation.action == "pause"
+    assert settlement.run.continuation.reason == "continuation_policy_failed"
+    assert [failure.error_type for failure in settlement.failures] == [error_type]
+    assert [item.activation_id for item in remaining] == [survivor.activation_id]
+    assert any("owner-private cleanup was not confirmed" in item for item in settlement.diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_invalid_continuation_transition_does_not_release_another_activation(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    plugin_id = "dev.example.owner"
+    bound = _activation(plugin_id, "mode")
+    other = _activation(plugin_id, "other")
+    session = SessionRecord(controls=SessionControlState(revision=1, activations=[bound, other]))
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-owner").model_copy(
+        update={
+            "active_when_controller_id": bound.controller_id,
+            "activation_id": bound.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "owner",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=plugin_id,
+                policy_id="boundary",
+                handler=lambda _outcome: ContinuationDecision(
+                    action="complete",
+                    session_control_transitions=[
+                        SessionControlTransitionRequest(
+                            action="release",
+                            activation_id=other.activation_id,
+                        )
+                    ],
+                ),
+                generation_id="gen-owner",
+                execution_contract_hash=controller_ref.execution_contract_hash,
+                contract_hash=controller_ref.contract_hash,
+                active_when_controller_id=bound.controller_id,
+            ),
+        ),
+    )
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    remaining = store.load_session_record(session.session_id).controls.activations
+    assert settlement.run.continuation is not None
+    assert settlement.run.continuation.reason == "continuation_decision_invalid"
+    assert [item.activation_id for item in remaining] == [other.activation_id]
+
+
+@pytest.mark.asyncio
+async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activation(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    plugin_id = "dev.example.mode"
+    old_activation = _activation(plugin_id, "mode")
+    new_activation = _activation(plugin_id, "mode")
+    session = SessionRecord(
+        controls=SessionControlState(revision=2, activations=[new_activation])
+    )
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-before").model_copy(
+        update={
+            "active_when_controller_id": old_activation.controller_id,
+            "activation_id": old_activation.activation_id,
+        }
+    )
+    plan = RunContinuationSettlementPlan(
+        plugin_id=plugin_id,
+        policy_id="boundary",
+        execution_contract_hash=controller_ref.execution_contract_hash,
+        contract_hash=controller_ref.contract_hash,
+        action="complete",
+        session_control_transitions=[
+            SessionControlTransitionRequest(
+                action="release",
+                controller_id="mode",
+                activation_id=old_activation.activation_id,
+            )
+        ],
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(
+            controllers=[controller_ref],
+            settlement_plan=plan,
+        ),
+    )
+    store.save_run(run)
+    policy_calls = 0
+
+    def should_not_run(_outcome):
+        nonlocal policy_calls
+        policy_calls += 1
+        raise AssertionError("staged decisions must not be reevaluated")
+
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "rebuilt-owner",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=plugin_id,
+                policy_id="boundary",
+                handler=should_not_run,
+                generation_id="gen-after",
+                execution_contract_hash=controller_ref.execution_contract_hash,
+                contract_hash=controller_ref.contract_hash,
+                active_when_controller_id=old_activation.controller_id,
+            ),
+        ),
+    )
+    controllers = _session_controller_registry(
+        plugin_id,
+        controller_ref.execution_contract_hash,
+        [],
+        generation_id="gen-after",
+    )
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+        session_controllers=controllers,
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    remaining = store.load_session_record(session.session_id).controls.activations
+    assert policy_calls == 0
+    assert settlement.run.continuation is not None
+    assert settlement.run.continuation.action == "complete"
+    assert [item.activation_id for item in remaining] == [new_activation.activation_id]
+
+
+@pytest.mark.asyncio
+async def test_runtime_startup_reconciliation_replays_pending_settlement_without_running(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    controller_ref = _controller("dev.example.mode", "boundary", "gen-before")
+    plan = RunContinuationSettlementPlan(
+        plugin_id=controller_ref.plugin_id,
+        policy_id=controller_ref.policy_id,
+        execution_contract_hash=controller_ref.execution_contract_hash,
+        contract_hash=controller_ref.contract_hash,
+        action="continue",
+        prompt="Resume the durable boundary work.",
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(
+            controllers=[controller_ref],
+            settlement_plan=plan,
+        ),
+    )
+    store.save_run(run)
+    policy_calls = 0
+
+    def should_not_run(_outcome):
+        nonlocal policy_calls
+        policy_calls += 1
+        raise AssertionError("startup must replay the staged plan")
+
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "rebuilt-owner",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=controller_ref.plugin_id,
+                policy_id=controller_ref.policy_id,
+                handler=should_not_run,
+                generation_id="gen-after",
+                execution_contract_hash=controller_ref.execution_contract_hash,
+                contract_hash=controller_ref.contract_hash,
+            ),
+        ),
+    )
+    provider = CountingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="recovery", provider_id=provider.provider_id),
+        ),
+        tools=ToolRegistry(),
+        continuations=registry,
+    )
+
+    first = await runtime.reconcile_pending_run_continuations()
+    second = await runtime.reconcile_pending_run_continuations()
+
+    restored = store.load_run(session.session_id, run.run_id)
+    queued = runtime.queued_inputs.eligible(store.load_runtime_session(session.session_id))
+    events, _ = store.load_events_page(session.session_id, limit=100)
+    assert first == (run.run_id,)
+    assert second == ()
+    assert policy_calls == 0
+    assert provider.calls == 0
+    assert restored.continuation is not None
+    assert restored.continuation.action == "continue"
+    assert [item.prompt for item in queued] == ["Resume the durable boundary work."]
+    assert [event.event_type for event in events].count("run_continuation_resolved") == 1
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -647,6 +1049,52 @@ def _controller(
         contract_hash=f"contract-{plugin_id}",
         execution_contract_hash=f"execution-{plugin_id}",
     )
+
+
+def _activation(
+    plugin_id: str,
+    controller_id: str,
+) -> SessionControlActivation:
+    return SessionControlActivation(
+        controller_id=f"{plugin_id}/session_controllers/{controller_id}",
+        plugin_id=plugin_id,
+        controller_local_id=controller_id,
+        plugin_class="user",
+        release_id=f"release-{plugin_id}",
+        generation_id=f"generation-{plugin_id}",
+        execution_contract_hash=f"execution-{plugin_id}",
+        claims=[SessionControlClaim(domain=f"{plugin_id}.{controller_id}")],
+    )
+
+
+def _session_controller_registry(
+    plugin_id: str,
+    execution_contract_hash: str,
+    lifecycle_calls: list,
+    *,
+    generation_id: str = "gen-mode",
+) -> PluginSessionControllerRegistry:
+    async def deactivate(call):
+        lifecycle_calls.append(call)
+        return PluginSessionControllerOutput()
+
+    controller = PluginSessionController(
+        controller_id="mode",
+        description="Own one generic Session mode.",
+        claims=(SessionControlClaim(domain=f"{plugin_id}.mode"),),
+        activate_handler=lambda _call: PluginSessionControllerOutput(),
+        deactivate_handler=deactivate,
+        plugin_id=plugin_id,
+        plugin_class="user",
+        release_id=f"release-{plugin_id}",
+        package_digest=f"release-{plugin_id}",
+        generation_id=generation_id,
+        contract_hash="session-controller-contract",
+        execution_contract_hash=execution_contract_hash,
+    )
+    registry = PluginSessionControllerRegistry()
+    registry.replace_owner("session-controller", (controller,))
+    return registry
 
 
 def _policy(

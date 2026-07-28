@@ -25,7 +25,10 @@ from ouro.application.queued_inputs import (
     QueuedInputSource,
 )
 from ouro.application.recovery import RunRecoveryService
-from ouro.application.run_continuations import RunContinuationService
+from ouro.application.run_continuations import (
+    RunContinuationService,
+    RunContinuationSettlement,
+)
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
@@ -409,6 +412,54 @@ class RuntimeService:
             if self.session_controls.reconcile_interrupted(entry.session_id):
                 reconciled.append(entry.session_id)
         return tuple(reconciled)
+
+    async def reconcile_pending_run_continuations(self) -> tuple[str, ...]:
+        """Replay unfinished terminal continuation settlements without starting Runs."""
+
+        settled_run_ids: list[str] = []
+        for entry in self.store.list_sessions():
+            snapshot = self.store.load_runtime_session(entry.session_id)
+            for run in snapshot.runs:
+                checkpoint = run.continuation
+                if (
+                    run.kind != "agent"
+                    or run.status in ACTIVE_RUN_STATUSES
+                    or checkpoint is None
+                    or checkpoint.state == "resolved"
+                ):
+                    continue
+                snapshot_error: str | None = None
+                try:
+                    await self._ensure_extension_snapshot(run)
+                except Exception as exc:  # noqa: BLE001 - recovery must fail closed
+                    snapshot_error = type(exc).__name__
+                try:
+                    settlement = await RunContinuationService(
+                        store=self.store,
+                        registry=self._continuations_for_run(run.run_id),
+                        queue=self.queued_inputs,
+                        session_controls=self.session_controls,
+                        session_controllers=self._session_controllers_for_run(run.run_id),
+                    ).settle(
+                        session_id=run.session_id,
+                        run_id=run.run_id,
+                    )
+                    if not settlement.settled:
+                        continue
+                    settled_run_ids.append(run.run_id)
+                    diagnostics = (
+                        (f"extension snapshot recovery failed: {snapshot_error}",)
+                        if snapshot_error is not None
+                        else ()
+                    )
+                    await self._emit_continuation_resolution(
+                        settlement,
+                        [],
+                        extra_diagnostics=diagnostics,
+                    )
+                finally:
+                    self._release_extension_snapshot(run.run_id)
+        return tuple(settled_run_ids)
 
     async def release_session_control(
         self,
@@ -2208,6 +2259,8 @@ class RuntimeService:
                     store=self.store,
                     registry=self._continuations_for_run(run.run_id),
                     queue=self.queued_inputs,
+                    session_controls=self.session_controls,
+                    session_controllers=self._session_controllers_for_run(run.run_id),
                 )
                 settlement = await continuation_service.settle(
                     session_id=run.session_id,
@@ -2215,26 +2268,8 @@ class RuntimeService:
                     final_text=result.final_text,
                 )
                 run = settlement.run
-                if settlement.settled and run.continuation is not None:
-                    await self.event_recorder.emit(
-                        result.events,
-                        self.store.latest_event_sequence(run.session_id),
-                        session_id=run.session_id,
-                        run_id=run.run_id,
-                        event_type="run_continuation_resolved",
-                        payload={
-                            "decision_id": run.continuation.decision_id,
-                            "action": run.continuation.action,
-                            "controller_id": run.continuation.selected_controller_id,
-                            "reason": run.continuation.reason,
-                            "queued": settlement.queued,
-                            "failure_count": len(settlement.failures),
-                            "failures": [
-                                failure.model_dump(mode="json") for failure in settlement.failures
-                            ],
-                            "diagnostics": list(settlement.diagnostics),
-                        },
-                    )
+                if settlement.settled:
+                    await self._emit_continuation_resolution(settlement, result.events)
                 outcome = RunOutcome(
                     session_id=run.session_id,
                     run_id=run.run_id,
@@ -2273,6 +2308,37 @@ class RuntimeService:
         if drain_queued_inputs and run.status == "completed":
             await self._drain_queued_input_queue(run.session_id)
         return updated
+
+    async def _emit_continuation_resolution(
+        self,
+        settlement: RunContinuationSettlement,
+        events: list[EventRecord],
+        *,
+        extra_diagnostics: tuple[str, ...] = (),
+    ) -> None:
+        run = settlement.run
+        checkpoint = run.continuation
+        if checkpoint is None:
+            return
+        await self.event_recorder.emit(
+            events,
+            self.store.latest_event_sequence(run.session_id),
+            session_id=run.session_id,
+            run_id=run.run_id,
+            event_type="run_continuation_resolved",
+            payload={
+                "decision_id": checkpoint.decision_id,
+                "action": checkpoint.action,
+                "controller_id": checkpoint.selected_controller_id,
+                "reason": checkpoint.reason,
+                "queued": settlement.queued,
+                "failure_count": len(settlement.failures),
+                "failures": [
+                    failure.model_dump(mode="json") for failure in settlement.failures
+                ],
+                "diagnostics": [*settlement.diagnostics, *extra_diagnostics],
+            },
+        )
 
     async def _settle_terminal_run(self, run: RunRecord) -> None:
         """Run product semantics after the terminal record is durable.

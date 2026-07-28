@@ -200,6 +200,74 @@ async def test_failed_controller_activation_rolls_back_host_state(tmp_path, back
 
 
 @pytest.mark.asyncio
+async def test_controller_lifecycle_receives_session_kind_and_symmetric_release_payload(
+    tmp_path,
+) -> None:
+    store = _store(tmp_path, "files")
+    session = SessionRecord(
+        root_session_id="ses_root",
+        parent_session_id="ses_parent",
+        session_kind="subagent",
+        delegation_id="delegation_1",
+    )
+    store.create_session(session)
+    calls = []
+
+    async def lifecycle(call):
+        calls.append(call)
+        return PluginSessionControllerOutput()
+
+    controller = PluginSessionController(
+        controller_id="mode",
+        description="Own a generic mode.",
+        claims=(SessionControlClaim(domain="dev.example.lifecycle"),),
+        activate_handler=lifecycle,
+        deactivate_handler=lifecycle,
+        plugin_id="dev.example.lifecycle",
+        plugin_class="user",
+        release_id="release-lifecycle",
+        package_digest="release-lifecycle",
+        generation_id="generation-lifecycle",
+        contract_hash="d" * 64,
+        execution_contract_hash=_CONTRACT,
+    )
+    registry = PluginSessionControllerRegistry()
+    registry.replace_owner("lifecycle", (controller,))
+    coordinator = SessionControlCoordinator(store)
+
+    acquired = await coordinator.apply(
+        AttributedSessionControlTransition(
+            action="acquire",
+            controller_id="mode",
+            payload={"command": "start"},
+            plugin_id="dev.example.lifecycle",
+            generation_id="generation-lifecycle",
+            execution_contract_hash=_CONTRACT,
+        ),
+        session_id=session.session_id,
+        controllers=registry,
+    )
+    assert acquired.activation is not None
+    released = await coordinator.apply(
+        AttributedSessionControlTransition(
+            action="release",
+            activation_id=acquired.activation.activation_id,
+            payload={"status": "complete", "report": "verified"},
+            plugin_id="dev.example.lifecycle",
+            generation_id="generation-lifecycle",
+            execution_contract_hash=_CONTRACT,
+        ),
+        session_id=session.session_id,
+        controllers=registry,
+    )
+
+    assert released.changed is True
+    assert [call.session_kind for call in calls] == ["subagent", "subagent"]
+    assert calls[0].payload == {"command": "start"}
+    assert calls[1].payload == {"status": "complete", "report": "verified"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
 async def test_replace_is_an_explicit_same_plugin_handoff(tmp_path, backend) -> None:
     store = _store(tmp_path, backend)

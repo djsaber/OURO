@@ -212,6 +212,17 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
 产生应随 controller 释放而取消的等待交互，应改用独立的 `interaction_controller` 声明其生命周期归属。工具可见性与
 pending interaction 归属是两个独立契约。
 
+`SessionControllerCall` 在 activate/deactivate 两条路径都提供 `session_kind`（`primary | subagent`）；owner 应依据该
+Host 事实决定自己是否支持该类 Session，不能从 session id 或目录推断。release transition 的 `payload` 会原样传给
+deactivate，与 acquire/activate 对称；需要提交 owner 私有终态时，应把终态数据放在 release payload 中，由
+deactivate 幂等落库，不能先改私有状态再尝试释放 Host activation。
+
+绑定 controller 的 Continuation Policy 会收到所有 terminal `RunOutcome`。非 `completed` Run 只能返回
+`pause | fail`，不能自动 `continue`；若需结束自身控制权，可在 `ContinuationDecision.session_control_transitions`
+返回一个 release local intent。Host 只允许它释放同 plugin、且被该 Run checkpoint 捕获的精确 activation，并先持久化
+settlement plan，再幂等执行 release/queue/checkpoint resolve。owner policy 不可用、超时或异常时，Host 仅 force-release
+该 policy 绑定的精确 activation，并明确记录 owner 私有清理未确认；多个非 ignore 决策仍视为冲突并暂停。
+
 ## 5. Catalog、owner 与 durable contract
 
 一个 Run 只读取一个不可变 `ExtensionCatalogLease`。插件更新先完整构建候选 generation 与 Catalog，再切换 current
@@ -254,7 +265,7 @@ worker 从 stdin 逐行读取 JSON-RPC 2.0 request，只向 stdout 写协议 JSO
 - `contributions.prepare`：返回 manifest 已声明 contribution 的协议描述；
 - `lifecycle.start` / `lifecycle.stop` / `shutdown`；
 - contribution 调用，例如 `tool.call`；
-- resumable 工具使用 `tool.resume`；协议 `1.1` 的 `call.resolution` 传输 `answer` 或 `unattended` 判别对象；
+- resumable 工具使用 `tool.resume`；协议 `1.2` 的 `call.resolution` 传输 `answer` 或 `unattended` 判别对象；
 - `cancel`：取消超时或被 Host 取消的 request。
 
 stdout 污染、未知消息、过大响应、声明不一致和错误 result shape 都会使协议调用失败。完整最小实现见
@@ -263,8 +274,10 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
 声明 `resumable=true` 的 worker tool 通过 `tool.resume` 接收原请求和 `resolution`；如需在 AFK 下自定义业务迁移，
-还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `1.1`，Host 不把旧版 `answer`
+还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `1.2`，Host 不把旧版 `answer`
 字段静默转换为新契约。
+协议 `1.2` 同时在 `session_controller.call` 输入中加入 `session_kind`，并允许 `continuation.call` 输出
+`session_control_transitions`；两者与 in-process Plugin API `1.2.0` 使用相同语义。
 `context.call` 的 `fragments` 既接受字符串，也接受
 `{"text": "...", "persistence": "ephemeral|message"}` 对象。
 

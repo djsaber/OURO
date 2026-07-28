@@ -19,6 +19,7 @@ _CONTROLLER_ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 
 class PluginSessionControllerCall(OuroModel):
     session_id: str
+    session_kind: Literal["primary", "subagent"]
     activation_id: str
     controller_id: str
     action: Literal["activate", "deactivate"]
@@ -70,6 +71,7 @@ class PluginSessionController:
         self,
         *,
         session_id: str,
+        session_kind: Literal["primary", "subagent"],
         activation_id: str,
         payload: JsonValue = None,
         workspace: str | None = None,
@@ -78,6 +80,7 @@ class PluginSessionController:
             self.activate_handler,
             PluginSessionControllerCall(
                 session_id=session_id,
+                session_kind=session_kind,
                 activation_id=activation_id,
                 controller_id=self.canonical_id,
                 action="activate",
@@ -90,7 +93,9 @@ class PluginSessionController:
         self,
         *,
         session_id: str,
+        session_kind: Literal["primary", "subagent"],
         activation_id: str,
+        payload: JsonValue = None,
         reason: str | None = None,
         workspace: str | None = None,
     ) -> PluginSessionControllerOutput:
@@ -98,9 +103,11 @@ class PluginSessionController:
             self.deactivate_handler,
             PluginSessionControllerCall(
                 session_id=session_id,
+                session_kind=session_kind,
                 activation_id=activation_id,
                 controller_id=self.canonical_id,
                 action="deactivate",
+                payload=payload,
                 reason=reason,
                 workspace=workspace,
             ),

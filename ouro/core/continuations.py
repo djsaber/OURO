@@ -9,7 +9,7 @@ from pydantic import Field, model_validator
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.redaction import redact_text
-from ouro.core.session_controls import SessionInputMode
+from ouro.core.session_controls import SessionControlTransitionRequest, SessionInputMode
 from ouro.core.state import RunOutcome
 
 ContinuationAction = Literal["ignore", "continue", "complete", "pause", "fail"]
@@ -24,6 +24,9 @@ class ContinuationDecision(OuroModel):
     title: str | None = None
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(
+        default_factory=list
+    )
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> ContinuationDecision:
@@ -32,6 +35,10 @@ class ContinuationDecision(OuroModel):
                 raise ValueError("continue decision requires a non-empty prompt")
         elif self.prompt is not None:
             raise ValueError(f"{self.action} decision cannot contain a prompt")
+        if self.action in {"ignore", "continue"} and self.session_control_transitions:
+            raise ValueError(
+                f"{self.action} decision cannot contain Session control transitions"
+            )
         return self
 
 

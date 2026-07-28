@@ -4,16 +4,29 @@ from dataclasses import dataclass, field
 
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.application.runs import maybe_active_run
+from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.base import utc_now
-from ouro.core.continuations import ContinuationFailure, RunContinuationRegistry
+from ouro.core.continuations import (
+    AttributedContinuationDecision,
+    ContinuationFailure,
+    ContinuationPolicyRegistration,
+    RunContinuationRegistry,
+)
 from ouro.core.messages import MessageRecord
-from ouro.core.session_controls import SessionInputMode
+from ouro.core.redaction import redact_text
+from ouro.core.session_controls import (
+    AttributedSessionControlTransition,
+    SessionControlTransitionRequest,
+    SessionInputMode,
+)
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
+    RunContinuationSettlementPlan,
     RunOutcome,
     RunRecord,
 )
+from ouro.plugins.session_controllers import PluginSessionControllerRegistry
 from ouro.sessions import SessionStore
 
 
@@ -32,9 +45,9 @@ class RunContinuationService:
     """Settle extension continuation decisions at a durable Run boundary.
 
     Policies only decide. This service remains responsible for conflict handling,
-    idempotent queueing, provenance, and persistence. A stable queue id stored on
-    the Run makes recovery safe if the process stops between queueing and marking
-    the checkpoint resolved.
+    exact control attribution, staged side effects, idempotent queueing, provenance,
+    and persistence. The durable plan and stable queue id make recovery safe across
+    release, queue, and checkpoint boundaries.
     """
 
     def __init__(
@@ -43,10 +56,14 @@ class RunContinuationService:
         store: SessionStore,
         registry: RunContinuationRegistry,
         queue: QueuedInputQueue,
+        session_controls: SessionControlCoordinator | None = None,
+        session_controllers: PluginSessionControllerRegistry | None = None,
     ) -> None:
         self.store = store
         self.registry = registry
         self.queue = queue
+        self.session_controls = session_controls or SessionControlCoordinator(store)
+        self.session_controllers = session_controllers
 
     async def settle(
         self,
@@ -65,14 +82,6 @@ class RunContinuationService:
             in {"queued", "running", "waiting_user", "waiting_approval", "waiting_child"}
         ):
             return RunContinuationSettlement(run=run)
-
-        if run.status != "completed":
-            resolved = self._resolve(
-                run,
-                action="pause",
-                reason=f"terminal_run_{run.status}",
-            )
-            return RunContinuationSettlement(run=resolved, settled=True)
 
         outcome = RunOutcome(
             session_id=run.session_id,
@@ -97,22 +106,20 @@ class RunContinuationService:
             for controller in checkpoint.controllers
             if self._controller_is_current(run.session_id, controller)
         }
+        if checkpoint.settlement_plan is not None:
+            return await self._settle_plan(run, checkpoint.settlement_plan)
+
         evaluation = await self.registry.evaluate(
             outcome,
             controller_ids=controller_ids,
         )
         failures = tuple(evaluation.failures)
         if failures:
-            resolved = self._resolve(
+            return self._settle_failures(
                 run,
-                action="pause",
-                reason="continuation_policy_failed",
-            )
-            return RunContinuationSettlement(
-                run=resolved,
-                settled=True,
                 failures=failures,
-                diagnostics=("one or more continuation policies failed",),
+                reason="continuation_policy_failed",
+                diagnostic="one or more continuation policies failed",
             )
         if len(evaluation.decisions) > 1:
             resolved = self._resolve(
@@ -129,6 +136,42 @@ class RunContinuationService:
                 ),
             )
         if not evaluation.decisions:
+            if run.status != "completed":
+                bound = tuple(
+                    controller
+                    for controller in checkpoint.controllers
+                    if controller.activation_id is not None
+                    and self._controller_is_current(run.session_id, controller)
+                )
+                if bound:
+                    missing = tuple(
+                        self._failure(
+                            run,
+                            controller.plugin_id,
+                            controller.policy_id,
+                            "ContinuationTerminalDecisionMissing",
+                            (
+                                "activation-bound continuation policy returned no decision "
+                                f"for terminal Run status {run.status}"
+                            ),
+                        )
+                        for controller in bound
+                    )
+                    return self._settle_failures(
+                        run,
+                        failures=missing,
+                        reason="continuation_terminal_decision_missing",
+                        diagnostic=(
+                            "activation-bound continuation policy did not settle an "
+                            "abnormal terminal Run"
+                        ),
+                    )
+                resolved = self._resolve(
+                    run,
+                    action="pause",
+                    reason=f"terminal_run_{run.status}",
+                )
+                return RunContinuationSettlement(run=resolved, settled=True)
             resolved = self._resolve(
                 run,
                 action="complete",
@@ -137,37 +180,242 @@ class RunContinuationService:
             return RunContinuationSettlement(run=resolved, settled=True)
 
         attributed = evaluation.decisions[0]
-        decision = attributed.decision
-        controller_ref = next(
-            controller
-            for controller in checkpoint.controllers
-            if controller.plugin_id == attributed.plugin_id
-            and controller.policy_id == attributed.policy_id
-        )
-        controller_id = f"{attributed.plugin_id}/continuation_policies/{attributed.policy_id}"
-        if decision.action != "continue":
-            resolved = self._resolve(
+        try:
+            plan = self._plan_for_decision(run, checkpoint, attributed)
+        except (TypeError, ValueError) as exc:
+            failure = self._failure(
                 run,
-                action=decision.action,
-                controller_id=controller_id,
-                reason=decision.reason,
-                state_revision=decision.state_revision,
+                attributed.plugin_id,
+                attributed.policy_id,
+                type(exc).__name__,
+                redact_text(str(exc)),
             )
-            return RunContinuationSettlement(run=resolved, settled=True)
+            return self._settle_failures(
+                run,
+                failures=(failure,),
+                reason="continuation_decision_invalid",
+                diagnostic="continuation policy returned an invalid terminal decision",
+            )
 
-        assert decision.prompt is not None
-        queued, resolved, diagnostic = self._enqueue_continuation(
-            run=run,
-            checkpoint=checkpoint,
+        staged = self._stage_plan(run, plan)
+        staged_checkpoint = staged.continuation
+        if staged_checkpoint is None or staged_checkpoint.state == "resolved":
+            return RunContinuationSettlement(run=staged)
+        assert staged_checkpoint.settlement_plan is not None
+        return await self._settle_plan(staged, staged_checkpoint.settlement_plan)
+
+    def _plan_for_decision(
+        self,
+        run: RunRecord,
+        checkpoint: RunContinuationCheckpoint,
+        attributed: AttributedContinuationDecision,
+    ) -> RunContinuationSettlementPlan:
+        controller_ref = next(
+            (
+                controller
+                for controller in checkpoint.controllers
+                if controller.plugin_id == attributed.plugin_id
+                and controller.policy_id == attributed.policy_id
+                and controller.execution_contract_hash
+                == attributed.execution_contract_hash
+                and controller.contract_hash == attributed.contract_hash
+            ),
+            None,
+        )
+        if controller_ref is None:
+            raise ValueError("continuation decision does not match its durable controller")
+
+        decision = attributed.decision
+        if decision.action == "ignore":
+            raise ValueError("attributed continuation decision cannot be ignore")
+        if run.status != "completed" and decision.action not in {"pause", "fail"}:
+            raise ValueError(
+                f"terminal Run status {run.status} only permits pause or fail decisions"
+            )
+        transitions = self._normalize_control_transitions(
+            decision.session_control_transitions,
+            controller_ref=controller_ref,
+        )
+        if (
+            run.status != "completed"
+            and controller_ref.activation_id is not None
+            and not transitions
+        ):
+            raise ValueError(
+                "activation-bound abnormal terminal decision must release its controller"
+            )
+        return RunContinuationSettlementPlan(
             plugin_id=attributed.plugin_id,
             policy_id=attributed.policy_id,
-            generation_id=attributed.generation_id,
-            execution_contract_hash=attributed.execution_contract_hash,
+            execution_contract_hash=controller_ref.execution_contract_hash,
+            contract_hash=controller_ref.contract_hash,
+            action=decision.action,
             prompt=decision.prompt,
             mode=decision.mode,
             title=decision.title,
             reason=decision.reason,
             state_revision=decision.state_revision,
+            session_control_transitions=transitions,
+        )
+
+    @staticmethod
+    def _normalize_control_transitions(
+        transitions: list[SessionControlTransitionRequest],
+        *,
+        controller_ref: RunContinuationControllerRef,
+    ) -> list[SessionControlTransitionRequest]:
+        if not transitions:
+            return []
+        if len(transitions) != 1:
+            raise ValueError("continuation decision may release only its one bound activation")
+        if (
+            controller_ref.active_when_controller_id is None
+            or controller_ref.activation_id is None
+        ):
+            raise ValueError(
+                "unbound continuation policy cannot emit Session control transitions"
+            )
+        transition = transitions[0]
+        if transition.action != "release":
+            raise ValueError(
+                "continuation policy may only release its checkpoint-bound activation"
+            )
+        prefix = f"{controller_ref.plugin_id}/session_controllers/"
+        if not controller_ref.active_when_controller_id.startswith(prefix):
+            raise ValueError("bound Session controller does not belong to the policy plugin")
+        local_controller_id = controller_ref.active_when_controller_id.removeprefix(prefix)
+        if transition.controller_id not in {None, local_controller_id}:
+            raise ValueError("continuation transition selected another Session controller")
+        if transition.activation_id not in {None, controller_ref.activation_id}:
+            raise ValueError("continuation transition selected another controller activation")
+        return [
+            transition.model_copy(
+                update={
+                    "controller_id": local_controller_id,
+                    "activation_id": controller_ref.activation_id,
+                }
+            )
+        ]
+
+    def _stage_plan(
+        self,
+        run: RunRecord,
+        plan: RunContinuationSettlementPlan,
+    ) -> RunRecord:
+        with self.store.session_mutation(run.session_id):
+            latest = self.store.load_run(run.session_id, run.run_id)
+            checkpoint = latest.continuation
+            if checkpoint is None or checkpoint.state == "resolved":
+                return latest
+            if checkpoint.settlement_plan is not None:
+                return latest
+            staged = latest.model_copy(
+                update={
+                    "continuation": checkpoint.model_copy(
+                        update={"settlement_plan": plan}
+                    )
+                }
+            )
+            self.store.save_run(staged)
+            return staged
+
+    async def _settle_plan(
+        self,
+        run: RunRecord,
+        plan: RunContinuationSettlementPlan,
+    ) -> RunContinuationSettlement:
+        checkpoint = run.continuation
+        assert checkpoint is not None
+        controller_ref = self._controller_ref_for_plan(checkpoint, plan)
+        controller_id = f"{plan.plugin_id}/continuation_policies/{plan.policy_id}"
+
+        if plan.session_control_transitions:
+            registration = self._current_registration(plan)
+            if (
+                registration is None
+                or registration.generation_id is None
+                or self.session_controllers is None
+            ):
+                failure = self._failure(
+                    run,
+                    plan.plugin_id,
+                    plan.policy_id,
+                    "ContinuationPolicyUnavailable",
+                    "staged continuation control transition owner is unavailable",
+                )
+                return self._settle_failures(
+                    run,
+                    failures=(failure,),
+                    reason="continuation_policy_failed",
+                    diagnostic="staged continuation owner was unavailable during replay",
+                )
+            try:
+                session = self.store.load_session_record(run.session_id)
+                for transition in plan.session_control_transitions:
+                    await self.session_controls.apply(
+                        AttributedSessionControlTransition(
+                            **transition.model_dump(mode="python"),
+                            plugin_id=plan.plugin_id,
+                            generation_id=registration.generation_id,
+                            execution_contract_hash=plan.execution_contract_hash,
+                        ),
+                        session_id=run.session_id,
+                        controllers=self.session_controllers,
+                        workspace=session.workspace,
+                    )
+            except Exception as exc:  # noqa: BLE001 - durable extension boundary
+                failure = self._failure(
+                    run,
+                    plan.plugin_id,
+                    plan.policy_id,
+                    type(exc).__name__,
+                    redact_text(str(exc)),
+                )
+                return self._settle_failures(
+                    run,
+                    failures=(failure,),
+                    reason="continuation_control_transition_failed",
+                    diagnostic="staged Session control transition failed",
+                )
+
+        if plan.action != "continue":
+            resolved = self._resolve(
+                run,
+                action=plan.action,
+                controller_id=controller_id,
+                reason=plan.reason,
+                state_revision=plan.state_revision,
+            )
+            return RunContinuationSettlement(run=resolved, settled=True)
+
+        registration = self._current_registration(plan)
+        if registration is None:
+            failure = self._failure(
+                run,
+                plan.plugin_id,
+                plan.policy_id,
+                "ContinuationPolicyUnavailable",
+                "staged continuation policy execution contract is unavailable",
+            )
+            return self._settle_failures(
+                run,
+                failures=(failure,),
+                reason="continuation_policy_failed",
+                diagnostic="staged continuation policy was unavailable during replay",
+            )
+        assert plan.prompt is not None
+        queued, resolved, diagnostic = self._enqueue_continuation(
+            run=run,
+            checkpoint=checkpoint,
+            plugin_id=plan.plugin_id,
+            policy_id=plan.policy_id,
+            generation_id=registration.generation_id,
+            execution_contract_hash=registration.execution_contract_hash,
+            prompt=plan.prompt,
+            mode=plan.mode,
+            title=plan.title,
+            reason=plan.reason,
+            state_revision=plan.state_revision,
             session_control_controller_id=controller_ref.active_when_controller_id,
             session_control_activation_id=controller_ref.activation_id,
         )
@@ -176,6 +424,96 @@ class RunContinuationService:
             settled=True,
             queued=queued,
             diagnostics=((diagnostic,) if diagnostic is not None else ()),
+        )
+
+    def _current_registration(
+        self,
+        plan: RunContinuationSettlementPlan,
+    ) -> ContinuationPolicyRegistration | None:
+        return next(
+            (
+                registration
+                for registration in self.registry.registered()
+                if registration.plugin_id == plan.plugin_id
+                and registration.policy_id == plan.policy_id
+                and registration.execution_contract_hash == plan.execution_contract_hash
+                and registration.contract_hash == plan.contract_hash
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _controller_ref_for_plan(
+        checkpoint: RunContinuationCheckpoint,
+        plan: RunContinuationSettlementPlan,
+    ) -> RunContinuationControllerRef:
+        try:
+            return next(
+                controller
+                for controller in checkpoint.controllers
+                if controller.plugin_id == plan.plugin_id
+                and controller.policy_id == plan.policy_id
+                and controller.execution_contract_hash == plan.execution_contract_hash
+                and controller.contract_hash == plan.contract_hash
+            )
+        except StopIteration as exc:
+            raise ValueError("staged continuation plan has no durable controller") from exc
+
+    def _settle_failures(
+        self,
+        run: RunRecord,
+        *,
+        failures: tuple[ContinuationFailure, ...],
+        reason: str,
+        diagnostic: str,
+    ) -> RunContinuationSettlement:
+        checkpoint = run.continuation
+        assert checkpoint is not None
+        failed_ids = {(failure.plugin_id, failure.policy_id) for failure in failures}
+        diagnostics = [diagnostic]
+        released: set[str] = set()
+        for controller in checkpoint.controllers:
+            if (
+                (controller.plugin_id, controller.policy_id) not in failed_ids
+                or controller.activation_id is None
+                or controller.activation_id in released
+                or not self._controller_is_current(run.session_id, controller)
+            ):
+                continue
+            result = self.session_controls.force_release(
+                session_id=run.session_id,
+                activation_id=controller.activation_id,
+                reason=reason,
+            )
+            released.add(controller.activation_id)
+            if result.changed:
+                diagnostics.append(
+                    "fail-closed released exact activation "
+                    f"{controller.activation_id}; owner-private cleanup was not confirmed"
+                )
+        resolved = self._resolve(run, action="pause", reason=reason)
+        return RunContinuationSettlement(
+            run=resolved,
+            settled=True,
+            failures=failures,
+            diagnostics=tuple(diagnostics),
+        )
+
+    @staticmethod
+    def _failure(
+        run: RunRecord,
+        plugin_id: str,
+        policy_id: str,
+        error_type: str,
+        message: str,
+    ) -> ContinuationFailure:
+        return ContinuationFailure(
+            plugin_id=plugin_id,
+            policy_id=policy_id,
+            session_id=run.session_id,
+            run_id=run.run_id,
+            error_type=error_type,
+            message=message,
         )
 
     def _enqueue_continuation(

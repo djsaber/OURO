@@ -103,7 +103,7 @@ class PluginRuntimeSpec(OuroModel):
     kind: PluginRuntimeKind = "declarative"
     entrypoint: str | None = None
     command: list[str] = Field(default_factory=list)
-    protocol: str = "1.1"
+    protocol: str = "1.2"
 
     @model_validator(mode="after")
     def _validate_runtime(self) -> PluginRuntimeSpec:

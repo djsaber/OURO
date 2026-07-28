@@ -767,6 +767,7 @@ def _adapt_session_controller(
         raw = handler(
             sdk.SessionControllerCall(
                 session_id=call.session_id,
+                session_kind=call.session_kind,
                 activation_id=call.activation_id,
                 controller_id=call.controller_id,
                 action=call.action,
@@ -905,6 +906,19 @@ def _adapt_continuation_policy(
             title=raw.title,
             reason=raw.reason,
             state_revision=raw.state_revision,
+            session_control_transitions=[
+                SessionControlTransitionRequest(
+                    action=item.action,
+                    controller_id=item.controller_id,
+                    activation_id=item.activation_id,
+                    replace_activation_ids=list(item.replace_activation_ids),
+                    expected_session_revision=item.expected_session_revision,
+                    expected_activation_revision=item.expected_activation_revision,
+                    payload=item.payload,
+                    reason=item.reason,
+                )
+                for item in raw.session_control_transitions
+            ],
         )
 
     return ContinuationPolicyRegistration(

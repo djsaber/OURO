@@ -201,6 +201,7 @@ class SessionControlCoordinator:
         )
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
+            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             existing = next(
                 (
@@ -244,6 +245,7 @@ class SessionControlCoordinator:
         try:
             output = await controller.activate(
                 session_id=session_id,
+                session_kind=session_kind,
                 activation_id=activation.activation_id,
                 payload=transition.payload,
                 workspace=workspace,
@@ -291,6 +293,7 @@ class SessionControlCoordinator:
     ) -> SessionControlTransitionResult:
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
+            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             activation = _select_release_activation(session.controls, transition)
             if activation is None:
@@ -348,7 +351,9 @@ class SessionControlCoordinator:
         try:
             output = await controller.deactivate(
                 session_id=session_id,
+                session_kind=session_kind,
                 activation_id=activation.activation_id,
+                payload=transition.payload,
                 reason=transition.reason,
                 workspace=workspace,
             )
@@ -425,6 +430,7 @@ class SessionControlCoordinator:
         replaced_ids = set(transition.replace_activation_ids)
         with self.store.session_mutation(session_id):
             session = self.store.load_session_record(session_id)
+            session_kind = session.session_kind
             self._check_session_revision(session.controls, transition.expected_session_revision)
             targets = [
                 activation
@@ -502,6 +508,7 @@ class SessionControlCoordinator:
         try:
             output = await controller.activate(
                 session_id=session_id,
+                session_kind=session_kind,
                 activation_id=activation.activation_id,
                 payload=transition.payload,
                 workspace=workspace,
@@ -519,6 +526,7 @@ class SessionControlCoordinator:
             try:
                 await target_controller.deactivate(
                     session_id=session_id,
+                    session_kind=session_kind,
                     activation_id=target.activation_id,
                     reason=transition.reason or "replaced",
                     workspace=workspace,

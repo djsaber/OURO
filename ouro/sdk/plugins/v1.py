@@ -10,6 +10,7 @@ ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
+SessionKind = Literal["primary", "subagent"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
 RunStatus = Literal[
     "queued",
@@ -384,6 +385,7 @@ class ContinuationDecision:
     title: str | None = None
     reason: str | None = None
     state_revision: int | None = None
+    session_control_transitions: tuple[SessionControlTransition, ...] = ()
 
 
 ContinuationHandler = Callable[
@@ -435,6 +437,7 @@ class SessionControlTransition:
 @dataclass(frozen=True)
 class SessionControllerCall:
     session_id: str
+    session_kind: SessionKind
     activation_id: str
     controller_id: str
     action: Literal["activate", "deactivate"]
@@ -611,6 +614,7 @@ __all__ = [
     "SessionControllerOutput",
     "SessionInput",
     "SessionInputMode",
+    "SessionKind",
     "StopReason",
     "ToolCall",
     "ToolBatchBehavior",

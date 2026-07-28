@@ -203,7 +203,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "1.0.0"
+    "plugin_api": "^1.2.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -347,6 +347,8 @@ Context 只暴露稳定、必要的能力：
 
 需要 workspace/session/run 的能力通过每次调用的 request context 传入，不能缓存到调用结束以后。Tool context 至少
 提供 workspace、Host artifact path resolution、abort 状态和可取消 sleep。worker 获得等价的序列化字段和 cancel。
+Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `session_kind = primary | subagent`；插件不能
+从 session id、父目录或私有存储推断 Session 类型。
 
 ### 8.3 开发期 API 规则
 
@@ -480,9 +482,14 @@ Turn Policy 在模型给出无工具的候选完成、Run 尚未完成时执行�
 Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | pause | fail`。
 
 - `continue` 必须包含 prompt 和 `follow_up|steer`；
+- policy 对所有 terminal RunOutcome 执行；非 `completed` Run 只允许 `pause | fail`，不能 `continue`；
+- 非 continue 决策可以携带一个 release `session_control_transitions` local intent；Application 只允许它释放同 plugin、
+  且由该 Run checkpoint 捕获的精确 activation；
 - 一个非 ignore 决策由 application 执行；
 - 多个控制决策、timeout 或异常使自动续跑暂停；
-- application 使用稳定 decision/queue identity 幂等提交；
+- application 先持久化 generation-independent settlement plan，再幂等提交 release、queue 和 checkpoint resolve；
+- activation-bound policy 不可用、timeout、异常或返回非法终态时，Host 只 fail-closed release 其精确 activation，
+  并记录 owner 私有清理未确认；
 - 插件不能自行创建 Run 或伪造 user message。
 
 ### 10.5 Session Controller 与激活绑定
@@ -493,6 +500,8 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 
 - Command 和 Tool 只返回 `acquire | release | replace` transition；Application 在 Session mutation 边界内校验
   generation/execution contract、expected revision 和 claim 冲突，再提交 activation；
+- acquire payload 传给 activate，release payload 对称传给 deactivate；owner 私有终态应由幂等 deactivate 消费
+  release payload 后提交，不能先改私有状态再尝试释放 Host activation；
 - 同 domain 的 exclusive/exclusive 或 exclusive/shared 在 activate 前拒绝；不同 domain 或 shared/shared 可共存；
 - 冲突不能按 priority、加载顺序或 last-command-wins 自动解决，Host 不维护 Plan/Goal/第三方插件冲突表；
 - `replace` 仅允许同一插件内部显式交接，插件不能替换其他 owner 的 activation；跨插件切换必须先明确 release；
@@ -704,6 +713,8 @@ Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 builtin/user pl
 
 - 相同 package、configuration revision、依赖和 contract 可以创建新 generation 并恢复；
 - package 缺失、contract 改变或依赖不满足时稳定失败；
+- terminal Run 的 pending continuation settlement 在启动时重放，但只提交 durable release/queue/checkpoint，
+  不因 Host 启动直接执行新 Run；
 - 不能仅按 tool name、plugin version 或随机 generation id 猜测等价性；
 - pending approval/tool batch 必须重新通过当前 generation gate 和 ToolExecutor。
 
