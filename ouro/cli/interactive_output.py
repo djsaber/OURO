@@ -15,6 +15,7 @@ from ouro.cli.terminal_status import (
     StatusTone,
     TerminalStatusLine,
     TerminalStatusRegion,
+    TerminalTransientRegion,
     tone_style,
 )
 from ouro.core.events import EventRecord
@@ -81,12 +82,14 @@ class InteractiveOutput:
         *,
         status_line: TerminalStatusLine | None = None,
         tool_lines: TerminalStatusRegion | None = None,
+        transient_region: TerminalTransientRegion | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.output_func = output_func
         self._clock = clock
         self.status_line = status_line or TerminalStatusLine(output_func, clock=clock)
         self.tool_lines = tool_lines or TerminalStatusRegion(output_func)
+        self.transient_region = transient_region or TerminalTransientRegion(output_func)
         self.streamed_run_ids: set[str] = set()
         self.in_reasoning = False
         self.streamed_text = False
@@ -99,6 +102,8 @@ class InteractiveOutput:
         # prompt. Animation tasks are paused (not locked) via prompt_scope.
         self._terminal_lock = asyncio.Lock()
         self._prompt_depth = 0
+        self._restore_prompt_status = True
+        self._transient_depth = 0
         self._deferred_events: list[EventRecord] = []
 
     async def start_waiting(
@@ -179,6 +184,7 @@ class InteractiveOutput:
                 self._write(f"    → {_truncate(_single_line(item.suggested_action), 140)}\n")
 
     async def close(self) -> None:
+        self.transient_region.clear()
         await self.status_line.clear()
         await self.tool_lines.clear()
         if self.in_reasoning:
@@ -193,6 +199,8 @@ class InteractiveOutput:
         self.active_tool_calls.clear()
         self.wait_timing = None
         self._prompt_depth = 0
+        self._restore_prompt_status = True
+        self._transient_depth = 0
         self._deferred_events.clear()
 
     async def handle_event(self, event: EventRecord) -> None:
@@ -353,7 +361,7 @@ class InteractiveOutput:
         return True
 
     @asynccontextmanager
-    async def prompt_scope(self) -> AsyncIterator[None]:
+    async def prompt_scope(self, *, restore_status: bool = True) -> AsyncIterator[None]:
         """Lease exclusive ownership of the terminal for a foreground prompt.
 
         On entry the lease pauses every animated region and marks the terminal
@@ -362,6 +370,10 @@ class InteractiveOutput:
         still-live status region is redrawn, so a paused spinner or tool row
         resumes exactly where it left off. Re-entrant: nested prompts share one
         lease and only the outermost scope replays and restores.
+
+        ``restore_status=False`` is for prompts that resolve the state currently
+        shown by those regions. Their next lifecycle event redraws the new state,
+        without briefly restoring a stale "approval required" or "waiting" row.
         """
 
         first = self._prompt_depth == 0
@@ -371,22 +383,49 @@ class InteractiveOutput:
             # raised depth routes new events to the buffer.
             async with self._terminal_lock:
                 self._prompt_depth += 1
+                self._restore_prompt_status = restore_status
                 await self.status_line.suspend()
                 await self.tool_lines.suspend()
                 self._end_streamed_content_line()
         else:
             self._prompt_depth += 1
+            self._restore_prompt_status = self._restore_prompt_status and restore_status
         try:
             yield
         finally:
             if self._prompt_depth == 1:
                 async with self._terminal_lock:
                     await self._replay_deferred_events()
-                    await self.status_line.resume()
-                    await self.tool_lines.resume()
+                    if self._restore_prompt_status:
+                        await self.status_line.resume()
+                        await self.tool_lines.resume()
                     self._prompt_depth = 0
+                    self._restore_prompt_status = True
             else:
                 self._prompt_depth -= 1
+
+    @asynccontextmanager
+    async def transient_prompt_scope(self) -> AsyncIterator[None]:
+        """Display one foreground interaction and erase it before event replay.
+
+        The transient region is nested inside the terminal lease deliberately:
+        clearing it happens while background events are still buffered, then the
+        surrounding ``prompt_scope`` replays those events into a clean region.
+        Pre-interaction status is not restored because the submitted response has
+        made it stale; the continuation's next event renders the new state.
+        """
+
+        async with self.prompt_scope(restore_status=False):
+            first = self._transient_depth == 0
+            if first:
+                self.transient_region.begin()
+            self._transient_depth += 1
+            try:
+                yield
+            finally:
+                self._transient_depth -= 1
+                if first:
+                    self.transient_region.clear()
 
     async def _replay_deferred_events(self) -> None:
         # Called while holding the terminal lock, so no concurrent handle_event

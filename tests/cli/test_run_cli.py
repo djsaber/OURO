@@ -1,3 +1,4 @@
+import asyncio
 import json
 import queue
 import sys
@@ -76,6 +77,47 @@ class CapturingProvider:
         self.messages = list(messages)
         yield ProviderStreamEvent(type="text_delta", text="ok")
         yield ProviderStreamEvent(type="done")
+
+
+class ApprovalStreamingProvider:
+    provider_id = "approval-streaming"
+
+    def __init__(self, target: Path) -> None:
+        self.target = target
+        self.round = 0
+        self.first_continuation_delta_consumed = asyncio.Event()
+        self.release_continuation = asyncio.Event()
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        if self.round == 0:
+            self.round += 1
+            yield ProviderStreamEvent(
+                type="tool_call",
+                tool_call={
+                    "id": "approval_stream_write",
+                    "name": "Write",
+                    "arguments": {"path": str(self.target), "content": "approved"},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+
+        yield ProviderStreamEvent(type="text_delta", text="Streaming after approval")
+        # An async generator resumes here only after the consumer has processed
+        # the yielded delta, giving the test a deterministic observation point.
+        self.first_continuation_delta_consumed.set()
+        await self.release_continuation.wait()
+        yield ProviderStreamEvent(type="text_delta", text=" completed.")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
 
 
 class SubagentInteractionProvider:
@@ -719,6 +761,33 @@ async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
     assert target.read_text(encoding="utf-8") == "approved"
     assert any(output.startswith("Approval required: Write(") for output in outputs)
     assert "Done." in outputs
+
+
+async def test_interactive_streams_before_approval_continuation_returns(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "approval-streamed.txt"
+    provider = ApprovalStreamingProvider(target)
+    runtime = _agent_runtime(tmp_path, store, provider)
+    inputs = iter(["write file", "y", "/exit"])
+    outputs: list[str] = []
+
+    interactive = asyncio.create_task(
+        run_interactive(
+            runtime=runtime,
+            input_func=lambda _prompt: next(inputs),
+            output_func=outputs.append,
+        )
+    )
+    try:
+        await asyncio.wait_for(provider.first_continuation_delta_consumed.wait(), timeout=5)
+        assert "Streaming after approval" in outputs
+        assert interactive.done() is False
+    finally:
+        provider.release_continuation.set()
+
+    assert await asyncio.wait_for(interactive, timeout=5) == 0
+    assert target.read_text(encoding="utf-8") == "approved"
 
 
 async def test_interactive_modifies_tool_arguments_before_approval(tmp_path) -> None:

@@ -6,6 +6,7 @@ from ouro.cli.terminal_status import (
     SPINNER_THEMES,
     TerminalStatusLine,
     TerminalStatusRegion,
+    TerminalTransientRegion,
 )
 
 
@@ -151,3 +152,15 @@ async def test_animated_region_updates_multiple_rows_in_place() -> None:
     assert "Read · completed · (path)" in rendered
     assert "Write · failed · (path)" in rendered
     assert rendered.count("\n") == 2
+
+
+def test_transient_region_restores_cursor_and_clears_temporary_content() -> None:
+    outputs: list[str] = []
+    region = TerminalTransientRegion(outputs.append, animated=True)
+
+    region.begin()
+    region.clear()
+    region.clear()
+
+    assert outputs == ["\r\x1b[s", "\x1b[u\x1b[J"]
+    assert region.active is False

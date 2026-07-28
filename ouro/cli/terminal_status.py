@@ -20,6 +20,9 @@ SpinnerSemantic = Literal[
 StatusTone = Literal["success", "error", "warning", "neutral"]
 
 _CLEAR_LINE = "\x1b[2K"
+_CLEAR_TO_END = "\x1b[J"
+_RESTORE_CURSOR = "\x1b[u"
+_SAVE_CURSOR_AT_LINE_START = "\r\x1b[s"
 _RESET = "\x1b[0m"
 _GREEN = "\x1b[32m"
 _YELLOW = "\x1b[33m"
@@ -92,9 +95,7 @@ class TerminalStatusLine:
     ) -> None:
         self.output_func = output_func
         self._clock = clock
-        self.animated = (
-            output_func is print and sys.stdout.isatty() if animated is None else animated
-        )
+        self.animated = _supports_in_place_output(output_func) if animated is None else animated
         terminal_columns = shutil.get_terminal_size(fallback=(100, 24)).columns
         self._message_limit = (
             max(20, min(_MAX_STATUS_LENGTH, terminal_columns - 4))
@@ -258,9 +259,7 @@ class TerminalStatusRegion:
         animated: bool | None = None,
     ) -> None:
         self.output_func = output_func
-        self.animated = (
-            output_func is print and sys.stdout.isatty() if animated is None else animated
-        )
+        self.animated = _supports_in_place_output(output_func) if animated is None else animated
         terminal_columns = shutil.get_terminal_size(fallback=(100, 24)).columns
         self._message_limit = (
             max(20, min(_MAX_STATUS_LENGTH, terminal_columns - 4))
@@ -439,6 +438,60 @@ class TerminalStatusRegion:
             sys.stdout.flush()
             return
         self.output_func(text)
+
+
+class TerminalTransientRegion:
+    """Own terminal content that disappears when a foreground interaction ends.
+
+    A prompt may contain several rendered lines, wrapped input, and validation
+    feedback, so counting rows is fragile. On an interactive terminal the region
+    instead saves its cursor origin and clears everything below that origin when
+    released. Event rendering is paused by the caller while the region is active,
+    which guarantees the erased area contains only temporary interaction UI.
+
+    Redirected and injected output is intentionally left intact: without cursor
+    control there is no safe way to erase it, and retaining prompts keeps logs and
+    tests readable.
+    """
+
+    def __init__(
+        self,
+        output_func: TerminalOutput,
+        *,
+        animated: bool | None = None,
+    ) -> None:
+        self.output_func = output_func
+        self.animated = _supports_in_place_output(output_func) if animated is None else animated
+        self._active = False
+
+    @property
+    def active(self) -> bool:
+        return self._active
+
+    def begin(self) -> None:
+        if self._active:
+            raise RuntimeError("transient terminal region is already active")
+        self._active = True
+        if self.animated:
+            self._write(_SAVE_CURSOR_AT_LINE_START)
+
+    def clear(self) -> None:
+        if not self._active:
+            return
+        if self.animated:
+            self._write(f"{_RESTORE_CURSOR}{_CLEAR_TO_END}")
+        self._active = False
+
+    def _write(self, text: str) -> None:
+        if self.output_func is print:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            return
+        self.output_func(text)
+
+
+def _supports_in_place_output(output_func: TerminalOutput) -> bool:
+    return output_func is print and sys.stdout.isatty()
 
 
 def _status_text(value: str, limit: int) -> str:

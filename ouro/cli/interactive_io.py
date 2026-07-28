@@ -241,7 +241,7 @@ class InteractionCoordinator:
         terminal exclusively.
         """
 
-        async with self._output.prompt_scope():
+        async with self._output.transient_prompt_scope():
             terminal_input.break_prompt()
             self._announce_subagent(interaction)
             terminal_input.replace_prompt(_subagent_input_prompt(interaction))
@@ -493,7 +493,12 @@ class InteractionCoordinator:
         announce: bool,
         initial_response: str | None,
     ) -> bool:
-        async with self._output.prompt_scope():
+        approved: bool | None = None
+        reason = "User rejected"
+        arguments_override: dict[str, object] | None = None
+        abort = False
+
+        async with self._output.transient_prompt_scope():
             if announce:
                 self._output_func(_subagent_approval_request(interaction))
             while True:
@@ -511,24 +516,17 @@ class InteractionCoordinator:
                     return False
 
                 if choice in {"y", "yes"}:
-                    await self._route_subagent_approval(interaction, approved=True)
-                    return True
+                    approved = True
+                    break
                 if choice in {"n", "no"}:
                     reason = (
                         await _input_optional(input_func, self._output_func, "Reason: ")
                     ) or "User rejected"
-                    await self._route_subagent_approval(
-                        interaction,
-                        approved=False,
-                        reason=reason,
-                    )
-                    return True
+                    approved = False
+                    break
                 if choice in {"a", "/abort", "abort"}:
-                    await self._host.interrupt_agent(
-                        interaction.delegation_id,
-                        reason="User aborted subagent",
-                    )
-                    return True
+                    abort = True
+                    break
                 if choice in {"m", "modify"}:
                     override = await _input_json_object(
                         input_func,
@@ -536,14 +534,26 @@ class InteractionCoordinator:
                         "Arguments JSON: ",
                     )
                     if override is not None:
-                        await self._route_subagent_approval(
-                            interaction,
-                            approved=True,
-                            arguments_override=override,
-                        )
-                        return True
+                        approved = True
+                        arguments_override = override
+                        break
                     continue
                 self._output_func("Choose y, n, m, or a.")
+
+        if abort:
+            await self._host.interrupt_agent(
+                interaction.delegation_id,
+                reason="User aborted subagent",
+            )
+            return True
+        assert approved is not None
+        await self._route_subagent_approval(
+            interaction,
+            approved=approved,
+            reason=reason,
+            arguments_override=arguments_override,
+        )
+        return True
 
     async def _resolve_subagent_question(
         self,
@@ -553,7 +563,10 @@ class InteractionCoordinator:
         announce: bool,
         initial_response: str | None,
     ) -> bool:
-        async with self._output.prompt_scope():
+        abort = False
+        answer: JsonValue = None
+
+        async with self._output.transient_prompt_scope():
             if announce:
                 self._announce_subagent(interaction)
             request = (
@@ -574,47 +587,42 @@ class InteractionCoordinator:
                     self._output_func("")
                     return False
                 if collected is AskUserControl.ABORT:
-                    await self._host.interrupt_agent(
-                        interaction.delegation_id,
-                        reason="User aborted subagent",
-                    )
-                    return True
-                await self._host.resolve_agent_input(
-                    interaction.delegation_id,
-                    child_session_id=interaction.child_session_id,
-                    child_run_id=interaction.child_run_id,
-                    tool_call_id=interaction.tool_call_id,
-                    request_id=interaction.request_id,
-                    answer=collected,
-                )
-                return True
-            while True:
-                try:
-                    answer = initial_response
-                    initial_response = None
-                    if answer is None:
-                        answer = await _read_input(input_func, "Answer subagent: ")
-                except EOFError:
-                    self._output_func("")
-                    return False
-                if answer.strip():
-                    break
-                self._output_func("Subagent answer cannot be empty.")
-            if answer.strip().lower() in {"/abort", "abort"}:
-                await self._host.interrupt_agent(
-                    interaction.delegation_id,
-                    reason="User aborted subagent",
-                )
-                return True
-            await self._host.resolve_agent_input(
+                    abort = True
+                else:
+                    answer = collected
+            else:
+                while True:
+                    try:
+                        raw_answer = initial_response
+                        initial_response = None
+                        if raw_answer is None:
+                            raw_answer = await _read_input(input_func, "Answer subagent: ")
+                    except EOFError:
+                        self._output_func("")
+                        return False
+                    if raw_answer.strip():
+                        break
+                    self._output_func("Subagent answer cannot be empty.")
+                if raw_answer.strip().lower() in {"/abort", "abort"}:
+                    abort = True
+                else:
+                    answer = _decode_user_answer(raw_answer)
+
+        if abort:
+            await self._host.interrupt_agent(
                 interaction.delegation_id,
-                child_session_id=interaction.child_session_id,
-                child_run_id=interaction.child_run_id,
-                tool_call_id=interaction.tool_call_id,
-                request_id=interaction.request_id,
-                answer=_decode_user_answer(answer),
+                reason="User aborted subagent",
             )
             return True
+        await self._host.resolve_agent_input(
+            interaction.delegation_id,
+            child_session_id=interaction.child_session_id,
+            child_run_id=interaction.child_run_id,
+            tool_call_id=interaction.tool_call_id,
+            request_id=interaction.request_id,
+            answer=answer,
+        )
+        return True
 
     async def _route_subagent_approval(
         self,
@@ -642,7 +650,12 @@ class InteractionCoordinator:
         result: RunResult,
         input_func: InputFunc,
     ) -> RunResult | None:
-        async with self._output.prompt_scope():
+        approved: bool | None = None
+        reason = "User rejected"
+        arguments_override: dict[str, object] | None = None
+        abort = False
+
+        async with self._output.transient_prompt_scope():
             invocation = _pending_invocation(result)
             self._output_func(_approval_request(invocation))
             while True:
@@ -657,26 +670,17 @@ class InteractionCoordinator:
                     return None
 
                 if choice in {"y", "yes"}:
-                    return await self._runtime.approve_tool(
-                        session_id=result.session.session_id,
-                        run_id=result.run.run_id,
-                        approved=True,
-                    )
+                    approved = True
+                    break
                 if choice in {"", "n", "no"}:
                     reason = (
                         await _input_optional(input_func, self._output_func, "Reason: ")
                     ) or "User rejected"
-                    return await self._runtime.approve_tool(
-                        session_id=result.session.session_id,
-                        run_id=result.run.run_id,
-                        approved=False,
-                        reason=reason,
-                    )
+                    approved = False
+                    break
                 if choice in {"/abort", "abort"}:
-                    return await self._runtime.abort_run(
-                        session_id=result.session.session_id,
-                        run_id=result.run.run_id,
-                    )
+                    abort = True
+                    break
                 if choice in {"m", "modify"}:
                     override = await _input_json_object(
                         input_func,
@@ -684,21 +688,35 @@ class InteractionCoordinator:
                         "Arguments JSON: ",
                     )
                     if override is not None:
-                        return await self._runtime.approve_tool(
-                            session_id=result.session.session_id,
-                            run_id=result.run.run_id,
-                            approved=True,
-                            arguments_override=override,
-                        )
+                        approved = True
+                        arguments_override = override
+                        break
                     continue
                 self._output_func("Choose y, n, or m.")
+
+        if abort:
+            return await self._runtime.abort_run(
+                session_id=result.session.session_id,
+                run_id=result.run.run_id,
+            )
+        assert approved is not None
+        return await self._runtime.approve_tool(
+            session_id=result.session.session_id,
+            run_id=result.run.run_id,
+            approved=approved,
+            reason=reason,
+            arguments_override=arguments_override,
+        )
 
     async def _resolve_run_question(
         self,
         result: RunResult,
         input_func: InputFunc,
     ) -> RunResult | None:
-        async with self._output.prompt_scope():
+        abort = False
+        answer: JsonValue = None
+
+        async with self._output.transient_prompt_scope():
             waiting_call = _pending_user_call(result)
             try:
                 request = (
@@ -723,65 +741,58 @@ class InteractionCoordinator:
                     self._output_func("")
                     return None
                 if collected is PlanConfirmationControl.ABORT:
-                    return await self._runtime.abort_run(
-                        session_id=result.session.session_id,
-                        run_id=result.run.run_id,
+                    abort = True
+                else:
+                    answer = collected
+            else:
+                try:
+                    ask_user_request = (
+                        parse_builtin_ask_user_request(
+                            waiting_call.request.name,
+                            waiting_call.input_request.data,
+                        )
+                        if waiting_call is not None and waiting_call.input_request is not None
+                        else None
                     )
-                return await self._runtime.answer_user(
-                    session_id=result.session.session_id,
-                    run_id=result.run.run_id,
-                    answer=collected,
-                )
+                except ValueError as exc:
+                    self._output_func(f"Invalid AskUser request: {exc}")
+                    ask_user_request = None
+                if ask_user_request is not None:
+                    ask_user_answer = await asyncio.to_thread(
+                        collect_ask_user_answers,
+                        ask_user_request,
+                        input_func=input_func,
+                        output_func=self._output_func,
+                    )
+                    if ask_user_answer is AskUserControl.EOF:
+                        self._output_func("")
+                        return None
+                    if ask_user_answer is AskUserControl.ABORT:
+                        abort = True
+                    else:
+                        answer = ask_user_answer
+                else:
+                    self._output_func(f"Question: {_pending_question(result)}")
+                    try:
+                        raw_answer = await _read_input(input_func, "Answer: ")
+                    except EOFError:
+                        self._output_func("")
+                        return None
+                    if raw_answer.strip().lower() in {"/abort", "abort"}:
+                        abort = True
+                    else:
+                        answer = _decode_user_answer(raw_answer)
 
-            try:
-                ask_user_request = (
-                    parse_builtin_ask_user_request(
-                        waiting_call.request.name,
-                        waiting_call.input_request.data,
-                    )
-                    if waiting_call is not None and waiting_call.input_request is not None
-                    else None
-                )
-            except ValueError as exc:
-                self._output_func(f"Invalid AskUser request: {exc}")
-                ask_user_request = None
-            if ask_user_request is not None:
-                ask_user_answer = await asyncio.to_thread(
-                    collect_ask_user_answers,
-                    ask_user_request,
-                    input_func=input_func,
-                    output_func=self._output_func,
-                )
-                if ask_user_answer is AskUserControl.EOF:
-                    self._output_func("")
-                    return None
-                if ask_user_answer is AskUserControl.ABORT:
-                    return await self._runtime.abort_run(
-                        session_id=result.session.session_id,
-                        run_id=result.run.run_id,
-                    )
-                return await self._runtime.answer_user(
-                    session_id=result.session.session_id,
-                    run_id=result.run.run_id,
-                    answer=ask_user_answer,
-                )
-
-            self._output_func(f"Question: {_pending_question(result)}")
-            try:
-                answer = await _read_input(input_func, "Answer: ")
-            except EOFError:
-                self._output_func("")
-                return None
-            if answer.strip().lower() in {"/abort", "abort"}:
-                return await self._runtime.abort_run(
-                    session_id=result.session.session_id,
-                    run_id=result.run.run_id,
-                )
-            return await self._runtime.answer_user(
+        if abort:
+            return await self._runtime.abort_run(
                 session_id=result.session.session_id,
                 run_id=result.run.run_id,
-                answer=_decode_user_answer(answer),
             )
+        return await self._runtime.answer_user(
+            session_id=result.session.session_id,
+            run_id=result.run.run_id,
+            answer=answer,
+        )
 
 
 def _paused_run_message(result: RunResult) -> str:

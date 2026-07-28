@@ -5,7 +5,12 @@ from types import SimpleNamespace
 from ouro.application.agent_models import AgentInteractionView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.cli.interactive_io import InteractionCoordinator, InteractiveOutput
-from ouro.cli.terminal_status import SPINNER_THEMES, TerminalStatusLine, TerminalStatusRegion
+from ouro.cli.terminal_status import (
+    SPINNER_THEMES,
+    TerminalStatusLine,
+    TerminalStatusRegion,
+    TerminalTransientRegion,
+)
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
@@ -927,4 +932,137 @@ async def test_prompt_scope_resumes_suspended_spinner_when_no_event_supersedes()
     # After release the spinner is redrawn and still animating.
     assert output.status_line.active is True
     assert any("Waiting · model response" in item for item in outputs)
+    await output.close()
+
+
+async def test_approval_releases_terminal_before_runtime_continuation_streams() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+    )
+    session = SessionRecord(session_id="ses_1")
+    waiting = RunRecord(
+        session_id=session.session_id,
+        run_id="run_1",
+        status="waiting_approval",
+        metadata={
+            "pending_invocation": {
+                "tool_name": "Write",
+                "arguments": {"path": "notes.md"},
+            }
+        },
+    )
+
+    class Runtime:
+        streamed_before_return = False
+
+        async def approve_tool(self, **_: object) -> RunResult:
+            await output.handle_event(_event(1, "model_text_delta", {"text": "continued"}))
+            self.streamed_before_return = "continued" in outputs
+            return RunResult(
+                session=session,
+                run=waiting.model_copy(update={"status": "completed"}),
+            )
+
+    runtime = Runtime()
+    coordinator = _coordinator(
+        runtime=runtime,
+        output=output,
+        agents=None,
+        input_func=lambda _prompt: "y",
+        output_func=outputs.append,
+    )
+
+    await coordinator.resolve_run(RunResult(session=session, run=waiting))
+
+    assert runtime.streamed_before_return is True
+    await coordinator.aclose()
+    await output.close()
+
+
+async def test_interaction_cards_clear_before_approval_and_answer_continuations() -> None:
+    outputs: list[str] = []
+    transient_region = TerminalTransientRegion(outputs.append, animated=True)
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+        transient_region=transient_region,
+    )
+    session = SessionRecord(session_id="ses_1")
+    approval = RunRecord(
+        session_id=session.session_id,
+        run_id="run_1",
+        status="waiting_approval",
+        metadata={
+            "pending_invocation": {
+                "tool_name": "Write",
+                "arguments": {"path": "notes.md"},
+            }
+        },
+    )
+    question = approval.model_copy(
+        update={
+            "status": "waiting_user",
+            "metadata": {"pending_question": "Which file?"},
+        }
+    )
+
+    class Runtime:
+        async def approve_tool(self, **_: object) -> RunResult:
+            outputs.append("approval continuation")
+            return RunResult(session=session, run=question)
+
+        async def answer_user(self, **_: object) -> RunResult:
+            outputs.append("answer continuation")
+            return RunResult(
+                session=session,
+                run=question.model_copy(update={"status": "completed"}),
+            )
+
+    answers = iter(("y", "notes.md"))
+    coordinator = _coordinator(
+        runtime=Runtime(),
+        output=output,
+        agents=None,
+        input_func=lambda _prompt: next(answers),
+        output_func=outputs.append,
+    )
+
+    await coordinator.resolve_run(RunResult(session=session, run=approval))
+
+    clear = "\x1b[u\x1b[J"
+    approval_card = outputs.index('Approval required: Write({"path": "notes.md"})')
+    approval_continuation = outputs.index("approval continuation")
+    question_card = outputs.index("Question: Which file?")
+    answer_continuation = outputs.index("answer continuation")
+    assert "\r\x1b[s" in outputs[:approval_card]
+    assert clear in outputs[approval_card:approval_continuation]
+    assert "\r\x1b[s" in outputs[approval_continuation:question_card]
+    assert clear in outputs[question_card:answer_continuation]
+    assert transient_region.active is False
+    await coordinator.aclose()
+    await output.close()
+
+
+async def test_transient_prompt_does_not_restore_stale_waiting_status() -> None:
+    outputs: list[str] = []
+    tool_lines = TerminalStatusRegion(outputs.append, animated=True)
+    output = InteractiveOutput(
+        outputs.append,
+        status_line=TerminalStatusLine(outputs.append, animated=False),
+        tool_lines=tool_lines,
+        transient_region=TerminalTransientRegion(outputs.append, animated=True),
+    )
+    await tool_lines.upsert("call_1", "tool_execution", "Write · approval required")
+    outputs.clear()
+
+    async with output.transient_prompt_scope():
+        outputs.append("Approval required: Write")
+
+    clear_index = outputs.index("\x1b[u\x1b[J")
+    assert not any("approval required" in item for item in outputs[clear_index + 1 :])
+
+    await tool_lines.upsert("call_1", "tool_execution", "Write · running")
+    assert any("Write · running" in item for item in outputs[clear_index + 1 :])
     await output.close()
