@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Builtin `dev.ouro.goal_mode` plugin with `/goal` create/status/pause/resume/replace/cancel
+  lifecycle commands, explicit model create/read/settle tools, durable Goal state, bounded-Run
+  continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
+  arbitration.
 - Native OURO plugin system with strict manifests, local/Git/archive installation, immutable
   package storage, separate code-trust and capability grants, declarative/in-process/worker
   runtimes, owner-atomic contributions, plugin Skills/MCP/background services, generation-safe
@@ -35,6 +39,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Run-bound continuation controller leases now survive controller release until settlement, and
+  same-controller replace can atomically rotate an activation without allowing stale work to
+  affect the replacement.
 - Subagent dispatch now uses one model tool: `SpawnAgent(sync)` durably resolves the original
   ToolCall with the child result, while `SpawnAgent(async)` returns a handle and automatically
   delivers the result at the next safe boundary. The model-facing `WaitAgents` tool and configurable

@@ -14,6 +14,7 @@ from ouro.core.session_controls import (
 from ouro.core.state import SessionRecord
 from ouro.plugins.session_controllers import (
     PluginSessionController,
+    PluginSessionControllerCall,
     PluginSessionControllerOutput,
     PluginSessionControllerRegistry,
 )
@@ -211,9 +212,9 @@ async def test_controller_lifecycle_receives_session_kind_and_symmetric_release_
         delegation_id="delegation_1",
     )
     store.create_session(session)
-    calls = []
+    calls: list[PluginSessionControllerCall] = []
 
-    async def lifecycle(call):
+    async def lifecycle(call: PluginSessionControllerCall) -> PluginSessionControllerOutput:
         calls.append(call)
         return PluginSessionControllerOutput()
 
@@ -324,6 +325,73 @@ async def test_replace_is_an_explicit_same_plugin_handoff(tmp_path, backend) -> 
     assert events[2].startswith("deactivate:")
     controls = store.load_session_record(session.session_id).controls
     assert [item.controller_local_id for item in controls.activations] == ["alternate"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ["files", "sqlite"])
+async def test_replace_can_rotate_the_same_controller_activation(tmp_path, backend) -> None:
+    store = _store(tmp_path, backend)
+    session = SessionRecord()
+    store.create_session(session)
+    calls = []
+
+    async def lifecycle(call):
+        calls.append(call)
+        return PluginSessionControllerOutput()
+
+    controller = PluginSessionController(
+        controller_id="mode",
+        description="Rotate one controller identity.",
+        claims=(SessionControlClaim(domain="dev.example.rotating-mode"),),
+        activate_handler=lifecycle,
+        deactivate_handler=lifecycle,
+        plugin_id="dev.example.rotating",
+        plugin_class="user",
+        release_id="release-rotating",
+        package_digest="release-rotating",
+        generation_id="generation-rotating",
+        contract_hash="d" * 64,
+        execution_contract_hash=_CONTRACT,
+    )
+    registry = PluginSessionControllerRegistry()
+    registry.replace_owner("rotating", (controller,))
+    coordinator = SessionControlCoordinator(store)
+    acquired = await coordinator.apply(
+        AttributedSessionControlTransition(
+            action="acquire",
+            controller_id="mode",
+            plugin_id="dev.example.rotating",
+            generation_id="generation-rotating",
+            execution_contract_hash=_CONTRACT,
+        ),
+        session_id=session.session_id,
+        controllers=registry,
+    )
+    assert acquired.activation is not None
+
+    replaced = await coordinator.apply(
+        AttributedSessionControlTransition(
+            action="replace",
+            controller_id="mode",
+            replace_activation_ids=[acquired.activation.activation_id],
+            payload={"operation": "rotate"},
+            plugin_id="dev.example.rotating",
+            generation_id="generation-rotating",
+            execution_contract_hash=_CONTRACT,
+        ),
+        session_id=session.session_id,
+        controllers=registry,
+    )
+
+    assert replaced.activation is not None
+    assert replaced.activation.activation_id != acquired.activation.activation_id
+    assert replaced.released_activation_ids == [acquired.activation.activation_id]
+    assert [call.action for call in calls] == ["activate", "activate", "deactivate"]
+    assert calls[1].payload == {"operation": "rotate"}
+    controls = store.load_session_record(session.session_id).controls
+    assert [item.activation_id for item in controls.activations] == [
+        replaced.activation.activation_id
+    ]
 
 
 @pytest.mark.asyncio

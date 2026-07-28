@@ -104,7 +104,6 @@ class RunContinuationService:
                 controller.contract_hash,
             )
             for controller in checkpoint.controllers
-            if self._controller_is_current(run.session_id, controller)
         }
         if checkpoint.settlement_plan is not None:
             return await self._settle_plan(run, checkpoint.settlement_plan)

@@ -447,10 +447,6 @@ class SessionControlCoordinator:
                 raise SessionControlConflictError(
                     "a plugin cannot replace another plugin's Session controller"
                 )
-            if any(target.controller_id == canonical_id for target in targets):
-                raise SessionControlConflictError(
-                    "replace cannot reacquire the same Session controller; use release/acquire"
-                )
             if any(target.phase != "active" for target in targets):
                 raise SessionControlConflictError("replace targets must all be in the active phase")
             if transition.expected_activation_revision is not None:

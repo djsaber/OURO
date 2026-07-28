@@ -330,9 +330,16 @@ class RuntimeService:
         snapshot = self._extension_snapshots.get(run_id)
         return snapshot.compaction if snapshot is not None else self.compaction_strategies
 
-    def _continuations_for_run(self, run_id: str) -> RunContinuationRegistry:
+    def _continuations_for_run(
+        self,
+        run_id: str,
+        *,
+        active_only: bool = True,
+    ) -> RunContinuationRegistry:
         snapshot = self._extension_snapshots.get(run_id)
         registry = snapshot.continuations if snapshot is not None else self.continuations
+        if not active_only:
+            return registry
         return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
 
     def _tool_policies_for_run(self, run_id: str) -> ToolPolicyRegistry:
@@ -436,7 +443,7 @@ class RuntimeService:
                 try:
                     settlement = await RunContinuationService(
                         store=self.store,
-                        registry=self._continuations_for_run(run.run_id),
+                        registry=self._continuations_for_run(run.run_id, active_only=False),
                         queue=self.queued_inputs,
                         session_controls=self.session_controls,
                         session_controllers=self._session_controllers_for_run(run.run_id),
@@ -2257,7 +2264,7 @@ class RuntimeService:
                 await self._settle_terminal_run(run)
                 continuation_service = RunContinuationService(
                     store=self.store,
-                    registry=self._continuations_for_run(run.run_id),
+                    registry=self._continuations_for_run(run.run_id, active_only=False),
                     queue=self.queued_inputs,
                     session_controls=self.session_controls,
                     session_controllers=self._session_controllers_for_run(run.run_id),
@@ -2599,11 +2606,33 @@ class RuntimeService:
                     activation_id=(activation.activation_id if activation is not None else None),
                 )
             )
-        if not controllers:
-            return None
-        if run.continuation is None or run.continuation.state == "resolved":
+        previous = run.continuation
+        if previous is None or previous.state == "resolved":
+            if not controllers:
+                return None
             return RunContinuationCheckpoint(controllers=controllers)
-        return run.continuation.model_copy(update={"controllers": controllers})
+        existing_identities = {
+            (
+                controller.plugin_id,
+                controller.policy_id,
+                controller.execution_contract_hash,
+                controller.contract_hash,
+            )
+            for controller in previous.controllers
+        }
+        retained = [*previous.controllers]
+        retained.extend(
+            controller
+            for controller in controllers
+            if (
+                controller.plugin_id,
+                controller.policy_id,
+                controller.execution_contract_hash,
+                controller.contract_hash,
+            )
+            not in existing_identities
+        )
+        return previous.model_copy(update={"controllers": retained})
 
     async def _ensure_extension_snapshot(self, run: RunRecord) -> None:
         self._restore_run_tool_cap(run)

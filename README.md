@@ -157,6 +157,23 @@ continuation policy 可在每轮完成后请求继续、完成、暂停或失败
 插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，
 不会因来源降级。`tool_policies` 可把 Host 控制的工具提升为审批或拒绝，但不能批准或改写参数，失败时默认拒绝。
 
+内置 `dev.ouro.goal_mode` 插件提供跨多个有界 Run 的持久目标模式，默认关闭。先运行
+`uv run ouro plugin enable dev.ouro.goal_mode --home ./.ouro-dev`，随后可使用：
+
+```text
+/goal [--token-budget N] <objective>
+/goal status
+/goal pause
+/goal resume [--token-budget N]
+/goal replace [--token-budget N] <objective>
+/goal cancel
+```
+
+一次 Run 的自然结束不会完成 Goal；模型必须通过 `UpdateGoal` 明确报告 `complete` 或 `blocked`。用户保留
+pause、resume、replace、cancel 与预算权限。Goal 与 Plan 竞争同一个 primary behavior claim，因此必须先退出或
+暂停当前模式再进入另一个模式。完整设计与验收边界见
+[目标模式 Goal 插件设计](docs/OURO_目标模式Goal插件设计_2026-07-28.md)。
+
 ## Provider 与 Endpoint
 
 Provider 用三个独立字段表达配置：`provider_id` 是用户实例标识，`provider_type` 是产品/通用配置类型，

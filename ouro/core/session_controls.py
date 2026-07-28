@@ -240,9 +240,16 @@ class SessionControlState(OuroModel):
         activation_ids = [item.activation_id for item in self.activations]
         if len(activation_ids) != len(set(activation_ids)):
             raise ValueError("duplicate session control activation id")
-        controller_ids = [item.controller_id for item in self.activations if item.phase != "failed"]
-        if len(controller_ids) != len(set(controller_ids)):
-            raise ValueError("duplicate active session controller identity")
+        by_controller: dict[str, list[SessionControlActivation]] = {}
+        for activation in self.activations:
+            if activation.phase != "failed":
+                by_controller.setdefault(activation.controller_id, []).append(activation)
+        for controller_id, values in by_controller.items():
+            if len(values) == 1:
+                continue
+            phases = {item.phase for item in values}
+            if len(values) != 2 or phases != {"activating", "deactivating"}:
+                raise ValueError(f"duplicate active session controller identity: {controller_id}")
         return self
 
 

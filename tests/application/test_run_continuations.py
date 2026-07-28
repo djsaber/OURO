@@ -34,6 +34,7 @@ from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
     RunContinuationSettlementPlan,
+    RunOutcome,
     RunRecord,
     SessionRecord,
 )
@@ -851,6 +852,59 @@ async def test_repeated_continuation_settlement_enqueues_once(tmp_path) -> None:
     assert second.settled is False
     assert len(queued) == 1
     assert queued[0].queue_id == first.run.continuation.queue_id
+
+
+@pytest.mark.asyncio
+async def test_bound_policy_can_settle_after_its_activation_was_released(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord()
+    store.create_session(session)
+    activation = _activation("dev.example.mode", "mode")
+    controller = _controller("dev.example.mode", "boundary", "gen-before").model_copy(
+        update={
+            "active_when_controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller]),
+    )
+    store.save_run(run)
+    outcomes: list[RunOutcome] = []
+
+    def settle_owner(outcome: RunOutcome) -> ContinuationDecision:
+        outcomes.append(outcome)
+        return ContinuationDecision(action="complete", reason="owner_settled")
+
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "mode",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=controller.plugin_id,
+                policy_id=controller.policy_id,
+                handler=settle_owner,
+                generation_id="gen-after",
+                execution_contract_hash=controller.execution_contract_hash,
+                contract_hash=controller.contract_hash,
+                active_when_controller_id=activation.controller_id,
+            ),
+        ),
+    )
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    assert [outcome.run_id for outcome in outcomes] == [run.run_id]
+    assert settlement.run.continuation is not None
+    assert settlement.run.continuation.action == "complete"
+    assert settlement.run.continuation.reason == "owner_settled"
 
 
 @pytest.mark.asyncio
