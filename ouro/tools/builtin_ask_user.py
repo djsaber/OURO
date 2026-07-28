@@ -11,12 +11,13 @@ ASK_USER_TOOL_NAME = "AskUser"
 ASK_USER_REQUEST_TYPE = "ask_user"
 
 _ASK_USER_DESCRIPTION = """\
-Ask the user for information that is necessary to continue and cannot be inferred or discovered
-from the available context. Use this tool only when the answer will materially change the work;
+Use this tool to ask the user for information that is necessary to continue and cannot be
+inferred or discovered from the available context. Use this tool only when the answer will
+materially change the work;
 do not interrupt the user for trivial choices or questions you can resolve yourself. Prefer one
 question and group closely related questions into one call, up to three. Provide 2-4 distinct,
 actionable options per question. Put the recommended option first and suffix its label with
-'(Recommended)'. Do not add an 'Other' option because the Host always provides free-form input.
+'(Recommended)'. Do not add an 'Other' option because free-form input is always available.
 Set multi_select only when the choices are independent and more than one may apply.
 """
 
@@ -63,8 +64,8 @@ class AskUserQuestion(OuroModel):
         min_length=2,
         max_length=4,
         description=(
-            "Two to four meaningful choices. Do not include an 'Other' option; the Host adds "
-            "free-form input automatically."
+            "Two to four meaningful choices. Do not include an 'Other' option because "
+            "free-form input is always available."
         ),
     )
     multi_select: bool = Field(

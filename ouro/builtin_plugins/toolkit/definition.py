@@ -5,7 +5,12 @@ from pathlib import Path
 from ouro.plugins.builtin import BuiltinPluginDefinition
 from ouro.plugins.manifest import PluginManifest
 
-from .toolkit_plugin import create_plugin
+from .toolkit_plugin import (
+    GLOB_DESCRIPTION,
+    GREP_DESCRIPTION,
+    TODOLIST_DESCRIPTION,
+    create_plugin,
+)
 
 TOOLKIT_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
@@ -29,27 +34,21 @@ TOOLKIT_PLUGIN = BuiltinPluginDefinition(
                     {
                         "id": "glob",
                         "exposed_name": "Glob",
-                        "description": (
-                            "Find files by glob pattern, sorted by modification time "
-                            "(most recent first)."
-                        ),
+                        "description": GLOB_DESCRIPTION,
                         "permission_mode": "auto",
                         "effect": "read_only",
                     },
                     {
                         "id": "grep",
                         "exposed_name": "Grep",
-                        "description": "Search file contents using regular expressions.",
+                        "description": GREP_DESCRIPTION,
                         "permission_mode": "auto",
                         "effect": "read_only",
                     },
                     {
                         "id": "todolist",
                         "exposed_name": "TodoList",
-                        "description": (
-                            "Maintain a structured TODO list while working through a "
-                            "multi-step task."
-                        ),
+                        "description": TODOLIST_DESCRIPTION,
                         "permission_mode": "auto",
                         "effect": "state_changing",
                     },

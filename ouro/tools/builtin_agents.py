@@ -28,16 +28,14 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
             definition=ToolDefinition(
                 name="SendAgentMessage",
                 description=(
-                    "Send a message to a subagent. The behavior depends on its state:\n\n"
-                    "- Active subagent (has a running Run): the message must use "
-                    "mode='steer' and is routed "
-                    "into the current Run as a host input for real-time guidance.\n"
-                    "- Idle/terminal subagent (no active Run): the message must use "
-                    "mode='follow_up' and "
-                    "starts a new Run continuing the same subagent Session.\n\n"
-                    "Default mode is 'steer'. Only use 'follow_up' when the subagent "
-                    "has finished its "
-                    "current Run and you want to resume it with a new Run."
+                    "Use this tool to give new information or instructions to an existing "
+                    "subagent. Use mode='steer' while the subagent is actively working so the "
+                    "message guides its current run. Use mode='follow_up' only after that run "
+                    "has ended to continue the same subagent with a new run. Do not use "
+                    "follow_up for an active subagent, steer for an idle subagent, or this tool "
+                    "when the work belongs to a new independent subagent; use SpawnAgent for "
+                    "the latter. Avoid sending duplicate guidance that the subagent already "
+                    "received."
                 ),
                 parameters_schema={
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -46,21 +44,28 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                         "delegation_id": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "The delegation_id from the subagent's AgentHandle.",
+                            "description": (
+                                "Exact delegation_id of the existing subagent you want to "
+                                "message, taken from its handle or agent listing."
+                            ),
                         },
                         "message": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 20_000,
-                            "description": "Message content for the subagent.",
+                            "description": (
+                                "New, actionable guidance for the subagent. Include any changed "
+                                "requirements or evidence it needs to act correctly."
+                            ),
                         },
                         "mode": {
                             "type": "string",
                             "enum": ["steer", "follow_up"],
                             "default": "steer",
                             "description": (
-                                "'steer' injects into the active Run; 'follow_up' starts a new Run "
-                                "after the subagent has finished."
+                                "Use 'steer' for a subagent with an active run. Use 'follow_up' "
+                                "only after its run has ended to start a continuation run. Omit "
+                                "for 'steer'."
                             ),
                         },
                     },
@@ -76,11 +81,12 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
             definition=ToolDefinition(
                 name="InterruptAgent",
                 description=(
-                    "Interrupt the active Run of a subagent without deleting its history.\n\n"
-                    "Use this to stop a long-running or off-track subagent. After interruption:\n"
-                    "- The subagent's Session and message history are preserved.\n"
-                    "- You may send follow_up messages later to resume from where it stopped.\n"
-                    "- Any terminal result from the interrupted Run may still be delivered."
+                    "Use this tool to stop an active subagent that is no longer needed, is "
+                    "off-track, or is consuming resources without useful progress. Do not "
+                    "interrupt an idle or completed subagent, and prefer SendAgentMessage with "
+                    "mode='steer' when corrected guidance is sufficient. Interruption preserves "
+                    "the subagent's history, so you can later resume it with a follow_up. A "
+                    "result already produced at the interruption boundary may still arrive."
                 ),
                 parameters_schema={
                     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -89,13 +95,19 @@ def agent_control_tools(catalog: AgentCatalogSnapshot) -> tuple[Tool, ...]:
                         "delegation_id": {
                             "type": "string",
                             "minLength": 1,
-                            "description": "The delegation_id from the subagent's AgentHandle.",
+                            "description": (
+                                "Exact delegation_id of the active subagent to stop, taken from "
+                                "its handle or agent listing."
+                            ),
                         },
                         "reason": {
                             "type": "string",
                             "minLength": 1,
                             "maxLength": 500,
-                            "description": "Optional reason recorded for the interruption.",
+                            "description": (
+                                "Concise reason for stopping the subagent, suitable for later "
+                                "diagnosis. Omit when the reason is already obvious."
+                            ),
                         },
                     },
                     "required": ["delegation_id"],
@@ -124,8 +136,8 @@ def _spawn_control_tool(
             "agent_id": {
                 "oneOf": options,
                 "description": (
-                    "The agent_id to spawn, selected from the frozen Agent catalog. "
-                    "Each option describes the subagent's capabilities and tools."
+                    "Choose the available agent_id whose stated capabilities best match the "
+                    "delegated task."
                 ),
             },
             "task": {
@@ -133,22 +145,27 @@ def _spawn_control_tool(
                 "minLength": 1,
                 "maxLength": 20_000,
                 "description": (
-                    "Self-contained task instruction for the subagent. Include all "
-                    "context it needs; "
-                    "the subagent starts without access to the current conversation."
+                    "Self-contained instruction describing the objective, relevant context, "
+                    "constraints, expected deliverable, and verification. The subagent does "
+                    "not receive the current conversation automatically."
                 ),
             },
             "description": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 500,
-                "description": "Short (3-5 word) summary of the task for UI and logs.",
+                "description": (
+                    "Short 3-5 word task summary that distinguishes this delegation from others."
+                ),
             },
             "nickname": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 80,
-                "description": "Optional display name for the subagent's Session.",
+                "description": (
+                    "Optional short display name for this subagent. Use one when several "
+                    "delegations would otherwise be hard to distinguish."
+                ),
             },
             "execution_mode": {
                 "type": "string",
@@ -159,10 +176,9 @@ def _spawn_control_tool(
                     else catalog.spawn_policy.allowed_execution_modes[0]
                 ),
                 "description": (
-                    "'sync' blocks until the subagent finishes and returns its result "
-                    "as the tool result. 'async' returns a durable handle immediately; "
-                    "the result is delivered automatically "
-                    "as a steer HostInput at the next parent model boundary."
+                    "Use 'sync' when you need the subagent's result before your next step. Use "
+                    "'async' when you can continue independent work while it runs; async "
+                    "returns a handle immediately and delivers the result automatically."
                 ),
             },
             "resource_refs": {
@@ -171,8 +187,8 @@ def _spawn_control_tool(
                 "maxItems": 16,
                 "uniqueItems": True,
                 "description": (
-                    "Parent Session resource references to copy into the subagent Session. "
-                    "Use only when the subagent needs access to specific parent resources."
+                    "IDs of resources from the current session that the subagent must inspect. "
+                    "Omit resources unrelated to its task."
                 ),
             },
         },
@@ -188,22 +204,21 @@ def _spawn_control_tool(
             name="SpawnAgent",
             display_name="派遣子智能体",
             description=(
-                "Dispatch an independent subagent to perform a task.\n\n"
-                "Available subagents (configured and enabled in the frozen Agent catalog):\n"
+                "Use this tool to delegate a bounded, self-contained task to an independent "
+                "subagent when separate context, specialized capabilities, or parallel work "
+                "will materially help. Do not spawn a subagent for trivial work, tightly "
+                "coupled sequential steps, or tasks you can complete faster in the current "
+                "context. Provide a complete task because the subagent does not inherit this "
+                "conversation.\n\n"
+                "Available subagents:\n"
                 f"{available_agents}\n\n"
-                "Execution modes:\n"
-                "- 'sync': Blocks until the subagent finishes. The tool result contains "
-                "the subagent's handle "
-                "and final result.\n"
-                "- 'async': Returns a durable handle immediately. The subagent runs in "
-                "the background and the result is delivered automatically as a steer "
-                "HostInput at the next parent model boundary.\n\n"
-                "Important limits for the current release:\n"
+                "Choose 'sync' when its result is required before you continue. Choose 'async' "
+                "when you have independent work to do; the result will be delivered "
+                "automatically.\n\n"
+                "Limits:\n"
                 "- Subagent nesting depth is 1; a subagent cannot spawn further subagents.\n"
-                "- Subagents use the ordinary runtime scheduler; tool permissions do not limit "
-                "dispatch concurrency.\n\n"
-                "Provide a self-contained task because the subagent starts without prior "
-                "conversation context."
+                "- Choose only an agent_id listed above; a parallel dispatch may wait when "
+                "execution capacity is full."
             ),
             parameters_schema=spawn_schema,
             effect="state_changing",

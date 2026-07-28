@@ -5,7 +5,11 @@ from pathlib import Path
 from ouro.plugins.builtin import BuiltinPluginDefinition
 from ouro.plugins.manifest import PluginManifest
 
-from .plan_mode_plugin import create_plugin
+from .plan_mode_plugin import (
+    ENTER_PLAN_MODE_DESCRIPTION,
+    EXIT_PLAN_MODE_DESCRIPTION,
+    create_plugin,
+)
 
 PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
@@ -26,10 +30,7 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                     {
                         "id": "enter",
                         "exposed_name": "EnterPlanMode",
-                        "description": (
-                            "Use this tool proactively before starting a non-trivial "
-                            "implementation task."
-                        ),
+                        "description": ENTER_PLAN_MODE_DESCRIPTION,
                         "permission_mode": "auto",
                         "permission_control": "tool",
                         "effect": "state_changing",
@@ -38,7 +39,7 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                     {
                         "id": "exit",
                         "exposed_name": "ExitPlanMode",
-                        "description": "Submit the current plan file for user approval.",
+                        "description": EXIT_PLAN_MODE_DESCRIPTION,
                         "permission_mode": "auto",
                         "permission_control": "tool",
                         "effect": "state_changing",

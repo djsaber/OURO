@@ -132,6 +132,31 @@ def test_toolkit_is_assembled_in_local_builtin_registry() -> None:
     assert definition.default_enabled is False
 
 
+async def test_toolkit_contracts_guide_model_decisions_and_describe_fields(
+    tmp_path: Path,
+) -> None:
+    tools = await _tools(_make_plugin(tmp_path / "data"))
+
+    glob = tools["Glob"]
+    grep = tools["Grep"]
+    todos = tools["TodoList"]
+
+    assert glob.description.startswith("Use this tool to discover")
+    assert "Prefer Grep" in glob.description
+    assert "Do not use this tool" in glob.description
+    assert grep.description.startswith("Use this tool to locate")
+    assert "Prefer Glob" in grep.description
+    assert todos.description.startswith("Use this tool to create")
+    assert "When NOT to use" in todos.description
+
+    for tool in (glob, grep, todos):
+        properties = tool.parameters_schema["properties"]
+        assert all("description" in schema for schema in properties.values())
+
+    todo_item_properties = todos.parameters_schema["properties"]["todos"]["items"]["properties"]
+    assert all("description" in schema for schema in todo_item_properties.values())
+
+
 # ---------------------------------------------------------------------------
 # Glob
 # ---------------------------------------------------------------------------

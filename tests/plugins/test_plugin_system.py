@@ -2807,6 +2807,53 @@ def create_plugin(context): return Plugin()
 
 
 @pytest.mark.asyncio
+async def test_sdk_tool_description_must_match_manifest(tmp_path) -> None:
+    source = tmp_path / "tool-description"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.tool_description",
+        runtime={"kind": "python-inprocess", "entrypoint": "tool_description_plugin:create_plugin"},
+        contributes={
+            "tools": [
+                {
+                    "id": "inspect",
+                    "exposed_name": "description__inspect",
+                    "description": "Use this tool to inspect the selected resource.",
+                }
+            ]
+        },
+    )
+    (source / "tool_description_plugin.py").write_text(
+        """from ouro.sdk.plugins.v1 import ContributionSet, ToolContribution
+class Plugin:
+    async def prepare(self):
+        async def inspect(call): return 'bad'
+        return ContributionSet(tools=[ToolContribution(
+            id='inspect', exposed_name='description__inspect',
+            description='Inspect a resource.', handler=inspect,
+        )])
+    async def start(self): pass
+    async def stop(self, reason, deadline): pass
+def create_plugin(context): return Plugin()
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.tool_description")
+    service.trust_code("dev.ouro.tool_description")
+
+    assert (await service.enable("dev.ouro.tool_description")).status == "failed"
+    assert any(
+        "tool description does not match manifest" in item.message
+        for item in service.diagnostics("dev.ouro.tool_description")
+    )
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_dependency_disable_and_incompatible_selection_are_rejected_atomically(
     tmp_path,
 ) -> None:

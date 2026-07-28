@@ -356,6 +356,10 @@ class ContributionCoordinator:
                     "tool contribution id does not match manifest: "
                     f"{sdk_identity} != {declaration.id}"
                 )
+            if sdk_identity is not None and tool.definition.description != declaration.description:
+                raise ContributionValidationError(
+                    f"tool description does not match manifest: {declaration.exposed_name}"
+                )
             if sdk_identity is not None and (
                 tool.definition.permission_mode != declaration.permission_mode
                 or tool.definition.permission_control != declaration.permission_control

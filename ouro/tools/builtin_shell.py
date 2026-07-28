@@ -136,9 +136,9 @@ def builtin_command_tool(shell: CommandShell) -> Tool:
                         "type": "string",
                         "minLength": 1,
                         "description": (
-                            "Working directory for this call, absolute or relative to the "
-                            "session workspace. It must already exist and does not persist "
-                            "between calls."
+                            "Existing directory in which to run this command, as an absolute "
+                            "path or a path relative to the workspace. Omit to use the current "
+                            "workspace. The choice applies only to this call."
                         ),
                     },
                     "timeout_seconds": {
@@ -146,8 +146,9 @@ def builtin_command_tool(shell: CommandShell) -> Tool:
                         "exclusiveMinimum": 0,
                         "default": 30,
                         "description": (
-                            "Hard execution timeout in seconds. Defaults to 30; timeout or "
-                            "cancellation terminates the shell process tree."
+                            "Maximum execution time in seconds. Omit for 30. Increase it only "
+                            "when the command is expected to run longer; do not use a longer "
+                            "timeout to accommodate an interactive or hung command."
                         ),
                     },
                 },
@@ -218,59 +219,73 @@ def _shell_description(shell: CommandShell) -> str:
     if shell.kind in ("powershell", "windows_powershell"):
         edition = "PowerShell 7+" if shell.kind == "powershell" else "Windows PowerShell"
         return (
-            f"Run a non-interactive {edition} command with {executable}. Use PowerShell "
-            "syntax only, never Bash or cmd syntax. Each call starts a clean -NoProfile "
+            f"Use this tool to run a non-interactive {edition} command with {executable} when "
+            "you need shell-only operations such as tests, builds, version control, or system "
+            "inspection. Prefer dedicated Read, Write, Edit, Glob, and Grep tools for simple "
+            "file work. Do not call interactive programs or rely on state from an earlier "
+            "call. Use PowerShell syntax only, never Bash or cmd syntax. Each call starts a "
+            "clean -NoProfile "
             "session. Use full cmdlet names instead of aliases; PowerShell pipelines carry "
             "objects, so filter and select with Where-Object/Select-Object and format only at "
             "the end. Cmdlet errors terminate the call. Quote paths and prefer -LiteralPath "
             "when wildcard characters may be literal. Do not assume Unix utilities exist: "
             "verify native programs with Get-Command. Native programs report failure through "
-            "$LASTEXITCODE; check it when later PowerShell statements could hide that status. "
-            "Interactive prompts are not supported."
+            "$LASTEXITCODE; check it when later PowerShell statements could hide that status."
         )
     if shell.kind == "bash":
         return (
-            f"Run a non-interactive Bash command with {executable}. Use Bash syntax only, "
-            "never PowerShell or cmd syntax. Profiles are disabled and pipefail is enabled. "
+            f"Use this tool to run a non-interactive Bash command with {executable} when you "
+            "need shell-only operations such as tests, builds, version control, or system "
+            "inspection. Prefer dedicated Read, Write, Edit, Glob, and Grep tools for simple "
+            "file work. Do not call interactive programs or rely on state from an earlier "
+            "call. Use Bash syntax only, never PowerShell or cmd syntax. Profiles are disabled "
+            "and pipefail is enabled. "
             "Quote paths and variable expansions, use -- before operands that can begin with "
             "'-', and use command -v before relying on optional programs. Unmatched globs stay "
             "literal by default. A semicolon continues after failure; use && when a later step "
             "requires an earlier one to succeed. Each call starts a fresh shell, so directory "
-            "and variable changes do not persist. Interactive commands are not supported."
+            "and variable changes do not persist."
         )
     if shell.kind == "sh":
         return (
-            f"Run a non-interactive POSIX sh command with {executable}. Use portable sh syntax "
-            "only: Bash-only arrays, [[ ... ]], brace expansion, and process substitution are "
-            "invalid. Quote paths and variable expansions, use -- before operands that can "
-            "begin with '-', and verify optional programs with command -v. Pipeline status is "
+            f"Use this tool to run a non-interactive POSIX sh command with {executable} when "
+            "you need shell-only operations such as tests, builds, version control, or system "
+            "inspection. Prefer dedicated file and search tools for simple file work. Do not "
+            "call interactive programs or rely on state from an earlier call. Use portable sh "
+            "syntax only: Bash-only arrays, [[ ... ]], brace expansion, and process "
+            "substitution are invalid. Quote paths and variable expansions, use -- before "
+            "operands that can begin with '-', and verify optional programs with command -v. "
+            "Pipeline status is "
             "normally the last command's status, so check critical stages explicitly. Each "
-            "call is a fresh shell and interactive commands are not supported."
+            "call starts a fresh shell."
         )
     return (
-        f"Run a non-interactive Windows cmd.exe command with {executable}. Use cmd syntax "
-        "only, never Bash or PowerShell syntax. Quote paths containing spaces; escape cmd "
+        f"Use this tool to run a non-interactive Windows cmd.exe command with {executable} "
+        "when you need shell-only operations such as tests, builds, version control, or system "
+        "inspection. Prefer dedicated file and search tools for simple file work. Do not call "
+        "interactive programs or rely on state from an earlier call. Use cmd syntax only, "
+        "never Bash or PowerShell syntax. Quote paths containing spaces; escape cmd "
         "metacharacters such as &, |, (, ), <, >, and ^ when they are data. Use %NAME% for "
         "environment variables, && for dependent steps, and where.exe before relying on "
         "optional programs. Each call starts a fresh process, so cd and set changes do not "
-        "persist. Interactive commands are not supported."
+        "persist."
     )
 
 
 def _command_description(shell: CommandShell) -> str:
     if shell.kind in ("powershell", "windows_powershell"):
         return (
-            "PowerShell source text to execute in the selected non-interactive PowerShell "
-            "session. Use PowerShell cmdlets and syntax; Bash constructs are invalid."
+            "Complete PowerShell source text for this call. Use PowerShell cmdlets and syntax; "
+            "Bash and cmd.exe constructs are invalid."
         )
     if shell.kind == "bash":
         return (
-            "Bash source text to execute with profiles disabled and pipefail enabled. Do not "
-            "send PowerShell, cmd.exe, or merely POSIX-sh syntax assumptions."
+            "Complete Bash source text for this call. Profiles are disabled and pipefail is "
+            "enabled; PowerShell and cmd.exe constructs are invalid."
         )
     if shell.kind == "sh":
-        return "Portable POSIX sh source text; do not use Bash-specific language features."
-    return "Windows cmd.exe command text; do not use Bash or PowerShell syntax."
+        return "Complete portable POSIX sh source text; do not use Bash-specific features."
+    return "Complete Windows cmd.exe command text; Bash and PowerShell syntax are invalid."
 
 
 def _powershell_command_line(executable: str, command: str) -> str:

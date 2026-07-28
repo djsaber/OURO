@@ -154,6 +154,9 @@ def test_shell_contract_exposes_dialect_specific_pitfalls(
     assert definition.display_name == shell.display_name
     assert definition.metadata["shell_kind"] == shell.kind
     assert definition.metadata["shell_executable"] == shell.executable
+    assert definition.description.startswith("Use this tool to run a non-interactive")
+    assert "Do not call interactive programs" in definition.description
+    assert "Prefer dedicated" in definition.description
     assert all(text in definition.description for text in required_guidance)
     assert all(
         "description" in schema for schema in definition.parameters_schema["properties"].values()

@@ -32,7 +32,10 @@ from .todos import TodoItem, TodoListRepository
 _GLOB_MAX_RESULTS = 100
 _DEFAULT_HEAD_LIMIT = 250
 
-_GLOB_DESCRIPTION = """Find files by glob pattern, sorted by modification time (most recent first).
+GLOB_DESCRIPTION = """Use this tool to discover files when you know a filename, extension, or \
+directory pattern but not the exact path. Prefer Grep when you need to locate file content and \
+Read when you already know the file path. Do not use this tool to list directories or search \
+inside files. Results are sorted by modification time (most recent first).
 
 Respects `.gitignore`, `.ignore`, and `.rgignore` by default — set `include_ignored` to also \
 match ignored files (e.g. build outputs, `node_modules`). Sensitive files (such as `.env`) are \
@@ -56,10 +59,10 @@ especially when `include_ignored` is set: `node_modules/**/*.js`, `.venv/**/*.py
 `__pycache__/**`, `target/**` can produce thousands of results that truncate at the match cap \
 and waste context. Prefer specific subpaths like `node_modules/react/src/**/*.js`."""
 
-_GREP_DESCRIPTION = """Search file contents using regular expressions.
-
-Use Grep when the task is to find unknown content or unknown file locations. Do not read whole \
-files into context when a targeted search can locate the relevant lines.
+GREP_DESCRIPTION = """Use this tool to locate regular-expression matches when the relevant \
+content or file location is unknown. Prefer Glob when you only need filenames and Read when you \
+already know the exact file and range. Do not read whole files into context when a targeted \
+search can locate the relevant lines.
 
 Write patterns in ripgrep regex syntax, which differs from POSIX `grep` syntax. For example, \
 braces are special, so escape them as `\\{` to match a literal `{`.
@@ -69,9 +72,9 @@ To also search files excluded by `.gitignore` (such as `node_modules` or build o
 `include_ignored` to `true`. Sensitive files (such as `.env`) are always skipped for safety, \
 even when `include_ignored` is `true`."""
 
-_TODOLIST_DESCRIPTION = """\
-Use this tool to maintain a structured TODO list as you work through a multi-step task. Use \
-it proactively and often when progress tracking helps the current work. This is especially \
+TODOLIST_DESCRIPTION = """\
+Use this tool to create, inspect, or update a structured TODO list for a multi-step task. Use \
+it when progress tracking helps the current work. This is especially \
 useful in long-running investigations and implementation tasks with several tool calls; in \
 plan mode, write the plan to the plan file rather than tracking it here.
 
@@ -126,20 +129,24 @@ _GLOB_SCHEMA: Mapping[str, object] = {
         "pattern": {
             "type": "string",
             "minLength": 1,
-            "description": "Glob pattern to match files.",
+            "description": (
+                "Glob pattern selecting the files you need. A bare filename pattern such as "
+                "`*.py` matches recursively; include `/` to anchor the pattern to subpaths."
+            ),
         },
         "path": {
             "type": "string",
             "description": (
-                "Directory to search. Accepts an absolute path, or a path relative to the "
-                "current working directory. Defaults to the current working directory."
+                "Root directory below which to match files. Use an absolute path or a path "
+                "relative to the current working directory. Omit to use the current working "
+                "directory."
             ),
         },
         "include_ignored": {
             "type": "boolean",
             "description": (
-                "Also match files excluded by ignore files such as `.gitignore`, `.ignore`, "
-                "and `.rgignore` (for example `node_modules` or build outputs). Sensitive "
+                "Set to true only when you specifically need files excluded by `.gitignore`, "
+                "`.ignore`, or `.rgignore`, such as a dependency or build output. Sensitive "
                 "files (such as `.env`) remain filtered out for safety. VCS metadata "
                 "directories (`.git` and similar) are always skipped, even when this is true. "
                 "Defaults to false."
@@ -148,9 +155,8 @@ _GLOB_SCHEMA: Mapping[str, object] = {
         "include_dirs": {
             "type": "boolean",
             "description": (
-                "Deprecated and ignored. Results are always files-only — directories are "
-                "never listed. Accepted only so older calls that still pass this flag are not "
-                "rejected by parameter validation."
+                "Deprecated; omit this field. It has no effect because results always contain "
+                "files, never directories."
             ),
         },
     },
@@ -164,21 +170,25 @@ _GREP_SCHEMA: Mapping[str, object] = {
         "pattern": {
             "type": "string",
             "minLength": 1,
-            "description": "Regular expression to search for.",
+            "description": (
+                "Ripgrep-compatible regular expression to find. Escape regex metacharacters "
+                "when you intend to match them literally."
+            ),
         },
         "path": {
             "type": "string",
             "description": (
-                "File or directory to search. Accepts an absolute path, or a path relative "
-                "to the current working directory. Omit to search the current working "
-                "directory."
+                "Exact file or root directory to search. Use an absolute path or a path "
+                "relative to the current working directory. Omit to search the current "
+                "working directory."
             ),
         },
         "glob": {
             "type": "string",
             "description": (
-                "Optional glob filter for which files to search, e.g. `*.ts`. Matched "
-                "against each file's full absolute path, so a path-anchored pattern like "
+                "Optional glob restricting which files are searched, for example `*.ts`. It "
+                "is matched against each file's full absolute path, so a path-anchored "
+                "pattern like "
                 "`src/**/*.ts` silently matches nothing — use a basename pattern (`*.ts`), "
                 "or anchor with `**/` (`**/src/**/*.ts`). To scope the search to a "
                 "directory, use `path` instead."
@@ -187,7 +197,7 @@ _GREP_SCHEMA: Mapping[str, object] = {
         "type": {
             "type": "string",
             "description": (
-                "Optional file type filter, such as ts or py. Prefer this over `glob` when "
+                "Optional ripgrep file type, such as `ts` or `py`. Prefer this over `glob` when "
                 "filtering by language or file kind: it is more efficient and less "
                 "error-prone than an equivalent glob pattern."
             ),
@@ -196,8 +206,9 @@ _GREP_SCHEMA: Mapping[str, object] = {
             "type": "string",
             "enum": ["content", "files_with_matches", "count_matches"],
             "description": (
-                "Shape of the result. `content` shows matching lines (honors `-A`, `-B`, "
-                "`-C`, `-n`, and `head_limit`); `files_with_matches` shows only the paths of "
+                "Choose `files_with_matches` for file discovery, `content` for matching lines "
+                "and context, or `count_matches` for per-file counts. `content` honors `-A`, `-B`, "
+                "`-C`, `-n`, and `head_limit`; `files_with_matches` shows only the paths of "
                 "files that contain a match, most-recently-modified first (honors "
                 "`head_limit`); `count_matches` shows per-file match counts as `path:count` "
                 "lines, preceded by an aggregate total line. Defaults to "
@@ -284,8 +295,8 @@ _TODOLIST_SCHEMA: Mapping[str, object] = {
         "todos": {
             "type": "array",
             "description": (
-                "The updated todo list. Omit to read the current todo list without making "
-                "changes. Pass an empty array to clear the list."
+                "Complete replacement for the current todo list. Omit this field to read the "
+                "list without changing it; pass an empty array to clear it."
             ),
             "items": {
                 "type": "object",
@@ -293,12 +304,17 @@ _TODOLIST_SCHEMA: Mapping[str, object] = {
                     "title": {
                         "type": "string",
                         "minLength": 1,
-                        "description": "Short, actionable title for the todo.",
+                        "description": (
+                            "Short, imperative action describing one verifiable unit of work."
+                        ),
                     },
                     "status": {
                         "type": "string",
                         "enum": ["pending", "in_progress", "done"],
-                        "description": "Current status of the todo.",
+                        "description": (
+                            "Use `pending` before work starts, `in_progress` for the single "
+                            "active item, and `done` only after the item is fully complete."
+                        ),
                     },
                 },
                 "required": ["title", "status"],
@@ -323,7 +339,7 @@ class ToolkitPlugin:
                 ToolContribution(
                     id="glob",
                     exposed_name="Glob",
-                    description=_GLOB_DESCRIPTION,
+                    description=GLOB_DESCRIPTION,
                     handler=self.glob,
                     parameters_schema=_GLOB_SCHEMA,
                     permission_mode="auto",
@@ -332,7 +348,7 @@ class ToolkitPlugin:
                 ToolContribution(
                     id="grep",
                     exposed_name="Grep",
-                    description=_GREP_DESCRIPTION,
+                    description=GREP_DESCRIPTION,
                     handler=self.grep,
                     parameters_schema=_GREP_SCHEMA,
                     permission_mode="auto",
@@ -341,7 +357,7 @@ class ToolkitPlugin:
                 ToolContribution(
                     id="todolist",
                     exposed_name="TodoList",
-                    description=_TODOLIST_DESCRIPTION,
+                    description=TODOLIST_DESCRIPTION,
                     handler=self.todolist,
                     parameters_schema=_TODOLIST_SCHEMA,
                     permission_mode="auto",

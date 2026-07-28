@@ -52,6 +52,21 @@ _PLAN_WRITERS = {
     "ouro.host/tools/Edit",
 }
 
+ENTER_PLAN_MODE_DESCRIPTION = (
+    "Use this tool before a non-trivial implementation when you need read-only investigation "
+    "and an explicit plan before making changes. Call it for ambiguous scope, architectural "
+    "decisions, or multi-file work whose approach should be reviewed. Do not call it for small, "
+    "well-specified edits, purely informational requests, or when plan mode is already active."
+)
+
+EXIT_PLAN_MODE_DESCRIPTION = (
+    "Use this tool only after the plan file contains a complete, actionable implementation plan "
+    "and you are ready for user review. Do not call it before writing the plan or use it to ask "
+    "for missing requirements; use AskUser for those. This submits the plan for acceptance, "
+    "revision, or rejection. Optional options represent implementation alternatives, never "
+    "approval actions."
+)
+
 _SCAFFOLD = """Plan mode is active. Read-only tools are available without additional plan
 mode restrictions. To create or change the plan, you MUST use OURO's builtin
 Write or Edit tool and target the exact plan file shown below. Those Write/Edit
@@ -107,10 +122,7 @@ class PlanModePlugin:
                 ToolContribution(
                     id="enter",
                     exposed_name="EnterPlanMode",
-                    description=(
-                        "Use this tool proactively before starting a non-trivial "
-                        "implementation task."
-                    ),
+                    description=ENTER_PLAN_MODE_DESCRIPTION,
                     handler=self.enter_plan_mode,
                     parameters_schema={
                         "type": "object",
@@ -125,7 +137,7 @@ class PlanModePlugin:
                 ToolContribution(
                     id="exit",
                     exposed_name="ExitPlanMode",
-                    description="Submit the current plan file for user approval.",
+                    description=EXIT_PLAN_MODE_DESCRIPTION,
                     handler=self.exit_plan_mode,
                     resume_handler=self.resume_exit_plan_mode,
                     parameters_schema={
@@ -136,10 +148,10 @@ class PlanModePlugin:
                                 "minItems": 1,
                                 "maxItems": 3,
                                 "description": (
-                                    "Optional mutually exclusive implementation approaches "
-                                    "from the plan. Never create options for approving, "
-                                    "revising, or rejecting the plan; the Host provides those "
-                                    "actions separately."
+                                    "One to three mutually exclusive implementation approaches "
+                                    "already explained in the plan. Omit when the plan recommends "
+                                    "a single approach. Never use options for approving, revising, "
+                                    "or rejecting the plan."
                                 ),
                                 "items": {
                                     "type": "object",
@@ -148,10 +160,18 @@ class PlanModePlugin:
                                             "type": "string",
                                             "minLength": 1,
                                             "maxLength": 80,
+                                            "description": (
+                                                "Concise user-facing name for this implementation "
+                                                "approach."
+                                            ),
                                         },
                                         "description": {
                                             "type": "string",
                                             "default": "",
+                                            "description": (
+                                                "Short sentence explaining the approach's defining "
+                                                "trade-off."
+                                            ),
                                         },
                                     },
                                     "required": ["label"],

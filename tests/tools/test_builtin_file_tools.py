@@ -31,6 +31,9 @@ def test_file_tool_contracts_explain_behavior_and_every_field() -> None:
     write = definitions["Write"]
     edit = definitions["Edit"]
 
+    assert read.description.startswith("Use this tool to inspect")
+    assert "Prefer Glob" in read.description
+    assert "do not use Read" in read.description
     assert "Directories are rejected" in read.description
     assert "100,000 UTF-8 bytes" in read.description
     assert read.parameters_schema["properties"]["offset"]["default"] == 1
@@ -39,15 +42,18 @@ def test_file_tool_contracts_explain_behavior_and_every_field() -> None:
     assert "description" in read.parameters_schema["properties"]["offset"]
     assert "description" in read.parameters_schema["properties"]["limit"]
 
-    assert "minimal test content" in write.description
-    assert "avoid wasting tokens" in write.description
+    assert write.description.startswith("Use this tool to create")
+    assert "Prefer Edit" in write.description
+    assert "Do not overwrite" in write.description
     assert write.parameters_schema["properties"]["mode"]["enum"] == [
         "overwrite",
         "append",
     ]
     assert all("description" in schema for schema in write.parameters_schema["properties"].values())
 
+    assert edit.description.startswith("Use this tool to make a focused")
     assert "exact literal text" in edit.description
+    assert "Do not set replace_all" in edit.description
     assert edit.parameters_schema["properties"]["replace_all"]["default"] is False
     assert all("description" in schema for schema in edit.parameters_schema["properties"].values())
 

@@ -823,6 +823,14 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     catalog = application.plugin_runtime.snapshot()
     enter = catalog.tools.get("EnterPlanMode")
     exit_plan = catalog.tools.get("ExitPlanMode")
+    assert enter.definition.description.startswith("Use this tool before")
+    assert "Do not call it" in enter.definition.description
+    assert exit_plan.definition.description.startswith("Use this tool only after")
+    assert "use AskUser" in exit_plan.definition.description
+    exit_properties = exit_plan.definition.parameters_schema["properties"]
+    assert "description" in exit_properties["options"]
+    option_properties = exit_properties["options"]["items"]["properties"]
+    assert all("description" in schema for schema in option_properties.values())
     controller = catalog.session_controllers.get("dev.ouro.plan_mode/session_controllers/mode")
     context = ToolExecutionContext(workspace=workspace, workspace_only=True)
     session_id = "ses_plan_contract"

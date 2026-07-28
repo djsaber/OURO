@@ -154,3 +154,35 @@ def test_spawn_description_lists_available_subagents() -> None:
     assert "- id: general, name: General, description: General child." in description
     assert "- id: researcher, name: Researcher, description: Researches topics." in description
     assert "broken" not in description
+
+
+def test_agent_control_contracts_guide_model_decisions_and_describe_fields() -> None:
+    catalog = AgentCatalogSnapshot(
+        entries=(
+            AgentCatalogEntry(
+                definition=AgentDefinition(
+                    agent_id="general",
+                    name="General",
+                    description="General child.",
+                )
+            ),
+        )
+    )
+    definitions = {tool.definition.name: tool.definition for tool in agent_control_tools(catalog)}
+
+    spawn = definitions["SpawnAgent"]
+    send = definitions["SendAgentMessage"]
+    interrupt = definitions["InterruptAgent"]
+
+    assert spawn.description.startswith("Use this tool to delegate")
+    assert "Do not spawn" in spawn.description
+    assert "does not inherit this conversation" in spawn.description
+    assert send.description.startswith("Use this tool to give")
+    assert "Use mode='steer'" in send.description
+    assert "Use mode='follow_up' only" in send.description
+    assert interrupt.description.startswith("Use this tool to stop")
+    assert "Do not interrupt" in interrupt.description
+
+    for definition in definitions.values():
+        properties = definition.parameters_schema["properties"]
+        assert all("description" in schema for schema in properties.values())
