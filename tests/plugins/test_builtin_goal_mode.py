@@ -109,19 +109,80 @@ def _created_goal_id(messages: list[Any]) -> str:
 
 
 def _create_goal_step(
-    objective: str,
+    source_request: str,
     *,
     token_budget: int | None = None,
+    replace_goal_id: str | None = None,
 ) -> dict[str, object]:
-    arguments: dict[str, object] = {"objective": objective}
-    if token_budget is not None:
-        arguments["token_budget"] = token_budget
+    arguments = _goal_arguments(
+        source_request,
+        token_budget=token_budget,
+        replace_goal_id=replace_goal_id,
+    )
     return {
         "tool": ToolCallRequest(
             id="call_create_goal",
             name="CreateGoal",
             arguments=arguments,
         )
+    }
+
+
+def _goal_arguments(
+    source_request: str,
+    *,
+    token_budget: int | None = None,
+    replace_goal_id: str | None = None,
+) -> dict[str, object]:
+    arguments: dict[str, object] = {
+        "source_request": source_request,
+        "outcome": source_request,
+        "verification": [f"Concrete evidence confirms: {source_request}"],
+        "constraints": [],
+        "boundaries": [],
+        "iteration_strategy": (
+            "Inspect current state, take the next useful action, verify, and adapt."
+        ),
+        "blocked_conditions": [
+            "Progress requires unavailable user input or an external state change after "
+            "useful attempts."
+        ],
+    }
+    if token_budget is not None:
+        arguments["token_budget"] = token_budget
+    if replace_goal_id is not None:
+        arguments["replace_goal_id"] = replace_goal_id
+    return arguments
+
+
+def _controller_goal_payload(
+    *,
+    operation: str,
+    goal_id: str,
+    source_request: str,
+    actor: str,
+    **extra: object,
+) -> dict[str, object]:
+    arguments = _goal_arguments(source_request)
+    contract = {
+        key: arguments[key]
+        for key in (
+            "outcome",
+            "verification",
+            "constraints",
+            "boundaries",
+            "iteration_strategy",
+            "blocked_conditions",
+        )
+    }
+    return {
+        "operation": operation,
+        "goal_id": goal_id,
+        "source_request": source_request,
+        "contract": contract,
+        "token_budget": None,
+        "actor": actor,
+        **extra,
     }
 
 
@@ -224,6 +285,113 @@ def test_goal_builtin_manifest_is_the_public_harness_contract() -> None:
 
 
 @pytest.mark.asyncio
+async def test_create_goal_exposes_the_structured_contract_and_strict_authority(
+    tmp_path,
+) -> None:
+    plugin = _make_goal_plugin(tmp_path / "data")
+    contributions = await plugin.prepare()
+    create_tool = next(tool for tool in contributions.tools if tool.exposed_name == "CreateGoal")
+    required = create_tool.parameters_schema["required"]
+
+    assert isinstance(required, list)
+    assert set(required) == {
+        "source_request",
+        "outcome",
+        "verification",
+        "constraints",
+        "boundaries",
+        "iteration_strategy",
+        "blocked_conditions",
+    }
+    assert "NEVER call this tool autonomously" in create_tool.description
+    assert "explicitly asks" in create_tool.description
+    assert create_tool.permission_mode == "approval"
+    assert create_tool.effect == "state_changing"
+
+    invalid_arguments = _goal_arguments("Ship a verifiable result")
+    invalid_arguments["verification"] = []
+    invalid = plugin.create_goal(
+        sdk.ToolCall(
+            tool_call_id="call_invalid_contract",
+            session_id="session_contract",
+            run_id="run_contract",
+            tool_name="CreateGoal",
+            arguments=invalid_arguments,
+        )
+    )
+
+    assert invalid.is_error is True
+    assert invalid.structured["error_type"] == "invalid_goal_contract"
+
+
+@pytest.mark.asyncio
+async def test_goal_replace_command_delegates_to_create_goal_with_exact_identity(
+    tmp_path,
+) -> None:
+    plugin = _make_goal_plugin(tmp_path / "data")
+    session_id = "session_replace_command"
+    plugin.activate_goal_controller(
+        sdk.SessionControllerCall(
+            session_id=session_id,
+            session_kind="primary",
+            activation_id="activation_old",
+            controller_id="mode",
+            action="activate",
+            payload=_controller_goal_payload(
+                operation="create",
+                goal_id="goal_old",
+                source_request="Old request",
+                actor="model",
+            ),
+        )
+    )
+    contributions = await plugin.prepare()
+    command = contributions.commands[0].handler(
+        sdk.CommandCall(
+            command_id="goal",
+            argument="replace New explicit request",
+            session_id=session_id,
+        )
+    )
+
+    assert isinstance(command, sdk.CommandOutput)
+    assert command.session_control_transitions == ()
+    assert len(command.session_inputs) == 1
+    assert command.data["replace_goal_id"] == "goal_old"
+    assert '"goal_old"' in command.session_inputs[0].prompt
+    before_replace = plugin.get_goal(
+        sdk.ToolCall(
+            tool_call_id="call_get_before_replace",
+            session_id=session_id,
+            run_id="run_replace",
+            tool_name="GetGoal",
+            arguments={},
+        )
+    )
+    assert before_replace.structured["goal"]["goal_id"] == "goal_old"
+
+    replacement = plugin.create_goal(
+        sdk.ToolCall(
+            tool_call_id="call_replace",
+            session_id=session_id,
+            run_id="run_replace",
+            tool_name="CreateGoal",
+            arguments=_goal_arguments(
+                "New explicit request",
+                replace_goal_id="goal_old",
+            ),
+        )
+    )
+
+    assert replacement.is_error is False
+    assert replacement.session_control_transitions[0].action == "replace"
+    assert replacement.session_control_transitions[0].replace_activation_ids == (
+        "activation_old",
+    )
+    assert replacement.session_control_transitions[0].payload["operation"] == "replace"
+
+
+@pytest.mark.asyncio
 async def test_goal_command_creation_delegates_without_activating_or_creating_a_run(
     tmp_path,
 ) -> None:
@@ -244,10 +412,12 @@ async def test_goal_command_creation_delegates_without_activating_or_creating_a_
     assert len(created.session_inputs) == 1
     assert created.output == "Requesting Goal creation through the Agent."
     assert created.data == {
-        "objective": "Ship the durable feature",
+        "source_request": "Ship the durable feature",
         "token_budget": 100,
+        "replace_goal_id": None,
     }
     assert "CreateGoal exactly once" in created.session_inputs[0].prompt
+    assert "all six parts" in created.session_inputs[0].prompt
     assert '"Ship the durable feature"' in created.session_inputs[0].prompt
     assert store.load_runtime_session(session.session_id).runs == []
     assert store.load_session_record(session.session_id).controls.activations == []
@@ -384,7 +554,8 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
     assert scaffolds
-    assert all("objective_json" in message.text_content for message in scaffolds)
+    assert all("source_request_json" in message.text_content for message in scaffolds)
+    assert all("goal_contract_json" in message.text_content for message in scaffolds)
 
     await runtime.reconcile_pending_run_continuations()
     replayed = _goal_state(home, session.session_id)["goal"]
@@ -568,7 +739,7 @@ async def test_create_goal_waits_for_manual_approval_without_starting_another_ru
                 "tool": ToolCallRequest(
                     id="call_create_goal",
                     name="CreateGoal",
-                    arguments={"objective": "Explicitly requested durable work"},
+                    arguments=_goal_arguments("Explicitly requested durable work"),
                 ),
                 "usage": Usage(input_tokens=2, output_tokens=1),
             }
@@ -620,13 +791,12 @@ def test_replaced_goal_rejects_stale_tool_and_ignores_old_run_settlement(tmp_pat
             activation_id=old_activation,
             controller_id="mode",
             action="activate",
-            payload={
-                "operation": "create",
-                "goal_id": old_goal_id,
-                "objective": "Old objective",
-                "token_budget": None,
-                "actor": "user",
-            },
+            payload=_controller_goal_payload(
+                operation="create",
+                goal_id=old_goal_id,
+                source_request="Old objective",
+                actor="user",
+            ),
         )
     )
     plugin.goal_context(
@@ -672,15 +842,14 @@ def test_replaced_goal_rejects_stale_tool_and_ignores_old_run_settlement(tmp_pat
             activation_id=new_activation,
             controller_id="mode",
             action="activate",
-            payload={
-                "operation": "replace",
-                "goal_id": new_goal_id,
-                "objective": "New objective",
-                "token_budget": None,
-                "actor": "user",
-                "expected_goal_id": old_goal_id,
-                "expected_revision": 1,
-            },
+            payload=_controller_goal_payload(
+                operation="replace",
+                goal_id=new_goal_id,
+                source_request="New objective",
+                actor="user",
+                expected_goal_id=old_goal_id,
+                expected_revision=1,
+            ),
         )
     )
     plugin.deactivate_goal_controller(
@@ -746,13 +915,12 @@ def test_goal_accounting_is_idempotent_and_subagents_cannot_activate(tmp_path) -
                 activation_id="activation_subagent",
                 controller_id="mode",
                 action="activate",
-                payload={
-                    "operation": "create",
-                    "goal_id": "goal_subagent",
-                    "objective": "Nested durable control",
-                    "token_budget": None,
-                    "actor": "model",
-                },
+                payload=_controller_goal_payload(
+                    operation="create",
+                    goal_id="goal_subagent",
+                    source_request="Nested durable control",
+                    actor="model",
+                ),
             )
         )
 
@@ -763,13 +931,12 @@ def test_goal_accounting_is_idempotent_and_subagents_cannot_activate(tmp_path) -
             activation_id="activation_primary",
             controller_id="mode",
             action="activate",
-            payload={
-                "operation": "create",
-                "goal_id": "goal_primary",
-                "objective": "Account one Run once",
-                "token_budget": None,
-                "actor": "user",
-            },
+            payload=_controller_goal_payload(
+                operation="create",
+                goal_id="goal_primary",
+                source_request="Account one Run once",
+                actor="user",
+            ),
         )
     )
     plugin.goal_context(

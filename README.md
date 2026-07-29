@@ -161,11 +161,11 @@ continuation policy 可在每轮完成后请求继续、完成、暂停或失败
 `uv run ouro plugin enable dev.ouro.goal_mode --home ./.ouro-dev`，随后可使用：
 
 ```text
-/goal [--token-budget N] <objective>
+/goal [--token-budget N] <request>
 /goal status
 /goal pause
 /goal resume [--token-budget N]
-/goal replace [--token-budget N] <objective>
+/goal replace [--token-budget N] <request>
 /goal cancel
 ```
 

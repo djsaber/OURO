@@ -63,9 +63,9 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             "Create and control a durable Goal for the current Session."
                         ),
                         "usage": (
-                            "[--token-budget N] <objective> | status | pause | "
+                            "[--token-budget N] <request> | status | pause | "
                             "resume [--token-budget N] | cancel | "
-                            "replace [--token-budget N] <objective>"
+                            "replace [--token-budget N] <request>"
                         ),
                         "requires_session": True,
                     }

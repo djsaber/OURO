@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
+from typing import Literal
 from uuid import uuid4
 
 from ouro.sdk.plugins.v1 import (
@@ -14,6 +15,7 @@ from ouro.sdk.plugins.v1 import (
     ContinuationDecision,
     ContinuationPolicyContribution,
     ContributionSet,
+    JsonValue,
     PluginContext,
     RunOutcome,
     SessionControlClaim,
@@ -37,6 +39,7 @@ from .prompts import (
 from .state import (
     UNFINISHED_GOAL_STATUSES,
     GoalActor,
+    GoalContract,
     GoalRecord,
     GoalRunBinding,
     GoalStateRepository,
@@ -85,10 +88,72 @@ class GoalModePlugin:
                     parameters_schema={
                         "type": "object",
                         "properties": {
-                            "objective": {
+                            "source_request": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "The exact user-requested durable objective.",
+                                "description": (
+                                    "The complete explicit request that authorized Goal "
+                                    "creation, preserved exactly without rewriting."
+                                ),
+                            },
+                            "outcome": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "The concrete result to deliver, without materially "
+                                    "expanding or narrowing source_request."
+                                ),
+                            },
+                            "verification": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "Observable pass/fail checks that demonstrate the "
+                                    "outcome is complete."
+                                ),
+                            },
+                            "constraints": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "Actual constraints stated by the user. Use an empty "
+                                    "array when none are known; do not invent constraints."
+                                ),
+                            },
+                            "boundaries": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "Explicit in-scope or out-of-scope boundaries. Use an "
+                                    "empty array when none are established. Boundaries never "
+                                    "grant tool, approval, filesystem, or safety authority."
+                                ),
+                            },
+                            "iteration_strategy": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "A concrete inspect-act-verify-adapt strategy for "
+                                    "successive bounded Runs."
+                                ),
+                            },
+                            "blocked_conditions": {
+                                "type": "array",
+                                "minItems": 1,
+                                "items": {"type": "string", "minLength": 1},
+                                "description": (
+                                    "Concrete conditions that require unavailable user input "
+                                    "or an external state change after useful attempts."
+                                ),
+                            },
+                            "replace_goal_id": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": (
+                                    "The exact current goal_id. Include only when the user "
+                                    "explicitly requested replacing that Goal."
+                                ),
                             },
                             "token_budget": {
                                 "type": "integer",
@@ -99,7 +164,15 @@ class GoalModePlugin:
                                 ),
                             },
                         },
-                        "required": ["objective"],
+                        "required": [
+                            "source_request",
+                            "outcome",
+                            "verification",
+                            "constraints",
+                            "boundaries",
+                            "iteration_strategy",
+                            "blocked_conditions",
+                        ],
                         "additionalProperties": False,
                     },
                     permission_mode="approval",
@@ -138,9 +211,9 @@ class GoalModePlugin:
                     id="goal",
                     description="Create and control a durable Goal for the current Session.",
                     usage=(
-                        "[--token-budget N] <objective> | status | pause | "
+                        "[--token-budget N] <request> | status | pause | "
                         "resume [--token-budget N] | cancel | "
-                        "replace [--token-budget N] <objective>"
+                        "replace [--token-budget N] <request>"
                     ),
                     handler=self._commands.handle,
                 )
@@ -200,43 +273,101 @@ class GoalModePlugin:
         )
 
     def create_goal(self, call: ToolCall) -> ToolOutput:
-        objective = _non_empty_argument(call.arguments.get("objective"))
-        if objective is None:
-            return _tool_error("invalid_objective", "CreateGoal requires a non-empty objective.")
+        source_request = _non_empty_argument(call.arguments.get("source_request"))
+        if source_request is None:
+            return _tool_error(
+                "invalid_source_request",
+                "CreateGoal requires the exact non-empty source_request.",
+            )
+        contract, contract_error = _goal_contract(call.arguments)
+        if contract_error is not None:
+            return _tool_error("invalid_goal_contract", contract_error)
+        assert contract is not None
         token_budget, budget_error = _optional_budget(call.arguments.get("token_budget"))
         if budget_error is not None:
             return _tool_error("invalid_token_budget", budget_error)
+        raw_replace_goal_id = call.arguments.get("replace_goal_id")
+        replace_goal_id = _non_empty_argument(raw_replace_goal_id)
+        if raw_replace_goal_id is not None and replace_goal_id is None:
+            return _tool_error(
+                "invalid_replace_goal_id",
+                "replace_goal_id must be a non-empty Goal ID when supplied.",
+            )
         with self._lock:
             current = self._state.load(call.session_id).goal
-        if current is not None and current.status in UNFINISHED_GOAL_STATUSES:
+        transition_action: Literal["acquire", "replace"]
+        replace_activation_ids: tuple[str, ...]
+        if replace_goal_id is not None:
+            if current is None:
+                return _tool_error(
+                    "goal_not_found",
+                    "The explicitly requested Goal replacement no longer has a current Goal.",
+                )
+            if current.goal_id != replace_goal_id:
+                return _tool_error(
+                    "stale_goal_id",
+                    (
+                        "Goal replacement identity is stale. The current goal_id is "
+                        f"{current.goal_id}."
+                    ),
+                )
+            operation = "replace"
+            expected_goal = current
+            if current.status == "active" and current.activation_id is not None:
+                transition_action = "replace"
+                replace_activation_ids = (current.activation_id,)
+            else:
+                transition_action = "acquire"
+                replace_activation_ids = ()
+        elif current is not None and current.status in UNFINISHED_GOAL_STATUSES:
             return _tool_error(
                 "unfinished_goal_exists",
                 (
-                    f"Goal {current.goal_id} is {current.status}. Finish it or ask the user "
-                    "to pause/cancel/replace it before creating another Goal."
+                    f"Goal {current.goal_id} is {current.status}. CreateGoal cannot "
+                    "autonomously replace it; the user must explicitly request replacement."
                 ),
             )
+        else:
+            operation = "create"
+            expected_goal = None
+            transition_action = "acquire"
+            replace_activation_ids = ()
         goal_id = uuid4().hex
+        payload: dict[str, JsonValue] = {
+            "operation": operation,
+            "goal_id": goal_id,
+            "source_request": source_request,
+            "contract": contract.to_json(),
+            "token_budget": token_budget,
+            "actor": "model",
+        }
+        if expected_goal is not None:
+            payload.update(
+                {
+                    "expected_goal_id": expected_goal.goal_id,
+                    "expected_revision": expected_goal.revision,
+                }
+            )
         return ToolOutput(
-            content=f"Goal {goal_id} will be activated for: {objective}",
+            content=f"Goal {goal_id} will be activated for: {contract.outcome}",
             structured={
                 "goal_id": goal_id,
-                "objective": objective,
+                "source_request": source_request,
+                "contract": contract.to_json(),
                 "status": "active",
                 "token_budget": token_budget,
             },
             session_control_transitions=(
                 SessionControlTransition(
-                    action="acquire",
+                    action=transition_action,
                     controller_id="mode",
-                    payload={
-                        "operation": "create",
-                        "goal_id": goal_id,
-                        "objective": objective,
-                        "token_budget": token_budget,
-                        "actor": "model",
-                    },
-                    reason="model_created_goal",
+                    replace_activation_ids=replace_activation_ids,
+                    payload=payload,
+                    reason=(
+                        "model_replaced_goal"
+                        if operation == "replace"
+                        else "model_created_goal"
+                    ),
                 ),
             ),
         )
@@ -305,7 +436,8 @@ class GoalModePlugin:
             state = self._state.load(call.session_id)
             if operation in {"create", "replace"}:
                 goal_id = _required_payload_text(payload, "goal_id")
-                objective = _required_payload_text(payload, "objective")
+                source_request = _required_payload_text(payload, "source_request")
+                contract = _payload_contract(payload.get("contract"))
                 token_budget = _payload_budget(payload.get("token_budget"))
                 actor = _payload_actor(payload.get("actor"))
                 if (
@@ -325,7 +457,8 @@ class GoalModePlugin:
                         _validate_expected_goal(payload, state.goal)
                     goal = _new_goal(
                         goal_id=goal_id,
-                        objective=objective,
+                        source_request=source_request,
+                        contract=contract,
                         token_budget=token_budget,
                         actor=actor,
                         activation_id=call.activation_id,
@@ -566,7 +699,8 @@ class GoalModePlugin:
 def _new_goal(
     *,
     goal_id: str,
-    objective: str,
+    source_request: str,
+    contract: GoalContract,
     token_budget: int | None,
     actor: GoalActor,
     activation_id: str,
@@ -574,7 +708,8 @@ def _new_goal(
     stamp = utc_now()
     return GoalRecord(
         goal_id=goal_id,
-        objective=objective,
+        source_request=source_request,
+        contract=contract,
         status="active",
         actor=actor,
         revision=1,
@@ -600,7 +735,28 @@ def _tool_error(error_type: str, message: str) -> ToolOutput:
 
 
 def _non_empty_argument(value: object) -> str | None:
-    return value.strip() if isinstance(value, str) and value.strip() else None
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _goal_contract(
+    arguments: Mapping[str, object],
+) -> tuple[GoalContract | None, str | None]:
+    try:
+        return (
+            GoalContract.from_json(
+                {
+                    "outcome": arguments.get("outcome"),
+                    "verification": arguments.get("verification"),
+                    "constraints": arguments.get("constraints"),
+                    "boundaries": arguments.get("boundaries"),
+                    "iteration_strategy": arguments.get("iteration_strategy"),
+                    "blocked_conditions": arguments.get("blocked_conditions"),
+                }
+            ),
+            None,
+        )
+    except ValueError as exc:
+        return None, str(exc)
 
 
 def _optional_budget(value: object) -> tuple[int | None, str | None]:
@@ -631,6 +787,13 @@ def _payload_budget(value: object) -> int | None:
     if error is not None:
         raise RuntimeError(error)
     return budget
+
+
+def _payload_contract(value: object) -> GoalContract:
+    try:
+        return GoalContract.from_json(value)
+    except ValueError as exc:
+        raise RuntimeError(f"Goal controller payload has an invalid contract: {exc}") from exc
 
 
 def _payload_actor(value: object) -> GoalActor:

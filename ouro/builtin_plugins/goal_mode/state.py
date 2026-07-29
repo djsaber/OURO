@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
-from ouro.sdk.plugins.v1 import PluginDataStore
+from ouro.sdk.plugins.v1 import JsonValue, PluginDataStore
 
-_STATE_SCHEMA_VERSION = 1
+_STATE_SCHEMA_VERSION = 2
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _GOAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
@@ -22,9 +22,62 @@ UNFINISHED_GOAL_STATUSES: frozenset[GoalStatus] = frozenset(
 
 
 @dataclass(frozen=True)
+class GoalContract:
+    outcome: str
+    verification: tuple[str, ...]
+    constraints: tuple[str, ...]
+    boundaries: tuple[str, ...]
+    iteration_strategy: str
+    blocked_conditions: tuple[str, ...]
+
+    @classmethod
+    def from_json(cls, raw: object) -> GoalContract:
+        if not isinstance(raw, dict):
+            raise ValueError("Goal contract must be an object")
+        return cls(
+            outcome=_required_text(raw.get("outcome"), name="contract outcome"),
+            verification=_required_text_tuple(
+                raw.get("verification"),
+                name="contract verification",
+                allow_empty=False,
+            ),
+            constraints=_required_text_tuple(
+                raw.get("constraints"),
+                name="contract constraints",
+                allow_empty=True,
+            ),
+            boundaries=_required_text_tuple(
+                raw.get("boundaries"),
+                name="contract boundaries",
+                allow_empty=True,
+            ),
+            iteration_strategy=_required_text(
+                raw.get("iteration_strategy"),
+                name="contract iteration_strategy",
+            ),
+            blocked_conditions=_required_text_tuple(
+                raw.get("blocked_conditions"),
+                name="contract blocked_conditions",
+                allow_empty=False,
+            ),
+        )
+
+    def to_json(self) -> dict[str, JsonValue]:
+        return {
+            "outcome": self.outcome,
+            "verification": list(self.verification),
+            "constraints": list(self.constraints),
+            "boundaries": list(self.boundaries),
+            "iteration_strategy": self.iteration_strategy,
+            "blocked_conditions": list(self.blocked_conditions),
+        }
+
+
+@dataclass(frozen=True)
 class GoalRecord:
     goal_id: str
-    objective: str
+    source_request: str
+    contract: GoalContract
     status: GoalStatus
     actor: GoalActor
     revision: int
@@ -44,7 +97,8 @@ class GoalRecord:
         if not isinstance(raw, dict):
             raise ValueError("Goal record must be an object")
         goal_id = _required_identifier(raw.get("goal_id"), name="goal_id")
-        objective = _required_text(raw.get("objective"), name="objective")
+        source_request = _required_text(raw.get("source_request"), name="source_request")
+        contract = GoalContract.from_json(raw.get("contract"))
         status = raw.get("status")
         if status not in {"active", "paused", "blocked", "complete"}:
             raise ValueError(f"invalid Goal status: {status}")
@@ -62,7 +116,8 @@ class GoalRecord:
         runs_used = _non_negative_int(raw.get("runs_used"), name="runs_used")
         return cls(
             goal_id=goal_id,
-            objective=objective,
+            source_request=source_request,
+            contract=contract,
             status=status,
             actor=actor,
             revision=revision,
@@ -83,7 +138,8 @@ class GoalRecord:
     def to_json(self) -> dict[str, object]:
         return {
             "goal_id": self.goal_id,
-            "objective": self.objective,
+            "source_request": self.source_request,
+            "contract": self.contract.to_json(),
             "status": self.status,
             "actor": self.actor,
             "revision": self.revision,
@@ -229,6 +285,19 @@ def _optional_text(value: object, *, name: str) -> str | None:
     return _required_text(value, name=name)
 
 
+def _required_text_tuple(
+    value: object,
+    *,
+    name: str,
+    allow_empty: bool,
+) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ValueError(f"Goal {name} must be a list")
+    if not allow_empty and not value:
+        raise ValueError(f"Goal {name} must not be empty")
+    return tuple(_required_text(item, name=f"{name} item") for item in value)
+
+
 def _non_negative_int(value: object, *, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"Goal {name} must be a non-negative integer")
@@ -257,6 +326,7 @@ def _timestamp(value: object, *, name: str) -> str:
 
 __all__ = [
     "GoalActor",
+    "GoalContract",
     "GoalRecord",
     "GoalRunBinding",
     "GoalStateRepository",

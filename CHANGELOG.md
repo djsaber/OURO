@@ -39,7 +39,14 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- `/goal <objective>` now submits an attributed creation request to the current Session Agent;
+- `CreateGoal` now preserves the exact user request and requires a compact six-field Goal Contract:
+  outcome, verification, constraints, boundaries, iteration strategy, and blocked conditions.
+  Goal scaffolds, status output, persistence, and terminal audit prompts use that contract without
+  introducing a requirements graph or evidence database.
+- `CreateGoal` now explicitly forbids autonomous model invocation: only a current user's explicit
+  Goal creation or replacement request authorizes the approval-governed tool. `/goal replace`
+  delegates through the same tool path with the exact prior Goal identity.
+- `/goal <request>` now submits an attributed creation request to the current Session Agent;
   every new Goal receives its identity and controller activation exclusively through the
   approval-governed `CreateGoal` tool instead of a parallel command transition path.
 - Interactive plugin commands can declare `requires_session` in their Manifest. The Host now

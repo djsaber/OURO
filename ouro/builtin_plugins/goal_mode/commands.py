@@ -5,18 +5,15 @@ from __future__ import annotations
 import re
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
-from typing import Literal
-from uuid import uuid4
 
 from ouro.sdk.plugins.v1 import (
     CommandCall,
     CommandOutput,
-    JsonValue,
     SessionControlTransition,
     SessionInput,
 )
 
-from .prompts import continuation_prompt, goal_creation_request_prompt, initial_goal_prompt
+from .prompts import continuation_prompt, goal_creation_request_prompt
 from .state import (
     UNFINISHED_GOAL_STATUSES,
     GoalActor,
@@ -31,7 +28,7 @@ _BUDGET_PREFIX = re.compile(r"--token-budget(?:\s+|=)(\S+)(?:\s+|$)")
 @dataclass(frozen=True)
 class ParsedGoalCommand:
     action: str
-    objective: str | None = None
+    source_request: str | None = None
     token_budget: int | None = None
     error: str | None = None
 
@@ -62,7 +59,7 @@ class GoalCommandService:
                 data={"goal": current.to_public()},
             )
         if parsed.action == "create":
-            assert parsed.objective is not None
+            assert parsed.source_request is not None
             if current is not None and current.status in UNFINISHED_GOAL_STATUSES:
                 return CommandOutput(
                     output=(
@@ -72,7 +69,7 @@ class GoalCommandService:
                     data={"error": "unfinished_goal_exists", "goal": current.to_public()},
                 )
             return self._creation_request_output(
-                objective=parsed.objective,
+                source_request=parsed.source_request,
                 token_budget=parsed.token_budget,
             )
         if current is None:
@@ -144,89 +141,39 @@ class GoalCommandService:
                 data={"goal_id": current.goal_id, "cancelled": True},
             )
         if parsed.action == "replace":
-            assert parsed.objective is not None
-            return self._replace_output(
-                current,
-                objective=parsed.objective,
+            assert parsed.source_request is not None
+            return self._creation_request_output(
+                source_request=parsed.source_request,
                 token_budget=parsed.token_budget,
+                replace_goal=current,
             )
         raise AssertionError(f"unsupported parsed Goal command: {parsed.action}")
 
     @staticmethod
     def _creation_request_output(
         *,
-        objective: str,
+        source_request: str,
         token_budget: int | None,
+        replace_goal: GoalRecord | None = None,
     ) -> CommandOutput:
+        replace_goal_id = replace_goal.goal_id if replace_goal is not None else None
+        operation = "replacement" if replace_goal_id is not None else "creation"
         return CommandOutput(
-            output="Requesting Goal creation through the Agent.",
+            output=f"Requesting Goal {operation} through the Agent.",
             data={
-                "objective": objective,
+                "source_request": source_request,
                 "token_budget": token_budget,
+                "replace_goal_id": replace_goal_id,
             },
             session_inputs=(
                 SessionInput(
                     prompt=goal_creation_request_prompt(
-                        objective=objective,
+                        source_request=source_request,
                         token_budget=token_budget,
+                        replace_goal_id=replace_goal_id,
                     ),
                     mode="follow_up",
-                    title=f"Create Goal: {objective[:48]}",
-                ),
-            ),
-        )
-
-    def _create_output(
-        self,
-        *,
-        action: Literal["acquire", "replace"],
-        operation: str,
-        objective: str,
-        token_budget: int | None,
-        replace_activation_ids: tuple[str, ...] = (),
-        expected_goal: GoalRecord | None = None,
-    ) -> CommandOutput:
-        goal_id = uuid4().hex
-        payload: dict[str, JsonValue] = {
-            "operation": operation,
-            "goal_id": goal_id,
-            "objective": objective,
-            "token_budget": token_budget,
-            "actor": "user",
-        }
-        if expected_goal is not None:
-            payload.update(
-                {
-                    "expected_goal_id": expected_goal.goal_id,
-                    "expected_revision": expected_goal.revision,
-                }
-            )
-        return CommandOutput(
-            output=f"Activating Goal {goal_id}.",
-            data={
-                "goal_id": goal_id,
-                "objective": objective,
-                "status": "active",
-                "token_budget": token_budget,
-            },
-            session_inputs=(
-                SessionInput(
-                    prompt=initial_goal_prompt(
-                        goal_id=goal_id,
-                        objective=objective,
-                        token_budget=token_budget,
-                    ),
-                    mode="follow_up",
-                    title=f"Goal: {objective[:48]}",
-                ),
-            ),
-            session_control_transitions=(
-                SessionControlTransition(
-                    action=action,
-                    controller_id="mode",
-                    replace_activation_ids=replace_activation_ids,
-                    payload=payload,
-                    reason=f"user_{operation}_goal",
+                    title=f"Create Goal: {source_request[:48]}",
                 ),
             ),
         )
@@ -265,30 +212,6 @@ class GoalCommandService:
                     reason="user_resumed_goal",
                 ),
             ),
-        )
-
-    def _replace_output(
-        self,
-        goal: GoalRecord,
-        *,
-        objective: str,
-        token_budget: int | None,
-    ) -> CommandOutput:
-        if goal.status == "active" and goal.activation_id is not None:
-            return self._create_output(
-                action="replace",
-                operation="replace",
-                objective=objective,
-                token_budget=token_budget,
-                replace_activation_ids=(goal.activation_id,),
-                expected_goal=goal,
-            )
-        return self._create_output(
-            action="acquire",
-            operation="replace",
-            objective=objective,
-            token_budget=token_budget,
-            expected_goal=goal,
         )
 
     @staticmethod
@@ -342,21 +265,29 @@ def parse_goal_command(argument: str) -> ParsedGoalCommand:
             )
         return ParsedGoalCommand(action="resume", token_budget=budget)
     if command == "replace":
-        budget, objective, error = _parse_budget_prefix(tail.strip())
+        budget, source_request, error = _parse_budget_prefix(tail.strip())
         if error is not None:
             return ParsedGoalCommand(action="replace", error=error)
-        if not objective:
+        if not source_request:
             return ParsedGoalCommand(
                 action="replace",
-                error="Usage: /goal replace [--token-budget N] <objective>",
+                error="Usage: /goal replace [--token-budget N] <request>",
             )
-        return ParsedGoalCommand(action="replace", objective=objective, token_budget=budget)
-    budget, objective, error = _parse_budget_prefix(text)
+        return ParsedGoalCommand(
+            action="replace",
+            source_request=source_request,
+            token_budget=budget,
+        )
+    budget, source_request, error = _parse_budget_prefix(text)
     if error is not None:
         return ParsedGoalCommand(action="create", error=error)
-    if not objective:
-        return ParsedGoalCommand(action="create", error="Goal objective cannot be empty.")
-    return ParsedGoalCommand(action="create", objective=objective, token_budget=budget)
+    if not source_request:
+        return ParsedGoalCommand(action="create", error="Goal request cannot be empty.")
+    return ParsedGoalCommand(
+        action="create",
+        source_request=source_request,
+        token_budget=budget,
+    )
 
 
 def _parse_budget_prefix(text: str) -> tuple[int | None, str, str | None]:
@@ -380,7 +311,13 @@ def format_goal_status(goal: GoalRecord) -> str:
     )
     details = [
         f"Goal {goal.goal_id}: {goal.status} (actor: {goal.actor}).",
-        f"Objective: {goal.objective}",
+        f"Source request: {goal.source_request}",
+        f"Outcome: {goal.contract.outcome}",
+        _format_contract_list("Verification", goal.contract.verification),
+        _format_contract_list("Constraints", goal.contract.constraints),
+        _format_contract_list("Boundaries", goal.contract.boundaries),
+        f"Iteration strategy: {goal.contract.iteration_strategy}",
+        _format_contract_list("Blocked conditions", goal.contract.blocked_conditions),
         (
             f"Usage: {goal.tokens_used} tokens across {goal.runs_used} settled Runs; "
             f"budget: {budget}; remaining: {remaining}."
@@ -391,6 +328,12 @@ def format_goal_status(goal: GoalRecord) -> str:
     if goal.report is not None:
         details.append(f"Report: {goal.report}")
     return "\n".join(details)
+
+
+def _format_contract_list(label: str, items: tuple[str, ...]) -> str:
+    if not items:
+        return f"{label}: none declared."
+    return f"{label}:\n" + "\n".join(f"- {item}" for item in items)
 
 
 __all__ = [
