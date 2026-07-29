@@ -99,8 +99,12 @@ async def handle_command(
         plugins,
         command.removeprefix("/"),
         argument,
+        runtime=runtime,
         session_id=session_id,
         workspace=runtime.default_workspace,
+        approval_mode=approval_mode,
+        initial_model=initial_model,
+        interaction_mode=interaction_mode,
     )
     if plugin_result is not None:
         return plugin_result
@@ -153,8 +157,12 @@ async def _plugin_command(
     selector: str,
     argument: str,
     *,
+    runtime: RuntimeService,
     session_id: str | None,
     workspace: str | None,
+    approval_mode: SessionApprovalMode,
+    initial_model: str | None,
+    interaction_mode: SessionInteractionMode,
 ) -> CommandResult | None:
     if plugins is None:
         return None
@@ -171,17 +179,32 @@ async def _plugin_command(
             session_id=session_id,
             output=f"Ambiguous plugin command /{selector}; use one of: {choices}",
         )
+    selected = matches[0]
+    target_session_id = session_id
+    if target_session_id is None and selected.requires_session:
+        created = runtime.create_session(
+            title=_plugin_session_title(selected.name, argument),
+            initial_model=initial_model,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+        target_session_id = created.session_id
     executed = await plugins.execute_command(
-        matches[0].command_id,
+        selected.command_id,
         argument,
-        session_id=session_id,
+        session_id=target_session_id,
         workspace=workspace,
     )
     return CommandResult(
-        session_id=session_id,
+        session_id=target_session_id,
         output=executed.output,
         session_inputs=tuple(executed.session_inputs),
     )
+
+
+def _plugin_session_title(command_name: str, argument: str) -> str:
+    normalized = " ".join(argument.split())
+    return normalized[:60] if normalized else f"/{command_name}"
 
 
 def _sessions_text(runtime: RuntimeService) -> str:

@@ -169,6 +169,7 @@ class CommandContributionSpec(OuroModel):
     description: str
     usage: str = ""
     optional: bool = False
+    requires_session: bool = False
 
     @field_validator("id")
     @classmethod

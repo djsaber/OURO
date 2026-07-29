@@ -263,6 +263,41 @@ async def _enable_plan_mode(application: LocalApplication) -> None:
 
 
 @pytest.mark.asyncio
+async def test_plan_cli_first_command_creates_and_binds_a_session(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    runtime, store = _runtime(home, workspace, FinalProvider())
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_plan_mode(application)
+    assert application.plugins is not None
+
+    activated = await handle_command(
+        "/plan",
+        runtime,
+        None,
+        plugins=application.plugins,
+    )
+
+    assert activated.session_id is not None
+    session_id = activated.session_id
+    record = store.load_session_record(session_id)
+    assert record.title == "/plan"
+    assert len(record.controls.activations) == 1
+    assert store.load_runtime_session(session_id).runs == []
+
+    deactivated = await handle_command(
+        "/plan off",
+        runtime,
+        session_id,
+        plugins=application.plugins,
+    )
+    assert "deactivated" in deactivated.output.lower()
+    assert store.load_session_record(session_id).controls.activations == []
+    await application.close()
+
+
+@pytest.mark.asyncio
 async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes_after_restart(
     tmp_path,
 ) -> None:

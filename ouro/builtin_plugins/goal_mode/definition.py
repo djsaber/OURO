@@ -67,6 +67,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             "resume [--token-budget N] | cancel | "
                             "replace [--token-budget N] <objective>"
                         ),
+                        "requires_session": True,
                     }
                 ],
                 "session_controllers": [

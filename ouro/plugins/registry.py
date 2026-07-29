@@ -67,6 +67,7 @@ class PluginCommand:
     generation_id: str | None = None
     execution_contract_hash: str | None = None
     allow_session_inputs: bool = False
+    requires_session: bool = False
 
     @property
     def command_id(self) -> str:
@@ -160,6 +161,10 @@ class PluginCommandRegistry:
         workspace: str | None = None,
     ) -> PluginCommandResult:
         command = self.get(command_id)
+        if command.requires_session and session_id is None:
+            raise PluginCommandError(
+                f"plugin command requires a target Session: {command_id}"
+            )
         request = PluginCommandRequest(
             command_id=command_id,
             argument=argument,

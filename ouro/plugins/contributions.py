@@ -446,8 +446,9 @@ class ContributionCoordinator:
                 ),
                 generation_id=owner.generation_id,
                 allow_session_inputs=_allows_session_inputs(manifest),
+                requires_session=declarations[command_id].requires_session,
             )
-            for command in actual.values()
+            for command_id, command in actual.items()
         )
 
     @staticmethod

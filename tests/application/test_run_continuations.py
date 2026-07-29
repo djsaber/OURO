@@ -274,6 +274,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
         plugins=application.plugins,
     )
     assert alias.output == "Goal started."
+    assert alias.session_id is None
     assert alias.session_inputs[0].prompt == "Work on: inspect the feature"
 
     command = await handle_command(
@@ -283,6 +284,8 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
         plugins=application.plugins,
     )
     assert command.output == "Goal started."
+    assert command.session_id is None
+    assert store.list_sessions() == []
     assert len(command.session_inputs) == 1
     attributed = command.session_inputs[0]
     assert attributed.plugin_id == "dev.ouro.goal"
@@ -1053,6 +1056,28 @@ async def test_command_session_input_requires_explicit_permissions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_command_declared_session_requirement_is_host_enforced() -> None:
+    registry = PluginCommandRegistry()
+    registry.register(
+        PluginCommand(
+            plugin_id="dev.ouro.session_command",
+            name="start",
+            requires_session=True,
+            handler=lambda _request: "started",
+        )
+    )
+
+    with pytest.raises(PluginCommandError, match="requires a target Session"):
+        await registry.execute("dev.ouro.session_command:start")
+
+    result = await registry.execute(
+        "dev.ouro.session_command:start",
+        session_id="session-1",
+    )
+    assert result.output == "started"
+
+
+@pytest.mark.asyncio
 async def test_plugin_command_short_alias_reports_ambiguity(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -1083,6 +1108,8 @@ async def test_plugin_command_short_alias_reports_ambiguity(tmp_path) -> None:
 
     result = await handle_command("/goal target", runtime, None, plugins=Commands())
 
+    assert result.session_id is None
+    assert store.list_sessions() == []
     assert result.output == (
         "Ambiguous plugin command /goal; use one of: /dev.ouro.first:goal, /dev.ouro.second:goal"
     )

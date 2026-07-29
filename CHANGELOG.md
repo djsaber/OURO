@@ -39,6 +39,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Interactive plugin commands can declare `requires_session` in their Manifest. The Host now
+  enforces that precondition and lazily binds a Session before a first `/goal` or `/plan` command,
+  while stateless commands preserve the existing no-Session behavior.
 - Run-bound continuation controller leases now survive controller release until settlement, and
   same-controller replace can atomically rotate an activation without allowing stale work to
   affect the replacement.

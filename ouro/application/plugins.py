@@ -285,6 +285,7 @@ class PluginService:
                     name=item.name,
                     description=item.description,
                     usage=item.usage,
+                    requires_session=item.requires_session,
                 )
                 for item in snapshot.commands.list()
             ]

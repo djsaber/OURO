@@ -500,6 +500,9 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 
 - Command 和 Tool 只返回 `acquire | release | replace` transition；Application 在 Session mutation 边界内校验
   generation/execution contract、expected revision 和 claim 冲突，再提交 activation；
+- 依赖目标 Session 才能执行的 Command 必须在 Manifest 声明 `requires_session: true`。Host 在调用 handler 前
+  强制该前置条件；Interactive Host 在尚无当前 Session 时可先按当前模型与交互策略创建并绑定 Session。默认
+  `false`，无状态命令不能因此隐式创建 Session；
 - acquire payload 传给 activate，release payload 对称传给 deactivate；owner 私有终态应由幂等 deactivate 消费
   release payload 后提交，不能先改私有状态再尝试释放 Host activation；
 - 同 domain 的 exclusive/exclusive 或 exclusive/shared 在 activate 前拒绝；不同 domain 或 shared/shared 可共存；

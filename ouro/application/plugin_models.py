@@ -90,6 +90,7 @@ class PluginCommandView(OuroModel):
     name: str
     description: str = ""
     usage: str = ""
+    requires_session: bool = False
 
 
 class PluginCommandExecutionView(OuroModel):

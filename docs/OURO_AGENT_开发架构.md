@@ -491,7 +491,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   降级；manifest 工具权限是授权契约，运行时 SDK 贡献不得偏离，相关字段变化会改变 contribution fingerprint。
 - 插件命令使用 `<plugin_id>:<name>` 稳定 identity 和类型化 request/result；CLI/TUI 可映射为 slash command，
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
-  `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。
+  `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。Manifest 的
+  `requires_session=true` 显式声明 handler 前置条件；Interactive 在首条 Session 级命令前懒创建并绑定 Session，
+  无状态命令不触发该行为。
 - Session 级长期控制统一由 `SessionControlCoordinator` 仲裁。插件以 `session_controllers` 声明 canonical controller、
   `domain + exclusive|shared` claims 和生命周期，Command/Tool 只返回 transition intent；Host 不读取 Plan、Goal 或
   私有 state 来判断冲突。Tool/Context/Tool Policy/Turn Policy/Continuation/observational Hook 可用 `active_when` 绑定 controller，

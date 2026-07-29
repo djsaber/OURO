@@ -152,6 +152,7 @@ def test_goal_builtin_manifest_is_the_public_harness_contract() -> None:
         "update-goal",
     }
     assert [command.id for command in manifest.contributes.commands] == ["goal"]
+    assert manifest.contributes.commands[0].requires_session is True
     assert [controller.id for controller in manifest.contributes.session_controllers] == ["mode"]
     assert manifest.contributes.session_controllers[0].claims[0].domain == (
         "ouro.session.primary_behavior"
@@ -242,18 +243,21 @@ async def test_goal_command_lifecycle_is_durable_and_does_not_create_runs(tmp_pa
 @pytest.mark.asyncio
 async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_path) -> None:
     home = tmp_path / "home"
-    runtime, _store = _runtime(home, ScriptedGoalProvider([]))
+    runtime, store = _runtime(home, ScriptedGoalProvider([]))
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
-    session = runtime.create_session(title="Goal CLI")
 
     created = await handle_command(
         "/goal Inspect and verify the CLI path",
         runtime,
-        session.session_id,
+        None,
         plugins=application.plugins,
     )
+    assert created.session_id is not None
+    session_id = created.session_id
+    assert store.load_session_record(session_id).title == "Inspect and verify the CLI path"
+    assert store.load_runtime_session(session_id).runs == []
     assert len(created.session_inputs) == 1
     attributed = created.session_inputs[0]
     assert attributed.plugin_id == PLUGIN_ID
@@ -262,7 +266,7 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
     status = await handle_command(
         "/goal status",
         runtime,
-        session.session_id,
+        session_id,
         plugins=application.plugins,
     )
     assert "Inspect and verify the CLI path" in status.output
@@ -271,7 +275,7 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
     await handle_command(
         "/goal cancel",
         runtime,
-        session.session_id,
+        session_id,
         plugins=application.plugins,
     )
     await application.close()
