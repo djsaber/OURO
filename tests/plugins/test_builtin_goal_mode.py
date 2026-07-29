@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
 from typing import Any
@@ -57,6 +59,15 @@ class ScriptedGoalProvider:
             raise error
         tool = step.get("tool")
         if isinstance(tool, ToolCallRequest):
+            if tool.name == "UpdateGoal" and tool.arguments.get("goal_id") == "placeholder":
+                tool = tool.model_copy(
+                    update={
+                        "arguments": {
+                            **tool.arguments,
+                            "goal_id": _created_goal_id(messages),
+                        }
+                    }
+                )
             yield ProviderStreamEvent(type="tool_call", tool_call=tool)
         else:
             yield ProviderStreamEvent(
@@ -82,6 +93,50 @@ def _provider_tool_name(tool: Any) -> str:
     if isinstance(tool, dict):
         return str(tool["name"])
     return str(tool.name)
+
+
+def _created_goal_id(messages: list[Any]) -> str:
+    for message in reversed(messages):
+        if (
+            message.role == "tool_result"
+            and message.tool_result is not None
+            and message.tool_result.tool_name == "CreateGoal"
+        ):
+            match = re.search(r"Goal ([a-f0-9]{32}) will be activated", message.text_content)
+            if match is not None:
+                return match.group(1)
+    raise AssertionError("CreateGoal result did not expose the created goal_id")
+
+
+def _create_goal_step(
+    objective: str,
+    *,
+    token_budget: int | None = None,
+) -> dict[str, object]:
+    arguments: dict[str, object] = {"objective": objective}
+    if token_budget is not None:
+        arguments["token_budget"] = token_budget
+    return {
+        "tool": ToolCallRequest(
+            id="call_create_goal",
+            name="CreateGoal",
+            arguments=arguments,
+        )
+    }
+
+
+class GatedGoalProvider(ScriptedGoalProvider):
+    def __init__(self, steps: list[dict[str, object]]) -> None:
+        super().__init__(steps)
+        self.goal_activated = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(self, **kwargs) -> AsyncIterator[ProviderStreamEvent]:
+        if self.calls == 1:
+            self.goal_activated.set()
+            await self.release.wait()
+        async for event in super().stream(**kwargs):
+            yield event
 
 
 def _runtime(
@@ -169,7 +224,9 @@ def test_goal_builtin_manifest_is_the_public_harness_contract() -> None:
 
 
 @pytest.mark.asyncio
-async def test_goal_command_lifecycle_is_durable_and_does_not_create_runs(tmp_path) -> None:
+async def test_goal_command_creation_delegates_without_activating_or_creating_a_run(
+    tmp_path,
+) -> None:
     home = tmp_path / "home"
     provider = ScriptedGoalProvider([])
     runtime, store = _runtime(home, provider)
@@ -185,65 +242,42 @@ async def test_goal_command_lifecycle_is_durable_and_does_not_create_runs(tmp_pa
     )
 
     assert len(created.session_inputs) == 1
-    first_goal_id = created.data["goal_id"]
-    assert _goal_state(home, session.session_id)["goal"]["status"] == "active"
+    assert created.output == "Requesting Goal creation through the Agent."
+    assert created.data == {
+        "objective": "Ship the durable feature",
+        "token_budget": 100,
+    }
+    assert "CreateGoal exactly once" in created.session_inputs[0].prompt
+    assert '"Ship the durable feature"' in created.session_inputs[0].prompt
     assert store.load_runtime_session(session.session_id).runs == []
-    assert len(store.load_session_record(session.session_id).controls.activations) == 1
-
-    duplicate = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal",
-        "Create an implicit second Goal",
-        session_id=session.session_id,
-    )
-    assert duplicate.data["error"] == "unfinished_goal_exists"
-    assert len(store.load_session_record(session.session_id).controls.activations) == 1
-
-    paused = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal",
-        "pause",
-        session_id=session.session_id,
-    )
-    assert "paused" in paused.output
-    assert _goal_state(home, session.session_id)["goal"]["status"] == "paused"
     assert store.load_session_record(session.session_id).controls.activations == []
-
-    resumed = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal",
-        "resume",
-        session_id=session.session_id,
-    )
-    assert len(resumed.session_inputs) == 1
-    assert _goal_state(home, session.session_id)["goal"]["status"] == "active"
-
-    replaced = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal",
-        "replace --token-budget 200 Ship the replacement",
-        session_id=session.session_id,
-    )
-    replacement = _goal_state(home, session.session_id)["goal"]
-    assert replacement["goal_id"] == replaced.data["goal_id"]
-    assert replacement["goal_id"] != first_goal_id
-    assert replacement["objective"] == "Ship the replacement"
-    assert replacement["token_budget"] == 200
-    assert len(store.load_session_record(session.session_id).controls.activations) == 1
-
-    cancelled = await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal",
-        "cancel",
-        session_id=session.session_id,
-    )
-    assert "cancelled" in cancelled.output.lower()
     assert not (
         home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
     ).exists()
-    assert store.load_runtime_session(session.session_id).runs == []
     await application.close()
 
 
 @pytest.mark.asyncio
 async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_path) -> None:
     home = tmp_path / "home"
-    runtime, store = _runtime(home, ScriptedGoalProvider([]))
+    provider = ScriptedGoalProvider(
+        [
+            _create_goal_step("Inspect and verify the CLI path"),
+            {
+                "tool": ToolCallRequest(
+                    id="call_complete",
+                    name="UpdateGoal",
+                    arguments={
+                        "goal_id": "placeholder",
+                        "status": "complete",
+                        "report": "Verified the CLI creation path.",
+                    },
+                )
+            },
+            {"text": "Goal creation and completion recorded."},
+        ]
+    )
+    runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
@@ -252,6 +286,7 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
         "/goal Inspect and verify the CLI path",
         runtime,
         None,
+        approval_mode="auto",
         plugins=application.plugins,
     )
     assert created.session_id is not None
@@ -263,6 +298,11 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
     assert attributed.plugin_id == PLUGIN_ID
     assert attributed.contribution_id == "goal"
 
+    result = await runtime.submit_plugin_input(attributed, session_id=session_id)
+    assert result.run.status == "completed"
+    assert "CreateGoal" in provider.tool_names[0]
+    assert "UpdateGoal" in provider.tool_names[1]
+
     status = await handle_command(
         "/goal status",
         runtime,
@@ -270,7 +310,7 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
         plugins=application.plugins,
     )
     assert "Inspect and verify the CLI path" in status.output
-    assert "active" in status.output
+    assert "complete" in status.output
 
     await handle_command(
         "/goal cancel",
@@ -288,6 +328,7 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
     home = tmp_path / "home"
     provider = ScriptedGoalProvider(
         [
+            _create_goal_step("Complete and verify the result"),
             {"text": "Made partial progress.", "usage": Usage(input_tokens=3, output_tokens=2)},
             {
                 "tool": ToolCallRequest(
@@ -308,17 +349,11 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
-    session = runtime.create_session(title="Goal completion")
+    session = runtime.create_session(title="Goal completion", approval_mode="auto")
     command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "Complete and verify the result",
         session_id=session.session_id,
-    )
-    goal_id = str(command.data["goal_id"])
-    complete_call = provider.steps[1]["tool"]
-    assert isinstance(complete_call, ToolCallRequest)
-    provider.steps[1]["tool"] = complete_call.model_copy(
-        update={"arguments": {**complete_call.arguments, "goal_id": goal_id}}
     )
 
     result = await runtime.submit_plugin_input(
@@ -327,7 +362,7 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
     )
 
     assert result.run.status == "completed"
-    assert provider.calls == 3
+    assert provider.calls == 4
     snapshot = store.load_runtime_session(session.session_id)
     assert [run.origin for run in snapshot.runs] == ["plugin", "plugin"]
     assert all(run.continuation is not None for run in snapshot.runs)
@@ -363,6 +398,7 @@ async def test_goal_can_report_blocked_after_multiple_bounded_runs(tmp_path) -> 
     home = tmp_path / "home"
     provider = ScriptedGoalProvider(
         [
+            _create_goal_step("Retry and diagnose the external operation"),
             {"text": "First external attempt failed.", "usage": Usage(input_tokens=1)},
             {"text": "Second external attempt failed.", "usage": Usage(input_tokens=1)},
             {"text": "Third external attempt failed.", "usage": Usage(input_tokens=1)},
@@ -385,27 +421,17 @@ async def test_goal_can_report_blocked_after_multiple_bounded_runs(tmp_path) -> 
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
-    session = runtime.create_session(title="Goal blocked")
+    session = runtime.create_session(title="Goal blocked", approval_mode="auto")
     command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "Retry and diagnose the external operation",
         session_id=session.session_id,
     )
-    blocked_call = provider.steps[3]["tool"]
-    assert isinstance(blocked_call, ToolCallRequest)
-    provider.steps[3]["tool"] = blocked_call.model_copy(
-        update={
-            "arguments": {
-                **blocked_call.arguments,
-                "goal_id": str(command.data["goal_id"]),
-            }
-        }
-    )
 
     await runtime.submit_plugin_input(command.session_inputs[0], session_id=session.session_id)
 
     snapshot = store.load_runtime_session(session.session_id)
-    assert provider.calls == 5
+    assert provider.calls == 6
     assert len(snapshot.runs) == 4
     assert [run.continuation.action for run in snapshot.runs if run.continuation] == [
         "continue",
@@ -449,12 +475,17 @@ async def test_budget_boundary_stops_without_claiming_completion(
     expected_tokens,
 ) -> None:
     home = tmp_path / "home"
-    provider = ScriptedGoalProvider([step])
+    provider = ScriptedGoalProvider(
+        [
+            _create_goal_step("Finish within a budget", token_budget=5),
+            step,
+        ]
+    )
     runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
-    session = runtime.create_session(title="Goal budget")
+    session = runtime.create_session(title="Goal budget", approval_mode="auto")
     command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "--token-budget 5 Finish within a budget",
@@ -469,7 +500,7 @@ async def test_budget_boundary_stops_without_claiming_completion(
     assert goal["reason_code"] == expected_reason
     assert goal["tokens_used"] == expected_tokens
     assert goal["runs_used"] == 1
-    assert provider.calls == 1
+    assert provider.calls == 2
     assert store.load_session_record(session.session_id).controls.activations == []
     if expected_reason == "token_budget_exhausted":
         rejected = await application.plugins.execute_command(
@@ -495,12 +526,17 @@ async def test_budget_boundary_stops_without_claiming_completion(
 @pytest.mark.asyncio
 async def test_runtime_failure_pauses_goal_and_releases_controller(tmp_path) -> None:
     home = tmp_path / "home"
-    provider = ScriptedGoalProvider([{"error": RuntimeError("provider unavailable")}])
+    provider = ScriptedGoalProvider(
+        [
+            _create_goal_step("Keep working unless execution really fails"),
+            {"error": RuntimeError("provider unavailable")},
+        ]
+    )
     runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
     assert application.plugins is not None
-    session = runtime.create_session(title="Goal failure")
+    session = runtime.create_session(title="Goal failure", approval_mode="auto")
     command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "Keep working unless execution really fails",
@@ -541,19 +577,30 @@ async def test_create_goal_waits_for_manual_approval_without_starting_another_ru
     runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_goal_mode(application)
-
-    waiting = await runtime.run(
-        "Create a Goal for the explicitly requested durable work",
+    assert application.plugins is not None
+    session = runtime.create_session(
+        title="Approval-governed Goal creation",
         approval_mode="approval",
+    )
+    command = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "Explicitly requested durable work",
+        session_id=session.session_id,
+    )
+
+    waiting = await runtime.submit_plugin_input(
+        command.session_inputs[0],
+        session_id=session.session_id,
     )
 
     assert waiting.run.status == "waiting_approval"
-    snapshot = store.load_runtime_session(waiting.session.session_id)
+    snapshot = store.load_runtime_session(session.session_id)
     assert len(snapshot.runs) == 1
+    assert snapshot.runs[0].origin == "plugin"
     assert provider.calls == 1
     assert snapshot.session.controls.activations == []
     state_path = (
-        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{waiting.session.session_id}.json"
+        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
     )
     assert not state_path.exists()
     await application.close()
@@ -763,25 +810,43 @@ def test_goal_accounting_is_idempotent_and_subagents_cannot_activate(tmp_path) -
 @pytest.mark.asyncio
 async def test_goal_and_plan_mode_conflict_through_the_shared_framework_claim(tmp_path) -> None:
     home = tmp_path / "home"
-    runtime, _store = _runtime(home, ScriptedGoalProvider([]))
+    provider = ScriptedGoalProvider(
+        [
+            _create_goal_step("Conflicting objective"),
+            {"text": "Goal creation conflict reported."},
+        ]
+    )
+    runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     assert application.plugins is not None
     await application.start()
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
     assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
-    session = runtime.create_session(title="Mode conflict")
+    session = runtime.create_session(title="Mode conflict", approval_mode="auto")
     await application.plugins.execute_command(
         "dev.ouro.plan_mode:plan",
         "on",
         session_id=session.session_id,
     )
 
-    with pytest.raises(SessionControlConflictError, match="primary_behavior"):
-        await application.plugins.execute_command(
-            f"{PLUGIN_ID}:goal",
-            "Conflicting objective",
-            session_id=session.session_id,
-        )
+    command = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "Conflicting objective",
+        session_id=session.session_id,
+    )
+    result = await runtime.submit_plugin_input(
+        command.session_inputs[0],
+        session_id=session.session_id,
+    )
+
+    create_result = next(item for item in result.tool_results if item.tool_name == "CreateGoal")
+    assert create_result.is_error is True
+    assert create_result.structured["error_type"] == "ToolPermissionDenied"
+    assert "Plan mode denied" in create_result.content
+    assert len(store.load_session_record(session.session_id).controls.activations) == 1
+    assert not (
+        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
+    ).exists()
 
     await application.close()
 
@@ -789,18 +854,45 @@ async def test_goal_and_plan_mode_conflict_through_the_shared_framework_claim(tm
 @pytest.mark.asyncio
 async def test_plan_cannot_partially_activate_while_goal_is_active(tmp_path) -> None:
     home = tmp_path / "home"
-    runtime, store = _runtime(home, ScriptedGoalProvider([]))
+    provider = GatedGoalProvider(
+        [
+            _create_goal_step("Keep the Goal controller authoritative"),
+            {
+                "tool": ToolCallRequest(
+                    id="call_complete",
+                    name="UpdateGoal",
+                    arguments={
+                        "goal_id": "placeholder",
+                        "status": "complete",
+                        "report": "Goal arbitration verified.",
+                    },
+                )
+            },
+            {"text": "Goal arbitration recorded."},
+        ]
+    )
+    runtime, store = _runtime(home, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     assert application.plugins is not None
     await application.start()
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
     assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
-    session = runtime.create_session(title="Goal owns primary behavior")
-    await application.plugins.execute_command(
+    session = runtime.create_session(
+        title="Goal owns primary behavior",
+        approval_mode="auto",
+    )
+    command = await application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "Keep the Goal controller authoritative",
         session_id=session.session_id,
     )
+    run_task = asyncio.create_task(
+        runtime.submit_plugin_input(
+            command.session_inputs[0],
+            session_id=session.session_id,
+        )
+    )
+    await asyncio.wait_for(provider.goal_activated.wait(), timeout=2)
     before = store.load_session_record(session.session_id).controls.activations
 
     with pytest.raises(SessionControlConflictError, match="primary_behavior"):
@@ -814,26 +906,45 @@ async def test_plan_cannot_partially_activate_while_goal_is_active(tmp_path) -> 
     assert [item.activation_id for item in after] == [item.activation_id for item in before]
     assert after[0].controller_id == f"{PLUGIN_ID}/session_controllers/mode"
     assert _goal_state(home, session.session_id)["goal"]["status"] == "active"
-    await application.plugins.execute_command(
-        f"{PLUGIN_ID}:goal", "cancel", session_id=session.session_id
-    )
+    provider.release.set()
+    await run_task
+    assert _goal_state(home, session.session_id)["goal"]["status"] == "complete"
     await application.close()
 
 
 @pytest.mark.asyncio
 async def test_active_goal_recovers_after_restart_without_boot_time_autorun(tmp_path) -> None:
     home = tmp_path / "home"
-    first_runtime, _first_store = _runtime(home, ScriptedGoalProvider([]))
+    first_provider = ScriptedGoalProvider(
+        [
+            _create_goal_step("Survive a Host restart"),
+            _create_goal_step("A second Goal must remain pending"),
+        ]
+    )
+    first_runtime, _first_store = _runtime(home, first_provider)
     first_application = LocalApplication.from_runtime(first_runtime, home=home)
     await _enable_goal_mode(first_application)
     assert first_application.plugins is not None
-    session = first_runtime.create_session(title="Recover Goal")
+    session = first_runtime.create_session(title="Recover Goal", approval_mode="approval")
     created = await first_application.plugins.execute_command(
         f"{PLUGIN_ID}:goal",
         "Survive a Host restart",
         session_id=session.session_id,
     )
-    goal_id = created.data["goal_id"]
+    waiting = await first_runtime.submit_plugin_input(
+        created.session_inputs[0],
+        session_id=session.session_id,
+    )
+    assert waiting.run.pending_approval_id is not None
+    active_waiting = await first_runtime.approve_tool(
+        session_id=session.session_id,
+        run_id=waiting.run.run_id,
+        approval_id=waiting.run.pending_approval_id,
+        approved=True,
+    )
+    assert active_waiting.run.status == "waiting_approval"
+    assert active_waiting.run.pending_approval_id is not None
+    goal_id = _goal_state(home, session.session_id)["goal"]["goal_id"]
     await first_application.close()
 
     second_provider = ScriptedGoalProvider([{"error": RuntimeError("recovered provider failure")}])
@@ -850,16 +961,12 @@ async def test_active_goal_recovers_after_restart_without_boot_time_autorun(tmp_
     assert status_goal["goal_id"] == goal_id
     assert status_goal["status"] == "active"
 
-    result = await second_runtime.run(
-        "Continue after restart",
+    assert second_store.load_session_record(session.session_id).controls.activations
+    cancelled = await second_application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "cancel",
         session_id=session.session_id,
     )
-
-    assert result.run.status == "failed"
-    recovered = _goal_state(home, session.session_id)["goal"]
-    assert recovered["goal_id"] == goal_id
-    assert recovered["objective"] == "Survive a Host restart"
-    assert recovered["status"] == "paused"
-    assert recovered["runs_used"] == 1
+    assert "cancelled" in cancelled.output.lower()
     assert second_store.load_session_record(session.session_id).controls.activations == []
     await second_application.close()

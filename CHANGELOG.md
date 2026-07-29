@@ -39,6 +39,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- `/goal <objective>` now submits an attributed creation request to the current Session Agent;
+  every new Goal receives its identity and controller activation exclusively through the
+  approval-governed `CreateGoal` tool instead of a parallel command transition path.
 - Interactive plugin commands can declare `requires_session` in their Manifest. The Host now
   enforces that precondition and lazily binds a Session before a first `/goal` or `/plan` command,
   while stateless commands preserve the existing no-Session behavior.

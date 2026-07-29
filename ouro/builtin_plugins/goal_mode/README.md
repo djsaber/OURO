@@ -3,7 +3,9 @@
 `dev.ouro.goal_mode` owns one durable Goal for a primary Session. It composes only public
 plugin contracts:
 
-- `/goal` is the user control plane for create, status, pause, resume, cancel, and replace.
+- `/goal` is the user intent and lifecycle control plane. New creation requests are submitted to
+  the current Agent and activate only through `CreateGoal`; status, pause, resume, cancel, and
+  replace remain user-owned commands.
 - `GetGoal`, `CreateGoal`, and `UpdateGoal` are the model-facing read/create/settle tools.
 - the `mode` Session Controller exclusively claims `ouro.session.primary_behavior`.
 - `goal-scaffold` persists the objective and completion rules in model context.

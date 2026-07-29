@@ -16,7 +16,7 @@ from ouro.sdk.plugins.v1 import (
     SessionInput,
 )
 
-from .prompts import continuation_prompt, initial_goal_prompt
+from .prompts import continuation_prompt, goal_creation_request_prompt, initial_goal_prompt
 from .state import (
     UNFINISHED_GOAL_STATUSES,
     GoalActor,
@@ -71,9 +71,7 @@ class GoalCommandService:
                     ),
                     data={"error": "unfinished_goal_exists", "goal": current.to_public()},
                 )
-            return self._create_output(
-                action="acquire",
-                operation="create",
+            return self._creation_request_output(
                 objective=parsed.objective,
                 token_budget=parsed.token_budget,
             )
@@ -153,6 +151,30 @@ class GoalCommandService:
                 token_budget=parsed.token_budget,
             )
         raise AssertionError(f"unsupported parsed Goal command: {parsed.action}")
+
+    @staticmethod
+    def _creation_request_output(
+        *,
+        objective: str,
+        token_budget: int | None,
+    ) -> CommandOutput:
+        return CommandOutput(
+            output="Requesting Goal creation through the Agent.",
+            data={
+                "objective": objective,
+                "token_budget": token_budget,
+            },
+            session_inputs=(
+                SessionInput(
+                    prompt=goal_creation_request_prompt(
+                        objective=objective,
+                        token_budget=token_budget,
+                    ),
+                    mode="follow_up",
+                    title=f"Create Goal: {objective[:48]}",
+                ),
+            ),
+        )
 
     def _create_output(
         self,
