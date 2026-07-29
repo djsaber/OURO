@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from mcp.shared.exceptions import McpError
 from ouro.core.redaction import redact_text
 from ouro.mcp.client import (
     CredentialResolver,
+    MCPConnectionLostHandler,
     MCPDiagnosticHandler,
     MCPToolsChangedHandler,
 )
@@ -35,6 +37,24 @@ from ouro.mcp.models import (
     MCPServerConfig,
     MCPServerInfo,
 )
+
+
+class _LegacySSELogFilter(logging.Filter):
+    """Drop transport tracebacks after the same disconnect entered OURO's lifecycle."""
+
+    _DISCONNECT_MESSAGES = {"Error in sse_reader", "Error in post_writer"}
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() not in self._DISCONNECT_MESSAGES or record.exc_info is None:
+            return True
+        return not isinstance(record.exc_info[1], (httpx.RequestError, OSError))
+
+
+# The legacy SDK logs expected reader/writer network failures before surfacing them
+# through its session streams. OURO consumes those failures below or through the next
+# bounded request and records one redacted lifecycle diagnostic, so allowing the SDK
+# copy to propagate would leak a duplicate implementation traceback into terminals.
+logging.getLogger("mcp.client.sse").addFilter(_LegacySSELogFilter())
 
 
 class SDKMCPClientSession:
@@ -101,6 +121,7 @@ class SDKMCPClientFactory:
         resolve_credential: CredentialResolver,
         diagnostic: MCPDiagnosticHandler,
         tools_changed: MCPToolsChangedHandler,
+        connection_lost: MCPConnectionLostHandler,
     ) -> AsyncIterator[SDKMCPClientSession]:
         secrets = _resolve_secrets(config, resolve_credential)
 
@@ -116,7 +137,8 @@ class SDKMCPClientFactory:
             ):
                 tools_changed()
             elif isinstance(message, Exception):
-                diagnostic("error", _redact(str(message), secrets.values()))
+                error = _translate_sdk_error(message, operation="session transport")
+                connection_lost(_redact(str(error), secrets.values()))
 
         if config.transport == "stdio":
             environment = {
@@ -182,7 +204,11 @@ class SDKMCPClientFactory:
                         config.url or "",
                         headers=headers,
                         timeout=config.timeout_seconds,
-                        sse_read_timeout=config.timeout_seconds,
+                        # The MCP owner actively probes liveness with bounded ping
+                        # requests. A passive read deadline on the long-lived event
+                        # stream races that supervisor and disconnects healthy idle
+                        # sessions.
+                        sse_read_timeout=None,  # type: ignore[arg-type]
                     ) as streams:
                         async with _client_session(
                             streams,

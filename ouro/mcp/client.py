@@ -13,6 +13,7 @@ from ouro.mcp.models import (
 
 MCPDiagnosticHandler = Callable[[str, str], None]
 MCPToolsChangedHandler = Callable[[], None]
+MCPConnectionLostHandler = Callable[[str], None]
 CredentialResolver = Callable[[str], str | None]
 
 
@@ -40,6 +41,7 @@ class MCPClientFactory(Protocol):
         resolve_credential: CredentialResolver,
         diagnostic: MCPDiagnosticHandler,
         tools_changed: MCPToolsChangedHandler,
+        connection_lost: MCPConnectionLostHandler,
     ) -> AbstractAsyncContextManager[MCPClientSession]: ...
 
 

@@ -74,12 +74,14 @@ class FakeFactory:
         self.open_count = 0
         self.close_count = 0
         self.tools_changed = lambda: None
+        self.connection_lost = lambda _error: None
 
     @asynccontextmanager
     async def open(self, config, **callbacks) -> AsyncIterator[FakeSession]:
         del config
         self.open_count += 1
         self.tools_changed = callbacks["tools_changed"]
+        self.connection_lost = callbacks["connection_lost"]
         session = self.sessions[min(self.open_count - 1, len(self.sessions) - 1)]
         try:
             yield session
@@ -269,6 +271,30 @@ async def test_remote_disconnect_recycles_session_and_restores_tools() -> None:
     assert registry.names() == ["fs__read"]
     result = await registry.get("fs__read").execute(invocation)
     assert result.content == "ok"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_idle_transport_disconnect_reconnects_without_waiting_for_health_ping() -> None:
+    factory = FakeFactory(
+        FakeSession(tools=[_remote_tool()]),
+        FakeSession(tools=[_remote_tool()]),
+    )
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=factory)
+    manager.configure(_config(health_check_interval_seconds=3600))
+    await manager.start("fs")
+
+    factory.connection_lost("MCP session transport failed: connection closed")
+    for _ in range(100):
+        if factory.open_count == 2 and manager.get("fs").status == "connected":
+            break
+        await asyncio.sleep(0.01)
+
+    assert factory.open_count == 2
+    assert manager.get("fs").status == "connected"
+    assert registry.names() == ["fs__read"]
+    assert any("connection closed" in item.message for item in manager.diagnostics("fs"))
     await manager.close()
 
 

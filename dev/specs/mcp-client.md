@@ -62,7 +62,9 @@ configured/disabled
 - initialize 完成版本/能力协商，随后完整消费 tools/list pagination；
 - list-changed notification 只唤醒 owner，由 owner 发起发现，不能在 SDK receive loop 内等待响应；
 - ToolRegistry 使用原子 contribution replacement，刷新失败保留刷新前的完整 registry；
-- health ping 或工具连接错误触发有界指数退避重连；显式 reconnect 执行完整 stop/start；
+- SDK receive loop 的连接丢失、health ping 或工具连接错误都会唤醒 owner 并触发有界指数退避重连；
+  legacy SSE 的长连接读取不复用普通请求超时，存活性统一由 owner 的有界 ping 监督；显式 reconnect 执行
+  完整 stop/start；
 - `stop`、`close` 和 RuntimeSupervisor shutdown 退出 session、HTTP client、stdio 管道与子进程；
 - `MCPRuntimeResource` 是 MCPManager 到 RuntimeSupervisor 通用受管资源协议的适配器。
 

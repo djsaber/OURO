@@ -95,6 +95,57 @@ async def test_streamable_http_server_full_lifecycle() -> None:
             await asyncio.wait_for(process.wait(), timeout=5)
 
 
+@pytest.mark.asyncio
+async def test_legacy_sse_server_remains_usable_while_interactive_host_is_idle() -> None:
+    port = _unused_tcp_port()
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(SERVER_SCRIPT),
+        "--transport",
+        "sse",
+        "--port",
+        str(port),
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry)
+    manager.configure(
+        MCPServerConfig(
+            server_id="sse",
+            name="Legacy SSE integration",
+            transport="sse",
+            url=f"http://127.0.0.1:{port}/sse",
+            timeout_seconds=0.2,
+            health_check_interval_seconds=1,
+            max_reconnect_attempts=10,
+            reconnect_backoff_seconds=0.05,
+        )
+    )
+    try:
+        connected = await manager.start("sse")
+        assert connected.status == "connected", connected.error
+
+        # Request timeouts must not become passive read deadlines for the
+        # long-lived SSE stream while the interactive host is awaiting input.
+        await asyncio.sleep(0.4)
+
+        result = await registry.get("sse__echo").execute(
+            ToolInvocation(
+                session_id="session",
+                run_id="run",
+                tool_name="sse__echo",
+                arguments={"value": "still connected"},
+            )
+        )
+        assert result.structured == {"value": "still connected"}
+    finally:
+        await manager.close()
+        if process.returncode is None:
+            process.terminate()
+            await asyncio.wait_for(process.wait(), timeout=5)
+
+
 def _unused_tcp_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

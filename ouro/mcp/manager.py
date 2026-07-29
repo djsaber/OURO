@@ -254,6 +254,7 @@ class MCPManager:
                             server_id, level, message
                         ),
                         tools_changed=runtime.tools_changed.set,
+                        connection_lost=lambda error: self._request_recycle(runtime, error),
                     ) as session:
                         runtime.session = session
                         server_info = await asyncio.wait_for(
@@ -424,14 +425,20 @@ class MCPManager:
         except Exception as exc:  # noqa: BLE001 - remote call failure is isolated.
             error = self._safe_error(server_id, exc)
             self._record_diagnostic(server_id, "error", error)
-            runtime.recycle_error = error
-            runtime.recycle.set()
+            self._request_recycle(runtime, error)
             raise MCPToolCallError(error) from exc
         finally:
             if not task.done():
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
         return mcp_tool_result(invocation, remote_result)
+
+    @staticmethod
+    def _request_recycle(runtime: _ServerRuntime, error: str) -> None:
+        if runtime.stop.is_set():
+            return
+        runtime.recycle_error = error
+        runtime.recycle.set()
 
     def _connected_runtime(self, server_id: str) -> _ServerRuntime:
         record = self.get(server_id)
