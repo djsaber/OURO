@@ -41,13 +41,13 @@ def create_plugin_scaffold(
         manifest_dir = staging / ".ouro-plugin"
         manifest_dir.mkdir()
         manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "plugin_id": normalized_id,
             "name": display_name,
             "version": "0.1.0",
             "description": "A local OURO user plugin.",
             "namespace": local_namespace,
-            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.2.0"},
+            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": f"{module_name}:create_plugin",

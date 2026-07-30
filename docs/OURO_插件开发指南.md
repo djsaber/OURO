@@ -113,9 +113,9 @@ class Plugin:
 configuration、插件私有 data 或 canonical Session 数据。没有本地用户数据根的 Host 可以返回 `None`，依赖文件
 制品的插件应在激活时明确失败。
 
-当前稳定 contribution 包括 Tool、Command、观察 Hook、Context Provider、Turn Policy、Compaction Strategy、Skill、
-MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能动态注册新的
-extension point。
+当前稳定 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
+Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能
+动态注册新的 extension point。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Command、
@@ -175,6 +175,18 @@ def plan_scaffold(call):
 
 Host 在调用模型前把它写成带 plugin/provider/generation provenance 的 `system_synthetic` 消息；同一
 Run/model round 的恢复不会重复写入。不要把瞬时状态快照无差别持久化。
+
+### Observer 与 Prompt Policy
+
+Observer 只接收已经发生的类型化事实，handler 必须返回 `None`。Application 为每个 registration 使用独立有界
+mailbox；回调不在模型、工具或 Run 的语义关键路径中被等待。需要改变行为时应使用对应的 Context Provider、Policy、
+Strategy 或 Session Controller，不能依赖 Observer 的执行顺序。
+
+Prompt Policy 在 Host 路由后的直接用户提示进入 canonical message、durable queue 或 Run 前返回 `allow | deny`。它不能改写提示；
+timeout、异常和非法返回都会 fail-closed。User plugin 必须声明 `sessions.prompt.inspect`，因为回调会收到原始提示以及
+附件的 resource id、media type、size，不会收到附件正文或来源路径。完整示例见
+[`inprocess-observer`](../examples/plugins/inprocess-observer)和
+[`inprocess-prompt-policy`](../examples/plugins/inprocess-prompt-policy)。
 
 ### Session 级控制模式
 
@@ -276,7 +288,8 @@ worker 从 stdin 逐行读取 JSON-RPC 2.0 request，只向 stdout 写协议 JSO
 - `contributions.prepare`：返回 manifest 已声明 contribution 的协议描述；
 - `lifecycle.start` / `lifecycle.stop` / `shutdown`；
 - contribution 调用，例如 `tool.call`；
-- resumable 工具使用 `tool.resume`；协议 `1.2` 的 `call.resolution` 传输 `answer` 或 `unattended` 判别对象；
+- resumable 工具使用 `tool.resume`；协议 `2.0` 的 `call.resolution` 传输 `answer` 或 `unattended` 判别对象；
+- Observer 使用 `observer.observe`，Prompt Policy 使用 `prompt_policy.call`；
 - `cancel`：取消超时或被 Host 取消的 request。
 
 stdout 污染、未知消息、过大响应、声明不一致和错误 result shape 都会使协议调用失败。完整最小实现见
@@ -285,10 +298,10 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
 声明 `resumable=true` 的 worker tool 通过 `tool.resume` 接收原请求和 `resolution`；如需在 AFK 下自定义业务迁移，
-还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `1.2`，Host 不把旧版 `answer`
+还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `2.0`，Host 不把旧版 `answer`
 字段静默转换为新契约。
-协议 `1.2` 同时在 `session_controller.call` 输入中加入 `session_kind`，并允许 `continuation.call` 输出
-`session_control_transitions`；两者与 in-process Plugin API `1.2.0` 使用相同语义。
+协议 `2.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
+`session_control_transitions`，并使用新的 Observer/Prompt Policy 契约；它与 in-process Plugin API `2.0.0` 使用相同语义。
 `context.call` 的 `fragments` 既接受字符串，也接受
 `{"text": "...", "persistence": "ephemeral|message"}` 对象。
 
@@ -312,8 +325,10 @@ uv run ouro plugin import-report ./community-package --json
 
 - [`declarative-skill`](../examples/plugins/declarative-skill)：静态 Agent Skill；
 - [`inprocess-command`](../examples/plugins/inprocess-command)：Python Command；
+- [`inprocess-observer`](../examples/plugins/inprocess-observer)：非阻塞类型化 Observer；
+- [`inprocess-prompt-policy`](../examples/plugins/inprocess-prompt-policy)：持久化前拒绝提示的 Prompt Policy；
 - 内置 Plan 模式位于 `ouro/builtin_plugins/plan_mode`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
-三个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin
+五个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin
 enable/disable、Generation、工具恢复与跨进程 Run 集成测试覆盖，避免文档示例与实现漂移。

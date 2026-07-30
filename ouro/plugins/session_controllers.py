@@ -9,7 +9,7 @@ from pydantic import Field, JsonValue
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
-from ouro.core.hooks import PluginSource
+from ouro.core.extensions import PluginSource
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import SessionControlClaim
 from ouro.plugins.models import PluginClass

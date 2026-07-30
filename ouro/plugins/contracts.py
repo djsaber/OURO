@@ -8,7 +8,8 @@ from typing import Protocol
 from ouro.core.compaction import CompactionStrategy
 from ouro.core.context_providers import ContextProviderRegistration
 from ouro.core.continuations import ContinuationPolicyRegistration
-from ouro.core.hooks import HookRegistration
+from ouro.core.observers import ObserverRegistration
+from ouro.core.prompt_policies import PromptPolicyRegistration
 from ouro.core.tool_policies import ToolPolicyRegistration
 from ouro.core.turn_policies import TurnPolicyRegistration
 from ouro.plugins.manifest import PluginManifest
@@ -26,12 +27,13 @@ class ContractBackgroundService(Protocol):
 class ContributionContractContext:
     manifest: PluginManifest
     tools: tuple[Tool, ...]
-    hooks: tuple[HookRegistration, ...]
+    observers: tuple[ObserverRegistration, ...]
     context_providers: tuple[ContextProviderRegistration, ...]
     commands: tuple[PluginCommand, ...]
     compaction: tuple[CompactionStrategy, ...]
     background_services: tuple[ContractBackgroundService, ...]
     continuation_policies: tuple[ContinuationPolicyRegistration, ...]
+    prompt_policies: tuple[PromptPolicyRegistration, ...]
     turn_policies: tuple[TurnPolicyRegistration, ...]
     tool_policies: tuple[ToolPolicyRegistration, ...]
     session_controllers: tuple[PluginSessionController, ...]
@@ -61,20 +63,20 @@ class _ToolContractAdapter:
 
 
 @dataclass(frozen=True)
-class _HookContractAdapter:
-    kind: str = "hooks"
+class _ObserverContractAdapter:
+    kind: str = "observers"
 
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
-        contracts: dict[str, object] = {}
-        for hook in context.hooks:
-            if hook.hook_id.startswith("skill:"):
-                continue
-            contracts[f"{context.manifest.plugin_id}/hooks/{hook.hook_id}"] = {
-                "event": hook.hook_name,
-                "priority": hook.priority,
-                "active_when_controller_id": hook.active_when_controller_id,
+        return {
+            f"{context.manifest.plugin_id}/observers/{observer.observer_id}": {
+                "event": observer.event,
+                "event_types": list(observer.event_types),
+                "priority": observer.priority,
+                "timeout_seconds": observer.timeout_seconds,
+                "active_when_controller_id": observer.active_when_controller_id,
             }
-        return contracts
+            for observer in context.observers
+        }
 
 
 @dataclass(frozen=True)
@@ -179,6 +181,23 @@ class _ToolPolicyContractAdapter:
 
 
 @dataclass(frozen=True)
+class _PromptPolicyContractAdapter:
+    kind: str = "prompt_policies"
+
+    def contracts(self, context: ContributionContractContext) -> dict[str, object]:
+        return {
+            f"{context.manifest.plugin_id}/prompt_policies/{policy.policy_id}": {
+                "priority": policy.priority,
+                "timeout_seconds": policy.timeout_seconds,
+                "deny_only": True,
+                "active_when_controller_id": policy.active_when_controller_id,
+                "permission": "sessions.prompt.inspect",
+            }
+            for policy in context.prompt_policies
+        }
+
+
+@dataclass(frozen=True)
 class _TurnPolicyContractAdapter:
     kind: str = "turn_policies"
 
@@ -194,13 +213,14 @@ class _TurnPolicyContractAdapter:
 
 
 TOOL_CONTRACT_ADAPTER = _ToolContractAdapter()
-HOOK_CONTRACT_ADAPTER = _HookContractAdapter()
+OBSERVER_CONTRACT_ADAPTER = _ObserverContractAdapter()
 COMMAND_CONTRACT_ADAPTER = _CommandContractAdapter()
 CONTEXT_CONTRACT_ADAPTER = _ContextContractAdapter()
 COMPACTION_CONTRACT_ADAPTER = _CompactionContractAdapter()
 BACKGROUND_SERVICE_CONTRACT_ADAPTER = _BackgroundServiceContractAdapter()
 CONTINUATION_CONTRACT_ADAPTER = _ContinuationContractAdapter()
 TOOL_POLICY_CONTRACT_ADAPTER = _ToolPolicyContractAdapter()
+PROMPT_POLICY_CONTRACT_ADAPTER = _PromptPolicyContractAdapter()
 TURN_POLICY_CONTRACT_ADAPTER = _TurnPolicyContractAdapter()
 SESSION_CONTROLLER_CONTRACT_ADAPTER = _SessionControllerContractAdapter()
 

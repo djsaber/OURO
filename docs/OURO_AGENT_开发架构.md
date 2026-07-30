@@ -175,10 +175,10 @@ usage/budget、pending interaction 及 result/delivery 状态的有界根树快�
 activity change 触发树摘要，text/reasoning/tool delta 仍留在各自 Session stream。终态 child 退出 live subscription
 但保留历史节点；慢 Host 收到 lag diagnostic 后按 canonical snapshot/revision 重连，关闭订阅不会取消 child。
 AgentService 产生的关系事件与 Runtime 事件统一经过 `RuntimeEventRecorder` 的先持久化、后观察边界，不能直接写
-Store 绕过 Host/Hook observer。
+Store 绕过 Host/Observer 边界。
 
-`RuntimeEventRecorder` 先在线程外持久化事件，再把 Host sink 与观察型 Hook 投递到彼此独立的有界 worker；
-慢观察者不会持有跨 Session 全局锁，也不会回滚 durable event。每个 sink/hook 都有超时和脱敏诊断，关闭
+`RuntimeEventRecorder` 先在线程外持久化事件，再把 Host sink 与每个 Observer 投递到彼此独立的有界 mailbox；
+慢观察者不会持有跨 Session 全局锁，也不会回滚 durable event。每个 sink/observer 都有超时和脱敏诊断，关闭
 生命周期会 drain 已接收事件。Host 收到的是类型化 `RuntimeEventView`，不需要重复解释任意 payload。
 
 排队输入的提交时机是应用层契约：`follow_up` 在当前 Run 完整结束后进入新的 Run，`steer` 在当前
@@ -285,7 +285,7 @@ snapshot-bound Context Provider 和 token 预算。Context Provider 在模型请
 fragment 默认只参与本次模型请求；声明 `persistence="message"` 时，Application 必须先通过 `RunLifecycle` 将它以
 `system_synthetic` 写入 canonical history，并记录 plugin、provider、generation、model round 和幂等 delivery key，
 成功后才能调用模型。同一 Run/model round 的重试不能重复落盘。optional provider 失败时省略自身，required
-provider 失败时阻断本轮，不能借用观察 Hook 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
+provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
 通过 message id 前缀和 digest 验证摘要来源。
 
 模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
@@ -316,7 +316,7 @@ Provider 内容 digest。资源 blob 不复制进快照，审计内容查询通�
 面向用户的当前上下文查询属于另一应用用例。`RuntimeService.current_context` 使用与请求准备、压缩完成相同的纯投影
 边界，从 canonical messages、active compaction、当前模型、Catalog 工具、Skills 和资源构造 `ContextView`；
 `/context` 与 `session context` 读取 metrics，full/content 读取同一视图的统一 `ProviderContext`。查询不执行
-Context Provider、Hook 或自动压缩，也不写入 Session。请求级 ephemeral 注入只属于具体 Run，不能伪装成空闲
+Context Provider、Observer 或自动压缩，也不写入 Session。请求级 ephemeral 注入只属于具体 Run，不能伪装成空闲
 Session 的当前事实。该查询需要显式 O(context bytes) 投影，以保证手动压缩后不会继续展示旧请求快照。
 
 ## Provider Usage 与全局费用账本
@@ -482,9 +482,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 
 ## 扩展边界
 
-- Hook 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；semantic 与
-  observational hook 使用不同超时上限。
-- 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、观察 Hook、Host-neutral command、
+- Observer 失败由 `RuntimeEventRecorder` 隔离并转为脱敏事件，不允许破坏 durable run；每个 registration 的
+  mailbox、timeout 和 scope isolation 相互独立。
+- 插件只能通过 owner-aware candidate Catalog 贡献工具、限制性 tool policy、Prompt Policy、Observer、Host-neutral command、
   上下文 provider、turn policy、压缩策略、Skills、MCP、Run continuation policy 或受监督后台服务。manifest 的
   `official` 自报不构成信任；有效 provenance 由安装来源传入，capability/permission 必须覆盖实际贡献，
   未授权插件保持 `needs_authorization`。用户信任并授权插件后，其工具权限与内置工具使用相同语义，不按来源
@@ -496,22 +496,25 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   无状态命令不触发该行为。
 - Session 级长期控制统一由 `SessionControlCoordinator` 仲裁。插件以 `session_controllers` 声明 canonical controller、
   `domain + exclusive|shared` claims 和生命周期，Command/Tool 只返回 transition intent；Host 不读取 Plan、Goal 或
-  私有 state 来判断冲突。Tool/Context/Tool Policy/Turn Policy/Continuation/observational Hook 可用 `active_when` 绑定 controller，
+  私有 state 来判断冲突。Tool/Context/Prompt Policy/Tool Policy/Turn Policy/Continuation/Observer 可用 `active_when` 绑定 controller，
   Runtime 每个模型轮次冻结 active controller refs，避免切换期间权限放宽。`/control` 是 Host-owned 状态、正常释放和
   force release 逃生口；activation-bound pending interaction 与 queued continuation 随 release 取消。
 - 插件不得取得 `RuntimeService` 或 `SessionStore`。获得 `sessions.write` 与 `background.run` 后，command 可以
   返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
-  durable checkpoint；普通 `after_run` Hook 仍是 fail-open observer。
+  durable checkpoint；`run_finished` Observer 仍是 fail-open、非阻塞通知。
 - 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace/Host artifact 路径边界与
   协作式取消语义；
-  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 与观察型 `before_tool_call`
-  分离，对 host-controlled 和 tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
+  worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 对 host-controlled 和
+  tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
   审批修改后的最终参数以及每个尚未执行的调用都必须重新评估。`permission_control="tool"` 只隔离 Host permission
   维度，不隔离插件策略维度。
 - 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
   `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
   superseded；目标插件在下一 Run 重新评估。
+- `prompt_policies` 只检查 Host 路由后的直接用户提示并返回 `allow | deny`。Application 在 message、durable queue 和 Run
+  之前 fail-closed 评估；user plugin 必须声明 `sessions.prompt.inspect`。允许后，直接或排队的 prospective Run 都固定
+  同一 Catalog execution contract；拒绝路径不记录提示正文。
 - 插件是 OURO 系统级扩展模块，来源只分 `builtin` 与 `user`。workspace/project 只作为一次请求的执行上下文，
   不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 均不再
   携带 activation scope。
@@ -543,7 +546,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   active dependent 存在时不能禁用依赖项。不同 digest 共用 plugin data，候选 Host API 写入先进入隔离 staging，
   发布成功才提交；只有最后一个安装被移除时才允许 purge。
 - `ContributionCoordinator` 只负责把 generation contribution 校验、归一化为 owner set；`ExtensionCatalog` builder
-  从稳定 Host baseline 与 active generation set 构建结构冻结的 Tool、tool policy、观察 Hook、context provider、
+  从稳定 Host baseline 与 active generation set 构建结构冻结的 Tool、Prompt Policy、tool policy、Observer、context provider、
   turn policy、command、compaction 与 continuation registry。候选失败不会改写 baseline 或 current Catalog。
 - `ouro.plugins.contribution_types` 是 Host-owned 封闭清单，把每种 Manifest capability 的 SDK、worker、prepare、
   optional、contract、resource 与 Catalog projection facet 绑定在同一记录。主流程遍历清单且不接受用户动态注册；
@@ -551,17 +554,17 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   `activation-singleton`，其 projection 明确为空；其他 contribution 属于 Run `snapshot-bound`。
 - Skill metadata 也是 Catalog 的 snapshot-bound 目录：Runtime 装配时发现的 user/workspace Skill 作为 Host baseline，
   Plugin Skill 作为 generation resource 加入同一名称空间。候选按名称拒绝冲突；每轮上下文从 Run lease 生成提示词，
-  不通过 Hook 二次注入。disable 只改变新 Catalog，旧 lease 保留不可变包内的 `SKILL.md` 路径。
+  不通过 Observer 二次注入。disable 只改变新 Catalog，旧 lease 保留不可变包内的 `SKILL.md` 路径。
 - Python in-process 的 canonical owned module 为 `<namespace>_plugin`（已带后缀时保持不变）；激活检查 canonical
   冲突，实际加载键为 `_ouro_plugin_<generation_id>`。插件内依赖必须放在 owned package 并使用相对 import；关闭
   generation 时删除其完整私有 module tree。需要独立第三方环境时使用 worker。
-- Runtime 在 Run 创建时取得 `ExtensionCatalogLease`，并把同一 Catalog 贯穿 context、model tool list、tool
-  execution、Hook、turn completion、compaction、continuation 和异步 `on_event`。current pointer 仅在短同步临界区交换；旧 Catalog
+- Runtime 在直接用户提示持久化前取得 `ExtensionCatalogLease`，并把同一 Catalog 贯穿 Prompt Policy、context、model
+  tool list、tool execution、Observer、turn completion、compaction 和 continuation。current pointer 仅在短同步临界区交换；旧 Catalog
   由自身 lease 自然 drain，插件 import、worker/MCP 启停、回调和 I/O 均不在 pointer lock 内。
 - 插件生命周期 mutation 由单一 runtime lock 串行化；候选 generation set、required MCP 与 Catalog 全部成功后，
   Store 以 expected state 比较提交，并在无 `await` 的发布段打开新 gate、交换 pointer。Background Service 不进入
   Run Catalog，发布后按“旧代停止、新代启动”串行转交。
-- Catalog registry 的结构在构建后冻结；运行期只允许 Hook 的 per-Run isolation 状态变化。builtin/Host 与 user
+- Catalog registry 的结构在构建后冻结；Observer 的 per-Run isolation 只存在于 application dispatcher。builtin/Host 与 user
   contribution 都有 canonical identity、owner 和 contract hash；插件激活不会修改进程级 Host registry。
 - `LocalApplication` shutdown 先关闭 Runtime 并释放其 generation snapshot，再关闭插件 owner 与全局 MCP；插件
   runtime 等待 lease drain 到 deadline，逾期记录诊断后继续清理，避免资源 owner 先于消费者失效。

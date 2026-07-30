@@ -34,15 +34,6 @@ class EventEmitter(Protocol):
     ) -> int: ...
 
 
-class HookFailureRecorder(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        failures,
-    ) -> int: ...
-
-
 class ToolBatchHandler(Protocol):
     async def __call__(
         self,
@@ -254,7 +245,6 @@ class TurnCompletionPolicyResult:
 class InnerLoopPorts:
     prepare_context: ContextPreparer
     emit: EventEmitter
-    record_hook_failures: HookFailureRecorder
     handle_tool_batch: ToolBatchHandler
     record_usage: UsageRecorder
     aborted_result: AbortResultFactory

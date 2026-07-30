@@ -66,7 +66,7 @@ OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和�
 统一 Provider 只接收纯模型语义 `ModelMessage`，不会看到 Session 持久化 identity、metadata 或资源引用。
 OURO 在每次模型请求前维护请求快照和类型化 token 指标；Provider 完成后在该审计事实上补记供应商报告的 input
 token。面向用户的当前上下文查询从 canonical history、active compaction、当前模型、工具、Skills 和资源重新投影，
-不会执行动态 Context Provider、Hook 或压缩。长度与完整内容查询共享同一个 `ContextView`；完整查询返回统一
+不会执行动态 Context Provider、Observer 或压缩。长度与完整内容查询共享同一个 `ContextView`；完整查询返回统一
 Provider 边界接受的 system prompt、messages 和 tools，并在手动压缩后立即反映新摘要。
 
 ### 工具与人机协同
@@ -120,7 +120,7 @@ MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy S
 
 插件系统已提供首版完整闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
 grant、declarative/Python in-process/stdio worker runtime、不可变 owner Catalog、generation lease、依赖解析、
-更新/回滚、Skills/MCP/background service、最小 scaffold/开发 reload、四类兼容报告和三类可运行示例。插件是 OURO
+更新/回滚、Skills/MCP/background service、最小 scaffold/开发 reload、四类兼容报告和五类可运行示例。插件是 OURO
 系统级模块，正式来源只分 builtin 与 user；
 workspace/project 只影响一次执行的上下文，不存在项目插件；workspace plugin scope 已从持久化模型、CLI 和 DTO
 删除。in-process 是用户明确授予的同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
@@ -134,12 +134,13 @@ workspace/project 只影响一次执行的上下文，不存在项目插件；wo
 插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
 用户在审批中修改参数后会以最终参数重新评估。Runtime 现已为每个 Run 固定不可变 Extension Catalog，贯穿模型
-工具列表、执行、Hook、上下文、压缩、continuation 与 policy；current pointer 切换不改变旧 Run，插件 contribution
+工具列表、执行、Observer、上下文、压缩、continuation 与 policy；current pointer 切换不改变旧 Run，插件 contribution
 也不再写入 Host 全局 registry。每代 callback 经过 process-local gate，disable/revoke 后不能开始新调用。候选
 activation 已统一 enable/configure/select/restart：失败不提交 state/Catalog，依赖变化重建传递 closure；候选数据写入
 隔离暂存，后台服务按旧停新启串行转交。依赖 observed state、封闭 contribution adapter 清单、严格 Worker 协议、
-代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期也已落地。下一阶段需完成稳定执行
-契约。完整审查与
+代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期也已落地。Observer 使用独立有界
+mailbox，不能阻塞语义路径；Prompt Policy 在直接用户提示持久化前 fail-closed，并把同一 Catalog contract 转交
+prospective Run。完整审查与
 取舍见[插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
 
 ### 资源与后台运行
@@ -157,8 +158,8 @@ Host detach 不会隐式终止 Run；explicit abort 与进程 shutdown 使用不
 SessionStore，而不是内存 registry。subagent 使用同一 Supervisor 队列；parent `waiting_child` 不占 execution
 permit，也没有第二个 Agent worker pool。
 
-Host 事件由 `RuntimeEventView` 提供稳定类别和常用字段；原始扩展数据统一脱敏。慢 Host sink 与观察型 Hook
-在独立有界 worker 中运行，不能阻塞 durable event 或其他 Session。`LocalApplication` 为 CLI 和未来 TUI/
+Host 事件由 `RuntimeEventView` 提供稳定类别和常用字段；原始扩展数据统一脱敏。慢 Host sink 与每个 Observer
+在彼此独立的有界 mailbox 中运行，不能阻塞 durable event、其他 Observer 或其他 Session。`LocalApplication` 为 CLI 和未来 TUI/
 Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关闭。
 
 ### 运行界面

@@ -1,10 +1,11 @@
 # OURO 插件系统目标规格
 
-状态：已实现（B1-B8）
+状态：当前（B1-B8、C1-C5 已实现）
 
-本文定义 OURO 插件系统下一阶段必须满足的规范性契约。当前实现与目标的差异见
-[插件系统架构审查](../../docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，实施顺序见
-[连接与扩展计划](../plans/connectivity-extensions.md)。
+本文定义 OURO 插件系统必须满足的规范性契约。B1-B8 的实现范围见
+[连接与扩展计划](../plans/connectivity-extensions.md)；Observer 与 Prompt Policy 的 C1-C5 设计和实施顺序见
+[插件观察器与语义扩展点设计](../../docs/OURO_插件观察器与语义扩展点设计_2026-07-29.md)和
+[插件观察器与提示策略计划](../plans/plugin-observers-prompt-policy.md)。
 
 OURO 尚处于开发阶段。本规格不承诺兼容旧 Manifest、旧 state、旧 Plugin API 或旧 worker protocol；实现进入
 本规格时应直接更新代码、测试、示例和本地开发数据，旧格式默认严格拒绝。
@@ -21,7 +22,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 以下资源与插件作用域相互独立：
 
 - Skills、提示词和项目规则可以来自 user 或 workspace；
-- workspace 可以作为 Tool、Hook、Command 和 Run 的执行上下文；
+- workspace 可以作为 Tool、Observer、Policy、Command 和 Run 的执行上下文；
 - workspace 不能发现、安装、覆盖、启用或禁用插件。
 
 ## 2. 目标
@@ -29,8 +30,8 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 插件系统必须满足：
 
 - **系统级扩展**：插件是一等 application resource，而不是 CLI 脚本或 prompt 拼接约定；
-- **深层能力**：支持 Tool、Command、Hook、Context、Compaction、Skills、MCP、Background Service、Run
-  Continuation 和 Tool Policy；
+- **深层能力**：支持 Tool、Command、Observer、Context、Compaction、Skills、MCP、Background Service、Run
+  Continuation、Prompt Policy 和 Tool Policy；
 - **Host 中立**：插件 API 不依赖 CLI、TUI 或 Desktop 对象；
 - **Run 一致性**：一个 Run 使用一个不可变 Extension Catalog，不在执行中混用不同插件代际；
 - **原子替换**：候选插件完整启动后才影响新 Run，失败不改变当前可用版本；
@@ -49,7 +50,7 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 - 每插件虚拟环境、自动 pip/npm 安装和第三方构建脚本；
 - 自动 worker 重启、熔断和复杂 backoff policy；
 - 任意 HTML/Python widget、Host 专用 UI DSL；
-- 万能事件总线、共享可变 middleware 或反向 `host.call`；
+- 万能事件总线、共享可变 middleware、任意 request/response transformer 或反向 `host.call`；
 - 插件直接取得 `RuntimeService`、`SessionStore`、数据库连接或全局 registry；
 - 对社区可执行插件 API 的透明仿真；
 - 对开发期旧格式、旧 API 和旧本地状态的兼容层。
@@ -67,17 +68,21 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 9. 新 Run 获取不可变 catalog；current catalog 更新不改变已有 Run。
 10. User plugin Tool 始终经过 `ToolExecutor`；Manifest 不能单方面授予自动执行权。
 11. Tool Policy 只能提升审批或拒绝，不能批准、放宽 Host policy 或修改参数。
-12. 插件不能通过 Hook 直接改写 canonical Session/Run、durable sequence 或用户消息来源。
+12. Observer 只能异步读取不可变事实，不能阻断、改写或同步反压 canonical Session/Run、durable sequence
+    或用户消息来源。
 13. Command 和 Continuation 只返回类型化意图，只有 application 层可以持久化消息、排队和创建 Run。
 14. 插件输入保存为 synthetic context，并保留 plugin、contribution 和 execution contract 来源。
 15. 所有 task、进程、MCP、listener 和 connection 都属于一个可关闭 generation owner。
 16. Disable/revoke 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
 18. 状态查询和管理命令必须使用同一 observed-state reconciler。
-19. Pending tool/approval 恢复必须验证发布引用（user package digest 或 builtin contract hash）和 execution contract，不能按同名新工具替代。
+19. Pending tool/approval 恢复必须验证发布引用（user package digest 或 builtin contract hash）和 execution
+    contract，不能按同名新工具替代。
 20. 旧格式只允许经过显式、单向的 schema migration；不得用散落的兼容分支掩盖当前领域模型错误。
 21. 依赖契约变化时必须原子重建受影响的 active dependant closure，不能在新 Catalog 中保留旧 dependency lock。
 22. 候选阶段不得执行自主后台副作用或破坏性修改共享 plugin data。
+23. Prompt Policy 必须在用户提示持久化和 Run 创建前、基于 prospective Run 的同一 Catalog lease fail-closed；
+    拒绝不得留下消息或 Run。
 
 ## 5. 领域模型
 
@@ -195,7 +200,7 @@ calendar-plugin/
 
 ```json
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "plugin_id": "dev.ouro.calendar",
   "name": "Calendar",
   "version": "1.0.0",
@@ -203,7 +208,7 @@ calendar-plugin/
   "namespace": "calendar",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "^1.2.0"
+    "plugin_api": "^2.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",
@@ -360,12 +365,13 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 
 ## 9. Contribution 与 Catalog
 
-### 9.1 稳定 contribution
+### 9.1 目标稳定 contribution
 
 - `tools`；
 - `commands`；
-- `hooks`；
+- `observers`；
 - `context_providers`；
+- `prompt_policies`；
 - `turn_policies`；
 - `compaction_strategies`；
 - `skills`；
@@ -374,6 +380,9 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 - `continuation_policies`；
 - `tool_policies`；
 - `session_controllers`。
+
+当前代码只公开 `observers` 与独立的 `prompt_policies`，旧 `hooks` 字段不属于兼容输入。对应破坏式迁移已同步把
+Manifest schema 提升为 3、Plugin API 提升为 2.0、worker protocol 提升为 2.0。
 
 ### 9.2 Identity 与冲突
 
@@ -406,13 +415,14 @@ Adapter 不是公开动态扩展点。不同 contribution 的组合和失败规�
 - `snapshot-bound`：投影到 Run Catalog，可由旧、新 generation 并存；
 - `activation-singleton`：不进入 Run 可调用目录，每个 plugin id 同时只允许一个 generation 的 gate 打开。
 
-Tools、Commands、Hooks、Context、Turn Policy、Compaction、Skills、MCP tool projection、Continuation、Tool Policy
-和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
+Tools、Commands、Observers、Context、Prompt Policy、Turn Policy、Compaction、Skills、MCP tool projection、
+Continuation、Tool Policy 和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
 activation 本身属于 durable Session state，不属于进程级插件 activation。
 
-当前实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
+当前 B8 实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
 optional、contract、resource 与 projection facet；facet 保留各类型独立语义，Catalog、Coordinator、worker 与
-generation resource 主流程只遍历清单，不维护第二份 capability 分支。该清单没有注册 API，用户插件不能追加类型。
+generation resource 主流程只遍历清单，不维护第二份 capability 分支。C2/C4 必须通过该清单接入目标新类型。该清单没有
+注册 API，用户插件不能追加类型。
 Skill/MCP resource facet 只为成功加载/连接的资源生成 contract；可选资源失败只产生 degraded observed state。
 
 ### 9.4 ExtensionCatalog
@@ -432,30 +442,55 @@ Background Service 由 activation owner 管理，不是 Catalog callback。Catal
 immutable package path 读取，不能重新发现 current plugin state。Catalog 对外返回防御性副本，消费者不能修改
 共享 Skill metadata。
 
-## 10. Hook、Policy 与 Continuation
+## 10. Observer、Policy 与 Continuation
 
-### 10.1 Hook 分类
+### 10.1 Observer 与语义类型
 
-Hook 不使用万能可变 output。稳定类型按语义分类：
+公共扩展点不使用万能可变 output。稳定类型按语义分类：
 
 | 类型 | 示例 | 组合 | 失败 |
 |---|---|---|---|
-| observational | on_event、after_context_build、after_run | 按 priority/canonical identity，不改变语义 | fail-open |
+| observation | runtime_event、context/tool/run facts | 每个 registration 独立 FIFO，不改变语义 | 异步隔离 |
 | enrich | context provider | 追加带 owner 的 typed fragment | optional 省略，required 阻断 |
-| transform | 明确的 request patch | 逐项校验 typed patch | 拒绝无效 patch |
-| guard | tool policy | 只允许收紧 | fail-closed |
+| transform | 当前未开放；未来只允许具体 typed patch | 字段级授权、重新校验 | 拒绝无效 patch |
+| guard | prompt/tool policy | allow/deny 或只允许收紧 | fail-closed |
 | turn guard | turn policy | allow 或带 feedback 的同 Run continue | fail-closed |
 | lifecycle | generation start/stop | 幂等、有 deadline | 按阶段失败 |
 
-Context Provider 和 Turn Policy 是独立 registry，不通过 Hook output 承载语义。Hook 的 provenance 只用于归属、
-诊断和 contract，不改变顺序或失败规则。只在 producer、typed input/output 和失败规则同时存在时增加事件或策略点。
+Observer 接收 frozen、以事件名为判别字段的 typed observation，handler 返回 `None`。Application 只执行非阻塞
+enqueue，不等待回调；每个 registration 有 generation-owned、有界、FIFO mailbox 和独立 consumer。queue full、
+timeout、异常或取消只影响该 observer，不能改变模型、工具、Run 或 Session 的结果。投递为进程内 at-most-once；
+可靠审计以 canonical event store 为准。diagnostic 走统一的 Host 通道，不通过无人消费的返回值传递。
+
+Observer provenance 只用于归属、过滤、诊断和 contract，不建立不同 observer 之间的业务顺序。`runtime_event` 可声明
+精确 `event_types` allowlist；Host 在入队前过滤和脱敏。队列项持有精确 generation lease，处理、丢弃或取消后恰好
+释放一次；generation retire 和 Host shutdown 按 deadline drain，随后取消并回收。
+
+Context Provider、Prompt Policy、Tool Policy 和 Turn Policy 是独立 registry，不通过 Observer 承载语义。只有在
+producer、typed input/output、组合、失败和授权规则同时明确时才增加新的 observation 或 semantic contribution。
+
+### 10.2 Context Provider
 
 Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`。`message` 表示该语义必须在模型
 请求前由 application 以带 provider/generation provenance 的 `system_synthetic` canonical message 持久化；
 Run/model round/provider/fragment index 构成幂等 delivery identity。持久化失败阻断模型请求，不能退化为临时注入。
 该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
 
-### 10.2 Tool Policy
+### 10.3 Prompt Policy
+
+Prompt Policy 在 Host command routing 确认输入是模型提示后、持久化 user message 和创建 Run 前执行，返回
+`allow | deny`。
+
+- Application 先获取 prospective Run 将使用的 `ExtensionCatalogLease`，并用同一 lease 评估全部 active policy；
+- 全部 allow 后才持久化提示并把该 lease 转交新 Run；deny、timeout、异常或非法返回均关闭 lease，不创建消息或 Run；
+- 多策略按 canonical identity 稳定评估，`deny` 短路；
+- Policy 只能拒绝，不能改写提示、注入 Context、创建 Session/Run 或改变 input source；
+- 被拒绝提示正文不进入 state、event、log 或 diagnostic，只允许记录无正文的 attributed audit summary；
+- User plugin 声明该 contribution 时必须请求 `sessions.prompt.inspect`。
+
+Plugin command、Host 管理命令、审批回答和 ToolInput resolution 使用各自现有类型化边界，不进入 Prompt Policy。
+
+### 10.4 Tool Policy
 
 `ToolPolicyDecision = ignore | require_approval | deny`。
 
@@ -468,7 +503,7 @@ Run/model round/provider/fragment index 构成幂等 delivery identity。持久�
 - timeout、异常和非法返回视为 deny；
 - 决策 owner 和 reason 进入 invocation provenance。
 
-### 10.3 Turn Policy
+### 10.5 Turn Policy
 
 Turn Policy 在模型给出无工具的候选完成、Run 尚未完成时执行，返回 `allow | continue`。
 
@@ -477,7 +512,7 @@ Turn Policy 在模型给出无工具的候选完成、Run 尚未完成时执行�
 - timeout、异常和非法返回暂停 Run，不能静默完成；
 - 它不创建新 Run，也不替代只消费终态 `RunOutcome` 的 Continuation Policy。
 
-### 10.4 Continuation Policy
+### 10.6 Continuation Policy
 
 Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | pause | fail`。
 
@@ -492,7 +527,7 @@ Continuation 接收只读 `RunOutcome`，返回 `ignore | continue | complete | 
   并记录 owner 私有清理未确认；
 - 插件不能自行创建 Run 或伪造 user message。
 
-### 10.5 Session Controller 与激活绑定
+### 10.7 Session Controller 与激活绑定
 
 长期改变一个 Session 行为的插件必须使用 Host-owned Session Controller 协议，不能只把“模式已开启”写入插件私有
 JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical identity，静态声明一个或多个
@@ -510,7 +545,8 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 - `replace` 仅允许同一插件内部显式交接，插件不能替换其他 owner 的 activation；跨插件切换必须先明确 release；
 - Session 持久化 activation id、controller id、release/generation/execution contract、claims、revision 与
   `activating|active|deactivating|failed` phase；启动时未完成 transition fail-closed；
-- Tool、Context Provider、Tool Policy、Turn Policy、Continuation Policy 和 observational Hook 可用 Manifest/SDK 的
+- Tool、Context Provider、Prompt Policy、Tool Policy、Turn Policy、Continuation Policy 和 Observer 可用
+  Manifest/SDK 的
   `active_when=<controller-local-id>` 绑定 activation；Manifest 引用未知 controller 时拒绝；
 - Runtime 在每个模型轮次开始时把 active activation refs 写入 Run metadata，并以该快照筛选本轮贡献。工具在本轮
   acquire 后从下一轮生效；并发 release 不得放宽已开始轮次的 Tool Policy；
@@ -522,7 +558,7 @@ JSON。Controller 使用 `<plugin_id>/session_controllers/<local_id>` canonical 
 Tools 与 Commands 默认保持可见，以便提供 acquire/status/release 入口；只有显式声明 `active_when` 的 Tool 才会从模型
 tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务私有状态，但不能把它当作 Host activation 的真实性来源。
 
-### 10.6 Tool contract 与用户输入恢复
+### 10.8 Tool contract 与用户输入恢复
 
 每个工具显式声明 `effect = read_only | state_changing | unknown`、
 `batch_behavior = compatible | exclusive` 和 resumable 能力。builtin 与插件在定义处声明；MCP 依次采用用户 override、
@@ -558,6 +594,7 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `process.spawn`：披露并授权插件 MCP/Host service 启动子进程；
 - `network.outbound`：披露并授权插件 MCP/Host service 建立远程连接；
 - `sessions.write`：允许请求 synthetic Session input；
+- `sessions.prompt.inspect`：允许 Prompt Policy 接收用户提示正文和附件的安全 metadata；
 - `background.run`：允许请求 continuation/background Run。
 
 未知 permission 严格拒绝。只有真实 Host service 落地后才新增 filesystem、resource、model 等 permission。
@@ -712,6 +749,10 @@ Run 获取一个 `ExtensionCatalogLease`，并持久化所使用 builtin/user pl
 
 `execution_contract_hash` 对以上事实计算稳定摘要。`generation_id` 只用于当前进程 owner、日志和诊断。
 
+Prompt Policy 在 Run 尚未创建前执行，不产生可恢复 pending state；allow 后必须把评估时取得的同一 Catalog lease 转交
+Run，不能在策略检查后重新读取 current catalog。Observer registration 属于执行契约，但观察投递不成为 durable Run
+恢复条件；未投递或未完成的 observation 不阻断恢复。
+
 恢复时：
 
 - 相同 package、configuration revision、依赖和 contract 可以创建新 generation 并恢复；
@@ -807,6 +848,8 @@ correlation id，并经过敏感值脱敏。每个 generation 的 diagnostic 必
 - catalog swap 只保护不可变 pointer 交换；
 - 插件 import、start、stop 和 I/O 不在 catalog lock 内；
 - callback 有类型相关 timeout、cancel 和 output limit；
+- 每个 Observer registration 使用独立有界 mailbox；业务路径只做非阻塞 enqueue，关闭时有 deadline 且 lease
+  精确释放；
 - owner close、gate close、lease close 和 unregister 幂等；
 - Host shutdown 先停止 Run consumer，再按依赖逆序关闭插件 owner。
 
@@ -887,7 +930,15 @@ ouro/builtin_plugins/
 - contribution adapter 统一执行 declaration、contract、projection 和 cleanup；
 - Context Provider、Turn Policy、Continuation、Tool Policy、Command synthetic input 继续满足各自来源和组合规则。
 
-B6 实现注记：Plugin Skill 已不再转换为 `after_context_build` Hook；`RuntimeService` 每轮从该 Run 的
+### Observer 与 Prompt Policy
+
+- Observer 不被 Agent 语义关键路径 await，慢、失败或积压的 registration 不影响其他 observer 或业务结果；
+- 同 registration FIFO，queue drop、timeout、cancel、retire 和 shutdown 均不泄漏 task 或 Catalog lease；
+- Prompt Policy 的 allow/deny、失败关闭、permission 和 same-catalog 语义可由 application 集成测试证明；
+- deny 不创建 canonical user message、Run、continuation 或可恢复残留，且 diagnostic 不泄露提示正文；
+- in-process 与 worker 的 observation/policy 类型、错误、取消和 contract 行为等价。
+
+B6 实现注记：Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
 `ExtensionCatalogLease.skills` 生成 Skill 提示词。Plugin MCP 只为 connected server 生成 contract，required 失败
 中止候选，optional 失败产生 degraded；发现工具结构冻结在 Catalog，连接由 generation owner 在 retire 时关闭。
 

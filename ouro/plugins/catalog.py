@@ -29,7 +29,13 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
-from ouro.core.hooks import HookContext, HookName, HookRegistration, HookRegistry
+from ouro.core.observers import Observation, ObserverRegistration, ObserverRegistry
+from ouro.core.prompt_policies import (
+    PromptPolicyCall,
+    PromptPolicyDecision,
+    PromptPolicyRegistration,
+    PromptPolicyRegistry,
+)
 from ouro.core.state import RunOutcome
 from ouro.core.tool_policies import (
     ToolPolicyCall,
@@ -149,11 +155,12 @@ class ContributionOwnerRecord:
 @dataclass(frozen=True)
 class ExtensionCatalogBase:
     tools: tuple[dict[str, Tool], dict[str, str]]
-    hooks: tuple[list[HookRegistration], set[tuple[str | None, str, HookName, str]]]
+    observers: list[ObserverRegistration]
     context_providers: list[ContextProviderRegistration]
     commands: dict[str, PluginCommand]
     compaction: tuple[dict[str, CompactionStrategy], dict[str, str]]
     continuations: list[ContinuationPolicyRegistration]
+    prompt_policies: list[PromptPolicyRegistration]
     turn_policies: list[TurnPolicyRegistration]
     tool_policies: list[ToolPolicyRegistration]
     skills: tuple[SkillMetadata, ...]
@@ -164,11 +171,12 @@ class ExtensionCatalogBase:
         cls,
         *,
         tools: ToolRegistry,
-        hooks: HookRegistry,
+        observers: ObserverRegistry,
         context_providers: ContextProviderRegistry | None = None,
         commands: PluginCommandRegistry | None,
         compaction: CompactionStrategyRegistry | None,
         continuations: RunContinuationRegistry | None,
+        prompt_policies: PromptPolicyRegistry | None = None,
         turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None,
         skills: Sequence[SkillMetadata] = (),
@@ -180,11 +188,12 @@ class ExtensionCatalogBase:
             raise ValueError("Host baseline contains duplicate skill names")
         return cls(
             tools=tools.snapshot(),
-            hooks=hooks.snapshot(),
+            observers=observers.snapshot(),
             context_providers=(context_providers or ContextProviderRegistry()).snapshot(),
             commands=commands.snapshot() if commands is not None else {},
             compaction=(compaction or CompactionStrategyRegistry()).snapshot(),
             continuations=(continuations or RunContinuationRegistry()).snapshot(),
+            prompt_policies=(prompt_policies or PromptPolicyRegistry()).snapshot(),
             turn_policies=(turn_policies or TurnPolicyRegistry()).snapshot(),
             tool_policies=(tool_policies or ToolPolicyRegistry()).snapshot(),
             skills=captured_skills,
@@ -202,11 +211,12 @@ class ExtensionCatalog:
         *,
         generations: Sequence[CatalogGeneration],
         tools: ToolRegistry,
-        hooks: HookRegistry,
+        observers: ObserverRegistry,
         context_providers: ContextProviderRegistry,
         commands: PluginCommandRegistry,
         compaction: CompactionStrategyRegistry,
         continuations: RunContinuationRegistry,
+        prompt_policies: PromptPolicyRegistry,
         turn_policies: TurnPolicyRegistry,
         tool_policies: ToolPolicyRegistry,
         skills: Sequence[SkillMetadata],
@@ -219,11 +229,12 @@ class ExtensionCatalog:
             source.record.model_copy(deep=True) for source in self._generation_sources
         )
         self.tools = tools
-        self.hooks = hooks
+        self.observers = observers
         self.context_providers = context_providers
         self.commands = commands
         self.compaction = compaction
         self.continuations = continuations
+        self.prompt_policies = prompt_policies
         self.turn_policies = turn_policies
         self.tool_policies = tool_policies
         self.session_controllers = session_controllers
@@ -308,8 +319,8 @@ class ExtensionCatalogLease:
         return self.catalog.tools
 
     @property
-    def hooks(self) -> HookRegistry:
-        return self.catalog.hooks
+    def observers(self) -> ObserverRegistry:
+        return self.catalog.observers
 
     @property
     def context_providers(self) -> ContextProviderRegistry:
@@ -326,6 +337,10 @@ class ExtensionCatalogLease:
     @property
     def continuations(self) -> RunContinuationRegistry:
         return self.catalog.continuations
+
+    @property
+    def prompt_policies(self) -> PromptPolicyRegistry:
+        return self.catalog.prompt_policies
 
     @property
     def turn_policies(self) -> TurnPolicyRegistry:
@@ -374,8 +389,8 @@ def build_extension_catalog(
 ) -> ExtensionCatalog:
     tools = ToolRegistry()
     tools.restore(base.tools)
-    hooks = HookRegistry()
-    hooks.restore(base.hooks)
+    observers = ObserverRegistry()
+    observers.restore(base.observers)
     context_providers = ContextProviderRegistry()
     context_providers.restore(base.context_providers)
     commands = PluginCommandRegistry()
@@ -384,6 +399,8 @@ def build_extension_catalog(
     compaction.restore(base.compaction)
     continuations = RunContinuationRegistry()
     continuations.restore(base.continuations)
+    prompt_policies = PromptPolicyRegistry()
+    prompt_policies.restore(base.prompt_policies)
     turn_policies = TurnPolicyRegistry()
     turn_policies.restore(base.turn_policies)
     tool_policies = ToolPolicyRegistry()
@@ -394,11 +411,12 @@ def build_extension_catalog(
     owners = _base_owner_records(base)
     targets = CatalogProjectionTargets(
         tools=tools,
-        hooks=hooks,
+        observers=observers,
         context_providers=context_providers,
         commands=commands,
         compaction=compaction,
         continuations=continuations,
+        prompt_policies=prompt_policies,
         turn_policies=turn_policies,
         tool_policies=tool_policies,
         skills=skills,
@@ -428,22 +446,24 @@ def build_extension_catalog(
                 contract_hash=contract_hash,
             )
     tools.freeze()
-    hooks.freeze()
+    observers.freeze()
     context_providers.freeze()
     commands.freeze()
     compaction.freeze()
     continuations.freeze()
+    prompt_policies.freeze()
     turn_policies.freeze()
     tool_policies.freeze()
     session_controllers.freeze()
     return ExtensionCatalog(
         generations=generations,
         tools=tools,
-        hooks=hooks,
+        observers=observers,
         context_providers=context_providers,
         commands=commands,
         compaction=compaction,
         continuations=continuations,
+        prompt_policies=prompt_policies,
         turn_policies=turn_policies,
         tool_policies=tool_policies,
         session_controllers=session_controllers,
@@ -459,7 +479,7 @@ def bind_generation_gate(
     return replace(
         prepared,
         tools=tuple(_gated_tool(item, gate) for item in prepared.tools),
-        hooks=tuple(_gated_hook(item, gate) for item in prepared.hooks),
+        observers=tuple(_gated_observer(item, gate) for item in prepared.observers),
         context_providers=tuple(
             _gated_context_provider(item, gate) for item in prepared.context_providers
         ),
@@ -469,6 +489,9 @@ def bind_generation_gate(
         ),
         continuation_policies=tuple(
             _gated_continuation(item, gate) for item in prepared.continuation_policies
+        ),
+        prompt_policies=tuple(
+            _gated_prompt_policy(item, gate) for item in prepared.prompt_policies
         ),
         turn_policies=tuple(_gated_turn_policy(item, gate) for item in prepared.turn_policies),
         tool_policies=tuple(_gated_tool_policy(item, gate) for item in prepared.tool_policies),
@@ -531,13 +554,15 @@ def _gated_tool(tool: Tool, gate: GenerationGate) -> Tool:
     )
 
 
-def _gated_hook(
-    registration: HookRegistration,
+def _gated_observer(
+    registration: ObserverRegistration,
     gate: GenerationGate,
-) -> HookRegistration:
-    async def invoke(context: HookContext):
+) -> ObserverRegistration:
+    async def invoke(observation: Observation) -> None:
         async with gate.invocation():
-            return await _invoke_callback(registration.handler, context)
+            result = await _invoke_callback(registration.handler, observation)
+            if result is not None:
+                raise TypeError("observer handler must return None")
 
     return replace(registration, handler=invoke)
 
@@ -609,6 +634,17 @@ def _gated_tool_policy(
     return replace(registration, handler=invoke)
 
 
+def _gated_prompt_policy(
+    registration: PromptPolicyRegistration,
+    gate: GenerationGate,
+) -> PromptPolicyRegistration:
+    async def invoke(call: PromptPolicyCall) -> PromptPolicyDecision:
+        async with gate.invocation():
+            return await _invoke_callback(registration.handler, call)
+
+    return replace(registration, handler=invoke)
+
+
 def _gated_turn_policy(
     registration: TurnPolicyRegistration,
     gate: GenerationGate,
@@ -639,21 +675,21 @@ def _base_owner_records(
             identity,
             _hash(tool.definition.model_dump(mode="json", exclude={"metadata"})),
         )
-    for index, hook_registration in enumerate(base.hooks[0]):
-        local_id = hook_registration.hook_id or f"anonymous-{index}"
+    for observer_registration in base.observers:
         identity = (
-            "ouro.host/hooks/"
-            f"{hook_registration.plugin_id}:{hook_registration.hook_name}:{local_id}"
+            "ouro.host/observers/"
+            f"{observer_registration.plugin_id}:{observer_registration.observer_id}"
         )
         records[identity] = _host_owner(
             identity,
             _hash(
                 {
-                    "hook_name": hook_registration.hook_name,
-                    "source": hook_registration.source,
-                    "priority": hook_registration.priority,
-                    "enabled": hook_registration.enabled,
-                    "timeout_seconds": hook_registration.timeout_seconds,
+                    "event": observer_registration.event,
+                    "event_types": list(observer_registration.event_types),
+                    "source": observer_registration.source,
+                    "priority": observer_registration.priority,
+                    "enabled": observer_registration.enabled,
+                    "timeout_seconds": observer_registration.timeout_seconds,
                 }
             ),
         )
@@ -703,6 +739,20 @@ def _base_owner_records(
                 {
                     "priority": tool_policy_registration.priority,
                     "timeout_seconds": tool_policy_registration.timeout_seconds,
+                }
+            ),
+        )
+    for prompt_policy_registration in base.prompt_policies:
+        identity = (
+            "ouro.host/prompt_policies/"
+            f"{prompt_policy_registration.plugin_id}:{prompt_policy_registration.policy_id}"
+        )
+        records[identity] = _host_owner(
+            identity,
+            _hash(
+                {
+                    "priority": prompt_policy_registration.priority,
+                    "timeout_seconds": prompt_policy_registration.timeout_seconds,
                 }
             ),
         )

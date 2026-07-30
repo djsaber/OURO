@@ -16,7 +16,7 @@ for line in sys.stdin:
     method = request.get("method")
     result: dict[str, object] = {}
     if method == "initialize":
-        result = {"protocol_version": "1.2"}
+        result = {"protocol_version": "2.0"}
     elif method == "contributions.prepare":
         result = {
             "tools": {

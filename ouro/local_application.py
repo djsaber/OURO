@@ -32,7 +32,8 @@ from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import OuroError
-from ouro.core.hooks import HookRegistry
+from ouro.core.observers import ObserverRegistry
+from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
@@ -141,10 +142,11 @@ class LocalApplication:
         plugin_runtime, plugins = _build_local_plugin_runtime(
             configured_home,
             tools=runtime.tools,
-            hooks=runtime.hooks,
+            observers=runtime.observers,
             context_providers=runtime.context_providers,
             compaction=runtime.compaction_strategies,
             continuations=runtime.continuations,
+            prompt_policies=runtime.prompt_policies,
             turn_policies=runtime.turn_policies,
             tool_policies=runtime.tool_policies,
             skills=runtime.skills,
@@ -273,10 +275,11 @@ async def open_local_plugins(
     runtime, service = _build_local_plugin_runtime(
         root,
         tools=ToolRegistry(),
-        hooks=HookRegistry(),
+        observers=ObserverRegistry(),
         context_providers=ContextProviderRegistry(),
         compaction=CompactionStrategyRegistry(),
         continuations=RunContinuationRegistry(),
+        prompt_policies=PromptPolicyRegistry(),
         turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
@@ -304,10 +307,11 @@ async def open_local_agent_definitions(
     plugin_runtime, _ = _build_local_plugin_runtime(
         root,
         tools=tools,
-        hooks=HookRegistry(),
+        observers=ObserverRegistry(),
         context_providers=ContextProviderRegistry(),
         compaction=CompactionStrategyRegistry(),
         continuations=RunContinuationRegistry(),
+        prompt_policies=PromptPolicyRegistry(),
         turn_policies=TurnPolicyRegistry(),
         tool_policies=ToolPolicyRegistry(),
         session_store=session_services._store,
@@ -485,10 +489,11 @@ def _build_local_plugin_runtime(
     home: Path,
     *,
     tools: ToolRegistry,
-    hooks: HookRegistry,
+    observers: ObserverRegistry,
     context_providers: ContextProviderRegistry,
     compaction: CompactionStrategyRegistry,
     continuations: RunContinuationRegistry,
+    prompt_policies: PromptPolicyRegistry,
     turn_policies: TurnPolicyRegistry,
     tool_policies: ToolPolicyRegistry,
     skills: tuple[SkillMetadata, ...] = (),
@@ -501,11 +506,12 @@ def _build_local_plugin_runtime(
         store,
         ContributionCoordinator(
             tools=tools,
-            hooks=hooks,
+            observers=observers,
             context_providers=context_providers,
             commands=commands,
             compaction=compaction,
             continuations=continuations,
+            prompt_policies=prompt_policies,
             turn_policies=turn_policies,
             tool_policies=tool_policies,
         ),

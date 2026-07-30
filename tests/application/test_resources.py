@@ -20,8 +20,8 @@ from ouro.core.errors import (
     UnsafeResourcePathError,
     UnsupportedMediaTypeError,
 )
-from ouro.core.hooks import HookRegistry
 from ouro.core.messages import ImageContent, MessageRecord
+from ouro.core.observers import ObserverRegistry
 from ouro.core.state import RunRecord
 from ouro.core.tools import ToolResult
 from ouro.resources import LocalResourceStore
@@ -330,7 +330,7 @@ def test_symbolic_link_import_is_rejected_when_platform_supports_links(tmp_path)
 def test_tool_resource_refs_are_validated_before_canonical_message_commit(tmp_path) -> None:
     sessions, resource_store, resources, session_service = _services(tmp_path)
     session = session_service.create(title="Tool refs").session
-    recorder = RuntimeEventRecorder(store=sessions, hooks=HookRegistry())
+    recorder = RuntimeEventRecorder(store=sessions, observers=ObserverRegistry())
     lifecycle = RunLifecycle(
         store=sessions,
         events=recorder,

@@ -22,17 +22,17 @@
 | [供应商类型与协议类型拆分](provider-type-protocol.md) | 集成厂商/通用配置类型、线协议、实例 id 与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
 | [工具与人机协同](tools-hitl.md) | 工具契约、权限、批执行、审批、AskUser 和进程取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
 | [上下文与压缩](context-compaction.md) | ContextView、原子帧、预算、摘要、投影与 lineage | `ouro/core/context.py`、`ouro/application/compaction.py` |
-| [Skills 与扩展](skills-extensions.md) | Skills、Hook、插件 contribution 和 MCP 框架边界 | `ouro/skills`、`ouro/plugins`、`ouro/mcp` |
+| [Skills 与扩展](skills-extensions.md) | Skills、Observer、Prompt Policy、插件 contribution 和 MCP 框架边界 | `ouro/skills`、`ouro/plugins`、`ouro/mcp` |
 | [MCP 客户端](mcp-client.md) | transport、握手、工具发现/调用、重连、诊断与资源关闭 | `ouro/mcp`、`ouro/tools/registry.py` |
 | [CLI 与 Host](cli-host.md) | 命令面、输出模式、退出码和 Host/application 边界 | `ouro/cli`、`ouro/application` services/DTO |
 | [资源与后台运行监督](resources-supervisor.md) | ResourceService、不可变 blob、引用可达性、RuntimeSupervisor 调度与订阅 | `ouro/resources`、`ouro/application/resources.py`、`ouro/application/supervisor.py` |
 | [子智能体](subagents.md) | AgentDefinition、durable Delegation、前后台执行、Agent tree/HITL、权限、结果交付与恢复 | `ouro/core/agents.py`、`ouro/application/agents.py`、`ouro/tools/builtin_agents.py`、`ouro/sessions` |
+| [插件系统](plugin-system.md) | 不可变 Catalog、原子 generation、Observer、Prompt Policy 与稳定执行契约 | `ouro/plugins`、`ouro/application/observers.py`、`ouro/core/observers.py`、`ouro/core/prompt_policies.py` |
 
 ## 目标规格
 
 | 规格 | 目标能力 |
 |---|---|
-| [插件系统](plugin-system.md) | 在现有闭环上收敛 builtin/user 来源、不可变 Catalog、原子 generation、依赖协调、扩展类型适配与稳定执行契约 |
 | [个人智能体平台能力](future-platform.md) | Desktop、长期记忆与 durable Goal/Task 等剩余跨能力目标 |
 
 ## 规格完成标准

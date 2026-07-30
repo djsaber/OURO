@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal, Protocol
 
 PermissionMode = Literal["auto", "approval", "deny"]
@@ -10,6 +11,7 @@ ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
+PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
 RunStatus = Literal[
@@ -25,12 +27,12 @@ RunStatus = Literal[
     "recoverable",
 ]
 RunOrigin = Literal["user", "follow_up", "replay", "host", "plugin", "delegation"]
-HookEvent = Literal[
-    "after_run",
-    "after_context_build",
-    "before_tool_call",
-    "after_tool_call",
-    "on_event",
+ObservationName = Literal[
+    "runtime_event",
+    "context_prepared",
+    "tool_call_requested",
+    "tool_call_finished",
+    "run_finished",
 ]
 StopReason = Literal["disable", "restart", "upgrade", "shutdown", "startup_failed"]
 
@@ -279,6 +281,49 @@ class ToolPolicyContribution:
     active_when: str | None = None
 
 
+PromptPolicyAction = Literal["allow", "deny"]
+
+
+@dataclass(frozen=True)
+class PromptAttachmentMetadata:
+    resource_id: str
+    media_type: str
+    size: int
+
+
+@dataclass(frozen=True)
+class PromptPolicyCall:
+    session_id: str
+    prospective_run_id: str
+    prompt: str
+    input_source: PromptInputSource = "user"
+    workspace: str | None = None
+    attachments: tuple[PromptAttachmentMetadata, ...] = ()
+    catalog_id: str | None = None
+    execution_contracts: Mapping[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PromptPolicyDecision:
+    action: PromptPolicyAction = "allow"
+    reason: str | None = None
+
+
+PromptPolicyHandler = Callable[
+    [PromptPolicyCall],
+    PromptPolicyDecision | Awaitable[PromptPolicyDecision],
+]
+
+
+@dataclass(frozen=True)
+class PromptPolicyContribution:
+    id: str
+    handler: PromptPolicyHandler
+    priority: int = 100
+    timeout_seconds: float = 5.0
+    active_when: str | None = None
+
+
 TurnPolicyAction = Literal["allow", "continue"]
 
 
@@ -324,29 +369,98 @@ class RunOutcome:
 
 
 @dataclass(frozen=True)
-class HookCall:
-    event: HookEvent
-    session_id: str | None = None
-    run_id: str | None = None
-    data: Mapping[str, object] = field(default_factory=dict)
-    run_outcome: RunOutcome | None = None
+class RuntimeEventView:
+    event_id: str
+    session_id: str
+    run_id: str | None
+    turn_id: str | None
+    event_type: str
+    created_at: datetime
+    sequence: int
+    payload: Mapping[str, object] = field(default_factory=dict)
+    metadata: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
-class HookOutput:
-    diagnostics: tuple[str, ...] = ()
-
-
-HookHandler = Callable[[HookCall], HookOutput | None | Awaitable[HookOutput | None]]
+class RuntimeEventObservation:
+    session_id: str
+    run_id: str | None
+    record: RuntimeEventView
+    event: Literal["runtime_event"] = field(init=False, default="runtime_event")
 
 
 @dataclass(frozen=True)
-class HookContribution:
+class ContextPreparedObservation:
+    session_id: str
+    run_id: str
+    message_count: int
+    tool_count: int
+    model_round: int
+    context_metadata: Mapping[str, object] = field(default_factory=dict)
+    event: Literal["context_prepared"] = field(init=False, default="context_prepared")
+
+
+@dataclass(frozen=True)
+class ToolCallRequestedObservation:
+    session_id: str
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    canonical_tool_id: str
+    owner_id: str
+    effect: ToolEffect
+    batch_behavior: ToolBatchBehavior
+    arguments: Mapping[str, object] = field(default_factory=dict)
+    event: Literal["tool_call_requested"] = field(
+        init=False,
+        default="tool_call_requested",
+    )
+
+
+@dataclass(frozen=True)
+class ToolCallFinishedObservation:
+    session_id: str
+    run_id: str
+    tool_call_id: str
+    tool_name: str
+    canonical_tool_id: str
+    owner_id: str
+    effect: ToolEffect
+    batch_behavior: ToolBatchBehavior
+    is_error: bool
+    content: str
+    structured: Mapping[str, object] = field(default_factory=dict)
+    resource_refs: tuple[str, ...] = ()
+    exit_code: int | None = None
+    event: Literal["tool_call_finished"] = field(init=False, default="tool_call_finished")
+
+
+@dataclass(frozen=True)
+class RunFinishedObservation:
+    session_id: str
+    run_id: str
+    outcome: RunOutcome
+    event: Literal["run_finished"] = field(init=False, default="run_finished")
+
+
+type Observation = (
+    RuntimeEventObservation
+    | ContextPreparedObservation
+    | ToolCallRequestedObservation
+    | ToolCallFinishedObservation
+    | RunFinishedObservation
+)
+ObserverHandler = Callable[[Observation], None | Awaitable[None]]
+
+
+@dataclass(frozen=True)
+class ObserverContribution:
     id: str
-    event: HookEvent
-    handler: HookHandler
+    event: ObservationName
+    handler: ObserverHandler
     priority: int = 100
-    timeout_seconds: float | None = None
+    timeout_seconds: float = 1.0
+    event_types: tuple[str, ...] = ()
     active_when: str | None = None
 
 
@@ -547,12 +661,13 @@ class CompactionContribution:
 @dataclass
 class ContributionSet:
     tools: list[ToolContribution] = field(default_factory=list)
-    hooks: list[HookContribution] = field(default_factory=list)
+    observers: list[ObserverContribution] = field(default_factory=list)
     commands: list[CommandContribution] = field(default_factory=list)
     context_providers: list[ContextContribution] = field(default_factory=list)
     compaction_strategies: list[CompactionContribution] = field(default_factory=list)
     background_services: list[BackgroundServiceContribution] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContribution] = field(default_factory=list)
+    prompt_policies: list[PromptPolicyContribution] = field(default_factory=list)
     turn_policies: list[TurnPolicyContribution] = field(default_factory=list)
     tool_policies: list[ToolPolicyContribution] = field(default_factory=list)
     session_controllers: list[SessionControllerContribution] = field(default_factory=list)
@@ -585,13 +700,14 @@ __all__ = [
     "ContextCall",
     "ContextFragment",
     "ContextFragmentPersistence",
+    "ContextPreparedObservation",
     "ContextOutput",
     "ContributionSet",
     "DiagnosticEmitter",
-    "HookCall",
-    "HookContribution",
-    "HookOutput",
     "JsonValue",
+    "Observation",
+    "ObservationName",
+    "ObserverContribution",
     "PluginContext",
     "PluginCredentialResolver",
     "PluginDataStore",
@@ -601,7 +717,14 @@ __all__ = [
     "PluginLogger",
     "PluginProvenanceSummary",
     "PluginTaskGroup",
+    "PromptAttachmentMetadata",
+    "PromptInputSource",
+    "PromptPolicyAction",
+    "PromptPolicyCall",
+    "PromptPolicyContribution",
+    "PromptPolicyDecision",
     "RunOutcome",
+    "RunFinishedObservation",
     "RunOrigin",
     "RunStatus",
     "SessionControlAccess",
@@ -617,6 +740,8 @@ __all__ = [
     "SessionKind",
     "StopReason",
     "ToolCall",
+    "ToolCallFinishedObservation",
+    "ToolCallRequestedObservation",
     "ToolBatchBehavior",
     "ToolContribution",
     "ToolEffect",
@@ -628,6 +753,8 @@ __all__ = [
     "ToolPolicyCall",
     "ToolPolicyContribution",
     "ToolPolicyDecision",
+    "RuntimeEventObservation",
+    "RuntimeEventView",
     "ToolPermissionControl",
     "ToolResumeCall",
     "UnattendedResolution",

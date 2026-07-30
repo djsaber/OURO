@@ -15,7 +15,7 @@ from .toolkit_plugin import (
 TOOLKIT_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "plugin_id": "dev.ouro.toolkit",
             "name": "Toolkit",
             "version": "1.0.0",
@@ -24,7 +24,7 @@ TOOLKIT_PLUGIN = BuiltinPluginDefinition(
                 "Session-scoped TodoList."
             ),
             "namespace": "toolkit",
-            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "toolkit_plugin:create_plugin",

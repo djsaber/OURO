@@ -33,6 +33,28 @@ class SessionNotFoundError(OuroError):
     """A requested canonical session does not exist."""
 
 
+class PromptRejectedError(OuroError):
+    """A prompt was rejected before a canonical message or Run was created."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        plugin_id: str,
+        policy_id: str,
+        policy_failed: bool = False,
+        failure_error_type: str | None = None,
+        failure_message: str | None = None,
+    ) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.plugin_id = plugin_id
+        self.policy_id = policy_id
+        self.policy_failed = policy_failed
+        self.failure_error_type = failure_error_type
+        self.failure_message = failure_message
+
+
 class SessionBranchError(OuroError):
     """A session cannot be branched at the requested canonical message boundary."""
 

@@ -14,8 +14,20 @@ from ouro.core.context_providers import (
     ContextProviderRegistry,
     ContextProviderResult,
 )
-from ouro.core.errors import PersistenceError, ResourceNotFoundError, SessionBusyError
+from ouro.core.errors import (
+    PersistenceError,
+    PromptRejectedError,
+    ResourceNotFoundError,
+    SessionBusyError,
+)
 from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.observers import Observation, ObserverRegistration, ObserverRegistry
+from ouro.core.prompt_policies import (
+    PromptPolicyCall,
+    PromptPolicyDecision,
+    PromptPolicyRegistration,
+    PromptPolicyRegistry,
+)
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
@@ -25,6 +37,7 @@ from ouro.core.provider import (
     Usage,
 )
 from ouro.core.run_budget import RunBudgetPolicy
+from ouro.core.session_controls import AttributedSessionInput
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolInvocation
@@ -54,6 +67,90 @@ def _tools() -> ToolRegistry:
     for tool in builtin_tools():
         registry.register(tool)
     return registry
+
+
+@pytest.mark.asyncio
+async def test_runtime_produces_each_public_observation_type(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = ToolRegistry()
+
+    def inspect_tool(invocation: ToolInvocation) -> ToolResult:
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="observed",
+        )
+
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ObserveTool",
+                description="Exercise typed observation producers.",
+                permission_mode="auto",
+            ),
+            handler=inspect_tool,
+        )
+    )
+    seen: list[Observation] = []
+    observers = ObserverRegistry()
+    observers.register_many(
+        tuple(
+            ObserverRegistration(
+                plugin_id="dev.ouro.observation_test",
+                observer_id=event,
+                event=event,
+                handler=seen.append,
+            )
+            for event in (
+                "runtime_event",
+                "context_prepared",
+                "tool_call_requested",
+                "tool_call_finished",
+                "run_finished",
+            )
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "observe_1",
+                                "name": "ObserveTool",
+                                "arguments": {"value": 1},
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="finished"),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="observations", provider_id="faux"),
+        ),
+        tools=tools,
+        observers=observers,
+    )
+
+    result = await runtime.run("Exercise observations")
+    await runtime.event_recorder.drain()
+
+    assert result.run.status == "completed"
+    assert {observation.event for observation in seen} == {
+        "runtime_event",
+        "context_prepared",
+        "tool_call_requested",
+        "tool_call_finished",
+        "run_finished",
+    }
+    await runtime.close()
 
 
 class WaitingProvider:
@@ -277,6 +374,290 @@ async def test_runtime_allows_system_prompt_override(tmp_path) -> None:
 
     assert provider.system_prompt == "Custom system prompt."
     assert provider.messages[0].role == "user"
+
+
+@pytest.mark.asyncio
+async def test_prompt_policy_denies_before_message_and_run_persistence(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionService(store).create(title="Policy boundary").session
+    calls: list[PromptPolicyCall] = []
+
+    def deny(call: PromptPolicyCall) -> PromptPolicyDecision:
+        calls.append(call)
+        return PromptPolicyDecision(
+            action="deny",
+            reason=f"rejected {call.prompt}; token=policy-reason-secret",
+        )
+
+    policies = PromptPolicyRegistry()
+    policies.register(
+        PromptPolicyRegistration(
+            plugin_id="dev.ouro.guard",
+            policy_id="secret",
+            handler=deny,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="policy", provider_id="faux"),
+        ),
+        tools=_tools(),
+        prompt_policies=policies,
+        default_workspace=tmp_path,
+    )
+
+    with pytest.raises(PromptRejectedError) as rejected:
+        await runtime.run("do not persist this prompt", session_id=session.session_id)
+
+    assert rejected.value.reason == "rejected [REDACTED]; token=***"
+    assert rejected.value.plugin_id == "dev.ouro.guard"
+    assert rejected.value.policy_id == "secret"
+    assert calls[0].prompt == "do not persist this prompt"
+    assert calls[0].workspace == str(tmp_path.resolve())
+    snapshot = store.load_runtime_session(session.session_id)
+    assert snapshot.messages == []
+    assert snapshot.runs == []
+    assert "do not persist this prompt" not in session.model_dump_json()
+
+    with pytest.raises(PromptRejectedError):
+        await runtime.run("new-session prompt must not become a title")
+    assert [item.session_id for item in store.list_sessions()] == [session.session_id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_mode", ["timeout", "exception", "invalid"])
+async def test_prompt_policy_failures_close_before_canonical_state(
+    tmp_path,
+    failure_mode: str,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionService(store).create(title="Fail closed").session
+
+    async def policy(call: PromptPolicyCall):
+        del call
+        if failure_mode == "timeout":
+            await asyncio.sleep(1)
+            return PromptPolicyDecision()
+        if failure_mode == "exception":
+            raise RuntimeError("token=prompt-policy-secret")
+        return None
+
+    policies = PromptPolicyRegistry()
+    policies.register(
+        PromptPolicyRegistration(
+            "dev.ouro.guard",
+            failure_mode,
+            policy,
+            timeout_seconds=0.01,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="policy", provider_id="faux"),
+        ),
+        tools=_tools(),
+        prompt_policies=policies,
+    )
+
+    with pytest.raises(PromptRejectedError) as rejected:
+        await runtime.run("unpersisted failure input", session_id=session.session_id)
+
+    assert rejected.value.policy_failed is True
+    assert rejected.value.failure_error_type in {"TimeoutError", "RuntimeError", "TypeError"}
+    assert "unpersisted failure input" not in (rejected.value.failure_message or "")
+    snapshot = store.load_runtime_session(session.session_id)
+    assert snapshot.messages == []
+    assert snapshot.runs == []
+    assert "unpersisted failure input" not in snapshot.session.model_dump_json()
+
+
+@pytest.mark.asyncio
+async def test_prompt_policy_allow_precedes_normal_run_creation(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    calls: list[str] = []
+
+    def allow(call: PromptPolicyCall) -> PromptPolicyDecision:
+        calls.append(call.prospective_run_id)
+        return PromptPolicyDecision()
+
+    policies = PromptPolicyRegistry()
+    policies.register(PromptPolicyRegistration("ouro.host", "allow", allow))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="policy", provider_id="faux"),
+        ),
+        tools=_tools(),
+        prompt_policies=policies,
+    )
+
+    result = await runtime.run("allowed prompt")
+
+    assert calls == [result.run.run_id]
+    snapshot = store.load_runtime_session(result.session.session_id)
+    assert snapshot.messages[0].text_content == "allowed prompt"
+    assert snapshot.runs[0].run_id == result.run.run_id
+
+
+@pytest.mark.asyncio
+async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    target = tmp_path / "approved.txt"
+    inspected_prompts: list[str] = []
+
+    def inspect(call: PromptPolicyCall) -> PromptPolicyDecision:
+        inspected_prompts.append(call.prompt)
+        return PromptPolicyDecision()
+
+    policies = PromptPolicyRegistry()
+    policies.register(PromptPolicyRegistration("ouro.host", "inspect", inspect))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "write_1",
+                                "name": "Write",
+                                "arguments": {
+                                    "path": str(target),
+                                    "content": "approved",
+                                },
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="File written."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(
+                            type="tool_call",
+                            tool_call={
+                                "id": "ask_1",
+                                "name": "AskUser",
+                                "arguments": {
+                                    "questions": [
+                                        {
+                                            "id": "file",
+                                            "header": "File",
+                                            "question": "Which file?",
+                                            "options": [
+                                                {
+                                                    "label": "notes.md (Recommended)",
+                                                    "description": "Use the notes file.",
+                                                },
+                                                {
+                                                    "label": "README.md",
+                                                    "description": "Use the readme file.",
+                                                },
+                                            ],
+                                        }
+                                    ]
+                                },
+                            },
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Answer accepted."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                    [
+                        ProviderStreamEvent(type="text_delta", text="Plugin input accepted."),
+                        ProviderStreamEvent(type="done"),
+                    ],
+                ]
+            ),
+            ModelMetadata(model_id="policy-boundaries", provider_id="faux"),
+        ),
+        tools=_tools(),
+        prompt_policies=policies,
+    )
+
+    waiting_approval = await runtime.run("Write the approved file")
+    assert inspected_prompts == ["Write the approved file"]
+    assert waiting_approval.run.pending_approval_id is not None
+    await runtime.approve_tool(
+        session_id=waiting_approval.session.session_id,
+        run_id=waiting_approval.run.run_id,
+        approval_id=waiting_approval.run.pending_approval_id,
+        approved=True,
+    )
+    assert inspected_prompts == ["Write the approved file"]
+
+    waiting_user = await runtime.run("Ask for a file")
+    assert inspected_prompts == ["Write the approved file", "Ask for a file"]
+    await runtime.answer_user(
+        session_id=waiting_user.session.session_id,
+        run_id=waiting_user.run.run_id,
+        answer={"answers": {"file": ["notes.md"]}},
+    )
+    assert inspected_prompts == ["Write the approved file", "Ask for a file"]
+
+    plugin_result = await runtime.submit_plugin_input(
+        AttributedSessionInput(
+            prompt="Synthetic command output",
+            plugin_id="dev.ouro.command",
+            contribution_id="start",
+            generation_id="gen_command",
+            execution_contract_hash="contract_command",
+        ),
+        session_id=None,
+    )
+    assert plugin_result.run.status == "completed"
+    assert inspected_prompts == ["Write the approved file", "Ask for a file"]
+    plugin_snapshot = store.load_runtime_session(plugin_result.session.session_id)
+    assert plugin_snapshot.messages[0].role == "system_synthetic"
+
+
+@pytest.mark.asyncio
+async def test_prompt_policy_denies_before_active_run_queue_persistence(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = GateProvider()
+
+    def policy(call: PromptPolicyCall) -> PromptPolicyDecision:
+        if call.prompt == "blocked follow-up":
+            return PromptPolicyDecision(action="deny", reason="blocked before queue")
+        return PromptPolicyDecision()
+
+    policies = PromptPolicyRegistry()
+    policies.register(PromptPolicyRegistration("ouro.host", "queue-guard", policy))
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="policy", provider_id="gate"),
+        ),
+        tools=_tools(),
+        prompt_policies=policies,
+    )
+    first = asyncio.create_task(runtime.run("first prompt"))
+    await provider.first_started.wait()
+    session = await _wait_for_active_session(store)
+
+    with pytest.raises(PromptRejectedError, match="blocked before queue"):
+        await runtime.run("blocked follow-up", session_id=session.session_id)
+
+    snapshot = store.load_runtime_session(session.session_id)
+    assert "follow_up_queue" not in snapshot.session.metadata
+    assert all(message.text_content != "blocked follow-up" for message in snapshot.messages)
+    provider.release_first.set()
+    await first
 
 
 @pytest.mark.asyncio

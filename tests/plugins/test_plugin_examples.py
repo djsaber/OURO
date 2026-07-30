@@ -15,6 +15,8 @@ EXAMPLES = Path(__file__).parents[2] / "examples" / "plugins"
     [
         ("declarative-skill", "dev.ouro.examples.declarative_skill", False),
         ("inprocess-command", "dev.ouro.examples.inprocess_command", True),
+        ("inprocess-observer", "dev.ouro.examples.observer", True),
+        ("inprocess-prompt-policy", "dev.ouro.examples.prompt_policy", True),
         ("worker-tool", "dev.ouro.examples.worker_tool", True),
     ],
 )

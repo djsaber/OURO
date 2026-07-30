@@ -6,19 +6,16 @@
 ## 计划关系
 
 ```text
-personal-workflow-foundation
-   |             |
-   v             v
-desktop-host   connectivity-extensions
-   \             /
-    v           v
- advanced-agent-capabilities
+personal-workflow-foundation -> desktop-host
+personal-workflow-foundation + connectivity-extensions -> advanced-agent-capabilities
+connectivity-extensions -> plugin-observers-prompt-policy
 ```
 
 | 计划 | 目标 | 前置条件 |
 |---|---|---|
 | [个人工作流基础](personal-workflow-foundation.md) | ResourceService、RuntimeSupervisor、配置门面 | 当前 Session/Runtime/Config 契约 |
 | [连接与扩展](connectivity-extensions.md) | 插件底层架构收敛（MCP 与首版闭环已完成） | 配置门面、现有 MCP/Supervisor 边界 |
+| [插件观察器与提示策略（已完成）](plugin-observers-prompt-policy.md) | 非阻塞 typed Observer 与 fail-closed Prompt Policy | 连接与扩展 B1-B8、不可变 ExtensionCatalog |
 | [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆与 durable Goal/Task；工作流 C 子智能体已完成 | ResourceService、Supervisor 和稳定 Host 控制面 |
 | [子智能体（已完成）](subagents.md) | 工作流 C 的实现记录：AgentDefinition、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |

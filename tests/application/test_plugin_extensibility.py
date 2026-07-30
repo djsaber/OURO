@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 
 import pytest
 
+from ouro.application.observers import ObserverDispatcher
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.cancellation import AbortSignal
+from ouro.core.errors import PromptRejectedError
+from ouro.core.observers import ContextPreparedObservation
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.tool_policies import (
     ToolPolicyDecision,
@@ -153,6 +158,348 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
     )
     assert policy_event.payload["mode"] == "deny"
     assert policy_event.payload["policy_ids"] == ["dev.ouro.guard/tool_policies/safe_shell"]
+
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_state(
+    tmp_path,
+) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="prompt-policy", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "prompt-policy-plugin"
+    _write_prompt_policy_plugin(source)
+    assert application.plugins is not None
+    application.plugins.install(source)
+    application.plugins.trust_code("dev.ouro.prompt_guard")
+    await application.start()
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == (
+        "needs_authorization"
+    )
+    without_grant = await runtime.run("contains blocked marker without grant")
+    assert without_grant.run.status == "completed"
+
+    application.plugins.authorize("dev.ouro.prompt_guard")
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
+
+    allowed = await runtime.run("ordinary input")
+    seen = json.loads(
+        (home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    generation = allowed.run.metadata["extension_generations"][0]
+    assert seen["catalog_id"] == allowed.run.metadata["extension_catalog_id"]
+    assert seen["execution_contract"] == generation["execution_contract_hash"]
+
+    before = store.load_runtime_session(allowed.session.session_id)
+    with pytest.raises(PromptRejectedError, match="prompt rejected by test guard"):
+        await runtime.run("contains blocked marker", session_id=allowed.session.session_id)
+    after = store.load_runtime_session(allowed.session.session_id)
+    assert after.messages == before.messages
+    assert after.runs == before.runs
+    assert "contains blocked marker" not in after.session.model_dump_json()
+
+    assert (await application.plugins.disable("dev.ouro.prompt_guard")).status == "disabled"
+    after_disable = await runtime.run(
+        "contains blocked marker after disable",
+        session_id=allowed.session.session_id,
+    )
+    assert after_disable.run.status == "completed"
+
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
+    assert (await application.plugins.revoke("dev.ouro.prompt_guard")).status == (
+        "needs_authorization"
+    )
+    after_revoke = await runtime.run(
+        "contains blocked marker after revoke",
+        session_id=allowed.session.session_id,
+    )
+    assert after_revoke.run.status == "completed"
+
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_observer_timeout_releases_catalog_lease_after_plugin_disable(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="observer-retire", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "observer-retire-plugin"
+    _write_observer_retire_plugin(source)
+    assert application.plugins is not None
+    assert application.plugin_runtime is not None
+    application.plugins.install(source)
+    application.plugins.authorize("dev.ouro.observer_retire")
+    application.plugins.trust_code("dev.ouro.observer_retire")
+    await application.start()
+    assert (await application.plugins.enable("dev.ouro.observer_retire")).status == "active"
+
+    lease = application.plugin_runtime.snapshot()
+    dispatcher = ObserverDispatcher(shutdown_timeout_seconds=1)
+    dispatcher.enqueue(
+        lease.observers,
+        ContextPreparedObservation(
+            session_id="ses_retire",
+            run_id="run_retire",
+            message_count=1,
+            tool_count=0,
+            model_round=0,
+        ),
+        release=lease.close,
+    )
+    started = home / "plugins" / "data" / "dev.ouro.observer_retire" / "started"
+    for _ in range(100):
+        if started.exists():
+            break
+        await asyncio.sleep(0.005)
+    assert started.exists()
+
+    assert (await application.plugins.disable("dev.ouro.observer_retire")).status == "disabled"
+    stopped = home / "plugins" / "data" / "dev.ouro.observer_retire" / "stopped"
+    for _ in range(100):
+        if stopped.exists():
+            break
+        await asyncio.sleep(0.005)
+
+    assert stopped.exists()
+    assert stopped.read_text(encoding="utf-8") == "disable"
+    await dispatcher.close()
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_prompt_policy_catalog_swap_cannot_change_the_prospective_run(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent(type="text_delta", text="allowed"),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="prompt-policy-swap", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "prompt-policy-plugin"
+    _write_prompt_policy_plugin(source)
+    assert application.plugins is not None
+    assert application.plugin_runtime is not None
+    application.plugins.install(source)
+    application.plugins.authorize("dev.ouro.prompt_guard")
+    application.plugins.trust_code("dev.ouro.prompt_guard")
+    await application.start()
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
+    with application.plugin_runtime.snapshot() as initial:
+        old_generation = initial.generations[0].generation_id
+
+    run_task = asyncio.create_task(runtime.run("slow marker input"))
+    seen_path = home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json"
+    for _ in range(100):
+        if seen_path.exists():
+            break
+        await asyncio.sleep(0.005)
+    assert seen_path.exists()
+    assert store.list_sessions() == []
+
+    assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
+    with application.plugin_runtime.snapshot() as current:
+        assert current.generations[0].generation_id != old_generation
+
+    result = await run_task
+    assert result.run.status == "completed"
+    assert result.run.metadata["extension_generations"][0]["generation_id"] == old_generation
+
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_queued_prompt_policy_approval_pins_the_prospective_catalog(tmp_path) -> None:
+    class GateProvider:
+        provider_id = "gate"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def stream(self, *, model, system_prompt="", messages, tools=None):
+            del model, system_prompt, messages, tools
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await self.release.wait()
+            yield ProviderStreamEvent(type="text_delta", text="done")
+            yield ProviderStreamEvent(type="done")
+
+        async def check_connection(self, model):
+            raise AssertionError(f"unexpected connection check: {model.model_id}")
+
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    provider = GateProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="prompt-policy", provider_id="gate"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+        queued_input_config=QueuedInputConfig(consumption_mode="all_at_once"),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "prompt-policy-plugin"
+    _write_prompt_policy_plugin(source)
+    assert application.plugins is not None
+    assert application.plugin_runtime is not None
+    application.plugins.install(source)
+    application.plugins.authorize("dev.ouro.prompt_guard")
+    application.plugins.trust_code("dev.ouro.prompt_guard")
+    await application.start()
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
+
+    first_task = asyncio.create_task(runtime.run("first input"))
+    await provider.started.wait()
+    session = store.list_sessions()[0]
+    first_run = store.load_runtime_session(session.session_id).runs[0]
+    old_generation = first_run.metadata["extension_generations"][0]["generation_id"]
+
+    await runtime.run("queued input", session_id=session.session_id)
+    queued = store.load_session_record(session.session_id).metadata["follow_up_queue"][0]
+    assert queued["prompt_policy_checked"] is True
+    assert queued["prospective_run_id"]
+    assert queued["extension_generations"][0]["generation_id"] == old_generation
+
+    assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
+    with application.plugin_runtime.snapshot() as current:
+        assert current.generations[0].generation_id != old_generation
+        current_generation = current.generations[0].generation_id
+
+    await runtime.run("queued under current catalog", session_id=session.session_id)
+    queued_items = store.load_session_record(session.session_id).metadata["follow_up_queue"]
+    assert len(queued_items) == 2
+    assert queued_items[1]["extension_generations"][0]["generation_id"] == current_generation
+
+    provider.release.set()
+    await first_task
+    completed = store.load_runtime_session(session.session_id)
+    assert len(completed.runs) == 3
+    queued_run = completed.runs[1]
+    assert queued_run.run_id == queued["prospective_run_id"]
+    assert queued_run.metadata["extension_generations"][0]["generation_id"] == old_generation
+    current_run = completed.runs[2]
+    assert current_run.run_id == queued_items[1]["prospective_run_id"]
+    assert current_run.metadata["extension_generations"][0]["generation_id"] == current_generation
+
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_steering_prompt_policy_uses_the_active_run_catalog(tmp_path) -> None:
+    class GateProvider:
+        provider_id = "gate"
+
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.calls = 0
+
+        async def stream(self, *, model, system_prompt="", messages, tools=None):
+            del model, system_prompt, messages, tools
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await self.release.wait()
+            yield ProviderStreamEvent(type="text_delta", text="done")
+            yield ProviderStreamEvent(type="done")
+
+        async def check_connection(self, model):
+            raise AssertionError(f"unexpected connection check: {model.model_id}")
+
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    provider = GateProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="prompt-policy-steer", provider_id="gate"),
+        ),
+        tools=ToolRegistry(),
+        environment=RuntimeEnvironment(home=home),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "prompt-policy-plugin"
+    _write_prompt_policy_plugin(source)
+    assert application.plugins is not None
+    assert application.plugin_runtime is not None
+    application.plugins.install(source)
+    application.plugins.authorize("dev.ouro.prompt_guard")
+    application.plugins.trust_code("dev.ouro.prompt_guard")
+    await application.start()
+    assert (await application.plugins.enable("dev.ouro.prompt_guard")).status == "active"
+
+    first_task = asyncio.create_task(runtime.run("first input"))
+    await provider.started.wait()
+    session = store.list_sessions()[0]
+    active_run = store.load_runtime_session(session.session_id).runs[0]
+    active_catalog_id = active_run.metadata["extension_catalog_id"]
+    active_generation = active_run.metadata["extension_generations"][0]["generation_id"]
+
+    assert await application.plugin_runtime.restart("dev.ouro.prompt_guard") == "active"
+    await runtime.run(
+        "steer under active catalog",
+        session_id=session.session_id,
+        queue_mode="steer",
+    )
+    queued = store.load_session_record(session.session_id).metadata["follow_up_queue"][0]
+    assert queued["extension_catalog_id"] == active_catalog_id
+    assert queued["extension_generations"][0]["generation_id"] == active_generation
+    seen = json.loads(
+        (home / "plugins" / "data" / "dev.ouro.prompt_guard" / "seen.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert seen["catalog_id"] == active_catalog_id
+
+    provider.release.set()
+    await first_task
+    completed = store.load_runtime_session(session.session_id)
+    assert len(completed.runs) == 1
+    assert "follow_up_queue" not in completed.session.metadata
+    assert provider.calls == 2
 
     await application.close()
 
@@ -985,12 +1332,12 @@ def _write_guard_plugin(source, command_tool_name: str) -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.guard",
                 "name": "Guard",
                 "version": "1.0.0",
                 "namespace": "guard",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "guard_plugin:create_plugin",
@@ -1038,6 +1385,145 @@ def create_plugin(context):
     )
 
 
+def _write_observer_retire_plugin(source) -> None:
+    manifest_dir = source / ".ouro-plugin"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "plugin_id": "dev.ouro.observer_retire",
+                "name": "Observer Retire",
+                "version": "1.0.0",
+                "namespace": "observer_retire",
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+                "runtime": {
+                    "kind": "python-inprocess",
+                    "entrypoint": "observer_retire_plugin:create_plugin",
+                },
+                "contributes": {
+                    "observers": [
+                        {
+                            "id": "stuck",
+                            "event": "context_prepared",
+                            "timeout_seconds": 0.2,
+                        }
+                    ]
+                },
+                "permissions": [],
+                "dependencies": {"plugins": []},
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "observer_retire_plugin.py").write_text(
+        """import asyncio
+from ouro.sdk.plugins.v1 import ContributionSet, ObserverContribution
+
+class Plugin:
+    def __init__(self, context):
+        self.context = context
+
+    async def prepare(self):
+        async def observe(_observation):
+            self.context.data.write_bytes('started', b'1')
+            await asyncio.Event().wait()
+
+        return ContributionSet(observers=[ObserverContribution(
+            id='stuck', event='context_prepared', handler=observe,
+        )])
+
+    async def start(self): pass
+
+    async def stop(self, reason, deadline):
+        self.context.data.write_bytes('stopped', reason.encode('utf-8'))
+
+def create_plugin(context):
+    return Plugin(context)
+""",
+        encoding="utf-8",
+    )
+
+
+def _write_prompt_policy_plugin(source) -> None:
+    manifest_dir = source / ".ouro-plugin"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "plugin_id": "dev.ouro.prompt_guard",
+                "name": "Prompt Guard",
+                "version": "1.0.0",
+                "namespace": "prompt_guard",
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+                "runtime": {
+                    "kind": "python-inprocess",
+                    "entrypoint": "prompt_guard_plugin:create_plugin",
+                },
+                "contributes": {
+                    "prompt_policies": [
+                        {"id": "blocked_marker", "priority": 10, "timeout_seconds": 2}
+                    ]
+                },
+                "permissions": [
+                    {
+                        "id": "sessions.prompt.inspect",
+                        "reason": "Reject a test marker before prompt persistence.",
+                    }
+                ],
+                "dependencies": {"plugins": []},
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "prompt_guard_plugin.py").write_text(
+        """import asyncio
+import json
+from ouro.sdk.plugins.v1 import (
+    ContributionSet,
+    PromptPolicyContribution,
+    PromptPolicyDecision,
+)
+
+class Plugin:
+    def __init__(self, context):
+        self.context = context
+        self.plugin_id = context.identity.plugin_id
+
+    async def prepare(self):
+        async def inspect_prompt(call):
+            self.context.data.write_bytes(
+                'seen.json',
+                json.dumps({
+                    'catalog_id': call.catalog_id,
+                    'execution_contract': call.execution_contracts.get(self.plugin_id),
+                }).encode('utf-8'),
+            )
+            if 'slow marker' in call.prompt:
+                await asyncio.sleep(0.1)
+            if 'blocked marker' in call.prompt:
+                return PromptPolicyDecision(
+                    action='deny', reason='prompt rejected by test guard'
+                )
+            return PromptPolicyDecision()
+
+        return ContributionSet(prompt_policies=[PromptPolicyContribution(
+            id='blocked_marker', handler=inspect_prompt,
+        )])
+
+    async def start(self): pass
+    async def stop(self, reason, deadline): pass
+
+def create_plugin(context):
+    return Plugin(context)
+""",
+        encoding="utf-8",
+    )
+
+
 def _tool_call_batch(call_id: str, tool_name: str) -> list[ProviderStreamEvent]:
     return [
         ProviderStreamEvent(
@@ -1059,12 +1545,12 @@ def _write_catalog_plugin(source, *, version: str = "1.0.0") -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.catalog",
                 "name": "Catalog",
                 "version": version,
                 "namespace": "catalog",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "catalog_plugin:create_plugin",
@@ -1136,12 +1622,12 @@ def _write_resumable_plugin(source) -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.resume",
                 "name": "Resume",
                 "version": "1.0.0",
                 "namespace": "resume",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "resume_plugin:create_plugin",
@@ -1217,12 +1703,12 @@ def _write_skill_plugin(source) -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.skill_prompt",
                 "name": "Skill Prompt",
                 "version": "1.0.0",
                 "namespace": "skill_prompt",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],

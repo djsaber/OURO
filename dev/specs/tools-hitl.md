@@ -107,10 +107,11 @@ workspace 约束只限制命令行工具的工作目录，不是操作系统命�
 进程退出时正在执行或提交结果的调用标记为 `unknown_outcome`。恢复不得自动重放这些调用。已经 durable
 提交的结果通过 call id 去重；checkpointed result 可安全完成消息提交。
 
-## Hook 与事件
+## Observer 与事件
 
-工具调用周围分发 `before_tool_call` / `after_tool_call` Hook，并产生 batch/call/approval/AskUser 事件。
-Hook 失败隔离为 `plugin_hook_failed`，不改变工具的实际结果。
+工具请求和结果成为 canonical 事实后，分别非阻塞投递 `tool_call_requested` / `tool_call_finished` Observer，并产生
+batch/call/approval/AskUser 事件。
+Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结果。
 
 ## 验收证据
 

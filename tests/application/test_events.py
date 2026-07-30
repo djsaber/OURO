@@ -4,33 +4,41 @@ import threading
 import pytest
 
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.observers import ObserverDispatcher
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookFailure, HookRegistration, HookRegistry, HookResult
+from ouro.core.observers import (
+    ObserverFailure,
+    ObserverRegistration,
+    ObserverRegistry,
+    RuntimeEventObservation,
+)
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_path) -> None:
+async def test_event_recorder_persists_event_and_dispatches_runtime_event_observer(
+    tmp_path,
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Events")
     store.create_session(session)
-    hooks = HookRegistry()
-    seen: list[dict[str, object]] = []
+    observers = ObserverRegistry()
+    seen: list[str] = []
 
-    def on_event(context: HookContext) -> HookResult:
-        seen.append(context.data["event"])
-        return HookResult()
+    def on_event(observation: RuntimeEventObservation) -> None:
+        seen.append(observation.record.event_type)
 
-    hooks.register(
-        HookRegistration(
+    observers.register(
+        ObserverRegistration(
             plugin_id="observer",
-            hook_name="on_event",
+            observer_id="events",
+            event="runtime_event",
             handler=on_event,
         )
     )
-    recorder = RuntimeEventRecorder(store=store, hooks=hooks)
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
 
     emitted: list[EventRecord] = []
     sequence = await recorder.emit(
@@ -47,7 +55,45 @@ async def test_event_recorder_persists_event_and_dispatches_on_event_hook(tmp_pa
     assert sequence == 1
     assert emitted[0].event_type == "run_started"
     assert snapshot.events[0].event_type == "run_started"
-    assert seen[0]["event_type"] == "run_started"
+    assert seen == ["run_started"]
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_observer_receives_a_redacted_payload(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Redacted events")
+    store.create_session(session)
+    observers = ObserverRegistry()
+    seen: list[object] = []
+
+    def observe(observation: RuntimeEventObservation) -> None:
+        seen.append(observation.record.payload["text"])
+
+    observers.register(
+        ObserverRegistration(
+            plugin_id="observer",
+            observer_id="events",
+            event="runtime_event",
+            handler=observe,
+        )
+    )
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
+
+    await recorder.emit(
+        [],
+        0,
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="model_text_delta",
+        payload={"text": "token=observer-secret"},
+    )
+    await recorder.close()
+
+    assert seen == ["token=***"]
+    assert store.load_session(session.session_id).events[0].payload["text"] == (
+        "token=observer-secret"
+    )
 
 
 @pytest.mark.asyncio
@@ -57,7 +103,11 @@ async def test_application_event_publish_uses_same_durable_observer_boundary(tmp
     session = SessionRecord(title="Application events")
     store.create_session(session)
     seen: list[EventRecord] = []
-    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry(), event_sink=seen.append)
+    recorder = RuntimeEventRecorder(
+        store=store,
+        observers=ObserverRegistry(),
+        event_sink=seen.append,
+    )
 
     event = await recorder.publish(
         session_id=session.session_id,
@@ -80,37 +130,39 @@ async def test_application_event_publish_uses_same_durable_observer_boundary(tmp
 
 
 @pytest.mark.asyncio
-async def test_event_observer_retains_hook_registry_resolved_at_publish_time(tmp_path) -> None:
+async def test_event_observer_retains_registry_resolved_at_publish_time(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Catalog-bound events")
     store.create_session(session)
-    first_hooks = HookRegistry()
-    second_hooks = HookRegistry()
+    first_observers = ObserverRegistry()
+    second_observers = ObserverRegistry()
     seen: list[str] = []
     releases: list[str] = []
-    first_hooks.register(
-        HookRegistration(
+    first_observers.register(
+        ObserverRegistration(
             plugin_id="first",
-            hook_name="on_event",
+            observer_id="events",
+            event="runtime_event",
             handler=lambda _context: seen.append("first"),
         )
     )
-    second_hooks.register(
-        HookRegistration(
+    second_observers.register(
+        ObserverRegistration(
             plugin_id="second",
-            hook_name="on_event",
+            observer_id="events",
+            event="runtime_event",
             handler=lambda _context: seen.append("second"),
         )
     )
-    active_hooks = first_hooks
-    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    active_observers = first_observers
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
-    def resolve(_run_id: str | None):
-        retained = active_hooks
+    def resolve(_observation):
+        retained = active_observers
         return retained, lambda: releases.append("released")
 
-    recorder.set_hook_registry_resolver(resolve)
+    recorder.set_observer_registry_resolver(resolve)
     await recorder.emit(
         [],
         0,
@@ -119,7 +171,7 @@ async def test_event_observer_retains_hook_registry_resolved_at_publish_time(tmp
         event_type="run_started",
         payload={"trigger": "user"},
     )
-    active_hooks = second_hooks
+    active_observers = second_observers
     await recorder.close()
 
     assert seen == ["first"]
@@ -127,52 +179,50 @@ async def test_event_observer_retains_hook_registry_resolved_at_publish_time(tmp
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_records_hook_failures_as_events(tmp_path) -> None:
+async def test_event_recorder_records_observer_failures_as_events(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Hook failures")
+    session = SessionRecord(title="Observer failures")
     store.create_session(session)
-    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
-    failure = HookFailure(
+    failure = ObserverFailure(
         plugin_id="bad",
-        hook_name="after_tool_call",
+        observer_id="tools",
+        observation="tool_call_finished",
         session_id=session.session_id,
         run_id="run_1",
         error_type="RuntimeError",
         message="boom",
     )
-    emitted: list[EventRecord] = []
-    sequence = await recorder.record_hook_failures(emitted, 3, [failure])
+    await recorder.record_observer_failure(failure)
     await recorder.close()
     snapshot = store.load_session(session.session_id)
 
-    assert sequence == 4
-    assert emitted[0].event_type == "plugin_hook_failed"
-    assert emitted[0].sequence == 4
-    assert emitted[0].payload["plugin_id"] == "bad"
-    assert snapshot.events[0].event_type == "plugin_hook_failed"
+    assert snapshot.events[0].event_type == "plugin_observer_failed"
+    assert snapshot.events[0].payload["plugin_id"] == "bad"
 
 
 @pytest.mark.asyncio
-async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tmp_path) -> None:
+async def test_event_recorder_converts_observer_failure_to_failure_event(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Event hook failure")
+    session = SessionRecord(title="Event observer failure")
     store.create_session(session)
-    hooks = HookRegistry()
+    observers = ObserverRegistry()
 
-    def broken_on_event(context: HookContext) -> HookResult:
-        raise RuntimeError("on_event exploded")
+    def broken_on_event(_observation) -> None:
+        raise RuntimeError("observer exploded")
 
-    hooks.register(
-        HookRegistration(
+    observers.register(
+        ObserverRegistration(
             plugin_id="broken",
-            hook_name="on_event",
+            observer_id="events",
+            event="runtime_event",
             handler=broken_on_event,
         )
     )
-    recorder = RuntimeEventRecorder(store=store, hooks=hooks)
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
 
     emitted: list[EventRecord] = []
     sequence = await recorder.emit(
@@ -190,9 +240,9 @@ async def test_event_recorder_converts_on_event_hook_failure_to_failure_event(tm
     assert [event.event_type for event in emitted] == ["run_started"]
     assert [event.event_type for event in snapshot.events] == [
         "run_started",
-        "plugin_hook_failed",
+        "plugin_observer_failed",
     ]
-    assert snapshot.events[1].payload["hook_name"] == "on_event"
+    assert snapshot.events[1].payload["observer_id"] == "events"
 
 
 @pytest.mark.asyncio
@@ -213,10 +263,10 @@ async def test_event_recorder_allocates_unique_sequences_across_concurrent_emitt
 
     first = RuntimeEventRecorder(
         store=store,
-        hooks=HookRegistry(),
+        observers=ObserverRegistry(),
         event_sink=blocking_sink,
     )
-    second = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    second = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
     first_events: list[EventRecord] = []
     second_events: list[EventRecord] = []
 
@@ -273,7 +323,7 @@ async def test_slow_file_persistence_does_not_block_another_session(tmp_path) ->
     store.create_session(blocked)
     store.create_session(independent)
     store.blocked_session_id = blocked.session_id
-    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
     blocked_emit = asyncio.create_task(
         recorder.emit(
@@ -305,26 +355,26 @@ async def test_slow_file_persistence_does_not_block_another_session(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_observational_hook_timeout_cannot_block_durable_event(tmp_path) -> None:
+async def test_observer_timeout_cannot_block_durable_event(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Hook timeout")
+    session = SessionRecord(title="Observer timeout")
     store.create_session(session)
-    hooks = HookRegistry(observational_timeout_seconds=0.02)
+    observers = ObserverRegistry()
 
-    async def never_returns(context: HookContext) -> HookResult:
-        del context
+    async def never_returns(_observation) -> None:
         await asyncio.Event().wait()
-        return HookResult()
 
-    hooks.register(
-        HookRegistration(
+    observers.register(
+        ObserverRegistration(
             plugin_id="hung-observer",
-            hook_name="on_event",
+            observer_id="events",
+            event="runtime_event",
             handler=never_returns,
+            timeout_seconds=0.02,
         )
     )
-    recorder = RuntimeEventRecorder(store=store, hooks=hooks)
+    recorder = RuntimeEventRecorder(store=store, observers=observers)
 
     sequence = await asyncio.wait_for(
         recorder.emit(
@@ -343,9 +393,50 @@ async def test_observational_hook_timeout_cannot_block_durable_event(tmp_path) -
     snapshot = store.load_session(session.session_id)
     assert [event.event_type for event in snapshot.events] == [
         "run_started",
-        "plugin_hook_failed",
+        "plugin_observer_failed",
     ]
     assert snapshot.events[1].payload["error_type"] == "TimeoutError"
+
+
+@pytest.mark.asyncio
+async def test_event_recorder_close_applies_observer_shutdown_deadline(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Observer shutdown")
+    store.create_session(session)
+    observers = ObserverRegistry()
+    started = asyncio.Event()
+
+    async def never_returns(_observation) -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    observers.register(
+        ObserverRegistration(
+            plugin_id="hung-observer",
+            observer_id="events",
+            event="runtime_event",
+            handler=never_returns,
+            timeout_seconds=30,
+        )
+    )
+    recorder = RuntimeEventRecorder(
+        store=store,
+        observers=observers,
+        observer_dispatcher=ObserverDispatcher(shutdown_timeout_seconds=0.01),
+    )
+
+    await recorder.emit(
+        [],
+        0,
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="run_started",
+        payload={},
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.2)
+
+    await asyncio.wait_for(recorder.close(), timeout=0.2)
 
 
 @pytest.mark.asyncio
@@ -354,7 +445,7 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
     store.initialize()
     session = SessionRecord(title="Invalid event")
     store.create_session(session)
-    recorder = RuntimeEventRecorder(store=store, hooks=HookRegistry())
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
 
     with pytest.raises(ValueError, match="requires string payload field text"):
         await recorder.emit(

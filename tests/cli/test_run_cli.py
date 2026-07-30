@@ -1327,9 +1327,7 @@ async def test_interactive_resolves_concurrent_async_subagent_questions_once(
             for event in store.load_session(relation.child_session_id).events
             if event.event_type == "ask_user_resolved"
         ]
-        assert resolved_answers == [
-            {"answers": {f"question_{key.lower()}": [f"answer-{key}"]}}
-        ]
+        assert resolved_answers == [{"answers": {f"question_{key.lower()}": [f"answer-{key}"]}}]
     assert sum("Question A?" in output for output in outputs) == 1
     assert sum("Question B?" in output for output in outputs) == 1
     assert not any(output.startswith("Error:") for output in outputs), "\n".join(outputs)
@@ -1625,7 +1623,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
     monkeypatch.setattr("ouro.local_application.build_runtime_adapter", fake_adapter)
     runtime = build_default_runtime(home)
 
-    assert runtime.hooks.registered("after_context_build") == []
+    assert runtime.observers.registered() == []
 
     await runtime.run("help me with files")
 

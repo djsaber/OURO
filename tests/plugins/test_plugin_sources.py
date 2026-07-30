@@ -31,12 +31,12 @@ def _create_repository(root) -> None:
     (plugin / ".ouro-plugin" / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.git_example",
                 "name": "Git example",
                 "version": "1.0.0",
                 "namespace": "git_example",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {"kind": "declarative"},
                 "contributes": {},
                 "permissions": [],

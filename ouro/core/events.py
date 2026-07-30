@@ -57,7 +57,7 @@ EventType = Literal[
     "run_failed",
     "recovery_tool_result_committed",
     "persistence_warning",
-    "plugin_hook_failed",
+    "plugin_observer_failed",
     "event_sink_failed",
     "event_observer_overflow",
     "diagnostic",

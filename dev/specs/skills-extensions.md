@@ -45,13 +45,20 @@
 可供模型调用且未禁用的 Skills 被渲染为原生系统指令目录，包含 name、description 和 location。完整
 `SKILL.md` 不在每次请求中展开；模型需要使用时再读取内容。
 
-## Hook
+## Observer 与 Prompt Policy
 
-Hook 注册包含 plugin id、hook name、source、priority 和 handler。排序规则：official、third-party、
-AI-generated，然后按 priority/plugin id。
+当前 Observer 包含 `runtime_event`、`context_prepared`、`tool_call_requested`、`tool_call_finished` 和
+`run_finished` 五类类型化事实。handler 只能返回 `None`；它不改写 Context、工具参数、工具结果或 Run 状态。
 
-非 official Hook 一次失败后在该 Run 的同一 hook 上隔离，Run 结束时清理隔离状态。Hook failure 转为
-类型化记录和事件，不传播第三方异常。
+Application 为每个 registration 建立独立有界 FIFO mailbox。生产点只做非阻塞 enqueue，不等待插件；慢、超时、异常或
+满队列只隔离对应 observer/scope，并通过脱敏 `plugin_observer_failed` 诊断暴露。队列项持有精确 Catalog lease，直到
+处理、丢弃或关闭时恰好释放一次。可靠事实仍以 canonical event store 为准，Observer 是 at-most-once 进程内通知。
+
+`prompt_policies` 是独立的 fail-closed guard，只检查 Host 路由后的直接用户提示并返回 `allow | deny`，不能改写提示。User plugin
+必须声明 `sessions.prompt.inspect`；拒绝或失败发生在提示进入 canonical message、durable queue 或 Run 前。允许后，直接
+Run 或 queued prospective Run 都继续使用评估时固定的同一 Catalog execution contract。完整契约见
+[插件系统规格](plugin-system.md)和
+[插件观察器与语义扩展点设计](../../docs/OURO_插件观察器与语义扩展点设计_2026-07-29.md)。
 
 ## 插件注册边界
 
@@ -63,7 +70,7 @@ AI-generated，然后按 priority/plugin id。
   不发布；
 - 插件不得使用 `builtin.*` 压缩策略 id；
 - entrypoint 只在授权后由 generation runtime 加载，注册边界本身不 import 插件代码；
-- 目标实现不得重新建立一套绕过现有 ToolExecutor、Hook failure 和 durable Run 的平行执行路径。
+- 目标实现不得重新建立一套绕过现有 ToolExecutor、类型化 Policy、Observer failure 和 durable Run 的平行执行路径。
 
 ## MCP 框架边界
 
@@ -73,14 +80,15 @@ MCP 已从注册占位边界演进为真实客户端。当前 transport、配置
 ## 目标扩展能力
 
 插件的目标包模型、来源信任、权限确认、entrypoint/worker 生命周期、贡献事务、durable execution contract、
-更新与回滚由[插件系统规格](plugin-system.md)定义。本规格继续作为当前 Skills、Hook 和 contribution
-注册边界的事实来源。
+更新与回滚由[插件系统规格](plugin-system.md)定义。本规格继续作为当前 Skills、Observer、Prompt Policy 和
+contribution 注册边界的事实来源。
 
 ## 验收证据
 
 - `tests/skills/test_skill_loader.py`
 - `tests/skills/test_skill_manager.py`
 - `tests/cli/test_skill_management_cli.py`
-- `tests/core/test_hooks.py`
+- `tests/core/test_observers.py`
+- `tests/core/test_prompt_policies.py`
 - `tests/plugins/test_plugin_system.py`
 - `tests/mcp/test_manager.py`

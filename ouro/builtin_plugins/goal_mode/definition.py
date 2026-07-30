@@ -15,13 +15,13 @@ from .prompts import (
 GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "plugin_id": "dev.ouro.goal_mode",
             "name": "Goal Mode",
             "version": "1.0.0",
             "description": "Runs one durable, user-owned Goal across bounded OURO Runs.",
             "namespace": "goal_mode",
-            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.2.0"},
+            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "goal_mode_plugin:create_plugin",

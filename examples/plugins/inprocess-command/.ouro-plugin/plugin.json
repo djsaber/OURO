@@ -1,5 +1,5 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "plugin_id": "dev.ouro.examples.inprocess_command",
   "name": "In-process Command Example",
   "version": "0.1.0",
@@ -7,7 +7,7 @@
   "namespace": "inprocess_command",
   "engines": {
     "ouro": ">=0.1.0,<0.2.0",
-    "plugin_api": "^1.0.0"
+    "plugin_api": "^2.0.0"
   },
   "runtime": {
     "kind": "python-inprocess",

@@ -10,7 +10,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
 from ouro.core.errors import OuroError
-from ouro.core.hooks import PluginSource
+from ouro.core.extensions import PluginSource
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
@@ -162,9 +162,7 @@ class PluginCommandRegistry:
     ) -> PluginCommandResult:
         command = self.get(command_id)
         if command.requires_session and session_id is None:
-            raise PluginCommandError(
-                f"plugin command requires a target Session: {command_id}"
-            )
+            raise PluginCommandError(f"plugin command requires a target Session: {command_id}")
         request = PluginCommandRequest(
             command_id=command_id,
             argument=argument,

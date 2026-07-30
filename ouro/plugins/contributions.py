@@ -21,7 +21,9 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
-from ouro.core.hooks import HookRegistration, HookRegistry, PluginSource
+from ouro.core.extensions import PluginSource
+from ouro.core.observers import ObserverRegistration, ObserverRegistry
+from ouro.core.prompt_policies import PromptPolicyRegistration, PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistration, ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistration, TurnPolicyRegistry
 from ouro.plugins.candidates import PluginRuntimeCandidate
@@ -55,12 +57,13 @@ class BackgroundService(Protocol):
 @dataclass
 class PluginContributions:
     tools: list[Tool] = field(default_factory=list)
-    hooks: list[HookRegistration] = field(default_factory=list)
+    observers: list[ObserverRegistration] = field(default_factory=list)
     commands: list[PluginCommand] = field(default_factory=list)
     context_providers: list[ContextProviderRegistration] = field(default_factory=list)
     compaction_strategies: list[CompactionStrategy] = field(default_factory=list)
     background_services: list[BackgroundService] = field(default_factory=list)
     continuation_policies: list[ContinuationPolicyRegistration] = field(default_factory=list)
+    prompt_policies: list[PromptPolicyRegistration] = field(default_factory=list)
     turn_policies: list[TurnPolicyRegistration] = field(default_factory=list)
     tool_policies: list[ToolPolicyRegistration] = field(default_factory=list)
     session_controllers: list[PluginSessionController] = field(default_factory=list)
@@ -84,13 +87,14 @@ class ContributionOwner:
 class PreparedContributionSet:
     owner: ContributionOwner
     tools: tuple[Tool, ...] = ()
-    hooks: tuple[HookRegistration, ...] = ()
+    observers: tuple[ObserverRegistration, ...] = ()
     context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     session_controllers: tuple[PluginSessionController, ...] = ()
@@ -188,13 +192,14 @@ class _PreparationContext:
 @dataclass
 class _PreparedBuilder:
     tools: tuple[Tool, ...] = ()
-    hooks: tuple[HookRegistration, ...] = ()
+    observers: tuple[ObserverRegistration, ...] = ()
     context_providers: tuple[ContextProviderRegistration, ...] = ()
     commands: tuple[PluginCommand, ...] = ()
     compaction_strategies: tuple[CompactionStrategy, ...] = ()
     background_services: tuple[BackgroundService, ...] = ()
     skills: tuple[SkillMetadata, ...] = ()
     continuation_policies: tuple[ContinuationPolicyRegistration, ...] = ()
+    prompt_policies: tuple[PromptPolicyRegistration, ...] = ()
     turn_policies: tuple[TurnPolicyRegistration, ...] = ()
     tool_policies: tuple[ToolPolicyRegistration, ...] = ()
     session_controllers: tuple[PluginSessionController, ...] = ()
@@ -240,20 +245,22 @@ class ContributionCoordinator:
         self,
         *,
         tools: ToolRegistry,
-        hooks: HookRegistry,
+        observers: ObserverRegistry,
         context_providers: ContextProviderRegistry | None = None,
         commands: PluginCommandRegistry | None = None,
         compaction: CompactionStrategyRegistry | None = None,
         continuations: RunContinuationRegistry | None = None,
+        prompt_policies: PromptPolicyRegistry | None = None,
         turn_policies: TurnPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
     ) -> None:
         self.tools = tools
-        self.hooks = hooks
+        self.observers = observers
         self.context_providers = context_providers or ContextProviderRegistry()
         self.commands = commands
         self.compaction = compaction
         self.continuations = continuations
+        self.prompt_policies = prompt_policies
         self.turn_policies = turn_policies
         self.tool_policies = tool_policies
 
@@ -297,12 +304,13 @@ class ContributionCoordinator:
             ContributionContractContext(
                 manifest=manifest,
                 tools=builder.tools,
-                hooks=builder.hooks,
+                observers=builder.observers,
                 context_providers=builder.context_providers,
                 commands=builder.commands,
                 compaction=builder.compaction_strategies,
                 background_services=builder.background_services,
                 continuation_policies=builder.continuation_policies,
+                prompt_policies=builder.prompt_policies,
                 turn_policies=builder.turn_policies,
                 tool_policies=builder.tool_policies,
                 session_controllers=builder.session_controllers,
@@ -320,13 +328,14 @@ class ContributionCoordinator:
         return PreparedContributionSet(
             owner=owner,
             tools=builder.tools,
-            hooks=builder.hooks,
+            observers=builder.observers,
             context_providers=builder.context_providers,
             commands=builder.commands,
             compaction_strategies=builder.compaction_strategies,
             background_services=builder.background_services,
             skills=builder.skills,
             continuation_policies=builder.continuation_policies,
+            prompt_policies=builder.prompt_policies,
             turn_policies=builder.turn_policies,
             tool_policies=builder.tool_policies,
             session_controllers=builder.session_controllers,
@@ -537,46 +546,37 @@ class ContributionCoordinator:
         return tuple(prepared)
 
     @staticmethod
-    def _prepare_hooks(
+    def _prepare_observers(
         manifest: PluginManifest,
         owner: ContributionOwner,
         source: PluginSource,
-        hooks: list[HookRegistration],
-    ) -> tuple[HookRegistration, ...]:
-        declarations = {item.id: item for item in manifest.contributes.hooks}
-        actual: dict[str, HookRegistration] = {}
-        for hook in hooks:
-            hook_id = hook.hook_id
-            if not hook_id:
-                matches = [
-                    item.id
-                    for item in manifest.contributes.hooks
-                    if item.event == hook.hook_name and item.id not in actual
-                ]
-                if len(matches) != 1:
-                    raise ContributionValidationError(
-                        f"hook contribution requires stable hook_id: {hook.hook_name}"
-                    )
-                hook_id = matches[0]
-            if hook_id in actual:
-                raise ContributionValidationError(f"duplicate hook contribution: {hook_id}")
-            actual[hook_id] = hook
-        _validate_declared_set("hook", declarations, actual)
-        prepared: list[HookRegistration] = []
-        for hook_id, hook in actual.items():
-            declaration = declarations[hook_id]
-            if hook.hook_name != declaration.event:
-                raise ContributionValidationError(f"hook event does not match manifest: {hook_id}")
-            maximum = 1.0 if hook.hook_name == "on_event" else 10.0
-            timeout = declaration.timeout_seconds or hook.timeout_seconds or maximum
+        observers: list[ObserverRegistration],
+    ) -> tuple[ObserverRegistration, ...]:
+        declarations = {item.id: item for item in manifest.contributes.observers}
+        actual = _unique_contribution_map(
+            "observer",
+            ((observer.observer_id, observer) for observer in observers),
+        )
+        _validate_declared_set("observer", declarations, actual)
+        prepared: list[ObserverRegistration] = []
+        for observer_id, observer in actual.items():
+            declaration = declarations[observer_id]
+            if observer.event != declaration.event:
+                raise ContributionValidationError(
+                    f"observer event does not match manifest: {observer_id}"
+                )
+            if tuple(observer.event_types) != tuple(declaration.event_types):
+                raise ContributionValidationError(
+                    f"observer event_types do not match manifest: {observer_id}"
+                )
             prepared.append(
                 replace(
-                    hook,
+                    observer,
                     plugin_id=manifest.plugin_id,
                     source=source,
                     priority=declaration.priority,
-                    timeout_seconds=min(timeout, maximum),
-                    hook_id=hook_id,
+                    timeout_seconds=declaration.timeout_seconds,
+                    observer_id=observer_id,
                     owner=owner.key,
                     generation_id=owner.generation_id,
                     active_when_controller_id=_canonical_controller_id(
@@ -720,6 +720,39 @@ class ContributionCoordinator:
         )
 
     @staticmethod
+    def _prepare_prompt_policies(
+        manifest: PluginManifest,
+        owner: ContributionOwner,
+        policies: list[PromptPolicyRegistration],
+    ) -> tuple[PromptPolicyRegistration, ...]:
+        declarations = {item.id: item for item in manifest.contributes.prompt_policies}
+        actual = _unique_contribution_map(
+            "prompt policy",
+            ((policy.policy_id, policy) for policy in policies),
+        )
+        _validate_declared_set("prompt policy", declarations, actual)
+        permissions = {request.id for request in manifest.permissions}
+        if actual and "sessions.prompt.inspect" not in permissions:
+            raise ContributionValidationError(
+                "prompt policies require sessions.prompt.inspect permission"
+            )
+        return tuple(
+            replace(
+                policy,
+                plugin_id=manifest.plugin_id,
+                priority=declarations[policy.policy_id].priority,
+                timeout_seconds=declarations[policy.policy_id].timeout_seconds,
+                owner=owner.key,
+                generation_id=owner.generation_id,
+                active_when_controller_id=_canonical_controller_id(
+                    manifest.plugin_id,
+                    declarations[policy.policy_id].active_when,
+                ),
+            )
+            for policy in actual.values()
+        )
+
+    @staticmethod
     def _prepare_turn_policies(
         manifest: PluginManifest,
         owner: ContributionOwner,
@@ -780,8 +813,8 @@ class _ToolPreparationAdapter:
 
 
 @dataclass(frozen=True)
-class _HookPreparationAdapter:
-    kind: str = "hooks"
+class _ObserverPreparationAdapter:
+    kind: str = "observers"
 
     def prepare(
         self,
@@ -789,13 +822,13 @@ class _HookPreparationAdapter:
         context: _PreparationContext,
         builder: _PreparedBuilder,
     ) -> None:
-        builder.hooks = (
-            *builder.hooks,
-            *coordinator._prepare_hooks(
+        builder.observers = (
+            *builder.observers,
+            *coordinator._prepare_observers(
                 context.candidate.manifest,
                 context.owner,
                 context.source,
-                context.contributions.hooks,
+                context.contributions.observers,
             ),
         )
 
@@ -805,9 +838,9 @@ class _HookPreparationAdapter:
         builder: _PreparedBuilder,
     ) -> tuple[str, ...]:
         return _missing_optional(
-            "hooks",
-            context.candidate.manifest.contributes.hooks,
-            {hook.hook_id for hook in builder.hooks if not hook.hook_id.startswith("skill:")},
+            "observers",
+            context.candidate.manifest.contributes.observers,
+            {observer.observer_id for observer in builder.observers},
         )
 
 
@@ -1065,6 +1098,34 @@ class _ToolPolicyPreparationAdapter:
 
 
 @dataclass(frozen=True)
+class _PromptPolicyPreparationAdapter:
+    kind: str = "prompt_policies"
+
+    def prepare(
+        self,
+        coordinator: ContributionCoordinator,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> None:
+        builder.prompt_policies = coordinator._prepare_prompt_policies(
+            context.candidate.manifest,
+            context.owner,
+            context.contributions.prompt_policies,
+        )
+
+    def missing_optional(
+        self,
+        context: _PreparationContext,
+        builder: _PreparedBuilder,
+    ) -> tuple[str, ...]:
+        return _missing_optional(
+            "prompt_policies",
+            context.candidate.manifest.contributes.prompt_policies,
+            {policy.policy_id for policy in builder.prompt_policies},
+        )
+
+
+@dataclass(frozen=True)
 class _TurnPolicyPreparationAdapter:
     kind: str = "turn_policies"
 
@@ -1093,7 +1154,7 @@ class _TurnPolicyPreparationAdapter:
 
 
 TOOL_PREPARATION_ADAPTER = _ToolPreparationAdapter()
-HOOK_PREPARATION_ADAPTER = _HookPreparationAdapter()
+OBSERVER_PREPARATION_ADAPTER = _ObserverPreparationAdapter()
 COMMAND_PREPARATION_ADAPTER = _CommandPreparationAdapter()
 SESSION_CONTROLLER_PREPARATION_ADAPTER = _SessionControllerPreparationAdapter()
 CONTEXT_PREPARATION_ADAPTER = _ContextPreparationAdapter()
@@ -1103,6 +1164,7 @@ MCP_PREPARATION_ADAPTER = _MCPPreparationAdapter()
 BACKGROUND_SERVICE_PREPARATION_ADAPTER = _BackgroundServicePreparationAdapter()
 CONTINUATION_PREPARATION_ADAPTER = _ContinuationPreparationAdapter()
 TOOL_POLICY_PREPARATION_ADAPTER = _ToolPolicyPreparationAdapter()
+PROMPT_POLICY_PREPARATION_ADAPTER = _PromptPolicyPreparationAdapter()
 TURN_POLICY_PREPARATION_ADAPTER = _TurnPolicyPreparationAdapter()
 
 

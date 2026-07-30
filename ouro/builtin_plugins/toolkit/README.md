@@ -323,7 +323,7 @@ ouro/core/run_budget.py
 ouro/core/messages.py
 ouro/core/provider.py
 ouro/core/inner_loop.py
-ouro/core/hooks.py
+ouro/core/observers.py
 ouro/core/context_snapshots.py
 ouro/core/events.py
 ouro/core/context.py

@@ -36,6 +36,10 @@ class QueuedInput(OuroModel):
     continuation_decision_id: str | None = None
     session_control_controller_id: str | None = None
     session_control_activation_id: str | None = None
+    prompt_policy_checked: bool = False
+    prospective_run_id: str | None = None
+    extension_catalog_id: str | None = None
+    extension_generations: tuple[dict[str, object], ...] = ()
 
     @field_validator("host_source_id")
     @classmethod
@@ -92,6 +96,12 @@ class QueuedInput(OuroModel):
             raise ValueError(
                 "queued input Session control binding requires controller and activation ids"
             )
+        if self.prompt_policy_checked and self.source != "user":
+            raise ValueError("only direct user input can be prompt-policy checked")
+        if self.prompt_policy_checked and not self.prospective_run_id:
+            raise ValueError("prompt-policy checked input requires a prospective run id")
+        if self.extension_generations and not self.extension_catalog_id:
+            raise ValueError("queued extension generations require a catalog id")
         return self
 
 
@@ -125,6 +135,10 @@ class QueuedInputQueue:
         continuation_decision_id: str | None = None,
         session_control_controller_id: str | None = None,
         session_control_activation_id: str | None = None,
+        prompt_policy_checked: bool = False,
+        prospective_run_id: str | None = None,
+        extension_catalog_id: str | None = None,
+        extension_generations: tuple[dict[str, object], ...] = (),
     ) -> tuple[SessionRecord, QueuedInput, int]:
         item = QueuedInput(
             queue_id=queue_id or new_id("queued"),
@@ -143,6 +157,10 @@ class QueuedInputQueue:
             continuation_decision_id=continuation_decision_id,
             session_control_controller_id=session_control_controller_id,
             session_control_activation_id=session_control_activation_id,
+            prompt_policy_checked=prompt_policy_checked,
+            prospective_run_id=prospective_run_id,
+            extension_catalog_id=extension_catalog_id,
+            extension_generations=extension_generations,
         )
         with self.store.session_mutation(snapshot.session.session_id):
             latest = self.store.load_session_record(snapshot.session.session_id)
@@ -327,6 +345,26 @@ class QueuedInputQueue:
                     item.get("execution_contract_hash")
                     if isinstance(item.get("execution_contract_hash"), str)
                     else None
+                ),
+                prompt_policy_checked=item.get("prompt_policy_checked") is True,
+                prospective_run_id=(
+                    item.get("prospective_run_id")
+                    if isinstance(item.get("prospective_run_id"), str)
+                    else None
+                ),
+                extension_catalog_id=(
+                    item.get("extension_catalog_id")
+                    if isinstance(item.get("extension_catalog_id"), str)
+                    else None
+                ),
+                extension_generations=(
+                    tuple(
+                        value
+                        for value in item.get("extension_generations", ())
+                        if isinstance(value, dict)
+                    )
+                    if isinstance(item.get("extension_generations", ()), list | tuple)
+                    else ()
                 ),
                 caused_by_run_id=(
                     item.get("caused_by_run_id")

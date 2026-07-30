@@ -261,7 +261,7 @@ def test_goal_builtin_manifest_is_the_public_harness_contract() -> None:
     manifest = GOAL_MODE_PLUGIN.manifest
 
     assert manifest.plugin_id == PLUGIN_ID
-    assert manifest.engines.plugin_api == "^1.2.0"
+    assert manifest.engines.plugin_api == "^2.0.0"
     assert {tool.id for tool in manifest.contributes.tools} == {
         "get-goal",
         "create-goal",
@@ -385,9 +385,7 @@ async def test_goal_replace_command_delegates_to_create_goal_with_exact_identity
 
     assert replacement.is_error is False
     assert replacement.session_control_transitions[0].action == "replace"
-    assert replacement.session_control_transitions[0].replace_activation_ids == (
-        "activation_old",
-    )
+    assert replacement.session_control_transitions[0].replace_activation_ids == ("activation_old",)
     assert replacement.session_control_transitions[0].payload["operation"] == "replace"
 
 
@@ -770,9 +768,7 @@ async def test_create_goal_waits_for_manual_approval_without_starting_another_ru
     assert snapshot.runs[0].origin == "plugin"
     assert provider.calls == 1
     assert snapshot.session.controls.activations == []
-    state_path = (
-        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
-    )
+    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
     assert not state_path.exists()
     await application.close()
 

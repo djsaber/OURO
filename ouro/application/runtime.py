@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING
 
 from pydantic import JsonValue
@@ -70,11 +71,11 @@ from ouro.core.errors import (
     CompactionError,
     ConfigError,
     PersistenceError,
+    PromptRejectedError,
     ResourceAttachmentError,
     SessionBusyError,
 )
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.inner_loop import (
     InnerAgentLoop,
     InnerLoopPorts,
@@ -86,6 +87,18 @@ from ouro.core.interactions import (
     SessionInteractionMode,
 )
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.observers import (
+    Observation,
+    ObserverRegistry,
+    RunFinishedObservation,
+    RunOutcomeView,
+)
+from ouro.core.prompt_policies import (
+    PromptAttachmentMetadata,
+    PromptPolicyCall,
+    PromptPolicyRegistry,
+)
+from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import (
@@ -99,7 +112,6 @@ from ouro.core.session_controls import (
 from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
-    RunOutcome,
     RunRecord,
     RunStatus,
     SessionRecord,
@@ -130,7 +142,7 @@ class RuntimeService:
         adapter: RuntimeAdapter,
         model_catalog: RuntimeAdapterCatalog | None = None,
         tools: ToolRegistry,
-        hooks: HookRegistry | None = None,
+        observers: ObserverRegistry | None = None,
         context_providers: ContextProviderRegistry | None = None,
         context_builder: ContextBuilder | None = None,
         run_budget: RunBudgetPolicy | None = None,
@@ -143,6 +155,7 @@ class RuntimeService:
         compaction_adapter: RuntimeAdapter | None = None,
         compaction_adapter_error: str | None = None,
         continuations: RunContinuationRegistry | None = None,
+        prompt_policies: PromptPolicyRegistry | None = None,
         tool_policies: ToolPolicyRegistry | None = None,
         turn_policies: TurnPolicyRegistry | None = None,
         queued_input_config: QueuedInputConfig | None = None,
@@ -175,14 +188,15 @@ class RuntimeService:
         )
         self._permission_overrides = dict(permission_overrides or {})
         self._tool_execution_config = tool_execution_config or ToolExecutionConfig()
-        self.hooks = hooks or HookRegistry()
+        self.observers = observers or ObserverRegistry()
         self.context_providers = context_providers or ContextProviderRegistry()
         self.continuations = continuations or RunContinuationRegistry()
+        self.prompt_policies = prompt_policies or PromptPolicyRegistry()
         self.tool_policies = tool_policies or ToolPolicyRegistry()
         self.turn_policies = turn_policies or TurnPolicyRegistry()
         self.event_recorder = RuntimeEventRecorder(
             store=store,
-            hooks=self.hooks,
+            observers=self.observers,
             event_sink=event_sink,
         )
         self.run_lifecycle = RunLifecycle(
@@ -228,7 +242,6 @@ class RuntimeService:
         self.context_preparation = ContextPreparationService(
             store=store,
             adapter=adapter,
-            hooks=self.hooks,
             context_providers=self.context_providers,
             events=self.event_recorder,
             context_builder=self.context_builder,
@@ -243,6 +256,7 @@ class RuntimeService:
         self._abort_signals: dict[str, AbortSignal] = {}
         self._extension_catalog: PluginRuntimeResource | None = None
         self._extension_snapshots: dict[str, ExtensionCatalogLease] = {}
+        self._queued_extension_snapshots: dict[str, ExtensionCatalogLease] = {}
         self._session_control_snapshots: dict[str, frozenset[str]] = {}
         self._agent_definitions: AgentDefinitionService | None = None
         self._agent_controls: AgentControlExecutor | None = None
@@ -255,7 +269,7 @@ class RuntimeService:
         if self._extension_catalog is not None and self._extension_catalog is not catalog:
             raise RuntimeError("runtime already has an extension catalog")
         self._extension_catalog = catalog
-        self.event_recorder.set_hook_registry_resolver(self._event_hooks_for_run)
+        self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
 
     def attach_agent_definitions(self, service: AgentDefinitionService) -> None:
         if self._agent_definitions is not None and self._agent_definitions is not service:
@@ -267,18 +281,22 @@ class RuntimeService:
             raise RuntimeError("runtime already has an Agent control executor")
         self._agent_controls = controls
 
-    def _event_hooks_for_run(
+    def _observers_for_observation(
         self,
-        run_id: str | None,
-    ) -> tuple[HookRegistry, Callable[[], None]]:
-        if run_id is None:
-            return self.hooks.scoped(lambda: set()), lambda: None
-        snapshot = self._extension_snapshots.get(run_id)
-        if snapshot is None:
-            return self.hooks, lambda: None
-        retained = snapshot.fork()
+        observation: Observation,
+    ) -> tuple[ObserverRegistry, Callable[[], None]]:
+        run_id = observation.run_id
+        snapshot = self._extension_snapshots.get(run_id) if run_id is not None else None
+        if snapshot is not None:
+            retained = snapshot.fork()
+        elif self._extension_catalog is not None:
+            retained = self._extension_catalog.snapshot()
+        else:
+            return self.observers.scoped(lambda: set()), lambda: None
         return (
-            retained.hooks.scoped(lambda: self._active_controller_ids_for_run(run_id)),
+            retained.observers.scoped(
+                lambda: self._active_controller_ids_for_run(run_id) if run_id else set()
+            ),
             retained.close,
         )
 
@@ -309,14 +327,14 @@ class RuntimeService:
             return selected
         return selected.overlay(agent_control_tools(catalog))
 
-    def _hooks_for_run(self, run_id: str) -> HookRegistry:
-        snapshot = self._extension_snapshots.get(run_id)
-        registry = snapshot.hooks if snapshot is not None else self.hooks
-        return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
-
     def _context_providers_for_run(self, run_id: str) -> ContextProviderRegistry:
         snapshot = self._extension_snapshots.get(run_id)
         registry = snapshot.context_providers if snapshot is not None else self.context_providers
+        return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
+
+    def _prompt_policies_for_run(self, run_id: str) -> PromptPolicyRegistry:
+        snapshot = self._extension_snapshots.get(run_id)
+        registry = snapshot.prompt_policies if snapshot is not None else self.prompt_policies
         return registry.scoped(lambda: self._active_controller_ids_for_run(run_id))
 
     def _skills_for_run(self, run_id: str) -> tuple[SkillMetadata, ...]:
@@ -381,7 +399,6 @@ class RuntimeService:
                 },
             ),
             registry=tools,
-            hooks=self._hooks_for_run(run_id),
             events=self.event_recorder,
             runs=self.run_lifecycle,
             execution_config=execution_config,
@@ -535,6 +552,9 @@ class RuntimeService:
         for snapshot in self._extension_snapshots.values():
             snapshot.close()
         self._extension_snapshots.clear()
+        for snapshot in self._queued_extension_snapshots.values():
+            snapshot.close()
+        self._queued_extension_snapshots.clear()
         self._session_control_snapshots.clear()
         try:
             await self.event_recorder.close()
@@ -613,6 +633,7 @@ class RuntimeService:
         self,
         *,
         title: str,
+        _session_id: str | None = None,
         initial_model: str | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
@@ -629,6 +650,7 @@ class RuntimeService:
             else self.models.default_model()
         )
         created = self.sessions.create(
+            session_id=_session_id,
             title=title,
             current_model=selected_model.key,
             approval_mode=approval_mode,
@@ -789,13 +811,54 @@ class RuntimeService:
                 "resource attachments require an existing session; import the resource "
                 "and pass its session with session_id"
             )
+        preapproved_new_run: RunRecord | None = None
         if session_id is None:
-            session = self.create_session(
-                title=title or _title_from_prompt(prompt),
-                initial_model=initial_model,
-                approval_mode=approval_mode or "inherit",
-                interaction_mode=interaction_mode or "interactive",
-            )
+            if _input_attribution is None:
+                selected_model = (
+                    self.resolve_model(initial_model)
+                    if initial_model is not None
+                    else self.models.default_model()
+                )
+                candidate_session = SessionRecord(
+                    title=title or _title_from_prompt(prompt),
+                    workspace=self.default_workspace,
+                    current_model=selected_model.key,
+                    approval_mode=approval_mode or "inherit",
+                    interaction_mode=interaction_mode or "interactive",
+                )
+                preapproved_new_run = RunRecord(
+                    session_id=candidate_session.session_id,
+                    status="running",
+                    origin="user",
+                    trigger="user",
+                )
+                if self._extension_catalog is not None:
+                    self._extension_snapshots[preapproved_new_run.run_id] = (
+                        self._extension_catalog.snapshot()
+                    )
+                try:
+                    await self._evaluate_prompt_policies(
+                        session=candidate_session,
+                        run=preapproved_new_run,
+                        inputs=[QueuedInput(prompt=prompt, title=title, source="user")],
+                    )
+                    session = self.create_session(
+                        title=candidate_session.title,
+                        _session_id=candidate_session.session_id,
+                        initial_model=selected_model.key,
+                        approval_mode=candidate_session.approval_mode,
+                        interaction_mode=candidate_session.interaction_mode,
+                    )
+                except BaseException:
+                    self._release_extension_snapshot(preapproved_new_run.run_id)
+                    raise
+            else:
+                session = self.create_session(
+                    title=title or _title_from_prompt(prompt),
+                    initial_model=initial_model,
+                    approval_mode=approval_mode or "inherit",
+                    interaction_mode=interaction_mode or "interactive",
+                )
             snapshot = RuntimeSessionSnapshot(session=session)
         else:
             snapshot = self._load_runtime_snapshot(
@@ -843,30 +906,41 @@ class RuntimeService:
             if _input_attribution is not None
             else (queued_synthetic_input.source if queued_synthetic_input is not None else None)
         )
-        run = _prepared_run or RunRecord(
-            session_id=session.session_id,
-            status="running",
-            origin=(
-                synthetic_source
-                if synthetic_source is not None
-                else ("follow_up" if _queued_inputs else "user")
-            ),
-            parent_run_id=(
-                next(
-                    (
-                        item.caused_by_run_id
-                        for item in (_queued_inputs or [])
-                        if item.caused_by_run_id is not None
-                    ),
-                    None,
-                )
-            ),
-            initiator_id=(
-                _attributed_input_initiator(_input_attribution)
-                if _input_attribution is not None
-                else _queued_input_initiator(queued_synthetic_input)
-            ),
-            trigger=synthetic_source or "user",
+        run = (
+            _prepared_run
+            or preapproved_new_run
+            or RunRecord(
+                run_id=(
+                    _queued_inputs[0].prospective_run_id
+                    if _queued_inputs
+                    and _queued_inputs[0].prompt_policy_checked
+                    and _queued_inputs[0].prospective_run_id is not None
+                    else new_id("run")
+                ),
+                session_id=session.session_id,
+                status="running",
+                origin=(
+                    synthetic_source
+                    if synthetic_source is not None
+                    else ("follow_up" if _queued_inputs else "user")
+                ),
+                parent_run_id=(
+                    next(
+                        (
+                            item.caused_by_run_id
+                            for item in (_queued_inputs or [])
+                            if item.caused_by_run_id is not None
+                        ),
+                        None,
+                    )
+                ),
+                initiator_id=(
+                    _attributed_input_initiator(_input_attribution)
+                    if _input_attribution is not None
+                    else _queued_input_initiator(queued_synthetic_input)
+                ),
+                trigger=synthetic_source or "user",
+            )
         )
         run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
         if run_lock is None:
@@ -1013,10 +1087,25 @@ class RuntimeService:
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             self._restore_run_tool_cap(run)
-            if _prepared_run is not None and "extension_generations" in run.metadata:
+            if preapproved_new_run is not None:
+                run = self._bind_extension_snapshot(
+                    run,
+                    self._extension_snapshots.get(run.run_id),
+                )
+            elif _queued_inputs and _queued_inputs[0].prompt_policy_checked:
+                run = await self._attach_queued_extension_snapshot(run, pending_inputs)
+            elif _prepared_run is not None and "extension_generations" in run.metadata:
                 await self._ensure_extension_snapshot(run)
             else:
                 run = self._attach_extension_snapshot(run)
+            if preapproved_new_run is None and not (
+                _queued_inputs and _queued_inputs[0].prompt_policy_checked
+            ):
+                await self._evaluate_prompt_policies(
+                    session=session,
+                    run=run,
+                    inputs=pending_inputs,
+                )
             session, run = self.run_lifecycle.start(
                 session=session,
                 run=run,
@@ -1117,7 +1206,6 @@ class RuntimeService:
         adapter: RuntimeAdapter,
     ) -> RunResult:
         tools = self._tools_for_run(run.run_id)
-        hooks = self._hooks_for_run(run.run_id)
         context_providers = self._context_providers_for_run(run.run_id)
         compaction = self._compaction_for_run(run.run_id)
         tool_calls = self._tool_calls_for_run(run.run_id)
@@ -1129,13 +1217,11 @@ class RuntimeService:
                 prepare_context=partial(
                     self.context_preparation.prepare,
                     adapter=adapter,
-                    hooks=hooks,
                     context_providers=context_providers,
                     strategies=compaction,
                     skill_instructions=self._instructions_for_run(run),
                 ),
                 emit=self.event_recorder.emit,
-                record_hook_failures=self.event_recorder.record_hook_failures,
                 handle_tool_batch=tool_calls.handle_batch,
                 record_usage=self.run_lifecycle.record_usage,
                 record_context_completion=self.context_preparation.record_provider_completion,
@@ -1281,7 +1367,7 @@ class RuntimeService:
             self._release_abort_signal(run.run_id, abort_signal)
             self._release_session_run_lock(run_lock)
             if terminal_run.status in ACTIVE_RUN_STATUSES:
-                self._finish_run_hooks(terminal_run)
+                self._finish_run_observers(terminal_run)
             else:
                 await self._finalize_run_boundary(
                     RunResult(
@@ -1422,42 +1508,128 @@ class RuntimeService:
         resource_refs: tuple[str, ...] = (),
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
-        session, queued_input, queue_size = self.queued_inputs.enqueue(
-            snapshot=snapshot,
-            prompt=prompt,
-            title=title,
-            mode=mode,
-            resource_refs=resource_refs,
-            queue_id=(attribution.queue_id if isinstance(attribution, HostSessionInput) else None),
-            source=_attributed_input_source(attribution) if attribution is not None else "user",
-            host_source_id=(
-                attribution.host_source_id if isinstance(attribution, HostSessionInput) else None
-            ),
-            delegation_id=(
-                attribution.delegation_id if isinstance(attribution, DelegatedTaskInput) else None
-            ),
-            plugin_id=(
-                attribution.plugin_id if isinstance(attribution, AttributedSessionInput) else None
-            ),
-            contribution_id=(
-                attribution.contribution_id
-                if isinstance(attribution, AttributedSessionInput)
-                else None
-            ),
-            generation_id=(
-                attribution.generation_id
-                if isinstance(attribution, AttributedSessionInput)
-                else None
-            ),
-            execution_contract_hash=(
-                attribution.execution_contract_hash
-                if isinstance(attribution, AttributedSessionInput)
-                else None
-            ),
-            caused_by_run_id=(
-                active_run.run_id if active_run is not None and attribution is not None else None
-            ),
+        source = _attributed_input_source(attribution) if attribution is not None else "user"
+        queue_id = (
+            attribution.queue_id
+            if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
+            else new_id("queued")
         )
+        prompt_policy_checked = source == "user"
+        prospective_run_id: str | None = None
+        extension_snapshot: ExtensionCatalogLease | None = None
+        extension_catalog_id: str | None = None
+        extension_generations: tuple[dict[str, object], ...] = ()
+        if prompt_policy_checked:
+            prospective = RunRecord(
+                session_id=snapshot.session.session_id,
+                status="running",
+                origin=source,
+            )
+            prospective_run_id = prospective.run_id
+            controller_run_id: str | None = None
+            if mode == "steer" and active_run is not None:
+                await self._ensure_extension_snapshot(active_run)
+                active_snapshot = self._extension_snapshots.get(active_run.run_id)
+                if active_snapshot is not None:
+                    extension_snapshot = active_snapshot.fork()
+                controller_run_id = active_run.run_id
+            else:
+                prospective = self._attach_extension_snapshot(prospective)
+            try:
+                await self._evaluate_prompt_policies(
+                    session=snapshot.session,
+                    run=prospective,
+                    inputs=[
+                        QueuedInput(
+                            queue_id=queue_id,
+                            prompt=prompt,
+                            title=title,
+                            mode=mode,
+                            resource_refs=resource_refs,
+                            source=source,
+                            delegation_id=(
+                                attribution.delegation_id
+                                if isinstance(attribution, DelegatedTaskInput)
+                                else None
+                            ),
+                        )
+                    ],
+                    catalog_snapshot=extension_snapshot,
+                    controller_run_id=controller_run_id,
+                )
+                if controller_run_id is None:
+                    extension_snapshot = self._detach_extension_snapshot(prospective.run_id)
+                if extension_snapshot is not None:
+                    extension_catalog_id = extension_snapshot.catalog_id
+                    extension_generations = tuple(
+                        generation.model_dump(mode="json", exclude_none=True)
+                        for generation in extension_snapshot.generations
+                    )
+            except BaseException:
+                self._release_extension_snapshot(prospective.run_id)
+                if extension_snapshot is not None:
+                    extension_snapshot.close()
+                raise
+        try:
+            session, queued_input, queue_size = self.queued_inputs.enqueue(
+                snapshot=snapshot,
+                prompt=prompt,
+                title=title,
+                mode=mode,
+                resource_refs=resource_refs,
+                queue_id=queue_id,
+                source=source,
+                host_source_id=(
+                    attribution.host_source_id
+                    if isinstance(attribution, HostSessionInput)
+                    else None
+                ),
+                delegation_id=(
+                    attribution.delegation_id
+                    if isinstance(attribution, DelegatedTaskInput)
+                    else None
+                ),
+                plugin_id=(
+                    attribution.plugin_id
+                    if isinstance(attribution, AttributedSessionInput)
+                    else None
+                ),
+                contribution_id=(
+                    attribution.contribution_id
+                    if isinstance(attribution, AttributedSessionInput)
+                    else None
+                ),
+                generation_id=(
+                    attribution.generation_id
+                    if isinstance(attribution, AttributedSessionInput)
+                    else None
+                ),
+                execution_contract_hash=(
+                    attribution.execution_contract_hash
+                    if isinstance(attribution, AttributedSessionInput)
+                    else None
+                ),
+                caused_by_run_id=(
+                    active_run.run_id
+                    if active_run is not None and attribution is not None
+                    else None
+                ),
+                prompt_policy_checked=prompt_policy_checked,
+                prospective_run_id=prospective_run_id,
+                extension_catalog_id=extension_catalog_id,
+                extension_generations=extension_generations,
+            )
+        except BaseException:
+            if extension_snapshot is not None:
+                extension_snapshot.close()
+            raise
+        if extension_snapshot is not None:
+            retained = self._queued_extension_snapshots.setdefault(
+                queued_input.queue_id,
+                extension_snapshot,
+            )
+            if retained is not extension_snapshot:
+                extension_snapshot.close()
         emitted: list[EventRecord] = []
         event_type = (
             "follow_up_input_queued"
@@ -1519,15 +1691,34 @@ class RuntimeService:
     def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
         limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
         queued = self.queued_inputs.eligible(snapshot, limit=limit)
-        pending = [
-            item
-            for item in queued
-            if not self._queued_input_is_durable(snapshot.messages, item.queue_id)
-        ]
+        pending: list[QueuedInput] = []
         for item in queued:
-            if item not in pending:
+            if self._queued_input_is_durable(snapshot.messages, item.queue_id):
                 self.queued_inputs.acknowledge(snapshot, item.queue_id)
+                self._release_queued_extension_snapshot(item.queue_id)
+                continue
+            pending.append(item)
+        if pending and self.queued_input_config.consumption_mode == "all_at_once":
+            first = pending[0]
+            compatible: list[QueuedInput] = []
+            for item in pending:
+                if first.prompt_policy_checked:
+                    matches = self._same_approved_queue_contract(first, item)
+                else:
+                    matches = not item.prompt_policy_checked
+                if not matches:
+                    break
+                compatible.append(item)
+            pending = compatible
         return pending
+
+    @staticmethod
+    def _same_approved_queue_contract(first: QueuedInput, item: QueuedInput) -> bool:
+        return (
+            item.prompt_policy_checked
+            and item.extension_catalog_id == first.extension_catalog_id
+            and item.extension_generations == first.extension_generations
+        )
 
     async def _consume_turn_boundary_inputs(
         self,
@@ -1566,6 +1757,7 @@ class RuntimeService:
             latest = self.store.load_runtime_session(session.session_id)
             if self._queued_input_is_durable(latest.messages, item.queue_id):
                 self.queued_inputs.acknowledge(latest, item.queue_id)
+                self._release_queued_extension_snapshot(item.queue_id)
                 durable = next(
                     (
                         message
@@ -1590,6 +1782,7 @@ class RuntimeService:
             appended.append(input_message)
             latest = self.store.load_runtime_session(session.session_id)
             self.queued_inputs.acknowledge(latest, item.queue_id)
+            self._release_queued_extension_snapshot(item.queue_id)
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -1777,6 +1970,84 @@ class RuntimeService:
             supports_vision=active_adapter.model.supports_vision,
             message_role=message_role,
         )
+
+    async def _evaluate_prompt_policies(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        inputs: list[QueuedInput],
+        catalog_snapshot: ExtensionCatalogLease | None = None,
+        controller_run_id: str | None = None,
+    ) -> None:
+        scope_run_id = controller_run_id or run.run_id
+        snapshot = catalog_snapshot or self._extension_snapshots.get(run.run_id)
+        registry = (
+            snapshot.prompt_policies.scoped(
+                lambda: self._active_controller_ids_for_run(scope_run_id)
+            )
+            if snapshot is not None
+            else self._prompt_policies_for_run(scope_run_id)
+        )
+        if not registry.registered():
+            return
+        execution_contracts = {
+            generation.plugin_id: generation.execution_contract_hash
+            for generation in (snapshot.generations if snapshot is not None else ())
+            if generation.execution_contract_hash is not None
+        }
+        for item in inputs:
+            if item.source != "user":
+                continue
+            attachments: tuple[PromptAttachmentMetadata, ...] = ()
+            if item.resource_refs:
+                assert self.resources is not None
+                attachments = tuple(
+                    PromptAttachmentMetadata(
+                        resource_id=resource.resource_id,
+                        media_type=resource.media_type,
+                        size=resource.size,
+                    )
+                    for resource in (
+                        self.resources.show_resource(
+                            session.session_id,
+                            resource_id,
+                            verify=False,
+                        )
+                        for resource_id in item.resource_refs
+                    )
+                )
+            evaluation = await registry.evaluate(
+                PromptPolicyCall(
+                    session_id=session.session_id,
+                    prospective_run_id=run.run_id,
+                    prompt=item.prompt,
+                    input_source=item.source,
+                    workspace=self.default_workspace,
+                    attachments=attachments,
+                    catalog_id=snapshot.catalog_id if snapshot is not None else None,
+                    execution_contracts=execution_contracts,
+                )
+            )
+            if evaluation.allowed:
+                continue
+            prompt_redactor = SensitiveValueRedactor((item.prompt,))
+            if evaluation.rejected_by is not None:
+                rejected = evaluation.rejected_by
+                raise PromptRejectedError(
+                    prompt_redactor.redact(evaluation.reason or "prompt rejected"),
+                    plugin_id=rejected.plugin_id,
+                    policy_id=rejected.policy_id,
+                )
+            failure = evaluation.failures[0]
+            raise PromptRejectedError(
+                evaluation.reason or "prompt policy evaluation failed",
+                plugin_id=failure.plugin_id,
+                policy_id=failure.policy_id,
+                policy_failed=True,
+                failure_error_type=failure.error_type,
+                failure_message=prompt_redactor.redact(failure.message),
+            )
 
     @staticmethod
     def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
@@ -2277,34 +2548,26 @@ class RuntimeService:
                 run = settlement.run
                 if settlement.settled:
                     await self._emit_continuation_resolution(settlement, result.events)
-                outcome = RunOutcome(
+                outcome = RunOutcomeView(
                     session_id=run.session_id,
                     run_id=run.run_id,
                     status=run.status,
                     origin=run.origin,
                     final_text=result.final_text,
                     error=run.error,
-                    usage=dict(run.usage),
+                    usage=MappingProxyType(dict(run.usage)),
                 )
-                dispatch = await self._hooks_for_run(run.run_id).dispatch(
-                    HookContext(
-                        hook_name="after_run",
+                self.event_recorder.observe(
+                    RunFinishedObservation(
                         session_id=run.session_id,
                         run_id=run.run_id,
-                        data={"outcome": outcome.model_dump(mode="json")},
-                        run_outcome=outcome,
+                        outcome=outcome,
                     )
                 )
-                if dispatch.failures:
-                    await self.event_recorder.record_hook_failures(
-                        result.events,
-                        self.store.latest_event_sequence(run.session_id),
-                        dispatch.failures,
-                    )
             finally:
-                self._finish_run_hooks(run)
+                self._finish_run_observers(run)
         else:
-            self._finish_run_hooks(run)
+            self._finish_run_observers(run)
 
         updated = result.model_copy(
             update={
@@ -2340,9 +2603,7 @@ class RuntimeService:
                 "reason": checkpoint.reason,
                 "queued": settlement.queued,
                 "failure_count": len(settlement.failures),
-                "failures": [
-                    failure.model_dump(mode="json") for failure in settlement.failures
-                ],
+                "failures": [failure.model_dump(mode="json") for failure in settlement.failures],
                 "diagnostics": [*settlement.diagnostics, *extra_diagnostics],
             },
         )
@@ -2360,10 +2621,10 @@ class RuntimeService:
             return
         await self._agent_controls.settle_terminal_run(run)
 
-    def _finish_run_hooks(self, run: RunRecord) -> None:
+    def _finish_run_observers(self, run: RunRecord) -> None:
         self.run_lifecycle.finish_run(run)
         if run.status not in ACTIVE_RUN_STATUSES:
-            self._hooks_for_run(run.run_id).finish_run(run.run_id)
+            self.event_recorder.finish_run_observers(run.run_id)
             snapshot = self._extension_snapshots.pop(run.run_id, None)
             self._session_control_snapshots.pop(run.run_id, None)
             self._run_agent_catalogs.pop(run.run_id, None)
@@ -2374,14 +2635,23 @@ class RuntimeService:
                 snapshot.close()
 
     def _release_extension_snapshot(self, run_id: str) -> None:
+        snapshot = self._detach_extension_snapshot(run_id)
+        if snapshot is not None:
+            snapshot.close()
+
+    def _release_queued_extension_snapshot(self, queue_id: str) -> None:
+        snapshot = self._queued_extension_snapshots.pop(queue_id, None)
+        if snapshot is not None:
+            snapshot.close()
+
+    def _detach_extension_snapshot(self, run_id: str) -> ExtensionCatalogLease | None:
         snapshot = self._extension_snapshots.pop(run_id, None)
         self._session_control_snapshots.pop(run_id, None)
         self._run_agent_catalogs.pop(run_id, None)
         self._run_tool_caps.pop(run_id, None)
         self._run_tool_refs.pop(run_id, None)
         self._run_delegated_constraints.pop(run_id, None)
-        if snapshot is not None:
-            snapshot.close()
+        return snapshot
 
     def _restore_run_tool_cap(self, run: RunRecord) -> None:
         if "effective_tool_names" not in run.metadata:
@@ -2513,11 +2783,20 @@ class RuntimeService:
         self._session_control_snapshots[run.run_id] = frozenset(eligible)
 
     def _attach_extension_snapshot(self, run: RunRecord) -> RunRecord:
+        snapshot = (
+            self._extension_catalog.snapshot() if self._extension_catalog is not None else None
+        )
+        return self._bind_extension_snapshot(run, snapshot)
+
+    def _bind_extension_snapshot(
+        self,
+        run: RunRecord,
+        snapshot: ExtensionCatalogLease | None,
+    ) -> RunRecord:
         metadata = dict(run.metadata)
         metadata.setdefault("run_budget", self.run_budget.model_dump(mode="json"))
         update: dict[str, object] = {"metadata": metadata}
-        if self._extension_catalog is not None:
-            snapshot = self._extension_catalog.snapshot()
+        if snapshot is not None:
             self._extension_snapshots[run.run_id] = snapshot
             metadata["session_control_snapshot"] = self._session_control_snapshot(
                 run.session_id,
@@ -2548,6 +2827,30 @@ class RuntimeService:
             update["agent_catalog"] = catalog
             self._run_agent_catalogs[run.run_id] = catalog
         return run.model_copy(update=update)
+
+    async def _attach_queued_extension_snapshot(
+        self,
+        run: RunRecord,
+        inputs: list[QueuedInput],
+    ) -> RunRecord:
+        first = inputs[0]
+        if not first.prompt_policy_checked or first.prospective_run_id != run.run_id:
+            raise ValueError("queued prompt policy approval does not match prospective run")
+        if any(not self._same_approved_queue_contract(first, item) for item in inputs[1:]):
+            raise ValueError("approved queued inputs do not share one extension Catalog")
+        snapshot = self._queued_extension_snapshots.pop(first.queue_id, None)
+        for item in inputs[1:]:
+            extra = self._queued_extension_snapshots.pop(item.queue_id, None)
+            if extra is not None:
+                extra.close()
+        if snapshot is None and first.extension_catalog_id is not None:
+            if self._extension_catalog is None:
+                raise RuntimeError("approved queued input extension Catalog is unavailable")
+            snapshot = await self._extension_catalog.snapshot_for(
+                list(first.extension_generations),
+                catalog_id=first.extension_catalog_id,
+            )
+        return self._bind_extension_snapshot(run, snapshot)
 
     def _continuation_checkpoint(
         self,

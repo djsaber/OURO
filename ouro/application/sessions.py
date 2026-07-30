@@ -77,6 +77,7 @@ class SessionService:
     def create(
         self,
         *,
+        session_id: str | None = None,
         title: str = "New session",
         title_source: SessionTitleSource = "fallback",
         workspace: str | None = None,
@@ -86,6 +87,7 @@ class SessionService:
     ) -> SessionMutationResult:
         normalized_title = _normalize_title(title)
         session = SessionRecord(
+            session_id=session_id or new_id("ses"),
             title=normalized_title,
             title_source=title_source,
             title_locked=title_source == "user",

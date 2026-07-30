@@ -1,0 +1,30 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.observer",
+  "name": "Observer Example",
+  "version": "1.0.0",
+  "description": "Observes selected non-sensitive runtime facts.",
+  "namespace": "observer_example",
+  "engines": {
+    "ouro": ">=0.1.0,<0.2.0",
+    "plugin_api": "^2.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "observer_example_plugin:create_plugin"
+  },
+  "contributes": {
+    "observers": [
+      {
+        "id": "run_completion",
+        "event": "run_finished",
+        "timeout_seconds": 1
+      }
+    ]
+  },
+  "permissions": [],
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

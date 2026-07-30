@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.hooks import HookName
+from ouro.core.events import EventType
+from ouro.core.observers import ObservationName
 from ouro.core.session_controls import SessionControlAccess, SessionControlClaim
 from ouro.core.tools import (
     PermissionMode,
@@ -19,13 +20,14 @@ from ouro.plugins.semver import SemVer, validate_version_range
 PluginCapability = Literal[
     "tools",
     "commands",
-    "hooks",
+    "observers",
     "context_providers",
     "compaction_strategies",
     "skills",
     "mcp_servers",
     "background_services",
     "continuation_policies",
+    "prompt_policies",
     "turn_policies",
     "tool_policies",
     "session_controllers",
@@ -37,9 +39,11 @@ PLUGIN_PERMISSION_IDS = frozenset(
         "credentials.use",
         "network.outbound",
         "process.spawn",
+        "sessions.prompt.inspect",
         "sessions.write",
     }
 )
+_PUBLIC_RUNTIME_EVENT_TYPES = frozenset(get_args(EventType))
 PluginStatus = Literal[
     "invalid",
     "incompatible",
@@ -103,7 +107,7 @@ class PluginRuntimeSpec(OuroModel):
     kind: PluginRuntimeKind = "declarative"
     entrypoint: str | None = None
     command: list[str] = Field(default_factory=list)
-    protocol: str = "1.2"
+    protocol: str = "2.0"
 
     @model_validator(mode="after")
     def _validate_runtime(self) -> PluginRuntimeSpec:
@@ -207,11 +211,12 @@ class SessionControllerContributionSpec(OuroModel):
         return self
 
 
-class HookContributionSpec(OuroModel):
+class ObserverContributionSpec(OuroModel):
     id: str
-    event: HookName
+    event: ObservationName
     priority: int = Field(default=100, ge=-10_000, le=10_000)
-    timeout_seconds: float | None = Field(default=None, gt=0, le=30)
+    timeout_seconds: float = Field(default=1.0, gt=0, le=10)
+    event_types: list[str] = Field(default_factory=list)
     active_when: str | None = None
     optional: bool = False
 
@@ -219,6 +224,17 @@ class HookContributionSpec(OuroModel):
     @classmethod
     def _validate_id(cls, value: str | None) -> str | None:
         return _validate_local_id(value) if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_event_types(self) -> ObserverContributionSpec:
+        if self.event != "runtime_event" and self.event_types:
+            raise ValueError("event_types is only valid for runtime_event observers")
+        if len(self.event_types) != len(set(self.event_types)):
+            raise ValueError("observer event_types must be unique")
+        unknown = sorted(set(self.event_types) - _PUBLIC_RUNTIME_EVENT_TYPES)
+        if unknown:
+            raise ValueError(f"unknown runtime event types: {', '.join(unknown)}")
+        return self
 
 
 class ContinuationPolicyContributionSpec(OuroModel):
@@ -235,6 +251,19 @@ class ContinuationPolicyContributionSpec(OuroModel):
 
 
 class ToolPolicyContributionSpec(OuroModel):
+    id: str
+    priority: int = Field(default=100, ge=-10_000, le=10_000)
+    timeout_seconds: float = Field(default=5.0, gt=0, le=30)
+    active_when: str | None = None
+    optional: bool = False
+
+    @field_validator("id", "active_when")
+    @classmethod
+    def _validate_id(cls, value: str | None) -> str | None:
+        return _validate_local_id(value) if value is not None else None
+
+
+class PromptPolicyContributionSpec(OuroModel):
     id: str
     priority: int = Field(default=100, ge=-10_000, le=10_000)
     timeout_seconds: float = Field(default=5.0, gt=0, le=30)
@@ -291,13 +320,14 @@ class PathContributionSpec(NamedContributionSpec):
 class PluginContributes(OuroModel):
     tools: list[ToolContributionSpec] = Field(default_factory=list)
     commands: list[CommandContributionSpec] = Field(default_factory=list)
-    hooks: list[HookContributionSpec] = Field(default_factory=list)
+    observers: list[ObserverContributionSpec] = Field(default_factory=list)
     context_providers: list[ContextProviderContributionSpec] = Field(default_factory=list)
     compaction_strategies: list[NamedContributionSpec] = Field(default_factory=list)
     skills: list[PathContributionSpec] = Field(default_factory=list)
     mcp_servers: list[PathContributionSpec] = Field(default_factory=list)
     background_services: list[NamedContributionSpec] = Field(default_factory=list)
     continuation_policies: list[ContinuationPolicyContributionSpec] = Field(default_factory=list)
+    prompt_policies: list[PromptPolicyContributionSpec] = Field(default_factory=list)
     turn_policies: list[TurnPolicyContributionSpec] = Field(default_factory=list)
     tool_policies: list[ToolPolicyContributionSpec] = Field(default_factory=list)
     session_controllers: list[SessionControllerContributionSpec] = Field(default_factory=list)
@@ -316,9 +346,10 @@ class PluginContributes(OuroModel):
             (item.id, item.active_when)
             for items in (
                 self.tools,
-                self.hooks,
+                self.observers,
                 self.context_providers,
                 self.continuation_policies,
+                self.prompt_policies,
                 self.turn_policies,
                 self.tool_policies,
             )
@@ -336,13 +367,14 @@ class PluginContributes(OuroModel):
         return {
             "tools": list(self.tools),
             "commands": list(self.commands),
-            "hooks": list(self.hooks),
+            "observers": list(self.observers),
             "context_providers": list(self.context_providers),
             "compaction_strategies": list(self.compaction_strategies),
             "skills": list(self.skills),
             "mcp_servers": list(self.mcp_servers),
             "background_services": list(self.background_services),
             "continuation_policies": list(self.continuation_policies),
+            "prompt_policies": list(self.prompt_policies),
             "turn_policies": list(self.turn_policies),
             "tool_policies": list(self.tool_policies),
             "session_controllers": list(self.session_controllers),
@@ -377,7 +409,7 @@ class PluginDependencies(OuroModel):
 
 
 class PluginManifest(OuroModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     plugin_id: str
     name: str = Field(min_length=1, max_length=120)
     version: str
@@ -415,6 +447,8 @@ class PluginManifest(OuroModel):
         identities = [request.id for request in self.permissions]
         if len(identities) != len(set(identities)):
             raise ValueError("duplicate permission request id")
+        if self.contributes.prompt_policies and "sessions.prompt.inspect" not in identities:
+            raise ValueError("prompt_policies require the sessions.prompt.inspect permission")
         dependencies = [item.plugin_id for item in self.dependencies.plugins]
         if len(dependencies) != len(set(dependencies)):
             raise ValueError("duplicate plugin dependency id")

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, cast
 
 from ouro.application.events import RuntimeEventRecorder
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
@@ -43,8 +43,8 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
@@ -348,7 +348,6 @@ class ContextPreparationService:
         *,
         store: SessionStore,
         adapter: RuntimeAdapter,
-        hooks: HookRegistry,
         context_providers: ContextProviderRegistry,
         events: RuntimeEventRecorder,
         context_builder: ContextBuilder,
@@ -360,7 +359,6 @@ class ContextPreparationService:
     ) -> None:
         self.store = store
         self.adapter = adapter
-        self.hooks = hooks
         self.context_providers = context_providers
         self.events = events
         self.context_builder = context_builder
@@ -383,13 +381,11 @@ class ContextPreparationService:
         turn_id: str,
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter | None = None,
-        hooks: HookRegistry | None = None,
         context_providers: ContextProviderRegistry | None = None,
         strategies: CompactionStrategyRegistry | None = None,
         skill_instructions: str = "",
     ) -> tuple[ContextView, int]:
         active_adapter = adapter or self.adapter
-        active_hooks = hooks or self.hooks
         active_context_providers = context_providers or self.context_providers
         provider_result = await active_context_providers.evaluate(
             ContextProviderCall(
@@ -475,7 +471,6 @@ class ContextPreparationService:
                     turn_id=turn_id,
                     model_round=model_round,
                     adapter=active_adapter,
-                    hooks=active_hooks,
                     view=final_view,
                     source_messages=source_messages,
                     injected_message_count=len(added_context),
@@ -508,7 +503,6 @@ class ContextPreparationService:
             turn_id=turn_id,
             model_round=model_round,
             adapter=active_adapter,
-            hooks=active_hooks,
             view=view,
             source_messages=source_messages,
             injected_message_count=len(added_context),
@@ -585,34 +579,27 @@ class ContextPreparationService:
             messages.append(message)
         return ephemeral
 
-    async def _observe_built_context(
+    def _observe_built_context(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
         *,
-        hooks: HookRegistry,
         session: SessionRecord,
         run: RunRecord,
         view: ContextView,
         model_round: int,
-    ) -> int:
-        hook_result = await hooks.dispatch(
-            HookContext(
-                hook_name="after_context_build",
+    ) -> None:
+        metadata = cast(
+            "Mapping[str, FrozenJson]",
+            freeze_json(view.context_metadata),
+        )
+        self.events.observe(
+            ContextPreparedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                data={
-                    "message_count": len(view.model_messages),
-                    "tool_count": len(view.tool_definitions),
-                    "model_round": model_round,
-                    "context_metadata": dict(view.context_metadata),
-                },
+                message_count=len(view.model_messages),
+                tool_count=len(view.tool_definitions),
+                model_round=model_round,
+                context_metadata=metadata,
             )
-        )
-        return await self.events.record_hook_failures(
-            emitted,
-            sequence,
-            hook_result.failures,
         )
 
     async def _finalize_prepared_context(
@@ -625,7 +612,6 @@ class ContextPreparationService:
         turn_id: str,
         model_round: int,
         adapter: RuntimeAdapter,
-        hooks: HookRegistry,
         view: ContextView,
         source_messages: list[MessageRecord],
         injected_message_count: int,
@@ -652,10 +638,7 @@ class ContextPreparationService:
                 context_digest=context_view_digest(prepared),
             )
         )
-        sequence = await self._observe_built_context(
-            emitted,
-            sequence,
-            hooks=hooks,
+        self._observe_built_context(
             session=session,
             run=run,
             view=prepared,

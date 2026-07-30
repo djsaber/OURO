@@ -50,11 +50,20 @@ def test_plugin_sdk_is_standalone_from_ouro_internals() -> None:
     assert violations == []
 
 
-def test_semantic_policy_modules_do_not_depend_on_observational_hooks() -> None:
-    for filename in ("continuations.py", "tool_policies.py"):
+def test_semantic_policy_modules_do_not_depend_on_observers() -> None:
+    for filename in ("continuations.py", "prompt_policies.py", "tool_policies.py"):
         path = CORE_DIR / filename
         modules = _imported_modules(ast.parse(path.read_text(encoding="utf-8")))
-        assert "ouro.core.hooks" not in modules
+        assert "ouro.core.observers" not in modules
+
+    observer_modules = _imported_modules(
+        ast.parse((CORE_DIR / "observers.py").read_text(encoding="utf-8"))
+    )
+    assert not {
+        "ouro.core.continuations",
+        "ouro.core.prompt_policies",
+        "ouro.core.tool_policies",
+    }.intersection(observer_modules)
 
 
 def test_model_catalog_is_owned_by_application_not_core_or_providers() -> None:

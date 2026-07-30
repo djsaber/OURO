@@ -56,7 +56,7 @@ Run 表示一次可恢复执行。状态集合为：
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
    `ToolCallCoordinator`，最终消息则完成 Run。
 8. waiting 状态通过 approve/reject/AskUser 或 child 结果恢复同一 Run。
-9. terminal Run 释放 lock、abort signal 和每 Run Hook 隔离状态。
+9. terminal Run 释放 lock、abort signal、每 Run Observer 隔离状态和 Catalog lease。
 10. 在 model turn 边界消费 steer 输入；completed Run 先释放 session run lock，再串行启动 follow-up Run。
 
 ## Inner loop 边界
@@ -65,7 +65,7 @@ Run 表示一次可恢复执行。状态集合为：
 
 - 上下文准备；
 - 事件写入；
-- Hook 失败记录；
+- Observer 失败记录；
 - 工具批次处理；
 - usage 记录；
 - waiting、complete、fail、pause 状态转换；
@@ -167,7 +167,7 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 
 - 配置、持久化和 session lock 错误必须保持类型化异常。
 - Provider 失败转换为模型流 error event，再由 inner loop 结束 Run。
-- Hook 和 Host event sink 失败隔离为 diagnostic/event，不破坏 durable Run。父子终态级联、等待解析与结果固化属于
+- Observer 和 Host event sink 失败隔离为 diagnostic/event，不破坏 durable Run。父子终态级联、等待解析与结果固化属于
   `RuntimeService` 的显式 terminal semantic boundary，不得挂在观察型 event sink 上。
 - 工具失败作为 `ToolResult` 回灌模型；协调器自身失败才结束 Run。
 

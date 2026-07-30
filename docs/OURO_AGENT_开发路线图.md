@@ -22,11 +22,18 @@ SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及�
 不可变 `ExtensionCatalogLease`，旧/新 Run 可并存，插件不再修改 Host 全局 registry，也不存在全局 Catalog barrier。
 enable/configure/select/restart 已统一为“构建候选 generation closure 与 Catalog、expected-state 提交、pointer swap、
 旧代独立 drain”，Background Service 串行转交；builtin/user dependency lock、blocked 恢复和统一 observed state 也已
-落地。十种 Manifest capability 现由封闭 `ContributionTypeAdapter` 清单统一绑定 SDK/worker、准备、契约、资源与
+落地。十三种 Manifest capability 现由封闭 `ContributionTypeAdapter` 清单统一绑定 SDK/worker、准备、契约、资源与
 Catalog 投影。Worker 严格协议/进程树关闭、in-process 代际私有 module、统一 Run-local Skill Catalog 与 Plugin MCP
 生命周期均已收口。稳定执行契约现可跨进程重建 waiting/recoverable Run，并在插件更新后从保留的旧 digest、配置和
 依赖构建非当前 Catalog。最小 scaffold、显式本地 reload、checkout 前 Git tree 边界、四类社区兼容报告、三种 runtime
-可运行示例和[插件开发指南](OURO_插件开发指南.md)也已落地。后续只由真实插件需求驱动新增扩展点，不预建平台能力。
+可运行示例和[插件开发指南](OURO_插件开发指南.md)也已落地。
+
+C1-C5 已完成观察扩展面的领域修正：typed Observer 通过每 registration 独立 mailbox 非阻塞接收不可变事实，
+Prompt Policy 在用户提示持久化和 Run 创建前基于同一 prospective Catalog fail-closed。旧 `hooks`、旧 Manifest
+schema 和旧 worker/API 协议均已破坏式删除，没有兼容双轨。两类能力分别承担事实通知和语义决策，未引入通用
+可变 middleware、任意模型/工具 transformer 或 durable 观察队列。设计见
+[插件观察器与语义扩展点设计](OURO_插件观察器与语义扩展点设计_2026-07-29.md)，执行顺序见
+[插件观察器与提示策略计划](../dev/plans/plugin-observers-prompt-policy.md)。后续扩展点仍只由真实插件需求驱动。
 
 Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 都不是
 当前目标；只有真实插件提出不可由现有边界满足的需求时才重新评估。

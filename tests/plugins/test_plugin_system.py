@@ -13,12 +13,23 @@ from types import ModuleType
 import pytest
 
 from ouro.application.plugins import PluginOperationNotAllowedError, PluginService
+from ouro.core.base import utc_now
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderCall
 from ouro.core.continuations import RunContinuationRegistry
-from ouro.core.hooks import HookRegistry, RunOutcome
 from ouro.core.interactions import UnattendedResolution
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.observers import (
+    ContextPreparedObservation,
+    ObserverRegistry,
+    RunFinishedObservation,
+    RunOutcomeView,
+    RuntimeEventObservation,
+    RuntimeEventView,
+    ToolCallFinishedObservation,
+    ToolCallRequestedObservation,
+)
+from ouro.core.prompt_policies import PromptPolicyCall
+from ouro.core.state import RunOutcome, RunRecord, SessionRecord
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
 from ouro.core.turn_policies import TurnCompletionCandidate
@@ -93,12 +104,12 @@ def _write_native_plugin(
     extra: dict[str, object] | None = None,
 ) -> None:
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "plugin_id": plugin_id,
         "name": plugin_id.rsplit(".", 1)[-1].title(),
         "version": version,
         "namespace": plugin_id.rsplit(".", 1)[-1].replace("-", "_"),
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
         "runtime": runtime or {"kind": "declarative"},
         "contributes": contributes or {},
         "permissions": [],
@@ -122,7 +133,7 @@ def _runtime(
     base_skills: tuple[SkillMetadata, ...] = (),
 ):
     tools = ToolRegistry()
-    hooks = HookRegistry()
+    observers = ObserverRegistry()
     commands = PluginCommandRegistry()
     compaction = CompactionStrategyRegistry()
     continuations = RunContinuationRegistry()
@@ -131,7 +142,7 @@ def _runtime(
         PluginPackageStore(home),
         ContributionCoordinator(
             tools=tools,
-            hooks=hooks,
+            observers=observers,
             commands=commands,
             compaction=compaction,
             continuations=continuations,
@@ -140,7 +151,7 @@ def _runtime(
         builtin_plugins=builtin_plugins,
         base_skills=base_skills,
     )
-    return runtime, tools, hooks, commands, compaction
+    return runtime, tools, observers, commands, compaction
 
 
 class _EmptyBuiltinPlugin:
@@ -168,12 +179,12 @@ def _builtin_plugin(
     return BuiltinPluginDefinition(
         manifest=PluginManifest.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": plugin_id,
                 "name": plugin_id.rsplit(".", 1)[-1].title(),
                 "version": version,
                 "namespace": namespace,
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": f"{namespace}_plugin:create_plugin",
@@ -330,7 +341,7 @@ def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_has
         )
         base = ExtensionCatalogBase.capture(
             tools=tools,
-            hooks=HookRegistry(),
+            observers=ObserverRegistry(),
             commands=PluginCommandRegistry(),
             compaction=CompactionStrategyRegistry(),
             continuations=RunContinuationRegistry(),
@@ -360,6 +371,11 @@ def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tm
         validate_plugin_package(plugin)
 
     raw["schema_version"] = 2
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema_version"):
+        validate_plugin_package(plugin)
+
+    raw["schema_version"] = 3
     raw["dependencies"] = {
         "plugins": [
             {
@@ -395,6 +411,29 @@ def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tm
     )
     with pytest.raises(PluginStoreError, match="invalid plugin state"):
         store.read_state()
+
+
+def test_prompt_policy_manifest_requires_closed_inspection_permission(tmp_path) -> None:
+    plugin = tmp_path / "prompt-policy"
+    plugin.mkdir()
+    _write_native_plugin(
+        plugin,
+        contributes={"prompt_policies": [{"id": "guard"}]},
+    )
+    with pytest.raises(ValueError, match="sessions.prompt.inspect"):
+        validate_plugin_package(plugin)
+
+    manifest_path = plugin / ".ouro-plugin" / "plugin.json"
+    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+    raw["permissions"] = [
+        {
+            "id": "sessions.prompt.inspect",
+            "reason": "Inspect prompts before persistence.",
+        }
+    ]
+    manifest_path.write_text(json.dumps(raw), encoding="utf-8")
+    manifest = validate_plugin_package(plugin).manifest
+    assert manifest.contributes.prompt_policies[0].id == "guard"
 
 
 def test_boot_recovery_quarantines_unreadable_state_instead_of_raising(tmp_path) -> None:
@@ -1065,7 +1104,7 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
         "---\nname: calendar\ndescription: Manage a calendar.\n---\n\nInstructions.\n",
         encoding="utf-8",
     )
-    runtime, _tools, hooks, *_ = _runtime(tmp_path / "home")
+    runtime, _tools, observers, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
     service.authorize("dev.ouro.echo")
@@ -1073,7 +1112,7 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
 
     snapshot = runtime.snapshot()
     assert "dev.ouro.echo/skills/calendar" in snapshot.generations[0].contract_hashes
-    assert snapshot.hooks.registered("after_context_build") == []
+    assert snapshot.observers.registered() == []
     assert [skill.name for skill in snapshot.skills] == ["calendar"]
     skill = snapshot.skills[0]
     assert skill.description == "Manage a calendar."
@@ -1093,7 +1132,7 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
     assert [skill.name for skill in snapshot.skills] == ["calendar"]
     assert Path(snapshot.skills[0].location).is_file()
     snapshot.close()
-    assert hooks.registered("after_context_build") == []
+    assert observers.registered() == []
     await runtime.close()
 
 
@@ -1258,7 +1297,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
     )
     coordinator = ContributionCoordinator(
         tools=tools,
-        hooks=HookRegistry(),
+        observers=ObserverRegistry(),
         commands=commands,
     )
     generation = PluginGenerationRecord(
@@ -1269,7 +1308,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
         dependency_lock_fingerprint="2" * 64,
-        plugin_api_version="1.0.0",
+        plugin_api_version="2.0.0",
     )
     prepared = coordinator.prepare(
         _user_candidate(installed, source),
@@ -1290,7 +1329,7 @@ def test_candidate_catalog_failure_does_not_mutate_host_registries(tmp_path) -> 
 
     base = ExtensionCatalogBase.capture(
         tools=tools,
-        hooks=coordinator.hooks,
+        observers=coordinator.observers,
         commands=commands,
         compaction=None,
         continuations=None,
@@ -1316,7 +1355,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
     )
     base = ExtensionCatalogBase.capture(
         tools=tools,
-        hooks=HookRegistry(),
+        observers=ObserverRegistry(),
         commands=None,
         compaction=None,
         continuations=None,
@@ -1337,7 +1376,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         runtime_kind="declarative",
         configuration_revision_id="1" * 64,
         dependency_lock_fingerprint="2" * 64,
-        plugin_api_version="1.0.0",
+        plugin_api_version="2.0.0",
     )
     previous_catalog = build_extension_catalog(
         base,
@@ -1386,7 +1425,7 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
         runtime_kind="declarative",
         configuration_revision_id="3" * 64,
         dependency_lock_fingerprint="4" * 64,
-        plugin_api_version="1.0.0",
+        plugin_api_version="2.0.0",
     )
     with pytest.raises(ValueError, match="tool already registered"):
         build_extension_catalog(base, (_CatalogGeneration(replacement_record, replacement),))
@@ -1521,6 +1560,107 @@ for line in sys.stdin:
     assert log.read_text(encoding="utf-8").splitlines() == ["cancel:1", "cancel:2"]
     await client.close(timeout=0.2)
     assert diagnostics == []
+
+
+@pytest.mark.asyncio
+async def test_worker_prompt_policy_timeout_is_fail_closed_and_sends_cancel(tmp_path) -> None:
+    source = tmp_path / "worker-prompt-cancel"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        plugin_id="dev.ouro.worker_prompt_cancel",
+        runtime={
+            "kind": "worker",
+            "command": ["{python}", "./worker.py"],
+            "protocol": "2.0",
+        },
+        contributes={
+            "prompt_policies": [
+                {
+                    "id": "guard",
+                    "timeout_seconds": 0.05,
+                }
+            ]
+        },
+        extra={
+            "permissions": [
+                {
+                    "id": "sessions.prompt.inspect",
+                    "reason": "Exercise worker Prompt Policy cancellation.",
+                }
+            ]
+        },
+    )
+    (source / "worker.py").write_text(
+        """import json, pathlib, sys
+cancel_log = None
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    if method == 'cancel':
+        with cancel_log.open('a', encoding='utf-8') as stream:
+            stream.write(str(request['params']['id']) + '\\n')
+        continue
+    result = {}
+    if method == 'initialize':
+        cancel_log = pathlib.Path(request['params']['data_directory']) / 'cancel.log'
+        result = {'protocol_version': '2.0'}
+    elif method == 'contributions.prepare':
+        result = {'prompt_policies': ['guard']}
+    elif method == 'prompt_policy.call':
+        if request['params']['call']['prompt'] == 'invalid response':
+            result = {'action': 'rewrite'}
+        else:
+            continue
+    if 'id' in request:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+    if method == 'shutdown':
+        break
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.worker_prompt_cancel")
+    service.trust_code("dev.ouro.worker_prompt_cancel")
+    assert (await service.enable("dev.ouro.worker_prompt_cancel")).status == "active"
+    snapshot = runtime.snapshot()
+
+    evaluation = await snapshot.prompt_policies.evaluate(
+        PromptPolicyCall(
+            session_id="ses_worker",
+            prospective_run_id="run_worker",
+            prompt="inspect me",
+            catalog_id=snapshot.catalog_id,
+        )
+    )
+
+    assert evaluation.allowed is False
+    assert evaluation.failures[0].error_type == "TimeoutError"
+    cancel_log = (
+        tmp_path / "home" / "plugins" / "data" / "dev.ouro.worker_prompt_cancel" / "cancel.log"
+    )
+    for _ in range(50):
+        if cancel_log.exists() and cancel_log.stat().st_size:
+            break
+        await asyncio.sleep(0.01)
+    assert cancel_log.read_text(encoding="utf-8").splitlines() == ["4"]
+
+    invalid = await snapshot.prompt_policies.evaluate(
+        PromptPolicyCall(
+            session_id="ses_worker",
+            prospective_run_id="run_worker_invalid",
+            prompt="invalid response",
+            catalog_id=snapshot.catalog_id,
+        )
+    )
+    assert invalid.allowed is False
+    assert invalid.failures[0].error_type == "WorkerProtocolError"
+
+    snapshot.close()
+    await service.disable("dev.ouro.worker_prompt_cancel")
+    await runtime.close()
 
 
 @pytest.mark.asyncio
@@ -1659,7 +1799,7 @@ async def test_worker_runtime_uses_stdio_protocol_and_closes_process(tmp_path) -
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "tools": [
@@ -1678,7 +1818,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.2'}
+        result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'echo': {'parameters_schema': {'type': 'object'}}}}
     elif method == 'tool.call':
@@ -1724,7 +1864,7 @@ async def test_worker_tool_can_return_structured_input_request(tmp_path) -> None
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "tools": [
@@ -1743,7 +1883,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.2'}
+        result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'confirm': {}}}
     elif method == 'tool.call':
@@ -1786,7 +1926,7 @@ async def test_worker_resumable_tool_receives_unattended_resolution_contract(tmp
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "tools": [
@@ -1807,7 +1947,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.2'}
+        result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'confirm': {}}}
     elif method == 'tool.call':
@@ -1865,7 +2005,7 @@ async def test_worker_invalid_call_result_is_bounded_diagnostic(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "tools": [
@@ -1883,7 +2023,7 @@ for line in sys.stdin:
     request = json.loads(line)
     method = request.get('method')
     result = {}
-    if method == 'initialize': result = {'protocol_version': '1.2'}
+    if method == 'initialize': result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare': result = {'tools': {'run': {}}}
     elif method == 'tool.call': result = {'resource_refs': 'not-an-array'}
     if 'id' in request:
@@ -1930,7 +2070,7 @@ async def test_worker_exit_withdraws_generation_and_projects_failed(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "tools": [
@@ -1952,7 +2092,7 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.2'}
+        result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {'tools': {'run': {}}}
     if 'id' in request:
@@ -2001,10 +2141,17 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         contributes={
             "commands": [{"id": "goal", "description": "Start a goal."}],
+            "observers": [
+                {"id": "events", "event": "runtime_event"},
+                {"id": "context", "event": "context_prepared"},
+                {"id": "requested", "event": "tool_call_requested"},
+                {"id": "finished", "event": "tool_call_finished"},
+                {"id": "runs", "event": "run_finished"},
+            ],
             "context_providers": [
                 {
                     "id": "goal_context",
@@ -2013,6 +2160,7 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
                 }
             ],
             "continuation_policies": [{"id": "goal"}],
+            "prompt_policies": [{"id": "prompt_guard"}],
             "session_controllers": [
                 {
                     "id": "mode",
@@ -2027,6 +2175,10 @@ async def test_worker_supports_session_inputs_and_semantic_policies(tmp_path) ->
             "permissions": [
                 {"id": "sessions.write", "reason": "Write goal input."},
                 {"id": "background.run", "reason": "Continue the goal."},
+                {
+                    "id": "sessions.prompt.inspect",
+                    "reason": "Inspect prompts before persistence.",
+                },
             ]
         },
     )
@@ -2037,12 +2189,14 @@ for line in sys.stdin:
     method = request.get('method')
     result = {}
     if method == 'initialize':
-        result = {'protocol_version': '1.2'}
+        result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {
             'commands': ['goal'],
+            'observers': ['events', 'context', 'requested', 'finished', 'runs'],
             'context_providers': ['goal_context'],
             'continuation_policies': ['goal'],
+            'prompt_policies': ['prompt_guard'],
             'session_controllers': ['mode'],
             'turn_policies': ['goal_completion'],
             'tool_policies': ['guard'],
@@ -2082,6 +2236,26 @@ for line in sys.stdin:
         result = {'action': 'continue', 'feedback': 'Continue the current goal'}
     elif method == 'tool_policy.call':
         result = {'action': 'deny', 'reason': 'worker guard denied the call'}
+    elif method == 'prompt_policy.call':
+        call = request['params']['call']
+        result = {
+            'action': 'deny' if 'blocked' in call['prompt'] else 'allow',
+            'reason': (
+                'worker prompt guard denied the input'
+                if 'blocked' in call['prompt'] else None
+            ),
+        }
+    elif method == 'observer.observe':
+        observation = request['params']['observation']
+        required = {
+            'runtime_event': 'record',
+            'context_prepared': 'message_count',
+            'tool_call_requested': 'arguments',
+            'tool_call_finished': 'structured',
+            'run_finished': 'outcome',
+        }
+        if required.get(observation.get('event')) not in observation:
+            result = {'unexpected': observation}
     if 'id' in request:
         print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
     if method == 'shutdown':
@@ -2122,9 +2296,7 @@ for line in sys.stdin:
     assert terminal_decision.action == "pause"
     assert terminal_decision.session_control_transitions[0].controller_id == "mode"
     assert terminal_decision.session_control_transitions[0].payload == {"status": "paused"}
-    controller = snapshot.session_controllers.get(
-        "dev.ouro.worker_goal/session_controllers/mode"
-    )
+    controller = snapshot.session_controllers.get("dev.ouro.worker_goal/session_controllers/mode")
     activated = await controller.activate(
         session_id="ses_worker_child",
         session_kind="subagent",
@@ -2182,6 +2354,75 @@ for line in sys.stdin:
     )
     assert tool_decision.action == "deny"
     assert tool_decision.reason == "worker guard denied the call"
+    prompt_policy = snapshot.prompt_policies.registered()[0]
+    prompt_decision = await prompt_policy.handler(
+        PromptPolicyCall(
+            session_id="ses_worker",
+            prospective_run_id="run_worker",
+            prompt="blocked input",
+            catalog_id=snapshot.catalog_id,
+        )
+    )
+    assert prompt_decision.action == "deny"
+    assert prompt_decision.reason == "worker prompt guard denied the input"
+    observations = (
+        RuntimeEventObservation(
+            session_id="ses_worker",
+            run_id="run_worker",
+            record=RuntimeEventView(
+                event_id="evt_worker",
+                session_id="ses_worker",
+                run_id="run_worker",
+                turn_id="turn_worker",
+                event_type="run_started",
+                created_at=utc_now(),
+                sequence=1,
+            ),
+        ),
+        ContextPreparedObservation(
+            session_id="ses_worker",
+            run_id="run_worker",
+            message_count=3,
+            tool_count=2,
+            model_round=1,
+        ),
+        ToolCallRequestedObservation(
+            session_id="ses_worker",
+            run_id="run_worker",
+            tool_call_id="call_worker",
+            tool_name="Read",
+            canonical_tool_id="ouro.host/tools/Read",
+            owner_id="ouro.host",
+            effect="read_only",
+            batch_behavior="compatible",
+        ),
+        ToolCallFinishedObservation(
+            session_id="ses_worker",
+            run_id="run_worker",
+            tool_call_id="call_worker",
+            tool_name="Read",
+            canonical_tool_id="ouro.host/tools/Read",
+            owner_id="ouro.host",
+            effect="read_only",
+            batch_behavior="compatible",
+            is_error=False,
+            content="done",
+        ),
+        RunFinishedObservation(
+            session_id="ses_worker",
+            run_id="run_worker",
+            outcome=RunOutcomeView(
+                session_id="ses_worker",
+                run_id="run_worker",
+                status="completed",
+                origin="user",
+                final_text="done",
+            ),
+        ),
+    )
+    for observation in observations:
+        observer = snapshot.observers.registered(observation.event)[0]
+        await observer.handler(observation)
     snapshot.close()
     await service.disable("dev.ouro.worker_goal")
     await runtime.close()
@@ -2197,7 +2438,7 @@ async def test_worker_initialize_must_confirm_manifest_protocol(tmp_path) -> Non
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
     )
     (source / "worker.py").write_text(
@@ -2237,7 +2478,7 @@ async def test_worker_credentials_use_declared_slots_without_protocol_or_log_lea
         runtime={
             "kind": "worker",
             "command": ["{python}", "./worker.py"],
-            "protocol": "1.2",
+            "protocol": "2.0",
         },
         extra={
             "permissions": [
@@ -2263,7 +2504,7 @@ for line in sys.stdin:
         else:
             name = params['credential_environment']['calendar_api']
             print(os.environ[name], file=sys.stderr, flush=True)
-            result = {'protocol_version': '1.2'}
+            result = {'protocol_version': '2.0'}
     elif method == 'contributions.prepare':
         result = {}
     if 'id' in request:
@@ -3484,12 +3725,12 @@ def test_native_manifest_model_rejects_unknown_security_fields() -> None:
     with pytest.raises(ValueError, match="verified"):
         PluginManifest.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.strict",
                 "name": "Strict",
                 "version": "1.0.0",
                 "namespace": "strict",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
                 "verified": True,
             }
         )
@@ -3499,12 +3740,12 @@ def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:
     with pytest.raises(ValueError, match="tool-controlled permission must be auto or deny"):
         PluginManifest.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.control",
                 "name": "Control",
                 "version": "1.0.0",
                 "namespace": "control",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
                 "contributes": {
                     "tools": [
                         {
@@ -3524,12 +3765,12 @@ def test_native_manifest_rejects_unknown_activation_binding() -> None:
     with pytest.raises(ValueError, match="unknown session controller"):
         PluginManifest.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.bound",
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
                 "contributes": {"context_providers": [{"id": "context", "active_when": "missing"}]},
             }
         )
@@ -3539,12 +3780,12 @@ def test_native_manifest_rejects_unknown_interaction_controller() -> None:
     with pytest.raises(ValueError, match="unknown session controller"):
         PluginManifest.model_validate(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.bound",
                 "name": "Bound",
                 "version": "1.0.0",
                 "namespace": "bound",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
                 "contributes": {
                     "tools": [
                         {

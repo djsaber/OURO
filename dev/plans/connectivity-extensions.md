@@ -28,7 +28,7 @@
 - [x] 原生 Manifest、local/Git/archive 来源、静态校验和不可变 digest store；
 - [x] capability authorization、exact-digest code trust、configuration 和 credential slot；
 - [x] declarative、Python in-process 和 stdio worker runtime；
-- [x] Tool、Command、Hook、Context、Compaction、Skills、MCP、Background Service、Continuation 和 Tool Policy；
+- [x] Tool、Command、Observer、Context、Compaction、Skills、MCP、Background Service、Continuation 和 Tool Policy；
 - [x] owner-aware contribution transaction 与失败回滚；
 - [x] application facade、CLI、更新/选版/回滚/移除和 compatibility report；
 - [x] Run continuation、synthetic input provenance、ToolExecutionContext 和限制性 Tool Policy；
@@ -68,10 +68,10 @@ contract。B8 已补齐最小开发工具、示例、社区报告目标和开发
 目标：先建立 Run 可独立持有的完整扩展目录，解除对全局可变 registry 的结构依赖。
 
 - [x] 定义不可变 `ExtensionCatalog`、`ExtensionCatalogLease` 和 contribution owner record；
-- [x] Catalog 包含 Tool、Hook、Command、Context、Compaction、Continuation、Tool Policy、Skill context 和 MCP Tool 投影；
+- [x] Catalog 包含 Tool、Observer、Command、Context、Compaction、Continuation、Tool Policy、Skill context 和 MCP Tool 投影；
 - [x] Background Service 不进入 Run 可调用 Catalog；per-plugin activation-singleton ownership 由 B3 串行转交；
-- [x] Runtime 创建 Run 时获取 current catalog，并贯穿 context、model tool list、tool execution、Hook 和 compaction；
-- [x] Run 内禁止回读 current global registry；异步 `on_event` 在发布时 fork 对应 Run lease；
+- [x] Runtime 创建 Run 时获取 current catalog，并贯穿 context、model tool list、tool execution、Observer 和 compaction；
+- [x] Run 内禁止回读 current global registry；异步 `runtime_event` Observer 在发布时 fork 对应 Run lease；
 - [x] builtin/Host contribution 进入同一 catalog identity/contract 模型；
 - [x] 建立 process-local generation gate，每次 user plugin callback 前检查；
 - [x] catalog pointer swap 使用短临界区，插件代码、I/O、start/stop 不在锁内；
@@ -80,7 +80,7 @@ contract。B8 已补齐最小开发工具、示例、社区报告目标和开发
 验收（已通过）：
 
 - 两个并发 Run 可以持有不同 catalog；
-- current catalog 切换不改变旧 Run 的工具和 Hook；
+- current catalog 切换不改变旧 Run 的工具和 Observer；
 - 关闭 generation gate 后旧 catalog 中的后续插件调用稳定失败；
 - catalog swap 不等待无关 Run；
 - 架构测试证明 Runtime 执行路径不再依赖进程级插件 registry mutation。
@@ -156,7 +156,7 @@ closure；optional contribution 与 supervised task 失败投影 degraded。B4 �
 
 - [x] 从现有重复逻辑抽取内部 `ContributionTypeAdapter` Protocol；
 - [x] 每个 adapter 明确 declaration、SDK/worker adaptation、conflict、optional、contract 和 catalog projection；
-- [x] Tool、Hook、Command、Context、Compaction、Continuation、Tool Policy 迁移到同一接入边界；
+- [x] Tool、Observer、Command、Context、Compaction、Continuation、Tool Policy 迁移到同一接入边界；
 - [x] Plugin Skill 和 MCP 以资源型 adapter 接入，不再由 runtime 特判；
 - [x] Background Service 只参与 owner lifecycle，不伪装成 catalog callable；
 - [x] Adapter 明确 `snapshot-bound | activation-singleton` lifecycle class；

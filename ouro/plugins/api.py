@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
@@ -26,11 +26,25 @@ from ouro.core.continuations import (
     ContinuationDecision,
     ContinuationPolicyRegistration,
 )
-from ouro.core.hooks import HookContext, HookRegistration, HookResult
 from ouro.core.interactions import (
     AnswerResolution,
     ToolInputResolution,
     UnattendedResolution,
+)
+from ouro.core.observers import (
+    ContextPreparedObservation,
+    Observation,
+    ObserverRegistration,
+    RunFinishedObservation,
+    RuntimeEventObservation,
+    ToolCallFinishedObservation,
+    ToolCallRequestedObservation,
+)
+from ouro.core.prompt_policies import (
+    PromptAttachmentMetadata,
+    PromptPolicyCall,
+    PromptPolicyDecision,
+    PromptPolicyRegistration,
 )
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.session_controls import (
@@ -670,46 +684,97 @@ def _invoke_sdk_tool_handler(
     return handler(call)
 
 
-def _adapt_hook(contribution: sdk.HookContribution) -> HookRegistration:
-    async def handler(context: HookContext) -> HookResult:
-        raw = contribution.handler(
-            sdk.HookCall(
-                event=context.hook_name,
-                session_id=context.session_id,
-                run_id=context.run_id,
-                data=MappingProxyType(dict(context.data)),
-                run_outcome=(
-                    sdk.RunOutcome(
-                        session_id=context.run_outcome.session_id,
-                        run_id=context.run_outcome.run_id,
-                        status=context.run_outcome.status,
-                        origin=context.run_outcome.origin,
-                        final_text=context.run_outcome.final_text,
-                        error=context.run_outcome.error,
-                        usage=MappingProxyType(dict(context.run_outcome.usage)),
-                    )
-                    if context.run_outcome is not None
-                    else None
-                ),
-            )
-        )
+def _adapt_observer(contribution: sdk.ObserverContribution) -> ObserverRegistration:
+    async def handler(observation: Observation) -> None:
+        raw: object = contribution.handler(_sdk_observation(observation))
         if inspect.isawaitable(raw):
-            raw = await raw
-        if raw is None:
-            return HookResult()
-        return HookResult(
-            diagnostics=list(raw.diagnostics),
-        )
+            raw = await cast("Awaitable[object]", raw)
+        if raw is not None:
+            raise TypeError("observer handler must return None")
 
-    return HookRegistration(
+    return ObserverRegistration(
         plugin_id="",
-        hook_name=contribution.event,
+        observer_id=contribution.id,
+        event=contribution.event,
         handler=handler,
         priority=contribution.priority,
         timeout_seconds=contribution.timeout_seconds,
-        hook_id=contribution.id,
+        event_types=tuple(contribution.event_types),
         active_when_controller_id=contribution.active_when,
     )
+
+
+def _sdk_observation(observation: Observation) -> sdk.Observation:
+    if isinstance(observation, RuntimeEventObservation):
+        record = observation.record
+        return sdk.RuntimeEventObservation(
+            session_id=observation.session_id,
+            run_id=observation.run_id,
+            record=sdk.RuntimeEventView(
+                event_id=record.event_id,
+                session_id=record.session_id,
+                run_id=record.run_id,
+                turn_id=record.turn_id,
+                event_type=record.event_type,
+                created_at=record.created_at,
+                sequence=record.sequence,
+                payload=record.payload,
+                metadata=record.metadata,
+            ),
+        )
+    if isinstance(observation, ContextPreparedObservation):
+        return sdk.ContextPreparedObservation(
+            session_id=observation.session_id,
+            run_id=observation.run_id,
+            message_count=observation.message_count,
+            tool_count=observation.tool_count,
+            model_round=observation.model_round,
+            context_metadata=observation.context_metadata,
+        )
+    if isinstance(observation, ToolCallRequestedObservation):
+        return sdk.ToolCallRequestedObservation(
+            session_id=observation.session_id,
+            run_id=observation.run_id,
+            tool_call_id=observation.tool_call_id,
+            tool_name=observation.tool_name,
+            canonical_tool_id=observation.canonical_tool_id,
+            owner_id=observation.owner_id,
+            effect=observation.effect,
+            batch_behavior=observation.batch_behavior,
+            arguments=observation.arguments,
+        )
+    if isinstance(observation, ToolCallFinishedObservation):
+        return sdk.ToolCallFinishedObservation(
+            session_id=observation.session_id,
+            run_id=observation.run_id,
+            tool_call_id=observation.tool_call_id,
+            tool_name=observation.tool_name,
+            canonical_tool_id=observation.canonical_tool_id,
+            owner_id=observation.owner_id,
+            effect=observation.effect,
+            batch_behavior=observation.batch_behavior,
+            is_error=observation.is_error,
+            content=observation.content,
+            structured=observation.structured,
+            resource_refs=observation.resource_refs,
+            exit_code=observation.exit_code,
+        )
+    if isinstance(observation, RunFinishedObservation):
+        outcome = observation.outcome
+        return sdk.RunFinishedObservation(
+            session_id=observation.session_id,
+            run_id=observation.run_id,
+            outcome=sdk.RunOutcome(
+                session_id=outcome.session_id,
+                run_id=outcome.run_id,
+                status=outcome.status,
+                origin=outcome.origin,
+                final_text=outcome.final_text,
+                error=outcome.error,
+                usage=outcome.usage,
+            ),
+        )
+    raise TypeError(f"unsupported observation: {type(observation).__name__}")
 
 
 def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
@@ -967,6 +1032,46 @@ def _adapt_tool_policy(
     )
 
 
+def _adapt_prompt_policy(
+    contribution: sdk.PromptPolicyContribution,
+) -> PromptPolicyRegistration:
+    async def handler(call: PromptPolicyCall) -> PromptPolicyDecision:
+        raw = contribution.handler(
+            sdk.PromptPolicyCall(
+                session_id=call.session_id,
+                prospective_run_id=call.prospective_run_id,
+                prompt=call.prompt,
+                input_source=call.input_source,
+                workspace=call.workspace,
+                attachments=tuple(
+                    sdk.PromptAttachmentMetadata(
+                        resource_id=item.resource_id,
+                        media_type=item.media_type,
+                        size=item.size,
+                    )
+                    for item in call.attachments
+                    if isinstance(item, PromptAttachmentMetadata)
+                ),
+                catalog_id=call.catalog_id,
+                execution_contracts=MappingProxyType(dict(call.execution_contracts)),
+            )
+        )
+        if inspect.isawaitable(raw):
+            raw = await raw
+        if not isinstance(raw, sdk.PromptPolicyDecision):
+            raise TypeError("prompt policy must return PromptPolicyDecision")
+        return PromptPolicyDecision(action=raw.action, reason=raw.reason)
+
+    return PromptPolicyRegistration(
+        plugin_id="",
+        policy_id=contribution.id,
+        handler=handler,
+        priority=contribution.priority,
+        timeout_seconds=contribution.timeout_seconds,
+        active_when_controller_id=contribution.active_when,
+    )
+
+
 def _adapt_turn_policy(
     contribution: sdk.TurnPolicyContribution,
 ) -> TurnPolicyRegistration:
@@ -997,7 +1102,7 @@ def _adapt_turn_policy(
 
 
 TOOL_SDK_ADAPTER = SDKContributionAdapter("tools", _adapt_tool)
-HOOK_SDK_ADAPTER = SDKContributionAdapter("hooks", _adapt_hook)
+OBSERVER_SDK_ADAPTER = SDKContributionAdapter("observers", _adapt_observer)
 COMMAND_SDK_ADAPTER = SDKContributionAdapter("commands", _adapt_command)
 CONTEXT_SDK_ADAPTER = SDKContributionAdapter("context_providers", _adapt_context)
 COMPACTION_SDK_ADAPTER = SDKContributionAdapter(
@@ -1011,6 +1116,10 @@ BACKGROUND_SERVICE_SDK_ADAPTER = SDKContributionAdapter(
 CONTINUATION_SDK_ADAPTER = SDKContributionAdapter(
     "continuation_policies",
     _adapt_continuation_policy,
+)
+PROMPT_POLICY_SDK_ADAPTER = SDKContributionAdapter(
+    "prompt_policies",
+    _adapt_prompt_policy,
 )
 TOOL_POLICY_SDK_ADAPTER = SDKContributionAdapter("tool_policies", _adapt_tool_policy)
 TURN_POLICY_SDK_ADAPTER = SDKContributionAdapter("turn_policies", _adapt_turn_policy)

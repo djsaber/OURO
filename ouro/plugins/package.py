@@ -16,8 +16,8 @@ from ouro.plugins.paths import portable_relative_path
 from ouro.plugins.semver import version_satisfies
 
 OURO_VERSION = "0.1.0"
-PLUGIN_API_VERSION = "1.2.0"
-WORKER_PROTOCOL_VERSION = "1.2"
+PLUGIN_API_VERSION = "2.0.0"
+WORKER_PROTOCOL_VERSION = "2.0"
 NATIVE_MANIFEST = Path(".ouro-plugin") / "plugin.json"
 
 _REJECTED_PARTS = {".git", ".hg", ".svn", "__pycache__", ".pytest_cache", ".mypy_cache"}

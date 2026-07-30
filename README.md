@@ -29,6 +29,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
   候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
   通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
   Host-owned 工具执行上下文与限制性 tool policy 实现 plan mode、危险命令确认和受保护路径等通用扩展；
+  类型化 Observer 以独立 mailbox 非阻塞接收已发生事实，Prompt Policy 在直接用户提示持久化前 fail-closed；
   Session Controller 通过声明式 control claim 仲裁长期模式，分别支持模型轮次级 `active_when` 可见性、
   `interaction_controller` 等待交互归属、`/control` 逃生口和 pending interaction 取消；Host 不包含 Plan/Goal 冲突特例。
 
@@ -128,8 +129,8 @@ uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 Catalog 保持不变。Git source 在 checkout 前按 tree 校验路径、文件数和大小，subdirectory 使用 sparse checkout，
 不会先完整检出再校验。Claude/Codex/Pi/OpenCode 等社区包先通过 `plugin import-report` 输出 `supported`、
 `converted`、`ignored`、`incompatible` 逐项结论和明确 OURO target，不透明执行未知社区 Hook 或安装脚本。
-每个 Run 启动时取得一个结构冻结的 `ExtensionCatalogLease`；工具列表、工具执行、Hook、上下文、压缩、
-continuation 与 tool policy 在该 Run 内只读取同一 Catalog。插件变更构建候选 Catalog 后只短暂切换 current
+每个 Run 启动时取得一个结构冻结的 `ExtensionCatalogLease`；工具列表、工具执行、Observer、上下文、压缩、
+continuation、Prompt Policy 与 tool policy 在该 Run 内只读取同一 Catalog。插件变更构建候选 Catalog 后只短暂切换 current
 pointer，不再修改 Host 全局 registry，也不再等待无关 Run；旧 Run 与新 Run 可以同时使用不同 generation。
 configure/select/restart 会先完整构建受影响依赖闭包与候选 Catalog，再以 expected-state 比较提交并切换 pointer；
 失败不改变 current selection、active configuration revision 或旧 generation。disable/revoke 会关闭 generation gate，

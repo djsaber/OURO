@@ -4,6 +4,8 @@ These packages are focused examples and validate against the current development
 
 - `declarative-skill`: no executable plugin code; contributes one Agent Skill.
 - `inprocess-command`: trusted Python in-process command contribution.
+- `inprocess-observer`: non-blocking typed observation of a completed Run.
+- `inprocess-prompt-policy`: fail-closed rejection before a user prompt is persisted.
 - `worker-tool`: stdio JSON-RPC worker with one approval-gated Tool.
 
 Validate any example before installing it:

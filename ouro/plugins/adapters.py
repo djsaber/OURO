@@ -6,7 +6,8 @@ from typing import Literal, Protocol
 from ouro.core.compaction import CompactionStrategyRegistry
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
-from ouro.core.hooks import HookRegistry
+from ouro.core.observers import ObserverRegistry
+from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.plugins.contributions import PreparedContributionSet
@@ -21,11 +22,12 @@ ContributionLifecycle = Literal["snapshot-bound", "activation-singleton"]
 @dataclass(frozen=True)
 class CatalogProjectionTargets:
     tools: ToolRegistry
-    hooks: HookRegistry
+    observers: ObserverRegistry
     context_providers: ContextProviderRegistry
     commands: PluginCommandRegistry
     compaction: CompactionStrategyRegistry
     continuations: RunContinuationRegistry
+    prompt_policies: PromptPolicyRegistry
     turn_policies: TurnPolicyRegistry
     tool_policies: ToolPolicyRegistry
     skills: dict[str, SkillMetadata]
@@ -103,7 +105,11 @@ class _SkillProjectionAdapter:
 
 
 TOOL_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("tools", "tools", "tools")
-HOOK_PROJECTION_ADAPTER = _SnapshotProjectionAdapter("hooks", "hooks", "hooks")
+OBSERVER_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "observers",
+    "observers",
+    "observers",
+)
 CONTEXT_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "context_providers",
     "context_providers",
@@ -128,6 +134,11 @@ CONTINUATION_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "continuation_policies",
     "continuations",
     "continuation_policies",
+)
+PROMPT_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
+    "prompt_policies",
+    "prompt_policies",
+    "prompt_policies",
 )
 TOOL_POLICY_PROJECTION_ADAPTER = _SnapshotProjectionAdapter(
     "tool_policies",

@@ -21,7 +21,7 @@ def _contract_hash(**changes: object) -> str:
         "worker_protocol_version": "1",
         "contribution_contract_hashes": {
             "dev.ouro.example/tools/run": "d" * 64,
-            "dev.ouro.example/hooks/after": "e" * 64,
+            "dev.ouro.example/observers/facts": "e" * 64,
         },
     }
     values.update(changes)
@@ -32,7 +32,7 @@ def test_execution_contract_hash_is_canonical() -> None:
     first = _contract_hash()
     second = _contract_hash(
         contribution_contract_hashes={
-            "dev.ouro.example/hooks/after": "e" * 64,
+            "dev.ouro.example/observers/facts": "e" * 64,
             "dev.ouro.example/tools/run": "d" * 64,
         }
     )
@@ -54,7 +54,7 @@ def test_user_execution_contract_remains_compatible_with_package_digest_schema()
         "worker_protocol_version": "1",
         "contribution_contract_hashes": {
             "dev.ouro.example/tools/run": "d" * 64,
-            "dev.ouro.example/hooks/after": "e" * 64,
+            "dev.ouro.example/observers/facts": "e" * 64,
         },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()

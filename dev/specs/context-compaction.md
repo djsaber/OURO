@@ -25,7 +25,7 @@ assistant 尝试，不把它升级为 canonical 完成消息。
 - `ContextSnapshotRecord` 只保存最近一次真正准备并交给 Provider 的请求，用于请求 identity、digest、运行活动和
   Provider usage，不得由手动压缩或查询结果覆盖。
 
-当前投影不执行 Context Provider、Hook 或自动压缩，也不写入 canonical history。请求级 ephemeral Context
+当前投影不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。请求级 ephemeral Context
 Provider 内容只有在具体 Run 准备时才存在，不属于空闲 Session 的当前持久上下文。手动压缩激活新的
 `CompactionRecord` 后，下一次当前投影必须立即使用新摘要；普通和 full 查询不得继续返回旧请求快照。
 

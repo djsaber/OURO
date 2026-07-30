@@ -442,37 +442,16 @@ class WorkerPluginInstance:
 
         return handler
 
-    def _hook_handler(self, identity: str):
-        async def handler(call: sdk.HookCall) -> sdk.HookOutput:
+    def _observer_handler(self, identity: str):
+        async def handler(observation: sdk.Observation) -> None:
             raw = await self.client.request(
-                "hook.call",
+                "observer.observe",
                 {
                     "contribution_id": identity,
-                    "call": {
-                        "event": call.event,
-                        "session_id": call.session_id,
-                        "run_id": call.run_id,
-                        "data": dict(call.data),
-                        "run_outcome": (
-                            {
-                                "session_id": call.run_outcome.session_id,
-                                "run_id": call.run_outcome.run_id,
-                                "status": call.run_outcome.status,
-                                "origin": call.run_outcome.origin,
-                                "final_text": call.run_outcome.final_text,
-                                "error": call.run_outcome.error,
-                                "usage": dict(call.run_outcome.usage),
-                            }
-                            if call.run_outcome is not None
-                            else None
-                        ),
-                    },
+                    "observation": _worker_observation_payload(observation),
                 },
             )
-            result = self._result(raw, "hook.call")
-            return sdk.HookOutput(
-                diagnostics=tuple(str(item) for item in result.get("diagnostics", [])),
-            )
+            self._result(raw, "observer.observe")
 
         return handler
 
@@ -649,6 +628,42 @@ class WorkerPluginInstance:
 
         return handler
 
+    def _prompt_policy_handler(self, identity: str):
+        async def handler(call: sdk.PromptPolicyCall) -> sdk.PromptPolicyDecision:
+            raw = await self.client.request(
+                "prompt_policy.call",
+                {
+                    "contribution_id": identity,
+                    "call": {
+                        "session_id": call.session_id,
+                        "prospective_run_id": call.prospective_run_id,
+                        "prompt": call.prompt,
+                        "input_source": call.input_source,
+                        "workspace": call.workspace,
+                        "attachments": [
+                            {
+                                "resource_id": item.resource_id,
+                                "media_type": item.media_type,
+                                "size": item.size,
+                            }
+                            for item in call.attachments
+                        ],
+                        "catalog_id": call.catalog_id,
+                        "execution_contracts": dict(call.execution_contracts),
+                    },
+                },
+            )
+            result = self._result(raw, "prompt_policy.call")
+            action = result.get("action", "allow")
+            if action not in {"allow", "deny"}:
+                raise WorkerProtocolError(f"worker prompt policy action is invalid: {action}")
+            reason = result.get("reason")
+            if reason is not None and not isinstance(reason, str):
+                raise WorkerProtocolError("worker prompt policy reason must be a string")
+            return sdk.PromptPolicyDecision(action=action, reason=reason)
+
+        return handler
+
     def _turn_policy_handler(self, identity: str):
         async def handler(call: sdk.TurnCompletionCall) -> sdk.TurnPolicyDecision:
             raw = await self.client.request(
@@ -724,23 +739,24 @@ def _worker_tools(
     ]
 
 
-def _worker_hooks(
+def _worker_observers(
     instance: WorkerPluginInstance,
     raw: object,
     available: dict[str, set[str]],
 ) -> list[Any]:
     del raw
     return [
-        sdk.HookContribution(
+        sdk.ObserverContribution(
             id=item.id,
             event=item.event,
             priority=item.priority,
             timeout_seconds=item.timeout_seconds,
+            event_types=tuple(item.event_types),
             active_when=item.active_when,
-            handler=instance._hook_handler(item.id),
+            handler=instance._observer_handler(item.id),
         )
-        for item in instance.manifest.contributes.hooks
-        if item.id in available.get("hooks", set())
+        for item in instance.manifest.contributes.observers
+        if item.id in available.get("observers", set())
     ]
 
 
@@ -876,6 +892,25 @@ def _worker_tool_policies(
     ]
 
 
+def _worker_prompt_policies(
+    instance: WorkerPluginInstance,
+    raw: object,
+    available: dict[str, set[str]],
+) -> list[Any]:
+    del raw
+    return [
+        sdk.PromptPolicyContribution(
+            id=item.id,
+            handler=instance._prompt_policy_handler(item.id),
+            priority=item.priority,
+            timeout_seconds=item.timeout_seconds,
+            active_when=item.active_when,
+        )
+        for item in instance.manifest.contributes.prompt_policies
+        if item.id in available.get("prompt_policies", set())
+    ]
+
+
 def _worker_turn_policies(
     instance: WorkerPluginInstance,
     raw: object,
@@ -896,7 +931,11 @@ def _worker_turn_policies(
 
 
 TOOL_WORKER_ADAPTER = WorkerContributionAdapter("tools", "tools", _worker_tools)
-HOOK_WORKER_ADAPTER = WorkerContributionAdapter("hooks", "hooks", _worker_hooks)
+OBSERVER_WORKER_ADAPTER = WorkerContributionAdapter(
+    "observers",
+    "observers",
+    _worker_observers,
+)
 COMMAND_WORKER_ADAPTER = WorkerContributionAdapter(
     "commands",
     "commands",
@@ -921,6 +960,11 @@ CONTINUATION_WORKER_ADAPTER = WorkerContributionAdapter(
     "continuation_policies",
     "continuation_policies",
     _worker_continuation_policies,
+)
+PROMPT_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
+    "prompt_policies",
+    "prompt_policies",
+    _worker_prompt_policies,
 )
 TOOL_POLICY_WORKER_ADAPTER = WorkerContributionAdapter(
     "tool_policies",
@@ -1068,6 +1112,92 @@ def _object_result(raw: object, method: str) -> dict[str, Any]:
     return raw
 
 
+def _worker_observation_payload(observation: sdk.Observation) -> dict[str, object]:
+    if isinstance(observation, sdk.RuntimeEventObservation):
+        record = observation.record
+        return {
+            "event": observation.event,
+            "session_id": observation.session_id,
+            "run_id": observation.run_id,
+            "record": {
+                "event_id": record.event_id,
+                "session_id": record.session_id,
+                "run_id": record.run_id,
+                "turn_id": record.turn_id,
+                "event_type": record.event_type,
+                "created_at": record.created_at.isoformat(),
+                "sequence": record.sequence,
+                "payload": _wire_json(record.payload),
+                "metadata": _wire_json(record.metadata),
+            },
+        }
+    if isinstance(observation, sdk.ContextPreparedObservation):
+        return {
+            "event": observation.event,
+            "session_id": observation.session_id,
+            "run_id": observation.run_id,
+            "message_count": observation.message_count,
+            "tool_count": observation.tool_count,
+            "model_round": observation.model_round,
+            "context_metadata": _wire_json(observation.context_metadata),
+        }
+    if isinstance(observation, sdk.ToolCallRequestedObservation):
+        return {
+            "event": observation.event,
+            "session_id": observation.session_id,
+            "run_id": observation.run_id,
+            "tool_call_id": observation.tool_call_id,
+            "tool_name": observation.tool_name,
+            "canonical_tool_id": observation.canonical_tool_id,
+            "owner_id": observation.owner_id,
+            "effect": observation.effect,
+            "batch_behavior": observation.batch_behavior,
+            "arguments": _wire_json(observation.arguments),
+        }
+    if isinstance(observation, sdk.ToolCallFinishedObservation):
+        return {
+            "event": observation.event,
+            "session_id": observation.session_id,
+            "run_id": observation.run_id,
+            "tool_call_id": observation.tool_call_id,
+            "tool_name": observation.tool_name,
+            "canonical_tool_id": observation.canonical_tool_id,
+            "owner_id": observation.owner_id,
+            "effect": observation.effect,
+            "batch_behavior": observation.batch_behavior,
+            "is_error": observation.is_error,
+            "content": observation.content,
+            "structured": _wire_json(observation.structured),
+            "resource_refs": list(observation.resource_refs),
+            "exit_code": observation.exit_code,
+        }
+    if isinstance(observation, sdk.RunFinishedObservation):
+        outcome = observation.outcome
+        return {
+            "event": observation.event,
+            "session_id": observation.session_id,
+            "run_id": observation.run_id,
+            "outcome": {
+                "session_id": outcome.session_id,
+                "run_id": outcome.run_id,
+                "status": outcome.status,
+                "origin": outcome.origin,
+                "final_text": outcome.final_text,
+                "error": outcome.error,
+                "usage": dict(outcome.usage),
+            },
+        }
+    raise WorkerProtocolError(f"unsupported worker observation: {type(observation).__name__}")
+
+
+def _wire_json(value: object) -> object:
+    if isinstance(value, dict | Mapping):
+        return {str(key): _wire_json(item) for key, item in value.items()}
+    if isinstance(value, list | tuple):
+        return [_wire_json(item) for item in value]
+    return value
+
+
 def _worker_input_resolution(resolution: sdk.ToolInputResolution) -> dict[str, object]:
     if isinstance(resolution, sdk.AnswerResolution):
         return {
@@ -1125,8 +1255,9 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "is_error", bool, method)
         _worker_control_transitions(result)
         return
-    if method == "hook.call":
-        _require_string_list(result, "diagnostics", method)
+    if method == "observer.observe":
+        if result:
+            raise WorkerProtocolError("worker observer.observe result must be empty")
         return
     if method == "context.call":
         fragments = result.get("fragments", [])
@@ -1178,6 +1309,12 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         action = result.get("action", "ignore")
         if action not in {"ignore", "require_approval", "deny"}:
             raise WorkerProtocolError(f"worker tool policy action is invalid: {action}")
+        _require_optional_type(result, "reason", str, method, allow_none=True)
+        return
+    if method == "prompt_policy.call":
+        action = result.get("action", "allow")
+        if action not in {"allow", "deny"}:
+            raise WorkerProtocolError(f"worker prompt policy action is invalid: {action}")
         _require_optional_type(result, "reason", str, method, allow_none=True)
         return
     if method == "turn_policy.call":

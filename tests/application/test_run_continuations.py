@@ -21,7 +21,13 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
-from ouro.core.hooks import HookRegistration, HookRegistry, HookResult
+from ouro.core.observers import ObserverRegistration, ObserverRegistry, RunFinishedObservation
+from ouro.core.prompt_policies import (
+    PromptPolicyCall,
+    PromptPolicyDecision,
+    PromptPolicyRegistration,
+    PromptPolicyRegistry,
+)
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.session_controls import (
     SessionControlActivation,
@@ -99,12 +105,12 @@ def _write_goal_plugin(source) -> None:
     (manifest_dir / "plugin.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
                 "plugin_id": "dev.ouro.goal",
                 "name": "Goal",
                 "version": "1.0.0",
                 "namespace": "goal",
-                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {
                     "kind": "python-inprocess",
                     "entrypoint": "goal_plugin:create_plugin",
@@ -247,6 +253,14 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     store = LocalSessionStore(home)
     store.initialize()
     provider = CountingProvider()
+    inspected_prompts: list[str] = []
+
+    def inspect(call: PromptPolicyCall) -> PromptPolicyDecision:
+        inspected_prompts.append(call.prompt)
+        return PromptPolicyDecision(action="deny", reason="direct user prompts only")
+
+    prompt_policies = PromptPolicyRegistry()
+    prompt_policies.register(PromptPolicyRegistration("ouro.host", "direct-input-only", inspect))
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -254,6 +268,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
             ModelMetadata(model_id="command", provider_id=provider.provider_id),
         ),
         tools=ToolRegistry(),
+        prompt_policies=prompt_policies,
         environment=RuntimeEnvironment(home=home),
     )
     application = LocalApplication.from_runtime(runtime, home=home)
@@ -298,6 +313,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert snapshot.runs[0].origin == "plugin"
     assert snapshot.messages[0].role == "system_synthetic"
     assert snapshot.messages[0].text_content == "Work on: ship the feature"
+    assert inspected_prompts == []
 
     await application.close()
 
@@ -352,22 +368,21 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
 
 
 @pytest.mark.asyncio
-async def test_after_run_hook_receives_typed_terminal_outcome(tmp_path) -> None:
+async def test_run_finished_observer_receives_typed_terminal_outcome(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     provider = CountingProvider()
     seen = []
 
-    def observe(call):
-        seen.append(call.run_outcome)
-        return HookResult(diagnostics=["observed"])
+    def observe(observation: RunFinishedObservation) -> None:
+        seen.append(observation.outcome)
 
-    hooks = HookRegistry()
-    hooks.register(
-        HookRegistration(
+    observers = ObserverRegistry()
+    observers.register(
+        ObserverRegistration(
             plugin_id="dev.ouro.observer",
-            hook_id="after",
-            hook_name="after_run",
+            observer_id="runs",
+            event="run_finished",
             handler=observe,
         )
     )
@@ -375,16 +390,16 @@ async def test_after_run_hook_receives_typed_terminal_outcome(tmp_path) -> None:
         store=store,
         adapter=RuntimeAdapter(
             provider,
-            ModelMetadata(model_id="hook", provider_id=provider.provider_id),
+            ModelMetadata(model_id="observer", provider_id=provider.provider_id),
         ),
         tools=ToolRegistry(),
-        hooks=hooks,
+        observers=observers,
     )
 
     result = await runtime.run("Observe this")
+    await runtime.event_recorder.drain()
 
     assert len(seen) == 1
-    assert seen[0] is not None
     assert seen[0].run_id == result.run.run_id
     assert seen[0].status == "completed"
     assert seen[0].final_text == "answer-1"
@@ -674,9 +689,7 @@ async def test_staged_settlement_replay_does_not_reevaluate_or_release_new_activ
     plugin_id = "dev.example.mode"
     old_activation = _activation(plugin_id, "mode")
     new_activation = _activation(plugin_id, "mode")
-    session = SessionRecord(
-        controls=SessionControlState(revision=2, activations=[new_activation])
-    )
+    session = SessionRecord(controls=SessionControlState(revision=2, activations=[new_activation]))
     store.create_session(session)
     controller_ref = _controller(plugin_id, "boundary", "gen-before").model_copy(
         update={

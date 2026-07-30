@@ -1,0 +1,34 @@
+{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.examples.prompt_policy",
+  "name": "Prompt Policy Example",
+  "version": "1.0.0",
+  "description": "Rejects a demonstration secret marker before persistence.",
+  "namespace": "prompt_policy_example",
+  "engines": {
+    "ouro": ">=0.1.0,<0.2.0",
+    "plugin_api": "^2.0.0"
+  },
+  "runtime": {
+    "kind": "python-inprocess",
+    "entrypoint": "prompt_policy_example_plugin:create_plugin"
+  },
+  "contributes": {
+    "prompt_policies": [
+      {
+        "id": "demo_secret_guard",
+        "timeout_seconds": 2
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "id": "sessions.prompt.inspect",
+      "reason": "Inspect user-role prompts before they enter canonical state."
+    }
+  ],
+  "dependencies": {
+    "plugins": []
+  },
+  "metadata": {}
+}

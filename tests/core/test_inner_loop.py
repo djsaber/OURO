@@ -69,10 +69,6 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         emitted.append(event)
         return event.sequence
 
-    async def record_hook_failures(emitted, sequence, failures):
-        assert failures == []
-        return sequence
-
     async def handle_tool_batch(
         emitted,
         sequence,
@@ -183,7 +179,6 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         ports=InnerLoopPorts(
             prepare_context=_prepare_context,
             emit=emit,
-            record_hook_failures=record_hook_failures,
             handle_tool_batch=handle_tool_batch,
             record_usage=record_usage,
             aborted_result=aborted_result,
@@ -248,10 +243,6 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         )
         emitted.append(event)
         return event.sequence
-
-    async def record_hook_failures(emitted, sequence, failures):
-        assert failures == []
-        return sequence
 
     async def handle_tool_batch(
         emitted,
@@ -363,7 +354,6 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
         ports=InnerLoopPorts(
             prepare_context=_prepare_context,
             emit=emit,
-            record_hook_failures=record_hook_failures,
             handle_tool_batch=handle_tool_batch,
             record_usage=record_usage,
             aborted_result=aborted_result,

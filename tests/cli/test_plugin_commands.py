@@ -12,12 +12,12 @@ def test_plugin_cli_full_lifecycle_without_model_provider(tmp_path, capsys) -> N
     manifest_dir = source / ".ouro-plugin"
     manifest_dir.mkdir(parents=True)
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "plugin_id": "dev.ouro.cli",
         "name": "CLI plugin",
         "version": "1.0.0",
         "namespace": "cli_plugin",
-        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+        "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
         "runtime": {"kind": "python-inprocess", "entrypoint": "cli_plugin:create_plugin"},
         "contributes": {"commands": [{"id": "hello", "description": "Say hello."}]},
         "permissions": [],

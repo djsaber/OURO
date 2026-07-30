@@ -14,13 +14,13 @@ from .plan_mode_plugin import (
 PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
     manifest=PluginManifest.model_validate(
         {
-            "schema_version": 2,
+            "schema_version": 3,
             "plugin_id": "dev.ouro.plan_mode",
             "name": "Plan Mode",
             "version": "1.0.0",
             "description": "Implements plan mode as composable OURO harness contributions.",
             "namespace": "plan_mode",
-            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^1.0.0"},
+            "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
                 "kind": "python-inprocess",
                 "entrypoint": "plan_mode_plugin:create_plugin",

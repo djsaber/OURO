@@ -135,7 +135,7 @@ def _event_category(event_type: str) -> RuntimeEventCategory:
         "model_message_completed",
         "recovery_tool_result_committed",
         "persistence_warning",
-        "plugin_hook_failed",
+        "plugin_observer_failed",
         "context_provider_failed",
         "turn_policy_continued",
         "turn_policy_failed",

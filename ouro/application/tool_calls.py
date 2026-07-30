@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Callable
-from typing import Literal, Protocol
+from collections.abc import Callable, Mapping
+from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
 
@@ -25,9 +25,14 @@ from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.hooks import HookContext, HookRegistry
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.observers import (
+    FrozenJson,
+    ToolCallFinishedObservation,
+    ToolCallRequestedObservation,
+    freeze_json,
+)
 from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetReason
 from ouro.core.session_controls import AttributedSessionControlTransition
@@ -55,6 +60,7 @@ from ouro.tools.schema import tool_argument_error
 _JSON_VALUE_ADAPTER: TypeAdapter[JsonValue] = TypeAdapter(JsonValue)
 _AFK_RESOLVER_ID = "ouro.afk"
 _AFK_UNATTENDED_REASON = "AFK mode does not wait for user input"
+_OBSERVER_TOOL_CONTENT_LIMIT = 32_768
 
 
 class AgentControlExecutor(Protocol):
@@ -107,7 +113,6 @@ class ToolCallCoordinator:
         *,
         executor: ToolExecutor,
         registry: ToolRegistry,
-        hooks: HookRegistry,
         events: RuntimeEventRecorder,
         runs: RunLifecycle,
         execution_config: ToolExecutionConfig,
@@ -122,7 +127,6 @@ class ToolCallCoordinator:
         self.executor = executor
         self.batch_executor = ToolBatchExecutor(executor)
         self.registry = registry
-        self.hooks = hooks
         self.events = events
         self.runs = runs
         self.execution_config = execution_config
@@ -866,7 +870,6 @@ class ToolCallCoordinator:
             if call.result is None:
                 committed_calls.append(call)
                 continue
-            sequence = await self.after(emitted, sequence, session, run, call.result)
             message = self.runs.append_tool_result_message(
                 session=session,
                 run=run,
@@ -874,6 +877,7 @@ class ToolCallCoordinator:
                 sequence=message_sequence + len(messages),
                 turn_id=batch.turn_id,
             )
+            self.after(session, run, call.result, invocation=call.invocation)
             messages.append(message)
             results.append(call.result)
             committed_calls.append(
@@ -1281,26 +1285,44 @@ class ToolCallCoordinator:
             },
         )
 
-    async def after(
+    def after(
         self,
-        emitted: list[EventRecord],
-        sequence: int,
         session: SessionRecord,
         run: RunRecord,
         result: ToolResult,
-    ) -> int:
-        hook_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="after_tool_call",
+        *,
+        invocation: ToolInvocation | None,
+    ) -> None:
+        structured = cast(
+            "Mapping[str, FrozenJson]",
+            freeze_json(result.structured),
+        )
+        self.events.observe(
+            ToolCallFinishedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                data={"result": result.model_dump(mode="json")},
+                tool_call_id=result.tool_call_id,
+                tool_name=result.tool_name,
+                canonical_tool_id=(
+                    invocation.canonical_tool_id
+                    if invocation is not None and invocation.canonical_tool_id is not None
+                    else f"ouro.host/tools/{result.tool_name}"
+                ),
+                owner_id=(
+                    invocation.owner_id
+                    if invocation is not None and invocation.owner_id is not None
+                    else "ouro.host"
+                ),
+                effect=invocation.effect if invocation is not None else "unknown",
+                batch_behavior=(
+                    invocation.batch_behavior if invocation is not None else "compatible"
+                ),
+                is_error=result.is_error,
+                content=result.content[:_OBSERVER_TOOL_CONTENT_LIMIT],
+                structured=structured,
+                resource_refs=tuple(result.resource_refs),
+                exit_code=result.exit_code,
             )
-        )
-        return await self.events.record_hook_failures(
-            emitted,
-            sequence,
-            hook_result.failures,
         )
 
     async def _preflight_call(
@@ -1370,18 +1392,22 @@ class ToolCallCoordinator:
                 "source_index": request.source_index,
             },
         )
-        before_result = await self.hooks.dispatch(
-            HookContext(
-                hook_name="before_tool_call",
+        arguments = cast(
+            "Mapping[str, FrozenJson]",
+            freeze_json(request.arguments),
+        )
+        self.events.observe(
+            ToolCallRequestedObservation(
                 session_id=session.session_id,
                 run_id=run.run_id,
-                data={"tool_name": request.name, "arguments": request.arguments},
+                tool_call_id=request.id,
+                tool_name=request.name,
+                canonical_tool_id=invocation.canonical_tool_id or f"ouro.host/tools/{request.name}",
+                owner_id=invocation.owner_id or "ouro.host",
+                effect=invocation.effect,
+                batch_behavior=invocation.batch_behavior,
+                arguments=arguments,
             )
-        )
-        sequence = await self.events.record_hook_failures(
-            emitted,
-            sequence,
-            before_result.failures,
         )
         if abort_signal.is_aborted() or self.is_aborted(session.session_id, run.run_id):
             result = ToolResult(

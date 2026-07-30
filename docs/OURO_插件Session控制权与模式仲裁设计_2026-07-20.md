@@ -159,7 +159,7 @@ Manifest 中的以下 contribution 可以选择声明 `active_when=<session-cont
 - Tool Policy；
 - Turn Policy；
 - Continuation Policy；
-- observational Hook。
+- Observer。
 
 Host 在分发前检查本轮 Run control snapshot，只调用对应 activation 有效且 contract 匹配的贡献。插件回调仍可读取自己的
 业务数据，但不再负责判断 Host activation 是否存在。
@@ -237,7 +237,7 @@ Plan 是首个迁移样例，但不获得 Host 特权：
 1. 领域模型、文件/SQLite 持久化和通用 claim 仲裁器；
 2. SDK、Manifest、worker、contribution inventory、contract 和 Catalog 全链路 Session Controller；
 3. Command/Tool transition commit、acquire/release/同 owner replace 与 revision/contract 校验；
-4. Tool、Context、Tool Policy、Turn Policy、Continuation、observational Hook 的 `active_when` 和模型轮次 durable
+4. Tool、Context、Prompt Policy、Tool Policy、Turn Policy、Continuation、Observer 的 `active_when` 和模型轮次 durable
    snapshot，以及 resumable Tool 独立的 `interaction_controller` 生命周期绑定；
 5. builtin Plan 迁移、稳定工具列表、`/plan off`、审批/AFK 回归与 controller-owned pending interaction 取消；
 6. Host `/control status|release|release --all [--force]` 管理面；
