@@ -1,14 +1,21 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from math import ceil, isclose
 from typing import Any
 
 from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
-from ouro.core.messages import ImageContent, MessageRecord, ModelMessage, TextContent
+from ouro.core.context_providers import ContextFragment
+from ouro.core.messages import (
+    ImageContent,
+    MessageRecord,
+    ModelMessage,
+    TextContent,
+    model_visible_message,
+)
 from ouro.core.tools import ToolDefinition
 
 TokenEstimator = Callable[[str], int]
@@ -87,7 +94,7 @@ class ContextView(OuroModel):
     def provider_context(self) -> ProviderContext:
         return ProviderContext(
             system_prompt=self.system_prompt,
-            messages=list(self.model_messages),
+            messages=[model_visible_message(message) for message in self.model_messages],
             tools=[tool.model_dump() for tool in self.tool_definitions],
         )
 
@@ -108,7 +115,7 @@ class ContextBuilder:
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
         system_prompt: str = "",
-        added_context: list[str] | None = None,
+        added_context: Sequence[str | ContextFragment] | None = None,
         additional_skill_instructions: str = "",
         input_token_budget: int | None = None,
         context_window_tokens: int | None = None,
@@ -132,13 +139,18 @@ class ContextBuilder:
             additional_skill_instructions,
         )
         composed_prompt = _compose_system_prompt(system_prompt, skill_instructions)
-        context_fragments = [text for text in (added_context or []) if text]
+        context_fragments = [
+            value if isinstance(value, ContextFragment) else ContextFragment(text=value)
+            for value in (added_context or [])
+            if value
+        ]
         context_messages = [
             ModelMessage.text(
                 role="system_synthetic",
-                text=text,
+                text=fragment.text,
+                semantic_tag=fragment.semantic_tag,
             )
-            for text in context_fragments
+            for fragment in context_fragments
         ]
         model_messages = [ModelMessage.from_record(message) for message in messages]
         fixed_tokens = self.token_estimator(composed_prompt)
@@ -211,9 +223,7 @@ def estimate_message_tokens(
     estimator: TokenEstimator | None = None,
 ) -> int:
     active_estimator = estimator or estimate_text_tokens
-    model_message = (
-        ModelMessage.from_record(message) if isinstance(message, MessageRecord) else message
-    )
+    model_message = model_visible_message(message)
     content_tokens = sum(
         active_estimator(block.text)
         if isinstance(block, TextContent)
@@ -270,6 +280,7 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
                 f"{message.text_content}"
             ),
             sequence=message.sequence,
+            semantic_tag="interrupted-assistant-attempt",
         ).model_copy(
             update={
                 "message_id": message.message_id,

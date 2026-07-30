@@ -40,7 +40,13 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 generation_id="gen_alpha",
                 priority=10,
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[ContextFragment(text="first", persistence="message")]
+                    fragments=[
+                        ContextFragment(
+                            text="first",
+                            persistence="message",
+                            semantic_tag="plugin-context",
+                        )
+                    ]
                 ),
             ),
         ),
@@ -54,6 +60,8 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
     assert result.fragments[0].generation_id == "gen_alpha"
     assert result.fragments[0].fragment_index == 0
     assert result.fragments[0].persistence == "message"
+    assert result.fragments[0].semantic_tag == "plugin-context"
+    assert result.fragments[1].semantic_tag == "system-reminder"
     assert result.failures == []
     assert result.blocked is False
 

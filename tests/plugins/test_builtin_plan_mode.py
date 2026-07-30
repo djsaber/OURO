@@ -329,6 +329,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     ]
     assert len(scaffolds) == 3
     assert all(message.role == "system_synthetic" for message in scaffolds)
+    assert all(message.semantic_tag == "plan-context" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
     assert all(
         {"EnterPlanMode", "ExitPlanMode"} <= tool_names for tool_names in first_provider.tool_names
@@ -566,6 +567,7 @@ async def test_plan_command_only_activates_mode_until_next_user_message(tmp_path
         if message.metadata.get("kind") == "context_provider"
     )
     assert reminder.metadata["plugin_id"] == PLUGIN_ID
+    assert reminder.semantic_tag == "plan-context"
     assert "Plan mode is active" in reminder.text_content
     assert not any(
         message.metadata.get("session_input_source") in {"plugin", "turn_policy"}

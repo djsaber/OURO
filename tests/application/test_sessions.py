@@ -16,7 +16,7 @@ from ouro.core.agents import (
     ResultDelivery,
 )
 from ouro.core.context import ContextBuilder
-from ouro.core.context_snapshots import ContextSnapshotRecord
+from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -98,6 +98,41 @@ def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) ->
     assert sessions.context_status(session.session_id) is not None
     with pytest.raises(PersistenceError, match="does not match its stored digest"):
         sessions.context(session.session_id)
+
+
+def test_session_context_preserves_legacy_unwrapped_synthetic_snapshot_digest(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Legacy context digest").session
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="system_synthetic",
+        text="legacy scaffold",
+    )
+    legacy_message = message.model_copy(update={"semantic_tag": None})
+    view = (
+        ContextBuilder()
+        .build(messages=[legacy_message], tools=[])
+        .model_copy(update={"context_id": "ctx_legacy"})
+    )
+    store.save_latest_context(
+        ContextSnapshotRecord(
+            context_id="ctx_legacy",
+            session_id=session.session_id,
+            run_id="run_legacy",
+            turn_id="turn_legacy",
+            model_round=1,
+            provider_id="test",
+            model_id="test-model",
+            source_messages=[message],
+            metrics=view.metrics,
+            context_digest=context_view_digest(view),
+        )
+    )
+
+    snapshot = sessions.context(session.session_id)
+
+    assert snapshot is not None
+    assert snapshot.provider_context.messages[0].text_content == "legacy scaffold"
 
 
 def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) -> None:

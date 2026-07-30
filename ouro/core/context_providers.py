@@ -8,6 +8,7 @@ from pydantic import Field
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.message_semantics import DEFAULT_SYNTHETIC_MESSAGE_TAG, SemanticTag
 from ouro.core.redaction import redact_text
 
 ContextProviderFailureMode = Literal["omit", "block"]
@@ -24,6 +25,7 @@ class ContextProviderCall(OuroModel):
 class ContextFragment(OuroModel):
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
+    semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
 
 
 class AttributedContextFragment(OuroModel):
@@ -33,6 +35,7 @@ class AttributedContextFragment(OuroModel):
     fragment_index: int = Field(ge=0)
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
+    semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
 
 
 class ContextProviderResult(OuroModel):
@@ -159,6 +162,7 @@ class ContextProviderRegistry:
                         fragment_index=index,
                         text=fragment.text,
                         persistence=fragment.persistence,
+                        semantic_tag=fragment.semantic_tag,
                     )
                     for index, fragment in enumerate(result.fragments)
                 )

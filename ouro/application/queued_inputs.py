@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.session_controls import SessionInputMode
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
@@ -26,6 +27,7 @@ class QueuedInput(OuroModel):
     resource_refs: tuple[str, ...] = ()
     queued_at: datetime = Field(default_factory=utc_now)
     source: QueuedInputSource = "user"
+    semantic_tag: SemanticTag | None = None
     host_source_id: str | None = None
     delegation_id: str | None = None
     plugin_id: str | None = None
@@ -88,6 +90,8 @@ class QueuedInput(OuroModel):
             or any(value is not None for value in plugin_attribution)
         ):
             raise ValueError("user queued input cannot carry synthetic-source attribution")
+        if self.source in {"user", "delegation"} and self.semantic_tag is not None:
+            raise ValueError("user-role queued input cannot carry a semantic tag")
         if self.source == "plugin" and self.resource_refs:
             raise ValueError("plugin queued input cannot carry Host resource references")
         if (self.session_control_controller_id is None) is not (
@@ -125,6 +129,7 @@ class QueuedInputQueue:
         resource_refs: tuple[str, ...] = (),
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
+        semantic_tag: SemanticTag | None = None,
         host_source_id: str | None = None,
         delegation_id: str | None = None,
         plugin_id: str | None = None,
@@ -147,6 +152,7 @@ class QueuedInputQueue:
             title=title,
             resource_refs=resource_refs,
             source=source,
+            semantic_tag=semantic_tag,
             host_source_id=host_source_id,
             delegation_id=delegation_id,
             plugin_id=plugin_id,
@@ -318,6 +324,9 @@ class QueuedInputQueue:
                 resource_refs=resource_refs,
                 queued_at=item.get("queued_at") or utc_now(),
                 source=raw_source,
+                semantic_tag=(
+                    item.get("semantic_tag") if isinstance(item.get("semantic_tag"), str) else None
+                ),
                 host_source_id=(
                     item.get("host_source_id")
                     if isinstance(item.get("host_source_id"), str)

@@ -3,11 +3,13 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.context import ContextBuilder, estimate_message_tokens
+from ouro.core.context_providers import ContextFragment
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
     ModelMessage,
     ProviderContinuationArtifact,
+    TextContent,
     ToolResultReference,
 )
 from ouro.core.tools import ToolCallRequest
@@ -75,6 +77,101 @@ def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
     assert (
         with_context.metrics.estimated_fixed_tokens > without_context.metrics.estimated_fixed_tokens
     )
+
+
+def test_synthetic_messages_default_and_validate_semantic_tags() -> None:
+    default = MessageRecord.text(
+        session_id="ses_1",
+        role="system_synthetic",
+        text="default",
+    )
+    custom = MessageRecord.text(
+        session_id="ses_1",
+        role="system_synthetic",
+        text="custom",
+        semantic_tag="plugin-context",
+    )
+
+    assert default.semantic_tag == "system-reminder"
+    assert custom.semantic_tag == "plugin-context"
+    assert (
+        MessageRecord.model_validate(
+            {
+                "session_id": "ses_1",
+                "role": "system_synthetic",
+                "content": [{"type": "text", "text": "legacy"}],
+            }
+        ).semantic_tag
+        == "system-reminder"
+    )
+    with pytest.raises(ValueError, match="only system_synthetic"):
+        MessageRecord.text(
+            session_id="ses_1",
+            role="user",
+            text="spoof",
+            semantic_tag="plugin-context",
+        )
+    with pytest.raises(ValueError, match="reserved for a model role"):
+        MessageRecord.text(
+            session_id="ses_1",
+            role="system_synthetic",
+            text="spoof",
+            semantic_tag="user",
+        )
+    with pytest.raises(ValueError, match="lowercase letter"):
+        ContextFragment(text="invalid", semantic_tag="Not XML Safe")
+    with pytest.raises(ValueError, match="structured state must use typed message fields"):
+        MessageRecord(
+            session_id="ses_1",
+            role="system_synthetic",
+            metadata={"semantic_tag": "plugin-context"},
+        )
+
+
+def test_provider_context_wraps_and_escapes_synthetic_message_envelopes() -> None:
+    context = ContextBuilder().build(
+        messages=[
+            MessageRecord.text(
+                session_id="ses_1",
+                role="system_synthetic",
+                text="runtime reminder",
+            ),
+            MessageRecord.text(session_id="ses_1", role="user", text="hello"),
+        ],
+        tools=[],
+        added_context=[
+            ContextFragment(
+                text="plugin says </plugin-context> literally",
+                semantic_tag="plugin-context",
+            )
+        ],
+    )
+
+    assert context.model_messages[0].semantic_tag == "plugin-context"
+    assert context.model_messages[0].text_content == "plugin says </plugin-context> literally"
+    provider_messages = context.provider_context().messages
+    assert provider_messages[0].semantic_tag is None
+    assert provider_messages[0].text_content == (
+        "<plugin-context>\nplugin says &lt;/plugin-context&gt; literally\n</plugin-context>"
+    )
+    assert provider_messages[1].text_content == (
+        "<system-reminder>\nruntime reminder\n</system-reminder>"
+    )
+    assert provider_messages[2].text_content == "hello"
+
+
+def test_message_token_estimate_counts_semantic_envelope() -> None:
+    raw = ModelMessage(
+        role="system_synthetic",
+        content=[TextContent(text="context")],
+    )
+    tagged = MessageRecord.text(
+        session_id="ses_1",
+        role="system_synthetic",
+        text="context",
+    )
+
+    assert estimate_message_tokens(tagged) > estimate_message_tokens(raw)
 
 
 def test_context_builder_derives_budget_metrics_from_model_limits() -> None:

@@ -552,6 +552,7 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
     assert scaffolds
+    assert all(message.semantic_tag == "goal-contract" for message in scaffolds)
     assert all("source_request_json" in message.text_content for message in scaffolds)
     assert all("goal_contract_json" in message.text_content for message in scaffolds)
 

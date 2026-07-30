@@ -884,7 +884,11 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
             values = raw
         return ContextProviderResult(
             fragments=[
-                ContextFragment(text=value.text, persistence=value.persistence)
+                ContextFragment(
+                    text=value.text,
+                    persistence=value.persistence,
+                    semantic_tag=value.semantic_tag,
+                )
                 if isinstance(value, sdk.ContextFragment)
                 else ContextFragment(text=value)
                 for value in values

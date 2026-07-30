@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ouro.core.message_semantics import validate_semantic_tag
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.package import PLUGIN_API_VERSION
@@ -1411,13 +1412,26 @@ def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
         raise WorkerProtocolError("worker context fragment must be a string or object")
     text = raw.get("text")
     persistence = raw.get("persistence", "ephemeral")
+    semantic_tag = raw.get("semantic_tag", "system-reminder")
     if not isinstance(text, str) or not text:
         raise WorkerProtocolError("worker context fragment text must not be empty")
     if persistence not in {"ephemeral", "message"}:
         raise WorkerProtocolError(
             "worker context fragment persistence must be ephemeral or message"
         )
-    return sdk.ContextFragment(text=text, persistence=persistence)
+    if not isinstance(semantic_tag, str) or not semantic_tag:
+        raise WorkerProtocolError("worker context fragment semantic_tag must not be empty")
+    try:
+        semantic_tag = validate_semantic_tag(semantic_tag)
+    except ValueError as exc:
+        raise WorkerProtocolError(
+            f"worker context fragment semantic_tag is invalid: {exc}"
+        ) from exc
+    return sdk.ContextFragment(
+        text=text,
+        persistence=persistence,
+        semantic_tag=semantic_tag,
+    )
 
 
 async def _noop_background_lifecycle() -> None:

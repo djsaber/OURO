@@ -168,13 +168,16 @@ def plan_scaffold(call):
             ContextFragment(
                 text="Plan mode is active for this Session.",
                 persistence="message",
+                semantic_tag="plan-context",
             ),
         )
     )
 ```
 
 Host 在调用模型前把它写成带 plugin/provider/generation provenance 的 `system_synthetic` 消息；同一
-Run/model round 的恢复不会重复写入。不要把瞬时状态快照无差别持久化。
+Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `system-reminder`，可设置为小写字母、数字和连字符
+组成的具体语义名。构建 ProviderContext 时正文会被包装为 `<plan-context>...</plan-context>`；标签只描述来源语义，
+不会改变消息的协议权限。不要把瞬时状态快照无差别持久化。
 
 ### Observer 与 Prompt Policy
 
@@ -303,7 +306,7 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 协议 `2.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
 `session_control_transitions`，并使用新的 Observer/Prompt Policy 契约；它与 in-process Plugin API `2.0.0` 使用相同语义。
 `context.call` 的 `fragments` 既接受字符串，也接受
-`{"text": "...", "persistence": "ephemeral|message"}` 对象。
+`{"text": "...", "persistence": "ephemeral|message", "semantic_tag": "plugin-context"}` 对象。
 
 ## 8. 社区资源导入前审查
 

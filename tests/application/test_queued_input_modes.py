@@ -172,6 +172,7 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
             mode="follow_up",
             title="Recovery",
             host_source_id="ouro.runtime/recovery",
+            semantic_tag="runtime-recovery",
         ),
         session_id=session.session_id,
     )
@@ -193,9 +194,12 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
     host_run = snapshot.runs[-1]
 
     assert host_message.role == "system_synthetic"
+    assert host_message.semantic_tag == "runtime-recovery"
     assert host_message.text_content == "Recover from the durable checkpoint."
     assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"
-    assert provider.contexts[-1][-1].text_content == host_message.text_content
+    assert provider.contexts[-1][-1].text_content == (
+        "<runtime-recovery>\nRecover from the durable checkpoint.\n</runtime-recovery>"
+    )
     assert not hasattr(provider.contexts[-1][-1], "message_id")
     assert host_run.origin == "host"
     assert host_run.trigger == "host"

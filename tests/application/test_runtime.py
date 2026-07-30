@@ -1225,7 +1225,7 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
 
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
     assert seen_messages[0].role == "system_synthetic"
-    assert seen_messages[0].text_content == "extra context"
+    assert seen_messages[0].text_content == ("<system-reminder>\nextra context\n</system-reminder>")
     snapshot = store.load_runtime_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
@@ -1293,6 +1293,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
                         ContextFragment(
                             text="durable harness context",
                             persistence="message",
+                            semantic_tag="plugin-context",
                         )
                     ]
                 ),
@@ -1312,6 +1313,9 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     result = await runtime.run("Use durable context")
 
     snapshot = store.load_runtime_session(result.session.session_id)
+    context_snapshot = store.load_latest_context(result.session.session_id)
+    assert context_snapshot is not None
+    assert context_snapshot.semantic_envelopes is True
     scaffold = next(
         message
         for message in snapshot.messages
@@ -1319,6 +1323,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     )
     assert scaffold.role == "system_synthetic"
     assert scaffold.synthetic is True
+    assert scaffold.semantic_tag == "plugin-context"
     assert scaffold.text_content == "durable harness context"
     assert scaffold.metadata == {
         "kind": "context_provider",
@@ -1331,7 +1336,9 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     }
     assert (
         sum(
-            message.role == "system_synthetic" and message.text_content == "durable harness context"
+            message.role == "system_synthetic"
+            and message.text_content
+            == "<plugin-context>\ndurable harness context\n</plugin-context>"
             for message in provider.messages
         )
         == 1
@@ -1437,7 +1444,7 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
     synthetic_messages = [
         message.text_content for message in provider.messages if message.role == "system_synthetic"
     ]
-    assert synthetic_messages == ["plugin context"]
+    assert synthetic_messages == ["<system-reminder>\nplugin context\n</system-reminder>"]
 
 
 @pytest.mark.asyncio
@@ -2855,7 +2862,9 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
     assert snapshot.active_compaction is not None
     assert len(snapshot.messages) == 26
     assert provider.business_messages[0].role == "system_synthetic"
-    assert provider.business_messages[0].text_content.startswith("durable summary")
+    assert provider.business_messages[0].text_content.startswith(
+        "<conversation-summary>\ndurable summary"
+    )
     assert provider.business_messages[-1].text_content == "new"
     assert any(event.event_type == "compaction_completed" for event in snapshot.events)
 

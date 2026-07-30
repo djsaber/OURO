@@ -28,6 +28,7 @@ class ContextSnapshotRecord(OuroModel):
     endpoint_id: str | None = None
     model_id: str
     supports_vision: bool = False
+    semantic_envelopes: bool = False
     prepared_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     system_prompt: str = ""

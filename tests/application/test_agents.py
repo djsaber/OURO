@@ -1110,6 +1110,7 @@ async def test_idle_child_follow_up_reuses_session_and_creates_new_run(tmp_path)
     child_snapshot = store.load_runtime_session(first.child_session_id)
     assert len(child_snapshot.runs) == 2
     assert child_snapshot.messages[-2].role == "system_synthetic"
+    assert child_snapshot.messages[-2].semantic_tag == "subagent-message"
     assert (
         child_snapshot.messages[-2]
         .metadata["host_source_id"]
@@ -1263,6 +1264,7 @@ async def test_sync_follow_up_result_is_delivered_to_parent(tmp_path) -> None:
     ]
     assert len(delivered) == 1
     assert delivered[0].role == "system_synthetic"
+    assert delivered[0].semantic_tag == "subagent-result"
     assert "## Subagent Result" in delivered[0].text_content
     assert "child complete" in delivered[0].text_content
     await service.close()

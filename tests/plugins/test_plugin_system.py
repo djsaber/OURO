@@ -2229,7 +2229,11 @@ for line in sys.stdin:
     elif method == 'context.call':
         result = {
             'fragments': [
-                {'text': 'Current goal: ship', 'persistence': 'message'},
+                {
+                    'text': 'Current goal: ship',
+                    'persistence': 'message',
+                    'semantic_tag': 'goal-contract',
+                },
             ]
         }
     elif method == 'turn_policy.call':
@@ -2328,6 +2332,7 @@ for line in sys.stdin:
     )
     assert [fragment.text for fragment in context_result.fragments] == ["Current goal: ship"]
     assert context_result.fragments[0].persistence == "message"
+    assert context_result.fragments[0].semantic_tag == "goal-contract"
     assert context_provider.failure_mode == "block"
     turn_policy = snapshot.turn_policies.registered()[0]
     turn_decision = await turn_policy.handler(

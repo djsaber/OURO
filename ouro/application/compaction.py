@@ -32,6 +32,7 @@ from ouro.core.context import (
 )
 from ouro.core.context_providers import (
     AttributedContextFragment,
+    ContextFragment,
     ContextProviderCall,
     ContextProviderRegistry,
 )
@@ -43,6 +44,7 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
@@ -85,6 +87,7 @@ class ContextMessageAppender(Protocol):
         prompt: str,
         sequence: int,
         metadata: dict[str, object],
+        semantic_tag: SemanticTag | None = None,
     ) -> MessageRecord: ...
 
 
@@ -414,7 +417,12 @@ class ContextPreparationService:
             model_round=model_round,
         )
         if session.interaction_mode == "unattended":
-            added_context.append(AFK_CONTEXT_PROMPT)
+            added_context.append(
+                ContextFragment(
+                    text=AFK_CONTEXT_PROMPT,
+                    semantic_tag="unattended-mode-reminder",
+                )
+            )
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         source_messages, view = self._project_context(
@@ -539,11 +547,16 @@ class ContextPreparationService:
         run: RunRecord,
         messages: list[MessageRecord],
         model_round: int,
-    ) -> list[str]:
-        ephemeral: list[str] = []
+    ) -> list[ContextFragment]:
+        ephemeral: list[ContextFragment] = []
         for fragment in fragments:
             if fragment.persistence == "ephemeral":
-                ephemeral.append(fragment.text)
+                ephemeral.append(
+                    ContextFragment(
+                        text=fragment.text,
+                        semantic_tag=fragment.semantic_tag,
+                    )
+                )
                 continue
             delivery_key = (
                 f"{run.run_id}:{model_round}:{fragment.plugin_id}:"
@@ -571,6 +584,7 @@ class ContextPreparationService:
                     prompt=fragment.text,
                     sequence=len(messages) + 1,
                     metadata=metadata,
+                    semantic_tag=fragment.semantic_tag,
                 )
             except PersistenceError as exc:
                 raise ContextBlockedError(
@@ -629,6 +643,7 @@ class ContextPreparationService:
                 endpoint_id=adapter.model.endpoint_id,
                 model_id=adapter.model.model_id,
                 supports_vision=adapter.model.supports_vision,
+                semantic_envelopes=True,
                 system_prompt=prepared.system_prompt,
                 injected_messages=prepared.model_messages[:injected_message_count],
                 source_messages=source_messages,
@@ -655,7 +670,7 @@ class ContextPreparationService:
         run: RunRecord,
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
-        added_context: list[str] | None,
+        added_context: Sequence[str | ContextFragment] | None,
         trigger: CompactionTrigger,
         force: bool,
         abort_signal: AbortSignal,
@@ -887,7 +902,7 @@ class ContextPreparationService:
         messages: list[MessageRecord],
         active: CompactionRecord | None,
         tools: list[ToolDefinition],
-        added_context: list[str],
+        added_context: Sequence[str | ContextFragment],
         adapter: RuntimeAdapter,
         skill_instructions: str,
     ) -> tuple[list[MessageRecord], ContextView]:
@@ -915,7 +930,7 @@ class ContextPreparationService:
         *,
         messages: list[MessageRecord],
         tools: list[ToolDefinition],
-        added_context: list[str],
+        added_context: Sequence[str | ContextFragment],
         adapter: RuntimeAdapter,
         skill_instructions: str = "",
     ) -> ContextView:
@@ -1002,6 +1017,8 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
             "tool_result": "Tool result",
             "system_synthetic": "Synthetic context",
         }[message.role]
+        if message.semantic_tag is not None:
+            label += f" ({message.semantic_tag})"
         if message.metadata.get("incomplete"):
             label += " (interrupted/incomplete)"
         parts.append(f"[{label}] {message.text_content}")

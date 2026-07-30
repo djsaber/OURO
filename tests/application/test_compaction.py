@@ -388,7 +388,9 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
     assert store.load_session(session.session_id).session.active_compaction_id == active_id
     assert canonical_after_first[:10] == first_snapshot.messages[:10]
     assert second_provider.calls[0][0].role == "system_synthetic"
-    assert second_provider.calls[0][0].text_content == "summary-1"
+    assert second_provider.calls[0][0].text_content == (
+        "<conversation-summary>\nsummary-1\n</conversation-summary>"
+    )
     assert second_provider.calls[0][-1].text_content == "again"
 
 
@@ -483,7 +485,9 @@ async def test_manual_compaction_updates_current_context_without_rewriting_last_
     )
     assert current_after.context_digest != current_before.context_digest
     assert current_after.provider_context.messages[0].role == "system_synthetic"
-    assert current_after.provider_context.messages[0].text_content == "summary-1"
+    assert current_after.provider_context.messages[0].text_content == (
+        "<conversation-summary>\nsummary-1\n</conversation-summary>"
+    )
 
 
 @pytest.mark.asyncio

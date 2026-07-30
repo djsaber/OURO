@@ -299,6 +299,7 @@ def project_compacted_messages(
         role="system_synthetic",
         text=active.summary,
         sequence=-1,
+        semantic_tag="conversation-summary",
     ).model_copy(
         update={
             "metadata": {

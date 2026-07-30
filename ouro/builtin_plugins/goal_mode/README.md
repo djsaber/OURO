@@ -9,7 +9,7 @@ plugin contracts:
 - `GetGoal`, `CreateGoal`, and `UpdateGoal` are the model-facing read/create/settle tools.
 - the `mode` Session Controller exclusively claims `ouro.session.primary_behavior`.
 - `goal-scaffold` persists the exact source request, six-field Goal Contract, and completion rules
-  in model context.
+  in model context under a `goal-contract` semantic envelope.
 - `goal-continuation` accounts canonical usage and schedules the next bounded Run.
 
 `CreateGoal` must never be called autonomously. It is allowed only after the current user

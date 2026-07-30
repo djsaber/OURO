@@ -9,7 +9,12 @@ from ouro.core.base import utc_now
 from ouro.core.billing import UsagePurpose
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, ToolResultReference
+from ouro.core.message_semantics import SemanticTag
+from ouro.core.messages import (
+    MessageRecord,
+    ProviderContinuationArtifact,
+    ToolResultReference,
+)
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
@@ -132,6 +137,7 @@ class RunLifecycle:
         sequence: int,
         metadata: dict[str, Any],
         resource_refs: Iterable[str] = (),
+        semantic_tag: SemanticTag | None = None,
     ) -> MessageRecord:
         """Persist extension-produced context without impersonating the user."""
 
@@ -148,6 +154,7 @@ class RunLifecycle:
             role="system_synthetic",
             text=prompt,
             sequence=sequence,
+            semantic_tag=semantic_tag,
         ).model_copy(
             update={
                 "metadata": dict(metadata),

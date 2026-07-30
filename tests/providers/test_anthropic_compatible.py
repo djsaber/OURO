@@ -189,7 +189,9 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
         "anthropic-version": "2023-06-01",
         "x-api-key": "secret",
     }
-    assert request["payload"]["system"] == "Be precise.\n\nWorkspace policy."
+    assert request["payload"]["system"] == (
+        "Be precise.\n\n<system-reminder>\nWorkspace policy.\n</system-reminder>"
+    )
     assert request["payload"]["output_config"] == {"effort": "low"}
     assert request["payload"]["messages"][0]["content"][1] == {
         "type": "image",

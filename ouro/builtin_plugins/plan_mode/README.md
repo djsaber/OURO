@@ -240,4 +240,6 @@ MCP、用户插件或其他 Host 工具即使理论上能写计划文件，也�
 - Host 只在 controller activation 存在于本轮快照时分发 Context Provider；provider 返回
   `persistence="message"` 的 Context Fragment，Application 在模型请求前通过
   `RunLifecycle` 落盘，并记录 plugin/provider/generation/model-round provenance；
+- Fragment 使用 `semantic_tag="plan-context"`，ProviderContext 中的脚手架正文以
+  `<plan-context>...</plan-context>` 包装；
 - 同一 Run/model round 的恢复使用 delivery key 去重，持久化失败时阻断模型请求，不能静默降级为临时提示。

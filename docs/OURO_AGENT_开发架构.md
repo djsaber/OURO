@@ -275,6 +275,7 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 - assistant 工具请求写入 `tool_calls`；
 - tool result 关联写入 `tool_result`；
 - 可展示思考写入 `reasoning_content`，协议私有续接状态写入 `provider_continuation`；
+- `system_synthetic` 使用 `semantic_tag` 标明脚手架语义，默认值为 `system-reminder`；
 - `metadata` 只保存非结构化附加信息，不保存工具请求、关联身份或思考续接状态。
 
 一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
@@ -288,6 +289,11 @@ fragment 默认只参与本次模型请求；声明 `persistence="message"` 时�
 provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
 通过 message id 前缀和 digest 验证摘要来源。
 
+脚手架正文以原文持久化；构建统一 ProviderContext 时，Application 使用经过校验的 `semantic_tag` 将内容投影成
+`<semantic-tag>...</semantic-tag>`。正文中与当前包络冲突的标记会转义，标签只能使用小写字母、数字和连字符，
+且不能冒充模型角色。Context Fragment 可以覆盖默认标签，使运行时提醒、插件上下文、Goal/Plan 状态和子智能体
+消息在不改变协议角色的前提下保持可辨别语义。包络参与 token 估算与 Provider 内容 digest。
+
 模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
 `allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 synthetic feedback 持久化到同一
 Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-closed 并暂停 Run。跨 Run 的 Continuation Policy 与此
@@ -297,7 +303,7 @@ Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-cl
 校验 Session 归属、digest、size、媒体类型和 Endpoint 能力，再把受支持文本或图片仅注入本次模型请求；附件
 内容参与上下文预算与压缩，但不回写历史。
 
-`MessageRecord` 到统一 Provider 的投影以 `ModelMessage` 为硬边界。后者只包含 role、模型可见 content、工具调用/
+`MessageRecord` 到统一 Provider 的投影以 `ModelMessage` 为硬边界。后者只包含 role、模型可见 content、语义标签、工具调用/
 结果关联和路由绑定的 continuation，不携带 message/session/run identity、metadata、resource references 或仅供 Host
 展示的 reasoning。这里的“真实 Provider 上下文”特指 `RuntimeAdapter` 交给统一 `Provider.stream` 的
 `system_prompt`、`messages` 和 `tools` 三项，不是任何厂商 HTTP endpoint 的最终 payload；厂商 codec 在该边界之后

@@ -898,6 +898,7 @@ class AgentService:
                     prompt=message,
                     mode="steer",
                     host_source_id=(f"ouro.subagents/{delegation_id}/messages/{request_id}"),
+                    semantic_tag="subagent-message",
                 ),
                 session_id=relation.child_session_id,
             )
@@ -965,6 +966,7 @@ class AgentService:
                 prompt=message,
                 mode="follow_up",
                 host_source_id=f"ouro.subagents/{delegation_id}/messages/{request_id}",
+                semantic_tag="subagent-message",
             ),
         )
         self._run_handles[delegation_id] = handle
@@ -1426,6 +1428,7 @@ class AgentService:
                 prompt=self._delivery_prompt(relation),
                 mode="steer",
                 host_source_id=f"ouro.subagents/results/{result.delivery.delivery_id}",
+                semantic_tag="subagent-result",
                 queue_id=result.delivery.delivery_id,
                 resource_refs=parent_resource_refs,
             ),

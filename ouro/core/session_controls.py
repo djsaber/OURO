@@ -7,6 +7,7 @@ from typing import Any, Literal, Self
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.message_semantics import SemanticTag
 
 SessionInputMode = Literal["follow_up", "steer"]
 SessionControlAccess = Literal["exclusive", "shared"]
@@ -52,6 +53,7 @@ class HostSessionInput(SessionInputRequest):
     """A synthetic input produced by an OURO Host/Application component."""
 
     host_source_id: str = Field(min_length=1)
+    semantic_tag: SemanticTag = "host-message"
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 

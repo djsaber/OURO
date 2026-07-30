@@ -352,7 +352,15 @@ class PlanModePlugin:
             if state.plan_path is None:
                 return ContextOutput()
             scaffold = _SCAFFOLD.format(plan_path=state.plan_path)
-        return ContextOutput(fragments=(ContextFragment(text=scaffold, persistence="message"),))
+        return ContextOutput(
+            fragments=(
+                ContextFragment(
+                    text=scaffold,
+                    persistence="message",
+                    semantic_tag="plan-context",
+                ),
+            )
+        )
 
     def plan_tool_gate(self, call) -> ToolPolicyDecision:
         with self._lock:

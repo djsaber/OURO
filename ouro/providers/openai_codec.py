@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from ouro.core.messages import ImageContent, ModelMessage, TextContent
+from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_visible_message
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tools import ToolCallRequest
 
@@ -17,6 +17,7 @@ def _message_to_openai(
     model_id: str,
     include_continuation: bool,
 ) -> dict[str, Any]:
+    message = model_visible_message(message)
     role = message.role
     if role == "system_synthetic":
         openai_role = "system"

@@ -1042,6 +1042,13 @@ class RuntimeService:
                         if _input_attribution is not None
                         else "user"
                     ),
+                    semantic_tag=(
+                        _input_attribution.semantic_tag
+                        if isinstance(_input_attribution, HostSessionInput)
+                        else "plugin-message"
+                        if isinstance(_input_attribution, AttributedSessionInput)
+                        else None
+                    ),
                     host_source_id=(
                         _input_attribution.host_source_id
                         if isinstance(_input_attribution, HostSessionInput)
@@ -1579,6 +1586,13 @@ class RuntimeService:
                 resource_refs=resource_refs,
                 queue_id=queue_id,
                 source=source,
+                semantic_tag=(
+                    attribution.semantic_tag
+                    if isinstance(attribution, HostSessionInput)
+                    else "plugin-message"
+                    if isinstance(attribution, AttributedSessionInput)
+                    else None
+                ),
                 host_source_id=(
                     attribution.host_source_id
                     if isinstance(attribution, HostSessionInput)
@@ -1868,6 +1882,7 @@ class RuntimeService:
                 "turn_id": turn_id,
                 "controllers": controllers,
             },
+            semantic_tag="turn-policy-feedback",
         )
         sequence = await self.event_recorder.emit(
             emitted,
@@ -1934,6 +1949,10 @@ class RuntimeService:
                 sequence=sequence,
                 metadata=metadata,
                 resource_refs=item.resource_refs,
+                semantic_tag=(
+                    item.semantic_tag
+                    or ("plugin-message" if item.source == "plugin" else "host-message")
+                ),
             )
         return self.run_lifecycle.append_user_message(
             session=session,

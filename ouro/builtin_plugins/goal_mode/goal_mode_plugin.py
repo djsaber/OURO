@@ -364,9 +364,7 @@ class GoalModePlugin:
                     replace_activation_ids=replace_activation_ids,
                     payload=payload,
                     reason=(
-                        "model_replaced_goal"
-                        if operation == "replace"
-                        else "model_created_goal"
+                        "model_replaced_goal" if operation == "replace" else "model_created_goal"
                     ),
                 ),
             ),
@@ -449,8 +447,7 @@ class GoalModePlugin:
                     goal = state.goal
                 else:
                     if operation == "create" and (
-                        state.goal is not None
-                        and state.goal.status in UNFINISHED_GOAL_STATUSES
+                        state.goal is not None and state.goal.status in UNFINISHED_GOAL_STATUSES
                     ):
                         raise RuntimeError("an unfinished Goal already exists")
                     if operation == "replace":
@@ -579,7 +576,13 @@ class GoalModePlugin:
                     SessionGoalState(goal=goal, run_binding=binding),
                 )
         return ContextOutput(
-            fragments=(ContextFragment(text=goal_scaffold(goal), persistence="message"),)
+            fragments=(
+                ContextFragment(
+                    text=goal_scaffold(goal),
+                    persistence="message",
+                    semantic_tag="goal-contract",
+                ),
+            )
         )
 
     def goal_continuation(self, outcome: RunOutcome) -> ContinuationDecision:

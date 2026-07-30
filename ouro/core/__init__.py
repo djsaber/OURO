@@ -16,6 +16,7 @@ from ouro.core.interactions import (
     ToolInputResolution,
     UnattendedResolution,
 )
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord, TextContent
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.resources import ResourceRecord, ResourceSource, SessionResourceReference
@@ -26,6 +27,7 @@ __all__ = [
     "EventRecord",
     "CompactionRecord",
     "MessageRecord",
+    "SemanticTag",
     "ProviderRetryPolicy",
     "ProviderUsageEntry",
     "RunRecord",

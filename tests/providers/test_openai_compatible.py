@@ -272,7 +272,15 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
         async for event in provider.stream(
             model=model,
             system_prompt="System instructions.",
-            messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+            messages=[
+                MessageRecord.text(
+                    session_id="ses_1",
+                    role="system_synthetic",
+                    text="Plugin state.",
+                    semantic_tag="plugin-context",
+                ),
+                MessageRecord.text(session_id="ses_1", role="user", text="hello"),
+            ],
         )
     ]
 
@@ -281,6 +289,10 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
     assert request["url"] == "https://example.test/v1/responses/chat"
     assert request["payload"]["messages"] == [
         {"role": "system", "content": "System instructions."},
+        {
+            "role": "system",
+            "content": "<plugin-context>\nPlugin state.\n</plugin-context>",
+        },
         {"role": "user", "content": "hello"},
     ]
     assert request["payload"]["stream"] is False

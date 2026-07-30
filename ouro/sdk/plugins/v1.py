@@ -598,10 +598,15 @@ class ContextOutput:
 
 @dataclass(frozen=True)
 class ContextFragment:
-    """Model context supplied for one request or persisted as a canonical message."""
+    """Model context supplied for one request or persisted as a canonical message.
+
+    ``semantic_tag`` becomes the model-visible envelope name and defaults to
+    ``system-reminder``.
+    """
 
     text: str
     persistence: ContextFragmentPersistence = "ephemeral"
+    semantic_tag: str = "system-reminder"
 
 
 ContextHandler = Callable[

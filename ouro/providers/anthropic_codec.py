@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
 
-from ouro.core.messages import ImageContent, ModelMessage, TextContent
+from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_visible_message
 from ouro.core.provider import Usage
 from ouro.core.tools import ToolCallRequest
 
@@ -23,7 +23,8 @@ def messages_to_anthropic(
 
     system_parts = [system_prompt] if system_prompt else []
     converted: list[dict[str, Any]] = []
-    for message in messages:
+    for raw_message in messages:
+        message = model_visible_message(raw_message)
         if message.role == "system_synthetic":
             if message.text_content:
                 system_parts.append(message.text_content)
