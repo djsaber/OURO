@@ -377,6 +377,28 @@ async def test_runtime_allows_system_prompt_override(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_runtime_appends_additional_system_prompt(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(provider, ModelMetadata(model_id="capture", provider_id="capture")),
+        tools=_tools(),
+        context_builder=ContextBuilder(skill_instructions="Available skills."),
+        system_prompt="Base system prompt.",
+        additional_system_prompt="Additional system prompt.",
+    )
+
+    await runtime.run("hello")
+
+    assert provider.system_prompt == (
+        "Base system prompt.\n\nAdditional system prompt.\n\nAvailable skills."
+    )
+    assert provider.messages[0].role == "user"
+
+
+@pytest.mark.asyncio
 async def test_prompt_policy_denies_before_message_and_run_persistence(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

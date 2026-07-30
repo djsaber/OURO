@@ -134,6 +134,20 @@ if TYPE_CHECKING:
     from ouro.plugins.runtime import PluginRuntimeResource
 
 
+def _append_system_prompt(system_prompt: str, fragment: str) -> str:
+    if not fragment:
+        return system_prompt
+    if not system_prompt:
+        return fragment
+    if system_prompt.endswith("\n\n"):
+        separator = ""
+    elif system_prompt.endswith("\n"):
+        separator = "\n"
+    else:
+        separator = "\n\n"
+    return f"{system_prompt}{separator}{fragment}"
+
+
 class RuntimeService:
     def __init__(
         self,
@@ -147,6 +161,7 @@ class RuntimeService:
         context_builder: ContextBuilder | None = None,
         run_budget: RunBudgetPolicy | None = None,
         system_prompt: str | None = None,
+        additional_system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
         tool_execution_config: ToolExecutionConfig | None = None,
@@ -215,6 +230,7 @@ class RuntimeService:
         self.context_builder = context_builder or ContextBuilder()
         self.run_budget = run_budget or RunBudgetPolicy()
         self.system_prompt = DEFAULT_SYSTEM_PROMPT if system_prompt is None else system_prompt
+        self.additional_system_prompt = (additional_system_prompt or "").strip()
         self.compaction_config = compaction_config or CompactionConfig()
         self.compaction_strategies = compaction_strategies or CompactionStrategyRegistry()
         configured_adapter_error = compaction_adapter_error
@@ -247,7 +263,10 @@ class RuntimeService:
             context_builder=self.context_builder,
             strategies=self.compaction_strategies,
             config=self.compaction_config,
-            system_prompt=self.system_prompt,
+            system_prompt=_append_system_prompt(
+                self.system_prompt,
+                self.additional_system_prompt,
+            ),
             append_context_message=self.run_lifecycle.append_synthetic_input,
             project_model_messages=(
                 resources.project_model_messages if resources is not None else None
