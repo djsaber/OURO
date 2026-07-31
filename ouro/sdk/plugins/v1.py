@@ -602,7 +602,9 @@ class ContextOutput:
 class ContextFragment:
     """Model context supplied for one request or persisted as a canonical message.
 
-    ``semantic_tag`` becomes the model-visible envelope name and defaults to
+    Supply raw ``text`` and declare its meaning through ``semantic_tag``. The
+    Host validates that tag and constructs the model-visible semantic envelope
+    for both message and system-prompt targets. ``semantic_tag`` defaults to
     ``system-reminder``.
     """
 

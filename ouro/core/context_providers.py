@@ -25,6 +25,8 @@ class ContextProviderCall(OuroModel):
 
 
 class ContextFragment(OuroModel):
+    """Raw provider-owned context projected through a declared semantic envelope."""
+
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
     semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG

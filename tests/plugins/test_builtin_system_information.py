@@ -75,18 +75,17 @@ def test_system_information_is_tagged_prompt_tail_with_day_precision() -> None:
     assert isinstance(fragment, sdk.ContextFragment)
     assert fragment.target == "system_prompt"
     assert fragment.persistence == "ephemeral"
+    assert fragment.semantic_tag == "ouro-system-information"
     assert fragment.text == (
-        "<ouro-system-information>\n"
-        "System platform: Test OS &lt;1&gt;\n"
+        "System platform: Test OS <1>\n"
         "Architecture: test64\n"
         "Runtime environment: OURO test; CPython test\n"
         "Current date: 2026-07-31\n"
         "Time zone: CST (UTC+08:00)\n"
-        "Workspace: /work &amp; project\n"
-        "Shell: /bin/test &amp; tools\n"
+        "Workspace: /work & project\n"
+        "Shell: /bin/test & tools\n"
         "Path style: POSIX\n"
-        "Preferred encoding: UTF-8\n"
-        "</ouro-system-information>"
+        "Preferred encoding: UTF-8"
     )
     assert "23:59" not in fragment.text
 

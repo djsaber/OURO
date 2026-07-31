@@ -9,6 +9,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel
 from ouro.core.context_providers import ContextFragment
+from ouro.core.message_semantics import render_semantic_envelope
 from ouro.core.messages import (
     ImageContent,
     MessageRecord,
@@ -144,7 +145,9 @@ class ContextBuilder:
             if value
         ]
         prompt_fragments = [
-            fragment.text for fragment in context_fragments if fragment.target == "system_prompt"
+            render_semantic_envelope(fragment.text, fragment.semantic_tag)
+            for fragment in context_fragments
+            if fragment.target == "system_prompt"
         ]
         composed_prompt = _compose_system_prompt(
             system_prompt,

@@ -9,7 +9,6 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from html import escape
 from pathlib import Path
 
 from ouro import __version__
@@ -91,6 +90,7 @@ class SystemInformationPlugin:
             fragments=(
                 ContextFragment(
                     text=self._render(call, self._clock()),
+                    semantic_tag="ouro-system-information",
                     target="system_prompt",
                 ),
             )
@@ -110,8 +110,7 @@ class SystemInformationPlugin:
             ("Path style", self._facts.path_style),
             ("Preferred encoding", self._facts.preferred_encoding),
         )
-        body = "\n".join(f"{label}: {escape(value, quote=False)}" for label, value in values)
-        return f"<ouro-system-information>\n{body}\n</ouro-system-information>"
+        return "\n".join(f"{label}: {value}" for label, value in values)
 
 
 def _timezone_description(current: datetime) -> str:

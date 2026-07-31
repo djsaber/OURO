@@ -1270,7 +1270,8 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
         return ContextProviderResult(
             fragments=[
                 ContextFragment(
-                    text="<runtime-facts>facts</runtime-facts>",
+                    text="facts",
+                    semantic_tag="runtime-facts",
                     target="system_prompt",
                 )
             ]
@@ -1300,7 +1301,9 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
 
     result = await runtime.run("Use runtime facts")
 
-    assert provider.system_prompt.endswith("<runtime-facts>facts</runtime-facts>")
+    assert provider.system_prompt.endswith(
+        "<runtime-facts>\nfacts\n</runtime-facts>"
+    )
     assert seen_calls[0].workspace == str((tmp_path / "workspace").resolve())
     snapshot = store.load_runtime_session(result.session.session_id)
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]

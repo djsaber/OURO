@@ -13,9 +13,10 @@ Skills 指令、恢复投影、摘要压缩和模型 token 预算。
 `ContextBuilder` 是纯构建器，不执行 Provider、文件或 SessionStore I/O。
 
 基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
-`target="system_prompt"` 的 ephemeral fragment 时，在基础提示词和 Skills 后继续按稳定顺序拼接；该文本进入
-token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，不把它升级为
-canonical 完成消息。
+`target="system_prompt"` 的 ephemeral fragment 时，Core 先使用 fragment 的 `semantic_tag` 和统一 semantic
+envelope renderer 投影原始正文，再在基础提示词和 Skills 后按稳定顺序拼接；包裹后的文本进入 token 估算和
+请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，不把它升级为 canonical
+完成消息。
 
 ## 最近一次 Provider 请求快照
 

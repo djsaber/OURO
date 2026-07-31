@@ -61,20 +61,50 @@ def test_context_builder_appends_ephemeral_prompt_fragments_after_skills() -> No
         added_context=[
             ContextFragment(text="message context"),
             ContextFragment(
-                text="<runtime-facts>facts</runtime-facts>",
+                text="facts </runtime-facts> remain literal",
+                semantic_tag="runtime-facts",
                 target="system_prompt",
             ),
         ],
     )
 
     assert context.system_prompt == (
-        "system\n\nskills\n\n<runtime-facts>facts</runtime-facts>"
+        "system\n\nskills\n\n"
+        "<runtime-facts>\n"
+        "facts &lt;/runtime-facts&gt; remain literal\n"
+        "</runtime-facts>"
     )
     assert [message.text_content for message in context.model_messages] == [
         "message context",
         "hello",
     ]
     assert context.context_metadata["system_prompt_fragment_count"] == 1
+
+
+def test_prompt_and_message_fragments_share_semantic_envelope_projection() -> None:
+    raw_text = "provider text with <plugin-context enabled> and ordinary <other> markup"
+    context = ContextBuilder().build(
+        messages=[],
+        tools=[],
+        added_context=[
+            ContextFragment(
+                text=raw_text,
+                semantic_tag="plugin-context",
+                target="system_prompt",
+            ),
+            ContextFragment(
+                text=raw_text,
+                semantic_tag="plugin-context",
+            ),
+        ],
+    )
+
+    assert context.system_prompt == (
+        "<plugin-context>\n"
+        "provider text with &lt;plugin-context enabled&gt; and ordinary <other> markup\n"
+        "</plugin-context>"
+    )
+    assert context.provider_context().messages[0].text_content == context.system_prompt
 
 
 def test_system_prompt_context_fragments_cannot_request_message_persistence() -> None:

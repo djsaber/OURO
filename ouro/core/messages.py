@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
 from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
-from ouro.core.message_semantics import DEFAULT_SYNTHETIC_MESSAGE_TAG, SemanticTag
+from ouro.core.message_semantics import (
+    DEFAULT_SYNTHETIC_MESSAGE_TAG,
+    SemanticTag,
+    escape_semantic_envelope_delimiters,
+)
 from ouro.core.tools import ToolCallRequest
 
 
@@ -206,7 +209,9 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
     if tag is None:
         return model_message
     escaped_content = [
-        block.model_copy(update={"text": _escape_envelope_delimiters(block.text, tag)})
+        block.model_copy(
+            update={"text": escape_semantic_envelope_delimiters(block.text, tag)}
+        )
         if isinstance(block, TextContent)
         else block
         for block in model_message.content
@@ -222,15 +227,4 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
             # typed field makes this projection idempotent across boundaries.
             "semantic_tag": None,
         }
-    )
-
-
-def _escape_envelope_delimiters(text: str, tag: str) -> str:
-    pattern = re.compile(
-        rf"<\s*/?\s*{re.escape(tag)}(?:\s+[^<>]*?)?\s*/?\s*>",
-        re.IGNORECASE,
-    )
-    return pattern.sub(
-        lambda match: match.group(0).replace("<", "&lt;").replace(">", "&gt;"),
-        text,
     )

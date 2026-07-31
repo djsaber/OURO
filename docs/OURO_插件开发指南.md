@@ -182,7 +182,9 @@ Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `system-r
 如果片段属于完整 system prompt 而不是 synthetic message，显式使用
 `ContextFragment(target="system_prompt")`。Application 会在基础 system prompt 与 Skills 指令之后按 Context
 Provider 顺序追加它；该目标只允许 `persistence="ephemeral"`，不会构造或持久化消息。
-`ContextCall.workspace` 提供本次 Session 中 Agent 的工作目录。
+提供方仍通过 `semantic_tag` 声明片段语义，正文只返回未包裹的原始文本；Core 与 message target 共用同一
+semantic envelope 投影，验证标签、转义正文中的同名包络分隔符并构造标签。`ContextCall.workspace` 提供本次
+Session 中 Agent 的工作目录。
 
 ### Observer 与 Prompt Policy
 

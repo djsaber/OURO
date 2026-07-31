@@ -290,13 +290,15 @@ provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical 
 通过 message id 前缀和 digest 验证摘要来源。
 
 Context Fragment 还可声明 `target="system_prompt"`。这类请求级片段在基础 system prompt 和 Skills 之后稳定追加，
-必须保持 ephemeral，不创建 canonical 或 synthetic message；其文本仍进入统一 token 估算、请求快照和
-ProviderContext digest。Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
+必须保持 ephemeral，不创建 canonical 或 synthetic message；Core 使用提供方声明的 `semantic_tag` 将原始正文
+投影为与 message target 相同的 semantic envelope，再进入统一 token 估算、请求快照和 ProviderContext digest。
+Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
 
-脚手架正文以原文持久化；构建统一 ProviderContext 时，Application 使用经过校验的 `semantic_tag` 将内容投影成
-`<semantic-tag>...</semantic-tag>`。正文中与当前包络冲突的标记会转义，标签只能使用小写字母、数字和连字符，
-且不能冒充模型角色。Context Fragment 可以覆盖默认标签，使运行时提醒、插件上下文、Goal/Plan 状态和子智能体
-消息在不改变协议角色的前提下保持可辨别语义。包络参与 token 估算与 Provider 内容 digest。
+脚手架正文以原文持久化；构建统一 ProviderContext 时，Core 对 message 与 system-prompt fragment 使用同一个
+semantic envelope renderer，把经过校验的 `semantic_tag` 投影成 `<semantic-tag>...</semantic-tag>`。提供方声明
+标签语义但不手写包络。正文中只有可能改变当前同名包络边界的标记会转义，其他内容保持原样；标签只能使用
+小写字母、数字和连字符，且不能冒充模型角色。Context Fragment 可以覆盖默认标签，使运行时提醒、插件上下文、
+Goal/Plan 状态和子智能体消息在不改变协议角色的前提下保持可辨别语义。包络参与 token 估算与 Provider 内容 digest。
 
 模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
 `allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 synthetic feedback 持久化到同一
