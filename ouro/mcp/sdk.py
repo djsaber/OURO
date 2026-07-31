@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from tempfile import TemporaryFile
@@ -11,7 +10,6 @@ from typing import Any, TextIO, cast
 
 import httpx
 from mcp import ClientSession, StdioServerParameters, types
-from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
 from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.exceptions import McpError
@@ -37,24 +35,7 @@ from ouro.mcp.models import (
     MCPServerConfig,
     MCPServerInfo,
 )
-
-
-class _LegacySSELogFilter(logging.Filter):
-    """Drop transport tracebacks after the same disconnect entered OURO's lifecycle."""
-
-    _DISCONNECT_MESSAGES = {"Error in sse_reader", "Error in post_writer"}
-
-    def filter(self, record: logging.LogRecord) -> bool:
-        if record.getMessage() not in self._DISCONNECT_MESSAGES or record.exc_info is None:
-            return True
-        return not isinstance(record.exc_info[1], (httpx.RequestError, OSError))
-
-
-# The legacy SDK logs expected reader/writer network failures before surfacing them
-# through its session streams. OURO consumes those failures below or through the next
-# bounded request and records one redacted lifecycle diagnostic, so allowing the SDK
-# copy to propagate would leak a duplicate implementation traceback into terminals.
-logging.getLogger("mcp.client.sse").addFilter(_LegacySSELogFilter())
+from ouro.mcp.sse_transport import legacy_sse_transport
 
 
 class SDKMCPClientSession:
@@ -122,7 +103,7 @@ class SDKMCPClientFactory:
         diagnostic: MCPDiagnosticHandler,
         tools_changed: MCPToolsChangedHandler,
         connection_lost: MCPConnectionLostHandler,
-    ) -> AsyncIterator[SDKMCPClientSession]:
+    ) -> AsyncGenerator[SDKMCPClientSession, None]:
         secrets = _resolve_secrets(config, resolve_credential)
 
         async def logging_callback(params: types.LoggingMessageNotificationParams) -> None:
@@ -175,7 +156,8 @@ class SDKMCPClientFactory:
 
         headers = dict(config.headers)
         headers.update(secrets)
-        timeout = httpx.Timeout(config.timeout_seconds, read=config.timeout_seconds)
+        read_timeout = None if config.transport == "sse" else config.timeout_seconds
+        timeout = httpx.Timeout(config.timeout_seconds, read=read_timeout)
         try:
             # MCP transport configuration is authoritative.  Implicit OS/env
             # proxies can route even loopback servers through an unrelated
@@ -200,15 +182,10 @@ class SDKMCPClientFactory:
                             yield SDKMCPClientSession(session)
                 else:
                     # SSE is retained only for compatibility with legacy servers.
-                    async with sse_client(
+                    async with legacy_sse_transport(
                         config.url or "",
-                        headers=headers,
-                        timeout=config.timeout_seconds,
-                        # The MCP owner actively probes liveness with bounded ping
-                        # requests. A passive read deadline on the long-lived event
-                        # stream races that supervisor and disconnects healthy idle
-                        # sessions.
-                        sse_read_timeout=None,  # type: ignore[arg-type]
+                        client=http_client,
+                        timeout_seconds=config.timeout_seconds,
                     ) as streams:
                         async with _client_session(
                             streams,
@@ -228,7 +205,7 @@ async def _client_session(
     config: MCPServerConfig,
     logging_callback: Any,
     message_handler: Any,
-) -> AsyncIterator[ClientSession]:
+) -> AsyncGenerator[ClientSession, None]:
     session = ClientSession(
         streams[0],
         streams[1],

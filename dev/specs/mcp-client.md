@@ -9,8 +9,9 @@
 `MCPRemoteToolResult` 完成转换，边界外只暴露 OURO Tool/ToolResult 和生命周期记录。
 
 生产依赖使用官方 MCP Python SDK 1.x 稳定线，并限制 `<2`，避免 2.x 预发布及未来稳定版在未迁移时改变
-transport 契约。stdio、Streamable HTTP 和兼容性 SSE 均由 SDK 实现；SSE 是 legacy transport，新配置优先
-使用 Streamable HTTP。
+transport 契约。stdio 和 Streamable HTTP 使用 SDK transport；legacy SSE 的 GET/POST 数据通道由
+`ouro.mcp.sse_transport` 适配为 SDK session stream，协议编解码与 session 仍由 SDK 负责。该边界保证 SSE
+任一方向失败都进入 OURO 生命周期，而不是由依赖直接写进程日志。新配置优先使用 Streamable HTTP。
 
 ## 配置与身份
 
@@ -63,8 +64,9 @@ configured/disabled
 - list-changed notification 只唤醒 owner，由 owner 发起发现，不能在 SDK receive loop 内等待响应；
 - ToolRegistry 使用原子 contribution replacement，刷新失败保留刷新前的完整 registry；
 - SDK receive loop 的连接丢失、health ping 或工具连接错误都会唤醒 owner 并触发有界指数退避重连；
-  legacy SSE 的长连接读取不复用普通请求超时，存活性统一由 owner 的有界 ping 监督；显式 reconnect 执行
-  完整 stop/start；
+  legacy SSE 的读取或 POST 状态失败也进入同一 session stream。长连接读取没有被动 read timeout，存活性统一
+  由 owner 的有界 ping 监督；初始消息端点等待和每次 POST 仍受请求 timeout 约束。显式 reconnect 执行完整
+  stop/start；
 - `stop`、`close` 和 RuntimeSupervisor shutdown 退出 session、HTTP client、stdio 管道与子进程；
 - `MCPRuntimeResource` 是 MCPManager 到 RuntimeSupervisor 通用受管资源协议的适配器。
 
@@ -97,6 +99,7 @@ request timeout；OURO 在 ToolExecutionContext abort 时取消本地等待任�
 
 - `tests/mcp/test_configuration.py`
 - `tests/mcp/test_manager.py`
+- `tests/mcp/test_sse_transport.py`
 - `tests/mcp/test_sdk_integration.py`
 - `tests/tools/test_tools.py`
 - `tests/application/test_supervisor.py`

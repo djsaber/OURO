@@ -562,6 +562,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
+    { name = "httpx-sse" },
     { name = "jsonschema" },
     { name = "mcp" },
     { name = "pathspec" },
@@ -584,6 +585,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
+    { name = "httpx-sse", specifier = ">=0.4.3" },
     { name = "jsonschema", specifier = ">=4.25" },
     { name = "mcp", specifier = ">=1.28,<2" },
     { name = "pathspec", specifier = ">=1.1.1" },

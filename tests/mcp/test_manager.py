@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 
@@ -77,7 +77,7 @@ class FakeFactory:
         self.connection_lost = lambda _error: None
 
     @asynccontextmanager
-    async def open(self, config, **callbacks) -> AsyncIterator[FakeSession]:
+    async def open(self, config, **callbacks) -> AsyncGenerator[FakeSession, None]:
         del config
         self.open_count += 1
         self.tools_changed = callbacks["tools_changed"]

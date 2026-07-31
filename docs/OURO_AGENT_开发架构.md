@@ -596,10 +596,12 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - Git source 在 checkout 前以 tree metadata 校验 portable path、文件数和字节上限；shallow/blob-filtered fetch、
   subdirectory sparse checkout 和禁用 LFS smudge 共同避免先物化范围外内容。所有 source 最终仍进入统一 package
   validation。社区 compatibility inspection 只读资源并输出四类 outcome 与显式 OURO target，不执行未知代码。
-- `ouro.mcp.sdk` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。
+- `ouro.mcp` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。stdio 与
+  Streamable HTTP 使用 SDK transport；`ouro.mcp.sse_transport` 只拥有 legacy SSE 的 GET/POST 数据通道，
+  并将其适配回 SDK session stream。
 - 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
-  协调 owner，SDK receive loop 的连接丢失同样只发送事件唤醒 owner，避免跨任务退出 AnyIO 取消域。legacy SSE
-  的长连接读取不承担存活性判断，统一由 owner 的有界 health ping 监督。
+  协调 owner，session stream 的连接丢失同样只发送事件唤醒 owner，避免跨任务退出 AnyIO 取消域。legacy SSE
+  的读取与 POST 失败进入同一生命周期；长连接读取不承担存活性判断，统一由 owner 的有界 health ping 监督。
 - MCP 工具以 `<server_id>__<remote_name>` 形成稳定 identity，通过 ToolRegistry 原子替换 projection，并继续
   经过 OURO schema、effect 归一化、权限/策略、批次和恢复边界。用户可以按 server 内的 remote tool name 显式
   覆盖 effect；override 改变会产生不同 contract hash。
@@ -618,8 +620,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - TUI 与 Desktop 直接消费 application DTO、`RuntimeEventView`、activity snapshot 和增量 cursor，不解析后端；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
 - 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
-- 第二种 MCP SDK 或自定义 transport 出现后，再抽取 SDK 之外的 transport provider 层；当前 client port 已足以
-  隔离官方 SDK 和测试实现。
+- 只有第二种 MCP SDK 或 transport 需要运行时选择时，才抽取通用 transport provider；当前 client port 与独立的
+  legacy SSE 数据通道模块已经足以隔离官方 SDK、兼容传输和测试实现。
 
 这些边界应由真实用例驱动，不能为了缩短文件或统一命名而增加空转 service、回调层或通用 manager。
 

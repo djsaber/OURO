@@ -111,9 +111,10 @@ identity 精确路由，并覆盖决议提交与 canonical inbox 投影收敛之
 OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时按需加载完整内容和资源。当前支持本地发现、
 集中启停、校验、安装、更新和安全移除。
 
-MCP 客户端通过官方 Python SDK 支持 stdio、Streamable HTTP 和 legacy SSE，覆盖握手、能力协商、工具分页
-发现与变化通知、调用、超时取消、健康检查、重连、凭据注入、隔离诊断和关闭。远程工具固定映射为带 server
-身份的 OURO Tool，并继续经过参数校验和权限执行边界。
+MCP 客户端通过官方 Python SDK 处理协议与 session，并支持 stdio、Streamable HTTP 和 legacy SSE；其中
+legacy SSE 数据通道由 OURO 适配为 SDK session stream，使读取和 POST 失败统一进入连接重建。客户端覆盖握手、
+能力协商、工具分页发现与变化通知、调用、超时取消、健康检查、重连、凭据注入、隔离诊断和关闭。远程工具
+固定映射为带 server 身份的 OURO Tool，并继续经过参数校验和权限执行边界。
 默认 CLI 的单次运行、交互循环和审批恢复都会从 `mcp.servers` 装配这些工具；Host 退出后连接与动态工具
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
