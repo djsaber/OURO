@@ -540,6 +540,8 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
 - [开发路线图](docs/OURO_AGENT_开发路线图.md)：尚未实现能力的推进顺序和完成条件。
 - [规格索引](dev/specs/README.md)：当前领域契约、失败语义和验收证据。
 - [执行计划索引](dev/plans/README.md)：未来能力的依赖、里程碑和退出条件。
+- [开源 Agent 系统提示词设计模式调研](docs/开源Agent系统提示词设计模式调研_2026-07-31.md)：
+  Codex CLI、Kimi Code CLI、OpenCode、Claude Code 与 Hermes 的公开提示词模式及默认提示词设计依据。
 - [中文编码准则](docs/OURO_AGENT_编码准则_ZH.md)：实现与评审规范。
 - [English coding guidelines](docs/OURO_AGENT_编码准则_EN.md)：英文版实现与评审规范。
 - [贡献指南](CONTRIBUTING.md)、[安全策略](SECURITY.md)、[变更记录](CHANGELOG.md)与[发布流程](RELEASING.md)。

@@ -39,6 +39,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Reworked the default Agent system prompt into a compact, capability-neutral contract for user
+  intent, autonomous completion, evidence-based verification, proportionate risk judgment, narrow
+  refusals, and concise communication.
 - `CreateGoal` now preserves the exact user request and requires a compact six-field Goal Contract:
   outcome, verification, constraints, boundaries, iteration strategy, and blocked conditions.
   Goal scaffolds, status output, persistence, and terminal audit prompts use that contract without
