@@ -12,6 +12,7 @@ from ouro.builtin_plugins.system_information.system_information_plugin import (
     RuntimeFacts,
     SystemInformationPlugin,
 )
+from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.local_application import LocalApplication
@@ -154,10 +155,20 @@ async def test_default_builtin_injects_runtime_prompt_without_persisting_message
         assert application.plugins is not None
         assert application.plugins.show(PLUGIN_ID).status == "active"
         result = await runtime.run("Inspect the environment")
+        context_command = await handle_command(
+            "/context full",
+            runtime,
+            result.session.session_id,
+        )
 
     assert system_prompts[0].endswith("</ouro-system-information>")
     assert f"Workspace: {tmp_path / 'workspace'}" in system_prompts[0]
     snapshot = store.load_runtime_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
+    )
+    assert context_command.output.startswith("Context: ctx_")
+    assert "<ouro-system-information>" in context_command.output
+    assert context_command.output.index("<ouro-system-information>") < (
+        context_command.output.index("</ouro-system-information>")
     )

@@ -65,7 +65,10 @@ def test_session_show_missing(tmp_path, capsys) -> None:
     assert "session not found" in captured.err
 
 
-def test_session_context_reports_current_status_and_provider_content(tmp_path, capsys) -> None:
+def test_session_context_reports_latest_request_status_and_provider_content(
+    tmp_path,
+    capsys,
+) -> None:
     assert main(["run", "--json", "--home", str(tmp_path), "hello context"]) == 0
     run_payload = json.loads(capsys.readouterr().out)
     session_id = run_payload["session_id"]
@@ -73,8 +76,9 @@ def test_session_context_reports_current_status_and_provider_content(tmp_path, c
     assert main(["session", "context", session_id, "--home", str(tmp_path), "--json"]) == 0
     status_payload = json.loads(capsys.readouterr().out)
     assert status_payload["context_status"]["metrics"]["estimated_input_tokens"] > 0
-    assert status_payload["context_status"]["projected_at"]
-    assert "provider_reported_input_tokens" not in status_payload["context_status"]
+    assert status_payload["context_status"]["context_id"].startswith("ctx_")
+    assert status_payload["context_status"]["prepared_at"]
+    assert status_payload["context_status"]["provider_reported_input_tokens"] is not None
     assert "provider_context" not in status_payload
 
     assert (
@@ -92,14 +96,12 @@ def test_session_context_reports_current_status_and_provider_content(tmp_path, c
         == 0
     )
     content_payload = json.loads(capsys.readouterr().out)
+    assert "<ouro-system-information>" in content_payload["provider_context"]["system_prompt"]
     assert content_payload["provider_context"]["messages"][0]["role"] == "user"
     assert content_payload["provider_context"]["messages"][0]["content"][0]["text"] == (
         "hello context"
     )
-    assert content_payload["provider_context"]["messages"][-1]["role"] == "assistant"
-    assert content_payload["provider_context"]["messages"][-1]["content"][0]["text"] == (
-        "Hello from OURO."
-    )
+    assert len(content_payload["provider_context"]["messages"]) == 1
     assert "message_id" not in content_payload["provider_context"]["messages"][0]
     assert content_payload["context_digest"].startswith("sha256:")
 

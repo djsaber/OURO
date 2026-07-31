@@ -3,12 +3,12 @@ from __future__ import annotations
 import json
 
 from ouro.application.session_models import (
-    CurrentSessionContextSnapshot,
-    CurrentSessionContextStatus,
     SessionContextSnapshot,
     SessionContextStatus,
 )
 from ouro.core.context import ContextMetrics
+
+NO_PREPARED_CONTEXT = "No Provider context has been prepared for this Session."
 
 
 def render_context_status(status: SessionContextStatus) -> str:
@@ -30,27 +30,6 @@ def render_context_status(status: SessionContextStatus) -> str:
         )
     if status.provider_reported_input_tokens is not None:
         lines.append(f"Provider reported input: {status.provider_reported_input_tokens} tokens")
-    if status.active_compaction_id is not None:
-        lines.append(f"Compaction: {status.active_compaction_id}")
-    return "\n".join(lines)
-
-
-def render_current_context_status(status: CurrentSessionContextStatus) -> str:
-    route = "/".join(
-        value for value in (status.provider_id, status.endpoint_id, status.model_id) if value
-    )
-    metrics = status.metrics
-    lines = [
-        "Context: current",
-        f"Route: {route}",
-        f"Size: {_context_size(metrics)}",
-        f"Projected: {status.projected_at.isoformat()}",
-    ]
-    if metrics.context_window_tokens is not None:
-        lines.append(
-            f"Window: {metrics.context_window_tokens} tokens "
-            f"({metrics.reserved_output_tokens} reserved for output)"
-        )
     if status.active_compaction_id is not None:
         lines.append(f"Compaction: {status.active_compaction_id}")
     return "\n".join(lines)
@@ -79,21 +58,8 @@ def render_context_snapshot(snapshot: SessionContextSnapshot) -> str:
     )
 
 
-def render_current_context_snapshot(snapshot: CurrentSessionContextSnapshot) -> str:
-    payload = snapshot.provider_context.model_dump(mode="json")
-    return "\n".join(
-        (
-            render_current_context_status(snapshot.status),
-            f"Digest: {snapshot.context_digest}",
-            "Provider context:",
-            json.dumps(payload, ensure_ascii=False, indent=2),
-        )
-    )
-
-
 __all__ = [
-    "render_current_context_snapshot",
-    "render_current_context_status",
+    "NO_PREPARED_CONTEXT",
     "render_context_snapshot",
     "render_context_status",
 ]

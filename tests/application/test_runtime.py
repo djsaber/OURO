@@ -5,6 +5,7 @@ import pytest
 
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
+from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextBuilder
@@ -1254,27 +1255,33 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
     )
 
 
-def test_current_context_projection_does_not_execute_request_time_context_providers(
+@pytest.mark.asyncio
+async def test_runtime_context_provider_appends_system_prompt_without_creating_message(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    session = SessionRecord(title="Current projection")
-    store.create_session(session)
-    calls = 0
-
-    def provide(_call):
-        nonlocal calls
-        calls += 1
-        return ContextProviderResult(fragments=[ContextFragment(text="ephemeral")])
-
+    provider = CapturingProvider()
+    seen_calls = []
     context_providers = ContextProviderRegistry()
+
+    def provide(call):
+        seen_calls.append(call)
+        return ContextProviderResult(
+            fragments=[
+                ContextFragment(
+                    text="<runtime-facts>facts</runtime-facts>",
+                    target="system_prompt",
+                )
+            ]
+        )
+
     context_providers.replace_owner(
         "ctx",
         (
             ContextProviderRegistration(
-                plugin_id="ctx",
-                provider_id="ephemeral",
+                plugin_id="dev.ouro.runtime",
+                provider_id="facts",
                 handler=provide,
             ),
         ),
@@ -1282,19 +1289,24 @@ def test_current_context_projection_does_not_execute_request_time_context_provid
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
-            FauxProvider(),
-            ModelMetadata(model_id="faux", provider_id="faux"),
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
         ),
         tools=_tools(),
         context_providers=context_providers,
+        default_workspace=tmp_path / "workspace",
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
 
-    projection = runtime.current_context(session.session_id)
+    result = await runtime.run("Use runtime facts")
 
-    assert calls == 0
-    assert all(
-        message.text_content != "ephemeral" for message in projection.provider_context.messages
-    )
+    assert provider.system_prompt.endswith("<runtime-facts>facts</runtime-facts>")
+    assert seen_calls[0].workspace == str((tmp_path / "workspace").resolve())
+    snapshot = store.load_runtime_session(result.session.session_id)
+    assert [message.role for message in snapshot.messages] == ["user", "assistant"]
+    context_snapshot = store.load_latest_context(result.session.session_id)
+    assert context_snapshot is not None
+    assert context_snapshot.injected_messages == []
 
 
 @pytest.mark.asyncio

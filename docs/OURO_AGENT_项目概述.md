@@ -65,9 +65,9 @@ OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和�
 
 统一 Provider 只接收纯模型语义 `ModelMessage`，不会看到 Session 持久化 identity、metadata 或资源引用。
 OURO 在每次模型请求前维护请求快照和类型化 token 指标；Provider 完成后在该审计事实上补记供应商报告的 input
-token。面向用户的当前上下文查询从 canonical history、active compaction、当前模型、工具、Skills 和资源重新投影，
-不会执行动态 Context Provider、Observer 或压缩。长度与完整内容查询共享同一个 `ContextView`；完整查询返回统一
-Provider 边界接受的 system prompt、messages 和 tools，并在手动压缩后立即反映新摘要。
+token。面向用户的上下文查询读取最近一次真实 Provider 请求快照：长度与完整内容查询共享同一个请求事实，完整
+查询返回 Provider 边界实际接受的 system prompt、messages 和 tools，因此包含请求级动态 Context Provider 注入。
+查询不会重跑插件或从 canonical history 猜测 prospective context；手动压缩后的摘要会在下一次真实请求中出现。
 
 ### 工具与人机协同
 

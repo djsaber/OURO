@@ -289,6 +289,10 @@ fragment 默认只参与本次模型请求；声明 `persistence="message"` 时�
 provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
 通过 message id 前缀和 digest 验证摘要来源。
 
+Context Fragment 还可声明 `target="system_prompt"`。这类请求级片段在基础 system prompt 和 Skills 之后稳定追加，
+必须保持 ephemeral，不创建 canonical 或 synthetic message；其文本仍进入统一 token 估算、请求快照和
+ProviderContext digest。Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
+
 脚手架正文以原文持久化；构建统一 ProviderContext 时，Application 使用经过校验的 `semantic_tag` 将内容投影成
 `<semantic-tag>...</semantic-tag>`。正文中与当前包络冲突的标记会转义，标签只能使用小写字母、数字和连字符，
 且不能冒充模型角色。Context Fragment 可以覆盖默认标签，使运行时提醒、插件上下文、Goal/Plan 状态和子智能体
@@ -317,13 +321,11 @@ base64 字节错误当作文本 token。
 请求审计采用 write-through latest snapshot。上下文准备完成后，在模型请求前原子替换 Session 的最新
 `ContextSnapshotRecord`；记录保存 ephemeral 注入、压缩/恢复后的 source messages、工具、指标、路由和实际
 Provider 内容 digest。资源 blob 不复制进快照，审计内容查询通过不可变 resource reference 还原后校验 digest。
-`SessionService.context_status/context` 只读取这一最近请求事实，供运行活动、Provider usage 和诊断使用。
-
-面向用户的当前上下文查询属于另一应用用例。`RuntimeService.current_context` 使用与请求准备、压缩完成相同的纯投影
-边界，从 canonical messages、active compaction、当前模型、Catalog 工具、Skills 和资源构造 `ContextView`；
-`/context` 与 `session context` 读取 metrics，full/content 读取同一视图的统一 `ProviderContext`。查询不执行
-Context Provider、Observer 或自动压缩，也不写入 Session。请求级 ephemeral 注入只属于具体 Run，不能伪装成空闲
-Session 的当前事实。该查询需要显式 O(context bytes) 投影，以保证手动压缩后不会继续展示旧请求快照。
+`SessionService.context_status/context` 是最近请求事实的唯一查询边界，供 `/context`、`session context`、运行活动、
+Provider usage 和诊断共同使用。status 只读取指标；full/content 从快照还原统一 `ProviderContext` 并校验 digest，
+因此会包含模型实际收到的请求级 ephemeral Context Provider 注入。查询不能从 canonical history 重新推演
+prospective context，也不能为了展示而执行插件。没有请求快照时明确返回空状态。手动压缩不会伪造一次 Provider
+请求；新摘要只在下一次真实请求准备时进入替换后的快照。
 
 ## Provider Usage 与全局费用账本
 
@@ -456,7 +458,8 @@ CLI 命令使用资源层级表达职责：
 - `provider check` 负责连接检查；
 - `mcp list/show/set/remove` 管理 MCP server 配置，`mcp check` 执行一次临时连接检查；
 - `session compact` 负责手动压缩；
-- `session context` 投影当前上下文长度，`session context --content` 显式读取同一当前统一 Provider 内容；
+- `session context` 读取最近 Provider 请求的指标，`session context --content` 显式读取同一请求的统一
+  Provider 内容；
 - `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
 - `agent definition list/show/tools/create/update/delete/copy` 通过 provider-independent composition 管理定义；

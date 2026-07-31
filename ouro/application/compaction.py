@@ -880,27 +880,6 @@ class ContextPreparationService:
             + "; ".join(f"{type(exc).__name__}: {exc}" for exc in failures)
         )
 
-    def project_current(
-        self,
-        *,
-        session_id: str,
-        messages: list[MessageRecord],
-        tools: list[ToolDefinition],
-        adapter: RuntimeAdapter | None = None,
-        skill_instructions: str = "",
-    ) -> ContextView:
-        """Project current durable Session state without executing request-time contributions."""
-
-        _, view = self._project_context(
-            messages=messages,
-            active=self.store.load_active_compaction(session_id),
-            tools=tools,
-            added_context=[],
-            adapter=adapter or self.adapter,
-            skill_instructions=skill_instructions,
-        )
-        return view
-
     def _project_context(
         self,
         *,

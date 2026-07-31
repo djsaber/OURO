@@ -35,8 +35,6 @@ from ouro.application.runtime_configuration import (
     RuntimeProviderOptions,
 )
 from ouro.application.session_models import (
-    CurrentSessionContextSnapshot,
-    CurrentSessionContextStatus,
     ReplayFrame,
     SessionBranchResult,
     SessionCatalogEntry,
@@ -122,8 +120,6 @@ __all__ = [
     "UsageService",
     "UsageSummary",
     "UsageTotals",
-    "CurrentSessionContextSnapshot",
-    "CurrentSessionContextStatus",
     "ReplayFrame",
     "SessionBranchResult",
     "SessionCatalogEntry",

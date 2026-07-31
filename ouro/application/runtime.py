@@ -40,10 +40,6 @@ from ouro.application.runs import (
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
-from ouro.application.session_models import (
-    CurrentSessionContextSnapshot,
-    CurrentSessionContextStatus,
-)
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
 from ouro.application.supervisor_models import HostInputReceipt
@@ -65,7 +61,6 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
 from ouro.core.context import ContextBuilder
 from ouro.core.context_providers import ContextProviderRegistry
-from ouro.core.context_snapshots import context_view_digest
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import (
     CompactionError,
@@ -600,46 +595,6 @@ class RuntimeService:
             return self.models.default_model()
         session = self.store.load_session_record(session_id)
         return self.models.resolve(session.current_model or self.models.default_model().key)
-
-    def current_context(self, session_id: str) -> CurrentSessionContextSnapshot:
-        """Project the Session's current durable context without starting a model request."""
-
-        snapshot = self.store.load_runtime_session(session_id)
-        selection = self.models.resolve(
-            snapshot.session.current_model or self.models.default_model().key
-        )
-        adapter = self.models.adapter_for(selection.key)
-        catalog = (
-            self._extension_catalog.snapshot() if self._extension_catalog is not None else None
-        )
-        try:
-            tools = catalog.tools if catalog is not None else self.tools
-            skills = catalog.skills if catalog is not None else self.skills
-            view = self.context_preparation.project_current(
-                session_id=session_id,
-                messages=snapshot.messages,
-                tools=tools.definitions(),
-                adapter=adapter,
-                skill_instructions=render_agent_skills_prompt(skills),
-            )
-        finally:
-            if catalog is not None:
-                catalog.close()
-
-        compaction_id = view.context_metadata.get("compaction_id")
-        return CurrentSessionContextSnapshot(
-            status=CurrentSessionContextStatus(
-                session_id=session_id,
-                provider_id=adapter.model.provider_id,
-                endpoint_id=adapter.model.endpoint_id,
-                model_id=adapter.model.model_id,
-                projected_at=utc_now(),
-                metrics=view.metrics,
-                active_compaction_id=(compaction_id if isinstance(compaction_id, str) else None),
-            ),
-            provider_context=view.provider_context(),
-            context_digest=context_view_digest(view),
-        )
 
     def resolve_model(self, selector: str) -> AvailableModel:
         """Resolve and validate a model route before it is attached to a session."""

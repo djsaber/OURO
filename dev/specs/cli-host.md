@@ -53,9 +53,10 @@ Run 结束、异常、EOF 和 Host 退出时必须清理。
 `/model <provider/endpoint>` 在已有空闲 Session 上持久化切换；没有 Session 时只更新 Host 的下一会话选择。
 首条普通消息通过 application 的新会话参数原子校验并持久化该模型，不得为了选择模型提前创建空 Session。
 
-`/context` 与 `/context full` 读取同一个 application 当前上下文投影：前者显示 metrics，后者输出统一
-Provider 边界的完整 `ProviderContext`。`session context [--content]` 使用相同语义。active compaction 变化后
-查询必须立即反映摘要投影；CLI 不得读取旧请求快照后自行修补 token 或 message 内容。
+`/context` 与 `/context full` 读取同一个 application 最近 Provider 请求快照：前者显示记录的 metrics，后者
+通过 `SessionService.context` 输出经 digest 校验的完整 `ProviderContext`。`session context [--content]` 使用
+相同语义。CLI 不得重新投影 canonical history、重跑 Context Provider，或自行修补 token、system prompt 和
+message 内容；没有请求快照时明确显示尚未准备过 Provider context。
 
 Interactive 启动配置了 auto-start MCP 时，先显示 `mcp_connection` 动态状态；连接完成后按 server 输出脱敏的
 connected/failed 状态、transport 和工具数量。MCP manager/resource 只暴露类型化连接结果，不依赖终端展示。
@@ -127,7 +128,7 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 ## Application 边界
 
 - Session 管理命令通过 `ApplicationFacade`。
-- Runtime 命令和当前上下文投影通过 `RuntimeService`。
+- Runtime 命令通过 `RuntimeService`；最近 Provider 请求上下文通过 `SessionService`。
 - Agent definition 管理通过 `AgentDefinitionService`；Agent 运行控制通过 `LocalApplication.agents` 暴露的
   `AgentService`。CLI 不导入 AgentService 实现，也不读取 Delegation 文件。
 - Provider、config 和 Skills 命令通过类型化 `ConfigurationFacade`；公开 DTO 不暴露凭据值。

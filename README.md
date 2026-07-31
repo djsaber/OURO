@@ -305,8 +305,9 @@ depends on deserializing historical Run or Delegation records.
 PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
 
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
-交付模式。`/context` 显示最新统一 Provider 上下文的长度，`/context full` 显示完整 system prompt、messages 和
-tools。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一 Run。
+交付模式。`/context` 显示最近一次真实 Provider 请求的长度，`/context full` 显示该请求实际使用的完整 system
+prompt、messages 和 tools。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一
+Run。
 
 批准模式是会话状态，不是工具配置：对于默认 `permission_control="host"` 的工具，`inherit` 沿用工具定义和
 `config permissions` 的结果，`auto` 自动执行，`approval` 要求审批，`deny` 拒绝调用（`AskUser` 在可执行时

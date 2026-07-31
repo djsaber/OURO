@@ -12,22 +12,21 @@ Skills 指令、恢复投影、摘要压缩和模型 token 预算。
 `ContextView` 包含：system prompt、messages、tools、token estimate、budget、overflow 状态和 metadata。
 `ContextBuilder` 是纯构建器，不执行 Provider、文件或 SessionStore I/O。
 
-系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。恢复投影只在模型上下文中标记 incomplete
-assistant 尝试，不把它升级为 canonical 完成消息。
+基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
+`target="system_prompt"` 的 ephemeral fragment 时，在基础提示词和 Skills 后继续按稳定顺序拼接；该文本进入
+token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，不把它升级为
+canonical 完成消息。
 
-## 当前上下文与请求快照
+## 最近一次 Provider 请求快照
 
-当前会话上下文与最近一次 Provider 请求快照是两个不同事实：
+`ContextSnapshotRecord` 保存最近一次真正准备并交给 Provider 的请求，包括 system prompt、请求级 ephemeral
+Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路由和实际 Provider 内容 digest。
+`/context` 与 `session context` 读取该记录的 metrics；`/context full` 与 `session context --content` 通过
+`SessionService.context` 还原并校验同一记录的完整 `ProviderContext`。没有发生过 Provider 请求时应明确返回
+“尚无已准备上下文”，不能用 prospective projection 冒充真实请求。
 
-- `RuntimeService.current_context` 从 canonical messages、active compaction、当前模型路由、工具、Skills 和资源
-  构建无副作用的当前 `ContextView`；`/context` 读取其 metrics，`/context full` 和
-  `session context --content` 输出同一视图的 `ProviderContext`；
-- `ContextSnapshotRecord` 只保存最近一次真正准备并交给 Provider 的请求，用于请求 identity、digest、运行活动和
-  Provider usage，不得由手动压缩或查询结果覆盖。
-
-当前投影不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。请求级 ephemeral Context
-Provider 内容只有在具体 Run 准备时才存在，不属于空闲 Session 的当前持久上下文。手动压缩激活新的
-`CompactionRecord` 后，下一次当前投影必须立即使用新摘要；普通和 full 查询不得继续返回旧请求快照。
+查询不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。手动压缩只激活新的
+`CompactionRecord`，不得改写最近请求快照；新摘要会在下一次模型请求准备后自然进入新的快照。
 
 ## Token 预算
 
@@ -62,7 +61,7 @@ metadata 中记录原因；这是当前运行策略，不是配置格式兼容�
 5. 累加 usage；
 6. 生成 `CompactionArtifact`；
 7. application 写入 `CompactionRecord` 并激活；
-8. 通过与当前上下文查询相同的投影路径重新构建 ContextView。
+8. 通过统一 `ContextBuilder` 路径重新构建 ContextView，验证压缩后的请求预算。
 
 摘要请求不携带普通工具定义，不把摘要文本写回 canonical messages。
 

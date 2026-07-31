@@ -5,8 +5,9 @@ from typing import TYPE_CHECKING, cast
 
 from ouro.application.runtime import RuntimeService
 from ouro.cli.context_output import (
-    render_current_context_snapshot,
-    render_current_context_status,
+    NO_PREPARED_CONTEXT,
+    render_context_snapshot,
+    render_context_status,
 )
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
@@ -544,8 +545,13 @@ def _session_context(
             output="Usage: /context [full]",
         )
     if argument == "full":
-        snapshot = runtime.current_context(session_id)
-        output = render_current_context_snapshot(snapshot)
+        snapshot = runtime.sessions.context(session_id)
+        output = (
+            render_context_snapshot(snapshot)
+            if snapshot is not None
+            else NO_PREPARED_CONTEXT
+        )
     else:
-        output = render_current_context_status(runtime.current_context(session_id).status)
+        status = runtime.sessions.context_status(session_id)
+        output = render_context_status(status) if status is not None else NO_PREPARED_CONTEXT
     return CommandResult(session_id=session_id, output=output)

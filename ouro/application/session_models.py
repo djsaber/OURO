@@ -194,24 +194,6 @@ class SessionContextSnapshot(ApplicationDTO):
     context_digest: str
 
 
-class CurrentSessionContextStatus(ApplicationDTO):
-    """Current durable Session projection at the unified Provider boundary."""
-
-    session_id: str
-    provider_id: str
-    endpoint_id: str | None = None
-    model_id: str
-    projected_at: datetime
-    metrics: ContextMetrics
-    active_compaction_id: str | None = None
-
-
-class CurrentSessionContextSnapshot(ApplicationDTO):
-    status: CurrentSessionContextStatus
-    provider_context: ProviderContext
-    context_digest: str
-
-
 class SessionExport(ApplicationDTO):
     """Explicit complete-history transfer DTO; interactive Host reads stay paged."""
 

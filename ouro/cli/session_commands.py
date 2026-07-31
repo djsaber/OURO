@@ -14,8 +14,9 @@ from ouro.application.session_models import (
 )
 from ouro.application.sessions import SessionService
 from ouro.cli.context_output import (
-    render_current_context_snapshot,
-    render_current_context_status,
+    NO_PREPARED_CONTEXT,
+    render_context_snapshot,
+    render_context_status,
 )
 from ouro.cli.errors import error_exit_code
 from ouro.cli.run import build_default_runtime
@@ -23,7 +24,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import OuroError
 from ouro.deployment import SessionBackend
-from ouro.local_application import LocalApplication, build_local_session_services
+from ouro.local_application import build_local_session_services
 
 
 def list_sessions(
@@ -316,11 +317,13 @@ async def show_session_context(
     json_mode: bool = False,
     session_backend: SessionBackend | None = None,
 ) -> int:
-    runtime = None
     try:
-        runtime = build_default_runtime(home, session_backend=session_backend)
-        async with LocalApplication.from_runtime(runtime, home=home):
-            snapshot = runtime.current_context(session_id)
+        sessions = build_local_session_services(
+            home,
+            session_backend=session_backend,
+        ).sessions
+        snapshot = sessions.context(session_id) if include_content else None
+        status = snapshot.status if snapshot is not None else sessions.context_status(session_id)
     except (OuroError, FileNotFoundError, ValueError) as exc:
         ouro_exc = exc if isinstance(exc, OuroError) else OuroError(str(exc))
         _print_error(ouro_exc, json_mode=json_mode)
@@ -329,9 +332,11 @@ async def show_session_context(
     if json_mode:
         payload: dict[str, Any] = {
             "status": "ok",
-            "context_status": snapshot.status.model_dump(mode="json"),
+            "context_status": (
+                status.model_dump(mode="json") if status is not None else None
+            ),
         }
-        if include_content:
+        if snapshot is not None:
             payload.update(
                 {
                     "provider_context": snapshot.provider_context.model_dump(mode="json"),
@@ -339,10 +344,12 @@ async def show_session_context(
                 }
             )
         print(json.dumps(payload, ensure_ascii=False))
-    elif include_content:
-        print(render_current_context_snapshot(snapshot))
+    elif snapshot is not None:
+        print(render_context_snapshot(snapshot))
+    elif status is not None:
+        print(render_context_status(status))
     else:
-        print(render_current_context_status(snapshot.status))
+        print(NO_PREPARED_CONTEXT)
     return 0
 
 

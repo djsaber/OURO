@@ -4,6 +4,7 @@ import pytest
 
 from ouro.application.compaction import LLMSummaryCompactionStrategy
 from ouro.application.runtime import RuntimeService
+from ouro.cli.context_output import NO_PREPARED_CONTEXT
 from ouro.cli.interactive import run_interactive
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -452,7 +453,7 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
 
 
 @pytest.mark.asyncio
-async def test_manual_compaction_updates_current_context_without_rewriting_last_request(
+async def test_manual_compaction_does_not_rewrite_latest_provider_context(
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -464,29 +465,16 @@ async def test_manual_compaction_updates_current_context_without_rewriting_last_
     await runtime.run("seed", session_id=session.session_id)
     _append_turns(store, session.session_id, 3)
 
-    last_request_before = runtime.sessions.context_status(session.session_id)
-    current_before = runtime.current_context(session.session_id)
+    last_request_before = runtime.sessions.context(session.session_id)
     result = await runtime.compact(session_id=session.session_id)
-    current_after = runtime.current_context(session.session_id)
-    last_request_after = runtime.sessions.context_status(session.session_id)
+    last_request_after = runtime.sessions.context(session.session_id)
 
     assert result.compaction is not None
     assert last_request_before is not None
     assert last_request_after is not None
-    assert last_request_after.context_id == last_request_before.context_id
-    assert current_after.status.active_compaction_id == result.compaction.compaction_id
-    assert (
-        current_after.status.metrics.estimated_input_tokens
-        == result.compaction.estimated_tokens_after
-    )
-    assert (
-        current_after.status.metrics.estimated_input_tokens
-        < current_before.status.metrics.estimated_input_tokens
-    )
-    assert current_after.context_digest != current_before.context_digest
-    assert current_after.provider_context.messages[0].role == "system_synthetic"
-    assert current_after.provider_context.messages[0].text_content == (
-        "<conversation-summary>\nsummary-1\n</conversation-summary>"
+    assert last_request_after == last_request_before
+    assert store.load_session_record(session.session_id).active_compaction_id == (
+        result.compaction.compaction_id
     )
 
 
@@ -589,7 +577,4 @@ async def test_interactive_compact_command_displays_progress_and_completion(tmp_
     assert any("Compacting context · manual" in output for output in outputs)
     assert any("Context compaction completed" in output for output in outputs)
     assert any(output.startswith("Active compaction: cmp_") for output in outputs)
-    assert any(
-        output.startswith("Context: current") and "Compaction: cmp_" in output for output in outputs
-    )
-    assert any("Provider context:" in output and "summary-1" in output for output in outputs)
+    assert outputs.count(NO_PREPARED_CONTEXT) == 3
