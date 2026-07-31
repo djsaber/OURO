@@ -872,6 +872,7 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
                 run_id=call.run_id,
                 message_count=call.message_count,
                 model_round=call.model_round,
+                workspace=call.workspace,
             )
         )
         if inspect.isawaitable(raw):
@@ -888,6 +889,7 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
                     text=value.text,
                     persistence=value.persistence,
                     semantic_tag=value.semantic_tag,
+                    target=value.target,
                 )
                 if isinstance(value, sdk.ContextFragment)
                 else ContextFragment(text=value)

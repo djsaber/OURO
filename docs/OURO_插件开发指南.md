@@ -179,6 +179,11 @@ Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `system-r
 组成的具体语义名。构建 ProviderContext 时正文会被包装为 `<plan-context>...</plan-context>`；标签只描述来源语义，
 不会改变消息的协议权限。不要把瞬时状态快照无差别持久化。
 
+如果片段属于完整 system prompt 而不是 synthetic message，显式使用
+`ContextFragment(target="system_prompt")`。Application 会在基础 system prompt 与 Skills 指令之后按 Context
+Provider 顺序追加它；该目标只允许 `persistence="ephemeral"`，不会构造或持久化消息。
+`ContextCall.workspace` 提供本次 Session 中 Agent 的工作目录。
+
 ### Observer 与 Prompt Policy
 
 Observer 只接收已经发生的类型化事实，handler 必须返回 `None`。Application 为每个 registration 使用独立有界
@@ -331,6 +336,8 @@ uv run ouro plugin import-report ./community-package --json
 - [`inprocess-observer`](../examples/plugins/inprocess-observer)：非阻塞类型化 Observer；
 - [`inprocess-prompt-policy`](../examples/plugins/inprocess-prompt-policy)：持久化前拒绝提示的 Prompt Policy；
 - 内置 Plan 模式位于 `ouro/builtin_plugins/plan_mode`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
+- 内置 System Information 插件位于 `ouro/builtin_plugins/system_information`，展示了请求级 system prompt
+  fragment、运行环境边界和默认启用 builtin 的组合方式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
 五个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin

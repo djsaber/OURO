@@ -1,0 +1,3 @@
+from .definition import SYSTEM_INFORMATION_PLUGIN
+
+__all__ = ["SYSTEM_INFORMATION_PLUGIN"]

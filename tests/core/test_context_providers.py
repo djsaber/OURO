@@ -17,6 +17,7 @@ def _call() -> ContextProviderCall:
         run_id="run_1",
         message_count=3,
         model_round=2,
+        workspace="/workspace",
     )
 
 
@@ -31,7 +32,9 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 provider_id="later",
                 priority=20,
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[ContextFragment(text="later")]
+                    fragments=[
+                        ContextFragment(text="later", target="system_prompt")
+                    ]
                 ),
             ),
             ContextProviderRegistration(
@@ -62,6 +65,7 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
     assert result.fragments[0].persistence == "message"
     assert result.fragments[0].semantic_tag == "plugin-context"
     assert result.fragments[1].semantic_tag == "system-reminder"
+    assert result.fragments[1].target == "system_prompt"
     assert result.failures == []
     assert result.blocked is False
 

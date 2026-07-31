@@ -53,6 +53,39 @@ def test_context_builder_places_skills_in_system_prompt_and_keeps_dynamic_contex
     assert context.context_metadata["skills_injected"] is True
 
 
+def test_context_builder_appends_ephemeral_prompt_fragments_after_skills() -> None:
+    context = ContextBuilder(skill_instructions="skills").build(
+        messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        tools=[],
+        system_prompt="system",
+        added_context=[
+            ContextFragment(text="message context"),
+            ContextFragment(
+                text="<runtime-facts>facts</runtime-facts>",
+                target="system_prompt",
+            ),
+        ],
+    )
+
+    assert context.system_prompt == (
+        "system\n\nskills\n\n<runtime-facts>facts</runtime-facts>"
+    )
+    assert [message.text_content for message in context.model_messages] == [
+        "message context",
+        "hello",
+    ]
+    assert context.context_metadata["system_prompt_fragment_count"] == 1
+
+
+def test_system_prompt_context_fragments_cannot_request_message_persistence() -> None:
+    with pytest.raises(ValueError, match="system prompt context fragments must be ephemeral"):
+        ContextFragment(
+            text="invalid",
+            target="system_prompt",
+            persistence="message",
+        )
+
+
 def test_context_builder_preserves_native_system_prompt_when_no_skills_are_present() -> None:
     system_prompt = "  Preserve this prompt exactly.  \n"
 

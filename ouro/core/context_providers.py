@@ -4,7 +4,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
@@ -13,6 +13,7 @@ from ouro.core.redaction import redact_text
 
 ContextProviderFailureMode = Literal["omit", "block"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
+ContextFragmentTarget = Literal["message", "system_prompt"]
 
 
 class ContextProviderCall(OuroModel):
@@ -20,12 +21,20 @@ class ContextProviderCall(OuroModel):
     run_id: str
     message_count: int = Field(ge=0)
     model_round: int = Field(ge=1)
+    workspace: str | None = None
 
 
 class ContextFragment(OuroModel):
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
     semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
+    target: ContextFragmentTarget = "message"
+
+    @model_validator(mode="after")
+    def validate_target_persistence(self) -> ContextFragment:
+        if self.target == "system_prompt" and self.persistence != "ephemeral":
+            raise ValueError("system prompt context fragments must be ephemeral")
+        return self
 
 
 class AttributedContextFragment(OuroModel):
@@ -36,6 +45,13 @@ class AttributedContextFragment(OuroModel):
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
     semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
+    target: ContextFragmentTarget = "message"
+
+    @model_validator(mode="after")
+    def validate_target_persistence(self) -> AttributedContextFragment:
+        if self.target == "system_prompt" and self.persistence != "ephemeral":
+            raise ValueError("system prompt context fragments must be ephemeral")
+        return self
 
 
 class ContextProviderResult(OuroModel):
@@ -163,6 +179,7 @@ class ContextProviderRegistry:
                         text=fragment.text,
                         persistence=fragment.persistence,
                         semantic_tag=fragment.semantic_tag,
+                        target=fragment.target,
                     )
                     for index, fragment in enumerate(result.fragments)
                 )
@@ -203,6 +220,7 @@ __all__ = [
     "AttributedContextFragment",
     "ContextFragment",
     "ContextFragmentPersistence",
+    "ContextFragmentTarget",
     "ContextProviderCall",
     "ContextProviderEvaluation",
     "ContextProviderFailure",

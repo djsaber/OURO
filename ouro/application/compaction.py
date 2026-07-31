@@ -396,6 +396,7 @@ class ContextPreparationService:
                 run_id=run.run_id,
                 message_count=len(messages),
                 model_round=model_round,
+                workspace=session.workspace,
             )
         )
         sequence = await self.events.record_context_provider_failures(
@@ -423,6 +424,9 @@ class ContextPreparationService:
                     semantic_tag="unattended-mode-reminder",
                 )
             )
+        injected_message_count = sum(
+            fragment.target == "message" for fragment in added_context
+        )
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         source_messages, view = self._project_context(
@@ -481,7 +485,7 @@ class ContextPreparationService:
                     adapter=active_adapter,
                     view=final_view,
                     source_messages=source_messages,
-                    injected_message_count=len(added_context),
+                    injected_message_count=injected_message_count,
                 )
             sequence = execution.sequence
             if execution.record is None and view.metrics.over_budget:
@@ -513,7 +517,7 @@ class ContextPreparationService:
             adapter=active_adapter,
             view=view,
             source_messages=source_messages,
-            injected_message_count=len(added_context),
+            injected_message_count=injected_message_count,
         )
 
     def record_provider_completion(
@@ -555,6 +559,7 @@ class ContextPreparationService:
                     ContextFragment(
                         text=fragment.text,
                         semantic_tag=fragment.semantic_tag,
+                        target=fragment.target,
                     )
                 )
                 continue

@@ -14,6 +14,7 @@ SessionInputMode = Literal["follow_up", "steer"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
+ContextFragmentTarget = Literal["message", "system_prompt"]
 RunStatus = Literal[
     "queued",
     "running",
@@ -589,6 +590,7 @@ class ContextCall:
     run_id: str
     message_count: int
     model_round: int
+    workspace: str | None = None
 
 
 @dataclass(frozen=True)
@@ -607,6 +609,7 @@ class ContextFragment:
     text: str
     persistence: ContextFragmentPersistence = "ephemeral"
     semantic_tag: str = "system-reminder"
+    target: ContextFragmentTarget = "message"
 
 
 ContextHandler = Callable[
@@ -705,6 +708,7 @@ __all__ = [
     "ContextCall",
     "ContextFragment",
     "ContextFragmentPersistence",
+    "ContextFragmentTarget",
     "ContextPreparedObservation",
     "ContextOutput",
     "ContributionSet",

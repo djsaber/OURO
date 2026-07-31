@@ -138,12 +138,19 @@ class ContextBuilder:
             self.skill_instructions,
             additional_skill_instructions,
         )
-        composed_prompt = _compose_system_prompt(system_prompt, skill_instructions)
         context_fragments = [
             value if isinstance(value, ContextFragment) else ContextFragment(text=value)
             for value in (added_context or [])
             if value
         ]
+        prompt_fragments = [
+            fragment.text for fragment in context_fragments if fragment.target == "system_prompt"
+        ]
+        composed_prompt = _compose_system_prompt(
+            system_prompt,
+            skill_instructions,
+            *prompt_fragments,
+        )
         context_messages = [
             ModelMessage.text(
                 role="system_synthetic",
@@ -151,6 +158,7 @@ class ContextBuilder:
                 semantic_tag=fragment.semantic_tag,
             )
             for fragment in context_fragments
+            if fragment.target == "message"
         ]
         model_messages = [ModelMessage.from_record(message) for message in messages]
         fixed_tokens = self.token_estimator(composed_prompt)
@@ -185,6 +193,7 @@ class ContextBuilder:
             ),
             context_metadata={
                 "skills_injected": bool(skill_instructions),
+                "system_prompt_fragment_count": len(prompt_fragments),
             },
         )
 
@@ -194,18 +203,20 @@ def _compose_skill_instructions(base: str, additional: str) -> str:
     return "\n\n".join(values)
 
 
-def _compose_system_prompt(system_prompt: str, skill_instructions: str) -> str:
-    if not skill_instructions:
-        return system_prompt
-    if not system_prompt:
-        return skill_instructions
-    if system_prompt.endswith("\n\n"):
-        separator = ""
-    elif system_prompt.endswith("\n"):
-        separator = "\n"
-    else:
-        separator = "\n\n"
-    return f"{system_prompt}{separator}{skill_instructions}"
+def _compose_system_prompt(system_prompt: str, *fragments: str) -> str:
+    composed = system_prompt
+    for fragment in fragments:
+        if not fragment:
+            continue
+        if not composed:
+            composed = fragment
+        elif composed.endswith("\n\n"):
+            composed = f"{composed}{fragment}"
+        elif composed.endswith("\n"):
+            composed = f"{composed}\n{fragment}"
+        else:
+            composed = f"{composed}\n\n{fragment}"
+    return composed
 
 
 def estimate_text_tokens(text: str) -> int:

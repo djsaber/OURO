@@ -476,6 +476,10 @@ Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephe
 Run/model round/provider/fragment index 构成幂等 delivery identity。持久化失败阻断模型请求，不能退化为临时注入。
 该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
 
+Fragment 的 `target = message | system_prompt` 默认是 `message`。`system_prompt` target 只允许 ephemeral：
+Application 在基础 system prompt 和 Skills 之后按 provider/fragment 稳定顺序追加文本，并将其计入 token 预算与
+请求 digest，但不得为它构造 canonical message。Context Provider call 可以读取 Host 提供的 Session workspace。
+
 ### 10.3 Prompt Policy
 
 Prompt Policy 在 Host command routing 确认输入是模型提示后、持久化 user message 和创建 Run 前执行，返回
