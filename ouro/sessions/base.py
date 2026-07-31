@@ -12,6 +12,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions.index import SessionIndex
 
@@ -39,6 +40,7 @@ class SessionSnapshot(RuntimeSessionSnapshot):
     """Complete Session view for recovery, inspection, export, and replay."""
 
     events: list[EventRecord] = Field(default_factory=list)
+    extension_states: list[SessionExtensionStateRecord] = Field(default_factory=list)
 
 
 class SessionLock(Protocol):
@@ -82,6 +84,7 @@ class SessionRepository(Protocol):
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
+        extension_states: list[SessionExtensionStateRecord] | None = None,
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...
@@ -164,6 +167,15 @@ class SessionRepository(Protocol):
 
     def is_resource_referenced(self, resource_id: str) -> bool: ...
 
+    def load_session_extension_states(
+        self,
+        session_id: str,
+    ) -> list[SessionExtensionStateRecord]: ...
+
+    def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None: ...
+
+    def delete_session_extension_state(self, session_id: str, owner_id: str) -> None: ...
+
     def session_mutation(
         self,
         session_id: str,
@@ -182,7 +194,6 @@ class SessionCatalogStore(Protocol):
     def refresh_catalog(
         self,
         session_id: str,
-        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> str | None: ...
 
 

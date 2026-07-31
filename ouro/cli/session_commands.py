@@ -332,9 +332,7 @@ async def show_session_context(
     if json_mode:
         payload: dict[str, Any] = {
             "status": "ok",
-            "context_status": (
-                status.model_dump(mode="json") if status is not None else None
-            ),
+            "context_status": (status.model_dump(mode="json") if status is not None else None),
         }
         if snapshot is not None:
             payload.update(
@@ -368,11 +366,15 @@ def remove_session(
             preview = ", ".join(session_ids[:4])
             if len(session_ids) > 4:
                 preview += ", ..."
-            confirm = input(
-                "Move the complete Session tree "
-                f"{root_session_id} ({len(session_ids)} Session(s): {preview}) to trash "
-                "and discard unfinished runs? [y/N] "
-            ).strip().lower()
+            confirm = (
+                input(
+                    "Move the complete Session tree "
+                    f"{root_session_id} ({len(session_ids)} Session(s): {preview}) to trash "
+                    "and discard unfinished runs? [y/N] "
+                )
+                .strip()
+                .lower()
+            )
             if confirm not in {"y", "yes"}:
                 if json_mode:
                     print(json.dumps({"status": "cancelled"}, ensure_ascii=False))

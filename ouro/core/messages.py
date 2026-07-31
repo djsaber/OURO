@@ -5,7 +5,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.message_semantics import (
     DEFAULT_SYNTHETIC_MESSAGE_TAG,
     SemanticTag,
@@ -118,8 +118,7 @@ class ModelMessage(OuroModel):
         return "".join(block.text for block in self.content if isinstance(block, TextContent))
 
 
-class MessageRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class MessageRecord(VersionedOuroModel):
     message_id: str = Field(default_factory=lambda: new_id("msg"))
     session_id: str
     run_id: str | None = None
@@ -209,9 +208,7 @@ def model_visible_message(message: MessageRecord | ModelMessage) -> ModelMessage
     if tag is None:
         return model_message
     escaped_content = [
-        block.model_copy(
-            update={"text": escape_semantic_envelope_delimiters(block.text, tag)}
-        )
+        block.model_copy(update={"text": escape_semantic_envelope_delimiters(block.text, tag)})
         if isinstance(block, TextContent)
         else block
         for block in model_message.content

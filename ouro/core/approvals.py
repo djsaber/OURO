@@ -5,7 +5,7 @@ from typing import Literal, Self, assert_never, cast, get_args
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, utc_now
 
 ApprovalStatus = Literal["requested", "approved", "rejected", "modified", "expired", "aborted"]
 ApprovalResolvedBy = Literal["user", "host_policy"]
@@ -68,8 +68,7 @@ def resolve_tool_permission(
             assert_never(invalid_mode)
 
 
-class ApprovalRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class ApprovalRecord(VersionedOuroModel):
     approval_id: str = Field(default_factory=lambda: new_id("apv"))
     session_id: str
     run_id: str

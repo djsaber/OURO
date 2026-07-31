@@ -71,9 +71,7 @@ def test_collect_multi_select_combines_options_and_other_without_duplicates() ->
         output_func=lambda _text: None,
     )
 
-    assert answer == {
-        "answers": {"database": ["SQLite (Recommended)", "CockroachDB"]}
-    }
+    assert answer == {"answers": {"database": ["SQLite (Recommended)", "CockroachDB"]}}
 
 
 def test_collect_questions_uses_prefetched_first_answer_and_question_ids() -> None:

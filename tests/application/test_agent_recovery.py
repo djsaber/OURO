@@ -328,7 +328,7 @@ async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
         tools=tools,
     )
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,
@@ -433,7 +433,7 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
         tools=ToolRegistry(),
     )
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,

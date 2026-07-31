@@ -7,7 +7,13 @@ from ouro.core.approvals import ApprovalRecord
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextBuilder
 from ouro.core.events import EventRecord
-from ouro.core.inner_loop import InnerAgentLoop, InnerLoopPorts
+from ouro.core.inner_loop import (
+    InnerAgentLoop,
+    InnerLoopContext,
+    InnerLoopPorts,
+    InnerLoopRunBoundaries,
+    InnerLoopTurnBoundaries,
+)
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
 from ouro.core.results import RunResult
@@ -174,18 +180,21 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
-        tools=ToolRegistry(),
+        tool_definitions=ToolRegistry().definitions,
         run_budget=RunBudgetPolicy(max_model_rounds=1),
         ports=InnerLoopPorts(
-            prepare_context=_prepare_context,
+            context=InnerLoopContext(prepare=_prepare_context),
+            runs=InnerLoopRunBoundaries(
+                record_usage=record_usage,
+                aborted_result=aborted_result,
+                save_waiting_state=save_waiting_state,
+                complete=complete_run,
+                fail=fail_run,
+                pause=pause_run,
+            ),
+            turns=InnerLoopTurnBoundaries(),
             emit=emit,
             handle_tool_batch=handle_tool_batch,
-            record_usage=record_usage,
-            aborted_result=aborted_result,
-            save_waiting_state=save_waiting_state,
-            complete_run=complete_run,
-            fail_run=fail_run,
-            pause_run=pause_run,
         ),
     )
 
@@ -340,27 +349,29 @@ async def test_inner_loop_accumulates_reasoning_and_passes_to_tool_handler() -> 
                         type="text_delta",
                         text="tool.",
                     ),
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={"id": "call_1", "name": "Write", "arguments": {}},
+                    ProviderStreamEvent.from_tool_call(
+                        {"id": "call_1", "name": "Write", "arguments": {}},
                     ),
                     ProviderStreamEvent(type="done"),
                 ]
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
-        tools=ToolRegistry(),
+        tool_definitions=ToolRegistry().definitions,
         run_budget=RunBudgetPolicy(max_model_rounds=2),
         ports=InnerLoopPorts(
-            prepare_context=_prepare_context,
+            context=InnerLoopContext(prepare=_prepare_context),
+            runs=InnerLoopRunBoundaries(
+                record_usage=record_usage,
+                aborted_result=aborted_result,
+                save_waiting_state=save_waiting_state,
+                complete=complete_run,
+                fail=fail_run,
+                pause=pause_run,
+            ),
+            turns=InnerLoopTurnBoundaries(),
             emit=emit,
             handle_tool_batch=handle_tool_batch,
-            record_usage=record_usage,
-            aborted_result=aborted_result,
-            save_waiting_state=save_waiting_state,
-            complete_run=complete_run,
-            fail_run=fail_run,
-            pause_run=pause_run,
         ),
     )
 

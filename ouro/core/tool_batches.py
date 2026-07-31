@@ -90,11 +90,3 @@ class ToolBatchHandlingResult(OuroModel):
     results: list[ToolResult] = Field(default_factory=list)
     input_request: ToolInputRequest | None = None
     sequence: int = 0
-
-    @property
-    def question(self) -> str | None:
-        """Return the legacy text question when the request happens to be text."""
-
-        if self.input_request is None or not isinstance(self.input_request.data, str):
-            return None
-        return self.input_request.data

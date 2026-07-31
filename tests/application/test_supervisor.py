@@ -148,9 +148,7 @@ async def test_supervisor_quarantines_incompatible_runtime_without_blocking_star
     runtime.store.save_run(run)
     payload = json.loads(run.model_dump_json())
     payload["agent_catalog"]["contract_hash"] = "sha256:" + "0" * 64
-    run_path = (
-        runtime.store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
-    )
+    run_path = runtime.store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
     run_path.write_text(json.dumps(payload), encoding="utf-8")
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
 

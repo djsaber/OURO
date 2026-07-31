@@ -73,9 +73,6 @@ def _replace_with_retry(source: Path, target: Path) -> None:
 
 
 def _is_transient_windows_sharing_error(exc: OSError) -> bool:
-    # Delete-pending/sharing races surface either as Win32 codes (5/32) or as a
-    # CRT-mapped PermissionError without a winerror (errno 13); both are transient
-    # around an atomic replace and settle within the bounded retry window.
     winerror = getattr(exc, "winerror", None)
     if winerror is not None:
         return winerror in _WINDOWS_TRANSIENT_SHARING_ERRORS

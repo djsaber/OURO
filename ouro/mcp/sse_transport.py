@@ -62,7 +62,9 @@ async def legacy_sse_transport(
                     task_group.cancel_scope.cancel()
         finally:
             await read_sender.aclose()
+            await read_stream.aclose()
             await write_stream.aclose()
+            await write_receiver.aclose()
 
 
 async def _read_events(

@@ -1,5 +1,7 @@
 # OURO AFK 模式设计
 
+状态：当前
+
 ## 1. 目标
 
 AFK（Away From Keyboard）模式用于用户暂时离开但希望 Agent 继续自主工作的场景。它保证：
@@ -91,7 +93,7 @@ tool preflight
 事件至少区分：
 
 - `approval_requested` / `approval_resolved`，后者记录 resolver provenance；
-- `ask_user_requested`，保留现有 Host 兼容投影；
+- `ask_user_requested`，提供 Host 兼容投影；
 - `ask_user_resolved`，记录 resolution 类型和 provenance；
 - 自动解决不得产生伪造的用户消息。
 
@@ -119,7 +121,7 @@ Plan Mode 的阶段 Tool Policy 仍然有效，AFK 不穿透其 `deny`。`ExitPl
 - CLI/Desktop：提供 AFK 预设、状态展示和交互入口；
 - Plugin SDK/worker：传递 resolution 与 capability，不解释业务 payload。
 
-不增加通用 Interaction Resolver Registry。首版复用已经存在的 resumable tool 边界；只有未来出现多个独立、可配置的外部回答器时，才基于真实用例增加新的 contribution。
+交互解决复用 resumable tool 边界，不设置通用 Interaction Resolver Registry。只有多个独立、可配置的外部回答器形成共同契约时，才基于真实用例增加新的 contribution。
 
 ## 8. 验收不变量
 

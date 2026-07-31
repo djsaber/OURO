@@ -189,22 +189,20 @@ async def _execute_command(
     if shell.kind in ("powershell", "windows_powershell"):
         stdout = _decode_powershell_clixml(stdout)
         stderr = _decode_powershell_clixml(stderr)
-    stdout_text, stdout_truncated = context.limit_output(stdout)
-    stderr_text, stderr_truncated = context.limit_output(stderr)
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
         is_error=process_result.aborted
         or process_result.timed_out
         or (process_result.returncode not in (0, None)),
-        content=_process_output(process_result, stdout=stdout_text, stderr=stderr_text),
+        content=_process_output(process_result, stdout=stdout, stderr=stderr),
         structured={
             "shell": shell.kind,
             "executable": shell.executable,
-            "stdout": stdout_text,
-            "stderr": stderr_text,
-            "stdout_truncated": stdout_truncated,
-            "stderr_truncated": stderr_truncated,
+            "stdout": stdout,
+            "stderr": stderr,
+            "stdout_truncated": process_result.stdout_truncated,
+            "stderr_truncated": process_result.stderr_truncated,
             "returncode": process_result.returncode,
             "timed_out": process_result.timed_out,
             "aborted": process_result.aborted,

@@ -549,9 +549,8 @@ async def test_tool_controlled_tool_bypasses_host_permission_but_not_tool_policy
     provider = FauxProvider(
         event_batches=[
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_control",
                         "name": "ControlHarness",
                         "arguments": {},
@@ -636,9 +635,8 @@ async def test_tool_policy_is_rechecked_at_the_execution_boundary(tmp_path) -> N
     provider = FauxProvider(
         event_batches=[
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_guarded",
                         "name": "GuardedTool",
                         "arguments": {},
@@ -726,9 +724,8 @@ async def test_execution_boundary_can_park_for_a_new_durable_approval(tmp_path) 
     provider = FauxProvider(
         event_batches=[
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_approval_boundary",
                         "name": "ApprovalBoundaryTool",
                         "arguments": {},

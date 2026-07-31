@@ -37,10 +37,10 @@ from ouro.core.redaction import redact_text
 from ouro.core.run_budget import RunBudgetReason
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import (
     ToolBatchCall,
     ToolBatchHandlingResult,
-    ToolBatchOutcomeStatus,
     ToolCallBatchRecord,
     ToolCallStatus,
     ToolExecutionMode,
@@ -254,20 +254,17 @@ class ToolCallCoordinator:
             calls.append(call)
         batch = batch.model_copy(update={"calls": calls, "updated_at": utc_now()})
 
-        pending_approvals = batch.pending_approvals
-        waiting_user = next((call for call in calls if call.status == "waiting_user"), None)
-        if pending_approvals or waiting_user is not None:
-            phase = "awaiting_interaction"
-            status: ToolBatchOutcomeStatus = (
-                "waiting_approval" if pending_approvals else "waiting_user"
+        suspension = tool_batch_suspension(batch)
+        if suspension is not None:
+            batch = batch.model_copy(
+                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
-            batch = batch.model_copy(update={"phase": phase, "updated_at": utc_now()})
             self.runs.save_batch_state(
                 session=session,
                 run=run,
                 batch=batch,
-                status=status,
-                phase="human_interaction",
+                status=suspension.status,
+                phase=suspension.run_phase,
             )
             sequence = await self.events.emit(
                 emitted,
@@ -276,17 +273,17 @@ class ToolCallCoordinator:
                 run_id=run.run_id,
                 event_type="run_status_changed",
                 payload={
-                    "to_status": status,
-                    "status": status,
+                    "to_status": suspension.status,
+                    "status": suspension.status,
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
                 },
             )
             return ToolBatchHandlingResult(
-                status=status,
+                status=suspension.status,
                 batch=batch,
                 messages=[assistant_message],
-                input_request=waiting_user.input_request if waiting_user is not None else None,
+                input_request=suspension.call.input_request,
                 sequence=sequence,
             )
 
@@ -501,43 +498,14 @@ class ToolCallCoordinator:
                     update={"calls": checkpoint_calls, "updated_at": utc_now()}
                 )
                 try:
-                    waiting_user = next(
-                        (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
-                        None,
-                    )
-                    waiting_child = next(
-                        (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
-                        None,
-                    )
-                    waiting_approval = next(
-                        (
-                            call
-                            for call in checkpoint_batch.calls
-                            if call.status == "awaiting_approval"
-                        ),
-                        None,
-                    )
+                    suspension = tool_batch_suspension(checkpoint_batch)
                     self.runs.save_batch_state(
                         session=session,
                         run=run,
                         batch=checkpoint_batch,
-                        status=(
-                            "waiting_approval"
-                            if waiting_approval is not None
-                            else "waiting_child"
-                            if waiting_child is not None
-                            else "waiting_user"
-                            if waiting_user is not None
-                            else "running"
-                        ),
+                        status=suspension.status if suspension is not None else "running",
                         phase=(
-                            "human_interaction"
-                            if waiting_approval is not None
-                            else "subagent_join"
-                            if waiting_child is not None
-                            else "human_interaction"
-                            if waiting_user is not None
-                            else "tool_execution"
+                            suspension.run_phase if suspension is not None else "tool_execution"
                         ),
                     )
                 except SessionBusyError:
@@ -596,7 +564,6 @@ class ToolCallCoordinator:
                             "tool_call_id": completed_call.request.id,
                             "tool_name": completed_call.request.name,
                             "request": completed_call.input_request.data,
-                            "question": completed_call.input_request.data,
                             "source_index": completed_call.request.source_index,
                         },
                     )
@@ -689,7 +656,6 @@ class ToolCallCoordinator:
                         "tool_call_id": resolving_call.request.id,
                         "tool_name": resolving_call.request.name,
                         "request": request.data,
-                        "question": request.data,
                         "source_index": resolving_call.request.source_index,
                         "interaction_mode": session.interaction_mode,
                         "will_suspend": False,
@@ -723,28 +689,17 @@ class ToolCallCoordinator:
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )
-        waiting_approval = next(
-            (call for call in checkpoint_batch.calls if call.status == "awaiting_approval"),
-            None,
-        )
-        waiting_user = next(
-            (call for call in checkpoint_batch.calls if call.status == "waiting_user"),
-            None,
-        )
-        waiting_child = next(
-            (call for call in checkpoint_batch.calls if call.status == "waiting_child"),
-            None,
-        )
-        if waiting_approval is not None:
+        suspension = tool_batch_suspension(checkpoint_batch)
+        if suspension is not None:
             waiting_batch = checkpoint_batch.model_copy(
-                update={"phase": "awaiting_interaction", "updated_at": utc_now()}
+                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
             )
             self.runs.save_batch_state(
                 session=session,
                 run=run,
                 batch=waiting_batch,
-                status="waiting_approval",
-                phase="human_interaction",
+                status=suspension.status,
+                phase=suspension.run_phase,
             )
             sequence = await self.events.emit(
                 emitted,
@@ -753,84 +708,27 @@ class ToolCallCoordinator:
                 run_id=run.run_id,
                 event_type="run_status_changed",
                 payload={
-                    "to_status": "waiting_approval",
-                    "status": "waiting_approval",
+                    "to_status": suspension.status,
+                    "status": suspension.status,
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
                 },
             )
+            if suspension.status == "waiting_child":
+                assert suspension.call.agent_wait is not None
+                if self.agent_controls is None:
+                    raise RuntimeError("Agent control executor is unavailable")
+                await self.agent_controls.wait_parked(
+                    session=session,
+                    run=run,
+                    batch=waiting_batch,
+                    tool_call_id=suspension.call.request.id,
+                    wait=suspension.call.agent_wait,
+                )
             return ToolBatchHandlingResult(
-                status="waiting_approval",
+                status=suspension.status,
                 batch=waiting_batch,
-                sequence=sequence,
-            )
-        if waiting_child is not None:
-            assert waiting_child.agent_wait is not None
-            waiting_batch = checkpoint_batch.model_copy(
-                update={"phase": "awaiting_child", "updated_at": utc_now()}
-            )
-            self.runs.save_batch_state(
-                session=session,
-                run=run,
-                batch=waiting_batch,
-                status="waiting_child",
-                phase="subagent_join",
-            )
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="run_status_changed",
-                payload={
-                    "to_status": "waiting_child",
-                    "status": "waiting_child",
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                },
-            )
-            if self.agent_controls is None:
-                raise RuntimeError("Agent control executor is unavailable")
-            await self.agent_controls.wait_parked(
-                session=session,
-                run=run,
-                batch=waiting_batch,
-                tool_call_id=waiting_child.request.id,
-                wait=waiting_child.agent_wait,
-            )
-            return ToolBatchHandlingResult(
-                status="waiting_child",
-                batch=waiting_batch,
-                sequence=sequence,
-            )
-        if waiting_user is not None:
-            waiting_batch = checkpoint_batch.model_copy(
-                update={"phase": "awaiting_interaction", "updated_at": utc_now()}
-            )
-            self.runs.save_batch_state(
-                session=session,
-                run=run,
-                batch=waiting_batch,
-                status="waiting_user",
-                phase="human_interaction",
-            )
-            sequence = await self.events.emit(
-                emitted,
-                sequence,
-                session_id=session.session_id,
-                run_id=run.run_id,
-                event_type="run_status_changed",
-                payload={
-                    "to_status": "waiting_user",
-                    "status": "waiting_user",
-                    "batch_id": batch.batch_id,
-                    "turn_id": batch.turn_id,
-                },
-            )
-            return ToolBatchHandlingResult(
-                status="waiting_user",
-                batch=waiting_batch,
-                input_request=waiting_user.input_request,
+                input_request=suspension.call.input_request,
                 sequence=sequence,
             )
         batch = checkpoint_batch.model_copy(
@@ -1521,9 +1419,6 @@ class ToolCallCoordinator:
                     "tool_call_id": request.id,
                     "tool_name": request.name,
                     "request": outcome.input_request.data
-                    if outcome.input_request is not None
-                    else None,
-                    "question": outcome.input_request.data
                     if outcome.input_request is not None
                     else None,
                 },

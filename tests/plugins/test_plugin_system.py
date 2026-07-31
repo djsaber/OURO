@@ -1559,6 +1559,7 @@ for line in sys.stdin:
         await asyncio.sleep(0.01)
     assert log.read_text(encoding="utf-8").splitlines() == ["cancel:1", "cancel:2"]
     await client.close(timeout=0.2)
+    assert client.process is None
     assert diagnostics == []
 
 

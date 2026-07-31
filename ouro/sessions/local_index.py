@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -10,20 +9,22 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from ouro.core.base import new_id, utc_now
-from ouro.core.errors import PersistenceError
-from ouro.core.state import SessionRecord
-from ouro.sessions.base import RuntimeSessionSnapshot
+from ouro.core.errors import MigrationRequiredError, PersistenceError
+from ouro.core.messages import MessageRecord
+from ouro.core.persistence import decode_versioned_record_json
+from ouro.core.state import RunRecord, SessionRecord
+from ouro.local_io import write_model_atomic, write_text_atomic
+from ouro.local_locks import FileOwnerLock
 from ouro.sessions.catalog import (
+    SessionCatalogProjection,
+    catalog_entry_from_projection,
     catalog_entry_from_session,
-    catalog_entry_from_snapshot,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionIndex, SessionIndexEntry
-from ouro.sessions.local_io import write_model_atomic, write_text_atomic
-from ouro.sessions.locks import SessionRunLock
+from ouro.sessions.index import SessionHealth, SessionIndex, SessionIndexEntry
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SnapshotLoader = Callable[[str], RuntimeSessionSnapshot]
+_MAX_PREVIEW_SCAN_BYTES = 64 * 1024
 
 
 class LocalSessionIndex:
@@ -33,18 +34,23 @@ class LocalSessionIndex:
         self,
         sessions_dir: Path,
         locks_dir: Path,
-        load_snapshot: SnapshotLoader,
     ) -> None:
         self.sessions_dir = sessions_dir
         self.index_path = sessions_dir / "index.json"
         self.dirty_path = sessions_dir / ".index-dirty"
         self.lock_path = locks_dir / "catalog.lock"
-        self._load_snapshot = load_snapshot
 
     def try_initialize(self) -> str | None:
         try:
             if not self.index_path.exists():
-                write_model_atomic(self.index_path, SessionIndex())
+                has_sessions = any(
+                    path.is_dir() and not path.name.startswith(".")
+                    for path in self.sessions_dir.iterdir()
+                )
+                if has_sessions:
+                    self._write(self.scan())
+                else:
+                    write_model_atomic(self.index_path, SessionIndex())
             else:
                 self.load()
         except (OSError, PersistenceError, ValueError) as exc:
@@ -80,8 +86,6 @@ class LocalSessionIndex:
     def try_update(
         self,
         session_id: str,
-        *,
-        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> str | None:
         lock = self._new_lock()
         try:
@@ -102,11 +106,7 @@ class LocalSessionIndex:
             entries = [entry for entry in index.sessions if entry.session_id != session_id]
             session_dir = self.sessions_dir / session_id
             if session_dir.exists():
-                entries.append(
-                    self._entry_from_snapshot(snapshot)
-                    if snapshot is not None
-                    else self._build_entry(session_dir)
-                )
+                entries.append(self._build_entry(session_dir))
             self._write(SessionIndex(sessions=sort_catalog_entries(entries)))
         except (OSError, PersistenceError, ValueError) as exc:
             self._mark_dirty(str(exc))
@@ -133,11 +133,10 @@ class LocalSessionIndex:
                     f"could not rebuild session index {self.index_path}: {exc}"
                 ) from exc
 
-    def _new_lock(self) -> SessionRunLock:
-        return SessionRunLock(
+    def _new_lock(self) -> FileOwnerLock:
+        return FileOwnerLock(
             self.lock_path,
-            session_id="catalog",
-            run_id=new_id("index"),
+            owner={"scope": "session_catalog", "operation_id": new_id("index")},
         )
 
     def _build_entry(self, session_dir: Path) -> SessionIndexEntry:
@@ -145,27 +144,80 @@ class LocalSessionIndex:
         if not _RECORD_ID.fullmatch(session_id):
             return self._corrupt_entry(session_dir)
         try:
-            session = SessionRecord.model_validate_json(
-                (session_dir / "session.json").read_text("utf-8")
+            session = decode_versioned_record_json(
+                SessionRecord,
+                (session_dir / "session.json").read_text("utf-8"),
+                label=f"session record {session_id}",
             )
-        except (OSError, ValidationError, ValueError):
+        except MigrationRequiredError:
+            return self._corrupt_entry(session_dir, health="migration_required")
+        except (OSError, PersistenceError, ValidationError, ValueError):
             return self._corrupt_entry(session_dir)
 
         try:
-            snapshot = self._load_snapshot(session_id)
+            projection = self._load_projection(session_dir, session)
+        except MigrationRequiredError:
+            return catalog_entry_from_session(session, health="migration_required")
         except (FileNotFoundError, PersistenceError):
             return catalog_entry_from_session(session, health="corrupt")
-        return self._entry_from_snapshot(snapshot)
+        return catalog_entry_from_projection(session, projection)
 
-    def _entry_from_snapshot(self, snapshot: RuntimeSessionSnapshot) -> SessionIndexEntry:
-        resource_count, missing_resource = self._resource_counts(snapshot.session.session_id)
-        return catalog_entry_from_snapshot(
-            snapshot,
+    def _load_projection(
+        self,
+        session_dir: Path,
+        session: SessionRecord,
+    ) -> SessionCatalogProjection:
+        resource_count, missing_resource = self._resource_counts(session.session_id)
+        run_count = sum(1 for _ in (session_dir / "runs").glob("*.json"))
+        latest_run = None
+        if session.last_run_id is not None:
+            latest_run = decode_versioned_record_json(
+                RunRecord,
+                (session_dir / "runs" / f"{session.last_run_id}.json").read_text("utf-8"),
+                label=f"latest Run for catalog {session.session_id}",
+            )
+        return SessionCatalogProjection(
+            latest_run=latest_run,
+            latest_message=self._latest_message(session_dir / "messages.jsonl"),
+            message_count=session.message_count,
+            run_count=run_count,
             resource_count=resource_count,
             resource_missing=missing_resource,
         )
 
-    def _corrupt_entry(self, session_dir: Path) -> SessionIndexEntry:
+    @staticmethod
+    def _latest_message(path: Path) -> MessageRecord | None:
+        with path.open("rb") as stream:
+            end = stream.seek(0, 2)
+            scanned = 0
+            buffer = b""
+            while end > 0 and scanned < _MAX_PREVIEW_SCAN_BYTES:
+                size = min(8192, end, _MAX_PREVIEW_SCAN_BYTES - scanned)
+                end -= size
+                scanned += size
+                stream.seek(end)
+                buffer = stream.read(size) + buffer
+                lines = buffer.split(b"\n")
+                complete_lines = lines[1:] if end > 0 else lines
+                for raw in reversed(complete_lines):
+                    if not raw.strip():
+                        continue
+                    message = decode_versioned_record_json(
+                        MessageRecord,
+                        raw,
+                        label="message for catalog preview",
+                    )
+                    if message.role in {"user", "assistant"} and message.text_content:
+                        return message
+                buffer = lines[0] if end > 0 else b""
+        return None
+
+    def _corrupt_entry(
+        self,
+        session_dir: Path,
+        *,
+        health: SessionHealth = "corrupt",
+    ) -> SessionIndexEntry:
         try:
             modified = datetime.fromtimestamp(session_dir.stat().st_mtime, UTC)
         except OSError:
@@ -173,12 +225,12 @@ class LocalSessionIndex:
         return SessionIndexEntry(
             session_id=session_dir.name,
             root_session_id=session_dir.name,
-            title="Corrupt session",
+            title=("Migration required" if health == "migration_required" else "Corrupt session"),
             created_at=modified,
             updated_at=modified,
             last_activity_at=modified,
             status="failed",
-            health="corrupt",
+            health=health,
         )
 
     def _resource_counts(self, session_id: str) -> tuple[int, bool]:

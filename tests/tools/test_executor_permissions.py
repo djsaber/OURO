@@ -372,7 +372,7 @@ def test_persisted_plugin_tool_requires_the_same_execution_contract() -> None:
     assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"
 
 
-def test_legacy_user_plugin_tool_contract_remains_recoverable() -> None:
+def test_incomplete_user_plugin_tool_contract_is_rejected() -> None:
     async def execute(_invocation):
         return "unused"
 
@@ -404,4 +404,8 @@ def test_legacy_user_plugin_tool_contract_remains_recoverable() -> None:
         execution_contract_hash="c" * 64,
     )
 
-    assert ToolExecutor(registry).preflight(invocation).status == "ready"
+    outcome = ToolExecutor(registry).preflight(invocation)
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.structured["error_type"] == "ToolExecutionContractMismatch"

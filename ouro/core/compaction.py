@@ -7,7 +7,7 @@ from typing import Literal, Protocol
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import TokenEstimator, estimate_message_tokens, estimate_text_tokens
 from ouro.core.errors import CompactionStateError
@@ -48,8 +48,7 @@ class CompactionArtifact(OuroModel):
     metadata: Metadata = MetadataField
 
 
-class CompactionRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class CompactionRecord(VersionedOuroModel):
     compaction_id: str = Field(default_factory=lambda: new_id("cmp"))
     session_id: str
     previous_compaction_id: str | None = None

@@ -30,6 +30,7 @@ from ouro.application.run_continuations import (
     RunContinuationService,
     RunContinuationSettlement,
 )
+from ouro.application.run_ownership import RunExecutionOwnership
 from ouro.application.runs import (
     ACTIVE_RUN_STATUSES,
     RunLifecycle,
@@ -73,7 +74,10 @@ from ouro.core.errors import (
 from ouro.core.events import EventRecord
 from ouro.core.inner_loop import (
     InnerAgentLoop,
+    InnerLoopContext,
     InnerLoopPorts,
+    InnerLoopRunBoundaries,
+    InnerLoopTurnBoundaries,
     TurnBoundaryInputResult,
     TurnCompletionPolicyResult,
 )
@@ -108,15 +112,15 @@ from ouro.core.state import (
     RunContinuationCheckpoint,
     RunContinuationControllerRef,
     RunRecord,
-    RunStatus,
     SessionRecord,
 )
+from ouro.core.tool_batch_transitions import tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.tools import PermissionMode, tool_definition_contract_hash
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
-from ouro.sessions import RuntimeSessionSnapshot, SessionLock, SessionStore
+from ouro.sessions import RuntimeSessionSnapshot, SessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import ToolExecutor, ToolRegistry, ToolResult
 from ouro.tools.builtin_agents import agent_control_tools
@@ -267,8 +271,9 @@ class RuntimeService:
                 resources.project_model_messages if resources is not None else None
             ),
         )
-        self._abort_signals: dict[str, AbortSignal] = {}
+        self.run_ownership = RunExecutionOwnership(store)
         self._extension_catalog: PluginRuntimeResource | None = None
+        self._extensions_bound = False
         self._extension_snapshots: dict[str, ExtensionCatalogLease] = {}
         self._queued_extension_snapshots: dict[str, ExtensionCatalogLease] = {}
         self._session_control_snapshots: dict[str, frozenset[str]] = {}
@@ -278,22 +283,29 @@ class RuntimeService:
         self._run_tool_caps: dict[str, frozenset[str]] = {}
         self._run_tool_refs: dict[str, tuple[EffectiveToolRef, ...]] = {}
         self._run_delegated_constraints: dict[str, DelegatedConstraints] = {}
+        self._run_tool_coordinators: dict[str, ToolCallCoordinator] = {}
 
-    def attach_extension_catalog(self, catalog: PluginRuntimeResource) -> None:
-        if self._extension_catalog is not None and self._extension_catalog is not catalog:
-            raise RuntimeError("runtime already has an extension catalog")
+    def bind_extensions(
+        self,
+        *,
+        catalog: PluginRuntimeResource | None = None,
+        agent_definitions: AgentDefinitionService | None = None,
+        agent_controls: AgentControlExecutor | None = None,
+    ) -> None:
+        """Bind one complete Host extension assembly before executing Runs."""
+
+        if self._extensions_bound:
+            raise RuntimeError("runtime extensions are already bound")
+        if catalog is None and agent_definitions is None and agent_controls is None:
+            raise ValueError("runtime extension binding cannot be empty")
+        if agent_controls is not None and agent_definitions is None:
+            raise ValueError("Agent controls require the matching AgentDefinition service")
         self._extension_catalog = catalog
-        self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
-
-    def attach_agent_definitions(self, service: AgentDefinitionService) -> None:
-        if self._agent_definitions is not None and self._agent_definitions is not service:
-            raise RuntimeError("runtime already has an AgentDefinition service")
-        self._agent_definitions = service
-
-    def attach_agent_controls(self, controls: AgentControlExecutor) -> None:
-        if self._agent_controls is not None and self._agent_controls is not controls:
-            raise RuntimeError("runtime already has an Agent control executor")
-        self._agent_controls = controls
+        self._agent_definitions = agent_definitions
+        self._agent_controls = agent_controls
+        self._extensions_bound = True
+        if catalog is not None:
+            self.event_recorder.set_observer_registry_resolver(self._observers_for_observation)
 
     def _observers_for_observation(
         self,
@@ -398,12 +410,15 @@ class RuntimeService:
         )
 
     def _tool_calls_for_run(self, run_id: str) -> ToolCallCoordinator:
+        existing = self._run_tool_coordinators.get(run_id)
+        if existing is not None:
+            return existing
         tools = self._tools_for_run(run_id)
         delegated = self._run_delegated_constraints.get(run_id)
         execution_config = self._tool_execution_config
         if delegated is not None and not delegated.allow_external_paths:
             execution_config = execution_config.model_copy(update={"workspace_only": True})
-        return ToolCallCoordinator(
+        coordinator = ToolCallCoordinator(
             executor=ToolExecutor(
                 tools,
                 permission_overrides=self._permission_overrides,
@@ -422,12 +437,14 @@ class RuntimeService:
                 if self.environment.artifact_root is not None
                 else None
             ),
-            is_aborted=self._is_run_aborted,
+            is_aborted=self.run_ownership.is_aborted,
             tool_policies=self._tool_policies_for_run(run_id),
             session_controls=self.session_controls,
             session_controllers=self._session_controllers_for_run(run_id),
             agent_controls=self._agent_controls,
         )
+        self._run_tool_coordinators[run_id] = coordinator
+        return coordinator
 
     def add_event_sink(self, event_sink: RuntimeEventSink) -> None:
         self.event_recorder.add_event_sink(event_sink)
@@ -636,7 +653,7 @@ class RuntimeService:
     def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
         """Persist an idle session's model route without changing other sessions."""
 
-        lock = self._acquire_session_run_lock(session_id, new_id("model"))
+        lock = self.run_ownership.acquire(session_id, new_id("model"))
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
@@ -663,7 +680,7 @@ class RuntimeService:
             self.store.refresh_catalog(session.session_id)
             return session
         finally:
-            self._release_session_run_lock(lock)
+            self.run_ownership.release(lock)
 
     def set_session_approval_mode(
         self,
@@ -712,8 +729,6 @@ class RuntimeService:
     def _resolve_session_adapter(
         self,
         session: SessionRecord,
-        *,
-        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> tuple[SessionRecord, RuntimeAdapter]:
         with self.store.session_mutation(session.session_id):
             latest = self.store.load_session_record(session.session_id)
@@ -729,12 +744,7 @@ class RuntimeService:
                 }
             )
             self.store.save_session(session)
-        self.store.refresh_catalog(
-            session.session_id,
-            snapshot=(
-                snapshot.model_copy(update={"session": session}) if snapshot is not None else None
-            ),
-        )
+        self.store.refresh_catalog(session.session_id)
         return session, adapter
 
     def _adapter_for_session_id(self, session_id: str) -> RuntimeAdapter:
@@ -837,7 +847,7 @@ class RuntimeService:
         else:
             snapshot = self._load_runtime_snapshot(
                 session_id,
-                recover=(_prepared_run is None and not self._is_session_run_locked(session_id)),
+                recover=(_prepared_run is None and not self.run_ownership.is_locked(session_id)),
             )
             session = snapshot.session
             active_run = maybe_active_run(snapshot.runs)
@@ -916,7 +926,7 @@ class RuntimeService:
                 trigger=synthetic_source or "user",
             )
         )
-        run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
+        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
         if run_lock is None:
             snapshot = self.store.load_runtime_session(session.session_id)
             active_run = maybe_active_run(snapshot.runs)
@@ -996,14 +1006,8 @@ class RuntimeService:
                     )
                     self.store.save_session(session)
                 locked_snapshot = locked_snapshot.model_copy(update={"session": session})
-                self.store.refresh_catalog(
-                    session.session_id,
-                    snapshot=locked_snapshot,
-                )
-            session, active_adapter = self._resolve_session_adapter(
-                session,
-                snapshot=locked_snapshot,
-            )
+                self.store.refresh_catalog(session.session_id)
+            session, active_adapter = self._resolve_session_adapter(session)
             existing_messages = locked_snapshot.messages
             pending_inputs = _queued_inputs or [
                 QueuedInput(
@@ -1134,7 +1138,7 @@ class RuntimeService:
                     },
                 )
 
-            abort_signal = self._activate_abort_signal(session.session_id, run.run_id)
+            abort_signal = self.run_ownership.activate_signal(session.session_id, run.run_id)
             result = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -1146,10 +1150,10 @@ class RuntimeService:
             )
         finally:
             if abort_signal is not None:
-                self._release_abort_signal(run.run_id, abort_signal)
+                self.run_ownership.release_signal(run.run_id, abort_signal)
             if result is None:
                 self._release_extension_snapshot(run.run_id)
-            self._release_session_run_lock(run_lock)
+            self.run_ownership.release(run_lock)
         assert result is not None
         return await self._finalize_run_boundary(
             result,
@@ -1186,43 +1190,51 @@ class RuntimeService:
         abort_signal: AbortSignal,
         adapter: RuntimeAdapter,
     ) -> RunResult:
-        tools = self._tools_for_run(run.run_id)
+        tool_calls = self._tool_calls_for_run(run.run_id)
+        tools = tool_calls.registry
         context_providers = self._context_providers_for_run(run.run_id)
         compaction = self._compaction_for_run(run.run_id)
-        tool_calls = self._tool_calls_for_run(run.run_id)
         loop = InnerAgentLoop(
             adapter=adapter,
-            tools=tools,
+            tool_definitions=tools.definitions,
             run_budget=self._run_budget_for_run(run),
             ports=InnerLoopPorts(
-                prepare_context=partial(
-                    self.context_preparation.prepare,
-                    adapter=adapter,
-                    context_providers=context_providers,
-                    strategies=compaction,
-                    skill_instructions=self._instructions_for_run(run),
+                context=InnerLoopContext(
+                    prepare=partial(
+                        self.context_preparation.prepare,
+                        adapter=adapter,
+                        context_providers=context_providers,
+                        strategies=compaction,
+                        skill_instructions=self._instructions_for_run(run),
+                    ),
+                    record_completion=self.context_preparation.record_provider_completion,
+                ),
+                runs=InnerLoopRunBoundaries(
+                    record_usage=self.run_lifecycle.record_usage,
+                    aborted_result=self.run_ownership.aborted_result,
+                    save_waiting_state=self.run_lifecycle.save_waiting_state,
+                    complete=self.run_lifecycle.complete,
+                    fail=self.run_lifecycle.fail,
+                    pause=self.run_lifecycle.pause,
+                ),
+                turns=InnerLoopTurnBoundaries(
+                    consume_inputs=self._consume_turn_boundary_inputs,
+                    evaluate_completion=partial(
+                        self._evaluate_turn_completion,
+                        policies=self._turn_policies_for_run(run.run_id),
+                    ),
+                    begin_model_round=(
+                        self._begin_model_round if self._extension_catalog is not None else None
+                    ),
+                    commit_model_request=self._commit_model_request,
+                    shared_budget_reason=(
+                        self._agent_controls.budget_reason
+                        if self._agent_controls is not None
+                        else None
+                    ),
                 ),
                 emit=self.event_recorder.emit,
                 handle_tool_batch=tool_calls.handle_batch,
-                record_usage=self.run_lifecycle.record_usage,
-                record_context_completion=self.context_preparation.record_provider_completion,
-                aborted_result=self._aborted_result,
-                save_waiting_state=self.run_lifecycle.save_waiting_state,
-                complete_run=self.run_lifecycle.complete,
-                fail_run=self.run_lifecycle.fail,
-                pause_run=self.run_lifecycle.pause,
-                consume_turn_boundary_inputs=self._consume_turn_boundary_inputs,
-                evaluate_turn_completion=partial(
-                    self._evaluate_turn_completion,
-                    policies=self._turn_policies_for_run(run.run_id),
-                ),
-                begin_model_round=(
-                    self._begin_model_round if self._extension_catalog is not None else None
-                ),
-                commit_model_request=self._commit_model_request,
-                shared_budget_reason=(
-                    self._agent_controls.budget_reason if self._agent_controls is not None else None
-                ),
             ),
         )
         return await loop.run(
@@ -1256,21 +1268,18 @@ class RuntimeService:
             trigger="manual_compaction",
             status="running",
         )
-        run_lock = self._acquire_session_run_lock(session_id, run.run_id)
+        run_lock = self.run_ownership.acquire(session_id, run.run_id)
         if run_lock is None:
             raise SessionBusyError(f"session is already locked: {session_id}")
         emitted: list[EventRecord] = []
         sequence = self.store.latest_event_sequence(session_id)
-        abort_signal = self._activate_abort_signal(session_id, run.run_id)
+        abort_signal = self.run_ownership.activate_signal(session_id, run.run_id)
         terminal_run = run
         try:
             snapshot = self.store.load_runtime_session(session_id)
             if maybe_active_run(snapshot.runs) is not None:
                 raise SessionBusyError(f"session already has an active run: {session_id}")
-            active_session, active_adapter = self._resolve_session_adapter(
-                snapshot.session,
-                snapshot=snapshot,
-            )
+            active_session, active_adapter = self._resolve_session_adapter(snapshot.session)
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             run = self._attach_extension_snapshot(run)
             terminal_run = run
@@ -1314,16 +1323,6 @@ class RuntimeService:
                     tool_results=[],
                 )
                 terminal_run = failed.run
-                idle_session = failed.session.model_copy(
-                    update={
-                        "status": "idle",
-                        "active_run_id": None,
-                        "updated_at": utc_now(),
-                        "last_activity_at": utc_now(),
-                    }
-                )
-                self.store.save_session(idle_session)
-                self.store.refresh_catalog(idle_session.session_id)
                 if isinstance(exc, CompactionError):
                     raise
                 raise CompactionError(f"manual compaction failed: {exc}") from exc
@@ -1345,8 +1344,8 @@ class RuntimeService:
                 skipped=execution.skipped,
             )
         finally:
-            self._release_abort_signal(run.run_id, abort_signal)
-            self._release_session_run_lock(run_lock)
+            self.run_ownership.release_signal(run.run_id, abort_signal)
+            self.run_ownership.release(run_lock)
             if terminal_run.status in ACTIVE_RUN_STATUSES:
                 self._finish_run_observers(terminal_run)
             else:
@@ -1373,7 +1372,7 @@ class RuntimeService:
             return RunResult(session=snapshot.session, run=run)
 
         emitted: list[EventRecord] = []
-        signal = self._abort_signals.get(run.run_id)
+        signal = self.run_ownership.signal_for(run.run_id)
         has_active_owner = signal is not None
         if signal is not None:
             signal.abort(reason)
@@ -1425,7 +1424,7 @@ class RuntimeService:
 
         snapshot = self._load_runtime_snapshot(
             session_id,
-            recover=not self._is_session_run_locked(session_id),
+            recover=not self.run_ownership.is_locked(session_id),
         )
         self._validate_model_resource_refs(
             snapshot.session,
@@ -1452,7 +1451,7 @@ class RuntimeService:
 
         snapshot = self._load_runtime_snapshot(
             receipt.session_id,
-            recover=not self._is_session_run_locked(receipt.session_id),
+            recover=not self.run_ownership.is_locked(receipt.session_id),
         )
         active = maybe_active_run(snapshot.runs)
         if active is not None:
@@ -1659,7 +1658,7 @@ class RuntimeService:
         while True:
             snapshot = self._load_runtime_snapshot(
                 session_id,
-                recover=not self._is_session_run_locked(session_id),
+                recover=not self.run_ownership.is_locked(session_id),
             )
             if maybe_active_run(snapshot.runs) is not None:
                 return
@@ -2050,16 +2049,6 @@ class RuntimeService:
             for message in messages
         )
 
-    def _acquire_session_run_lock(self, session_id: str, run_id: str) -> SessionLock | None:
-        return self.store.acquire_session_lock(session_id, run_id)
-
-    def _release_session_run_lock(self, lock: SessionLock | None) -> None:
-        if lock is not None:
-            lock.release()
-
-    def _is_session_run_locked(self, session_id: str) -> bool:
-        return self.store.is_session_locked(session_id)
-
     def _load_runtime_snapshot(
         self,
         session_id: str,
@@ -2091,7 +2080,7 @@ class RuntimeService:
         resolved_approval_id = approval_id or run.pending_approval_id
         if resolved_approval_id is None:
             raise ValueError("run has no pending approval")
-        run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
+        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
@@ -2148,7 +2137,7 @@ class RuntimeService:
                 sequence=sequence,
             )
         finally:
-            self._release_session_run_lock(run_lock)
+            self.run_ownership.release(run_lock)
         # Queue draining starts a new Run and therefore must occur outside the
         # completed interaction's non-reentrant Session run lock.
         return await self._finalize_run_boundary(result, drain_queued_inputs=True)
@@ -2171,7 +2160,7 @@ class RuntimeService:
         waiting_call = next((call for call in batch.calls if call.status == "waiting_user"), None)
         if waiting_call is None:
             raise ValueError("run has no tool call waiting for user input")
-        run_lock = self._acquire_session_run_lock(session.session_id, run.run_id)
+        run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run.run_id}")
         try:
@@ -2237,7 +2226,6 @@ class RuntimeService:
                         "tool_call_id": resolved_call.request.id,
                         "tool_name": resolved_call.request.name,
                         "request": resolved_call.input_request.data,
-                        "question": resolved_call.input_request.data,
                     },
                 )
             result = await self._continue_resolved_batch(
@@ -2249,7 +2237,7 @@ class RuntimeService:
                 sequence=sequence,
             )
         finally:
-            self._release_session_run_lock(run_lock)
+            self.run_ownership.release(run_lock)
         # Keep the same post-lock Run boundary as normal runs and approval
         # recovery; a follow-up must acquire a fresh Session run lock.
         return await self._finalize_run_boundary(result, drain_queued_inputs=True)
@@ -2269,7 +2257,7 @@ class RuntimeService:
         run = find_run(snapshot.runs, run_id)
         if run.status != "waiting_child":
             raise ValueError(f"run is not waiting for a child: {run.status}")
-        run_lock = self._acquire_session_run_lock(session_id, run_id)
+        run_lock = self.run_ownership.acquire(session_id, run_id)
         if run_lock is None:
             raise SessionBusyError(f"run is already active: {run_id}")
         try:
@@ -2351,7 +2339,7 @@ class RuntimeService:
                 sequence=sequence,
             )
         finally:
-            self._release_session_run_lock(run_lock)
+            self.run_ownership.release(run_lock)
         return await self._finalize_run_boundary(resumed, drain_queued_inputs=True)
 
     async def _continue_resolved_batch(
@@ -2365,16 +2353,17 @@ class RuntimeService:
         sequence: int,
     ) -> RunResult:
         await self._ensure_extension_snapshot(run)
-        pending_approvals = batch.pending_approvals
-        waiting_user = next((call for call in batch.calls if call.status == "waiting_user"), None)
-        if pending_approvals or waiting_user is not None:
-            status: RunStatus = "waiting_approval" if pending_approvals else "waiting_user"
+        suspension = tool_batch_suspension(batch)
+        if suspension is not None:
+            batch = batch.model_copy(
+                update={"phase": suspension.batch_phase, "updated_at": utc_now()}
+            )
             session, run = self.run_lifecycle.save_batch_state(
                 session=session,
                 run=run,
                 batch=batch,
-                status=status,
-                phase="human_interaction",
+                status=suspension.status,
+                phase=suspension.run_phase,
             )
             sequence = await self.event_recorder.emit(
                 emitted,
@@ -2383,15 +2372,15 @@ class RuntimeService:
                 run_id=run.run_id,
                 event_type="run_status_changed",
                 payload={
-                    "to_status": status,
-                    "status": status,
+                    "to_status": suspension.status,
+                    "status": suspension.status,
                     "batch_id": batch.batch_id,
                     "turn_id": batch.turn_id,
                 },
             )
             return RunResult(session=session, run=run, events=emitted)
 
-        active_signal = self._activate_abort_signal(session.session_id, run.run_id)
+        active_signal = self.run_ownership.activate_signal(session.session_id, run.run_id)
         try:
             try:
                 handling = await self._tool_calls_for_run(run.run_id).execute_batch(
@@ -2419,7 +2408,7 @@ class RuntimeService:
             latest = self._load_runtime_snapshot(session.session_id, recover=True)
             session = latest.session
             run = find_run(latest.runs, run.run_id)
-            abort_result = self._aborted_result(
+            abort_result = self.run_ownership.aborted_result(
                 session_id=session.session_id,
                 run_id=run.run_id,
                 final_text="",
@@ -2449,10 +2438,7 @@ class RuntimeService:
             latest = self.store.load_runtime_session(session.session_id)
             session = latest.session
             run = find_run(latest.runs, run.run_id)
-            session, active_adapter = self._resolve_session_adapter(
-                session,
-                snapshot=latest,
-            )
+            session, active_adapter = self._resolve_session_adapter(session)
             resumed = await self._continue_model_loop(
                 session=session,
                 run=run,
@@ -2464,57 +2450,8 @@ class RuntimeService:
                 adapter=active_adapter,
             )
         finally:
-            self._release_abort_signal(run.run_id, active_signal)
+            self.run_ownership.release_signal(run.run_id, active_signal)
         return resumed
-
-    def _is_run_aborted(self, session_id: str, run_id: str) -> bool:
-        return self._abort_state(session_id, run_id) is not None
-
-    def _abort_state(
-        self,
-        session_id: str,
-        run_id: str,
-    ) -> tuple[SessionRecord, RunRecord] | None:
-        try:
-            run = self.store.load_run(session_id, run_id)
-        except Exception:  # noqa: BLE001 - abort polling must not break active runs.
-            return None
-        if run.status == "aborted" or run.abort_requested:
-            try:
-                return self.store.load_session_record(session_id), run
-            except Exception:  # noqa: BLE001 - abort polling must not break active runs.
-                return None
-        return None
-
-    def _aborted_result(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        final_text: str,
-        emitted: list[EventRecord],
-        tool_results: list[ToolResult],
-    ) -> RunResult | None:
-        abort_state = self._abort_state(session_id, run_id)
-        if abort_state is None:
-            return None
-        session, run = abort_state
-        return RunResult(
-            session=session,
-            run=run,
-            final_text=final_text,
-            events=emitted,
-            tool_results=tool_results,
-        )
-
-    def _activate_abort_signal(self, session_id: str, run_id: str) -> AbortSignal:
-        signal = AbortSignal(lambda: self._abort_state(session_id, run_id) is not None)
-        self._abort_signals[run_id] = signal
-        return signal
-
-    def _release_abort_signal(self, run_id: str, signal: AbortSignal) -> None:
-        if self._abort_signals.get(run_id) is signal:
-            self._abort_signals.pop(run_id, None)
 
     async def _finalize_run_boundary(
         self,
@@ -2624,6 +2561,7 @@ class RuntimeService:
             self._run_tool_caps.pop(run.run_id, None)
             self._run_tool_refs.pop(run.run_id, None)
             self._run_delegated_constraints.pop(run.run_id, None)
+            self._run_tool_coordinators.pop(run.run_id, None)
             if snapshot is not None:
                 snapshot.close()
 
@@ -2644,6 +2582,7 @@ class RuntimeService:
         self._run_tool_caps.pop(run_id, None)
         self._run_tool_refs.pop(run_id, None)
         self._run_delegated_constraints.pop(run_id, None)
+        self._run_tool_coordinators.pop(run_id, None)
         return snapshot
 
     def _restore_run_tool_cap(self, run: RunRecord) -> None:

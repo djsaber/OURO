@@ -10,7 +10,7 @@
 1. 用诚实、非阻塞、无返回控制力的 `Observer` 取代当前观察型 `Hook`；
 2. 新增独立、fail-closed 的 `PromptPolicy`，允许插件在用户提示持久化和 Run 创建前拒绝输入。
 
-权威契约见[插件系统目标规格](../specs/plugin-system.md)，设计理由见
+权威契约见[插件系统规格](../specs/plugin-system.md)，设计理由见
 [插件观察器与语义扩展点设计](../../docs/OURO_插件观察器与语义扩展点设计_2026-07-29.md)。
 
 ## 当前事实基线
@@ -51,7 +51,7 @@ C2 和 C3 必须先完成，避免在错误的 Hook 抽象上继续增加 Prompt
 
 目标：在改代码前固定权威设计、迁移范围和可证伪验收条件。
 
-- [x] 更新插件系统目标规格，区分 Observer、enrich、guard、strategy 和 lifecycle；
+- [x] 更新插件系统规格，区分 Observer、enrich、guard、strategy 和 lifecycle；
 - [x] 新增 Observer/Prompt Policy 专项设计；
 - [x] 将本计划加入执行计划索引和开发路线图；
 - [x] 校正当前 Skills/Hook 规格中的实际排序、事件、返回值和同步/异步事实；

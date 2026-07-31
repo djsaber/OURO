@@ -39,6 +39,26 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Canonical Session, Run, tool-batch, compaction, billing, resource, configuration, and plugin
+  records now cross a strict versioned persistence boundary. Missing, malformed, unsupported, and
+  future schema versions fail deterministically instead of being inferred from payload shape.
+- Goal, Plan, and Todo state now use the Host-owned, Session-scoped extension-state contract, so
+  branch, export, trash, File, and SQLite behavior share the same lifecycle and version checks.
+- Run/Session and tool-batch state changes now use shared pure transition rules. Runtime execution
+  ownership, terminal settlement, queued-input draining, Agent settlement, and Catalog cleanup have
+  one application boundary, and Host extensions bind atomically during composition.
+- Shell stdout and stderr now share a hard retention budget at the pipe-consumption boundary while
+  excess output continues to drain. Timeout and abort use bounded EOF waits and explicit process-tree
+  cleanup.
+- Local atomic I/O and file locking now live in shared infrastructure, and the recursive package
+  dependency matrix enforces allowed edges across the complete `ouro` package tree.
+- Local transport and plugin worker shutdown now close every owned stream, pipe, worker descendant,
+  and Windows process-tree terminator explicitly. Resource and unraisable-finalizer warnings fail the
+  test suite instead of being accepted as cleanup noise.
+- Provider adapters now expose one delta-only tool-call stream contract. Complete non-streaming
+  responses are normalized at the adapter boundary; the internal complete `tool_call` event,
+  text-only interaction aliases, incomplete legacy plugin tool contracts, and the no-op Toolkit
+  `include_dirs` argument were removed.
 - Reworked the default Agent system prompt into a compact, capability-neutral contract for user
   intent, autonomous completion, evidence-based verification, open inquiry across sensitive subjects,
   proportionate action-based risk judgment, narrow refusals, and concise communication.

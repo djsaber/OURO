@@ -9,6 +9,10 @@
 
 ## 领域对象
 
+Session、Run、Message、Event 等可独立持久化的核心记录继承同一版本化记录契约。新记录默认写入当前版本，
+但持久化读取必须经过 versioned decoder 并要求 payload 显式包含当前 `schema_version`；普通 Pydantic 字段默认值
+不能作为旧数据迁移。嵌套值对象随其根记录版本演进，只有独立写入的 artifact 才建立独立解码边界。
+
 ### Session
 
 Session 是长期会话容器。关键字段包括：
@@ -32,6 +36,25 @@ Run 表示一次可恢复执行。状态集合为：
 
 运行阶段为：`model_streaming`、`tool_preflight`、`human_interaction`、`tool_execution`、
 `subagent_join`、`result_commit`。Run 保存模型、usage、活动工具批次、待审批身份、终止请求和错误信息。
+
+### Run/Session 状态转移
+
+Run 是执行状态的唯一权威，Session 只保存面向 Host 与查询的粗粒度投影。`plan_run_transition` 是不访问
+Store、锁、事件或外部系统的纯规则：它校验 Session/Run identity、拒绝 terminal Run 重新进入其他状态、要求
+active Run 没有 `ended_at` 且 terminal Run 必须有 `ended_at`，并在同一个时间点生成 Run 与 Session 写入计划。
+
+Session 投影规则为：
+
+- `queued`、`running`、`waiting_child` -> `running`，保留唯一 `active_run_id`；
+- `waiting_user` -> `waiting_user`，`waiting_approval` -> `waiting_approval`；
+- agent Run 的 `failed` -> `failed` 并清除 active owner；
+- `completed`、`aborted`、`paused`、`recoverable`，以及 compaction Run 的 `failed` -> `idle` 并清除
+  active owner。
+
+所有 active 状态之间允许在同一 Run 内 wait/resume；active Run 可以进入 terminal 状态。terminal Run 只允许
+保持原状态追加审计字段，不能复活或改写成另一个 terminal 结果。新 Run 只能从 `queued` 或 `running` 注册。
+application 用例仍负责取得 mutation lock、准备业务字段、先保存权威 Run 再保存 Session 投影，以及在 durable
+边界之后发事件。usage、continuation、tool batch 审计和消息游标等不改变 Run status 的写入不属于状态迁移。
 
 ### Message 与 model turn
 
@@ -61,22 +84,21 @@ Run 表示一次可恢复执行。状态集合为：
 
 ## Inner loop 边界
 
-`InnerAgentLoop` 只拥有一个 active Run 内的模型回合循环。所有副作用通过 `InnerLoopPorts` 注入：
+`InnerAgentLoop` 只拥有一个 active Run 内的模型回合循环。`InnerLoopPorts` 按变化原因分成三组协作者，
+事件和工具批次保留为两个直接边界：
 
-- 上下文准备；
-- 事件写入；
-- Observer 失败记录；
-- 工具批次处理；
-- usage 记录；
-- waiting、complete、fail、pause 状态转换；
-- abort 结果构造。
+- `InnerLoopContext`：上下文准备和 provider completion 记账；
+- `InnerLoopRunBoundaries`：usage、abort 观察、waiting 持久化与 complete/fail/pause durable boundary；
+- `InnerLoopTurnBoundaries`：turn input/policy、model request checkpoint 和共享预算；
+- `emit` 与 `handle_tool_batch`：事件顺序和完整工具批次交付。
 
 应用层不得在 core 中引入 SessionStore、CLI 或 Provider factory。
 
 ## Provider 流契约
 
-- 流式 Provider 必须把每个工具调用 chunk 规范化为 `tool_call_delta`，不得在 Provider 内等待完整响应后再
-  一次性提交；只支持非流式响应的 Provider 可以产生完整 `tool_call`。
+- Provider 必须把流式 chunk 与非流式完整调用都在 adapter 边界规范化为 `tool_call_delta`；Core 不接受第二种
+  完整 `tool_call` event。流式路径不得在 Provider 内等待完整响应后再
+  一次性提交；只支持非流式响应的 Provider 为每个完整调用产生一个包含全部字段的 delta event。
 - `tool_call_delta.index` 是当前 assistant 响应内从零开始的工具调用序号，并稳定关联同一调用；Provider
   适配器必须在统一边界内把供应商原生 content-block 坐标归一化，不能向 Core 泄漏。`id_delta`、
   `name_delta` 和 `arguments_delta` 字段均保持追加分片语义。
@@ -154,6 +176,15 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。
 
+`RunExecutionOwnership` 是 Runtime 内唯一的进程内执行所有权组件：它取得/释放 Session run lock、登记和释放
+AbortSignal，并从 durable Run 轮询 abort 事实。它不写 Run status、不发事件，也不处理 queued input 或 terminal
+产品语义。Run 命令由 `RunLifecycle` 负责；approval/AskUser/child wait 仍由 RuntimeService 作为跨协作者事务入口；
+terminal continuation、Agent settlement、Observer/catalog lease 清理由明确的 terminal boundary 依次完成。
+
+完整 LocalApplication 在 Runtime、Plugin catalog、Supervisor、AgentDefinitionService 和 AgentService 全部构造后，
+通过一次性 `bind_extensions` 绑定完整 Host 扩展组合。绑定不可重复，Agent controls 不能脱离 matching definitions
+单独注入。裸 Runtime 不绑定扩展，明确表示无插件/Agent Host。
+
 `RuntimeActivitySnapshot` 是 Host-facing 投影：Run、ToolBatch 和 ToolCall 提供 durable 权威状态，模型增量
 及 compaction 事件补足响应中的瞬时阶段。投影必须能从 SessionSnapshot 重建；`Session.status` 继续保持粗粒度，
 不得扩张为 UI 状态枚举。活动订阅是可选能力，已有 durable event 订阅语义不因 UI 投影而改变。
@@ -162,6 +193,14 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 `tool_batch_results_committing`。`tool_batch_started` 携带预检后的逐调用状态，交互恢复与调用完成事件也携带
 精确 ToolCall status；Host 不得仅凭 `is_error` 推断 aborted/failed。因而 Host 不需要从相邻事件间隙猜测
 预检、执行结果和提交阶段。
+
+批次暂停由纯 `tool_batch_suspension` 统一判定。优先级固定为 approval -> child join -> user input；该结果同时
+给出 Run status、Run phase、batch phase 和拥有暂停原因的 ToolCall。preflight、并发 outcome checkpoint、执行
+结束以及 interaction resume 均复用此规则，不得各自扫描 calls 后拼装不同状态。
+
+Runtime 为一个 Run 只构造一个 `ToolCallCoordinator`，其中的 registry 是 Run-frozen catalog 加动态 controller
+scope 的组合；approval、AskUser 和 child wait 恢复复用同一 coordinator，terminal 清理时释放。不得在每个恢复
+入口重复解析同一 Run 的 tool/policy/controller registry。
 
 ## 失败语义
 
@@ -174,8 +213,12 @@ aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完�
 ## 验收证据
 
 - `tests/core/test_inner_loop.py`
+- `tests/core/test_run_transitions.py`
+- `tests/core/test_tool_batch_transitions.py`
+- `tests/application/test_run_ownership.py`
 - `tests/application/test_runtime.py`
-- `tests/application/test_followups.py`
+- `tests/application/test_tool_call_batches.py`
+- `tests/application/test_queued_inputs.py`
 - `tests/application/test_queued_input_modes.py`
 - `tests/application/test_events.py`
 - `tests/application/test_agents.py`

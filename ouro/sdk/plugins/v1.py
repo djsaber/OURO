@@ -63,6 +63,30 @@ class PluginDataStore(Protocol):
     def delete(self, relative_path: str) -> None: ...
 
 
+@dataclass(frozen=True)
+class PluginSessionState:
+    """One plugin-owned value whose lifecycle is governed by its Session."""
+
+    state_schema_version: int
+    payload: JsonValue
+
+
+class PluginSessionStateStore(Protocol):
+    def load(self, session_id: str) -> PluginSessionState | None: ...
+
+    def save(
+        self,
+        session_id: str,
+        *,
+        state_schema_version: int,
+        payload: JsonValue,
+        branch_policy: Literal["copy", "reset", "reject"] = "reset",
+        projection_semantic_tags: tuple[str, ...] = (),
+    ) -> None: ...
+
+    def delete(self, session_id: str) -> None: ...
+
+
 class PluginCredentialResolver(Protocol):
     def resolve(self, slot: str) -> str: ...
 
@@ -103,6 +127,7 @@ class PluginContext:
     diagnostics: DiagnosticEmitter
     permissions: frozenset[str] = frozenset()
     artifact_root: str | None = None
+    session_state: PluginSessionStateStore | None = None
 
 
 class ToolExecutionContext(Protocol):

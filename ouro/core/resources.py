@@ -6,7 +6,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, OuroModel, utc_now
+from ouro.core.base import OuroModel, VersionedOuroModel, utc_now
 
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 _MEDIA_TYPE = re.compile(r"[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+\Z")
@@ -32,10 +32,9 @@ class ResourceSource(OuroModel):
         return self
 
 
-class ResourceRecord(OuroModel):
+class ResourceRecord(VersionedOuroModel):
     """Canonical identity and metadata for one immutable content blob."""
 
-    schema_version: int = SCHEMA_VERSION
     resource_id: str
     digest: str
     media_type: str

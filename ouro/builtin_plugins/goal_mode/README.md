@@ -17,7 +17,10 @@ explicitly requests Goal creation or replacement. The Agent preserves `source_re
 compiles `outcome`, `verification`, `constraints`, `boundaries`, `iteration_strategy`, and
 `blocked_conditions`; the state-changing tool remains subject to Host approval.
 
-The Goal record is plugin-private canonical state. Normal Run completion never implies Goal
+The Goal record is private, owner-bound canonical Session extension state. It is stored by the
+Host's SessionRepository rather than under plugin data, so branch/export/trash cannot separate
+the `goal-contract` projection from its source state. Goal uses `reset` branch semantics: a new
+branch contains neither the active Goal nor inherited Goal projection. Normal Run completion never implies Goal
 completion. `UpdateGoal(complete)` requires auditing the contract's verification items and
 constraints. `UpdateGoal(blocked)` requires a genuine user-input or external-state blocker.
 An explicit user lifecycle command, a Runtime failure, or a token-budget boundary also stops

@@ -142,9 +142,8 @@ async def test_interactive_command_sets_mode_before_first_session(tmp_path) -> N
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "written"},

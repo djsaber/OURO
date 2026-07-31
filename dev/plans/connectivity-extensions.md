@@ -170,7 +170,7 @@ closure；optional contribution 与 supervised task 失败投影 degraded。B4 �
 - 任何 adapter 失败都不能产生部分候选 catalog；
 - 用户插件不能动态注册 adapter 或自定义 extension point。
 
-实现证据：`ouro/plugins/contribution_types.py` 是唯一 Host-owned 类型清单，把 Manifest 的十种 capability 与
+实现证据：`ouro/plugins/contribution_types.py` 是唯一 Host-owned 类型清单，把 Manifest 的 13 种 capability 与
 SDK、worker、prepare/optional、contract、resource 和 Catalog projection facet 绑定；各主流程只遍历该清单。
 Skills/MCP 的外部资源准备由 `generation_resources.py` 持有，只有真正加载/连接成功的资源才生成 contract；
 Background Service 的 projection facet 明确为 no-op，仅由 activation owner 串行管理。清单完整性、lifecycle、

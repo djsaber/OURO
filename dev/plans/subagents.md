@@ -76,7 +76,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 - nested depth 大于 1；
 - AgentSwarm、CSV map 或通用 DAG；
-- durable Goal/Task 自动调度；
+- durable Task/Workflow 自动调度；
 - per-child git worktree 和自动合并；
 - remote worker 或分布式队列；
 - AgentDefinition plugin contribution；
@@ -164,8 +164,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 | tests/sessions/test_delegations.py | 文件/SQLite repository contract、布局与 migration |
 | tests/application/test_agents.py | application 编排 |
 | tests/application/test_agent_recovery.py | 崩溃窗口与恢复 |
-| tests/application/test_agent_events.py | root tree/subscription |
-| tests/tools/test_agent_tools.py | schema、权限和工具结果 |
+| tests/application/test_agents.py | root tree、subscription 与 application contract |
+| tests/tools/test_builtin_agents.py | schema、权限和工具结果 |
 | tests/architecture/test_boundaries.py | 依赖、插件与 Host 边界 |
 
 具体文件可随现有模块规模调整，但职责和依赖方向不能改变。
@@ -205,7 +205,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] RunPhase 增加 subagent_join。
 - [x] ToolCallStatus 增加 waiting_child。
 - [x] ToolBatchPhase 增加 awaiting_child 或语义等价状态。
-- [x] session_status_for_run 将 waiting_child 投影为 running。
+- [x] 共享 Run transition plan 将 waiting_child 投影为 running。
 - [x] RuntimeActivity 增加 waiting_child，但 SessionStatus 不扩张为 UI 枚举。
 - [x] 更新 exhaustive match、序列化和 SDK/public DTO 边界。
 

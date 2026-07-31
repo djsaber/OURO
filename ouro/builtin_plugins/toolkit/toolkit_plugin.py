@@ -152,13 +152,6 @@ _GLOB_SCHEMA: Mapping[str, object] = {
                 "Defaults to false."
             ),
         },
-        "include_dirs": {
-            "type": "boolean",
-            "description": (
-                "Deprecated; omit this field. It has no effect because results always contain "
-                "files, never directories."
-            ),
-        },
     },
     "required": ["pattern"],
     "additionalProperties": False,
@@ -330,7 +323,9 @@ _MISSING = object()
 
 class ToolkitPlugin:
     def __init__(self, context: PluginContext) -> None:
-        self._todos = TodoListRepository(context.data)
+        if context.session_state is None:
+            raise RuntimeError("toolkit requires Host-managed Session state")
+        self._todos = TodoListRepository(context.session_state)
         self._todo_lock = threading.RLock()
 
     async def prepare(self) -> ContributionSet:

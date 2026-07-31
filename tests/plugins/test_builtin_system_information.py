@@ -28,9 +28,7 @@ def test_system_information_manifest_is_default_enabled_context_contract() -> No
     manifest = SYSTEM_INFORMATION_PLUGIN.manifest
 
     assert manifest.plugin_id == PLUGIN_ID
-    assert [item.id for item in manifest.contributes.context_providers] == [
-        "runtime-facts"
-    ]
+    assert [item.id for item in manifest.contributes.context_providers] == ["runtime-facts"]
     assert manifest.contributes.context_providers[0].priority == 10_000
     assert manifest.contributes.context_providers[0].failure_mode == "omit"
     assert manifest.permissions == []

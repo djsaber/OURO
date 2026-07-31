@@ -1,5 +1,7 @@
 # 开源 Agent「计划模式」Harness 设计模式调研
 
+> 文档性质：历史调研快照。本文保留调研时的外部事实与设计背景，不作为 OURO 当前实现契约。
+
 > 调研日期：2026-07-18
 > 调研对象：Claude Code、OpenAI Codex CLI（codex-rs）、OpenCode（sst/opencode）、Cline
 > 调研范围：仅关注智能体循环与 LLM 交互的 harness 算法流程（智能体怎么循环、上下文怎么构建、工具怎么提供、模式怎么退出），不涉及具体代码技术实现。

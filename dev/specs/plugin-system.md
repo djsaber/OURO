@@ -1,11 +1,10 @@
-# OURO 插件系统目标规格
+# OURO 插件系统规格
 
-状态：当前（B1-B8、C1-C5 已实现）
+状态：当前
 
-本文定义 OURO 插件系统必须满足的规范性契约。B1-B8 的实现范围见
-[连接与扩展计划](../plans/connectivity-extensions.md)；Observer 与 Prompt Policy 的 C1-C5 设计和实施顺序见
-[插件观察器与语义扩展点设计](../../docs/OURO_插件观察器与语义扩展点设计_2026-07-29.md)和
-[插件观察器与提示策略计划](../plans/plugin-observers-prompt-policy.md)。
+本文定义 OURO 插件系统的规范性契约。设计背景和实施记录分别保存在
+[插件系统研究文档](../../docs/Agent_插件系统调研报告_2026-07-16.md)与
+[连接与扩展计划](../plans/connectivity-extensions.md)。
 
 OURO 尚处于开发阶段。本规格不承诺兼容旧 Manifest、旧 state、旧 Plugin API 或旧 worker protocol；实现进入
 本规格时应直接更新代码、测试、示例和本地开发数据，旧格式默认严格拒绝。
@@ -135,9 +134,9 @@ Builtin plugin：
 - 以稳定 version 和 builtin contract hash 参与 dependency lock；实现内容变化即使忘记提升 version，也必须产生不同 release identity。
 
 `builtin | user` 是代码供应类别，`declarative | python-inprocess | worker` 是运行方式，二者相互独立。Manifest
-不能声明 plugin class，也不新增可由 user package 伪造的 `runtime.kind = builtin`。首版 builtin 只实现当前 Plan/Goal
+不能声明 plugin class，也不设置可由 user package 伪造的 `runtime.kind = builtin`。Builtin 使用 Plan/Goal
 模式所需的 `python-inprocess`、空 configuration 和无 package resource 形态；其他 runtime、configuration、Skill/MCP
-package resource 在出现真实 builtin 用例后再扩展，不预建第二套配置、凭据或资源协议。
+package resource 只有在真实 builtin 用例形成共同契约时扩展，不预建第二套配置、凭据或资源协议。
 
 启用的 builtin 必须拥有正常 `PluginGeneration`。只有不可关闭、属于 Agent 正确运行前提的 Host/Core facility 才进入
 Catalog baseline；“随 OURO 分发”本身不足以把一个可关闭模块放入 baseline。
@@ -339,6 +338,9 @@ Context 只暴露稳定、必要的能力：
 - identity、provenance 摘要和 generation；
 - 只读 configuration；
 - plugin-private data view；候选读取共享数据，但写入/删除进入隔离 staging，active 发布后才提交到共享 data；
+- 可选的 owner-bound Session state view：只读写当前 plugin id 在指定 Session 下的版本化 JSON 值，并声明
+  `copy | reset | reject` branch policy 与 synthetic projection tags；它不是通用 KV，也不暴露 SessionStore；
+  candidate Generation 可以读取，但发布前写入一律失败；
 - credential slot resolver；
 - supervised tasks；
 - redacted logger 和 diagnostics；
@@ -347,6 +349,10 @@ Context 只暴露稳定、必要的能力：
   canonical Session 数据分离。
 
 不暴露 RuntimeService、SessionStore、全局 registry、Host UI、原始配置文件或 credential store。
+
+以 `session_id` 为 identity 且影响后续模型行为的插件状态属于 Session 聚合。当前 Goal、Plan、Todo 已使用该
+owner-bound view；branch、export、trash 与 File/SQLite migration 由 Host 的 Session 生命周期负责。旧
+`plugins/data/<plugin>/sessions|todos/*.json` 只由启动期显式 migrator 消费，不存在运行时 fallback 双轨。
 
 ### 8.2 Request context
 
@@ -381,8 +387,31 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 - `tool_policies`；
 - `session_controllers`。
 
-当前代码只公开 `observers` 与独立的 `prompt_policies`，旧 `hooks` 字段不属于兼容输入。对应破坏式迁移已同步把
-Manifest schema 提升为 3、Plugin API 提升为 2.0、worker protocol 提升为 2.0。
+Host capability 清单由以下 13 类组成。这里的“消费者”指真正解释该类型语义的 Host 边界，Catalog projection
+本身不算消费者；“证据”至少包含 builtin、可运行 example 或跨 SDK/worker/application 的契约测试。
+
+| capability | 生命周期 | producer / contract 证据 | Host 语义消费者 | 等级 |
+|---|---|---|---|---|
+| `tools` | snapshot | Goal/Plan/Toolkit builtin、worker-tool example | `ToolCallCoordinator` / `ToolBatchExecutor` | stable |
+| `commands` | snapshot | Goal builtin、inprocess-command example | `PluginService.execute_command` 与 Host command route | stable |
+| `observers` | snapshot | inprocess-observer example、observer contract tests | `ObserverDispatcher` 的有界 mailbox | stable |
+| `context_providers` | snapshot | System Information/Goal builtin、worker semantic contract | `ContextPreparationService` | stable |
+| `compaction_strategies` | snapshot | SDK/worker/contract adapter 与 compaction tests | `ContextPreparationService` 的 strategy selection | stable |
+| `skills` | snapshot | declarative-skill example、plugin skill catalog tests | Runtime prompt/context preparation | stable |
+| `mcp_servers` | snapshot | generation resource/MCP catalog contract tests | MCP runtime 投影到 Run-local `ToolRegistry`，随后走 Tool consumer | stable |
+| `background_services` | activation singleton | in-process/worker lifecycle contract tests | `PluginRuntime._handover_background_services` | stable |
+| `continuation_policies` | snapshot | Goal builtin、worker semantic contract | `RunContinuationService` | stable |
+| `prompt_policies` | snapshot | inprocess-prompt-policy example | Runtime prompt admission boundary | stable |
+| `turn_policies` | snapshot | SDK/worker semantic contract、Runtime turn tests | Runtime terminal-candidate boundary | stable |
+| `tool_policies` | snapshot | Plan builtin、SDK/worker semantic contract | `ToolCallCoordinator` preflight 与 execution recheck | stable |
+| `session_controllers` | snapshot | Goal/Plan builtin、worker semantic contract | `SessionControlCoordinator` 及 Run resume/settlement | stable |
+
+每种 capability 必须同时具备 Manifest/SDK 表达、Host adapter 和真实语义消费者。系统保持 13 类 capability；
+新类型必须由真实 builtin 或最小可运行 user plugin 驱动。失去消费者的类型应同步从 Manifest、SDK、worker、
+prepare、contract、projection 与文档删除，不保留空 adapter 或迁移别名。
+
+观察型扩展只公开 `observers`；`prompt_policies` 是独立语义边界。Manifest schema 3 不接受 `hooks` 字段；
+Plugin API 使用 2.0，worker protocol 使用 2.0。
 
 ### 9.2 Identity 与冲突
 
@@ -419,10 +448,10 @@ Tools、Commands、Observers、Context、Prompt Policy、Turn Policy、Compactio
 Continuation、Tool Policy 和 Session Controller 是 snapshot-bound；Background Service 是 activation-singleton。Session Controller 的
 activation 本身属于 durable Session state，不属于进程级插件 activation。
 
-当前 B8 实现以 `ouro/plugins/contribution_types.py` 作为唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
+`ouro/plugins/contribution_types.py` 是唯一 Host-owned 清单。每条记录组合 SDK、worker、prepare、
 optional、contract、resource 与 projection facet；facet 保留各类型独立语义，Catalog、Coordinator、worker 与
-generation resource 主流程只遍历清单，不维护第二份 capability 分支。C2/C4 必须通过该清单接入目标新类型。该清单没有
-注册 API，用户插件不能追加类型。
+generation resource 主流程只遍历清单，不维护第二份 capability 分支。新增 Host capability 必须通过该清单接入。
+该清单没有注册 API，用户插件不能追加类型。
 Skill/MCP resource facet 只为成功加载/连接的资源生成 contract；可选资源失败只产生 degraded observed state。
 
 ### 9.4 ExtensionCatalog
@@ -613,6 +642,8 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - resolver 只解析本插件声明且绑定的 slot；
 - 秘密不进入 state、event、diagnostic、exception、worker initialize 或公开 DTO；
 - worker 需要环境变量时使用 Host 生成的临时名称和 allowlisted environment。
+- worker close 必须拥有 worker、后代进程树、stdin/stdout/stderr 和 Windows tree-terminator 的完整生命周期；
+  业务关闭预算不能通过遗弃 OS 清理进程或等待对象来实现。
 
 ## 12. Configuration 与 Data
 
@@ -699,8 +730,8 @@ Plugin dependency 只有 `plugin_id + SemVer range`。
 - Python/Node library dependency 不是 plugin dependency；
 - 不存在 `optional_feature`，直到 OURO 有真实 feature negotiation 模型。
 
-首版 builtin dependency graph 必须闭合于 builtin definitions；user plugin 可以依赖 builtin，builtin 不依赖 user
-install。启用 dependant 时沿用现有语义启用 dependency closure；存在 active dependant 时不能关闭 builtin dependency。
+Builtin dependency graph 必须闭合于 builtin definitions；user plugin 可以依赖 builtin，builtin 不依赖 user
+install。启用 dependant 时启用 dependency closure；存在 active dependant 时不能关闭 builtin dependency。
 
 ## 14. Activation 与 Reconciliation
 
@@ -730,8 +761,8 @@ read persistent activation or mutation candidate
 
 当前单进程 Host 使用一个 runtime mutation lock 串行化候选提交，不建立容易死锁的 per-plugin 多锁图；插件代码、
 I/O 和 start/stop 均不进入 catalog pointer lock。Background Service 的声明与 owner 在候选期完成准备，但实际
-`start` 延迟到发布后，并严格等待旧代 `stop` 完成，因此同一 plugin id 不会同时运行两份声明式自主服务。旧
-generation 可继续服务旧 Run，但不再持有 activation-singleton Background Service。
+`start` 延迟到发布后，并严格等待旧代 `stop` 完成，因此同一 plugin id 不会同时运行两份声明式自主服务。
+Generation lease 可以继续服务已绑定的 Run；activation-singleton Background Service 只属于 current generation。
 
 Disable：
 
@@ -944,7 +975,7 @@ ouro/builtin_plugins/
 - deny 不创建 canonical user message、Run、continuation 或可恢复残留，且 diagnostic 不泄露提示正文；
 - in-process 与 worker 的 observation/policy 类型、错误、取消和 contract 行为等价。
 
-B6 实现注记：Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
+Plugin Skill 不转换为 Observer；`RuntimeService` 每轮从该 Run 的
 `ExtensionCatalogLease.skills` 生成 Skill 提示词。Plugin MCP 只为 connected server 生成 contract，required 失败
 中止候选，optional 失败产生 degraded；发现工具结构冻结在 Catalog，连接由 generation owner 在 retire 时关闭。
 

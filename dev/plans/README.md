@@ -1,11 +1,13 @@
 # OURO 执行计划索引
 
-本目录保存待实施工作的执行计划。计划以依赖、任务、验收和退出条件组织，不保存执行日志、日期化进度
-快照或方案修订记录。
+本目录保存当前与已完成工作的执行计划。计划以依赖、任务、验收和退出条件组织；完成计划可保留最终状态与
+验证证据，但不作为逐日执行日志。
 
 ## 计划关系
 
 ```text
+architecture-foundation-refactor -> desktop-host
+architecture-foundation-refactor -> advanced-agent-capabilities
 personal-workflow-foundation -> desktop-host
 personal-workflow-foundation + connectivity-extensions -> advanced-agent-capabilities
 connectivity-extensions -> plugin-observers-prompt-policy
@@ -13,10 +15,11 @@ connectivity-extensions -> plugin-observers-prompt-policy
 
 | 计划 | 目标 | 前置条件 |
 |---|---|---|
+| [架构底层重构（已完成）](architecture-foundation-refactor.md) | 持久化版本、Session 扩展状态、资源上界、Run 状态权威与编排收敛 | 当前 Runtime/Session/Plugin/Tool 契约 |
 | [个人工作流基础](personal-workflow-foundation.md) | ResourceService、RuntimeSupervisor、配置门面 | 当前 Session/Runtime/Config 契约 |
-| [连接与扩展](connectivity-extensions.md) | 插件底层架构收敛（MCP 与首版闭环已完成） | 配置门面、现有 MCP/Supervisor 边界 |
+| [连接与扩展（已完成）](connectivity-extensions.md) | 插件底层架构收敛与 MCP 生命周期 | 配置门面、MCP/Supervisor 边界 |
 | [插件观察器与提示策略（已完成）](plugin-observers-prompt-policy.md) | 非阻塞 typed Observer 与 fail-closed Prompt Policy | 连接与扩展 B1-B8、不可变 ExtensionCatalog |
-| [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆与 durable Goal/Task；工作流 C 子智能体已完成 | ResourceService、Supervisor 和稳定 Host 控制面 |
+| [高级智能体能力](advanced-agent-capabilities.md) | 长期记忆与 durable Task/Workflow；工作流 C 子智能体已完成 | ResourceService、Supervisor 和稳定 Host 控制面 |
 | [子智能体（已完成）](subagents.md) | 工作流 C 的实现记录：AgentDefinition、durable Delegation、控制工具、事件树、HITL、权限和恢复 | Session/Run、Tool/HITL、config、ExtensionCatalog、ResourceService、RuntimeSupervisor |
 | [桌面 Host](desktop-host.md) | 基于 application DTO 的本地桌面端 | 配置门面、Supervisor；资源视图依赖 ResourceService |
 

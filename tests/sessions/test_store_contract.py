@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 
 import pytest
 
@@ -10,9 +12,11 @@ from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
+from ouro.core.errors import MigrationRequiredError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore, SQLiteSessionStore
 
@@ -93,6 +97,33 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     )
     assert [event.event_type for event in first_after_zero] == ["run_started"]
     assert has_more is True
+
+
+def test_session_store_rejects_record_without_explicit_schema_version(
+    session_store: SessionStore,
+) -> None:
+    session = SessionRecord(title="Version boundary")
+    session_store.create_session(session)
+    raw = session.model_dump(mode="json")
+    raw.pop("schema_version")
+    payload = json.dumps(raw)
+
+    if isinstance(session_store, LocalSessionStore):
+        path = session_store.sessions_dir / session.session_id / "session.json"
+        path.write_text(payload, encoding="utf-8")
+    else:
+        connection = sqlite3.connect(session_store.database)
+        try:
+            connection.execute(
+                "UPDATE sessions SET payload = ? WHERE session_id = ?",
+                (payload, session.session_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+        session_store.load_session_record(session.session_id)
 
 
 def test_session_store_preserves_unicode_line_separators_inside_messages(
@@ -216,6 +247,31 @@ def test_session_store_resource_reference_ownership(session_store: SessionStore)
     assert not session_store.is_resource_referenced(resource_id)
 
 
+def test_session_store_owns_extension_state_lifecycle(session_store: SessionStore) -> None:
+    session = SessionRecord(title="Extension state")
+    session_store.create_session(session)
+    state = SessionExtensionStateRecord(
+        session_id=session.session_id,
+        owner_id="dev.ouro.goal_mode",
+        state_schema_version=2,
+        branch_policy="reset",
+        projection_semantic_tags=("goal-contract",),
+        payload={"goal": {"status": "active"}},
+    )
+
+    assert session_store.load_session_extension_states(session.session_id) == []
+    session_store.save_session_extension_state(state)
+    assert session_store.load_session_extension_states(session.session_id) == [state]
+
+    updated = state.model_copy(update={"payload": {"goal": {"status": "complete"}}})
+    session_store.save_session_extension_state(updated)
+    assert session_store.load_session_extension_states(session.session_id) == [updated]
+    assert session_store.load_session(session.session_id).extension_states == [updated]
+
+    session_store.delete_session_extension_state(session.session_id, state.owner_id)
+    assert session_store.load_session_extension_states(session.session_id) == []
+
+
 def test_session_store_allocates_event_sequences_atomically(
     session_store: SessionStore,
 ) -> None:
@@ -284,6 +340,13 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
     )
     session_store.create_session(root)
     session_store.create_session(child)
+    state = SessionExtensionStateRecord(
+        session_id=child.session_id,
+        owner_id="dev.example.lifecycle",
+        state_schema_version=1,
+        payload={"phase": "active"},
+    )
+    session_store.save_session_extension_state(state)
 
     trash_id = session_store.trash_session_tree(
         root.session_id,
@@ -292,6 +355,28 @@ def test_session_store_trashes_complete_tree_without_loading_domain_records(
 
     assert trash_id.startswith("trash_")
     assert session_store.list_sessions() == []
+    if isinstance(session_store, LocalSessionStore):
+        extension_path = (
+            session_store.trash_sessions_dir
+            / trash_id
+            / "sessions"
+            / child.session_id
+            / "extensions"
+            / "index.json"
+        )
+        assert (
+            state.model_dump(mode="json")
+            in json.loads(extension_path.read_text(encoding="utf-8"))["states"]
+        )
+    else:
+        with closing(sqlite3.connect(session_store.database)) as connection:
+            payload = json.loads(
+                connection.execute(
+                    "SELECT payload FROM trashed_sessions WHERE trash_id = ?",
+                    (trash_id,),
+                ).fetchone()[0]
+            )
+        assert payload["records"]["session_extension_states"]
 
 
 def test_session_store_catalog_and_trash(session_store: SessionStore) -> None:

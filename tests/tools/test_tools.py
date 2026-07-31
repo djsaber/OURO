@@ -288,7 +288,6 @@ async def test_ask_user_returns_waiting_state() -> None:
     )
 
     assert outcome.status == "waiting_user"
-    assert outcome.question is None
     assert outcome.input_request is not None
     assert outcome.input_request.data == {
         "type": "ask_user",

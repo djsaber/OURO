@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
+import ouro.local_io as local_io
 from ouro.core.errors import PersistenceError
-from ouro.sessions import local_io
 
 
 def _windows_replace_error(winerror: int) -> OSError:

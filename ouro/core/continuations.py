@@ -24,9 +24,7 @@ class ContinuationDecision(OuroModel):
     title: str | None = None
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
-    session_control_transitions: list[SessionControlTransitionRequest] = Field(
-        default_factory=list
-    )
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> ContinuationDecision:
@@ -36,9 +34,7 @@ class ContinuationDecision(OuroModel):
         elif self.prompt is not None:
             raise ValueError(f"{self.action} decision cannot contain a prompt")
         if self.action in {"ignore", "continue"} and self.session_control_transitions:
-            raise ValueError(
-                f"{self.action} decision cannot contain Session control transitions"
-            )
+            raise ValueError(f"{self.action} decision cannot contain Session control transitions")
         return self
 
 

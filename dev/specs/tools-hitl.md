@@ -93,9 +93,15 @@ child Run；根 Host 通过包含 delegation/session/run/tool-call/request ident
 `ToolExecutionContext` 提供 abort 检查、可取消 sleep 和 shell 运行。Shell：
 
 - 在独立进程组中启动；
+- 从进程启动起并发排空 stdout/stderr，不使用会先累计完整输出的 `communicate()`；
+- 两个 pipe 共用 `max_output_chars` 对应的保留预算，超出后继续排空但不再累计，并分别设置
+  `stdout_truncated` / `stderr_truncated`；最终 ToolResult 仍由 executor 执行统一总长度上限；
 - timeout 或 abort 时终止完整进程树；
-- 等待 stdout/stderr 管道 EOF 后返回；
+- 有界等待 stdout/stderr 管道 EOF；后代继承 pipe 不能让调用无限挂起；
 - 结果标记 timed_out 或 aborted。
+
+管道在字节边界实施硬上限，解码使用 UTF-8 replacement 语义；因此非法字节不会使状态丢失。PowerShell 的
+小型完整 CLIXML 仍在 Shell adapter 解码，截断的大型 payload 明确保留 truncated 标志而不伪装成完整 XML。
 
 插件工具应使用 execution context 的协作式 API，不能屏蔽取消信号。
 
@@ -121,5 +127,6 @@ Observer 失败隔离为 `plugin_observer_failed`，不改变工具的实际结�
 - `tests/application/test_runtime.py`
 - `tests/application/test_agents.py`
 - `tests/tools/test_builtin_agents.py`
+- `tests/tools/test_builtin_shell.py`
 - `tests/cli/test_approval_commands.py`
 - `tests/cli/test_tool_execution_config_commands.py`

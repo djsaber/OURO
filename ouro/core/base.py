@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Final, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION: Final = 1
+SchemaVersion = Literal[1]
 
 
 def utc_now() -> datetime:
@@ -19,6 +20,12 @@ def new_id(prefix: str) -> str:
 
 class OuroModel(BaseModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class VersionedOuroModel(OuroModel):
+    """Current core record shape written as an independent persisted artifact."""
+
+    schema_version: SchemaVersion = SCHEMA_VERSION
 
 
 Metadata = dict[str, Any]

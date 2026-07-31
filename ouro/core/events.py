@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import Field
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, utc_now
 
 EventType = Literal[
     "session_loaded",
@@ -64,8 +64,7 @@ EventType = Literal[
 ]
 
 
-class EventRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class EventRecord(VersionedOuroModel):
     event_id: str = Field(default_factory=lambda: new_id("evt"))
     session_id: str
     run_id: str | None = None

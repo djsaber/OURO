@@ -3,10 +3,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from pydantic import ValidationError
-
 from ouro.core.billing import ProviderUsageEntry, UsageFilter, UsageLedgerEvent
 from ouro.core.errors import PersistenceError
+from ouro.core.persistence import decode_versioned_record_json
 from ouro.local_locks import FileMutationLock
 
 
@@ -41,20 +40,20 @@ class LocalUsageLedger:
                     raise PersistenceError(
                         f"usage entry id conflicts with existing data: {entry.entry_id}"
                     )
-                return existing
+                return existing.model_copy(deep=True)
             self._append_event(UsageLedgerEvent(event_type="record", entry=entry))
-            return entry
+            return entry.model_copy(deep=True)
 
     def get(self, entry_id: str) -> ProviderUsageEntry:
         with self._mutation():
             entry = self._read_entries().get(entry_id)
             if entry is None:
                 raise KeyError(entry_id)
-            return entry
+            return entry.model_copy(deep=True)
 
     def list_entries(self) -> list[ProviderUsageEntry]:
         with self._mutation():
-            return list(self._read_entries().values())
+            return [entry.model_copy(deep=True) for entry in self._read_entries().values()]
 
     def replace(self, entry: ProviderUsageEntry, *, note: str) -> ProviderUsageEntry:
         with self._mutation():
@@ -70,7 +69,7 @@ class LocalUsageLedger:
             self._append_event(
                 UsageLedgerEvent(event_type="replace", entry=entry, note=note.strip())
             )
-            return entry
+            return entry.model_copy(deep=True)
 
     def reset(self, usage_filter: UsageFilter, *, note: str) -> list[ProviderUsageEntry]:
         with self._mutation():
@@ -83,7 +82,7 @@ class LocalUsageLedger:
                     note=note.strip(),
                 )
             )
-            return removed
+            return [entry.model_copy(deep=True) for entry in removed]
 
     def list_events(self) -> list[UsageLedgerEvent]:
         with self._mutation():
@@ -93,7 +92,7 @@ class LocalUsageLedger:
         return FileMutationLock(self.lock_path)
 
     def _read_events(self) -> list[UsageLedgerEvent]:
-        return list(self._read_state()[0])
+        return [event.model_copy(deep=True) for event in self._read_state()[0]]
 
     def _read_entries(self) -> dict[str, ProviderUsageEntry]:
         return self._read_state()[1]
@@ -114,12 +113,13 @@ class LocalUsageLedger:
             ):
                 if not line.strip():
                     continue
-                try:
-                    events.append(UsageLedgerEvent.model_validate_json(line))
-                except (ValidationError, ValueError) as exc:
-                    raise PersistenceError(
-                        f"invalid usage ledger event at line {line_number}: {exc}"
-                    ) from exc
+                events.append(
+                    decode_versioned_record_json(
+                        UsageLedgerEvent,
+                        line,
+                        label=f"usage ledger event at line {line_number}",
+                    )
+                )
             entries = self._effective_entries(events)
             self._cache_size = current_size
             self._cached_events = events
@@ -137,8 +137,9 @@ class LocalUsageLedger:
                 os.fsync(file.fileno())
             size = self.journal_path.stat().st_size
             if self._cache_size >= 0:
-                self._apply_event(self._cached_entries, event)
-                self._cached_events.append(event)
+                cached_event = event.model_copy(deep=True)
+                self._apply_event(self._cached_entries, cached_event)
+                self._cached_events.append(cached_event)
                 self._cache_size = size
         except (OSError, TypeError, ValueError) as exc:
             raise PersistenceError(f"could not append usage ledger event: {exc}") from exc

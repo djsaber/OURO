@@ -5,6 +5,7 @@ from ouro.core.base import new_id
 from ouro.core.errors import SessionBranchError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.session_extensions import SessionExtensionStateRecord
 
 
 def select_branch_messages(
@@ -66,6 +67,45 @@ def copy_branch_messages(
             )
         )
     return copied, message_id_map
+
+
+def apply_extension_branch_policies(
+    messages: list[MessageRecord],
+    requested_message_id: str,
+    states: list[SessionExtensionStateRecord],
+    branch_session_id: str,
+) -> tuple[list[MessageRecord], list[SessionExtensionStateRecord]]:
+    """Apply owner-declared Session lifecycle rules before publishing a branch."""
+
+    rejecting_owners = sorted(state.owner_id for state in states if state.branch_policy == "reject")
+    if rejecting_owners:
+        raise SessionBranchError(
+            "branch rejected by Session extension state owners: " + ", ".join(rejecting_owners)
+        )
+
+    reset_tags = {
+        tag
+        for state in states
+        if state.branch_policy == "reset"
+        for tag in state.projection_semantic_tags
+    }
+    requested = next(
+        (message for message in messages if message.message_id == requested_message_id),
+        None,
+    )
+    if requested is not None and requested.semantic_tag in reset_tags:
+        raise SessionBranchError(
+            "branch point is an extension projection that must reset; "
+            "choose an earlier durable message"
+        )
+
+    retained_messages = [message for message in messages if message.semantic_tag not in reset_tags]
+    copied_states = [
+        state.model_copy(update={"session_id": branch_session_id})
+        for state in states
+        if state.branch_policy == "copy"
+    ]
+    return retained_messages, copied_states
 
 
 def project_replay_frames(events: list[EventRecord]) -> tuple[ReplayFrame, ...]:

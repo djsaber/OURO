@@ -7,12 +7,8 @@ from ouro.core.base import utc_now
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
-from ouro.core.state import (
-    ACTIVE_RUN_STATUSES,
-    RunRecord,
-    SessionRecord,
-    session_status_for_run,
-)
+from ouro.core.run_transitions import plan_run_transition, session_state_for_run
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionSnapshot, SessionStore
 
 _INCOMPLETE_RUN_STATUSES = {"queued", "running"}
@@ -29,15 +25,7 @@ class SessionRecoveryService:
             snapshot = self.store.load_session(session_id)
             recovered, changed = self._recover_snapshot(snapshot)
         if changed:
-            self.store.refresh_catalog(
-                session_id,
-                RuntimeSessionSnapshot(
-                    session=recovered.session,
-                    messages=recovered.messages,
-                    runs=recovered.runs,
-                    compactions=recovered.compactions,
-                ),
-            )
+            self.store.refresh_catalog(session_id)
         return recovered
 
     def recover_runtime(self, session_id: str) -> RuntimeSessionSnapshot:
@@ -59,7 +47,7 @@ class SessionRecoveryService:
             compactions=recovered.compactions,
         )
         if changed:
-            self.store.refresh_catalog(session_id, recovered_runtime)
+            self.store.refresh_catalog(session_id)
         return recovered_runtime
 
     def _recover_snapshot(self, snapshot: SessionSnapshot) -> tuple[SessionSnapshot, bool]:
@@ -77,7 +65,6 @@ class SessionRecoveryService:
                 run.status in _INCOMPLETE_RUN_STATUSES or interaction_error is not None
             ):
                 metadata = dict(run.metadata)
-                metadata.pop("checkpoint", None)
                 partial_message = (
                     self._append_recovered_partial_message(
                         session=session,
@@ -93,6 +80,7 @@ class SessionRecoveryService:
                 metadata["recovered_from_status"] = run.status
                 if interaction_error is not None:
                     metadata["recovery_reason"] = "invalid_interaction_state"
+                now = utc_now()
                 active_batch = run.active_tool_batch
                 if active_batch is not None and (
                     interaction_error is not None
@@ -108,19 +96,27 @@ class SessionRecoveryService:
                         update={
                             "phase": "recoverable",
                             "calls": recovered_calls,
-                            "updated_at": utc_now(),
+                            "updated_at": now,
                         }
                     )
-                recovered = run.model_copy(
-                    update={
-                        "status": "recoverable",
-                        "ended_at": utc_now(),
-                        "error": interaction_error or "Run was interrupted before completion.",
-                        "abort_requested": False,
-                        "active_tool_batch": active_batch,
-                        "metadata": metadata,
-                    }
+                transition = plan_run_transition(
+                    session,
+                    current_run=run,
+                    next_run=run.model_copy(
+                        update={
+                            "status": "recoverable",
+                            "ended_at": now,
+                            "error": (
+                                interaction_error or "Run was interrupted before completion."
+                            ),
+                            "abort_requested": False,
+                            "active_tool_batch": active_batch,
+                            "metadata": metadata,
+                        }
+                    ),
+                    now=now,
                 )
+                recovered = transition.run
                 self.store.save_run(recovered)
                 recovery_event = self._append_recovery_event(
                     session_id=session.session_id,
@@ -283,9 +279,9 @@ def _model_round_is_durable(
         return any(message.turn_id == turn_id for message in durable_messages)
     if not durable_messages:
         return False
-    # Legacy journals may predate typed turn identities. Preserve their
-    # conservative duplicate-avoidance behavior; current journals use turn_id
-    # and never depend on wall-clock ordering across independent logs.
+    # Layout-v6 history may predate typed turn identities. Preserve its
+    # conservative duplicate avoidance until the explicit layout-v7 migration;
+    # current journals use turn_id and never compare independent log clocks.
     return durable_messages[-1].created_at >= started_at
 
 
@@ -308,15 +304,11 @@ def _reconcile_session_projection(
             f"session {session.session_id} has a non-latest active run: {active_run.run_id}"
         )
     if active_run is not None:
-        expected_status = session_status_for_run(active_run.status)
-        expected_active_run_id = active_run.run_id
+        expected_status, expected_active_run_id = session_state_for_run(active_run)
     else:
-        expected_status = (
-            "failed"
-            if latest_run and latest_run.status == "failed" and latest_run.kind == "agent"
-            else "idle"
+        expected_status, expected_active_run_id = (
+            session_state_for_run(latest_run) if latest_run is not None else ("idle", None)
         )
-        expected_active_run_id = None
 
     expected_last_run_id = latest_run.run_id if latest_run is not None else None
     expected_last_message_id = messages[-1].message_id if messages else None

@@ -287,8 +287,8 @@ class OpenAICompatibleProvider:
             )
             return
 
-        for tool_call in tool_calls:
-            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call)
+        for index, tool_call in enumerate(tool_calls):
+            yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
         if tool_calls and reasoning and model.reasoning.continuation == "text":
             yield ProviderStreamEvent(
                 type="continuation",

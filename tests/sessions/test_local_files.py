@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -696,7 +697,7 @@ def test_store_reports_corrupt_session_as_persistence_error(tmp_path) -> None:
     session_path = tmp_path / "sessions" / session.session_id / "session.json"
     session_path.write_text("{broken", encoding="utf-8")
 
-    with pytest.raises(PersistenceError, match="could not load session"):
+    with pytest.raises(PersistenceError, match="could not decode session record"):
         store.load_session(session.session_id)
 
 
@@ -854,7 +855,7 @@ def test_store_rejects_incompatible_data_layout_without_modifying_manifest(tmp_p
     )
     before = layout_path.read_bytes()
 
-    with pytest.raises(MigrationRequiredError, match="found 999, expected 4"):
+    with pytest.raises(MigrationRequiredError, match="found 999, expected 6"):
         LocalSessionStore(tmp_path).initialize()
 
     assert layout_path.read_bytes() == before
@@ -868,5 +869,65 @@ def test_store_rejects_data_from_before_typed_tool_messages(tmp_path) -> None:
         encoding="utf-8",
     )
 
-    with pytest.raises(MigrationRequiredError, match="found 2, expected 4"):
+    with pytest.raises(MigrationRequiredError, match="found 2, expected 6"):
         LocalSessionStore(tmp_path).initialize()
+
+
+@pytest.mark.parametrize("source_version", (3, 4))
+def test_store_migrates_extension_state_layout(
+    tmp_path,
+    source_version: int,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Existing Session")
+    store.create_session(session)
+    extension_dir = store.sessions_dir / session.session_id / "extensions"
+    shutil.rmtree(extension_dir)
+    (tmp_path / "layout.json").write_text(
+        json.dumps(
+            {
+                "data_layout_version": source_version,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    migrated = LocalSessionStore(tmp_path)
+    migrated.initialize()
+
+    assert migrated.load_session_extension_states(session.session_id) == []
+    assert (
+        json.loads((tmp_path / "layout.json").read_text(encoding="utf-8"))["data_layout_version"]
+        == 6
+    )
+    assert (extension_dir / "index.json").is_file()
+
+
+def test_store_migrates_v5_by_discarding_transcript_catalog(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Bounded catalog")
+    store.create_session(session)
+    (tmp_path / "layout.json").write_text(
+        json.dumps(
+            {
+                "data_layout_version": 5,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    store._catalog.index_path.write_text(
+        '{"data_layout_version":5,"sessions":[{"search_text":"full transcript"}]}',
+        encoding="utf-8",
+    )
+
+    migrated = LocalSessionStore(tmp_path)
+    migrated.initialize()
+
+    assert migrated.read_catalog().sessions[0].title == "Bounded catalog"
+    assert "full transcript" not in migrated._catalog.index_path.read_text(encoding="utf-8")

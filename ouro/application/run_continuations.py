@@ -215,8 +215,7 @@ class RunContinuationService:
                 for controller in checkpoint.controllers
                 if controller.plugin_id == attributed.plugin_id
                 and controller.policy_id == attributed.policy_id
-                and controller.execution_contract_hash
-                == attributed.execution_contract_hash
+                and controller.execution_contract_hash == attributed.execution_contract_hash
                 and controller.contract_hash == attributed.contract_hash
             ),
             None,
@@ -267,18 +266,11 @@ class RunContinuationService:
             return []
         if len(transitions) != 1:
             raise ValueError("continuation decision may release only its one bound activation")
-        if (
-            controller_ref.active_when_controller_id is None
-            or controller_ref.activation_id is None
-        ):
-            raise ValueError(
-                "unbound continuation policy cannot emit Session control transitions"
-            )
+        if controller_ref.active_when_controller_id is None or controller_ref.activation_id is None:
+            raise ValueError("unbound continuation policy cannot emit Session control transitions")
         transition = transitions[0]
         if transition.action != "release":
-            raise ValueError(
-                "continuation policy may only release its checkpoint-bound activation"
-            )
+            raise ValueError("continuation policy may only release its checkpoint-bound activation")
         prefix = f"{controller_ref.plugin_id}/session_controllers/"
         if not controller_ref.active_when_controller_id.startswith(prefix):
             raise ValueError("bound Session controller does not belong to the policy plugin")
@@ -309,11 +301,7 @@ class RunContinuationService:
             if checkpoint.settlement_plan is not None:
                 return latest
             staged = latest.model_copy(
-                update={
-                    "continuation": checkpoint.model_copy(
-                        update={"settlement_plan": plan}
-                    )
-                }
+                update={"continuation": checkpoint.model_copy(update={"settlement_plan": plan})}
             )
             self.store.save_run(staged)
             return staged

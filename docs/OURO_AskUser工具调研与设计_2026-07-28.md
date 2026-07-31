@@ -1,5 +1,8 @@
 # OURO AskUser 工具调研与设计
 
+> 文档性质：历史调研与设计记录。当前工具/HITL 契约以
+> [`dev/specs/tools-hitl.md`](../dev/specs/tools-hitl.md) 为准。
+
 ## 1. 调研结论
 
 本次对照了三套仍在演进的开源实现：

@@ -173,12 +173,12 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     assert [event.type for event in events] == [
         "reasoning_delta",
         "text_delta",
-        "tool_call",
+        "tool_call_delta",
         "continuation",
         "done",
     ]
-    assert events[2].tool_call is not None
-    assert events[2].tool_call.arguments == {"path": "CHANGELOG.md"}
+    assert events[2].tool_call_delta is not None
+    assert events[2].tool_call_delta.arguments_delta == '{"path":"CHANGELOG.md"}'
     assert events[3].continuation is not None
     assert events[3].continuation.blocks[0]["signature"] == "sig_1"
     assert events[-1].usage is not None

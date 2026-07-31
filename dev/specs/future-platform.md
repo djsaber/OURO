@@ -4,10 +4,9 @@
 
 ## 目标
 
-在保持本地优先、durable Run 和清晰依赖方向的前提下，为桌面 Host 和长期记忆/任务计划提供共同目标契约。
-本规格不表示这些剩余能力已经实现。ResourceService、RuntimeSupervisor、已实现插件和子智能体已经分别转入
-[当前监督规格](resources-supervisor.md)、[已实现插件规格](plugin-system.md)和[当前子智能体规格](subagents.md)，
-不再属于本目标规格。
+在保持本地优先、durable Run 和清晰依赖方向的前提下，为 Desktop Host、长期记忆和通用 Task/Workflow
+定义目标契约。ResourceService、RuntimeSupervisor、插件和子智能体的当前契约分别由
+[监督规格](resources-supervisor.md)、[插件规格](plugin-system.md)和[子智能体规格](subagents.md)定义。
 
 ## Desktop Host
 
@@ -24,12 +23,12 @@
 - 检索结果进入 ContextBuilder 的显式边界并占用预算。
 - 外部工具输出和提示注入不能自动升级为可信记忆。
 
-## Durable 计划
+## Durable Task/Workflow
 
-- durable goal/task tree 保存 owner、状态、依赖、预算和结果引用。
+- durable task/workflow 保存 owner、状态、依赖、预算和结果引用。
 - ready task 选择、依赖、重试和跨 Run 状态必须 durable，不以递归 RuntimeService 或裸 prompt 拼接代替任务模型。
-- Goal/Task 可关联当前 `DelegationRecord`，但二者保持不同 identity；不能把已实现的 Agent tree 反向解释成
-  尚未实现的通用任务调度器。
+- Task 可关联 `DelegationRecord` 和 builtin Goal，但三者保持独立 identity、状态转换和所有权；AgentTree 与 Goal
+  state 不充当通用任务调度器。
 - Host 展示可验证进度、预算和用户控制入口。
 
 ## 非功能门槛

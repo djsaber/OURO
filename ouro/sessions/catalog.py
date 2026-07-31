@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 
 from ouro.core.messages import MessageRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.sessions.base import RuntimeSessionSnapshot
 from ouro.sessions.index import (
     PendingInteraction,
     SessionCatalogStatus,
@@ -13,37 +13,34 @@ from ouro.sessions.index import (
 )
 
 
-def catalog_entry_from_snapshot(
-    snapshot: RuntimeSessionSnapshot,
-    *,
-    resource_count: int = 0,
-    resource_missing: bool = False,
+@dataclass(frozen=True)
+class SessionCatalogProjection:
+    latest_run: RunRecord | None = None
+    latest_message: MessageRecord | None = None
+    message_count: int = 0
+    run_count: int = 0
+    resource_count: int = 0
+    resource_missing: bool = False
+
+
+def catalog_entry_from_projection(
+    session: SessionRecord,
+    projection: SessionCatalogProjection,
 ) -> SessionIndexEntry:
-    session = snapshot.session
-    latest_run = snapshot.runs[-1] if snapshot.runs else None
-    status = _catalog_status(session, latest_run)
+    latest_run = projection.latest_run
+    status = _catalog_status(session, projection.latest_run)
     health: SessionHealth = "recoverable" if status == "recoverable" else "ok"
-    if resource_missing:
+    if projection.resource_missing:
         health = "missing_resource"
-    last_activity_at = session.last_activity_at
-    if snapshot.messages:
-        last_activity_at = max(last_activity_at, snapshot.messages[-1].created_at)
-    if latest_run is not None:
-        last_activity_at = max(
-            last_activity_at,
-            latest_run.ended_at or latest_run.started_at,
-        )
     return catalog_entry_from_session(
         session,
         status=status,
         health=health,
         active_run_id=_active_run_id(latest_run),
-        message_count=len(snapshot.messages),
-        run_count=len(snapshot.runs),
-        resource_count=resource_count,
-        last_message_preview=_last_message_preview(snapshot.messages),
-        search_text=_message_search_text(snapshot.messages),
-        last_activity_at=last_activity_at,
+        message_count=projection.message_count,
+        run_count=projection.run_count,
+        resource_count=projection.resource_count,
+        last_message_preview=message_preview(projection.latest_message),
     )
 
 
@@ -57,7 +54,6 @@ def catalog_entry_from_session(
     run_count: int = 0,
     resource_count: int = 0,
     last_message_preview: str = "",
-    search_text: str = "",
     last_activity_at: datetime | None = None,
 ) -> SessionIndexEntry:
     provider, endpoint = _split_model_route(session.current_model)
@@ -93,7 +89,6 @@ def catalog_entry_from_session(
         run_count=run_count,
         resource_count=resource_count,
         last_message_preview=last_message_preview,
-        search_text=search_text,
         health=health,
     )
 
@@ -146,19 +141,8 @@ def _split_model_route(value: str | None) -> tuple[str | None, str | None]:
     return provider or None, endpoint or None
 
 
-def _last_message_preview(messages: list[MessageRecord], *, limit: int = 160) -> str:
-    for message in reversed(messages):
-        if message.role not in {"user", "assistant"}:
-            continue
-        text = " ".join(message.text_content.split())
-        if text:
-            return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"
-    return ""
-
-
-def _message_search_text(messages: list[MessageRecord]) -> str:
-    return "\n".join(
-        message.text_content
-        for message in messages
-        if message.role in {"user", "assistant"} and message.text_content
-    )
+def message_preview(message: MessageRecord | None, *, limit: int = 160) -> str:
+    if message is None or message.role not in {"user", "assistant"}:
+        return ""
+    text = " ".join(message.text_content.split())
+    return text if len(text) <= limit else f"{text[: limit - 1].rstrip()}…"

@@ -15,7 +15,8 @@ from ouro.core.agents import (
     ToolSelection,
 )
 from ouro.core.run_budget import RunBudgetPolicy
-from ouro.core.state import RunRecord, SessionRecord, session_status_for_run
+from ouro.core.run_transitions import session_state_for_run
+from ouro.core.state import RunRecord, SessionRecord
 
 
 def _definition(agent_id: str = "general") -> AgentDefinition:
@@ -103,7 +104,7 @@ def test_waiting_child_is_an_active_run_and_projects_session_running() -> None:
     run = RunRecord(session_id="ses_parent", status="waiting_child", phase="subagent_join")
 
     assert run.status == "waiting_child"
-    assert session_status_for_run(run.status) == "running"
+    assert session_state_for_run(run) == ("running", run.run_id)
 
 
 def test_delegation_spawn_phases_validate_child_identity() -> None:

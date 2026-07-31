@@ -118,9 +118,8 @@ async def test_runtime_produces_each_public_observation_type(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "observe_1",
                                 "name": "ObserveTool",
                                 "arguments": {"value": 1},
@@ -549,9 +548,8 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "write_1",
                                 "name": "Write",
                                 "arguments": {
@@ -567,9 +565,8 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
                         ProviderStreamEvent(type="done"),
                     ],
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "ask_1",
                                 "name": "AskUser",
                                 "arguments": {
@@ -943,9 +940,8 @@ async def test_runtime_pauses_at_configured_soft_round_budget(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Read",
                                 "arguments": {"path": str(target)},
@@ -1301,9 +1297,7 @@ async def test_runtime_context_provider_appends_system_prompt_without_creating_m
 
     result = await runtime.run("Use runtime facts")
 
-    assert provider.system_prompt.endswith(
-        "<runtime-facts>\nfacts\n</runtime-facts>"
-    )
+    assert provider.system_prompt.endswith("<runtime-facts>\nfacts\n</runtime-facts>")
     assert seen_calls[0].workspace == str((tmp_path / "workspace").resolve())
     snapshot = store.load_runtime_session(result.session.session_id)
     assert [message.role for message in snapshot.messages] == ["user", "assistant"]
@@ -1669,9 +1663,8 @@ async def test_runtime_stops_for_tool_approval(tmp_path) -> None:
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "call_1",
                             "name": "Write",
                             "arguments": {"path": str(target), "content": "no write yet"},
@@ -1706,9 +1699,8 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "call_1",
                             "name": "Write",
                             "arguments": {"path": str(target), "content": "pending"},
@@ -1830,9 +1822,8 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Read",
                                 "arguments": {"path": str(target)},
@@ -1914,9 +1905,8 @@ async def test_runtime_approval_resume_executes_tool(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "approved"},
@@ -1977,9 +1967,8 @@ async def test_stale_approval_snapshot_cannot_reexecute_completed_tool(
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_once",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "once"},
@@ -2039,9 +2028,8 @@ async def test_runtime_abort_waiting_approval_run(tmp_path) -> None:
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "call_1",
                             "name": "Write",
                             "arguments": {"path": str(target), "content": "nope"},
@@ -2082,9 +2070,8 @@ async def test_runtime_can_continue_session_after_abort(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "nope"},
@@ -2262,9 +2249,8 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "shell_1",
                             "name": shell.tool_name,
                             "arguments": {"command": command, "timeout_seconds": 30},
@@ -2354,9 +2340,8 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
         adapter=RuntimeAdapter(
             FauxProvider(
                 [
-                    ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "wait_1",
                             "name": "WaitPlugin",
                             "arguments": {},
@@ -2400,9 +2385,8 @@ async def test_runtime_approval_rejection_writes_tool_error(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "call_1",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "nope"},
@@ -2449,9 +2433,8 @@ async def test_runtime_answer_user_resumes_waiting_run(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "ask_1",
                                 "name": "AskUser",
                                 "arguments": {
@@ -2524,9 +2507,8 @@ async def test_runtime_drains_follow_up_after_rejected_approval_releases_run_loc
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "write_1",
                                 "name": "Write",
                                 "arguments": {"path": str(target), "content": "blocked"},
@@ -2581,9 +2563,8 @@ async def test_runtime_drains_follow_up_after_user_answer_releases_run_lock(tmp_
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={
+                        ProviderStreamEvent.from_tool_call(
+                            {
                                 "id": "ask_1",
                                 "name": "AskUser",
                                 "arguments": {
@@ -2670,9 +2651,8 @@ class ReasoningToolProvider:
                 type="reasoning_delta",
                 reasoning_content="I should read the file.",
             )
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "call_1",
                     "name": "Read",
                     "arguments": {"path": self.read_path},
@@ -2916,9 +2896,8 @@ async def test_runtime_returns_unknown_tool_error_to_model_and_continues(tmp_pat
             FauxProvider(
                 event_batches=[
                     [
-                        ProviderStreamEvent(
-                            type="tool_call",
-                            tool_call={"id": "call_1", "name": "Missing", "arguments": {}},
+                        ProviderStreamEvent.from_tool_call(
+                            {"id": "call_1", "name": "Missing", "arguments": {}},
                         ),
                         ProviderStreamEvent(type="done"),
                     ],

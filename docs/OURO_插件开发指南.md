@@ -1,7 +1,7 @@
 # OURO 插件开发指南
 
-本文面向本地 user plugin 作者，描述当前代码实际支持的契约。规范性约束以
-[插件系统目标规格](../dev/specs/plugin-system.md)为准。
+本文面向本地 user plugin 作者，描述插件开发和运行契约。规范性约束以
+[插件系统规格](../dev/specs/plugin-system.md)为准。
 
 ## 1. 先选择正确的扩展形态
 
@@ -29,7 +29,7 @@ workspace 可以作为一次 Tool/Command 调用的 request context。项目级�
 
 OURO 自身开发者新增 builtin 时，应在 `ouro/builtin_plugins/` 中实现普通 Plugin SDK factory，并在本地 application
 composition root 的 builtin registry 显式装配。插件机制层不得 import Plan、Goal 等产品插件；具体 builtin 也不得取得
-`RuntimeService`、`SessionStore` 或可变 registry。首版 builtin 只支持已经有真实需求的 in-process、空配置形态。
+`RuntimeService`、`SessionStore` 或可变 registry。Builtin 使用 in-process、空配置形态，并只承载产品内建能力。
 
 用户可用普通管理入口查询、启用、关闭、重启和检查 builtin，例如
 `ouro plugin enable dev.ouro.plan_mode`。Builtin 不经过 install/authorize/trust-code/configure/update/remove；这些操作会
@@ -115,7 +115,9 @@ configuration、插件私有 data 或 canonical Session 数据。没有本地用
 
 当前稳定 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
 Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能
-动态注册新的 extension point。
+动态注册新的 extension point。13 类能力均必须对应明确 Host 语义消费者；完整 producer/consumer/contract 证据见
+[插件系统规格](../dev/specs/plugin-system.md#91-目标稳定-contribution)。没有真实 builtin 或最小可运行 user plugin
+证明前，Host 不增加第 14 类 contribution，也不复制 SDK/worker/prepare/contract/projection adapter 链。
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Command、
@@ -308,8 +310,8 @@ stdout 污染、未知消息、过大响应、声明不一致和错误 result sh
 worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请求；该字段不能与 `content`、
 `structured`、`resource_refs` 或 `is_error` 同时出现。
 声明 `resumable=true` 的 worker tool 通过 `tool.resume` 接收原请求和 `resolution`；如需在 AFK 下自定义业务迁移，
-还必须在 manifest 中声明 `supports_unattended=true`。当前 worker protocol 为 `2.0`，Host 不把旧版 `answer`
-字段静默转换为新契约。
+还必须在 manifest 中声明 `supports_unattended=true`。Worker protocol `2.0` 只接受 `resolution` 判别联合；出现
+`answer` 字段时协议校验失败。
 协议 `2.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
 `session_control_transitions`，并使用新的 Observer/Prompt Policy 契约；它与 in-process Plugin API `2.0.0` 使用相同语义。
 `context.call` 的 `fragments` 既接受字符串，也接受

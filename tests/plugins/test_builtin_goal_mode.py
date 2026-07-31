@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import AsyncIterator, Mapping
 from pathlib import Path
@@ -30,6 +29,33 @@ from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 PLUGIN_ID = "dev.ouro.goal_mode"
+_SESSION_STATES: dict[Path, dict[str, sdk.PluginSessionState]] = {}
+
+
+class _MemorySessionStateStore:
+    def __init__(self, values: dict[str, sdk.PluginSessionState]) -> None:
+        self._values = values
+
+    def load(self, session_id: str) -> sdk.PluginSessionState | None:
+        return self._values.get(session_id)
+
+    def save(
+        self,
+        session_id: str,
+        *,
+        state_schema_version: int,
+        payload: sdk.JsonValue,
+        branch_policy="reset",
+        projection_semantic_tags=(),
+    ) -> None:
+        del branch_policy, projection_semantic_tags
+        self._values[session_id] = sdk.PluginSessionState(
+            state_schema_version=state_schema_version,
+            payload=payload,
+        )
+
+    def delete(self, session_id: str) -> None:
+        self._values.pop(session_id, None)
 
 
 class ScriptedGoalProvider:
@@ -68,7 +94,7 @@ class ScriptedGoalProvider:
                         }
                     }
                 )
-            yield ProviderStreamEvent(type="tool_call", tool_call=tool)
+            yield ProviderStreamEvent.from_tool_call(tool)
         else:
             yield ProviderStreamEvent(
                 type="text_delta",
@@ -225,8 +251,10 @@ async def _enable_goal_mode(application: LocalApplication) -> None:
 
 
 def _goal_state(home: Path, session_id: str) -> dict[str, Any]:
-    path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session_id}.json"
-    return json.loads(path.read_text(encoding="utf-8"))["state"]
+    records = LocalSessionStore(home).load_session_extension_states(session_id)
+    state = next(record for record in records if record.owner_id == PLUGIN_ID)
+    assert isinstance(state.payload, dict)
+    return state.payload
 
 
 def _make_goal_plugin(data_root: Path) -> GoalModePlugin:
@@ -251,6 +279,7 @@ def _make_goal_plugin(data_root: Path) -> GoalModePlugin:
         logger=None,  # type: ignore[arg-type]
         diagnostics=None,  # type: ignore[arg-type]
         permissions=frozenset({"sessions.write", "background.run"}),
+        session_state=_MemorySessionStateStore(_SESSION_STATES.setdefault(data_root.resolve(), {})),
     )
     plugin = GOAL_MODE_PLUGIN.factory(context)
     assert isinstance(plugin, GoalModePlugin)

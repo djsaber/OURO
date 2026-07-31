@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import JsonValue, PluginDataStore
+from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
 
 _STATE_SCHEMA_VERSION = 2
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -16,9 +15,7 @@ _GOAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 
 GoalStatus = Literal["active", "paused", "blocked", "complete"]
 GoalActor = Literal["user", "model", "runtime"]
-UNFINISHED_GOAL_STATUSES: frozenset[GoalStatus] = frozenset(
-    {"active", "paused", "blocked"}
-)
+UNFINISHED_GOAL_STATUSES: frozenset[GoalStatus] = frozenset({"active", "paused", "blocked"})
 
 
 @dataclass(frozen=True)
@@ -217,38 +214,28 @@ class SessionGoalState:
 class GoalStateRepository:
     """Persist one independent Goal record per Session."""
 
-    def __init__(self, data: PluginDataStore) -> None:
-        self._data = data
+    def __init__(self, state: PluginSessionStateStore) -> None:
+        self._state = state
 
     def load(self, session_id: str) -> SessionGoalState:
-        path = self._session_path(session_id)
-        try:
-            raw = json.loads(self._data.read_bytes(path).decode("utf-8"))
-        except FileNotFoundError:
+        persisted = self._state.load(validate_session_id(session_id))
+        if persisted is None:
             return SessionGoalState()
-        if not isinstance(raw, dict) or raw.get("schema_version") != _STATE_SCHEMA_VERSION:
+        if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
             raise ValueError("unsupported Goal mode state schema")
-        return SessionGoalState.from_json(raw.get("state"))
+        return SessionGoalState.from_json(persisted.payload)
 
     def save(self, session_id: str, state: SessionGoalState) -> None:
-        payload = {
-            "schema_version": _STATE_SCHEMA_VERSION,
-            "state": state.to_json(),
-        }
-        self._data.write_bytes(
-            self._session_path(session_id),
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8"),
+        self._state.save(
+            validate_session_id(session_id),
+            state_schema_version=_STATE_SCHEMA_VERSION,
+            payload=cast(JsonValue, state.to_json()),
+            branch_policy="reset",
+            projection_semantic_tags=("goal-contract",),
         )
 
     def delete(self, session_id: str) -> None:
-        try:
-            self._data.delete(self._session_path(session_id))
-        except FileNotFoundError:
-            return
-
-    @staticmethod
-    def _session_path(session_id: str) -> str:
-        return f"sessions/{validate_session_id(session_id)}.json"
+        self._state.delete(validate_session_id(session_id))
 
 
 def utc_now() -> str:

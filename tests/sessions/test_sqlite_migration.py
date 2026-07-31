@@ -6,6 +6,7 @@ from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import (
     LocalSessionStore,
@@ -28,6 +29,14 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     run = RunRecord(session_id=first.session_id, status="completed")
     reference = SessionResourceReference(resource_id="res_" + "c" * 64)
     source.create_session_snapshot(first, [message], [reference])
+    source.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=first.session_id,
+            owner_id="dev.ouro.goal_mode",
+            state_schema_version=2,
+            payload={"status": "active"},
+        )
+    )
     source.save_run(run)
     source.append_ordered_event(
         EventRecord(
@@ -61,6 +70,7 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     assert report.event_count == 1
     assert report.run_count == 1
     assert report.resource_reference_count == 1
+    assert report.extension_state_count == 1
     assert report.delegation_count == 1
     assert target.list_delegations(first.session_id) == [delegation]
     for session in source.list_sessions():

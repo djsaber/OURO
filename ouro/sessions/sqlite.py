@@ -13,7 +13,7 @@ from typing import Any, Self
 from pydantic import ValidationError
 
 from ouro.core.agents import DelegationRecord
-from ouro.core.base import new_id, utc_now
+from ouro.core.base import VersionedOuroModel, new_id, utc_now
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import (
@@ -24,20 +24,23 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.catalog import (
+    SessionCatalogProjection,
+    catalog_entry_from_projection,
     catalog_entry_from_session,
-    catalog_entry_from_snapshot,
     sort_catalog_entries,
 )
-from ouro.sessions.index import SessionIndex
+from ouro.sessions.index import SessionIndex, SessionIndexEntry
 from ouro.sessions.locks import SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 2
+SQLITE_SCHEMA_VERSION = 3
 
 
 class SQLiteSessionStore:
@@ -118,6 +121,13 @@ class SQLiteSessionStore:
                     );
                     CREATE INDEX IF NOT EXISTS resource_reference_identity
                         ON resource_references(resource_id);
+                    CREATE TABLE IF NOT EXISTS session_extension_states (
+                        session_id TEXT NOT NULL,
+                        owner_id TEXT NOT NULL,
+                        payload TEXT NOT NULL,
+                        PRIMARY KEY(session_id, owner_id),
+                        FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+                    );
                     CREATE TABLE IF NOT EXISTS trashed_sessions (
                         trash_id TEXT PRIMARY KEY,
                         session_id TEXT NOT NULL,
@@ -157,7 +167,7 @@ class SQLiteSessionStore:
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
-            elif int(existing[0]) == 1:
+            elif int(existing[0]) in {1, 2}:
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
                     (str(SQLITE_SCHEMA_VERSION),),
@@ -339,6 +349,7 @@ class SQLiteSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
+        extension_states: list[SessionExtensionStateRecord] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             connection = self._transaction_connection()
@@ -355,6 +366,13 @@ class SQLiteSessionStore:
                     self._insert_message(connection, message)
                 for reference in resource_references or ():
                     self._insert_resource_reference(connection, session.session_id, reference)
+                for state in extension_states or ():
+                    if state.session_id != session.session_id:
+                        raise PersistenceError(
+                            f"extension state {state.owner_id} does not belong to "
+                            f"{session.session_id}"
+                        )
+                    self._insert_session_extension_state(connection, state)
             except sqlite3.IntegrityError as exc:
                 raise PersistenceError(f"session already exists: {session.session_id}") from exc
 
@@ -405,6 +423,7 @@ class SQLiteSessionStore:
                             "compactions",
                             "latest_contexts",
                             "resource_references",
+                            "session_extension_states",
                             "delegations",
                         )
                     },
@@ -480,12 +499,11 @@ class SQLiteSessionStore:
             ).fetchone()
         if row is None:
             return None
-        try:
-            return ContextSnapshotRecord.model_validate_json(row[0])
-        except (ValidationError, ValueError) as exc:
-            raise PersistenceError(
-                f"could not load latest context for session {session_id}: {exc}"
-            ) from exc
+        return self._validate_model(
+            ContextSnapshotRecord,
+            row[0],
+            f"latest context for session {session_id}",
+        )
 
     def append_compaction(self, compaction: CompactionRecord) -> None:
         with self.session_mutation(compaction.session_id):
@@ -544,6 +562,13 @@ class SQLiteSessionStore:
                     (session_id,),
                     CompactionRecord,
                 ),
+                extension_states=self._load_models(
+                    connection,
+                    "SELECT payload FROM session_extension_states "
+                    "WHERE session_id = ? ORDER BY owner_id",
+                    (session_id,),
+                    SessionExtensionStateRecord,
+                ),
             )
 
     def load_runtime_session(self, session_id: str) -> RuntimeSessionSnapshot:
@@ -590,7 +615,11 @@ class SQLiteSessionStore:
                     f"session {session_id} references missing compaction "
                     f"{session.active_compaction_id}"
                 )
-            return CompactionRecord.model_validate_json(row[0])
+            return self._validate_model(
+                CompactionRecord,
+                row[0],
+                f"compaction {session.active_compaction_id}",
+            )
 
     def latest_event_sequence(self, session_id: str) -> int:
         with self._read_connection() as connection:
@@ -724,12 +753,40 @@ class SQLiteSessionStore:
                 is not None
             )
 
+    def load_session_extension_states(
+        self,
+        session_id: str,
+    ) -> list[SessionExtensionStateRecord]:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            return self._load_models(
+                connection,
+                "SELECT payload FROM session_extension_states "
+                "WHERE session_id = ? ORDER BY owner_id",
+                (session_id,),
+                SessionExtensionStateRecord,
+            )
+
+    def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
+        with self.session_mutation(state.session_id):
+            connection = self._transaction_connection()
+            self._require_session(connection, state.session_id)
+            self._insert_session_extension_state(connection, state)
+
+    def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
+        with self.session_mutation(session_id):
+            connection = self._transaction_connection()
+            self._require_session(connection, session_id)
+            connection.execute(
+                "DELETE FROM session_extension_states WHERE session_id = ? AND owner_id = ?",
+                (session_id, owner_id),
+            )
+
     def refresh_catalog(
         self,
         session_id: str,
-        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> str | None:
-        del session_id, snapshot
+        del session_id
         return None
 
     def read_catalog(self) -> SessionIndex:
@@ -761,20 +818,92 @@ class SQLiteSessionStore:
             ) from exc
 
     def _build_catalog(self) -> SessionIndex:
-        entries = []
-        for session in self.list_sessions():
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT s.session_id, s.payload, "
+                "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.session_id), "
+                "(SELECT m.payload FROM messages m WHERE m.session_id = s.session_id "
+                "AND CASE WHEN json_valid(m.payload) "
+                "THEN json_extract(m.payload, '$.role') END IN ('user', 'assistant') "
+                "ORDER BY m.row_id DESC LIMIT 1), "
+                "(SELECT COUNT(*) FROM runs r WHERE r.session_id = s.session_id), "
+                "(SELECT r.payload FROM runs r WHERE r.session_id = s.session_id "
+                "ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1), "
+                "(SELECT COUNT(*) FROM resource_references rr "
+                "WHERE rr.session_id = s.session_id) "
+                "FROM sessions s ORDER BY s.session_id"
+            ).fetchall()
+        entries: list[SessionIndexEntry] = []
+        for row in rows:
+            session_id = str(row[0])
             try:
-                snapshot = self.load_runtime_session(session.session_id)
+                session = self._validate_model(
+                    SessionRecord,
+                    row[1],
+                    f"session {session_id}",
+                )
+            except MigrationRequiredError:
+                entries.append(self._unreadable_catalog_entry(session_id, migration=True))
+                continue
             except PersistenceError:
-                entries.append(catalog_entry_from_session(session, health="corrupt"))
-            else:
-                entries.append(
-                    catalog_entry_from_snapshot(
-                        snapshot,
-                        resource_count=len(self.load_resource_references(session.session_id)),
+                entries.append(self._unreadable_catalog_entry(session_id))
+                continue
+            try:
+                latest_message = (
+                    None
+                    if row[3] is None
+                    else self._validate_model(
+                        MessageRecord,
+                        row[3],
+                        f"latest message for catalog {session_id}",
                     )
                 )
+                latest_run = (
+                    None
+                    if row[5] is None
+                    else self._validate_model(
+                        RunRecord,
+                        row[5],
+                        f"latest Run for catalog {session_id}",
+                    )
+                )
+            except MigrationRequiredError:
+                entries.append(catalog_entry_from_session(session, health="migration_required"))
+                continue
+            except PersistenceError:
+                entries.append(catalog_entry_from_session(session, health="corrupt"))
+                continue
+            entries.append(
+                catalog_entry_from_projection(
+                    session,
+                    SessionCatalogProjection(
+                        latest_run=latest_run,
+                        latest_message=latest_message,
+                        message_count=int(row[2]),
+                        run_count=int(row[4]),
+                        resource_count=int(row[6]),
+                    ),
+                )
+            )
         return SessionIndex(sessions=sort_catalog_entries(entries))
+
+    @staticmethod
+    def _unreadable_catalog_entry(
+        session_id: str,
+        *,
+        migration: bool = False,
+    ) -> SessionIndexEntry:
+        now = utc_now()
+        return SessionIndexEntry(
+            session_id=session_id,
+            root_session_id=session_id,
+            title="Migration required" if migration else "Corrupt session",
+            created_at=now,
+            updated_at=now,
+            last_activity_at=now,
+            status="failed",
+            health="migration_required" if migration else "corrupt",
+        )
 
     @staticmethod
     def _raw_trash_tree_rows(
@@ -874,6 +1003,18 @@ class SQLiteSessionStore:
         )
 
     @staticmethod
+    def _insert_session_extension_state(
+        connection: sqlite3.Connection,
+        state: SessionExtensionStateRecord,
+    ) -> None:
+        connection.execute(
+            "INSERT INTO session_extension_states(session_id, owner_id, payload) "
+            "VALUES(?, ?, ?) "
+            "ON CONFLICT(session_id, owner_id) DO UPDATE SET payload = excluded.payload",
+            (state.session_id, state.owner_id, state.model_dump_json()),
+        )
+
+    @staticmethod
     def _require_session(connection: sqlite3.Connection, session_id: str) -> None:
         if (
             connection.execute(
@@ -909,6 +1050,8 @@ class SQLiteSessionStore:
 
     @staticmethod
     def _validate_model(model_type: type[Any], payload: str, label: str) -> Any:
+        if issubclass(model_type, VersionedOuroModel):
+            return decode_versioned_record_json(model_type, payload, label=label)
         try:
             return model_type.model_validate_json(payload)
         except (ValidationError, ValueError, TypeError) as exc:

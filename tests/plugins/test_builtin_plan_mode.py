@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -19,6 +18,7 @@ from ouro.core.provider import (
     ProviderCheckResult,
     ProviderStreamEvent,
 )
+from ouro.core.state import SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.sessions import LocalSessionStore
@@ -109,7 +109,7 @@ class PlanBuildProvider:
             yield ProviderStreamEvent(type="done")
             return
         self.stream_count += 1
-        yield ProviderStreamEvent(type="tool_call", tool_call=call)
+        yield ProviderStreamEvent.from_tool_call(call)
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model) -> ProviderCheckResult:
@@ -170,18 +170,16 @@ class PlanToolAttemptProvider:
     ) -> AsyncIterator[ProviderStreamEvent]:
         del model, system_prompt, messages, tools
         if self.stream_count == 0:
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call=ToolCallRequest(
+            yield ProviderStreamEvent.from_tool_call(
+                ToolCallRequest(
                     id="call_enter",
                     name="EnterPlanMode",
                     arguments={},
                 ),
             )
         elif self.stream_count == 1:
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call=ToolCallRequest(
+            yield ProviderStreamEvent.from_tool_call(
+                ToolCallRequest(
                     id="call_attempt",
                     name=self.tool_name,
                     arguments=self.arguments,
@@ -260,6 +258,13 @@ async def _enable_plan_mode(application: LocalApplication) -> None:
     assert application.plugins is not None
     await application.start()
     assert (await application.plugins.enable(PLUGIN_ID)).status == "active"
+
+
+def _plan_state(store: LocalSessionStore, session_id: str) -> dict[str, object]:
+    records = store.load_session_extension_states(session_id)
+    state = next(record for record in records if record.owner_id == PLUGIN_ID)
+    assert isinstance(state.payload, dict)
+    return state.payload
 
 
 @pytest.mark.asyncio
@@ -381,11 +386,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         and message.sequence > exit_result.sequence
         for message in completed_snapshot.messages
     )
-    state_path = (
-        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{completed.session.session_id}.json"
-    )
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["state"]["phase"] == "inactive"
+    assert _plan_state(second_store, completed.session.session_id)["phase"] == "inactive"
     await second_application.close()
 
 
@@ -425,11 +426,7 @@ async def test_plan_mode_exit_uses_unattended_resolution_in_afk_mode(tmp_path) -
         event for event in event_snapshot.events if event.event_type == "ask_user_resolved"
     )
     assert resolved_event.payload["resolution"]["kind"] == "unattended"
-    state_path = (
-        home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{completed.session.session_id}.json"
-    )
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["state"]["phase"] == "inactive"
+    assert _plan_state(store, completed.session.session_id)["phase"] == "inactive"
     await application.close()
 
 
@@ -473,9 +470,7 @@ async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answ
         if message.tool_result is not None and message.tool_result.tool_call_id == "call_exit"
     )
     assert "Selected option: Direct implementation" in exit_result.text_content
-    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["state"]["phase"] == "inactive"
+    assert _plan_state(store, session.session_id)["phase"] == "inactive"
     await application.close()
 
 
@@ -671,9 +666,7 @@ async def test_plan_off_releases_controller_without_creating_run_or_deleting_art
     assert plan_path.read_text(encoding="utf-8") == "# Draft plan\n"
     assert "Plan mode deactivated" in deactivated.output
     assert replayed.data["session_controls"][0]["changed"] is False
-    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["state"]["phase"] == "inactive"
+    assert _plan_state(store, session.session_id)["phase"] == "inactive"
 
     result = await runtime.run(
         "Implement the parser change",
@@ -748,9 +741,7 @@ async def test_disabling_plugin_revokes_its_session_controller_gate(tmp_path) ->
 
     assert disabled.status == "disabled"
     assert store.load_session_record(session.session_id).controls.activations == []
-    state_path = home / "plugins" / "data" / PLUGIN_ID / "sessions" / f"{session.session_id}.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["state"]["phase"] == "inactive"
+    assert _plan_state(store, session.session_id)["phase"] == "inactive"
     await application.close()
 
 
@@ -853,7 +844,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    runtime, _ = _runtime(home, workspace, FinalProvider())
+    runtime, store = _runtime(home, workspace, FinalProvider())
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_plan_mode(application)
     assert application.plugin_runtime is not None
@@ -877,6 +868,7 @@ async def test_plan_mode_tools_cover_failures_revisions_and_idempotent_transitio
     context = ToolExecutionContext(workspace=workspace, workspace_only=True)
     session_id = "ses_plan_contract"
     run_id = "run_plan_contract"
+    store.create_session(SessionRecord(session_id=session_id))
     enter_invocation = ToolInvocation(
         tool_call_id="call_enter",
         session_id=session_id,

@@ -54,9 +54,8 @@ async def test_approve_command_continues_run(monkeypatch, tmp_path, capsys) -> N
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "approved"},
@@ -107,9 +106,8 @@ async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "mcp_approval",
                         "name": "echo__echo",
                         "arguments": {"value": "approved MCP"},
@@ -156,9 +154,8 @@ async def test_reject_command_returns_reason_to_model(monkeypatch, tmp_path, cap
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(tmp_path / "rejected.txt"), "content": "x"},
@@ -196,9 +193,8 @@ async def test_approve_with_modified_arguments(monkeypatch, tmp_path, capsys) ->
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(tmp_path / "original.txt"), "content": "x"},
@@ -239,9 +235,8 @@ async def test_abort_command_aborts_waiting_approval(monkeypatch, tmp_path, caps
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(tmp_path / "aborted.txt"), "content": "x"},

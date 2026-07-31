@@ -340,8 +340,6 @@ def _tool_contract_error(
     invocation: ToolInvocation,
     metadata: Mapping[str, object],
 ) -> str | None:
-    if invocation.plugin_class is None and invocation.package_digest is not None:
-        return _legacy_user_tool_contract_error(invocation, metadata)
     expected_common = {
         "plugin_id": invocation.plugin_id,
         "plugin_class": invocation.plugin_class,
@@ -369,20 +367,4 @@ def _tool_contract_error(
             return "persisted builtin_contract_hash does not match the active tool contract"
     else:
         return "persisted plugin_class does not identify a supported plugin class"
-    return None
-
-
-def _legacy_user_tool_contract_error(
-    invocation: ToolInvocation,
-    metadata: Mapping[str, object],
-) -> str | None:
-    expected = {
-        "plugin_id": invocation.plugin_id,
-        "package_digest": invocation.package_digest,
-        "contract_hash": invocation.contract_hash,
-        "execution_contract_hash": invocation.execution_contract_hash,
-    }
-    for field, expected_value in expected.items():
-        if expected_value is None or metadata.get(field) != expected_value:
-            return f"persisted {field} does not match the active tool contract"
     return None

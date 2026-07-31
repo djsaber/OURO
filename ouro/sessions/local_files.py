@@ -22,14 +22,19 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
+from ouro.core.session_extensions import (
+    SessionExtensionStateCollection,
+    SessionExtensionStateRecord,
+)
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.local_io import read_text_atomic, write_json_atomic, write_model_atomic
 from ouro.local_locks import is_lock_held
 from ouro.sessions.base import RuntimeSessionSnapshot, SessionSnapshot
 from ouro.sessions.index import SessionIndex
 from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
-from ouro.sessions.local_io import read_text_atomic, write_json_atomic, write_model_atomic
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 
 _STREAM_DELTA_EVENT_TYPES = {
@@ -54,7 +59,6 @@ class LocalSessionStore:
         self._catalog = LocalSessionIndex(
             self.sessions_dir,
             self.session_locks_dir,
-            self._load_snapshot_for_index,
         )
         self._index_dirty_path = self._catalog.dirty_path
 
@@ -96,7 +100,11 @@ class LocalSessionStore:
         with self.session_mutation(root_session_id):
             path = self._delegation_path(root_session_id, delegation_id)
             try:
-                return DelegationRecord.model_validate_json(read_text_atomic(path))
+                return decode_versioned_record_json(
+                    DelegationRecord,
+                    read_text_atomic(path),
+                    label=f"delegation {delegation_id}",
+                )
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -180,15 +188,22 @@ class LocalSessionStore:
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
+        extension_states: list[SessionExtensionStateRecord] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
-            self._create_session_snapshot(session, messages, resource_references)
+            self._create_session_snapshot(
+                session,
+                messages,
+                resource_references,
+                extension_states,
+            )
 
     def _create_session_snapshot(
         self,
         session: SessionRecord,
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None,
+        extension_states: list[SessionExtensionStateRecord] | None,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
@@ -198,6 +213,7 @@ class LocalSessionStore:
         try:
             (staging_dir / "runs").mkdir(parents=True)
             (staging_dir / "resources").mkdir(parents=True)
+            (staging_dir / "extensions").mkdir(parents=True)
             self._write_model_atomic(staging_dir / "session.json", session)
             for name in ("messages.jsonl", "events.jsonl", "compactions.jsonl"):
                 (staging_dir / name).touch()
@@ -212,6 +228,17 @@ class LocalSessionStore:
                 staging_dir / "resources" / "index.json",
                 SessionResourceReferences(resources=resource_references or []).model_dump(
                     mode="json"
+                ),
+            )
+            states = extension_states or []
+            if any(state.session_id != session.session_id for state in states):
+                raise PersistenceError(
+                    f"extension state does not belong to session {session.session_id}"
+                )
+            self._write_model_atomic(
+                staging_dir / "extensions" / "index.json",
+                SessionExtensionStateCollection(
+                    states=sorted(states, key=lambda item: item.owner_id)
                 ),
             )
             staging_dir.replace(session_dir)
@@ -350,7 +377,11 @@ class LocalSessionStore:
             if not path.exists():
                 return None
             try:
-                return ContextSnapshotRecord.model_validate_json(read_text_atomic(path))
+                return decode_versioned_record_json(
+                    ContextSnapshotRecord,
+                    read_text_atomic(path),
+                    label=f"latest context for session {session_id}",
+                )
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load latest context for session {session_id}: {exc}"
@@ -388,7 +419,11 @@ class LocalSessionStore:
             session_dir = self._session_dir(session_id)
             try:
                 events = [
-                    EventRecord.model_validate_json(line)
+                    decode_versioned_record_json(
+                        EventRecord,
+                        line,
+                        label=f"event in session {session_id}",
+                    )
                     for line in self._read_jsonl(session_dir / "events.jsonl")
                 ]
             except (OSError, ValidationError, ValueError) as exc:
@@ -396,6 +431,7 @@ class LocalSessionStore:
             snapshot = SessionSnapshot(
                 **runtime.model_dump(),
                 events=events,
+                extension_states=self.load_session_extension_states(session_id),
             )
         return snapshot
 
@@ -411,7 +447,11 @@ class LocalSessionStore:
         session_dir = self._require_session_dir(session_id)
         try:
             runs = [
-                RunRecord.model_validate_json(read_text_atomic(path))
+                decode_versioned_record_json(
+                    RunRecord,
+                    read_text_atomic(path),
+                    label=f"run record {path}",
+                )
                 for path in sorted((session_dir / "runs").glob("*.json"))
             ]
         except (OSError, ValidationError, ValueError) as exc:
@@ -424,7 +464,11 @@ class LocalSessionStore:
         try:
             session = self.load_session_record(session_id)
             messages = [
-                MessageRecord.model_validate_json(line)
+                decode_versioned_record_json(
+                    MessageRecord,
+                    line,
+                    label=f"message in session {session_id}",
+                )
                 for line in self._read_jsonl(session_dir / "messages.jsonl")
             ]
             compactions = self._load_compactions(session_dir)
@@ -475,7 +519,11 @@ class LocalSessionStore:
         with self.session_mutation(session_id):
             path = self._session_dir(session_id) / "session.json"
             try:
-                return SessionRecord.model_validate_json(read_text_atomic(path))
+                return decode_versioned_record_json(
+                    SessionRecord,
+                    read_text_atomic(path),
+                    label=f"session record {session_id}",
+                )
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -534,7 +582,11 @@ class LocalSessionStore:
                 for raw in file:
                     if not raw.strip():
                         continue
-                    event = EventRecord.model_validate_json(raw)
+                    event = decode_versioned_record_json(
+                        EventRecord,
+                        raw,
+                        label=f"event in session {session_id}",
+                    )
                     if event.sequence <= after_sequence:
                         continue
                     records.append(event)
@@ -549,7 +601,11 @@ class LocalSessionStore:
             validated_run_id = _validated_record_id(run_id, kind="run")
             path = self._session_dir(session_id) / "runs" / f"{validated_run_id}.json"
             try:
-                return RunRecord.model_validate_json(read_text_atomic(path))
+                return decode_versioned_record_json(
+                    RunRecord,
+                    read_text_atomic(path),
+                    label=f"run {run_id} for session {session_id}",
+                )
             except FileNotFoundError:
                 raise
             except (OSError, ValidationError, ValueError) as exc:
@@ -561,7 +617,13 @@ class LocalSessionStore:
         records: list[SessionRecord] = []
         for session_json in sorted(self.sessions_dir.glob("*/session.json")):
             try:
-                records.append(SessionRecord.model_validate_json(read_text_atomic(session_json)))
+                records.append(
+                    decode_versioned_record_json(
+                        SessionRecord,
+                        read_text_atomic(session_json),
+                        label=f"session record {session_json}",
+                    )
+                )
             except (OSError, ValidationError, ValueError) as exc:
                 raise PersistenceError(
                     f"could not load session record {session_json}: {exc}"
@@ -622,6 +684,49 @@ class LocalSessionStore:
                 return True
         return False
 
+    def load_session_extension_states(
+        self,
+        session_id: str,
+    ) -> list[SessionExtensionStateRecord]:
+        path = self._extension_state_path(session_id)
+        if not path.exists():
+            return []
+        collection = decode_versioned_record_json(
+            SessionExtensionStateCollection,
+            read_text_atomic(path),
+            label=f"extension state collection for session {session_id}",
+        )
+        if any(state.session_id != session_id for state in collection.states):
+            raise PersistenceError(
+                f"extension state collection contains a foreign Session: {session_id}"
+            )
+        return sorted(collection.states, key=lambda item: item.owner_id)
+
+    def save_session_extension_state(self, state: SessionExtensionStateRecord) -> None:
+        with self.session_mutation(state.session_id):
+            states = {
+                item.owner_id: item for item in self.load_session_extension_states(state.session_id)
+            }
+            states[state.owner_id] = state
+            self._write_model_atomic(
+                self._extension_state_path(state.session_id),
+                SessionExtensionStateCollection(
+                    states=[states[owner_id] for owner_id in sorted(states)]
+                ),
+            )
+
+    def delete_session_extension_state(self, session_id: str, owner_id: str) -> None:
+        with self.session_mutation(session_id):
+            states = [
+                state
+                for state in self.load_session_extension_states(session_id)
+                if state.owner_id != owner_id
+            ]
+            self._write_model_atomic(
+                self._extension_state_path(session_id),
+                SessionExtensionStateCollection(states=states),
+            )
+
     def scan_catalog(self) -> SessionIndex:
         return self._catalog.scan()
 
@@ -634,9 +739,8 @@ class LocalSessionStore:
     def refresh_catalog(
         self,
         session_id: str,
-        snapshot: RuntimeSessionSnapshot | None = None,
     ) -> str | None:
-        return self._catalog.try_update(session_id, snapshot=snapshot)
+        return self._catalog.try_update(session_id)
 
     def read_catalog(self) -> SessionIndex:
         return self._catalog.load()
@@ -678,12 +782,19 @@ class LocalSessionStore:
     @staticmethod
     def _load_delegation_path(path: Path) -> DelegationRecord:
         try:
-            return DelegationRecord.model_validate_json(read_text_atomic(path))
+            return decode_versioned_record_json(
+                DelegationRecord,
+                read_text_atomic(path),
+                label=f"delegation {path}",
+            )
         except (OSError, ValidationError, ValueError) as exc:
             raise PersistenceError(f"could not load delegation {path}: {exc}") from exc
 
     def _resource_reference_path(self, session_id: str) -> Path:
         return self._require_session_dir(session_id) / "resources" / "index.json"
+
+    def _extension_state_path(self, session_id: str) -> Path:
+        return self._require_session_dir(session_id) / "extensions" / "index.json"
 
     def _require_session_dir(self, session_id: str) -> Path:
         session_dir = self._session_dir(session_id)
@@ -702,20 +813,56 @@ class LocalSessionStore:
             raise PersistenceError(
                 f"could not load data layout manifest {self._layout_path}: {exc}"
             ) from exc
-        if manifest.data_layout_version == 3 and DATA_LAYOUT_VERSION == 4:
-            migrated = manifest.model_copy(
-                update={"data_layout_version": DATA_LAYOUT_VERSION, "updated_at": utc_now()}
-            )
-            self._write_model_atomic(self._layout_path, migrated)
+        current_version = manifest.data_layout_version
+        if current_version == 3 and DATA_LAYOUT_VERSION == 6:
+            current_version = 4
+        if current_version == 4 and DATA_LAYOUT_VERSION == 6:
+            self._migrate_layout_v4_to_v5()
+            current_version = 5
+        if current_version == 5 and DATA_LAYOUT_VERSION == 6:
+            self._migrate_layout_v5_to_v6()
+            current_version = 6
+        if current_version == DATA_LAYOUT_VERSION:
+            if manifest.data_layout_version != DATA_LAYOUT_VERSION:
+                migrated = manifest.model_copy(
+                    update={
+                        "data_layout_version": DATA_LAYOUT_VERSION,
+                        "updated_at": utc_now(),
+                    }
+                )
+                self._write_model_atomic(self._layout_path, migrated)
             return
-        if manifest.data_layout_version != DATA_LAYOUT_VERSION:
+        if current_version != DATA_LAYOUT_VERSION:
             raise MigrationRequiredError(
                 "OURO data layout migration required: "
                 f"found {manifest.data_layout_version}, expected {DATA_LAYOUT_VERSION}"
             )
 
-    def _load_snapshot_for_index(self, session_id: str) -> RuntimeSessionSnapshot:
-        return self.load_runtime_session(session_id)
+    def _migrate_layout_v4_to_v5(self) -> None:
+        """Create canonical per-Session extension state collections.
+
+        The migration is intentionally idempotent. The layout manifest is advanced
+        only after every existing Session has a valid collection.
+        """
+        for session_path in sorted(self.sessions_dir.glob("*/session.json")):
+            session_dir = session_path.parent
+            extension_path = session_dir / "extensions" / "index.json"
+            if extension_path.exists():
+                decode_versioned_record_json(
+                    SessionExtensionStateCollection,
+                    read_text_atomic(extension_path),
+                    label=f"extension state collection for session {session_dir.name}",
+                )
+                continue
+            extension_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_model_atomic(extension_path, SessionExtensionStateCollection())
+
+    def _migrate_layout_v5_to_v6(self) -> None:
+        """Discard the transcript-bearing catalog; it is a rebuildable projection."""
+        with suppress(OSError):
+            self._catalog.index_path.unlink()
+        with suppress(OSError):
+            self._catalog.dirty_path.unlink()
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):
@@ -789,7 +936,11 @@ class LocalSessionStore:
 
     def _load_compactions(self, session_dir: Path) -> list[CompactionRecord]:
         return [
-            CompactionRecord.model_validate_json(line)
+            decode_versioned_record_json(
+                CompactionRecord,
+                line,
+                label=f"compaction in {session_dir}",
+            )
             for line in self._read_jsonl(session_dir / "compactions.jsonl")
         ]
 
@@ -848,7 +999,11 @@ class LocalSessionStore:
                         break
                     if not raw.strip():
                         continue
-                    record = model_type.model_validate_json(raw)
+                    record = decode_versioned_record_json(
+                        model_type,
+                        raw,
+                        label=f"{model_type.__name__} in {path}",
+                    )
                     if run_id is not None and getattr(record, "run_id", None) != run_id:
                         continue
                     records.append(record)

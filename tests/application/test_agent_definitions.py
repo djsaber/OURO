@@ -188,7 +188,7 @@ async def test_runtime_persists_run_frozen_agent_catalog(tmp_path) -> None:
         adapter=RuntimeAdapter(FauxProvider(), ModelMetadata(model_id="faux", provider_id="faux")),
         tools=_registry(),
     )
-    runtime.attach_agent_definitions(service)
+    runtime.bind_extensions(agent_definitions=service)
 
     first = await runtime.run("first")
     assert first.run.agent_catalog is not None

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import PluginDataStore
+from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
 
 _STATE_SCHEMA_VERSION = 1
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
@@ -40,16 +39,18 @@ class TodoItem:
 class TodoListRepository:
     """Persist each Session's list independently through the plugin data store."""
 
-    def __init__(self, data: PluginDataStore) -> None:
-        self._data = data
+    def __init__(self, state: PluginSessionStateStore) -> None:
+        self._state = state
 
     def load(self, session_id: str) -> tuple[TodoItem, ...]:
-        try:
-            raw = json.loads(self._data.read_bytes(self._path(session_id)).decode("utf-8"))
-        except FileNotFoundError:
+        persisted = self._state.load(self._validated_session_id(session_id))
+        if persisted is None:
             return ()
-        if not isinstance(raw, dict) or raw.get("schema_version") != _STATE_SCHEMA_VERSION:
+        if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
             raise ValueError("unsupported TodoList state schema")
+        raw = persisted.payload
+        if not isinstance(raw, dict):
+            raise ValueError("TodoList state must be an object")
         todos = raw.get("todos")
         if not isinstance(todos, list):
             raise ValueError("TodoList state todos must be a list")
@@ -59,23 +60,21 @@ class TodoListRepository:
         if not todos:
             self.clear(session_id)
             return
-        payload = {
-            "schema_version": _STATE_SCHEMA_VERSION,
-            "todos": [item.to_json() for item in todos],
-        }
-        self._data.write_bytes(
-            self._path(session_id),
-            json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
+        self._state.save(
+            self._validated_session_id(session_id),
+            state_schema_version=_STATE_SCHEMA_VERSION,
+            payload=cast(JsonValue, {"todos": [item.to_json() for item in todos]}),
+            branch_policy="reset",
         )
 
     def clear(self, session_id: str) -> None:
-        self._data.delete(self._path(session_id))
+        self._state.delete(self._validated_session_id(session_id))
 
     @staticmethod
-    def _path(session_id: str) -> str:
+    def _validated_session_id(session_id: str) -> str:
         if _SESSION_ID.fullmatch(session_id) is None:
-            raise ValueError("Session id cannot be used as a TodoList data path")
-        return f"todos/{session_id}.json"
+            raise ValueError("invalid TodoList Session id")
+        return session_id
 
 
 __all__ = ["TodoItem", "TodoListRepository", "TodoStatus"]

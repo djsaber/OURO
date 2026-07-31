@@ -59,7 +59,6 @@ class SessionIndexEntry(OuroModel):
     run_count: int = 0
     resource_count: int = 0
     last_message_preview: str = ""
-    search_text: str = ""
     health: SessionHealth = "ok"
 
 

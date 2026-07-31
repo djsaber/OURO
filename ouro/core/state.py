@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.session_controls import (
     SessionControlState,
@@ -116,9 +116,7 @@ class RunContinuationSettlementPlan(OuroModel):
     title: str | None = None
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
-    session_control_transitions: list[SessionControlTransitionRequest] = Field(
-        default_factory=list
-    )
+    session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_action_payload(self) -> Self:
@@ -147,20 +145,7 @@ class RunContinuationCheckpoint(OuroModel):
     resolved_at: datetime | None = None
 
 
-def session_status_for_run(status: RunStatus) -> SessionStatus:
-    """Project the authoritative active Run status onto its owning Session."""
-
-    if status == "waiting_approval":
-        return "waiting_approval"
-    if status == "waiting_user":
-        return "waiting_user"
-    if status == "failed":
-        return "failed"
-    return "running"
-
-
-class SessionRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class SessionRecord(VersionedOuroModel):
     session_id: str = Field(default_factory=lambda: new_id("ses"))
     root_session_id: str | None = None
     parent_session_id: str | None = None
@@ -209,8 +194,7 @@ class SessionRecord(OuroModel):
         return self
 
 
-class RunRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class RunRecord(VersionedOuroModel):
     run_id: str = Field(default_factory=lambda: new_id("run"))
     session_id: str
     kind: RunKind = "agent"

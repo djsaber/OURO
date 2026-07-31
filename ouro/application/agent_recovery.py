@@ -370,8 +370,7 @@ class AgentRecoveryService:
             severity="warning",
             component="application.agent_recovery",
             message=(
-                "Agent relation recovery skipped incompatible persisted execution data: "
-                f"{error}"
+                f"Agent relation recovery skipped incompatible persisted execution data: {error}"
             ),
             session_id=session_id or relation.parent_session_id,
             resource_id=relation.delegation_id,

@@ -13,6 +13,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
     RunRecord,
     SessionRecord,
@@ -78,7 +79,7 @@ class SessionCatalogEntry(ApplicationDTO):
 
     @classmethod
     def from_index(cls, entry: SessionIndexEntry) -> SessionCatalogEntry:
-        return cls.model_validate(entry.model_dump(exclude={"search_text"}))
+        return cls.model_validate(entry.model_dump())
 
 
 class SessionView(ApplicationDTO):
@@ -202,6 +203,7 @@ class SessionExport(ApplicationDTO):
     events: tuple[EventRecord, ...] = ()
     runs: tuple[RunRecord, ...] = ()
     compactions: tuple[CompactionRecord, ...] = ()
+    extension_states: tuple[SessionExtensionStateRecord, ...] = ()
 
 
 class SessionMessagePage(ApplicationDTO):

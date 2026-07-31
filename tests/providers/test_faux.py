@@ -31,7 +31,7 @@ async def test_faux_provider_streams_scripted_events() -> None:
 async def test_faux_provider_streams_event_batches_per_call() -> None:
     provider = FauxProvider(
         event_batches=[
-            [ProviderStreamEvent(type="tool_call", tool_call={"name": "Read"})],
+            [ProviderStreamEvent.from_tool_call({"name": "Read"})],
             [ProviderStreamEvent(type="text_delta", text="done"), ProviderStreamEvent(type="done")],
         ]
     )
@@ -58,7 +58,7 @@ async def test_faux_provider_streams_event_batches_per_call() -> None:
         )
     ]
 
-    assert [event.type for event in first] == ["tool_call"]
+    assert [event.type for event in first] == ["tool_call_delta"]
     assert [event.type for event in second] == ["text_delta", "done"]
     assert [event.type for event in exhausted] == ["done"]
 

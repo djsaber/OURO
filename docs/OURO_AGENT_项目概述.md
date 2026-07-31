@@ -13,7 +13,7 @@ OURO 的核心目标是提供稳定的智能体运行基础：同一套应用能
 - 本地优先：会话、配置和运行记录默认保存在用户指定的本地目录。
 - 可恢复：关键状态先持久化，再执行不可逆或结果未知的外部操作。
 - 明确边界：core 不依赖 UI、文件系统或具体模型供应商。
-- 单一契约：持久化格式、命令输入和运行时解析使用同一组权威字段。
+- 单一契约：持久化格式、命令输入和运行时解析使用同一组权威字段；独立 record 必须携带显式版本。
 - 用户控制：敏感工具执行、AskUser、终止和会话维护都有显式入口。
 - 渐进扩展：只有真实变化方向清楚时才引入新抽象或基础设施。
 - 可观察：重要状态变化、模型流、工具调用、失败和恢复均形成事件。
@@ -26,6 +26,7 @@ OURO 支持流式、多轮的模型/工具循环。文本、reasoning 和工具�
 循环；工具调用只在完整响应边界形成可执行批次。一次 Run 从用户输入开始，可经历多个模型回合和工具批次，
 最终进入 completed、waiting、paused、aborted、failed 或 recoverable 状态。运行软预算可在模型回合边界
 按轮数、累计 token 或耗时暂停运行。
+流式与非流式 Provider 都在 adapter 边界输出同一种 `tool_call_delta`；Core 不维护完整调用事件的第二条路径。
 
 ### 会话与恢复
 
@@ -39,6 +40,9 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - active run 期间来自用户、OURO Host/Application 或插件的 durable 排队输入、来源归属、去重，以及 run 级
   follow-up / turn 级 steer 交付；
 - 消息和事件按稳定 cursor 增量读取，事件订阅也支持 after-sequence 追赶，长历史不要求 Host 全量加载；
+- Session Catalog 只读取有界 latest/count 投影：文件后端读取有限尾部，SQLite 使用聚合查询，不加载完整历史；
+- Goal、Plan、Todo 等扩展状态由 SessionRepository 按 owner/version/branch policy 保存；canonical 状态、
+  synthetic projection、branch、export 与 trash 共享同一生命周期契约；
 - 后端中立 SessionRepository 下的本地可读文件与 SQLite 两种实现，以及原子、验证、失败回滚的
   文件到 SQLite 导入；
 - CLI Host 可通过 `--session-backend files|sqlite` 或 `OURO_SESSION_BACKEND` 选择后端；选择只决定当前数据集，
@@ -84,7 +88,7 @@ Bash 工作目录默认限制在 Session workspace，工具输出由统一边界
 
 ### 子智能体
 
-OURO 当前提供一等、可恢复的单层子智能体能力。系统始终包含不可编辑/删除的 builtin `general`，用户可通过
+OURO 提供一等、可恢复的单层子智能体能力。系统始终包含不可编辑/删除的 builtin `general`，用户可通过
 AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 all/selected tools 的自定义 definition。
 每个 parent Run 冻结 Agent 目录；模型 `SpawnAgent` schema 与执行解析使用同一快照，active Run 不受后续配置编辑
 影响。标准 LocalApplication 默认装配 Agent control tools；allowlist 无可用 definition 时只省略 SpawnAgent，不生成
@@ -100,7 +104,7 @@ AskUser 都可在主窗口处理。终端只有一个行读取所有者；intera
 identity 精确路由，并覆盖决议提交与 canonical inbox 投影收敛之间的短暂重复通知。终端仅渲染主智能体行动轨迹
 和 subagent HITL 提示，不展开 subagent 回复或工具调用。
 
-首版固定 `max_depth=1` 和 bound lifecycle，但不设置 subagent 专用 active/queued 配额。每个合法派遣都提交
+运行契约固定 `max_depth=1` 和 bound lifecycle，但不设置 subagent 专用 active/queued 配额。每个合法派遣都提交
 现有 RuntimeSupervisor，实际并发与排队由其通用并发上限和 FIFO 决定。工具 effect 与权限不参与并发调度；
 多个 write-capable subagent 可同时运行，工具冲突通过普通失败结果回到各自模型。subagent 能力只能从 parent 的
 工具/workspace/network/MCP/审批/预算上限收紧；nested 与 detached 明确拒绝。进程重启会把中断 Run
@@ -119,12 +123,12 @@ legacy SSE 数据通道由 OURO 适配为 SDK session stream，使读取和 POST
 投影一并释放。单个 server 启动失败不会阻止不依赖它的普通 Run。`mcp list/show/set/remove/check` 提供
 原子配置管理、脱敏查询和一次性连接诊断，用户不需要直接编辑共享 JSON 配置。
 
-插件系统已提供首版完整闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
+插件系统包括严格 manifest、local/Git/archive 安装、不可变 digest store、代码信任与 capability
 grant、declarative/Python in-process/stdio worker runtime、不可变 owner Catalog、generation lease、依赖解析、
 更新/回滚、Skills/MCP/background service、最小 scaffold/开发 reload、四类兼容报告和五类可运行示例。插件是 OURO
 系统级模块，正式来源只分 builtin 与 user；
-workspace/project 只影响一次执行的上下文，不存在项目插件；workspace plugin scope 已从持久化模型、CLI 和 DTO
-删除。in-process 是用户明确授予的同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
+workspace/project 只影响一次执行的上下文，不存在项目插件或 workspace plugin scope。in-process 是用户明确授予的
+同进程代码信任；worker 提供进程与协议隔离，但不是 OS sandbox。
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
@@ -134,12 +138,13 @@ workspace/project 只影响一次执行的上下文，不存在项目插件；wo
 
 插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
-用户在审批中修改参数后会以最终参数重新评估。Runtime 现已为每个 Run 固定不可变 Extension Catalog，贯穿模型
-工具列表、执行、Observer、上下文、压缩、continuation 与 policy；current pointer 切换不改变旧 Run，插件 contribution
-也不再写入 Host 全局 registry。每代 callback 经过 process-local gate，disable/revoke 后不能开始新调用。候选
-activation 已统一 enable/configure/select/restart：失败不提交 state/Catalog，依赖变化重建传递 closure；候选数据写入
-隔离暂存，后台服务按旧停新启串行转交。依赖 observed state、封闭 contribution adapter 清单、严格 Worker 协议、
-代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期也已落地。Observer 使用独立有界
+用户在审批中修改参数后会以最终参数重新评估。Runtime 为每个 Run 固定不可变 Extension Catalog，贯穿模型工具列表、
+执行、Observer、上下文、压缩、continuation 与 policy；current pointer 切换不改变已经冻结的 Run，插件 contribution
+归属于 Catalog，不写入 Host 全局 registry。每代 callback 经过 process-local gate，disable/revoke 后不能开始新调用。
+enable/configure/select/restart 共享候选 activation 事务：失败不提交 state/Catalog，依赖变化重建传递 closure；候选
+数据写入隔离暂存，后台服务按停旧启新顺序串行转交。依赖 observed state、封闭 contribution adapter 清单、严格
+Worker 协议、代际私有 in-process module、统一 Run-local Skill Catalog 与 Plugin MCP 生命周期属于同一 generation
+边界。Observer 使用独立有界
 mailbox，不能阻塞语义路径；Prompt Policy 在直接用户提示持久化前 fail-closed，并把同一 Catalog contract 转交
 prospective Run。完整审查与
 取舍见[插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)。
@@ -188,7 +193,8 @@ generation-frozen continuation checkpoint。
 ### Provider usage ledger
 
 跨 Session 的供应商请求级 token/费用账本。usage 只采集 Provider 响应，按日期、模型和路由等维度查询；
-上下文 token 估算不进入账本。人工修订和重置保留追加式审计历史。
+上下文 token 估算不进入账本。人工修订和重置保留追加式审计历史；公开读取返回深拷贝，调用方不能修改
+账本内存缓存中的权威状态。
 
 ### Model turn
 
@@ -228,20 +234,21 @@ result/delivery identity 和 revision，不镜像 running/waiting/terminal 状�
 - in-process 插件是同进程可信扩展；worker 是协议隔离。permission 是 Host-service 授权门，两者都不宣称
   OS 安全沙箱。
 - 删除会话先发布到回收站；canonical 写入与可重建索引分离。
+- 本地原子 I/O 与跨进程文件锁由共享基础设施拥有，Session、Resource、Config、Billing adapter 不互相借用实现。
+- `ouro/**` 的依赖方向由递归 allow-edge matrix 检查，新增 package 必须显式登记其允许依赖。
 - 配置 command 在跨进程锁内完成完整 read-validate-write；公共 DTO、事件和第三方错误统一脱敏。
 
 ## 未来设计范围
 
-以下能力属于明确的未来方向，当前实现不应假装已经提供：
+以下能力处于目标状态，不属于当前产品契约：
 
 - TUI Host：复用 application service/DTO、typed event、activity 与 cursor 的终端原生界面。
 - Desktop Host：复用相同 application service/DTO 的会话导航、运行视图、diff、审批和设置界面。
-- 插件后续能力：底层架构、最小 scaffold/reload、三类示例、社区导入报告和开发文档已经完成；只有真实 user plugin
-  证明现有 extension point 无法表达 Agent、provider、resource 或 UI 能力时才扩展。Marketplace、签名、publisher
-  policy、OS sandbox、项目插件与历史兼容层不在当前范围。
+- 插件扩展：只有真实 user plugin 证明现有 13 类 extension point 无法表达 Agent、provider、resource 或 UI 能力时
+  才增加类型。Marketplace、签名、publisher policy、OS sandbox、项目插件与历史兼容层不在当前范围。
 - 长期记忆：来源可追踪、可查看、可编辑、可删除的记忆提取与检索。
-- Durable Goal/Task：显式任务依赖、跨 Run 调度、重试和用户可见计划；它可以关联当前 Delegation，但不是
-  子智能体首版的前置条件。
+- Durable Task/Workflow：在 builtin Goal mode 之外表达多任务依赖、跨 Run 调度、重试和用户可见任务图；它可以
+  关联 Delegation，但不复制 Goal 或子智能体状态机。
 - SQLite 产品化：Desktop 后端选择、迁移 CLI/UI、备份恢复、版本升级和真实规模性能基准。
 
 未来能力必须复用现有 core/application 契约，不能让 Desktop、插件或协议对象直接接管运行状态。

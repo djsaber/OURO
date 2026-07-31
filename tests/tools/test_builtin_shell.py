@@ -1,7 +1,13 @@
+import os
+import shlex
+import subprocess
+import sys
+from asyncio import create_task, sleep
 from pathlib import Path
 
 import pytest
 
+from ouro.core.cancellation import AbortSignal
 from ouro.tools import (
     ToolExecutionContext,
     ToolExecutor,
@@ -28,6 +34,19 @@ def _invocation(shell: CommandShell, command: str) -> ToolInvocation:
         tool_name=shell.tool_name,
         arguments={"command": command},
     )
+
+
+def _python_command(script: str) -> str:
+    arguments = [sys.executable, "-c", script]
+    return subprocess.list2cmdline(arguments) if os.name == "nt" else shlex.join(arguments)
+
+
+def _python_command_for_shell(shell: CommandShell, script: str) -> str:
+    if shell.kind in {"powershell", "windows_powershell"}:
+        executable = sys.executable.replace("'", "''")
+        quoted_script = script.replace("'", "''")
+        return f"& '{executable}' -c '{quoted_script}'"
+    return _python_command(script)
 
 
 def test_windows_prefers_pwsh_then_windows_powershell_then_cmd() -> None:
@@ -293,3 +312,105 @@ async def test_detected_shell_surfaces_command_failure(tmp_path) -> None:
     assert outcome.result.exit_code not in (0, None)
     assert "shell-failed" in outcome.result.content
     assert "CLIXML" not in outcome.result.content
+
+
+@pytest.mark.asyncio
+async def test_process_boundary_drains_large_streams_with_one_shared_memory_cap() -> None:
+    limit = 4096
+    context = ToolExecutionContext(max_output_chars=limit)
+    command = _python_command(
+        "import sys; "
+        "sys.stdout.buffer.write(bytes([111]) * 200000); sys.stdout.flush(); "
+        "sys.stderr.buffer.write(bytes([101]) * 200000); sys.stderr.flush()"
+    )
+
+    result = await context.run_shell(command, timeout_seconds=10)
+
+    assert result.returncode == 0
+    assert result.stdout_truncated is True
+    assert result.stderr_truncated is True
+    assert len(result.stdout) + len(result.stderr) <= limit + 128
+    assert "tool output truncated" in result.stdout
+    assert "tool output truncated" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_builtin_shell_reports_pipe_and_final_result_truncation() -> None:
+    shell = detect_command_shell()
+    if shell is None:
+        pytest.skip("no supported command shell is installed")
+    limit = 4096
+    registry = ToolRegistry()
+    registry.register(builtin_command_tool(shell))
+    command = _python_command_for_shell(
+        shell,
+        "import sys; "
+        "sys.stdout.buffer.write(bytes([111]) * 200000); sys.stdout.flush(); "
+        "sys.stderr.buffer.write(bytes([101]) * 200000); sys.stderr.flush()",
+    )
+
+    outcome = await ToolExecutor(registry).execute(
+        _invocation(shell, command),
+        approved=True,
+        context=ToolExecutionContext(max_output_chars=limit),
+    )
+
+    assert outcome.result is not None
+    assert outcome.result.structured["stdout_truncated"] is True
+    assert outcome.result.structured["stderr_truncated"] is True
+    assert outcome.result.metadata["output_truncated"] is True
+    assert len(outcome.result.content) == limit
+
+
+@pytest.mark.asyncio
+async def test_process_boundary_replaces_invalid_utf8_without_losing_status() -> None:
+    context = ToolExecutionContext(max_output_chars=1024)
+
+    result = await context.run_shell(
+        _python_command("import sys; sys.stdout.buffer.write(b'\\xffok')"),
+        timeout_seconds=10,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout == "�ok"
+    assert result.stdout_truncated is False
+
+
+@pytest.mark.asyncio
+async def test_process_boundary_timeout_releases_inherited_pipes_within_deadline() -> None:
+    context = ToolExecutionContext(max_output_chars=1024, poll_interval=0.01)
+    child_script = "import time; time.sleep(30)"
+    command = _python_command(
+        "import subprocess, sys, time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}], "
+        "stdout=sys.stdout, stderr=sys.stderr); time.sleep(30)"
+    )
+
+    result = await context.run_shell(command, timeout_seconds=0.1)
+
+    assert result.timed_out is True
+    assert result.aborted is False
+
+
+@pytest.mark.asyncio
+async def test_process_boundary_abort_releases_process_tree() -> None:
+    signal = AbortSignal()
+    context = ToolExecutionContext(
+        signal=signal,
+        max_output_chars=1024,
+        poll_interval=0.01,
+    )
+    running = create_task(
+        context.run_shell(
+            _python_command("import time; print('started', flush=True); time.sleep(30)"),
+            timeout_seconds=30,
+        )
+    )
+    await sleep(0.1)
+    signal.abort("test abort")
+
+    result = await running
+
+    assert result.aborted is True
+    assert result.timed_out is False
+    assert "started" in result.stdout

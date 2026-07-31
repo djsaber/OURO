@@ -33,7 +33,7 @@
 
 | 规格 | 目标能力 |
 |---|---|
-| [个人智能体平台能力](future-platform.md) | Desktop、长期记忆与 durable Goal/Task 等剩余跨能力目标 |
+| [个人智能体平台能力](future-platform.md) | Desktop、长期记忆与 durable Task/Workflow 等跨能力目标 |
 
 ## 规格完成标准
 

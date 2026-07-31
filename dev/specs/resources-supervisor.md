@@ -14,6 +14,8 @@ Session 的 Run 提供进程内调度、订阅和 Host 生命周期。二者都�
 - `ResourceRecord` 保存 digest、media type、size、安全来源名和创建时间，不保存导入绝对路径。
 - blob 与 record 是 canonical 数据；全局资源 index 是可重建投影。
 - Session 的 `resources/index.json` 保存 canonical 引用关系；分支引用记录可追踪来源 Session。
+- 独立 `ResourceRecord` payload 必须显式携带当前核心 `schema_version`，缺失或不匹配时拒绝读取并要求迁移；
+  可重建 resource index 不替代 record 的版本检查。
 
 ## 导入、读取与删除
 

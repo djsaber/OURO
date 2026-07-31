@@ -2,6 +2,14 @@
 
 OURO targets Python 3.12 or newer and uses `uv` for its locked development environment.
 
+Use the fast architecture/core gate while iterating:
+
+```bash
+uv run --frozen pytest -q tests/architecture tests/core
+```
+
+Before handoff, run the complete cross-platform-equivalent quality gate:
+
 ```bash
 uv sync --frozen --all-groups
 uv run pytest --cov=ouro --cov-report=term-missing

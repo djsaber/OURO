@@ -546,11 +546,7 @@ def _session_context(
         )
     if argument == "full":
         snapshot = runtime.sessions.context(session_id)
-        output = (
-            render_context_snapshot(snapshot)
-            if snapshot is not None
-            else NO_PREPARED_CONTEXT
-        )
+        output = render_context_snapshot(snapshot) if snapshot is not None else NO_PREPARED_CONTEXT
     else:
         status = runtime.sessions.context_status(session_id)
         output = render_context_status(status) if status is not None else NO_PREPARED_CONTEXT

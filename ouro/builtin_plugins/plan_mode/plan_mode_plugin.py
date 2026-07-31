@@ -112,7 +112,9 @@ class PlanModePlugin:
     def __init__(self, context: PluginContext) -> None:
         if context.artifact_root is None:
             raise RuntimeError("plan mode requires a Host-managed artifact root")
-        self._state = PlanStateRepository(context.data)
+        if context.session_state is None:
+            raise RuntimeError("plan mode requires Host-managed Session state")
+        self._state = PlanStateRepository(context.session_state)
         self._artifact_root = Path(context.artifact_root).expanduser().resolve(strict=False)
         self._lock = threading.RLock()
 

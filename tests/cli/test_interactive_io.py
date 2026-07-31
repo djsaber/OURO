@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Literal
 
 from ouro.application.agent_models import AgentInteractionView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
@@ -11,9 +12,12 @@ from ouro.cli.terminal_status import (
     TerminalStatusRegion,
     TerminalTransientRegion,
 )
+from ouro.core.approvals import ApprovalRecord
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
+from ouro.core.tools import ToolCallRequest, ToolInputRequest, ToolInvocation
 from ouro.mcp import MCPServerConfig, MCPServerRecord
 
 
@@ -48,6 +52,56 @@ def _coordinator(
         output_func=output_func,
         prompt_func=prompt_func,
         agents=agents,  # type: ignore[arg-type]
+    )
+
+
+def _waiting_tool_run(
+    session: SessionRecord,
+    *,
+    run_id: str,
+    status: Literal["waiting_approval", "waiting_user"],
+    tool_name: str,
+    arguments: dict[str, object],
+    input_request: ToolInputRequest | None = None,
+) -> RunRecord:
+    call_id = f"{run_id}_call"
+    request = ToolCallRequest(id=call_id, name=tool_name, arguments=arguments)
+    invocation = ToolInvocation(
+        tool_call_id=call_id,
+        session_id=session.session_id,
+        run_id=run_id,
+        tool_name=tool_name,
+        arguments=arguments,
+    )
+    approval = (
+        ApprovalRecord(
+            session_id=session.session_id,
+            run_id=run_id,
+            tool_call_id=call_id,
+        )
+        if status == "waiting_approval"
+        else None
+    )
+    batch = ToolCallBatchRecord(
+        turn_id=f"{run_id}_turn",
+        assistant_message_id=f"{run_id}_assistant",
+        phase="awaiting_interaction",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="awaiting_approval" if approval is not None else "waiting_user",
+                invocation=invocation,
+                approval=approval,
+                input_request=input_request,
+            )
+        ],
+    )
+    return RunRecord(
+        session_id=session.session_id,
+        run_id=run_id,
+        status=status,
+        pending_approval_id=approval.approval_id if approval is not None else None,
+        active_tool_batch=batch,
     )
 
 
@@ -962,16 +1016,12 @@ async def test_approval_releases_terminal_before_runtime_continuation_streams() 
         status_line=TerminalStatusLine(outputs.append, animated=False),
     )
     session = SessionRecord(session_id="ses_1")
-    waiting = RunRecord(
-        session_id=session.session_id,
+    waiting = _waiting_tool_run(
+        session,
         run_id="run_1",
         status="waiting_approval",
-        metadata={
-            "pending_invocation": {
-                "tool_name": "Write",
-                "arguments": {"path": "notes.md"},
-            }
-        },
+        tool_name="Write",
+        arguments={"path": "notes.md"},
     )
 
     class Runtime:
@@ -1010,22 +1060,20 @@ async def test_interaction_cards_clear_before_approval_and_answer_continuations(
         transient_region=transient_region,
     )
     session = SessionRecord(session_id="ses_1")
-    approval = RunRecord(
-        session_id=session.session_id,
+    approval = _waiting_tool_run(
+        session,
         run_id="run_1",
         status="waiting_approval",
-        metadata={
-            "pending_invocation": {
-                "tool_name": "Write",
-                "arguments": {"path": "notes.md"},
-            }
-        },
+        tool_name="Write",
+        arguments={"path": "notes.md"},
     )
-    question = approval.model_copy(
-        update={
-            "status": "waiting_user",
-            "metadata": {"pending_question": "Which file?"},
-        }
+    question = _waiting_tool_run(
+        session,
+        run_id="run_1",
+        status="waiting_user",
+        tool_name="CustomInput",
+        arguments={},
+        input_request=ToolInputRequest(data="Which file?"),
     )
 
     class Runtime:

@@ -424,9 +424,7 @@ class ContextPreparationService:
                     semantic_tag="unattended-mode-reminder",
                 )
             )
-        injected_message_count = sum(
-            fragment.target == "message" for fragment in added_context
-        )
+        injected_message_count = sum(fragment.target == "message" for fragment in added_context)
         budget = self._input_budget(active_adapter)
         active = self.store.load_active_compaction(session.session_id)
         source_messages, view = self._project_context(
@@ -983,7 +981,7 @@ def _consume_summary_event(
         usage = _merge_usage(usage, event.usage)
     if event.type == "text_delta" and event.text:
         text_parts.append(event.text)
-    elif event.type in {"tool_call_delta", "tool_call"}:
+    elif event.type == "tool_call_delta":
         raise CompactionError("summary provider attempted to call a tool")
     elif event.type == "error":
         raise CompactionError(event.error or "summary provider returned an error")

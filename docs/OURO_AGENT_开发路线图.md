@@ -1,6 +1,7 @@
 # OURO Agent 开发路线图
 
-本文只描述尚未实现的能力和进入实现阶段的条件。当前能力以项目概述和开发架构为准。
+本文描述尚未实现的能力、实施顺序和进入实现阶段的条件。当前能力以项目概述和开发架构为准；已完成工作
+仅作为后续阶段的前置基线列出。
 具体任务、依赖和退出条件见 [执行计划索引](../dev/plans/README.md)。
 
 ## 推进原则
@@ -11,32 +12,18 @@
 - 不以“未来可能需要”为理由引入空接口、通用 manager 或深层依赖注入。
 - 每一项交付必须包含正常、错误、恢复和并发边界测试，并同步更新权威文档。
 
-## 近期：连接与扩展
+## 前置架构基线
 
-个人工作流基础（ResourceService、RuntimeSupervisor、Application 配置门面）、后端中立 SessionRepository、
-SQLite adapter、类型化 Host 事件、LocalApplication 生命周期，以及插件首版管理闭环、Run continuation、工具执行
-上下文和限制性 tool policy 控制面已经完成。
+后端中立 SessionRepository、File/SQLite adapter、ResourceService、RuntimeSupervisor、ConfigurationFacade、
+类型化 Host 事件、LocalApplication 生命周期、子智能体、builtin Goal/Plan 以及插件管理和运行闭环构成后续工作的
+前置基线。底层不变量与验证证据见[架构底层重构计划](../dev/plans/architecture-foundation-refactor.md)，插件实施记录见
+[连接与扩展计划](../dev/plans/connectivity-extensions.md)和
+[插件观察器与提示策略计划](../dev/plans/plugin-observers-prompt-policy.md)。
 
-插件系统已完成 B1-B8 八个里程碑：删除 workspace/managed 等插件 scope，只保留 builtin/user；Manifest/state
-直接升级并拒绝旧格式；配置改为 immutable revision；权限集合封闭；插件 MCP 随启用启动；Runtime 改为持有
-不可变 `ExtensionCatalogLease`，旧/新 Run 可并存，插件不再修改 Host 全局 registry，也不存在全局 Catalog barrier。
-enable/configure/select/restart 已统一为“构建候选 generation closure 与 Catalog、expected-state 提交、pointer swap、
-旧代独立 drain”，Background Service 串行转交；builtin/user dependency lock、blocked 恢复和统一 observed state 也已
-落地。十三种 Manifest capability 现由封闭 `ContributionTypeAdapter` 清单统一绑定 SDK/worker、准备、契约、资源与
-Catalog 投影。Worker 严格协议/进程树关闭、in-process 代际私有 module、统一 Run-local Skill Catalog 与 Plugin MCP
-生命周期均已收口。稳定执行契约现可跨进程重建 waiting/recoverable Run，并在插件更新后从保留的旧 digest、配置和
-依赖构建非当前 Catalog。最小 scaffold、显式本地 reload、checkout 前 Git tree 边界、四类社区兼容报告、三种 runtime
-可运行示例和[插件开发指南](OURO_插件开发指南.md)也已落地。
+Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 不属于
+当前路线图；只有真实插件提出无法由当前边界表达的共同需求时才重新评估。
 
-C1-C5 已完成观察扩展面的领域修正：typed Observer 通过每 registration 独立 mailbox 非阻塞接收不可变事实，
-Prompt Policy 在用户提示持久化和 Run 创建前基于同一 prospective Catalog fail-closed。旧 `hooks`、旧 Manifest
-schema 和旧 worker/API 协议均已破坏式删除，没有兼容双轨。两类能力分别承担事实通知和语义决策，未引入通用
-可变 middleware、任意模型/工具 transformer 或 durable 观察队列。设计见
-[插件观察器与语义扩展点设计](OURO_插件观察器与语义扩展点设计_2026-07-29.md)，执行顺序见
-[插件观察器与提示策略计划](../dev/plans/plugin-observers-prompt-policy.md)。后续扩展点仍只由真实插件需求驱动。
-
-Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖环境和通用 session-scoped KV/CAS 都不是
-当前目标；只有真实插件提出不可由现有边界满足的需求时才重新评估。
+## 近期：Host 产品面
 
 ### TUI Host
 
@@ -73,14 +60,16 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 - 检索结果与上下文预算协同；
 - 防止把工具输出或外部提示自动提升为可信记忆。
 
-### Durable Goal/Task
+### Durable Task/Workflow
 
-- durable task/goal 记录、状态和预算；
+- builtin Goal mode 已提供用户显式创建、Run continuation、状态、预算和控制权仲裁；本阶段不复制它；
+- 在出现真实多任务需求后，再定义独立的 durable task/workflow 记录与状态；
 - ready task 选择、依赖、重试与跨 Run 调度；
 - 与当前 durable Delegation 建立显式关联，不复制 Agent 状态机；
 - 用户可见的计划进度、预算与控制入口。
 
-子智能体首版已经完成；本阶段只实现尚未提供的通用 Goal/Task，不把 AgentTree 冒充任务系统。
+子智能体和单 Goal 生命周期已经完成；本阶段只实现尚未提供的多任务/工作流语义，不把 AgentTree 或 Goal state
+冒充通用任务图。
 
 ### SQLite 产品化
 
@@ -100,6 +89,7 @@ Marketplace、签名/publisher trust root、worker OS sandbox、每插件依赖�
 
 - 行为、错误、取消、恢复和并发语义有测试；
 - 不新增 core 对外层的依赖；
+- 快速 `tests/architecture + tests/core` gate 通过，完整跨平台 suite 与 branch coverage 门槛通过；
 - 敏感数据不进入日志、事件或公开 DTO；
 - 资源有明确关闭路径；
 - CLI、TUI、Desktop 和协议适配器不复制 application 规则；

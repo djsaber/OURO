@@ -12,6 +12,33 @@ from ouro.plugins.api import ScopedPluginDataStore
 from ouro.sdk.plugins import v1 as sdk
 
 PLUGIN_ID = "dev.ouro.toolkit"
+_SESSION_STATES: dict[Path, dict[str, sdk.PluginSessionState]] = {}
+
+
+class _MemorySessionStateStore:
+    def __init__(self, values: dict[str, sdk.PluginSessionState]) -> None:
+        self._values = values
+
+    def load(self, session_id: str) -> sdk.PluginSessionState | None:
+        return self._values.get(session_id)
+
+    def save(
+        self,
+        session_id: str,
+        *,
+        state_schema_version: int,
+        payload: sdk.JsonValue,
+        branch_policy="reset",
+        projection_semantic_tags=(),
+    ) -> None:
+        del branch_policy, projection_semantic_tags
+        self._values[session_id] = sdk.PluginSessionState(
+            state_schema_version=state_schema_version,
+            payload=payload,
+        )
+
+    def delete(self, session_id: str) -> None:
+        self._values.pop(session_id, None)
 
 
 class _ExecutionContext:
@@ -75,6 +102,7 @@ def _make_plugin(data_root: Path) -> ToolkitPlugin:
         tasks=None,  # type: ignore[arg-type]
         logger=None,  # type: ignore[arg-type]
         diagnostics=None,  # type: ignore[arg-type]
+        session_state=_MemorySessionStateStore(_SESSION_STATES.setdefault(data_root.resolve(), {})),
     )
     plugin = TOOLKIT_PLUGIN.factory(context)
     assert isinstance(plugin, ToolkitPlugin)

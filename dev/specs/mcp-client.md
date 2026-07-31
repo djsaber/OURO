@@ -68,6 +68,8 @@ configured/disabled
   由 owner 的有界 ping 监督；初始消息端点等待和每次 POST 仍受请求 timeout 约束。显式 reconnect 执行完整
   stop/start；
 - `stop`、`close` 和 RuntimeSupervisor shutdown 退出 session、HTTP client、stdio 管道与子进程；
+- legacy SSE transport 是两对 AnyIO memory stream 的创建者，退出时必须关闭全部 send/receive 端点，不能把
+  接收端留给 SDK 对象析构器回收；
 - `MCPRuntimeResource` 是 MCPManager 到 RuntimeSupervisor 通用受管资源协议的适配器。
 
 ## Host 装配

@@ -69,9 +69,15 @@ CLI / TUI / Desktop Host
 自身又关闭模型 adapter、事件 worker 和专用压缩 adapter。TUI/Desktop 必须复用同一 async lifecycle，
 不得从 Session adapter 路径推导部署配置，也不得只构建 RuntimeService 后绕过扩展资源装配。
 
-`RuntimeService` 拥有跨协作者的运行事务：session lock、abort signal、恢复、人工交互恢复和排队输入
-串行化。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；它通过 `InnerLoopPorts` 显式访问
-上下文、事件、工具和持久化副作用。`RunLifecycle` 集中承载模型循环中的 run/session 状态转换。
+`RuntimeService` 拥有跨协作者的运行事务：恢复、人工交互恢复、terminal settlement 和排队输入串行化。
+进程内 session run lock 与 abort signal 由 `RunExecutionOwnership` 唯一管理；`RunLifecycle` 集中承载模型循环中的
+durable Run/Session 状态转换。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；其端口按 context、
+run boundary、turn boundary 三个变化原因分组，事件和工具批次保留为两个直接边界，并在三个协作面之间传递
+成组依赖。
+
+LocalApplication 完成 Plugin catalog、Supervisor、AgentDefinitionService 和 AgentService 构造后，用一次性的
+`RuntimeService.bind_extensions` 绑定完整 Host 扩展组合。绑定不可重复，运行前不会暴露“有 definitions 但没有
+controls”等半装配状态。裸 Runtime 明确是无扩展 Host。
 
 运行事务读取 `RuntimeSessionSnapshot`，其中只包含 Session、messages、runs 和 compactions；包含完整
 events 的 `SessionSnapshot` 只服务查询、回放、导出和活动投影重建。正常 Run 在取得锁前后复用同一份运行态
@@ -101,7 +107,7 @@ Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父
 队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；Host input 持久接收后返回 receipt，模型消费由后续普通
 Run 调度独立完成。父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
 保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
-request_id 精确路由。首版限制单层和 bound lifecycle；subagent 的工具、workspace、审批与
+request_id 精确路由。运行契约限制为单层和 bound lifecycle；subagent 的工具、workspace、审批与
 RunBudgetPolicy 只能从父级能力上限收紧。
 
 循环交互 CLI 作为长期运行 Host，用单一行读取协调器把 stdin 经线程边界接入 async 循环，并与 AgentTree
@@ -114,7 +120,7 @@ subscription 同时等待。底层始终只有一个阻塞 reader；interaction 
 
 AgentService 不设置 root active/queued subagent 配额。每个通过派遣策略、深度、预算与幂等校验的请求都建立
 durable relation 并提交现有 RuntimeSupervisor；Supervisor 的通用 `max_concurrency` 与 FIFO 决定实际并发和排队。
-首版仍在 relation 创建前拒绝 depth > 1。工具 effect、write capability 与权限不参与调度；同一 Delegation 的
+AgentService 在 relation 创建前拒绝 depth > 1。工具 effect、write capability 与权限不参与调度；同一 Delegation 的
 生命周期竞争由 AgentService 的 per-delegation lock 与 repository CAS 收敛，控制工具无需声明 batch exclusive。
 subagent 直接复用冻结的 `RunBudgetPolicy`；InnerAgentLoop
 每次 model round durable boundary 先执行本 Run 检查，再由 application callback 聚合 parent Run 与其所有 child
@@ -144,7 +150,7 @@ child task 不进入 Delegation 文本、handle、根树或关系事件，applic
 child shell/path 仍走 ToolExecutionContext；不允许 external paths 时 Runtime 强制 `workspace_only=true`。多个
 write-capable subagent 可并发派遣；写工具冲突作为各 subagent 的普通 ToolResult 返回，由各自模型在现有循环中
 调整，不把工具权限提升为调度概念。Delegation constraints 只持久化 workspace 与 external-path 这类独立运行
-约束；工具名、write、network 和 MCP 能力由冻结的 EffectiveToolRefs 表达，不再复制为可能漂移的布尔字段。
+约束；工具名、write、network 和 MCP 能力只由冻结的 EffectiveToolRefs 表达。
 
 Local files 与 SQLite 使用同一 Delegation repository 契约。进程恢复先由现有 Session recovery 把失去 live job 的
 active Run 转为 recoverable，再由 `AgentRecoveryService` 双向核对 child Session、Delegation 和 child Run provenance。
@@ -198,8 +204,8 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
 规范化为 `tool_call_delta`；其中 `index` 是响应内从零开始的工具调用序号，不得泄漏供应商原生 content-block
 坐标。`InnerAgentLoop` 同步产生 `model_tool_call_delta` 事件，并在响应 `done` 边界
-聚合、解析和校验整批 tool calls。无法提供分片的非流式 Provider 可以产生完整 `tool_call` 事件；`done`
-只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
+聚合、解析和校验整批 tool calls。无法提供分片的非流式 Provider 也在 adapter 边界把完整响应规范化为一个
+delta，Core 不接受完整 `tool_call` event；`done` 只表达响应结束和 usage。随后按配置选择顺序或并行执行。assistant tool-call 消息必须先持久化，tool result
 按 provider 原始顺序提交。
 
 会话批准模式保存在 canonical `SessionRecord` 中，取值为 `inherit`、`auto`、`approval` 或 `deny`。工具定义
@@ -223,6 +229,10 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 归一化后的 effect、batch behavior 和 resumable 能力都进入 execution contract hash。工具策略只接收 canonical
 identity、owner、这些归一化语义、schema 校验后的参数及 Session/Run 上下文；包含 exclusive 工具的混合批次
 必须在任何 handler 执行前整批拒绝。
+
+批次的 durable suspension 由纯 `tool_batch_suspension` 统一选择，优先级为 approval、child join、user input，
+同时投影 Run status/phase 与 batch phase。preflight、并发 checkpoint、执行结束和恢复入口不能分别手写扫描逻辑。
+每个 Run 复用一个 ToolCallCoordinator；它持有 Run-frozen registry 以及动态 controller scope，terminal 后统一释放。
 工具 handler 可以返回
 `ToolInputRequest`，以独立于审批的用户输入协议挂起 Run；其中的请求和回答都是 Core 不解释的 JSON 值。
 需要根据回答继续执行的工具必须声明 resumable 并提供 resume handler；恢复仍绑定原 Catalog 与精确工具 contract，
@@ -230,6 +240,9 @@ identity、owner、这些归一化语义、schema 校验后的参数及 Session/
 协议的内置生产者，不被会话批准模式转换成普通工具批准。`ToolExecutionContext` 集中限制内置文件路径和 Bash cwd
 只能落在 workspace 或 Host 管理的 `OURO_HOME/artifacts` 制品根目录，并在 executor 边界统一限制结果长度；它不会
 放开 `OURO_HOME` 的配置、会话或插件私有数据，Bash cwd 限制也不等同于操作系统沙箱。
+Shell 的 stdout/stderr 从进程启动起并发排空，并在 pipe 消费边界共享一个硬保留预算；超过预算后继续 drain，
+但不保留超额内容。每个流保留独立 truncated 标志，timeout/abort 终止进程树后只做有界 EOF 等待。Builtin Shell
+只负责方言包装、PowerShell CLIXML 解码与结果投影。
 
 用户交互策略与批准策略正交保存：`SessionRecord.interaction_mode` 为 `interactive | unattended`。AFK 是
 application/Host 的命名预设，原子设置 `approval_mode=auto` 与 `interaction_mode=unattended`，Core 不持久化第三个
@@ -342,6 +355,7 @@ Provider `done` 时立即记账，因此即使后续摘要格式校验失败或�
 `replace` 保存带原因的人工修订，`reset` 在当时的有效视图上选择性失效匹配记录；查询重放事件得到当前
 有效视图，历史审计事件始终保留。入口层只解析过滤条件和格式化输出，日期/路由过滤、汇总与修订规则位于
 应用层，文件和锁细节留在基础设施层。
+Local ledger 的输入、entries 与 events 都在公开边界深拷贝；调用方修改 metadata 不会反向修改 append-only cache。
 
 ## 本地持久化
 
@@ -387,12 +401,29 @@ OURO_HOME/
 选择后端不等于迁移数据；文件和 SQLite 数据集保持隔离。`import_sessions_to_sqlite` 在一个目标事务中复制、
 逐 Session 验证并在失败时整体回滚；文件后端继续作为可读实现和导出来源。
 
+`ouro.local_io` 与 `ouro.local_locks` 是共享本地基础设施，提供原子替换、短 mutation lock 和带 owner diagnostic 的
+进程锁；Resource、Session、Config、Billing adapter 只依赖这些顶层模块，不跨 feature adapter 借用实现。
+`tests/architecture/test_boundaries.py` 用显式 allow-edge matrix 递归检查全部 `ouro/**` import，包括相对 import；
+新增顶层 package 或依赖边必须经过架构审查并更新矩阵。
+
 `session.json`、messages、events、runs 和 compactions 是 canonical history；`context.json` 是可替换的最新
 Provider 请求快照，SQLite 使用对应的 `latest_contexts` 单行记录；`sessions/index.json` 是可重建
 查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
+Catalog source 是有界的 `latest + count` 投影：文件实现最多读取 64 KiB 消息尾部并按 `last_run_id` 读取单个
+Run，SQLite 用一条聚合查询生成全部条目；两者都不为列表/重建加载 RuntimeSessionSnapshot。Catalog 不含完整
+transcript，文本查询只覆盖 title、160 字符最后消息预览、workspace、model 与 tags。未来全文搜索必须使用独立、
+可重建且可关闭的索引能力。
+以 `session_id` 为 identity 且影响后续行为的扩展状态同样属于 canonical Session：文件后端保存版本化
+`extensions/index.json`，SQLite schema v3 保存外键级联表。状态按稳定 plugin owner 隔离，branch 使用显式
+`copy/reset/reject`，export 完整表达，trash 与 Session 同事务/同 staging 封存。
 `billing/usage.jsonl` 是独立的全局 canonical 账本，不随 Session 归档或进入回收站而删除。
 messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后
 已有 cursor 仍可继续使用。
+
+独立持久化的核心 record 使用封闭的当前 `schema_version` 类型，并在 File、SQLite、Resource 和 Billing adapter
+的真实读取入口经过同一个 versioned decoder。payload 必须显式携带版本；缺失、非整数、旧版本和未来版本均
+产生 `MigrationRequiredError`，不能由 Pydantic 默认字段静默补全。整体 `data_layout_version`、SQLite schema
+version 与插件 manifest/state schema 各自独立演进，不共用数字或迁移规则。
 
 Provider text/reasoning delta 只追加到文件后端的 `events.jsonl`，由下一个非 delta 事件执行组提交；状态边界
 事件仍同步落盘。快照只在消息提交和生命周期状态转换时写入。SQLite 在同一语义契约下使用数据库事务。
@@ -439,7 +470,7 @@ CLI 与未来 Host 通过 `ConfigurationFacade` 的类型化 DTO/query/command �
 文件锁内完成 read-validate-write，避免 CLI/TUI/Desktop 并发修改不同 section 时丢失更新。
 
 `agents` 使用一个 expected revision 保护 definition 与 runtime policy，避免两个 Host editor 交叉覆盖。runtime
-首版只接受 `max_depth=1`、bound lifecycle 和 agent id allowlist；LocalApplication 在 composition start 读取，
+只接受 `max_depth=1`、bound lifecycle 和 agent id allowlist；LocalApplication 在 composition start 读取，
 变更从 next runtime 生效。definition 由 AgentDefinitionService 管理并从 next Run 冻结；root budget
 继续读取通用 `run_budget`，child default budget 继续使用 AgentDefinition 的 `RunBudgetPolicy`，不增加 Agent 专用
 预算引擎。allowlist 过滤后没有可用 definition 时，Run overlay 不注册 SpawnAgent，但保留管理既有 child 的其他
@@ -467,13 +498,13 @@ CLI 命令使用资源层级表达职责：
 - `agent definition list/show/tools/create/update/delete/copy` 通过 provider-independent composition 管理定义；
 - `agent list/show/spawn/wait/send/interrupt/close/tree/interactions` 通过 LocalApplication/AgentService
   管理 durable subagent；
-- `config agents` 使用 expected revision 配置首版 depth 和 agent id allowlist；
+- `config agents` 使用 expected revision 配置 depth 和 agent id allowlist；
 - `run --resource` 将已导入资源附加到本次输入；
 - `skills remove` 负责移除 OURO 管理的 Skill。
 
 命令入口不得实现运行规则。跨 Host 可复用的查询和命令进入完整、内聚的 application service
-（SessionService、ResourceService、UsageService、RuntimeService、ConfigurationFacade）；不再提供运行期才
-暴露“缺少某项能力”的大转发 façade。MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置、
+（SessionService、ResourceService、UsageService、RuntimeService、ConfigurationFacade）。这些 façade 在构造时即具备
+完整依赖，不以运行期“缺少某项能力”表达半装配状态。MCP CLI 只适配参数和格式化输出；原子更新、transport 字段重置、
 完整校验和脱敏公共视图都由 `ConfigurationFacade` 编排。
 Agent CLI 同样不读取 config/canonical 文件，也不导入 AgentService 实现。短生命周期 CLI 从 completed parent Run
 的冻结目录进行 unattended Host spawn，并在进程退出前等待 terminal；模型派遣仍绑定 active parent。长期 Host
@@ -514,6 +545,10 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；`run_finished` Observer 仍是 fail-open、非阻塞通知。
+- SDK 可提供绑定当前 plugin identity 的窄 Session state view；它只登记版本化 JSON 状态、branch policy 和
+  synthetic projection tags，不提供任意 Session 查询或通用数据库能力。候选 Generation 在正式发布前不能写
+  canonical Session。Goal、Plan、Todo 使用该入口，旧插件私有 Session JSON 通过显式 migrator 一次性迁移，
+  运行时不保留 fallback。
 - 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace/Host artifact 路径边界与
   协作式取消语义；
   worker 得到等价 workspace 字段并通过协议 `cancel` 中止调用。`tool_policies` 对 host-controlled 和
@@ -527,8 +562,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   之前 fail-closed 评估；user plugin 必须声明 `sessions.prompt.inspect`。允许后，直接或排队的 prospective Run 都固定
   同一 Catalog execution contract；拒绝路径不记录提示正文。
 - 插件是 OURO 系统级扩展模块，来源只分 `builtin` 与 `user`。workspace/project 只作为一次请求的执行上下文，
-  不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 均不再
-  携带 activation scope。
+  不提供项目插件、scope overlay 或按项目安装的插件运行时；plugin state、grant、provenance、CLI 与 DTO 不携带
+  activation scope。
 - Builtin 由 application composition root 的显式 definition registry 装配，不扫描磁盘、不写入 user immutable
   store，也不伪造 install/provenance。definition registry 是 builtin identity、默认启停、依赖 contract 和公开名称
   保留的唯一事实来源；user installer、dependency resolver、application services 与 runtime 都消费该 registry 的派生视图。
@@ -539,9 +574,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   OURO distribution 发布，私有 data 继续使用 `OURO_HOME/plugins/data/<plugin-id>/`。没有 override 时使用 definition 的
   product default，显式用户选择跨重启保留。需要交给模型内置文件工具编辑的用户制品使用独立的
   `OURO_HOME/artifacts/<plugin-id>/`，不混入插件私有 data 或 canonical Session 存储。
-- 插件系统将 package、install/provenance、authorization 和 runtime generation 分层。当前代码已经形成首版
-  管理与运行闭环；[插件系统规格](../dev/specs/plugin-system.md)描述权威目标与剩余契约，现状差距以
-  [插件系统架构审查](OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)为准。同进程插件为 full trust，worker
+- 插件系统将 package、install/provenance、authorization 和 runtime generation 分层，并提供完整管理与运行闭环。
+  [插件系统规格](../dev/specs/plugin-system.md)定义当前权威契约；同进程插件为 full trust，worker
   提供进程与协议边界，但不宣称 OS 沙箱。
 - `PluginPackageStore` 分离 immutable code、mutable state 与 plugin data；installer 从真实 local/Git/archive
   来源生成 provenance。安装阶段只校验包、路径、schema、MCP 描述符和兼容范围，不 import 或启动插件代码；
@@ -552,7 +586,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先关闭 generation
   gate 并发布不含受影响 generation closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
   reference 的内容寻址 immutable revision，selected digest 通过 active revision id 引用；配置/选版与候选 Catalog
-  在同一成功边界提交，失败不再依靠补偿恢复。
+  在同一成功边界提交；失败时 selection、configuration revision 和 generation pointer 保持不变。
 - 启用依赖图只使用显式选择的已安装 digest；digest/configuration 改变会按拓扑重建传递 desired dependant closure，
   active dependent 存在时不能禁用依赖项。不同 digest 共用 plugin data，候选 Host API 写入先进入隔离 staging，
   发布成功才提交；只有最后一个安装被移除时才允许 purge。
@@ -563,6 +597,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   optional、contract、resource 与 Catalog projection facet 绑定在同一记录。主流程遍历清单且不接受用户动态注册；
   Skill/MCP 是 generation-owned resource facet，只有准备成功的资源进入 contract。Background Service 唯一属于
   `activation-singleton`，其 projection 明确为空；其他 contribution 属于 Run `snapshot-bound`。
+- 清单当前冻结为 13 类；每类的 builtin/example/contract 与真实 Host consumer 证据记录在 plugin spec。没有可运行
+  producer 和具体语义消费者时不得新增 capability；失去消费者的开发期类型应整链删除，不保留空 adapter。
 - Skill metadata 也是 Catalog 的 snapshot-bound 目录：Runtime 装配时发现的 user/workspace Skill 作为 Host baseline，
   Plugin Skill 作为 generation resource 加入同一名称空间。候选按名称拒绝冲突；每轮上下文从 Run lease 生成提示词，
   不通过 Observer 二次注入。disable 只改变新 Catalog，旧 lease 保留不可变包内的 `SKILL.md` 路径。
@@ -620,8 +656,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - TUI 与 Desktop 直接消费 application DTO、`RuntimeEventView`、activity snapshot 和增量 cursor，不解析后端；
 - 第二种压缩后端独立演进后，拆分策略执行与上下文准备；
 - 第二种资源后端出现后，再扩展 ResourceStore，当前只支持本地 immutable blob；
-- 只有第二种 MCP SDK 或 transport 需要运行时选择时，才抽取通用 transport provider；当前 client port 与独立的
-  legacy SSE 数据通道模块已经足以隔离官方 SDK、兼容传输和测试实现。
+- 只有第二种 MCP SDK 或 transport 需要运行时选择时，才抽取通用 transport provider；client port 与独立的
+  legacy SSE 数据通道模块负责隔离官方 SDK、兼容传输和测试实现。
 
 这些边界应由真实用例驱动，不能为了缩短文件或统一命名而增加空转 service、回调层或通用 manager。
 
@@ -630,12 +666,15 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 每次架构改动至少验证：
 
 ```bash
-python -m pytest --cov=ouro --cov-report=term-missing
-python -m ruff check ouro tests
-python -m ruff format --check ouro tests
-python -m mypy ouro
-python -m compileall -q ouro
+uv run --frozen pytest -q tests/architecture tests/core
+uv run --frozen pytest --cov=ouro --cov-report=term-missing
+uv run --frozen ruff check ouro tests
+uv run --frozen ruff format --check ouro tests
+uv run --frozen mypy ouro
+uv run --frozen python -m compileall -q ouro
 git diff --check
 ```
 
-同时检查依赖方向、持久化失败路径、并发锁、取消、公开数据结构和文档是否仍与实现一致。
+pytest 将 `ResourceWarning` 与 `PytestUnraisableExceptionWarning` 视为失败。任何文件、流、连接或子进程都必须由
+创建边界显式关闭，不能依赖对象析构器。同时检查依赖方向、持久化失败路径、并发锁、取消、公开数据结构和文档
+是否仍与实现一致。

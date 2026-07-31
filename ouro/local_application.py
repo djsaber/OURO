@@ -24,6 +24,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
+from ouro.builtin_plugins.session_state_migration import migrate_builtin_session_state
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
 from ouro.core.adapter import RuntimeAdapter
@@ -152,11 +153,9 @@ class LocalApplication:
             skills=runtime.skills,
             session_store=runtime.store,
         )
-        runtime.attach_extension_catalog(plugin_runtime)
         agent_config = AgentDefinitionsConfigManager(configured_home)
         configured_agents = agent_config.snapshot()
         agent_definitions = AgentDefinitionService(agent_config)
-        runtime.attach_agent_definitions(agent_definitions)
         supervisor = RuntimeSupervisor(runtime)
         agents = AgentService(
             store=runtime.store,
@@ -167,7 +166,11 @@ class LocalApplication:
             spawn_policy=configured_agents.runtime.spawn_policy,
             max_depth=configured_agents.runtime.max_depth,
         )
-        runtime.attach_agent_controls(agents)
+        runtime.bind_extensions(
+            catalog=plugin_runtime,
+            agent_definitions=agent_definitions,
+            agent_controls=agents,
+        )
         return cls(
             runtime,
             build_local_mcp_runtime(runtime, home=home),
@@ -453,6 +456,8 @@ def build_local_plugin_service(
 
     store = PluginPackageStore(resolve_local_home(home))
     store.initialize()
+    if session_store is not None:
+        migrate_builtin_session_state(store.home, session_store)
     return PluginService(
         store,
         session_store=session_store,
@@ -501,6 +506,8 @@ def _build_local_plugin_runtime(
 ) -> tuple[PluginRuntimeResource, PluginService]:
     store = PluginPackageStore(home)
     store.initialize()
+    if session_store is not None:
+        migrate_builtin_session_state(home, session_store)
     commands = PluginCommandRegistry()
     runtime = PluginRuntimeResource(
         store,
@@ -518,6 +525,7 @@ def _build_local_plugin_runtime(
         credential_resolver=resolve_plugin_credential,
         builtin_plugins=LOCAL_BUILTIN_PLUGINS,
         base_skills=skills,
+        session_repository=session_store,
     )
     service = PluginService(
         store,

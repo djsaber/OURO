@@ -20,11 +20,11 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - Read、Write、Edit、Bash、AskUser 内置工具；AskUser 与插件工具可用同一 opaque JSON 协议挂起 Run 并接收结构化回答。
 - 一等子智能体：builtin general 与用户 AgentDefinition、Run-frozen 派遣目录、durable Delegation/独立 child
   Session/Run、sync/async、exact-once 结果交付、HITL 根路由、bound 级联、恢复对账、AgentTree
-  subscription，以及 definition/runtime 控制 CLI；首版固定单层并复用现有工具、权限、预算和 Supervisor。
+  subscription，以及 definition/runtime 控制 CLI；子智能体固定为单层并复用统一的工具、权限、预算和 Supervisor。
 - 标准 `SKILL.md` 发现、提示词注入、校验、安装、更新、启停和移除。
 - 官方 Python SDK 驱动的 MCP 客户端：stdio、Streamable HTTP、legacy SSE、握手、工具发现/调用、
   超时取消、健康检查、重连、凭据注入、隔离诊断和完整关闭。
-- 插件首版管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
+- 插件管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
   declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
   候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
   通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
@@ -35,7 +35,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 产品边界与未来方向见 [项目概述](docs/OURO_AGENT_项目概述.md)，代码分层见
 [开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见
-[Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的目标设计见
+[Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的当前契约见
 [插件系统规格](dev/specs/plugin-system.md)，总体扩展架构与 Pi 对照见
 [插件系统扩展性架构与 Pi 对照](docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，`/goal` 映射见
 [插件系统扩展性与目标模式设计](docs/OURO_插件系统扩展性与目标模式设计_2026-07-17.md)，插件作者从
@@ -94,8 +94,8 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 ## 插件
 
-原生插件使用 `.ouro-plugin/plugin.json`。产品模型把插件定义为系统级扩展，只分 builtin 与 user，不存在
-workspace/project 插件；插件安装、state、grant、CLI 和 DTO 已删除 workspace scope。安装只做静态校验和不可变发布，
+原生插件使用 `.ouro-plugin/plugin.json`。插件是系统级扩展，只分 builtin 与 user；安装、state、grant、CLI 和 DTO
+均不定义 workspace/project scope。安装只做静态校验和不可变发布，
 不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。完成信任和
 能力授权后，插件工具权限不按来源降级；manifest 声明属于 contribution 授权指纹的一部分。
 
@@ -131,16 +131,18 @@ Catalog 保持不变。Git source 在 checkout 前按 tree 校验路径、文件
 `converted`、`ignored`、`incompatible` 逐项结论和明确 OURO target，不透明执行未知社区 Hook 或安装脚本。
 每个 Run 启动时取得一个结构冻结的 `ExtensionCatalogLease`；工具列表、工具执行、Observer、上下文、压缩、
 continuation、Prompt Policy 与 tool policy 在该 Run 内只读取同一 Catalog。插件变更构建候选 Catalog 后只短暂切换 current
-pointer，不再修改 Host 全局 registry，也不再等待无关 Run；旧 Run 与新 Run 可以同时使用不同 generation。
+pointer；Host registry 不参与 generation 发布，也不会形成全局 Run barrier。已经持有 lease 的 Run 与后续 Run
+可以同时使用不同 generation。
 configure/select/restart 会先完整构建受影响依赖闭包与候选 Catalog，再以 expected-state 比较提交并切换 pointer；
 失败不改变 current selection、active configuration revision 或旧 generation。disable/revoke 会关闭 generation gate，
-因此旧 Catalog 保留结构但不能发起新的插件回调。进程内旧 Run 由 Catalog lease 保留，不再阻断生命周期命令；
+因此已发放的 Catalog 保留结构但不能发起新的插件回调。进程内 Run 由 Catalog lease 保留，生命周期命令无需等待
+无关 Run；
 跨进程恢复按稳定 `execution_contract_hash` 匹配 package、配置修订、依赖锁、API/protocol 和 contribution contract，
 不匹配随机 `generation_id`。插件已更新但旧 digest 与修订仍完整时，会构建只服务 durable Run 的非当前 Catalog，
 不改变 current selection 或 Background Service 单例；缺包或契约不一致时明确失败。重复 `enable` 不会隐式重建
 generation。
 
-Host 支持的十种 contribution 由封闭 `ContributionTypeAdapter` 清单统一接入 SDK/worker、候选准备、contract 和
+Host 支持的 13 种 contribution 由封闭 `ContributionTypeAdapter` 清单统一接入 SDK/worker、候选准备、contract 和
 Catalog；插件不能动态注册新扩展点。Skill/MCP 是 generation-owned 资源，Background Service 是
 `activation-singleton`，其余可调用贡献均冻结在 Run Catalog 中。
 
@@ -354,8 +356,8 @@ uv run ouro usage audit --home ./.ouro-dev --limit 100 --json
 `summary`、`list` 和 `reset` 共享 `--since`、`--until`、`--provider`、`--endpoint`、`--model`、
 `--session`、`--run`、`--purpose` 过滤器，重复同一参数表示匹配其中任意值。cache read/write token 保留为
 供应商 usage 的独立类别；`total_tokens` 只计算 input + output，避免把供应商的 cache 明细重复计入。
-升级前已经存在的 Run 仍保留原有 `run.usage`，但框架不会在缺少历史请求路由和请求边界时猜测并回填全局
-账本；全局统计从该账本启用后的供应商调用开始。人工修改或重置只改变可审计的全局费用视图，不改写
+全局账本不从 `run.usage` 猜测或回填缺少请求路由与请求边界的记录；统计从账本实际记录的供应商调用开始。
+人工修改或重置只改变可审计的全局费用视图，不改写
 Session 中保存的原始 Run usage。
 
 ## MCP Server
@@ -539,7 +541,7 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
 - [开发架构](docs/OURO_AGENT_开发架构.md)：模块职责、依赖方向和关键不变量。
 - [开发路线图](docs/OURO_AGENT_开发路线图.md)：尚未实现能力的推进顺序和完成条件。
 - [规格索引](dev/specs/README.md)：当前领域契约、失败语义和验收证据。
-- [执行计划索引](dev/plans/README.md)：未来能力的依赖、里程碑和退出条件。
+- [执行计划索引](dev/plans/README.md)：当前与已完成计划的依赖、里程碑和退出条件。
 - [开源 Agent 系统提示词设计模式调研](docs/开源Agent系统提示词设计模式调研_2026-07-31.md)：
   Codex CLI、Kimi Code CLI、OpenCode、Claude Code 与 Hermes 的公开提示词模式及默认提示词设计依据。
 - [中文编码准则](docs/OURO_AGENT_编码准则_ZH.md)：实现与评审规范。

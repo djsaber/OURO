@@ -6,13 +6,13 @@ from typing import Literal, Self
 
 from pydantic import Field, field_validator, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 
 UsagePurpose = Literal["agent", "compaction"]
 UsageLedgerEventType = Literal["record", "replace", "reset"]
 
 
-class ProviderUsageEntry(OuroModel):
+class ProviderUsageEntry(VersionedOuroModel):
     """One provider-reported usage result for one completed model request.
 
     Context-size estimates never enter this model. Cache token fields preserve the
@@ -20,7 +20,6 @@ class ProviderUsageEntry(OuroModel):
     supplements of input usage according to that provider's wire contract.
     """
 
-    schema_version: int = SCHEMA_VERSION
     entry_id: str
     occurred_at: datetime = Field(default_factory=utc_now)
     provider_id: str
@@ -147,10 +146,9 @@ class UsageFilter(OuroModel):
         return not self.purposes or entry.purpose in self.purposes
 
 
-class UsageLedgerEvent(OuroModel):
+class UsageLedgerEvent(VersionedOuroModel):
     """Append-only mutation in the global provider usage ledger."""
 
-    schema_version: int = SCHEMA_VERSION
     event_id: str = Field(default_factory=lambda: new_id("uev"))
     event_type: UsageLedgerEventType
     recorded_at: datetime = Field(default_factory=utc_now)

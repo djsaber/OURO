@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
-from ouro.sdk.plugins.v1 import PluginDataStore
+from ouro.sdk.plugins.v1 import JsonValue, PluginSessionStateStore
 
 from .interaction import PlanOption
 
@@ -83,32 +82,25 @@ class SessionPlanState:
 class PlanStateRepository:
     """Persist each Session independently so Generation overlap cannot clobber peers."""
 
-    def __init__(self, data: PluginDataStore) -> None:
-        self._data = data
+    def __init__(self, state: PluginSessionStateStore) -> None:
+        self._state = state
 
     def load(self, session_id: str) -> SessionPlanState:
-        path = self._session_path(session_id)
-        try:
-            raw = json.loads(self._data.read_bytes(path).decode("utf-8"))
-        except FileNotFoundError:
+        persisted = self._state.load(validate_session_id(session_id))
+        if persisted is None:
             return SessionPlanState()
-        if not isinstance(raw, dict) or raw.get("schema_version") != _STATE_SCHEMA_VERSION:
+        if persisted.state_schema_version != _STATE_SCHEMA_VERSION:
             raise ValueError("unsupported plan mode state schema")
-        return SessionPlanState.from_json(raw.get("state"))
+        return SessionPlanState.from_json(persisted.payload)
 
     def save(self, session_id: str, state: SessionPlanState) -> None:
-        payload = {
-            "schema_version": _STATE_SCHEMA_VERSION,
-            "state": state.to_json(),
-        }
-        self._data.write_bytes(
-            self._session_path(session_id),
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8"),
+        self._state.save(
+            validate_session_id(session_id),
+            state_schema_version=_STATE_SCHEMA_VERSION,
+            payload=cast(JsonValue, state.to_json()),
+            branch_policy="reset",
+            projection_semantic_tags=("plan-context",),
         )
-
-    @staticmethod
-    def _session_path(session_id: str) -> str:
-        return f"sessions/{validate_session_id(session_id)}.json"
 
 
 def validate_session_id(session_id: str) -> str:

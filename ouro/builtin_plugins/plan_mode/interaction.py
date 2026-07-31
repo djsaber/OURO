@@ -110,16 +110,11 @@ class PlanConfirmationAnswer:
 
     @classmethod
     def from_json(cls, raw: object) -> PlanConfirmationAnswer:
-        if isinstance(raw, str):
-            action: object = raw.strip().lower()
-            option = None
-            feedback = None
-        elif isinstance(raw, Mapping):
-            action = raw.get("action")
-            option = raw.get("option")
-            feedback = raw.get("feedback")
-        else:
-            raise ValueError("plan confirmation answer must be a string or object")
+        if not isinstance(raw, Mapping):
+            raise ValueError("plan confirmation answer must be an object")
+        action = raw.get("action")
+        option = raw.get("option")
+        feedback = raw.get("feedback")
         normalized_action = action.strip().lower() if isinstance(action, str) else ""
         if normalized_action not in PLAN_CONFIRMATION_ACTIONS:
             raise ValueError("plan confirmation action must be accept, revise, or reject")

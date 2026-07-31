@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 
@@ -7,7 +8,7 @@ import pytest
 
 from ouro.billing import LocalUsageLedger
 from ouro.core.billing import ProviderUsageEntry, UsageFilter
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import MigrationRequiredError, PersistenceError
 
 
 def _entry(index: int, *, model: str = "model-a") -> ProviderUsageEntry:
@@ -60,6 +61,18 @@ def test_local_usage_ledger_persists_revisions_and_filtered_resets(tmp_path) -> 
     ]
 
 
+def test_local_usage_ledger_rejects_event_without_explicit_schema_version(tmp_path) -> None:
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    ledger.record(_entry(0))
+    raw = json.loads(ledger.journal_path.read_text("utf-8"))
+    raw.pop("schema_version")
+    ledger.journal_path.write_text(json.dumps(raw) + "\n", encoding="utf-8")
+
+    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+        LocalUsageLedger(tmp_path).list_events()
+
+
 def test_local_usage_ledger_rejects_conflicting_ids(tmp_path) -> None:
     ledger = LocalUsageLedger(tmp_path)
     ledger.initialize()
@@ -92,3 +105,23 @@ def test_local_usage_ledger_serializes_concurrent_writers(tmp_path) -> None:
     ledger.initialize()
     assert len(ledger.list_entries()) == 40
     assert len(ledger.list_events()) == 40
+
+
+def test_local_usage_ledger_does_not_expose_mutable_cache_aliases(tmp_path) -> None:
+    ledger = LocalUsageLedger(tmp_path)
+    ledger.initialize()
+    source = _entry(0)
+
+    recorded = ledger.record(source)
+    source.metadata["token_source"] = "mutated-source"
+    recorded.metadata["token_source"] = "mutated-record-result"
+    listed = ledger.list_entries()
+    listed[0].metadata["token_source"] = "mutated-list-result"
+    events = ledger.list_events()
+    assert events[0].entry is not None
+    events[0].entry.metadata["token_source"] = "mutated-event-result"
+
+    assert ledger.get(source.entry_id).metadata == {"token_source": "provider_response"}
+    assert LocalUsageLedger(tmp_path).get(source.entry_id).metadata == {
+        "token_source": "provider_response"
+    }

@@ -11,8 +11,6 @@ from contextlib import suppress
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 
-from pydantic import ValidationError
-
 from ouro.core.base import new_id
 from ouro.core.errors import (
     PersistenceError,
@@ -20,12 +18,13 @@ from ouro.core.errors import (
     ResourceNotFoundError,
     UnsafeResourcePathError,
 )
+from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import (
     ResourceRecord,
     ResourceSource,
 )
-from ouro.sessions.local_io import read_text_atomic, write_json_atomic, write_model_atomic
-from ouro.sessions.locks import SessionRunLock
+from ouro.local_io import read_text_atomic, write_json_atomic, write_model_atomic
+from ouro.local_locks import FileOwnerLock
 
 _RESOURCE_ID = re.compile(r"res_[0-9a-f]{64}\Z")
 _CHUNK_SIZE = 1024 * 1024
@@ -96,10 +95,14 @@ class LocalResourceStore:
         resource_id = _validated_resource_id(resource_id)
         path = self.records_dir / f"{resource_id}.json"
         try:
-            record = ResourceRecord.model_validate_json(read_text_atomic(path))
+            record = decode_versioned_record_json(
+                ResourceRecord,
+                read_text_atomic(path),
+                label=f"resource {resource_id}",
+            )
         except FileNotFoundError as exc:
             raise ResourceNotFoundError(f"resource not found: {resource_id}") from exc
-        except (OSError, ValidationError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             raise PersistenceError(f"could not load resource {resource_id}: {exc}") from exc
         if verify:
             self._verify_blob(record)
@@ -288,8 +291,14 @@ class LocalResourceStore:
         records: list[ResourceRecord] = []
         for path in sorted(self.records_dir.glob("res_*.json")):
             try:
-                records.append(ResourceRecord.model_validate_json(read_text_atomic(path)))
-            except (OSError, ValidationError, ValueError) as exc:
+                records.append(
+                    decode_versioned_record_json(
+                        ResourceRecord,
+                        read_text_atomic(path),
+                        label=f"resource record {path}",
+                    )
+                )
+            except (OSError, ValueError) as exc:
                 raise PersistenceError(f"could not scan resource record {path}: {exc}") from exc
         return records
 
@@ -302,12 +311,11 @@ class LocalResourceStore:
     def _blob_path(self, record: ResourceRecord) -> Path:
         return self.blobs_dir / record.digest.removeprefix("sha256:")
 
-    def _catalog_lock(self) -> SessionRunLock:
+    def _catalog_lock(self) -> FileOwnerLock:
         for attempt in range(101):
-            lock = SessionRunLock(
+            lock = FileOwnerLock(
                 self._lock_path,
-                session_id="resource_catalog",
-                run_id=new_id("resource"),
+                owner={"scope": "resource_catalog", "operation_id": new_id("resource")},
             )
             if lock.acquire():
                 return lock

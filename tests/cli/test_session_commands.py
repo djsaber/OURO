@@ -166,10 +166,7 @@ def test_session_remove_child_cascades_old_incompatible_agent_tree(tmp_path, cap
     payload = relation.model_dump(mode="json")
     payload["execution_mode"] = "foreground"
     relation_path = (
-        store.sessions_dir
-        / root.session_id
-        / "delegations"
-        / f"{relation.delegation_id}.json"
+        store.sessions_dir / root.session_id / "delegations" / f"{relation.delegation_id}.json"
     )
     relation_path.write_text(json.dumps(payload), encoding="utf-8")
 

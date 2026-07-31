@@ -39,9 +39,8 @@ async def test_auto_mode_executes_protected_tools_and_persists_on_session(tmp_pa
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "automatic"},
@@ -73,9 +72,8 @@ async def test_approval_mode_requires_approval_for_automatic_tools(tmp_path) -> 
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Read",
                         "arguments": {"path": str(target)},
@@ -102,9 +100,8 @@ async def test_deny_mode_rejects_automatic_tools_without_requesting_approval(tmp
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "blocked"},
@@ -191,9 +188,8 @@ async def test_run_rejects_mode_change_while_session_has_active_run(tmp_path) ->
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(tmp_path / "pending.txt"), "content": "x"},

@@ -59,7 +59,9 @@ class GoalModePlugin:
             raise RuntimeError(
                 "Goal mode requires authorized permissions: " + ", ".join(sorted(missing))
             )
-        self._state = GoalStateRepository(context.data)
+        if context.session_state is None:
+            raise RuntimeError("Goal mode requires Host-managed Session state")
+        self._state = GoalStateRepository(context.session_state)
         self._lock = threading.RLock()
         self._commands = GoalCommandService(self._state, self._lock)
 

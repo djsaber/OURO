@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -20,6 +21,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_dige
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
@@ -305,7 +307,7 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert store.read_catalog().data_layout_version == DATA_LAYOUT_VERSION
 
 
-def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) -> None:
+def test_catalog_searches_only_bounded_fields_and_latest_preview(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Search").session
     first = MessageRecord.text(
@@ -329,12 +331,14 @@ def test_catalog_searches_all_user_assistant_text_but_not_reasoning(tmp_path) ->
     store.rebuild_catalog()
 
     historical = sessions.catalog(SessionCatalogQuery(text="historical-needle"))
+    latest = sessions.catalog(SessionCatalogQuery(text="latest preview"))
     reasoning = sessions.catalog(SessionCatalogQuery(text="private-reasoning-needle"))
 
-    assert [entry.session_id for entry in historical.entries] == [session.session_id]
+    assert historical.entries == ()
+    assert [entry.session_id for entry in latest.entries] == [session.session_id]
     assert reasoning.entries == ()
-    assert historical.entries[0].last_message_preview == "latest preview"
-    assert "search_text" not in historical.entries[0].model_dump()
+    assert latest.entries[0].last_message_preview == "latest preview"
+    assert "historical-needle" not in store._catalog.index_path.read_text(encoding="utf-8")
 
 
 def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tmp_path) -> None:
@@ -350,6 +354,21 @@ def test_catalog_keeps_valid_sessions_visible_when_another_session_is_corrupt(tm
     by_id = {entry.session_id: entry for entry in result.entries}
     assert by_id[valid.session_id].health == "ok"
     assert by_id["ses_corrupt"].health == "corrupt"
+
+
+def test_catalog_marks_incompatible_session_record_as_migration_required(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Old record").session
+    session_path = store.sessions_dir / session.session_id / "session.json"
+    raw = json.loads(session_path.read_text("utf-8"))
+    raw.pop("schema_version")
+    session_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    store.rebuild_catalog()
+
+    result = sessions.catalog()
+    entry = next(item for item in result.entries if item.session_id == session.session_id)
+    assert entry.health == "migration_required"
 
 
 def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> None:
@@ -426,6 +445,157 @@ def test_branch_rejects_incomplete_tool_exchange_and_reports_previous_boundary(t
         sessions.branch(source.session_id, assistant.message_id)
 
 
+def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    source = sessions.create(title="Extension lifecycle").session
+    first = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="define goal",
+        sequence=1,
+    )
+    projection = MessageRecord.text(
+        session_id=source.session_id,
+        role="system_synthetic",
+        semantic_tag="goal-contract",
+        text="active goal",
+        sequence=2,
+    )
+    branch_point = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="continue",
+        sequence=3,
+    )
+    for message in (first, projection, branch_point):
+        store.append_message(message)
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.ouro.goal_mode",
+            state_schema_version=2,
+            branch_policy="reset",
+            projection_semantic_tags=("goal-contract",),
+            payload={"status": "active"},
+        )
+    )
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.example.preferences",
+            state_schema_version=1,
+            branch_policy="copy",
+            payload={"detail": "concise"},
+        )
+    )
+
+    exported = sessions.export(source.session_id)
+    assert {state.owner_id for state in exported.extension_states} == {
+        "dev.ouro.goal_mode",
+        "dev.example.preferences",
+    }
+
+    result = sessions.branch(source.session_id, branch_point.message_id)
+    snapshot = store.load_session(result.session.session_id)
+
+    assert [message.text_content for message in snapshot.messages] == [
+        "define goal",
+        "continue",
+    ]
+    assert projection.message_id not in result.message_id_map
+    assert len(snapshot.extension_states) == 1
+    assert snapshot.extension_states[0].owner_id == "dev.example.preferences"
+    assert snapshot.extension_states[0].session_id == result.session.session_id
+
+
+def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    source = sessions.create(title="Projection boundary").session
+    projection = MessageRecord.text(
+        session_id=source.session_id,
+        role="system_synthetic",
+        semantic_tag="plan-context",
+        text="current plan",
+        sequence=1,
+    )
+    store.append_message(projection)
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.ouro.plan_mode",
+            state_schema_version=1,
+            branch_policy="reset",
+            projection_semantic_tags=("plan-context",),
+            payload={"steps": []},
+        )
+    )
+
+    with pytest.raises(SessionBranchError, match="must reset"):
+        sessions.branch(source.session_id, projection.message_id)
+
+
+def test_branch_honors_extension_reject_policy(tmp_path) -> None:
+    store, sessions = _service(tmp_path)
+    source = sessions.create(title="Unbranchable extension").session
+    message = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="branch",
+        sequence=1,
+    )
+    store.append_message(message)
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.example.unbranchable",
+            state_schema_version=1,
+            branch_policy="reject",
+            payload={"external_transaction": "open"},
+        )
+    )
+
+    with pytest.raises(SessionBranchError, match="dev.example.unbranchable"):
+        sessions.branch(source.session_id, message.message_id)
+
+
+def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
+    store = SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(title="SQLite extension lifecycle").session
+    projection = MessageRecord.text(
+        session_id=source.session_id,
+        role="system_synthetic",
+        semantic_tag="goal-contract",
+        text="goal",
+        sequence=1,
+    )
+    branch_point = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="continue",
+        sequence=2,
+    )
+    store.append_message(projection)
+    store.append_message(branch_point)
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.ouro.goal_mode",
+            state_schema_version=2,
+            branch_policy="reset",
+            projection_semantic_tags=("goal-contract",),
+            payload={"status": "active"},
+        )
+    )
+
+    result = sessions.branch(source.session_id, branch_point.message_id)
+    snapshot = store.load_session(result.session.session_id)
+
+    assert [message.text_content for message in snapshot.messages] == ["continue"]
+    assert snapshot.extension_states == []
+
+
 def test_branch_refuses_to_publish_dangling_resource_references(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     source = sessions.create(title="Resource").session
@@ -474,6 +644,15 @@ def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(
         sequence=1,
     )
     store.append_message(message)
+    store.save_session_extension_state(
+        SessionExtensionStateRecord(
+            session_id=source.session_id,
+            owner_id="dev.example.copy",
+            state_schema_version=1,
+            branch_policy="copy",
+            payload={"value": 1},
+        )
+    )
     before = store.load_session(source.session_id).model_dump()
     original = store._write_json_atomic
 
@@ -587,11 +766,12 @@ def test_trash_accepts_session_with_incompatible_runtime_records(tmp_path, backe
         run_path = store.sessions_dir / session.session_id / "runs" / f"{run.run_id}.json"
         run_path.write_text(json.dumps(payload), encoding="utf-8")
     else:
-        with sqlite3.connect(store.database) as connection:
+        with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
                 "UPDATE runs SET payload = ? WHERE session_id = ? AND run_id = ?",
                 (json.dumps(payload), session.session_id, run.run_id),
             )
+            connection.commit()
 
     with pytest.raises(PersistenceError, match="agent catalog contract hash"):
         store.load_runtime_session(session.session_id)
@@ -653,11 +833,12 @@ def test_trash_accepts_root_with_incompatible_delegation_record(tmp_path, backen
         )
         relation_path.write_text(json.dumps(payload), encoding="utf-8")
     else:
-        with sqlite3.connect(store.database) as connection:
+        with closing(sqlite3.connect(store.database)) as connection:
             connection.execute(
                 "UPDATE delegations SET payload = ? WHERE delegation_id = ?",
                 (json.dumps(payload), relation.delegation_id),
             )
+            connection.commit()
 
     with pytest.raises(PersistenceError, match="async child requires next_boundary"):
         store.list_delegations(root.session_id)

@@ -474,9 +474,7 @@ class InteractionCoordinator:
                 index=0,
                 total=len(request.questions),
             )
-            self._output_func(
-                f"Question from subagent {_subagent_label(interaction)}:\n{rendered}"
-            )
+            self._output_func(f"Question from subagent {_subagent_label(interaction)}:\n{rendered}")
             return
         question = (
             _format_user_input_request(interaction.input_request)
@@ -854,8 +852,7 @@ def _pending_invocation(result: RunResult) -> dict[str, Any]:
         )
         if pending is not None:
             return pending.model_dump(mode="json")
-    raw = result.run.metadata.get("pending_invocation")
-    return raw if isinstance(raw, dict) else {}
+    return {}
 
 
 def _approval_request(invocation: dict[str, Any]) -> str:
@@ -874,17 +871,6 @@ def _pending_question(result: RunResult) -> str:
     if waiting is not None:
         if waiting.input_request is not None:
             return _format_user_input_request(waiting.input_request.data)
-        if waiting.result is not None and waiting.result.content:
-            return waiting.result.content
-        question = waiting.request.arguments.get("question")
-        if question is not None:
-            return _format_user_input_request(question)
-    raw_question = result.run.metadata.get("pending_question")
-    if isinstance(raw_question, str) and raw_question:
-        return raw_question
-    arguments = _pending_invocation(result).get("arguments")
-    if isinstance(arguments, dict) and isinstance(arguments.get("question"), str):
-        return arguments["question"]
     return "Please provide the requested information."
 
 

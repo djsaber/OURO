@@ -18,13 +18,13 @@ from ouro.core.messages import (
 from ouro.core.provider import ModelMetadata, Usage
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunPauseReason
+from ouro.core.run_transitions import plan_run_transition
 from ouro.core.state import (
     ACTIVE_RUN_STATUSES,
     RunPhase,
     RunRecord,
     RunStatus,
     SessionRecord,
-    session_status_for_run,
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolCallRequest, ToolResult
@@ -69,32 +69,22 @@ class RunLifecycle:
                 raise SessionBusyError(
                     f"session already has an active run: {latest_session.active_run_id}"
                 )
-            active_run = run.model_copy(update={"status": "running"})
-            active_session = latest_session.model_copy(
-                update={
-                    "status": "running",
-                    "last_run_id": active_run.run_id,
-                    "active_run_id": active_run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
+            current_run = next(
+                (item for item in snapshot.runs if item.run_id == run.run_id),
+                None,
+            )
+            transition = plan_run_transition(
+                latest_session,
+                current_run=current_run,
+                next_run=run.model_copy(update={"status": "running"}),
             )
             # The Run is authoritative. If the second write fails, recovery can
             # safely reconstruct the Session projection from this record.
-            self.store.save_run(active_run)
-            self.store.save_session(active_session)
-        self.store.refresh_catalog(
-            active_session.session_id,
-            snapshot=snapshot.model_copy(
-                update={
-                    "session": active_session,
-                    "runs": [
-                        *(item for item in snapshot.runs if item.run_id != active_run.run_id),
-                        active_run,
-                    ],
-                }
-            ),
-        )
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            active_run = transition.run
+            active_session = transition.session
+        self.store.refresh_catalog(active_session.session_id)
         return active_session, active_run
 
     def append_user_message(
@@ -356,19 +346,14 @@ class RunLifecycle:
                     "abort_requested": latest_run.abort_requested,
                 }
             )
-            updated_session = latest_session.model_copy(
-                update={
-                    "status": session_status_for_run(updated_run.status),
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "last_run_id": run.run_id,
-                    "active_run_id": run.run_id,
-                    "last_message_id": latest_session.last_message_id,
-                    "message_count": latest_session.message_count,
-                }
+            transition = plan_run_transition(
+                latest_session,
+                current_run=latest_run,
+                next_run=updated_run,
             )
-            self.store.save_run(updated_run)
-            self.store.save_session(updated_session)
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            updated_session = transition.session
         self.store.refresh_catalog(updated_session.session_id)
         return updated_session
 
@@ -394,18 +379,15 @@ class RunLifecycle:
                     "pending_approval_id": pending[0].approval_id if pending else None,
                 }
             )
-            session_status = session_status_for_run(status)
-            updated_session = latest_session.model_copy(
-                update={
-                    "status": session_status,
-                    "active_run_id": run.run_id,
-                    "last_run_id": run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
+            transition = plan_run_transition(
+                latest_session,
+                current_run=latest_run,
+                next_run=updated_run,
             )
-            self.store.save_run(updated_run)
-            self.store.save_session(updated_session)
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            updated_run = transition.run
+            updated_session = transition.session
         if status in {"waiting_approval", "waiting_user", "waiting_child"}:
             self.store.refresh_catalog(updated_session.session_id)
         return updated_session, updated_run
@@ -476,28 +458,32 @@ class RunLifecycle:
             latest_run = self.store.load_run(session.session_id, run.run_id)
             self._require_active(latest_run)
             last_message_id = messages[-1].message_id if messages else session.last_message_id
+            now = utc_now()
             completed_run = latest_run.model_copy(
                 update={
                     "status": "completed",
-                    "ended_at": utc_now(),
+                    "ended_at": now,
                     "pending_approval_id": None,
                     "active_tool_batch": None,
-                    "metadata": clear_pending_metadata(latest_run.metadata),
+                    "metadata": dict(latest_run.metadata),
                 }
             )
-            completed_session = latest_session.model_copy(
+            session_basis = latest_session.model_copy(
                 update={
-                    "status": "idle",
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "active_run_id": None,
                     "last_message_id": last_message_id,
                     "message_count": len(messages),
-                    "last_run_id": completed_run.run_id,
                 }
             )
-            self.store.save_run(completed_run)
-            self.store.save_session(completed_session)
+            transition = plan_run_transition(
+                session_basis,
+                current_run=latest_run,
+                next_run=completed_run,
+                now=now,
+            )
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            completed_run = transition.run
+            completed_session = transition.session
         self.store.refresh_catalog(completed_session.session_id)
         await self.events.emit(
             emitted,
@@ -563,28 +549,27 @@ class RunLifecycle:
                 latest_session = self.store.load_session_record(session.session_id)
                 latest_run = self.store.load_run(session.session_id, run.run_id)
                 self._require_active(latest_run)
+            now = utc_now()
             failed_run = latest_run.model_copy(
                 update={
                     "status": "failed",
-                    "ended_at": utc_now(),
+                    "ended_at": now,
                     "error": error,
+                    "pending_approval_id": None,
                     "active_tool_batch": None,
-                    "metadata": clear_pending_metadata(latest_run.metadata),
+                    "metadata": dict(latest_run.metadata),
                 }
             )
-            failed_session = latest_session.model_copy(
-                update={
-                    "status": "failed",
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "active_run_id": None,
-                    "last_message_id": latest_session.last_message_id,
-                    "message_count": latest_session.message_count,
-                    "last_run_id": failed_run.run_id,
-                }
+            transition = plan_run_transition(
+                latest_session,
+                current_run=latest_run,
+                next_run=failed_run,
+                now=now,
             )
-            self.store.save_run(failed_run)
-            self.store.save_session(failed_session)
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            failed_run = transition.run
+            failed_session = transition.session
         self.store.refresh_catalog(failed_session.session_id)
         await self.events.emit(
             emitted,
@@ -637,26 +622,26 @@ class RunLifecycle:
                 "reason": reason,
                 "next_model_round": next_model_round,
             }
+            now = utc_now()
             paused_run = latest_run.model_copy(
                 update={
                     "status": "paused",
-                    "ended_at": utc_now(),
+                    "ended_at": now,
                     "pending_approval_id": None,
                     "active_tool_batch": None,
                     "metadata": metadata,
                 }
             )
-            paused_session = latest_session.model_copy(
-                update={
-                    "status": "idle",
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                    "active_run_id": None,
-                    "last_run_id": paused_run.run_id,
-                }
+            transition = plan_run_transition(
+                latest_session,
+                current_run=latest_run,
+                next_run=paused_run,
+                now=now,
             )
-            self.store.save_run(paused_run)
-            self.store.save_session(paused_session)
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            paused_run = transition.run
+            paused_session = transition.session
         self.store.refresh_catalog(paused_session.session_id)
         await self.events.emit(
             emitted,
@@ -798,7 +783,7 @@ def abort_run_state(
         if run.status not in ACTIVE_RUN_STATUSES:
             return snapshot.session, run, False
         now = utc_now()
-        metadata = clear_pending_metadata(run.metadata)
+        metadata = dict(run.metadata)
         metadata["abort_reason"] = reason
         aborted_run = run.model_copy(
             update={
@@ -810,17 +795,16 @@ def abort_run_state(
                 "metadata": metadata,
             }
         )
-        idle_session = snapshot.session.model_copy(
-            update={
-                "status": "idle",
-                "active_run_id": None,
-                "updated_at": now,
-                "last_activity_at": now,
-                "last_run_id": aborted_run.run_id,
-            }
+        transition = plan_run_transition(
+            snapshot.session,
+            current_run=run,
+            next_run=aborted_run,
+            now=now,
         )
-        store.save_run(aborted_run)
-        store.save_session(idle_session)
+        store.save_run(transition.run)
+        store.save_session(transition.session)
+        aborted_run = transition.run
+        idle_session = transition.session
     store.refresh_catalog(idle_session.session_id)
     return idle_session, aborted_run, True
 
@@ -847,13 +831,6 @@ def maybe_active_run(runs: list[RunRecord]) -> RunRecord | None:
         return find_active_run(runs)
     except ValueError:
         return None
-
-
-def clear_pending_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
-    cleaned = dict(metadata)
-    for key in ("pending_invocation", "pending_approval", "pending_question", "checkpoint"):
-        cleaned.pop(key, None)
-    return cleaned
 
 
 def merge_usage(current: dict[str, int | float], usage: Usage) -> dict[str, int | float]:

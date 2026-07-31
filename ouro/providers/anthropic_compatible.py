@@ -266,8 +266,8 @@ class AnthropicCompatibleProvider:
             yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=reasoning)
         for text in text_parts:
             yield ProviderStreamEvent(type="text_delta", text=text)
-        for tool_call in tool_calls:
-            yield ProviderStreamEvent(type="tool_call", tool_call=tool_call)
+        for index, tool_call in enumerate(tool_calls):
+            yield ProviderStreamEvent.from_tool_call(tool_call, index=index)
         if tool_calls and continuation_blocks and model.reasoning.continuation == "opaque":
             yield ProviderStreamEvent(
                 type="continuation",

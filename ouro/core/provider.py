@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any, Literal, Protocol
 
@@ -128,7 +129,6 @@ class ProviderStreamEvent(OuroModel):
         "reasoning_delta",
         "continuation",
         "tool_call_delta",
-        "tool_call",
         "retry_scheduled",
         "done",
         "error",
@@ -137,10 +137,33 @@ class ProviderStreamEvent(OuroModel):
     reasoning_content: str | None = None
     continuation: ProviderContinuationArtifact | None = None
     tool_call_delta: ToolCallDelta | None = None
-    tool_call: ToolCallRequest | None = None
     usage: Usage | None = None
     retry: ProviderRetryNotice | None = None
     error: str | None = None
+
+    @classmethod
+    def from_tool_call(
+        cls,
+        tool_call: ToolCallRequest | dict[str, Any],
+        *,
+        index: int | None = None,
+    ) -> ProviderStreamEvent:
+        """Normalize one complete provider response call into the delta-only stream."""
+
+        call = ToolCallRequest.model_validate(tool_call)
+        return cls(
+            type="tool_call_delta",
+            tool_call_delta=ToolCallDelta(
+                index=call.source_index if index is None else index,
+                id_delta=call.id,
+                name_delta=call.name,
+                arguments_delta=json.dumps(
+                    call.arguments,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
+        )
 
     @model_validator(mode="after")
     def _validate_payload(self) -> ProviderStreamEvent:
@@ -149,7 +172,6 @@ class ProviderStreamEvent(OuroModel):
             "reasoning_delta": self.reasoning_content,
             "continuation": self.continuation,
             "tool_call_delta": self.tool_call_delta,
-            "tool_call": self.tool_call,
             "retry_scheduled": self.retry,
             "error": self.error,
         }
@@ -162,7 +184,6 @@ class ProviderStreamEvent(OuroModel):
                 self.reasoning_content,
                 self.continuation,
                 self.tool_call_delta,
-                self.tool_call,
                 self.retry,
                 self.error,
             )

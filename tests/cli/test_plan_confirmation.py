@@ -177,7 +177,8 @@ def test_plan_confirmation_request_rejects_malformed_wire_data(
 @pytest.mark.parametrize(
     ("answer", "message"),
     [
-        (1, "must be a string or object"),
+        (1, "must be an object"),
+        ("accept", "must be an object"),
         ({"action": "defer"}, "must be accept, revise, or reject"),
         ({"action": "accept", "option": 1}, "option must be a string"),
         ({"action": "revise", "feedback": 1}, "feedback must be a string"),
@@ -191,11 +192,9 @@ def test_plan_confirmation_answer_rejects_malformed_wire_data(
         PlanConfirmationAnswer.from_json(answer)
 
 
-def test_plan_confirmation_answer_normalizes_legacy_string_and_optional_text() -> None:
-    legacy = PlanConfirmationAnswer.from_json(" ACCEPT ")
+def test_plan_confirmation_answer_normalizes_structured_optional_text() -> None:
     revised = PlanConfirmationAnswer.from_json(
         {"action": " revise ", "option": " ", "feedback": " Add tests. "}
     )
 
-    assert legacy.to_json() == {"action": "accept"}
     assert revised.to_json() == {"action": "revise", "feedback": "Add tests."}

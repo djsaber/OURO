@@ -134,21 +134,27 @@ class JsonRpcWorkerClient:
         process = self.process
         if process is None:
             return
-        if os.name == "nt":
-            await _terminate_process_tree(process, timeout=timeout)
-        elif process.returncode is None:
+        if os.name != "nt" and process.returncode is None:
             with suppress(Exception):
                 await self.request("shutdown", timeout=min(timeout, 2.0))
-            if process.stdin is not None:
-                process.stdin.close()
-            await _terminate_process_tree(process, timeout=timeout)
-        for task in (self._reader_task, self._stderr_task):
-            if task is not None:
-                task.cancel()
+        await _terminate_process_tree(process, timeout=timeout)
+        if process.stdin is not None:
+            process.stdin.close()
+            with suppress(BrokenPipeError, ConnectionError):
+                await process.stdin.wait_closed()
+
+        # A subprocess transport is not closed until the process and every pipe
+        # have finished.  Once the whole process tree is gone, stdout/stderr
+        # must reach EOF; consuming that EOF keeps ownership explicit and avoids
+        # leaving platform transports to object finalizers.
         await asyncio.gather(
             *(task for task in (self._reader_task, self._stderr_task) if task is not None),
             return_exceptions=True,
         )
+        await process.wait()
+        self.process = None
+        self._reader_task = None
+        self._stderr_task = None
         error = WorkerProtocolError("plugin worker closed")
         for future in self._pending.values():
             if not future.done():
@@ -990,6 +996,7 @@ async def _terminate_process_tree(
     timeout: float,
 ) -> None:
     if os.name == "nt":
+        killer: asyncio.subprocess.Process | None = None
         try:
             killer = await asyncio.create_subprocess_exec(
                 "taskkill",
@@ -1001,11 +1008,18 @@ async def _terminate_process_tree(
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            await asyncio.wait_for(killer.wait(), timeout=min(timeout, 2.0))
+            # `timeout` controls the worker-facing close budget.  The OS tree
+            # terminator needs its own small cleanup budget: abandoning it can
+            # leave descendants holding the worker pipe handles open.
+            await asyncio.wait_for(killer.wait(), timeout=2.0)
         except (OSError, TimeoutError):
-            pass
+            if killer is not None and killer.returncode is None:
+                with suppress(ProcessLookupError):
+                    killer.kill()
+                await killer.wait()
         if process.returncode is None:
-            process.kill()
+            with suppress(ProcessLookupError):
+                process.kill()
         await process.wait()
         return
 

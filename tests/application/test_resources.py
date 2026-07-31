@@ -11,6 +11,7 @@ from ouro.application.resources import ResourceService
 from ouro.application.runs import RunLifecycle
 from ouro.application.sessions import SessionService
 from ouro.core.errors import (
+    MigrationRequiredError,
     PersistenceError,
     ResourceAttachmentError,
     ResourceIntegrityError,
@@ -61,6 +62,21 @@ def test_import_is_content_addressed_deduplicated_and_does_not_expose_source_pat
     assert len(list(resource_store.blobs_dir.iterdir())) == 1
     assert resources.session_resource_ids(first_session.session_id) == (first.resource.resource_id,)
     assert str(source.parent) not in json.dumps(first.model_dump(mode="json"))
+
+
+def test_resource_store_rejects_record_without_explicit_schema_version(tmp_path) -> None:
+    _, resource_store, resources, session_service = _services(tmp_path)
+    session = session_service.create(title="Versioned resource").session
+    source = tmp_path / "versioned.txt"
+    source.write_text("versioned", encoding="utf-8")
+    imported = resources.import_resource(session.session_id, source)
+    record_path = resource_store.records_dir / f"{imported.resource.resource_id}.json"
+    raw = json.loads(record_path.read_text("utf-8"))
+    raw.pop("schema_version")
+    record_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(MigrationRequiredError, match="found missing, expected 1"):
+        resource_store.load_record(imported.resource.resource_id)
 
 
 def test_failed_oversized_import_leaves_no_visible_reference_or_staging_file(tmp_path) -> None:

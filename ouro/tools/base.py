@@ -7,6 +7,7 @@ import subprocess
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from inspect import Parameter, signature
 from pathlib import Path
 
@@ -66,6 +67,53 @@ class ToolProcessResult:
     returncode: int | None
     timed_out: bool = False
     aborted: bool = False
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+
+_DEFAULT_PROCESS_OUTPUT_LIMIT = 100_000
+_PROCESS_READ_SIZE = 64 * 1024
+_PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+
+
+@dataclass
+class _BoundedProcessOutput:
+    """Drain both process pipes while retaining one shared bounded prefix."""
+
+    limit: int
+    stdout: bytearray = dataclass_field(default_factory=bytearray)
+    stderr: bytearray = dataclass_field(default_factory=bytearray)
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+
+    @property
+    def retained_bytes(self) -> int:
+        return len(self.stdout) + len(self.stderr)
+
+    def append(self, stream_name: str, chunk: bytes) -> None:
+        target = self.stdout if stream_name == "stdout" else self.stderr
+        available = max(0, self.limit - self.retained_bytes)
+        if available:
+            target.extend(chunk[:available])
+        if len(chunk) > available:
+            if stream_name == "stdout":
+                self.stdout_truncated = True
+            else:
+                self.stderr_truncated = True
+
+    def render(self) -> tuple[str, str]:
+        return (
+            _bounded_text(
+                bytes(self.stdout).decode(errors="replace"),
+                self.limit,
+                truncated=self.stdout_truncated,
+            ),
+            _bounded_text(
+                bytes(self.stderr).decode(errors="replace"),
+                self.limit,
+                truncated=self.stderr_truncated,
+            ),
+        )
 
 
 @dataclass
@@ -75,7 +123,7 @@ class ToolExecutionContext:
     workspace: str | Path | None = None
     artifact_root: str | Path | None = None
     workspace_only: bool = False
-    max_output_chars: int | None = None
+    max_output_chars: int | None = _DEFAULT_PROCESS_OUTPUT_LIMIT
 
     @property
     def is_aborted(self) -> bool:
@@ -135,9 +183,7 @@ class ToolExecutionContext:
         limit = self.max_output_chars
         if limit is None or len(text) <= limit:
             return text, False
-        marker = f"\n...[tool output truncated at {limit} characters]"
-        prefix_length = max(0, limit - len(marker))
-        return f"{text[:prefix_length]}{marker}", True
+        return _bounded_text(text, limit, truncated=True), True
 
     def _resolved_workspace(self) -> Path | None:
         if self.workspace is None:
@@ -173,12 +219,18 @@ class ToolExecutionContext:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
-        communicate_task = asyncio.create_task(process.communicate())
+        assert process.stdout is not None
+        assert process.stderr is not None
+        output = _BoundedProcessOutput(self.max_output_chars or _DEFAULT_PROCESS_OUTPUT_LIMIT)
+        stdout_task = asyncio.create_task(_drain_process_stream(process.stdout, output, "stdout"))
+        stderr_task = asyncio.create_task(_drain_process_stream(process.stderr, output, "stderr"))
+        wait_task = asyncio.create_task(process.wait())
+        tasks = (wait_task, stdout_task, stderr_task)
         timed_out = False
         aborted = False
         deadline = asyncio.get_running_loop().time() + timeout_seconds
         try:
-            while not communicate_task.done():
+            while not all(task.done() for task in tasks):
                 if self.is_aborted:
                     await _kill_process_tree(process)
                     aborted = True
@@ -188,52 +240,96 @@ class ToolExecutionContext:
                     await _kill_process_tree(process)
                     timed_out = True
                     break
-                await asyncio.wait({communicate_task}, timeout=min(self.poll_interval, remaining))
+                await asyncio.wait(tasks, timeout=min(self.poll_interval, remaining))
 
             if timed_out or aborted:
-                stdout, stderr = await communicate_task
+                await _settle_process_tasks(process, tasks)
             else:
-                stdout, stderr = communicate_task.result()
+                await asyncio.gather(*tasks)
+            stdout, stderr = output.render()
             return ToolProcessResult(
-                stdout=stdout.decode(errors="replace"),
-                stderr=stderr.decode(errors="replace"),
+                stdout=stdout,
+                stderr=stderr,
                 returncode=process.returncode,
                 timed_out=timed_out,
                 aborted=aborted,
+                stdout_truncated=output.stdout_truncated,
+                stderr_truncated=output.stderr_truncated,
             )
         finally:
-            if not communicate_task.done():
+            if not all(task.done() for task in tasks):
                 with suppress(Exception):
                     await _kill_process_tree(process)
-                if not communicate_task.done():
-                    communicate_task.cancel()
-                await asyncio.gather(communicate_task, return_exceptions=True)
+                await _settle_process_tasks(process, tasks)
+
+
+def _bounded_text(text: str, limit: int, *, truncated: bool) -> str:
+    if not truncated and len(text) <= limit:
+        return text
+    marker = f"\n...[tool output truncated at {limit} characters]"
+    prefix_length = max(0, limit - len(marker))
+    return f"{text[:prefix_length]}{marker}"
+
+
+async def _drain_process_stream(
+    stream: asyncio.StreamReader,
+    output: _BoundedProcessOutput,
+    stream_name: str,
+) -> None:
+    while chunk := await stream.read(_PROCESS_READ_SIZE):
+        output.append(stream_name, chunk)
+
+
+async def _settle_process_tasks(
+    process: asyncio.subprocess.Process,
+    tasks: tuple[asyncio.Task[int], asyncio.Task[None], asyncio.Task[None]],
+) -> None:
+    _, pending = await asyncio.wait(
+        tasks,
+        timeout=_PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+    )
+    if not pending:
+        return
+    with suppress(ProcessLookupError):
+        process.kill()
+    _, still_pending = await asyncio.wait(pending, timeout=1.0)
+    for task in still_pending:
+        task.cancel()
+    await asyncio.gather(*still_pending, return_exceptions=True)
 
 
 async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
     """Stop the shell and descendants so inherited output pipes can reach EOF."""
 
-    if process.returncode is not None:
-        return
     if os.name == "nt":
-        killer = await asyncio.create_subprocess_exec(
-            "taskkill",
-            "/PID",
-            str(process.pid),
-            "/T",
-            "/F",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await killer.wait()
+        killer: asyncio.subprocess.Process | None = None
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(process.pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(
+                killer.wait(),
+                timeout=_PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+            )
+        except (OSError, TimeoutError):
+            if killer is not None:
+                with suppress(ProcessLookupError):
+                    killer.kill()
     else:
         kill_process_group = getattr(os, "killpg", None)
         sigkill = getattr(signal, "SIGKILL", None)
         if kill_process_group is not None and sigkill is not None:
             with suppress(ProcessLookupError):
                 kill_process_group(process.pid, sigkill)
-    with suppress(ProcessLookupError):
-        process.kill()
+    if process.returncode is None:
+        with suppress(ProcessLookupError):
+            process.kill()
 
 
 ToolExecutionResult = ToolResult | ToolInputRequest

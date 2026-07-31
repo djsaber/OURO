@@ -92,9 +92,8 @@ class ApprovalStreamingProvider:
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "approval_stream_write",
                     "name": "Write",
                     "arguments": {"path": str(self.target), "content": "approved"},
@@ -144,9 +143,8 @@ class SubagentInteractionProvider:
                 self.subagent_round += 1
                 if self.mode == "approval":
                     assert self.target is not None
-                    yield ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    yield ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "subagent_write",
                             "name": "Write",
                             "arguments": {
@@ -156,9 +154,8 @@ class SubagentInteractionProvider:
                         },
                     )
                 else:
-                    yield ProviderStreamEvent(
-                        type="tool_call",
-                        tool_call={
+                    yield ProviderStreamEvent.from_tool_call(
+                        {
                             "id": "subagent_question",
                             "name": "AskUser",
                             "arguments": _ask_user_arguments("Choose A or B?"),
@@ -172,9 +169,8 @@ class SubagentInteractionProvider:
 
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "spawn_subagent",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -231,9 +227,8 @@ class ConcurrentSubagentQuestionProvider:
                 for message in messages
             )
             if not answered:
-                yield ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                yield ProviderStreamEvent.from_tool_call(
+                    {
                         "id": f"subagent_question_{key.lower()}",
                         "name": "AskUser",
                         "arguments": _ask_user_arguments(
@@ -257,9 +252,8 @@ class ConcurrentSubagentQuestionProvider:
         if self.root_round == 0:
             self.root_round += 1
             for key in ("A", "B"):
-                yield ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                yield ProviderStreamEvent.from_tool_call(
+                    {
                         "id": f"spawn_subagent_{key.lower()}",
                         "name": "SpawnAgent",
                         "arguments": {
@@ -270,6 +264,7 @@ class ConcurrentSubagentQuestionProvider:
                             "execution_mode": "async",
                         },
                     },
+                    index=0 if key == "A" else 1,
                 )
             yield ProviderStreamEvent(type="done")
             return
@@ -437,9 +432,8 @@ async def test_run_print_composes_configured_mcp_tool_and_closes_it(
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "mcp_call",
                         "name": "echo__echo",
                         "arguments": {"value": "assembled"},
@@ -491,9 +485,8 @@ async def test_run_json_composes_mcp_without_corrupting_machine_output(
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "json_mcp_call",
                         "name": "echo__echo",
                         "arguments": {"value": "json"},
@@ -630,9 +623,8 @@ async def test_interactive_composes_mcp_for_process_lifetime(
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "interactive_mcp",
                         "name": "echo__echo",
                         "arguments": {"value": "interactive"},
@@ -732,9 +724,8 @@ async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "approved"},
@@ -796,9 +787,8 @@ async def test_interactive_modifies_tool_arguments_before_approval(tmp_path) -> 
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "original"},
@@ -839,9 +829,8 @@ async def test_interactive_aborts_waiting_approval(tmp_path) -> None:
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "nope"},
@@ -875,9 +864,8 @@ async def test_interactive_keeps_running_when_approval_resume_fails(
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "nope"},
@@ -934,9 +922,8 @@ async def test_interactive_open_waiting_session_drains_follow_up_after_rejection
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "nope"},
@@ -991,9 +978,8 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "ask_1",
                         "name": "AskUser",
                         "arguments": _ask_user_arguments(
@@ -1339,9 +1325,8 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "ask_1",
                         "name": "AskUser",
                         "arguments": _ask_user_arguments(
@@ -2113,9 +2098,8 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
         tmp_path,
         [
             [
-                ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "call_1",
                         "name": "Write",
                         "arguments": {"path": str(target), "content": "hello"},

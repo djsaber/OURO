@@ -21,6 +21,89 @@ LOWER_LAYER_DIRS = (
     "skills",
     "tools",
 )
+OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
+    "__init__": frozenset(),
+    "application": frozenset(
+        {
+            "billing",
+            "config",
+            "core",
+            "mcp",
+            "plugins",
+            "prompts",
+            "resources",
+            "sessions",
+            "skills",
+            "tools",
+        }
+    ),
+    "billing": frozenset({"core", "local_io", "local_locks"}),
+    "builtin_plugins": frozenset({"core", "plugins", "sdk", "sessions"}),
+    "cli": frozenset(
+        {
+            "application",
+            "builtin_plugins",
+            "config",
+            "core",
+            "deployment",
+            "local_application",
+            "mcp",
+            "sdk",
+            "skills",
+            "tools",
+        }
+    ),
+    "config": frozenset({"core", "local_io", "local_locks", "prompts"}),
+    "core": frozenset(),
+    "deployment": frozenset({"core"}),
+    "local_application": frozenset(
+        {
+            "application",
+            "billing",
+            "builtin_plugins",
+            "config",
+            "core",
+            "deployment",
+            "mcp",
+            "plugins",
+            "providers",
+            "resources",
+            "sessions",
+            "skills",
+            "tools",
+        }
+    ),
+    "local_io": frozenset({"core"}),
+    "local_locks": frozenset(),
+    "mcp": frozenset({"config", "core", "tools"}),
+    "plugins": frozenset({"core", "local_locks", "mcp", "sdk", "sessions", "skills", "tools"}),
+    "prompts": frozenset(),
+    "providers": frozenset({"config", "core"}),
+    "resources": frozenset({"core", "local_io", "local_locks"}),
+    "sdk": frozenset(),
+    "sessions": frozenset({"core", "local_io", "local_locks"}),
+    "skills": frozenset({"config", "core"}),
+    "tools": frozenset({"core"}),
+}
+
+
+def test_all_ouro_imports_follow_the_explicit_dependency_matrix() -> None:
+    ouro_dir = PROJECT_ROOT / "ouro"
+    violations: list[str] = []
+    seen_roots: set[str] = set()
+    for path in sorted(ouro_dir.rglob("*.py")):
+        source_root = _ouro_source_root(path)
+        seen_roots.add(source_root)
+        allowed_targets = OURO_IMPORT_ALLOWLIST[source_root]
+        for target_root, module in _imported_ouro_roots(path):
+            if target_root == source_root or target_root in allowed_targets:
+                continue
+            violations.append(
+                f"{path.relative_to(PROJECT_ROOT)} imports disallowed dependency {module}"
+            )
+
+    assert seen_roots == set(OURO_IMPORT_ALLOWLIST)
+    assert violations == []
 
 
 def test_core_does_not_import_outer_layers() -> None:
@@ -234,6 +317,37 @@ def _imported_modules(tree: ast.AST) -> list[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             modules.append(node.module)
     return modules
+
+
+def _ouro_source_root(path: Path) -> str:
+    relative_parts = path.relative_to(PROJECT_ROOT / "ouro").parts
+    return relative_parts[0] if len(relative_parts) > 1 else path.stem
+
+
+def _imported_ouro_roots(path: Path) -> list[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    relative = path.relative_to(PROJECT_ROOT).with_suffix("")
+    package_parts = relative.parts[:-1]
+    modules: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.extend(alias.name for alias in node.names)
+            continue
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level == 0:
+            if node.module:
+                modules.append(node.module)
+            continue
+        retained_count = len(package_parts) - node.level + 1
+        resolved_parts = (*package_parts[:retained_count], *(node.module or "").split("."))
+        modules.append(".".join(part for part in resolved_parts if part))
+
+    return [
+        (module.split(".", maxsplit=2)[1], module)
+        for module in modules
+        if module.startswith("ouro.")
+    ]
 
 
 def _attribute_path(node: ast.AST) -> str | None:

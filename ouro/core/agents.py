@@ -10,7 +10,7 @@ from typing import Any, Literal, Self
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.approvals import PermissionMode, SessionApprovalMode
-from ouro.core.base import SCHEMA_VERSION, OuroModel, new_id, utc_now
+from ouro.core.base import OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.run_budget import RunBudgetPolicy
 
@@ -63,8 +63,7 @@ class ToolSelection(OuroModel):
         return self
 
 
-class AgentDefinition(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class AgentDefinition(VersionedOuroModel):
     agent_id: str
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(min_length=1, max_length=500)
@@ -185,8 +184,7 @@ class AgentCatalogEntry(OuroModel):
         return not self.missing_tool_names
 
 
-class AgentCatalogSnapshot(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class AgentCatalogSnapshot(VersionedOuroModel):
     revision: int = Field(default=0, ge=0)
     entries: tuple[AgentCatalogEntry, ...] = ()
     spawn_policy: AgentSpawnPolicy = Field(default_factory=AgentSpawnPolicy)
@@ -266,8 +264,7 @@ class DelegationResult(OuroModel):
     delivery: ResultDelivery = Field(default_factory=ResultDelivery)
 
 
-class DelegationRecord(OuroModel):
-    schema_version: int = SCHEMA_VERSION
+class DelegationRecord(VersionedOuroModel):
     revision: int = Field(default=0, ge=0)
     delegation_id: str = Field(default_factory=lambda: new_id("dlg"))
     idempotency_key: str = Field(min_length=1, max_length=256)

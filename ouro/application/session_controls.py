@@ -3,6 +3,7 @@ from __future__ import annotations
 from ouro.application.queued_inputs import QueuedInputQueue
 from ouro.core.base import utc_now
 from ouro.core.errors import OuroError
+from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlActivation,
@@ -779,28 +780,26 @@ class SessionControlCoordinator:
                 "controller_id": controller_id,
                 "activation_id": activation_id,
             }
+            now = utc_now()
             aborted_run = run.model_copy(
                 update={
                     "status": "aborted",
-                    "ended_at": utc_now(),
+                    "ended_at": now,
                     "error": "session_control_released",
                     "pending_approval_id": None,
                     "active_tool_batch": aborted_batch,
                     "metadata": run_metadata,
                 }
             )
-            updated_session = session.model_copy(
-                update={
-                    "status": "idle",
-                    "active_run_id": None,
-                    "last_run_id": aborted_run.run_id,
-                    "updated_at": utc_now(),
-                    "last_activity_at": utc_now(),
-                }
+            transition = plan_run_transition(
+                session,
+                current_run=run,
+                next_run=aborted_run,
+                now=now,
             )
-            self.store.save_run(aborted_run)
-            self.store.save_session(updated_session)
-            cancelled_run_id = aborted_run.run_id
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            cancelled_run_id = transition.run.run_id
         self.store.refresh_catalog(session_id)
         return cancelled_run_id
 

@@ -54,6 +54,10 @@ async def test_post_failure_enters_session_stream_without_logging_traceback(capl
     assert isinstance(failure, httpx.HTTPStatusError)
     assert failure.response.status_code == 400
     assert caplog.records == []
+    assert read_stream.statistics().open_send_streams == 0
+    assert read_stream.statistics().open_receive_streams == 0
+    assert write_stream.statistics().open_send_streams == 0
+    assert write_stream.statistics().open_receive_streams == 0
 
 
 @pytest.mark.asyncio

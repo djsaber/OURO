@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import importlib
 import importlib.util
 import inspect
@@ -12,7 +13,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import uuid4
 
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
@@ -52,6 +53,7 @@ from ouro.core.session_controls import (
     SessionControlTransitionRequest,
     SessionInputRequest,
 )
+from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.tool_policies import (
     ToolPolicyCall,
     ToolPolicyDecision,
@@ -77,6 +79,7 @@ from ouro.plugins.session_controllers import (
     PluginSessionControllerOutput,
 )
 from ouro.sdk.plugins import v1 as sdk
+from ouro.sessions.base import SessionRepository
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -156,6 +159,72 @@ class ScopedPluginDataStore:
         if not path.is_relative_to(root):
             raise ValueError("plugin data path escapes private data root")
         return path
+
+
+class BoundPluginSessionStateStore:
+    """Owner-bound access to canonical Session state, gated by Generation activation."""
+
+    def __init__(
+        self,
+        repository: SessionRepository,
+        owner_id: str,
+        *,
+        active: bool = False,
+    ) -> None:
+        self._repository = repository
+        self._owner_id = owner_id
+        self._active = active
+
+    def load(self, session_id: str) -> sdk.PluginSessionState | None:
+        record = next(
+            (
+                state
+                for state in self._repository.load_session_extension_states(session_id)
+                if state.owner_id == self._owner_id
+            ),
+            None,
+        )
+        if record is None:
+            return None
+        return sdk.PluginSessionState(
+            state_schema_version=record.state_schema_version,
+            payload=copy.deepcopy(record.payload),
+        )
+
+    def save(
+        self,
+        session_id: str,
+        *,
+        state_schema_version: int,
+        payload: sdk.JsonValue,
+        branch_policy: Literal["copy", "reset", "reject"] = "reset",
+        projection_semantic_tags: tuple[str, ...] = (),
+    ) -> None:
+        self._require_active()
+        self._repository.save_session_extension_state(
+            SessionExtensionStateRecord(
+                session_id=session_id,
+                owner_id=self._owner_id,
+                state_schema_version=state_schema_version,
+                branch_policy=branch_policy,
+                projection_semantic_tags=projection_semantic_tags,
+                payload=payload,
+            )
+        )
+
+    def delete(self, session_id: str) -> None:
+        self._require_active()
+        self._repository.delete_session_extension_state(session_id, self._owner_id)
+
+    def activate(self) -> None:
+        self._active = True
+
+    def deactivate(self) -> None:
+        self._active = False
+
+    def _require_active(self) -> None:
+        if not self._active:
+            raise RuntimeError("candidate plugin Generation cannot mutate canonical Session state")
 
 
 class BoundCredentialResolver:
@@ -435,6 +504,7 @@ def build_plugin_context(
     diagnostics: list[PluginDiagnostic],
     redactor: SensitiveValueRedactor,
     data_store: ScopedPluginDataStore | None = None,
+    session_state_store: BoundPluginSessionStateStore | None = None,
     artifact_root: Path | None = None,
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
@@ -467,6 +537,7 @@ def build_plugin_context(
             if artifact_root is not None
             else None
         ),
+        session_state=session_state_store,
     )
 
 

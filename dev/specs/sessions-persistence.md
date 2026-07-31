@@ -25,6 +25,7 @@ OURO_HOME/
       runs/<run_id>.json
       delegations/<delegation_id>.json
       resources/index.json
+      extensions/index.json
   resources/
     records/<resource_id>.json
     blobs/sha256/<digest>
@@ -33,8 +34,15 @@ OURO_HOME/
   trash/sessions/<trash_id>/
 ```
 
-当前 `data_layout_version` 为 4；版本 3 只执行增加 delegation 目录语义的确定性升级。其他不兼容布局必须在
+当前 `data_layout_version` 为 6；版本 3/4 会确定性升级 delegation 目录语义并为每个现有 Session 创建版本化
+extension state collection；版本 5 的 transcript-bearing disposable Catalog 直接丢弃并按有界投影重建。只有全部
+canonical 迁移成功后才推进 layout manifest；迁移可重入。其他不兼容布局必须在
 初始化时抛出 `MigrationRequiredError`，不能猜测迁移。
+
+版本 6 启动期仍执行一次性 builtin Goal/Plan/Todo 私有文件迁移，成功后删除源文件，孤儿移入 trash，运行时没有
+读回旧路径的 fallback。该启动扫描的删除窗口是 `data_layout_version=7`：v7 migrator 必须先转换或明确拒绝全部旧
+路径，再从 composition root 删除 `migrate_builtin_session_state`。同理，无 `turn_id` 的历史未完成模型轮次只在 v6
+冷恢复中使用保守去重；v7 迁移必须终结该历史形态，不能让时间比较继续进入当前 Run 热路径。
 
 ## Canonical 数据与投影
 
@@ -46,6 +54,15 @@ Canonical 数据包括：
 - `runs/*.json`；
 - root Session 下的 `delegations/*.json`；
 - `compactions.jsonl`。
+- `extensions/index.json` 中按稳定 owner identity 唯一的 Session extension state。
+
+Session、Run、Message、Event、Compaction、ContextSnapshot 和 Delegation 是独立持久化根记录。每个 payload
+必须显式携带当前 `schema_version=1`；缺失、非整数、旧版本或未来版本均由共享 versioned decoder 在 adapter
+读取边界抛出 `MigrationRequiredError`。领域模型的版本字段使用封闭字面量类型，未知版本不能被验证为当前记录。
+Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必须先通过独立、可测试的 migrator 转换。
+
+`data_layout_version`、SQLite schema version 和插件 manifest/state schema 是独立版本域，不能因为当前数字相同
+而共用迁移规则。Session resource reference index 与 Session catalog 是 layout-bound 文档，不冒充核心 record 版本。
 
 `sessions/index.json` 是可重建查询投影，不属于 canonical transaction。索引更新失败时：
 
@@ -67,6 +84,10 @@ Canonical 数据包括：
 端口覆盖：创建 snapshot、Session/Run 保存、消息/事件/压缩追加、压缩激活、Delegation repository、加载、
 索引、回收站发布以及 session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，
 而不只是复制方法签名。
+
+Session extension state 以 `(session_id, owner_id)` 为 identity，并显式保存自身 schema、branch policy、派生
+synthetic semantic tags 和 JSON payload。文件后端把版本化 collection 保存到 Session tree；SQLite schema v3 使用
+外键级联的 `session_extension_states` 表。插件代码 Generation 只拥有代码/执行资源，不拥有这些状态的生命周期。
 
 Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
 反向查询和 revision compare-and-swap。所有 Delegation 查询必须携带 root identity；单个 Session 的运行路径不得
@@ -119,7 +140,8 @@ application 提供：
 - messages、events、export 和 replay；
 - branch 与 trash。
 
-Host DTO 不暴露 catalog 内部的 `search_text`。
+Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title、至多 160 字符的最后消息预览、workspace、
+model 和 tags。全文搜索是独立未来能力，不能借 disposable Catalog 复制 canonical 对话。
 
 root Session 有 active 或无法判定的 Agent descendant 时不能归档。trash 与归档语义不同：删除任意 root 或 subagent
 都会先通过 `SessionRecord.parent_session_id` 解析 owning primary 和传递 subagent scope，再删除完整根树。该路径不得
@@ -132,6 +154,9 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档。tr
 - 分支消息获得新 id、清除 run/turn id，并记录 source identity。
 - 分支 lineage 写入 root/parent/fork 字段。
 - 含 `resource_refs` 的分支通过 ResourceService 验证存在性，并与消息一起原子发布引用关系。
+- extension state 的 `copy` 会随目标 Session 原子复制；`reset` 不复制并移除 owner 声明的 synthetic 投影；
+  `reject` 明确拒绝分支。若请求分支点自身是必须 reset 的投影，则拒绝生成自相矛盾的 lineage。
+- export 包含完整、版本化 extension state section；普通消息分页和 Catalog 不暴露该私有状态。
 
 ## 回收站
 
@@ -140,16 +165,21 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档。tr
 随后按稳定顺序取得整树全部 Run 锁。Local backend 使用 tree staging 后原子发布到
 `trash/sessions/<trash_id>/sessions/<session_id>`；SQLite backend 在一个事务中封存原始 rows 并删除整树。发布失败
 必须回滚全部 Session，或明确报告数据保留位置。初始化负责完成可判定安全的中断 tree publish。
+extension state 位于同一 Session tree 或外键事务内，因此不依赖 fail-open Observer 做事后清理。
 
 发布 trash 后，ResourceService 对该 Session 原引用执行可达性清理；共享资源仍被其他活动 Session 引用时
 不得删除。清理失败只形成可重试 diagnostic，不破坏已经完成的 trash 事务。
 
 ## 验收证据
 
+- `tests/core/test_persistence.py`
+- `tests/sessions/test_store_contract.py`
 - `tests/sessions/test_local_files.py`
 - `tests/sessions/test_local_io.py`
+- `tests/sessions/test_catalog_projection.py`
 - `tests/application/test_sessions.py`
 - `tests/application/test_session_models.py`
 - `tests/sessions/test_delegations.py`
 - `tests/application/test_agent_recovery.py`
+- `tests/plugins/test_session_state.py`
 - `tests/cli/test_session_commands.py`

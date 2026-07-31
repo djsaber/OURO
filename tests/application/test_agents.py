@@ -79,9 +79,8 @@ class SyncAgentProvider:
         self.root_tool_schemas.append(definitions)
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "spawn_call",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -119,9 +118,8 @@ class SyncHitlProvider:
         if "SpawnAgent" not in names:
             if self.child_round == 0:
                 self.child_round += 1
-                yield ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                yield ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "sync_ask_call",
                         "name": "AskUser",
                         "arguments": {"question": "Choose A or B"},
@@ -135,9 +133,8 @@ class SyncHitlProvider:
 
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "sync_hitl_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -175,9 +172,8 @@ class SpawnAndChildApprovalProvider:
         if "SpawnAgent" not in names:
             if self.child_round == 0:
                 self.child_round += 1
-                yield ProviderStreamEvent(
-                    type="tool_call",
-                    tool_call={
+                yield ProviderStreamEvent.from_tool_call(
+                    {
                         "id": "child_danger_call",
                         "name": "Danger",
                         "arguments": {},
@@ -191,9 +187,8 @@ class SpawnAndChildApprovalProvider:
 
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "approved_spawn_call",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -232,9 +227,8 @@ class AsyncFollowUpProvider:
             return
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "async_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -290,9 +284,8 @@ class AsyncSendAfterDeliveryProvider:
             return
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "async_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -312,9 +305,8 @@ class AsyncSendAfterDeliveryProvider:
             return
         if self.root_round == 2:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "send_after_delivery",
                     "name": "SendAgentMessage",
                     "arguments": {
@@ -358,9 +350,8 @@ class NextBoundaryRaceProvider:
         self.root_messages.append(list(messages))
         if self.root_round == 0:
             self.root_round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "next_boundary_spawn",
                     "name": "SpawnAgent",
                     "arguments": {
@@ -431,9 +422,8 @@ class ApprovalChildProvider:
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "danger_call",
                     "name": "Danger",
                     "arguments": {"command": "x" * 500},
@@ -463,9 +453,8 @@ class AskUserChildProvider:
         del model, system_prompt, messages, tools
         if self.round == 0:
             self.round += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": "ask_call",
                     "name": "AskUser",
                     "arguments": {"question": {"kind": "choice", "items": ["A", "B"]}},
@@ -496,9 +485,8 @@ class ConcurrentAskUserProvider:
         if self.initial_calls < 2:
             index = self.initial_calls
             self.initial_calls += 1
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={
+            yield ProviderStreamEvent.from_tool_call(
+                {
                     "id": f"concurrent_ask_{index}",
                     "name": "AskUser",
                     "arguments": {"question": f"Question {index}"},
@@ -598,7 +586,7 @@ async def _services(
         system_prompt="BASE INSTRUCTIONS",
         resources=resources,
     )
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     await supervisor.start()
     service = AgentService(
@@ -656,7 +644,6 @@ async def _active_subagent_services(
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     await supervisor.start()
     service = AgentService(
@@ -666,7 +653,7 @@ async def _active_subagent_services(
         events=runtime.event_recorder,
         cascade_timeout_seconds=cascade_timeout_seconds,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     root = SessionRecord(
         session_id="ses_steer_root",
         status="running",
@@ -1539,7 +1526,7 @@ async def test_child_hitl_is_projected_at_root_and_resolved_by_exact_identity(
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -1645,7 +1632,6 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
         tools=tools,
         permission_overrides={"SpawnAgent": "approval"},
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
     service = AgentService(
         store=store,
@@ -1653,7 +1639,7 @@ async def test_spawn_approval_does_not_approve_the_child_tool_call(tmp_path) -> 
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Delegate with an approved spawn.")
@@ -1714,7 +1700,7 @@ async def test_async_child_user_input_is_streamed_and_routed_by_exact_identity(
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -1809,7 +1795,7 @@ async def test_simultaneous_child_inputs_remain_isolated(tmp_path) -> None:
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
     service = AgentService(
         store=store,
@@ -1915,7 +1901,7 @@ async def test_unattended_child_input_fails_deterministically_without_parking(tm
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
+    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -2444,7 +2430,6 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=max_concurrency)
     service = AgentService(
         store=store,
@@ -2452,7 +2437,7 @@ async def test_sync_spawn_releases_parent_worker_and_resumes_original_tool_call(
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Delegate this task.")
@@ -2546,7 +2531,6 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -2554,7 +2538,7 @@ async def test_sync_child_hitl_keeps_parent_parked_and_single_worker_progresses(
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Delegate a synchronous question.")
@@ -2619,7 +2603,6 @@ async def test_parent_abort_resolves_sync_wait_and_cascades_waiting_child(tmp_pa
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -2627,7 +2610,7 @@ async def test_parent_abort_resolves_sync_wait_and_cascades_waiting_child(tmp_pa
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Delegate a synchronous question.")
@@ -2693,7 +2676,6 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=2)
     service = AgentService(
         store=store,
@@ -2701,7 +2683,7 @@ async def test_next_boundary_delivery_racing_parent_round_is_committed_once(tmp_
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Start a next-boundary child.")
@@ -2766,7 +2748,6 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -2774,7 +2755,7 @@ async def test_async_result_delivery_is_exact_once(tmp_path) -> None:
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Start async work.")
@@ -2896,7 +2877,6 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
         ),
         tools=tools,
     )
-    runtime.attach_agent_definitions(definitions)
     supervisor = RuntimeSupervisor(runtime, max_concurrency=1)
     service = AgentService(
         store=store,
@@ -2904,7 +2884,7 @@ async def test_delivery_run_can_message_the_same_subagent_without_deadlock(tmp_p
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
-    runtime.attach_agent_controls(service)
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     await service.start()
 
     parent_handle = await supervisor.submit("Start async work.")

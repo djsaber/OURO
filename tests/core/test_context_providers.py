@@ -32,9 +32,7 @@ async def test_context_providers_order_by_priority_and_identity() -> None:
                 provider_id="later",
                 priority=20,
                 handler=lambda _call: ContextProviderResult(
-                    fragments=[
-                        ContextFragment(text="later", target="system_prompt")
-                    ]
+                    fragments=[ContextFragment(text="later", target="system_prompt")]
                 ),
             ),
             ContextProviderRegistration(

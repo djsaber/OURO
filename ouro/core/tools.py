@@ -138,14 +138,6 @@ class ToolExecutionOutcome(OuroModel):
     input_request: ToolInputRequest | None = None
     agent_wait: AgentWaitRequest | None = None
 
-    @property
-    def question(self) -> str | None:
-        """Return the legacy text question when the request happens to be text."""
-
-        if self.input_request is None or not isinstance(self.input_request.data, str):
-            return None
-        return self.input_request.data
-
 
 def tool_definition_contract_hash(definition: ToolDefinition) -> str:
     encoded = json.dumps(

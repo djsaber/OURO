@@ -46,9 +46,8 @@ class ToolTurnGateProvider(TurnGateProvider):
         if len(self.contexts) == 1:
             self.first_started.set()
             await self.release_first.wait()
-            yield ProviderStreamEvent(
-                type="tool_call",
-                tool_call={"id": "echo-1", "name": "Echo", "arguments": {}},
+            yield ProviderStreamEvent.from_tool_call(
+                {"id": "echo-1", "name": "Echo", "arguments": {}},
             )
             yield ProviderStreamEvent(type="done")
             return

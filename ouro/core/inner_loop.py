@@ -2,232 +2,29 @@ from __future__ import annotations
 
 import itertools
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
-from ouro.core.billing import UsagePurpose
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
-from ouro.core.provider import ModelMetadata, ToolCallDelta, Usage
+from ouro.core.provider import ToolCallDelta
 from ouro.core.results import RunResult
-from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason, RunPauseReason
-from ouro.core.state import RunRecord, SessionRecord, session_status_for_run
+from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
+from ouro.core.run_transitions import plan_run_transition
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchHandlingResult
 from ouro.core.tools import ToolCallRequest, ToolDefinition, ToolResult
-
-
-class EventEmitter(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session_id: str,
-        run_id: str,
-        event_type: str,
-        payload: dict[str, Any],
-    ) -> int: ...
-
-
-class ToolBatchHandler(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        session: SessionRecord,
-        run: RunRecord,
-        tool_calls: list[ToolCallRequest],
-        *,
-        turn_id: str,
-        message_sequence: int,
-        assistant_text: str,
-        assistant_reasoning: str,
-        assistant_continuation: ProviderContinuationArtifact | None,
-        abort_signal: AbortSignal,
-    ) -> ToolBatchHandlingResult: ...
-
-
-class UsageRecorder(Protocol):
-    def __call__(
-        self,
-        run: RunRecord,
-        usage: Usage,
-        *,
-        model: ModelMetadata,
-        request_id: str,
-        purpose: UsagePurpose,
-    ) -> RunRecord: ...
-
-
-class ToolDefinitionProvider(Protocol):
-    def definitions(self) -> list[ToolDefinition]: ...
-
-
-class AbortResultFactory(Protocol):
-    def __call__(
-        self,
-        *,
-        session_id: str,
-        run_id: str,
-        final_text: str,
-        emitted: list[EventRecord],
-        tool_results: list[ToolResult],
-    ) -> RunResult | None: ...
-
-
-class RunCompleter(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        final_text: str,
-        reasoning_content: str,
-        provider_continuation: ProviderContinuationArtifact | None,
-        turn_id: str | None = None,
-        tool_results: list[ToolResult],
-    ) -> RunResult: ...
-
-
-class WaitingStatePersister(Protocol):
-    def __call__(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-    ) -> SessionRecord: ...
-
-
-class RunFailer(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        error: str,
-        final_text: str,
-        reasoning_content: str,
-        provider_continuation: ProviderContinuationArtifact | None,
-        turn_id: str | None,
-        tool_results: list[ToolResult],
-    ) -> RunResult: ...
-
-
-class RunPauser(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        reason: RunPauseReason,
-        next_model_round: int,
-        final_text: str,
-        tool_results: list[ToolResult],
-    ) -> RunResult: ...
-
-
-class ContextPreparer(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        tools: list[ToolDefinition],
-        model_round: int,
-        turn_id: str,
-        abort_signal: AbortSignal,
-    ) -> tuple[ContextView, int]: ...
-
-
-class ContextCompletionRecorder(Protocol):
-    def __call__(
-        self,
-        *,
-        session_id: str,
-        context_id: str,
-        usage: Usage | None,
-    ) -> None: ...
-
-
-class TurnBoundaryInputConsumer(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        assistant_text: str,
-        assistant_reasoning: str,
-        assistant_continuation: ProviderContinuationArtifact | None,
-        turn_id: str,
-    ) -> TurnBoundaryInputResult: ...
 
 
 @dataclass(frozen=True)
 class TurnBoundaryInputResult:
     sequence: int
     messages: list[MessageRecord] = field(default_factory=list)
-
-
-class TurnCompletionPolicyEvaluator(Protocol):
-    async def __call__(
-        self,
-        emitted: list[EventRecord],
-        sequence: int,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        messages: list[MessageRecord],
-        assistant_text: str,
-        assistant_reasoning: str,
-        assistant_continuation: ProviderContinuationArtifact | None,
-        turn_id: str,
-    ) -> TurnCompletionPolicyResult: ...
-
-
-class ModelRoundBeginner(Protocol):
-    def __call__(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        model_round: int,
-    ) -> RunRecord: ...
-
-
-class ModelRequestCommitter(Protocol):
-    def __call__(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        model_round: int,
-    ) -> RunRecord: ...
-
-
-class SharedBudgetReasonProvider(Protocol):
-    def __call__(
-        self,
-        run: RunRecord,
-        next_model_round: int,
-    ) -> RunBudgetReason | None: ...
 
 
 @dataclass(frozen=True)
@@ -241,23 +38,54 @@ class TurnCompletionPolicyResult:
         return bool(self.messages) and self.blocked_reason is None
 
 
+EventEmitter = Callable[..., Awaitable[int]]
+ToolBatchHandler = Callable[..., Awaitable[ToolBatchHandlingResult]]
+ContextPreparer = Callable[..., Awaitable[tuple[ContextView, int]]]
+ContextCompletionRecorder = Callable[..., None]
+UsageRecorder = Callable[..., RunRecord]
+AbortResultFactory = Callable[..., RunResult | None]
+WaitingStatePersister = Callable[..., SessionRecord]
+RunCompleter = Callable[..., Awaitable[RunResult]]
+RunFailer = Callable[..., Awaitable[RunResult]]
+RunPauser = Callable[..., Awaitable[RunResult]]
+TurnBoundaryInputConsumer = Callable[..., Awaitable[TurnBoundaryInputResult]]
+TurnCompletionPolicyEvaluator = Callable[..., Awaitable[TurnCompletionPolicyResult]]
+ModelRoundUpdater = Callable[..., RunRecord]
+SharedBudgetReasonProvider = Callable[[RunRecord, int], RunBudgetReason | None]
+
+
 @dataclass(frozen=True)
-class InnerLoopPorts:
-    prepare_context: ContextPreparer
-    emit: EventEmitter
-    handle_tool_batch: ToolBatchHandler
+class InnerLoopContext:
+    prepare: ContextPreparer
+    record_completion: ContextCompletionRecorder | None = None
+
+
+@dataclass(frozen=True)
+class InnerLoopRunBoundaries:
     record_usage: UsageRecorder
     aborted_result: AbortResultFactory
     save_waiting_state: WaitingStatePersister
-    complete_run: RunCompleter
-    fail_run: RunFailer
-    pause_run: RunPauser
-    record_context_completion: ContextCompletionRecorder | None = None
-    consume_turn_boundary_inputs: TurnBoundaryInputConsumer | None = None
-    evaluate_turn_completion: TurnCompletionPolicyEvaluator | None = None
-    begin_model_round: ModelRoundBeginner | None = None
-    commit_model_request: ModelRequestCommitter | None = None
+    complete: RunCompleter
+    fail: RunFailer
+    pause: RunPauser
+
+
+@dataclass(frozen=True)
+class InnerLoopTurnBoundaries:
+    consume_inputs: TurnBoundaryInputConsumer | None = None
+    evaluate_completion: TurnCompletionPolicyEvaluator | None = None
+    begin_model_round: ModelRoundUpdater | None = None
+    commit_model_request: ModelRoundUpdater | None = None
     shared_budget_reason: SharedBudgetReasonProvider | None = None
+
+
+@dataclass(frozen=True)
+class InnerLoopPorts:
+    context: InnerLoopContext
+    runs: InnerLoopRunBoundaries
+    turns: InnerLoopTurnBoundaries
+    emit: EventEmitter
+    handle_tool_batch: ToolBatchHandler
 
 
 @dataclass
@@ -310,12 +138,12 @@ class InnerAgentLoop:
         self,
         *,
         adapter: RuntimeAdapter,
-        tools: ToolDefinitionProvider,
+        tool_definitions: Callable[[], list[ToolDefinition]],
         run_budget: RunBudgetPolicy | None = None,
         ports: InnerLoopPorts,
     ) -> None:
         self.adapter = adapter
-        self.tools = tools
+        self.tool_definitions = tool_definitions
         self.run_budget = run_budget or RunBudgetPolicy()
         self.ports = ports
 
@@ -345,7 +173,7 @@ class InnerAgentLoop:
             if aborted := self._aborted_result(state):
                 return aborted
             if reason := self._budget_reason(state.run, model_round):
-                return await self.ports.pause_run(
+                return await self.ports.runs.pause(
                     state.emitted,
                     state.sequence,
                     session=state.session,
@@ -355,8 +183,8 @@ class InnerAgentLoop:
                     final_text=state.final_text(),
                     tool_results=state.tool_results,
                 )
-            if self.ports.begin_model_round is not None:
-                state.run = self.ports.begin_model_round(
+            if self.ports.turns.begin_model_round is not None:
+                state.run = self.ports.turns.begin_model_round(
                     session=state.session,
                     run=state.run,
                     model_round=model_round,
@@ -370,7 +198,7 @@ class InnerAgentLoop:
                     abort_signal,
                 )
             except ContextBlockedError:
-                return await self.ports.pause_run(
+                return await self.ports.runs.pause(
                     state.emitted,
                     state.sequence,
                     session=state.session,
@@ -382,8 +210,8 @@ class InnerAgentLoop:
                 )
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
-            if self.ports.commit_model_request is not None:
-                state.run = self.ports.commit_model_request(
+            if self.ports.turns.commit_model_request is not None:
+                state.run = self.ports.turns.commit_model_request(
                     session=state.session,
                     run=state.run,
                     model_round=model_round,
@@ -449,9 +277,9 @@ class InnerAgentLoop:
             ):
                 state.final_parts.clear()
                 continue
-            if self.ports.evaluate_turn_completion is not None:
+            if self.ports.turns.evaluate_completion is not None:
                 try:
-                    completion = await self.ports.evaluate_turn_completion(
+                    completion = await self.ports.turns.evaluate_completion(
                         state.emitted,
                         state.sequence,
                         session=state.session,
@@ -469,7 +297,7 @@ class InnerAgentLoop:
                     )
                 state.sequence = completion.sequence
                 if completion.blocked_reason is not None:
-                    return await self.ports.pause_run(
+                    return await self.ports.runs.pause(
                         state.emitted,
                         state.sequence,
                         session=state.session,
@@ -483,7 +311,7 @@ class InnerAgentLoop:
                     state.messages.extend(completion.messages)
                     state.final_parts.clear()
                     continue
-            return await self.ports.complete_run(
+            return await self.ports.runs.complete(
                 state.emitted,
                 state.sequence,
                 session=state.session,
@@ -510,9 +338,9 @@ class InnerAgentLoop:
             output_tokens=int(run.usage.get("output_tokens", 0)),
             elapsed_seconds=elapsed_seconds,
         )
-        if local_reason is not None or self.ports.shared_budget_reason is None:
+        if local_reason is not None or self.ports.turns.shared_budget_reason is None:
             return local_reason
-        return self.ports.shared_budget_reason(run, next_model_round)
+        return self.ports.turns.shared_budget_reason(run, next_model_round)
 
     async def _build_context(
         self,
@@ -521,13 +349,13 @@ class InnerAgentLoop:
         turn_id: str,
         abort_signal: AbortSignal,
     ) -> ContextView:
-        context, state.sequence = await self.ports.prepare_context(
+        context, state.sequence = await self.ports.context.prepare(
             state.emitted,
             state.sequence,
             session=state.session,
             run=state.run,
             messages=state.messages,
-            tools=self.tools.definitions(),
+            tools=self.tool_definitions(),
             model_round=model_round,
             turn_id=turn_id,
             abort_signal=abort_signal,
@@ -543,7 +371,7 @@ class InnerAgentLoop:
         *,
         assistant_already_committed: bool,
     ) -> bool:
-        consumer = self.ports.consume_turn_boundary_inputs
+        consumer = self.ports.turns.consume_inputs
         if consumer is None:
             return False
         result = await consumer(
@@ -611,14 +439,14 @@ class InnerAgentLoop:
                 if provider_event.type == "done":
                     if context.context_id is None:
                         raise ValueError("prepared model context is missing its identity")
-                    if self.ports.record_context_completion is not None:
-                        self.ports.record_context_completion(
+                    if self.ports.context.record_completion is not None:
+                        self.ports.context.record_completion(
                             session_id=state.session.session_id,
                             context_id=context.context_id,
                             usage=provider_event.usage,
                         )
                 if provider_event.type == "done" and provider_event.usage is not None:
-                    state.run = self.ports.record_usage(
+                    state.run = self.ports.runs.record_usage(
                         state.run,
                         provider_event.usage,
                         model=self.adapter.model,
@@ -656,15 +484,6 @@ class InnerAgentLoop:
                         round_state,
                         model_round,
                         provider_event.tool_call_delta,
-                    )
-                elif provider_event.type == "tool_call":
-                    if provider_event.tool_call is None:
-                        raise ValueError("provider tool call event is missing its payload")
-                    await self._record_complete_tool_call(
-                        state,
-                        round_state,
-                        model_round,
-                        provider_event.tool_call,
                     )
                 elif provider_event.type == "retry_scheduled":
                     if provider_event.retry is None:
@@ -775,34 +594,6 @@ class InnerAgentLoop:
         parts.append(delta)
         await self._emit_tool_call_delta(state, round_state, model_round, delta)
 
-    async def _record_complete_tool_call(
-        self,
-        state: _LoopState,
-        round_state: _RoundState,
-        model_round: int,
-        tool_call: ToolCallRequest,
-    ) -> None:
-        if round_state.tool_call_parts:
-            raise ValueError("provider mixed streamed and complete tool calls in one response")
-        source_index = len(round_state.tool_calls)
-        complete_call = tool_call.model_copy(update={"source_index": source_index})
-        round_state.tool_calls.append(complete_call)
-        await self._emit_tool_call_delta(
-            state,
-            round_state,
-            model_round,
-            ToolCallDelta(
-                index=source_index,
-                id_delta=complete_call.id,
-                name_delta=complete_call.name,
-                arguments_delta=json.dumps(
-                    complete_call.arguments,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ),
-            ),
-        )
-
     async def _emit_tool_call_delta(
         self,
         state: _LoopState,
@@ -856,25 +647,30 @@ class InnerAgentLoop:
             return None
 
         pending_approvals = handling.batch.pending_approvals
-        state.run = state.run.model_copy(
-            update={
-                "status": handling.status,
-                "phase": (
-                    "subagent_join" if handling.status == "waiting_child" else "human_interaction"
-                ),
-                "active_tool_batch": handling.batch,
-                "pending_approval_id": pending_approvals[0].approval_id
-                if pending_approvals
-                else None,
-            }
+        transition = plan_run_transition(
+            state.session,
+            current_run=state.run,
+            next_run=state.run.model_copy(
+                update={
+                    "status": handling.status,
+                    "phase": (
+                        "subagent_join"
+                        if handling.status == "waiting_child"
+                        else "human_interaction"
+                    ),
+                    "active_tool_batch": handling.batch,
+                    "pending_approval_id": (
+                        pending_approvals[0].approval_id if pending_approvals else None
+                    ),
+                }
+            ),
         )
-        state.session = state.session.model_copy(
-            update={
-                "status": session_status_for_run(state.run.status),
-                "updated_at": utc_now(),
-            }
+        state.run = transition.run
+        state.session = transition.session
+        state.session = self.ports.runs.save_waiting_state(
+            session=state.session,
+            run=state.run,
         )
-        state.session = self.ports.save_waiting_state(session=state.session, run=state.run)
         return await self._save_waiting_state(
             emitted=state.emitted,
             session=state.session,
@@ -888,7 +684,7 @@ class InnerAgentLoop:
         state: _LoopState,
         round_parts: list[str] | None = None,
     ) -> RunResult | None:
-        return self.ports.aborted_result(
+        return self.ports.runs.aborted_result(
             session_id=state.session.session_id,
             run_id=state.run.run_id,
             final_text=state.final_text(round_parts),
@@ -905,7 +701,7 @@ class InnerAgentLoop:
         turn_id: str | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> RunResult:
-        return await self.ports.fail_run(
+        return await self.ports.runs.fail(
             state.emitted,
             state.sequence,
             session=state.session,

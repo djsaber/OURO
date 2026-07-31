@@ -29,6 +29,10 @@ Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路�
 查询不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。手动压缩只激活新的
 `CompactionRecord`，不得改写最近请求快照；新摘要会在下一次模型请求准备后自然进入新的快照。
 
+`semantic_envelopes=false` 只允许读取 schema 1 已存在的历史快照，以原始 synthetic text 重建其当时的 digest；
+当前写入一律为 `true`。该读取分支的删除窗口是 ContextSnapshot schema 2：升级到 schema 2 时必须提供显式迁移
+或拒绝旧记录，届时同步删除该字段的双值语义和历史测试，禁止把它用于创建新的请求投影。
+
 ## Token 预算
 
 - 输入预算来自 Endpoint context window 减去 max output tokens。

@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Protocol
 from ouro.application.dto import Diagnostic
 from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_history import (
+    apply_extension_branch_policies,
     copy_branch_messages,
     project_replay_frames,
     select_branch_messages,
@@ -204,6 +205,7 @@ class SessionService:
             events=tuple(snapshot.events),
             runs=tuple(snapshot.runs),
             compactions=tuple(snapshot.compactions),
+            extension_states=tuple(snapshot.extension_states),
         )
 
     def message_page(
@@ -637,6 +639,12 @@ class SessionService:
             interaction_mode=source.session.interaction_mode,
             tags=list(source.session.tags),
         )
+        selected_messages, extension_states = apply_extension_branch_policies(
+            selected_messages,
+            source_message.message_id,
+            source.extension_states,
+            branch.session_id,
+        )
         copied_messages, message_id_map = copy_branch_messages(
             branch.session_id,
             selected_messages,
@@ -656,7 +664,12 @@ class SessionService:
             if self._resources is not None
             else []
         )
-        self._store.create_session_snapshot(branch, copied_messages, resource_references)
+        self._store.create_session_snapshot(
+            branch,
+            copied_messages,
+            resource_references,
+            extension_states,
+        )
         return SessionBranchResult(
             session=SessionView.from_record(branch),
             source_session_id=source_session_id,
@@ -792,7 +805,6 @@ def _matches_query(entry: SessionIndexEntry, query: SessionCatalogQuery) -> bool
         fields = (
             entry.title,
             entry.last_message_preview,
-            entry.search_text,
             entry.workspace or "",
             entry.current_model or "",
             " ".join(entry.tags),

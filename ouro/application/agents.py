@@ -53,8 +53,9 @@ from ouro.core.agents import (
 from ouro.core.base import new_id, utc_now
 from ouro.core.errors import DelegationRevisionConflictError, PersistenceError, SessionBusyError
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
+from ouro.core.run_transitions import plan_run_transition
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
-from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, session_status_for_run
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tools import ToolInvocation, ToolResult
 from ouro.sessions import SessionStore
@@ -740,19 +741,15 @@ class AgentService:
                 },
             )
             with self.store.session_mutation(child.session_id):
-                self.store.save_run(run)
                 latest_child = self.store.load_session_record(child.session_id)
-                self.store.save_session(
-                    latest_child.model_copy(
-                        update={
-                            "status": session_status_for_run(run.status),
-                            "active_run_id": run.run_id,
-                            "last_run_id": run.run_id,
-                            "updated_at": utc_now(),
-                            "last_activity_at": utc_now(),
-                        }
-                    )
+                transition = plan_run_transition(
+                    latest_child,
+                    current_run=None,
+                    next_run=run,
                 )
+                self.store.save_run(transition.run)
+                self.store.save_session(transition.session)
+                run = transition.run
         if not self.recovery.relation_is_consistent(relation):
             raise PersistenceError(
                 f"reserved child Run does not match Delegation {relation.delegation_id}"
@@ -765,17 +762,12 @@ class AgentService:
                         f"child Session already has an active Run: {latest_child.active_run_id}"
                     )
                 if latest_child.active_run_id != run.run_id:
-                    self.store.save_session(
-                        latest_child.model_copy(
-                            update={
-                                "status": session_status_for_run(run.status),
-                                "active_run_id": run.run_id,
-                                "last_run_id": run.run_id,
-                                "updated_at": utc_now(),
-                                "last_activity_at": utc_now(),
-                            }
-                        )
+                    transition = plan_run_transition(
+                        latest_child,
+                        current_run=run,
+                        next_run=run,
                     )
+                    self.store.save_session(transition.session)
         return run
 
     async def wait_agents(
@@ -937,19 +929,19 @@ class AgentService:
             },
         )
         with self.store.session_mutation(child.session_id):
-            self.store.save_run(run)
             latest_child = self.store.load_session_record(child.session_id)
-            self.store.save_session(
-                latest_child.model_copy(
-                    update={
-                        "status": "running",
-                        "active_run_id": run.run_id,
-                        "last_run_id": run.run_id,
-                        "updated_at": utc_now(),
-                        "last_activity_at": utc_now(),
-                    }
+            if latest_child.active_run_id is not None:
+                raise SessionBusyError(
+                    f"child Session already has an active Run: {latest_child.active_run_id}"
                 )
+            transition = plan_run_transition(
+                latest_child,
+                current_run=None,
+                next_run=run,
             )
+            self.store.save_run(transition.run)
+            self.store.save_session(transition.session)
+            run = transition.run
         relation = self.store.save_delegation(
             relation.model_copy(
                 update={

@@ -18,6 +18,7 @@ class SQLiteImportReport(OuroModel):
     run_count: int = 0
     compaction_count: int = 0
     resource_reference_count: int = 0
+    extension_state_count: int = 0
     delegation_count: int = 0
 
 
@@ -56,6 +57,8 @@ def import_sessions_to_sqlite(
                         "compaction_count": report.compaction_count + len(snapshot.compactions),
                         "resource_reference_count": report.resource_reference_count
                         + len(references),
+                        "extension_state_count": report.extension_state_count
+                        + len(snapshot.extension_states),
                     }
                 )
             root_ids = sorted(
@@ -91,7 +94,12 @@ def _copy_snapshot(
     snapshot: SessionSnapshot,
     references: list[SessionResourceReference],
 ) -> None:
-    target.create_session_snapshot(snapshot.session, snapshot.messages, references)
+    target.create_session_snapshot(
+        snapshot.session,
+        snapshot.messages,
+        references,
+        snapshot.extension_states,
+    )
     for run in snapshot.runs:
         target.save_run(run)
     for compaction in snapshot.compactions:

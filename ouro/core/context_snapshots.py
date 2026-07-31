@@ -7,7 +7,7 @@ from datetime import datetime
 
 from pydantic import Field, model_validator
 
-from ouro.core.base import SCHEMA_VERSION, Metadata, MetadataField, OuroModel, new_id, utc_now
+from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, utc_now
 from ouro.core.context import ContextMetrics, ContextView
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.tools import ToolDefinition
@@ -15,10 +15,9 @@ from ouro.core.tools import ToolDefinition
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
-class ContextSnapshotRecord(OuroModel):
+class ContextSnapshotRecord(VersionedOuroModel):
     """Lossless latest-request snapshot without duplicated resource blob bytes."""
 
-    schema_version: int = SCHEMA_VERSION
     context_id: str = Field(default_factory=lambda: new_id("ctx"))
     session_id: str
     run_id: str
@@ -28,6 +27,7 @@ class ContextSnapshotRecord(OuroModel):
     endpoint_id: str | None = None
     model_id: str
     supports_vision: bool = False
+    # False is read-only schema-1 history. Remove it with the schema-2 migration.
     semantic_envelopes: bool = False
     prepared_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None

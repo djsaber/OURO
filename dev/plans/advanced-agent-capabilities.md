@@ -4,7 +4,8 @@
 
 ## 目标
 
-在资源身份、跨 Run 生命周期和稳定 Host 控制面就绪后，实现可审计的长期记忆、durable 计划和子智能体。
+在资源身份、跨 Run 生命周期和稳定 Host 控制面就绪后，实现可审计的长期记忆与 durable Task/Workflow，
+并与子智能体能力组合。
 这些能力必须增加用户控制，而不是扩大不可见自治。
 
 ## 前置条件
@@ -43,18 +44,18 @@
 - [ ] 注入内容明确标识为 memory context，不伪装用户消息。
 - [ ] 记录每次使用的 memory ids 以支持解释和删除影响分析。
 
-## 工作流 B：Durable plan/goal
+## 工作流 B：Durable Task/Workflow
 
 ### B1. 任务模型
 
-- [ ] Goal、Task、dependency、status、owner、budget、result refs。
+- [ ] Task、Workflow、dependency、status、owner、budget、result refs。
 - [ ] 状态转换和循环依赖校验。
 - [ ] 计划更新具备乐观版本或事务冲突语义。
 
 ### B2. 执行编排
 
 - [ ] Task 到 Run 的显式关联。
-- [ ] ready task 选择、公平调度和全局/goal 并发上限。
+- [ ] ready task 选择、公平调度和全局/workflow 并发上限。
 - [ ] 完成、失败、取消和重试传播规则。
 - [ ] 重启后从 durable task/run 状态恢复，不依赖内存队列。
 
@@ -67,7 +68,7 @@
 ## 工作流 C：子智能体
 
 规范性契约见[子智能体规格](../specs/subagents.md)，可执行里程碑、故障矩阵与退出条件见
-[子智能体实施计划](subagents.md)。首版已完成并转为当前能力；本节只保留高级能力之间的总体集成记录。
+[子智能体实施计划](subagents.md)。子智能体已转为当前能力；本节只保留高级能力之间的总体集成记录。
 
 ### C1. 能力与权限
 
@@ -112,7 +113,7 @@
 - 自治失控：预算、权限、并发和用户控制都是强制契约。
 - 任务系统过度设计：只支持当前计划/子任务用例，不预建通用工作流 DSL。
 - 上下文爆炸：资源引用和检索替代完整历史复制。
-- 状态组合复杂：当前 Delegation 与未来 Goal/Task 保持不同 identity；未来只增加显式关联，不重写 Agent 状态机。
+- 状态组合复杂：Task/Workflow、builtin Goal 与 Delegation 保持不同 identity，只增加显式关联，不重写各自状态机。
 
 ## 退出条件
 
