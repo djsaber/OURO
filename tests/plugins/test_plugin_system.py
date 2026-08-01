@@ -2206,7 +2206,11 @@ for line in sys.stdin:
         argument = request['params']['call']['argument']
         result = {
             'output': 'started',
-            'session_inputs': [{'prompt': 'Goal: ' + argument, 'mode': 'follow_up'}],
+            'session_inputs': [{
+                'prompt': 'Goal: ' + argument,
+                'mode': 'follow_up',
+                'role': 'user',
+            }],
         }
     elif method == 'continuation.call':
         if request['params']['call']['status'] == 'completed':
@@ -2277,6 +2281,7 @@ for line in sys.stdin:
     assert (await service.enable("dev.ouro.worker_goal")).status == "active"
     command = await service.execute_command("dev.ouro.worker_goal:goal", "ship")
     assert command.session_inputs[0].prompt == "Goal: ship"
+    assert command.session_inputs[0].role == "user"
     snapshot = runtime.snapshot()
     policy = snapshot.continuations.registered()[0]
     decision = await policy.handler(

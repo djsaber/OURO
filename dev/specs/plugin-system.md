@@ -70,7 +70,8 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 12. Observer 只能异步读取不可变事实，不能阻断、改写或同步反压 canonical Session/Run、durable sequence
     或用户消息来源。
 13. Command 和 Continuation 只返回类型化意图，只有 application 层可以持久化消息、排队和创建 Run。
-14. 插件输入保存为 synthetic context，并保留 plugin、contribution 和 execution contract 来源。
+14. 插件输入的 producer provenance 与 model role 必须分离：始终保留 plugin、contribution 和 execution
+    contract 来源；默认保存为 synthetic context，只有当前用户显式命令意图的投影可声明 user role。
 15. 所有 task、进程、MCP、listener 和 connection 都属于一个可关闭 generation owner。
 16. Disable/revoke 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
@@ -628,7 +629,8 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `credentials.use`：允许解析声明的 credential slot；
 - `process.spawn`：披露并授权插件 MCP/Host service 启动子进程；
 - `network.outbound`：披露并授权插件 MCP/Host service 建立远程连接；
-- `sessions.write`：允许请求 synthetic Session input；
+- `sessions.write`：允许请求带完整插件 provenance 的 Session input；输入默认 synthetic，显式用户命令投影
+  可以声明 user role；
 - `sessions.prompt.inspect`：允许 Prompt Policy 接收用户提示正文和附件的安全 metadata；
 - `background.run`：允许请求 continuation/background Run。
 
@@ -965,7 +967,8 @@ ouro/builtin_plugins/
 - Plugin Skill 使用统一 Skill Catalog，disable 后只影响新 catalog；
 - Plugin MCP 随 generation 启停；
 - contribution adapter 统一执行 declaration、contract、projection 和 cleanup；
-- Context Provider、Turn Policy、Continuation、Tool Policy、Command synthetic input 继续满足各自来源和组合规则。
+- Context Provider、Turn Policy、Continuation、Tool Policy、Command attributed input 继续满足各自来源、
+  model role 和组合规则。
 
 ### Observer 与 Prompt Policy
 

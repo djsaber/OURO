@@ -868,7 +868,12 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                 output=raw.output,
                 data=dict(raw.data),
                 session_inputs=[
-                    SessionInputRequest(prompt=item.prompt, mode=item.mode, title=item.title)
+                    SessionInputRequest(
+                        prompt=item.prompt,
+                        mode=item.mode,
+                        title=item.title,
+                        role=item.role,
+                    )
                     for item in raw.session_inputs
                 ],
                 session_control_transitions=[

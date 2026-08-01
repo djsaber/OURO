@@ -154,7 +154,8 @@ Plugin MCP 启用即连接：required 失败不发布候选，optional 失败进
 
 Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
 唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回
-类型化会话输入；输入以 `system_synthetic` 和完整 execution-contract provenance 持久化，不会冒充用户。Run
+类型化会话输入；producer provenance 与 model role 是两个独立维度。输入默认以 `system_synthetic` 持久化；
+只有投影当前用户显式命令意图时才使用 `user`，同时仍保留完整 execution-contract provenance。Run
 continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
 插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
 插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，

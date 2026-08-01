@@ -4,8 +4,9 @@
 plugin contracts:
 
 - `/goal` is the user intent and lifecycle control plane. Creation and explicit replacement
-  requests are submitted to the current Agent and activate only through `CreateGoal`; status,
-  pause, resume, cancel, and replacement authority remain user-owned.
+  requests are submitted as user-role inputs with plugin provenance and activate only through
+  `CreateGoal`; internal continuation stays synthetic, while status, pause, resume, cancel, and
+  replacement authority remain user-owned.
 - `GetGoal`, `CreateGoal`, and `UpdateGoal` are the model-facing read/create/settle tools.
 - the `mode` Session Controller exclusively claims `ouro.session.primary_behavior`.
 - `goal-scaffold` persists the exact source request, six-field Goal Contract, and completion rules
@@ -23,6 +24,8 @@ the `goal-contract` projection from its source state. Goal uses `reset` branch s
 branch contains neither the active Goal nor inherited Goal projection. Normal Run completion never implies Goal
 completion. `UpdateGoal(complete)` requires auditing the contract's verification items and
 constraints. `UpdateGoal(blocked)` requires a genuine user-input or external-state blocker.
+The active scaffold requires `UpdateGoal` before a terminal response; a bounded Run that omits
+the terminal update is explicitly treated as nonterminal and receives a continuation audit.
 An explicit user lifecycle command, a Runtime failure, or a token-budget boundary also stops
 automatic continuation.
 

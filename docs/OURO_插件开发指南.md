@@ -121,7 +121,9 @@ Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool 
 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Command、
-Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 synthetic input、队列和持久化。Tool
+Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 attributed input、队列和持久化。
+`SessionInput` 默认是 synthetic；只有投影当前用户显式 command 意图时才声明 `role="user"`，插件 provenance
+始终保留。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
 Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的

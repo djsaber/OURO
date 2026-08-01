@@ -10,6 +10,7 @@ from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_semantics import SemanticTag
 
 SessionInputMode = Literal["follow_up", "steer"]
+SessionInputRole = Literal["user", "system_synthetic"]
 SessionControlAccess = Literal["exclusive", "shared"]
 SessionControlPhase = Literal["activating", "active", "deactivating", "failed"]
 SessionControlTransitionAction = Literal["acquire", "release", "replace"]
@@ -31,6 +32,7 @@ class SessionInputRequest(OuroModel):
     prompt: str = Field(min_length=1)
     mode: SessionInputMode = "follow_up"
     title: str | None = None
+    role: SessionInputRole = "system_synthetic"
 
     @field_validator("prompt")
     @classmethod
@@ -52,6 +54,7 @@ class AttributedSessionInput(SessionInputRequest):
 class HostSessionInput(SessionInputRequest):
     """A synthetic input produced by an OURO Host/Application component."""
 
+    role: Literal["system_synthetic"] = "system_synthetic"
     host_source_id: str = Field(min_length=1)
     semantic_tag: SemanticTag = "host-message"
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -85,6 +88,7 @@ class DelegatedTaskInput(SessionInputRequest):
     an attributed user message for a child Session.
     """
 
+    role: Literal["user"] = "user"
     delegation_id: str = Field(min_length=1, max_length=128)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
@@ -279,5 +283,6 @@ __all__ = [
     "SessionControlTransitionRequest",
     "SessionControlTransitionResult",
     "SessionInputMode",
+    "SessionInputRole",
     "SessionInputRequest",
 ]

@@ -115,6 +115,68 @@ class ScriptedGoalProvider:
         )
 
 
+class UserCommandAwareGoalProvider:
+    """Exercise Goal creation only when the command arrives as the current user turn."""
+
+    provider_id = "goal-command-role-test"
+
+    def __init__(self, source_request: str) -> None:
+        self.source_request = source_request
+        self.calls = 0
+        self.requests: list[list[Any]] = []
+
+    async def stream(
+        self,
+        *,
+        model,
+        system_prompt="",
+        messages,
+        tools=None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, tools
+        self.requests.append(list(messages))
+        call_index = self.calls
+        self.calls += 1
+        if call_index == 0:
+            latest = messages[-1]
+            if latest.role == "user" and self.source_request in latest.text_content:
+                yield ProviderStreamEvent.from_tool_call(
+                    ToolCallRequest(
+                        id="call_create_goal",
+                        name="CreateGoal",
+                        arguments=_goal_arguments(self.source_request),
+                    )
+                )
+            else:
+                yield ProviderStreamEvent(
+                    type="text_delta",
+                    text="No current user Goal request was visible.",
+                )
+        elif call_index == 1:
+            yield ProviderStreamEvent.from_tool_call(
+                ToolCallRequest(
+                    id="call_complete",
+                    name="UpdateGoal",
+                    arguments={
+                        "goal_id": _created_goal_id(messages),
+                        "status": "complete",
+                        "report": "Verified the user-command Goal path.",
+                    },
+                )
+            )
+        else:
+            yield ProviderStreamEvent(type="text_delta", text="Goal lifecycle recorded.")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            ok=True,
+            message="ok",
+        )
+
+
 def _provider_tool_name(tool: Any) -> str:
     if isinstance(tool, dict):
         return str(tool["name"])
@@ -228,7 +290,7 @@ class GatedGoalProvider(ScriptedGoalProvider):
 
 def _runtime(
     home: Path,
-    provider: ScriptedGoalProvider,
+    provider: ScriptedGoalProvider | UserCommandAwareGoalProvider,
 ) -> tuple[RuntimeService, LocalSessionStore]:
     store = LocalSessionStore(home)
     store.initialize()
@@ -446,6 +508,7 @@ async def test_goal_command_creation_delegates_without_activating_or_creating_a_
     assert "CreateGoal exactly once" in created.session_inputs[0].prompt
     assert "all six parts" in created.session_inputs[0].prompt
     assert '"Ship the durable feature"' in created.session_inputs[0].prompt
+    assert created.session_inputs[0].role == "user"
     assert store.load_runtime_session(session.session_id).runs == []
     assert store.load_session_record(session.session_id).controls.activations == []
     assert not (
@@ -494,11 +557,14 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
     attributed = created.session_inputs[0]
     assert attributed.plugin_id == PLUGIN_ID
     assert attributed.contribution_id == "goal"
+    assert attributed.role == "user"
 
     result = await runtime.submit_plugin_input(attributed, session_id=session_id)
     assert result.run.status == "completed"
     assert "CreateGoal" in provider.tool_names[0]
     assert "UpdateGoal" in provider.tool_names[1]
+    snapshot = store.load_runtime_session(session_id)
+    assert snapshot.messages[0].role == "user"
 
     status = await handle_command(
         "/goal status",
@@ -515,6 +581,189 @@ async def test_goal_cli_alias_returns_attributed_input_and_visible_status(tmp_pa
         session_id,
         plugins=application.plugins,
     )
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_goal_command_is_a_user_turn_with_plugin_provenance(tmp_path) -> None:
+    home = tmp_path / "home"
+    source_request = "Ship the request through Goal mode"
+    provider = UserCommandAwareGoalProvider(source_request)
+    runtime, store = _runtime(home, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_goal_mode(application)
+    assert application.plugins is not None
+    session = runtime.create_session(title="Goal command role", approval_mode="auto")
+
+    command = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        source_request,
+        session_id=session.session_id,
+    )
+    attributed = command.session_inputs[0]
+    result = await runtime.submit_plugin_input(attributed, session_id=session.session_id)
+
+    assert result.run.status == "completed"
+    assert provider.calls == 3
+    assert provider.requests[0][-1].role == "user"
+    snapshot = store.load_runtime_session(session.session_id)
+    assert snapshot.messages[0].role == "user"
+    assert snapshot.messages[0].metadata["plugin_id"] == PLUGIN_ID
+    goal = _goal_state(home, session.session_id)["goal"]
+    assert goal["source_request"] == source_request
+    assert goal["status"] == "complete"
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_active_goal_replacement_supersedes_continuation_as_user_intent(tmp_path) -> None:
+    home = tmp_path / "home"
+    old_request = "Keep working on the old request"
+    new_request = "Replace it with the new request"
+    provider = GatedGoalProvider(
+        [
+            _create_goal_step(old_request),
+            {"text": "The old Goal made bounded progress."},
+            {"text": "replacement step is filled after the old Goal activates"},
+            {
+                "tool": ToolCallRequest(
+                    id="call_complete_replacement",
+                    name="UpdateGoal",
+                    arguments={
+                        "goal_id": "placeholder",
+                        "status": "complete",
+                        "report": "Verified the replacement Goal.",
+                    },
+                )
+            },
+            {"text": "Replacement Goal completion recorded."},
+        ]
+    )
+    runtime, store = _runtime(home, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_goal_mode(application)
+    assert application.plugins is not None
+    session = runtime.create_session(title="Replace active Goal", approval_mode="auto")
+    original = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        old_request,
+        session_id=session.session_id,
+    )
+    original_run = asyncio.create_task(
+        runtime.submit_plugin_input(
+            original.session_inputs[0],
+            session_id=session.session_id,
+        )
+    )
+    await asyncio.wait_for(provider.goal_activated.wait(), timeout=2)
+    old_goal_id = _goal_state(home, session.session_id)["goal"]["goal_id"]
+
+    replacement = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        f"replace {new_request}",
+        session_id=session.session_id,
+    )
+    assert replacement.data["replace_goal_id"] == old_goal_id
+    assert replacement.session_inputs[0].role == "user"
+    provider.steps[2] = _create_goal_step(new_request, replace_goal_id=old_goal_id)
+    queued = await runtime.submit_plugin_input(
+        replacement.session_inputs[0],
+        session_id=session.session_id,
+    )
+    assert queued.run.status == "running"
+
+    provider.release.set()
+    await original_run
+
+    goal = _goal_state(home, session.session_id)["goal"]
+    assert goal["goal_id"] != old_goal_id
+    assert goal["source_request"] == new_request
+    assert goal["status"] == "complete"
+    snapshot = store.load_runtime_session(session.session_id)
+    replacement_message = next(
+        message
+        for message in snapshot.messages
+        if message.role == "user" and new_request in message.text_content
+    )
+    assert replacement_message.metadata["plugin_id"] == PLUGIN_ID
+    latest_user_message = next(
+        message for message in reversed(provider.requests[2]) if message.role == "user"
+    )
+    assert new_request in latest_user_message.text_content
+    assert any(
+        "sole exception is a current user-role message" in message.text_content
+        for message in provider.requests[2]
+    )
+    assert snapshot.runs[0].continuation is not None
+    assert snapshot.runs[0].continuation.action == "pause"
+    assert snapshot.runs[0].continuation.reason == "superseded_by_queued_input"
+    assert store.load_session_record(session.session_id).controls.activations == []
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_user_can_pause_resume_and_cancel_goal_without_model_inference(tmp_path) -> None:
+    home = tmp_path / "home"
+    provider = GatedGoalProvider(
+        [
+            _create_goal_step("Exercise the user lifecycle controls"),
+            {"text": "The bounded Run stopped after the user paused the Goal."},
+        ]
+    )
+    runtime, store = _runtime(home, provider)
+    application = LocalApplication.from_runtime(runtime, home=home)
+    await _enable_goal_mode(application)
+    assert application.plugins is not None
+    session = runtime.create_session(title="Goal lifecycle controls", approval_mode="auto")
+    creation = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "Exercise the user lifecycle controls",
+        session_id=session.session_id,
+    )
+    run_task = asyncio.create_task(
+        runtime.submit_plugin_input(
+            creation.session_inputs[0],
+            session_id=session.session_id,
+        )
+    )
+    await asyncio.wait_for(provider.goal_activated.wait(), timeout=2)
+
+    paused = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "pause",
+        session_id=session.session_id,
+    )
+    assert paused.data["status"] == "paused"
+    assert _goal_state(home, session.session_id)["goal"]["status"] == "paused"
+    assert store.load_session_record(session.session_id).controls.activations == []
+    provider.release.set()
+    await run_task
+    assert provider.calls == 2
+    assert _goal_state(home, session.session_id)["goal"]["status"] == "paused"
+
+    resumed = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "resume",
+        session_id=session.session_id,
+    )
+    assert resumed.data["status"] == "active"
+    assert resumed.session_inputs[0].role == "system_synthetic"
+    assert _goal_state(home, session.session_id)["goal"]["status"] == "active"
+    assert len(store.load_session_record(session.session_id).controls.activations) == 1
+
+    cancelled = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "cancel",
+        session_id=session.session_id,
+    )
+    assert cancelled.data["cancelled"] is True
+    assert store.load_session_record(session.session_id).controls.activations == []
+    status = await application.plugins.execute_command(
+        f"{PLUGIN_ID}:goal",
+        "status",
+        session_id=session.session_id,
+    )
+    assert status.data["goal"] is None
     await application.close()
 
 
@@ -560,6 +809,9 @@ async def test_goal_naturally_continues_then_update_goal_completes_and_accounts_
 
     assert result.run.status == "completed"
     assert provider.calls == 4
+    assert any(
+        "previous bounded Run ended" in message.text_content for message in provider.requests[2]
+    )
     snapshot = store.load_runtime_session(session.session_id)
     assert [run.origin for run in snapshot.runs] == ["plugin", "plugin"]
     assert all(run.continuation is not None for run in snapshot.runs)

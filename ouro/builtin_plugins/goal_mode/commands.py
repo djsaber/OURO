@@ -174,6 +174,7 @@ class GoalCommandService:
                     ),
                     mode="follow_up",
                     title=f"Create Goal: {source_request[:48]}",
+                    role="user",
                 ),
             ),
         )

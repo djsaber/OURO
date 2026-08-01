@@ -1379,13 +1379,16 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
         prompt = value.get("prompt")
         mode = value.get("mode", "follow_up")
         title = value.get("title")
+        role = value.get("role", "system_synthetic")
         if not isinstance(prompt, str) or not prompt.strip():
             raise WorkerProtocolError("worker session input prompt must not be empty")
         if mode not in {"follow_up", "steer"}:
             raise WorkerProtocolError(f"worker session input mode is invalid: {mode}")
         if title is not None and not isinstance(title, str):
             raise WorkerProtocolError("worker session input title must be a string")
-        inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title))
+        if role not in {"user", "system_synthetic"}:
+            raise WorkerProtocolError(f"worker session input role is invalid: {role}")
+        inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title, role=role))
     return tuple(inputs)
 
 

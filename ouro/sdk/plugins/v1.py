@@ -11,6 +11,7 @@ ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
+SessionInputRole = Literal["user", "system_synthetic"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
@@ -242,11 +243,16 @@ ToolResumeHandler = (
 
 @dataclass(frozen=True)
 class SessionInput:
-    """Request a synthetic, provenance-bearing input through the Host runtime."""
+    """Request a provenance-bearing input through the Host runtime.
+
+    Inputs are synthetic by default. A command that projects the user's current,
+    explicit intent may select ``user`` without losing plugin provenance.
+    """
 
     prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
+    role: SessionInputRole = "system_synthetic"
 
 
 @dataclass(frozen=True)
@@ -773,6 +779,7 @@ __all__ = [
     "SessionControllerOutput",
     "SessionInput",
     "SessionInputMode",
+    "SessionInputRole",
     "SessionKind",
     "StopReason",
     "ToolCall",

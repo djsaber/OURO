@@ -136,6 +136,71 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
     assert restored.resource_refs == ("resource_1",)
 
 
+def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Plugin user-role queue")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    snapshot = store.load_session(session.session_id)
+
+    queued_session, queued, _ = queue.enqueue(
+        snapshot=snapshot,
+        prompt="The user's explicit command intent",
+        title=None,
+        source="plugin",
+        message_role="user",
+        plugin_id="dev.example.plugin",
+        contribution_id="command",
+        generation_id="generation_1",
+        execution_contract_hash="contract_1",
+    )
+    restored = queue.peek(store.load_session(queued_session.session_id))
+
+    assert queued.source == "plugin"
+    assert queued.message_role == "user"
+    assert restored is not None
+    assert restored.source == "plugin"
+    assert restored.message_role == "user"
+    assert restored.plugin_id == "dev.example.plugin"
+    with pytest.raises(ValidationError, match="Host queued input must use the synthetic"):
+        queue.enqueue(
+            snapshot=store.load_session(session.session_id),
+            prompt="Invalid Host role",
+            title=None,
+            source="host",
+            message_role="user",
+            host_source_id="ouro.runtime/test",
+        )
+
+
+def test_legacy_plugin_queue_defaults_to_synthetic_message_role(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(
+        title="Legacy plugin queue",
+        metadata={
+            QUEUED_INPUTS_KEY: [
+                {
+                    "prompt": "legacy plugin continuation",
+                    "mode": "follow_up",
+                    "source": "plugin",
+                    "plugin_id": "dev.example.plugin",
+                    "contribution_id": "continuation",
+                    "generation_id": "generation_1",
+                    "execution_contract_hash": "contract_1",
+                    "semantic_tag": "plugin-message",
+                }
+            ]
+        },
+    )
+    store.create_session(session)
+    restored = QueuedInputQueue(store).peek(store.load_session(session.session_id))
+
+    assert restored is not None
+    assert restored.message_role == "system_synthetic"
+
+
 def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

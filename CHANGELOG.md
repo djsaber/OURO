@@ -39,6 +39,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Plugin Session inputs now model producer provenance and model-visible role independently.
+  Synthetic remains the default, while commands such as `/goal` creation/replacement can project
+  the current explicit user intent as `user` without losing plugin execution-contract attribution.
+- Goal mode now gives replacement requests an explicit exception to the unfinished-Goal scaffold,
+  requires `UpdateGoal` before terminal responses, and frames continuation after an unclosed Run as
+  a nonterminal audit rather than a recap.
 - Canonical Session, Run, tool-batch, compaction, billing, resource, configuration, and plugin
   records now cross a strict versioned persistence boundary. Missing, malformed, unsupported, and
   future schema versions fail deterministically instead of being inferred from payload shape.

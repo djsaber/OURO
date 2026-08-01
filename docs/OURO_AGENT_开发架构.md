@@ -194,12 +194,14 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 用户输入请求恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
-队列来源是类型化的 `user | host | plugin | delegation`：用户输入写为 `role=user`；专用 `DelegatedTaskInput`
-携带稳定 `delegation_id`，也写为 `role=user`，但只允许启动已准备好的 child Run。OURO Host/Application 输入必须携带
-稳定 `host_source_id`；插件输入必须携带完整 Generation/contract attribution。后两者都写为带来源元数据的
-`role=system_synthetic`，也不能在消费时退化为用户消息。插件 synthetic input 不能携带资源；OURO Host input 只可
-携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。`RuntimeService.submit_host_input`
-与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence 边界。
+队列 producer 来源是类型化的 `user | host | plugin | delegation`，与 model role 正交：直接用户输入和专用
+`DelegatedTaskInput` 写为 `role=user`，后者还携带稳定 `delegation_id`，且只允许启动已准备好的 child Run。
+OURO Host/Application 输入必须携带稳定 `host_source_id` 并固定为 `role=system_synthetic`。插件输入必须携带完整
+Generation/contract attribution，默认也是 synthetic；只有投影当前用户显式 command 意图时才可声明
+`role=user`，但 producer 仍是 plugin，不能因此丢失来源或变成直接用户输入。插件输入不能携带资源；OURO Host
+input 只可携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。
+`RuntimeService.submit_host_input` 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence
+边界。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
 规范化为 `tool_call_delta`；其中 `index` 是响应内从零开始的工具调用序号，不得泄漏供应商原生 content-block
@@ -542,7 +544,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   Runtime 每个模型轮次冻结 active controller refs，避免切换期间权限放宽。`/control` 是 Host-owned 状态、正常释放和
   force release 逃生口；activation-bound pending interaction 与 queued continuation 随 release 取消。
 - 插件不得取得 `RuntimeService` 或 `SessionStore`。获得 `sessions.write` 与 `background.run` 后，command 可以
-  返回类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
+  返回带独立 producer provenance/model role 的类型化 `SessionInput`，continuation policy 可以在终态 Agent Run 后返回
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；`run_finished` Observer 仍是 fail-open、非阻塞通知。
 - SDK 可提供绑定当前 plugin identity 的窄 Session state view；它只登记版本化 JSON 状态、branch policy 和

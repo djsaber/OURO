@@ -107,6 +107,7 @@ from ouro.core.session_controls import (
     HostSessionInput,
     SessionControlActivation,
     SessionControlTransitionResult,
+    SessionInputRole,
 )
 from ouro.core.state import (
     RunContinuationCheckpoint,
@@ -1020,11 +1021,13 @@ class RuntimeService:
                         if _input_attribution is not None
                         else "user"
                     ),
+                    message_role=_input_message_role(_input_attribution),
                     semantic_tag=(
                         _input_attribution.semantic_tag
                         if isinstance(_input_attribution, HostSessionInput)
                         else "plugin-message"
                         if isinstance(_input_attribution, AttributedSessionInput)
+                        and _input_attribution.role == "system_synthetic"
                         else None
                     ),
                     host_source_id=(
@@ -1064,11 +1067,7 @@ class RuntimeService:
                     session,
                     pending_input.resource_refs,
                     adapter=active_adapter,
-                    message_role=(
-                        "user"
-                        if pending_input.source in {"user", "delegation"}
-                        else "system_synthetic"
-                    ),
+                    message_role=pending_input.message_role,
                 )
             run = run.model_copy(update={"model": active_adapter.model.model_id})
             self._restore_run_tool_cap(run)
@@ -1131,6 +1130,7 @@ class RuntimeService:
                         "message_id": input_message.message_id,
                         "queued_input_id": queued_input.queue_id if is_queued else None,
                         "source": queued_input.source,
+                        "message_role": queued_input.message_role,
                         "host_source_id": queued_input.host_source_id,
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
@@ -1489,6 +1489,7 @@ class RuntimeService:
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         source = _attributed_input_source(attribution) if attribution is not None else "user"
+        message_role = _input_message_role(attribution)
         queue_id = (
             attribution.queue_id
             if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
@@ -1559,11 +1560,13 @@ class RuntimeService:
                 resource_refs=resource_refs,
                 queue_id=queue_id,
                 source=source,
+                message_role=message_role,
                 semantic_tag=(
                     attribution.semantic_tag
                     if isinstance(attribution, HostSessionInput)
                     else "plugin-message"
                     if isinstance(attribution, AttributedSessionInput)
+                    and message_role == "system_synthetic"
                     else None
                 ),
                 host_source_id=(
@@ -1629,6 +1632,7 @@ class RuntimeService:
             "queue_size": queue_size,
             "resource_refs": list(queued_input.resource_refs),
             "source": queued_input.source,
+            "message_role": queued_input.message_role,
             "host_source_id": queued_input.host_source_id,
             "delegation_id": queued_input.delegation_id,
             "plugin_id": queued_input.plugin_id,
@@ -1896,25 +1900,25 @@ class RuntimeService:
         if is_queued:
             metadata["queued_input_id"] = item.queue_id
             metadata["queued_input_mode"] = item.mode
-        if item.source in {"host", "plugin"}:
-            if item.source == "plugin" and item.resource_refs:
-                raise ResourceAttachmentError(
-                    "plugin session inputs cannot attach Host resource references"
-                )
-            if item.source == "host":
-                metadata["host_source_id"] = item.host_source_id
-                metadata["caused_by_run_id"] = item.caused_by_run_id
-            else:
-                metadata.update(
-                    {
-                        "plugin_id": item.plugin_id,
-                        "contribution_id": item.contribution_id,
-                        "generation_id": item.generation_id,
-                        "execution_contract_hash": item.execution_contract_hash,
-                        "caused_by_run_id": item.caused_by_run_id,
-                        "continuation_decision_id": item.continuation_decision_id,
-                    }
-                )
+        if item.source == "plugin" and item.resource_refs:
+            raise ResourceAttachmentError(
+                "plugin session inputs cannot attach Host resource references"
+            )
+        if item.source == "host":
+            metadata["host_source_id"] = item.host_source_id
+            metadata["caused_by_run_id"] = item.caused_by_run_id
+        elif item.source == "plugin":
+            metadata.update(
+                {
+                    "plugin_id": item.plugin_id,
+                    "contribution_id": item.contribution_id,
+                    "generation_id": item.generation_id,
+                    "execution_contract_hash": item.execution_contract_hash,
+                    "caused_by_run_id": item.caused_by_run_id,
+                    "continuation_decision_id": item.continuation_decision_id,
+                }
+            )
+        if item.message_role == "system_synthetic":
             return self.run_lifecycle.append_synthetic_input(
                 session=session,
                 run=run,
@@ -2909,10 +2913,10 @@ def _attributed_input_initiator(
 
 def _input_message_role(
     attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None,
-) -> str:
-    if attribution is None or isinstance(attribution, DelegatedTaskInput):
+) -> SessionInputRole:
+    if attribution is None:
         return "user"
-    return "system_synthetic"
+    return attribution.role
 
 
 def _queued_input_initiator(item: QueuedInput | None) -> str | None:

@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_semantics import SemanticTag
-from ouro.core.session_controls import SessionInputMode
+from ouro.core.session_controls import SessionInputMode, SessionInputRole
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
@@ -27,6 +27,7 @@ class QueuedInput(OuroModel):
     resource_refs: tuple[str, ...] = ()
     queued_at: datetime = Field(default_factory=utc_now)
     source: QueuedInputSource = "user"
+    message_role: SessionInputRole = "user"
     semantic_tag: SemanticTag | None = None
     host_source_id: str | None = None
     delegation_id: str | None = None
@@ -50,6 +51,19 @@ class QueuedInput(OuroModel):
             return None
         normalized = value.strip()
         return normalized or None
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_legacy_message_role(cls, value: Any) -> Any:
+        if isinstance(value, dict) and "message_role" not in value:
+            normalized = dict(value)
+            normalized["message_role"] = (
+                "user"
+                if normalized.get("source", "user") in {"user", "delegation"}
+                else "system_synthetic"
+            )
+            return normalized
+        return value
 
     @model_validator(mode="after")
     def validate_source(self) -> QueuedInput:
@@ -90,7 +104,11 @@ class QueuedInput(OuroModel):
             or any(value is not None for value in plugin_attribution)
         ):
             raise ValueError("user queued input cannot carry synthetic-source attribution")
-        if self.source in {"user", "delegation"} and self.semantic_tag is not None:
+        if self.source in {"user", "delegation"} and self.message_role != "user":
+            raise ValueError(f"{self.source} queued input must use the user message role")
+        if self.source == "host" and self.message_role != "system_synthetic":
+            raise ValueError("Host queued input must use the synthetic message role")
+        if self.message_role == "user" and self.semantic_tag is not None:
             raise ValueError("user-role queued input cannot carry a semantic tag")
         if self.source == "plugin" and self.resource_refs:
             raise ValueError("plugin queued input cannot carry Host resource references")
@@ -129,6 +147,7 @@ class QueuedInputQueue:
         resource_refs: tuple[str, ...] = (),
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
+        message_role: SessionInputRole | None = None,
         semantic_tag: SemanticTag | None = None,
         host_source_id: str | None = None,
         delegation_id: str | None = None,
@@ -152,6 +171,13 @@ class QueuedInputQueue:
             title=title,
             resource_refs=resource_refs,
             source=source,
+            message_role=(
+                message_role
+                if message_role is not None
+                else "user"
+                if source in {"user", "delegation"}
+                else "system_synthetic"
+            ),
             semantic_tag=semantic_tag,
             host_source_id=host_source_id,
             delegation_id=delegation_id,
@@ -291,6 +317,11 @@ class QueuedInputQueue:
         raw_source = item.get("source")
         if raw_source not in {"user", "host", "plugin", "delegation"}:
             return None
+        if "message_role" in item and item.get("message_role") not in {
+            "user",
+            "system_synthetic",
+        }:
+            return None
         if raw_source == "plugin" and not all(
             isinstance(item.get(field), str) and bool(item.get(field))
             for field in (
@@ -324,6 +355,7 @@ class QueuedInputQueue:
                 resource_refs=resource_refs,
                 queued_at=item.get("queued_at") or utc_now(),
                 source=raw_source,
+                message_role=_parse_message_role(item.get("message_role"), raw_source),
                 semantic_tag=(
                     item.get("semantic_tag") if isinstance(item.get("semantic_tag"), str) else None
                 ),
@@ -398,3 +430,11 @@ class QueuedInputQueue:
             )
         except ValidationError:
             return None
+
+
+def _parse_message_role(value: object, source: QueuedInputSource) -> SessionInputRole:
+    if value == "user":
+        return "user"
+    if value == "system_synthetic":
+        return "system_synthetic"
+    return "user" if source in {"user", "delegation"} else "system_synthetic"

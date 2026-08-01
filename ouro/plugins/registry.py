@@ -211,6 +211,7 @@ class PluginCommandRegistry:
                         prompt=item.prompt,
                         mode=item.mode,
                         title=item.title,
+                        role=item.role,
                         plugin_id=command.plugin_id,
                         contribution_id=command.name,
                         generation_id=command.generation_id,
