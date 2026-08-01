@@ -27,6 +27,7 @@ from ouro.application.configuration_models import (
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.event_models import RuntimeEventView
 from ouro.application.events import RuntimeEventRecorder
+from ouro.application.models import ModelReasoningState
 from ouro.application.resources import ResourceService
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_configuration import (
@@ -96,6 +97,7 @@ __all__ = [
     "MCPConfigCatalogView",
     "MCPConnectionCheckView",
     "MCPServerConfigView",
+    "ModelReasoningState",
     "RunResult",
     "RuntimeEventRecorder",
     "RuntimeEventView",

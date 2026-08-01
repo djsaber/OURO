@@ -9,6 +9,7 @@ from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionRequest,
@@ -164,6 +165,7 @@ class SessionRecord(VersionedOuroModel):
     workspace: str | None = None
     workspace_trusted: bool = False
     current_model: str | None = None
+    reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
     controls: SessionControlState = Field(default_factory=SessionControlState)

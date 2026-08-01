@@ -25,6 +25,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.session_controls import AttributedSessionInput
 from ouro.deployment import SessionBackend
@@ -122,6 +123,7 @@ async def _run_interactive_session(
     session_id: str | None = None
     current_approval_mode = approval_mode
     current_interaction_mode = interaction_mode
+    current_reasoning_request = ReasoningRequest()
     initial_model = runtime.current_model().key
     plugin_run_task: asyncio.Task[RunResult] | None = None
     attachments = InteractiveAttachmentDraft()
@@ -141,7 +143,11 @@ async def _run_interactive_session(
                 try:
                     result = plugin_run_task.result()
                     session_id = await coordinator.resolve_run(result)
-                    current_approval_mode, current_interaction_mode = _session_policies(
+                    (
+                        current_approval_mode,
+                        current_interaction_mode,
+                        current_reasoning_request,
+                    ) = _session_preferences(
                         runtime,
                         session_id,
                     )
@@ -171,7 +177,11 @@ async def _run_interactive_session(
                         result,
                         prefetched_line=raw_line if consumes_line else None,
                     )
-                    current_approval_mode, current_interaction_mode = _session_policies(
+                    (
+                        current_approval_mode,
+                        current_interaction_mode,
+                        current_reasoning_request,
+                    ) = _session_preferences(
                         runtime,
                         session_id,
                     )
@@ -204,6 +214,7 @@ async def _run_interactive_session(
                         current_approval_mode,
                         initial_model,
                         plugins,
+                        reasoning_request=current_reasoning_request,
                         interaction_mode=current_interaction_mode,
                         attachments=attachments,
                         queue_mode=queue_mode,
@@ -220,6 +231,8 @@ async def _run_interactive_session(
                     current_interaction_mode = command_result.interaction_mode
                 if command_result.initial_model is not None:
                     initial_model = command_result.initial_model
+                if command_result.reasoning_request is not None:
+                    current_reasoning_request = command_result.reasoning_request
                 if command_result.output:
                     output_func(command_result.output)
                 if command_result.should_exit:
@@ -231,6 +244,7 @@ async def _run_interactive_session(
                         created = runtime.create_session(
                             title=first.title or _interactive_title(first.prompt),
                             initial_model=initial_model,
+                            reasoning_request=current_reasoning_request,
                             approval_mode=current_approval_mode,
                             interaction_mode=current_interaction_mode,
                         )
@@ -263,6 +277,9 @@ async def _run_interactive_session(
                     skill_invocation=skill_invocation,
                     session_id=session_id,
                     initial_model=initial_model if session_id is None else None,
+                    initial_reasoning_request=(
+                        current_reasoning_request if session_id is None else None
+                    ),
                     queue_mode=queue_mode,
                     approval_mode=current_approval_mode if session_id is None else None,
                     interaction_mode=current_interaction_mode if session_id is None else None,
@@ -279,7 +296,11 @@ async def _run_interactive_session(
                 ):
                     continue
                 session_id = await coordinator.resolve_run(result)
-                current_approval_mode, current_interaction_mode = _session_policies(
+                (
+                    current_approval_mode,
+                    current_interaction_mode,
+                    current_reasoning_request,
+                ) = _session_preferences(
                     runtime,
                     session_id,
                 )
@@ -357,12 +378,12 @@ def _interaction_root_session_id(
     return runtime.sessions.open(session_id, recover=False).session.root_session_id
 
 
-def _session_policies(
+def _session_preferences(
     runtime: RuntimeService,
     session_id: str,
-) -> tuple[SessionApprovalMode, SessionInteractionMode]:
+) -> tuple[SessionApprovalMode, SessionInteractionMode, ReasoningRequest]:
     session = runtime.sessions.open(session_id, recover=False).session
-    return session.approval_mode, session.interaction_mode
+    return session.approval_mode, session.interaction_mode, session.reasoning_request
 
 
 def _primary_session_event_sink(

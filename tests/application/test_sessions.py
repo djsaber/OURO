@@ -21,6 +21,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_dige
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolCallRequest
@@ -614,7 +615,12 @@ def test_branch_refuses_to_publish_dangling_resource_references(tmp_path) -> Non
 @pytest.mark.parametrize("status", ["running", "waiting_approval", "waiting_user"])
 def test_branch_reads_durable_history_from_an_active_source(tmp_path, status) -> None:
     store, sessions = _service(tmp_path)
-    source = SessionRecord(title="Active source", status=status, active_run_id="run_active")
+    source = SessionRecord(
+        title="Active source",
+        status=status,
+        active_run_id="run_active",
+        reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
+    )
     store.create_session(source)
     message = MessageRecord.text(
         session_id=source.session_id,
@@ -628,6 +634,7 @@ def test_branch_reads_durable_history_from_an_active_source(tmp_path, status) ->
     branch = sessions.branch(source.session_id, message.message_id)
 
     assert branch.session.parent_session_id == source.session_id
+    assert branch.session.reasoning_request == source.reasoning_request
     assert store.load_session(source.session_id).session.status == status
 
 

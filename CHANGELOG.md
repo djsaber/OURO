@@ -28,6 +28,8 @@ This project records user-visible and framework-contract changes in this file.
 - Provider retry policy with observable retry events and structured-output capability checks.
 - Provider-neutral reasoning intent/capability contracts, declarative native payload profiles,
   custom endpoint presets, and strict pre-request effort validation.
+- Session-scoped Interactive `/thinking` controls with Endpoint-aware choices, durable isolation,
+  atomic model compatibility checks, and request-local adapter binding.
 - Route-scoped reasoning continuation for OpenAI-compatible tool turns and opaque signed
   Anthropic thinking blocks.
 - Tool permission modes, workspace path policy, and bounded tool output.

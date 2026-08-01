@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
+from ouro.core.adapter import RuntimeAdapter
+from ouro.core.provider import ModelMetadata, Provider
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest, resolve_reasoning
+
+
+class _Provider:
+    provider_id = "test"
 
 
 def _toggle_capability() -> ReasoningCapability:
@@ -78,3 +86,23 @@ def test_reasoning_capability_rejects_invalid_continuation_contract() -> None:
 def test_disabled_reasoning_cannot_carry_an_effort() -> None:
     with pytest.raises(ValueError, match="cannot specify an effort"):
         ReasoningRequest(mode="disabled", effort="high")
+
+
+def test_runtime_adapter_binds_validated_reasoning_without_mutating_shared_model() -> None:
+    adapter = RuntimeAdapter(
+        cast(Provider, _Provider()),
+        ModelMetadata(
+            model_id="reasoning-model",
+            provider_id="test",
+            reasoning=_toggle_capability(),
+        ),
+    )
+    request = ReasoningRequest(mode="enabled", effort="high")
+
+    bound = adapter.with_reasoning(request)
+
+    assert bound.provider is adapter.provider
+    assert bound.model.reasoning_request == request
+    assert adapter.model.reasoning_request == ReasoningRequest()
+    with pytest.raises(ValueError, match="not supported"):
+        adapter.with_reasoning(ReasoningRequest(mode="enabled", effort="medium"))

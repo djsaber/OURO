@@ -44,6 +44,7 @@ from ouro.core.errors import (
 )
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
@@ -83,6 +84,7 @@ class SessionService:
         title_source: SessionTitleSource = "fallback",
         workspace: str | None = None,
         current_model: str | None = None,
+        reasoning_request: ReasoningRequest | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
     ) -> SessionMutationResult:
@@ -94,6 +96,7 @@ class SessionService:
             title_locked=title_source == "user",
             workspace=workspace,
             current_model=current_model,
+            reasoning_request=reasoning_request or ReasoningRequest(),
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
         )
@@ -303,6 +306,15 @@ class SessionService:
         if interaction_mode not in SESSION_INTERACTION_MODES:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         return self._update_session(session_id, interaction_mode=interaction_mode)
+
+    def set_reasoning_request(
+        self,
+        session_id: str,
+        reasoning_request: ReasoningRequest,
+    ) -> SessionMutationResult:
+        """Persist endpoint-neutral reasoning intent after application validation."""
+
+        return self._update_session(session_id, reasoning_request=reasoning_request)
 
     def set_afk_mode(self, session_id: str, *, enabled: bool) -> SessionMutationResult:
         """Apply the AFK policy preset atomically to an idle Session."""
@@ -635,6 +647,7 @@ class SessionService:
             workspace=source.session.workspace,
             workspace_trusted=source.session.workspace_trusted,
             current_model=source.session.current_model,
+            reasoning_request=source.session.reasoning_request,
             approval_mode=source.session.approval_mode,
             interaction_mode=source.session.interaction_mode,
             tags=list(source.session.tags),

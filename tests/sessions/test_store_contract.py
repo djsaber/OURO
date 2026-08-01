@@ -15,6 +15,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_dige
 from ouro.core.errors import MigrationRequiredError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.resources import SessionResourceReference
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import RunRecord, SessionRecord
@@ -32,7 +33,10 @@ def session_store(request: pytest.FixtureRequest, tmp_path) -> Iterator[SessionS
 
 
 def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None:
-    session = SessionRecord(title="Contract")
+    session = SessionRecord(
+        title="Contract",
+        reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
+    )
     message = MessageRecord.text(
         session_id=session.session_id,
         role="user",
@@ -65,6 +69,7 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     )
 
     snapshot = session_store.load_session(session.session_id)
+    assert snapshot.session.reasoning_request == session.reasoning_request
     assert snapshot.messages == [message]
     assert snapshot.runs == [run]
     assert snapshot.compactions == [compaction]

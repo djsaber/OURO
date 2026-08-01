@@ -7,12 +7,20 @@ from contextlib import suppress
 from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.provider import ModelMetadata, Provider, ProviderStreamEvent
+from ouro.core.reasoning import ReasoningRequest
 
 
 class RuntimeAdapter:
     def __init__(self, provider: Provider, model: ModelMetadata) -> None:
         self.provider = provider
         self.model = model
+
+    def with_reasoning(self, request: ReasoningRequest) -> RuntimeAdapter:
+        """Bind provider-neutral reasoning intent without mutating a shared adapter."""
+
+        model = self.model.model_copy(update={"reasoning_request": request})
+        _ = model.reasoning_resolution
+        return RuntimeAdapter(self.provider, model)
 
     async def stream(
         self,

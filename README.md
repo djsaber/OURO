@@ -265,7 +265,10 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
 通过 `/model provider/endpoint` 选择模型；若会话尚未创建，该选择会用于下一条普通消息创建的首个会话，
-否则切换当前空闲会话的模型。
+否则切换当前空闲会话的模型。`/thinking` 显示当前 Endpoint 的有效思考设置与可选值；
+`/thinking default|enabled|disabled|minimal|low|medium|high|xhigh|max` 设置当前会话（或下一新会话）的
+供应商中立思考意图。每个会话独立持久化该设置，共享同一 Endpoint 的会话不会相互影响；不受 Endpoint
+支持的模式或等级会在状态变更前被拒绝。切换模型时也会重新校验当前会话设置，不会静默降级或重置。
 
 ## 会话与运行控制
 

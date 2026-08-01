@@ -13,6 +13,7 @@ from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.core.state import (
     RunRecord,
@@ -100,6 +101,7 @@ class SessionView(ApplicationDTO):
     workspace: str | None = None
     workspace_trusted: bool
     current_model: str | None = None
+    reasoning_request: ReasoningRequest = Field(default_factory=ReasoningRequest)
     approval_mode: SessionApprovalMode = "inherit"
     interaction_mode: SessionInteractionMode = "interactive"
     active_compaction_id: str | None = None
@@ -130,6 +132,7 @@ class SessionView(ApplicationDTO):
             workspace=session.workspace,
             workspace_trusted=session.workspace_trusted,
             current_model=session.current_model,
+            reasoning_request=session.reasoning_request,
             approval_mode=session.approval_mode,
             interaction_mode=session.interaction_mode,
             active_compaction_id=session.active_compaction_id,

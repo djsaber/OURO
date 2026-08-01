@@ -22,12 +22,21 @@ from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.reasoning import (
+    REASONING_EFFORTS,
+    ReasoningEffort,
+    ReasoningMode,
+    ReasoningRequest,
+)
 
 if TYPE_CHECKING:
+    from ouro.application.models import ModelReasoningState
     from ouro.application.plugins import PluginService
     from ouro.core.session_controls import AttributedSessionInput
 
 _APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
+_THINKING_CHOICES = ("default", "enabled", "disabled", *REASONING_EFFORTS)
+_THINKING_CHOICE_TEXT = "|".join(_THINKING_CHOICES)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +47,7 @@ class CommandResult:
     approval_mode: SessionApprovalMode | None = None
     interaction_mode: SessionInteractionMode | None = None
     initial_model: str | None = None
+    reasoning_request: ReasoningRequest | None = None
     session_inputs: tuple[AttributedSessionInput, ...] = ()
     skill_invocation: SkillInvocationRequest | None = None
 
@@ -49,6 +59,7 @@ async def handle_command(
     approval_mode: SessionApprovalMode = "inherit",
     initial_model: str | None = None,
     plugins: PluginService | None = None,
+    reasoning_request: ReasoningRequest | None = None,
     interaction_mode: SessionInteractionMode = "interactive",
     attachments: InteractiveAttachmentDraft | None = None,
     queue_mode: QueuedInputMode = "follow_up",
@@ -68,6 +79,7 @@ async def handle_command(
             approval_mode="inherit",
             interaction_mode="interactive",
             initial_model=runtime.current_model().key,
+            reasoning_request=ReasoningRequest(),
         )
     if command == "/sessions":
         return CommandResult(session_id=session_id, output=_sessions_text(runtime))
@@ -76,7 +88,21 @@ async def handle_command(
     if command == "/models":
         return _available_models(runtime, session_id, initial_model)
     if command == "/model":
-        return _model_command(runtime, session_id, initial_model, argument)
+        return _model_command(
+            runtime,
+            session_id,
+            initial_model,
+            reasoning_request or ReasoningRequest(),
+            argument,
+        )
+    if command == "/thinking":
+        return _thinking_command(
+            runtime,
+            session_id,
+            initial_model,
+            reasoning_request or ReasoningRequest(),
+            argument,
+        )
     if command == "/approval-mode":
         return _approval_mode_command(runtime, session_id, approval_mode, argument)
     if command == "/afk":
@@ -116,6 +142,7 @@ async def handle_command(
             argument,
             attachments=attachments,
             initial_model=initial_model,
+            reasoning_request=reasoning_request or ReasoningRequest(),
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
         )
@@ -132,6 +159,7 @@ async def handle_command(
         workspace=runtime.default_workspace,
         approval_mode=approval_mode,
         initial_model=initial_model,
+        reasoning_request=reasoning_request or ReasoningRequest(),
         interaction_mode=interaction_mode,
     )
     if plugin_result is not None:
@@ -149,6 +177,8 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/models - List configured model endpoints.",
         "/model - Show the active or next-session model.",
         "/model <provider/endpoint> - Select the active or next-session model.",
+        "/thinking - Show the Session reasoning setting and endpoint choices.",
+        f"/thinking <{_THINKING_CHOICE_TEXT}> - Set reasoning for this Session.",
         "/approval-mode - Show the current session approval mode.",
         f"/approval-mode <{_APPROVAL_MODE_CHOICES}> - Set the session approval mode.",
         "/afk [on|off] - Show or change the unattended AFK policy preset.",
@@ -191,6 +221,7 @@ def _attach_resource(
     *,
     attachments: InteractiveAttachmentDraft | None,
     initial_model: str | None,
+    reasoning_request: ReasoningRequest,
     approval_mode: SessionApprovalMode,
     interaction_mode: SessionInteractionMode,
 ) -> CommandResult:
@@ -208,6 +239,7 @@ def _attach_resource(
         created = runtime.create_session(
             title=source.name or "New session",
             initial_model=initial_model,
+            reasoning_request=reasoning_request,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
         )
@@ -288,6 +320,7 @@ async def _plugin_command(
     workspace: str | None,
     approval_mode: SessionApprovalMode,
     initial_model: str | None,
+    reasoning_request: ReasoningRequest,
     interaction_mode: SessionInteractionMode,
 ) -> CommandResult | None:
     if plugins is None:
@@ -311,6 +344,7 @@ async def _plugin_command(
         created = runtime.create_session(
             title=_plugin_session_title(selected.name, argument),
             initial_model=initial_model,
+            reasoning_request=reasoning_request,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
         )
@@ -370,6 +404,7 @@ def _model_command(
     runtime: RuntimeService,
     session_id: str | None,
     initial_model: str | None,
+    reasoning_request: ReasoningRequest,
     selector: str,
 ) -> CommandResult:
     if not selector:
@@ -390,6 +425,7 @@ def _model_command(
         )
     if session_id is None:
         model = runtime.resolve_model(selector)
+        runtime.model_reasoning(model.key, reasoning_request)
         return CommandResult(
             session_id=None,
             output=f"Selected model for new session: {model.key} ({model.model_id})",
@@ -401,6 +437,55 @@ def _model_command(
         session_id=session_id,
         output=f"Switched model: {model.key} ({model.model_id})",
     )
+
+
+def _thinking_command(
+    runtime: RuntimeService,
+    session_id: str | None,
+    initial_model: str | None,
+    reasoning_request: ReasoningRequest,
+    value: str,
+) -> CommandResult:
+    if value and value not in _THINKING_CHOICES:
+        return CommandResult(
+            session_id=session_id,
+            output=f"Usage: /thinking <{_THINKING_CHOICE_TEXT}>",
+        )
+
+    selected = reasoning_request if not value else _reasoning_request(value)
+    if session_id is None:
+        state = runtime.model_reasoning(
+            initial_model or runtime.current_model().key,
+            selected,
+        )
+    else:
+        if value:
+            runtime.set_session_reasoning(session_id, selected)
+        state = runtime.session_reasoning(session_id)
+    return CommandResult(
+        session_id=session_id,
+        output=_format_reasoning_state(state),
+        reasoning_request=state.requested,
+    )
+
+
+def _reasoning_request(value: str) -> ReasoningRequest:
+    if value in REASONING_EFFORTS:
+        return ReasoningRequest(mode="enabled", effort=cast(ReasoningEffort, value))
+    return ReasoningRequest(mode=cast(ReasoningMode, value))
+
+
+def _format_reasoning_state(state: ModelReasoningState) -> str:
+    requested = state.requested.effort or state.requested.mode
+    effective = state.effective.effort or state.effective.mode
+    capability = state.capability
+    if capability.activation == "unsupported":
+        return f"Thinking: {requested} (effective: {effective}; endpoint controls unavailable)"
+    choices = ["default", "enabled"]
+    if capability.activation == "toggle":
+        choices.append("disabled")
+    choices.extend(capability.supported_efforts)
+    return f"Thinking: {requested} (effective: {effective}; available: {', '.join(choices)})"
 
 
 def _approval_mode_command(
@@ -478,6 +563,7 @@ def _open_session(runtime: RuntimeService, session_id: str) -> CommandResult:
         output=f"Opened session: {snapshot.session.session_id}",
         approval_mode=snapshot.session.approval_mode,
         interaction_mode=snapshot.session.interaction_mode,
+        reasoning_request=snapshot.session.reasoning_request,
     )
 
 

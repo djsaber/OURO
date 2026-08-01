@@ -8,6 +8,7 @@ from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.errors import ConfigError, SessionBusyError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
@@ -17,10 +18,12 @@ class _RespondingProvider:
         self.provider_id = provider_id
         self.text = text
         self.models: list[str] = []
+        self.reasoning_requests: list[ReasoningRequest] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
         del system_prompt, messages, tools
         self.models.append(model.model_id)
+        self.reasoning_requests.append(model.reasoning_request)
         yield ProviderStreamEvent(type="text_delta", text=self.text)
         yield ProviderStreamEvent(type="done")
 
@@ -70,6 +73,11 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 model_id="alpha-model",
                 provider_id="alpha",
                 endpoint_id="default",
+                reasoning=ReasoningCapability(
+                    activation="toggle",
+                    supported_efforts=("low", "high"),
+                    default=ReasoningRequest(mode="enabled", effort="low"),
+                ),
             ),
         ),
         "beta/fast": RuntimeAdapter(
@@ -78,6 +86,11 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 model_id="beta-model",
                 provider_id="beta",
                 endpoint_id="fast",
+                reasoning=ReasoningCapability(
+                    activation="always_on",
+                    supported_efforts=("low",),
+                    default=ReasoningRequest(mode="enabled", effort="low"),
+                ),
             ),
         ),
     }
@@ -240,3 +253,101 @@ async def test_interactive_selects_model_before_creating_first_session(tmp_path)
     assert any(line.startswith("* beta/fast") for line in model_lists[1].splitlines())
     assert providers["alpha"].models == []
     assert providers["beta"].models == ["beta-model"]
+
+
+@pytest.mark.asyncio
+async def test_session_reasoning_is_persisted_and_bound_per_model_request(tmp_path) -> None:
+    runtime, catalog, providers = _runtime(tmp_path)
+    high = ReasoningRequest(mode="enabled", effort="high")
+    low = ReasoningRequest(mode="enabled", effort="low")
+    first = runtime.create_session(title="High", reasoning_request=high)
+    second = runtime.create_session(title="Low", reasoning_request=low)
+
+    await runtime.run("first", session_id=first.session_id)
+    await runtime.run("second", session_id=second.session_id)
+
+    assert providers["alpha"].reasoning_requests == [high, low]
+    assert catalog.adapters["alpha/default"].model.reasoning_request == ReasoningRequest()
+
+    restarted = RuntimeService(
+        store=runtime.store,
+        adapter=catalog.adapters["alpha/default"],
+        model_catalog=catalog,
+        tools=ToolRegistry(),
+    )
+    await restarted.run("again", session_id=first.session_id)
+
+    assert providers["alpha"].reasoning_requests[-1] == high
+    assert restarted.session_reasoning(first.session_id).requested == high
+    assert restarted.session_reasoning(second.session_id).requested == low
+
+
+def test_model_and_reasoning_changes_reject_incompatible_or_busy_sessions(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    high = ReasoningRequest(mode="enabled", effort="high")
+    session = runtime.create_session(title="Strict", reasoning_request=high)
+    limited = runtime.create_session(title="Limited", initial_model="beta/fast")
+
+    with pytest.raises(ConfigError, match="not supported by beta/fast"):
+        runtime.set_session_reasoning(limited.session_id, high)
+    assert runtime.store.load_session_record(limited.session_id).reasoning_request == (
+        ReasoningRequest()
+    )
+
+    with pytest.raises(ConfigError, match="not supported by beta/fast"):
+        runtime.switch_session_model(session.session_id, "beta/fast")
+
+    persisted = runtime.store.load_session_record(session.session_id)
+    assert persisted.current_model == "alpha/default"
+    assert persisted.reasoning_request == high
+
+    lock = runtime.store.acquire_session_lock(session.session_id, "run_busy")
+    assert lock is not None
+    try:
+        with pytest.raises(SessionBusyError, match="active run"):
+            runtime.set_session_reasoning(
+                session.session_id,
+                ReasoningRequest(mode="disabled"),
+            )
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_interactive_thinking_command_keeps_new_sessions_independent(tmp_path) -> None:
+    runtime, _, providers = _runtime(tmp_path)
+    inputs = iter(
+        [
+            "/thinking high",
+            "first",
+            "/new",
+            "/thinking low",
+            "second",
+            "/thinking",
+            "/exit",
+        ]
+    )
+    outputs: list[str] = []
+
+    code = await run_interactive(
+        runtime=runtime,
+        input_func=lambda _prompt: next(inputs),
+        output_func=outputs.append,
+    )
+
+    assert code == 0
+    assert "Thinking: high (effective: high; available: default, enabled, disabled, low, high)" in (
+        outputs
+    )
+    assert "Thinking: low (effective: low; available: default, enabled, disabled, low, high)" in (
+        outputs
+    )
+    assert providers["alpha"].reasoning_requests == [
+        ReasoningRequest(mode="enabled", effort="high"),
+        ReasoningRequest(mode="enabled", effort="low"),
+    ]
+    sessions = runtime.sessions.catalog().entries
+    persisted = [
+        runtime.store.load_session_record(entry.session_id).reasoning_request for entry in sessions
+    ]
+    assert set(request.effort for request in persisted) == {"low", "high"}

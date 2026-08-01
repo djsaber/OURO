@@ -11,6 +11,7 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 
 AdapterBuilder = Callable[[ProviderRuntimeOptions], RuntimeAdapter]
 
@@ -23,6 +24,15 @@ class AvailableModel(OuroModel):
     endpoint_id: str
     model_id: str
     display_name: str | None = None
+
+
+class ModelReasoningState(OuroModel):
+    """Endpoint capability and resolved Session intent exposed to interface layers."""
+
+    model: AvailableModel
+    capability: ReasoningCapability
+    requested: ReasoningRequest
+    effective: ReasoningRequest
 
 
 class RuntimeAdapterCatalog(Protocol):

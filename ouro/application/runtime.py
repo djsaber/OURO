@@ -16,6 +16,7 @@ from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.models import (
     AvailableModel,
     FixedRuntimeAdapterCatalog,
+    ModelReasoningState,
     RuntimeAdapterCatalog,
     close_runtime_adapters,
 )
@@ -99,6 +100,7 @@ from ouro.core.prompt_policies import (
     PromptPolicyRegistry,
     PromptSkillActivationMetadata,
 )
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
@@ -645,12 +647,30 @@ class RuntimeService:
         self.models.adapter_for(model.key)
         return model
 
+    def model_reasoning(
+        self,
+        selector: str,
+        request: ReasoningRequest | None = None,
+    ) -> ModelReasoningState:
+        """Resolve one draft reasoning intent against a selectable model route."""
+
+        model = self.resolve_model(selector)
+        return self._model_reasoning_state(model, request or ReasoningRequest())
+
+    def session_reasoning(self, session_id: str) -> ModelReasoningState:
+        """Return the persisted and effective reasoning state for one Session."""
+
+        session = self.store.load_session_record(session_id)
+        model = self.models.resolve(session.current_model or self.models.default_model().key)
+        return self._model_reasoning_state(model, session.reasoning_request)
+
     def create_session(
         self,
         *,
         title: str,
         _session_id: str | None = None,
         initial_model: str | None = None,
+        reasoning_request: ReasoningRequest | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
     ) -> SessionRecord:
@@ -665,10 +685,13 @@ class RuntimeService:
             if initial_model is not None
             else self.models.default_model()
         )
+        selected_reasoning = reasoning_request or ReasoningRequest()
+        self._model_reasoning_state(selected_model, selected_reasoning)
         created = self.sessions.create(
             session_id=_session_id,
             title=title,
             current_model=selected_model.key,
+            reasoning_request=selected_reasoning,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
             workspace=self.default_workspace,
@@ -678,6 +701,29 @@ class RuntimeService:
     def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
         """Persist an idle session's model route without changing other sessions."""
 
+        return self._update_session_model_settings(session_id, selector=selector)
+
+    def set_session_reasoning(
+        self,
+        session_id: str,
+        reasoning_request: ReasoningRequest,
+    ) -> SessionRecord:
+        """Validate and persist the reasoning intent used by future Session Runs."""
+
+        return self._update_session_model_settings(
+            session_id,
+            reasoning_request=reasoning_request,
+        )
+
+    def _update_session_model_settings(
+        self,
+        session_id: str,
+        *,
+        selector: str | None = None,
+        reasoning_request: ReasoningRequest | None = None,
+    ) -> SessionRecord:
+        """Atomically keep an idle Session's route and reasoning intent executable."""
+
         lock = self.run_ownership.acquire(session_id, new_id("model"))
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
@@ -686,17 +732,25 @@ class RuntimeService:
                 snapshot = self.store.load_runtime_session(session_id)
                 if maybe_active_run(snapshot.runs) is not None:
                     raise SessionBusyError(f"session already has an active run: {session_id}")
-                normalized = selector.strip()
-                model = next(
-                    (item for item in self.models.list_models() if item.key == normalized),
-                    None,
-                )
-                if model is None:
-                    raise ConfigError(f"model not found: {selector}")
-                self.models.adapter_for(model.key)
+                if selector is None:
+                    model = self.models.resolve(
+                        snapshot.session.current_model or self.models.default_model().key
+                    )
+                else:
+                    normalized = selector.strip()
+                    selected_model = next(
+                        (item for item in self.models.list_models() if item.key == normalized),
+                        None,
+                    )
+                    if selected_model is None:
+                        raise ConfigError(f"model not found: {selector}")
+                    model = selected_model
+                selected_reasoning = reasoning_request or snapshot.session.reasoning_request
+                self._model_reasoning_state(model, selected_reasoning)
                 session = snapshot.session.model_copy(
                     update={
                         "current_model": model.key,
+                        "reasoning_request": selected_reasoning,
                         "updated_at": utc_now(),
                         "last_activity_at": utc_now(),
                     }
@@ -706,6 +760,34 @@ class RuntimeService:
             return session
         finally:
             self.run_ownership.release(lock)
+
+    def _model_reasoning_state(
+        self,
+        model: AvailableModel,
+        request: ReasoningRequest,
+    ) -> ModelReasoningState:
+        adapter = self.models.adapter_for(model.key)
+        bound = self._bind_reasoning(adapter, request, model.key)
+        return ModelReasoningState(
+            model=model,
+            capability=adapter.model.reasoning,
+            requested=request,
+            effective=bound.model.reasoning_resolution.effective,
+        )
+
+    @staticmethod
+    def _bind_reasoning(
+        adapter: RuntimeAdapter,
+        request: ReasoningRequest,
+        model_key: str,
+    ) -> RuntimeAdapter:
+        # A default Session intent preserves an explicit request already bound by
+        # a one-shot runtime composition; non-default Session intent takes precedence.
+        selected = adapter.model.reasoning_request if request == ReasoningRequest() else request
+        try:
+            return adapter.with_reasoning(selected)
+        except ValueError as exc:
+            raise ConfigError(f"reasoning setting is not supported by {model_key}: {exc}") from exc
 
     def set_session_approval_mode(
         self,
@@ -758,7 +840,11 @@ class RuntimeService:
         with self.store.session_mutation(session.session_id):
             latest = self.store.load_session_record(session.session_id)
             selection = self.models.resolve(latest.current_model or self.models.default_model().key)
-            adapter = self.models.adapter_for(selection.key)
+            adapter = self._bind_reasoning(
+                self.models.adapter_for(selection.key),
+                latest.reasoning_request,
+                selection.key,
+            )
             if latest.current_model == selection.key:
                 return latest, adapter
             session = latest.model_copy(
@@ -785,6 +871,7 @@ class RuntimeService:
         session_id: str | None = None,
         title: str | None = None,
         initial_model: str | None = None,
+        initial_reasoning_request: ReasoningRequest | None = None,
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
         interaction_mode: SessionInteractionMode | None = None,
@@ -802,6 +889,8 @@ class RuntimeService:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         if initial_model is not None and session_id is not None:
             raise ValueError("initial_model can only be set when creating a session")
+        if initial_reasoning_request is not None and session_id is not None:
+            raise ValueError("initial_reasoning_request can only be set when creating a session")
         if skill_invocation is not None:
             if prompt and prompt != skill_invocation.arguments:
                 raise ValueError("prompt must match the skill invocation arguments")
@@ -843,10 +932,13 @@ class RuntimeService:
                     if initial_model is not None
                     else self.models.default_model()
                 )
+                selected_reasoning = initial_reasoning_request or ReasoningRequest()
+                self._model_reasoning_state(selected_model, selected_reasoning)
                 candidate_session = SessionRecord(
                     title=title or _title_from_input(prompt, skill_invocation),
                     workspace=self.default_workspace,
                     current_model=selected_model.key,
+                    reasoning_request=selected_reasoning,
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
                 )
@@ -882,6 +974,7 @@ class RuntimeService:
                         title=candidate_session.title,
                         _session_id=candidate_session.session_id,
                         initial_model=selected_model.key,
+                        reasoning_request=candidate_session.reasoning_request,
                         approval_mode=candidate_session.approval_mode,
                         interaction_mode=candidate_session.interaction_mode,
                     )
@@ -892,6 +985,7 @@ class RuntimeService:
                 session = self.create_session(
                     title=title or _title_from_input(prompt, skill_invocation),
                     initial_model=initial_model,
+                    reasoning_request=initial_reasoning_request,
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
                 )
