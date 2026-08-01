@@ -497,6 +497,8 @@ CLI 命令使用资源层级表达职责：
   Provider 内容；
 - `session messages/events` 通过 cursor 和 limit 增量读取历史；
 - `resource import/list/show/export/remove` 管理 Session 资源；
+- Interactive `/attach`、`/attachments`、`/detach` 管理只属于当前 Session 下一条用户消息的 composer
+  attachment state；提交仍统一进入 `RuntimeService.run(..., resource_refs=...)`；
 - `agent definition list/show/tools/create/update/delete/copy` 通过 provider-independent composition 管理定义；
 - `agent list/show/spawn/wait/send/interrupt/close/tree/interactions` 通过 LocalApplication/AgentService
   管理 durable subagent；
@@ -512,6 +514,10 @@ Agent CLI 同样不读取 config/canonical 文件，也不导入 AgentService �
 的冻结目录进行 unattended Host spawn，并在进程退出前等待 terminal；模型派遣仍绑定 active parent。长期 Host
 直接保持 LocalApplication 与 subscription，可使用同一 application service 对 active parent 派遣。CLI spawn 固定
 notify-only，避免启动它无法持续拥有交互/subscription 的 parent delivery Run。
+Interactive 的 attachment draft 同样只属于 CLI adapter。它保存待提交的 `ResourceView` 与稳定顺序，
+不保存图片字节、不编码 Provider payload、不替代 Session resource reference；只有 `RuntimeService.run` 接受输入后
+才清空，能力或资源错误会保留 draft 供切换 Endpoint 后重试。Session 切换会清除旧 Session 的待发送选择。
+
 Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
 `mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；

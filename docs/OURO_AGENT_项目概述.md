@@ -154,7 +154,8 @@ prospective Run。完整审查与
 ResourceService 把本地附件导入为内容寻址的不可变资源。消息只保存 resource id；相同内容去重，Session
 引用只由 SessionRepository 持有，因而文件/SQLite Session 都能与本地 BlobStore 组合。分支原子复制引用
 关系，删除按活动 Session 可达性清理共享内容。资源 metadata 和 Session export 不暴露
-原始绝对路径。用户可把已导入资源附加到一次 Run：Runtime 在提交前验证归属与完整性，只在请求内将受支持
+原始绝对路径。用户可把已导入资源附加到一次 Run；Interactive 的 Session-scoped attachment draft 通过
+`/attach`、`/attachments` 和 `/detach` 把本地资源组合到下一条用户消息。Runtime 在提交前验证归属与完整性，只在请求内将受支持
 的 UTF-8 文本或 vision 图片投影给模型；canonical message 仍只保存引用。PDF 等格式在没有专用 adapter 时
 明确拒绝。
 
@@ -170,7 +171,7 @@ Desktop 统一拥有 Runtime、MCP、Provider 与后台 worker 的启动和关�
 
 ### 运行界面
 
-- Interactive：持续 stdin/stdout 会话、slash commands、流式展示和人工交互；工具名称及参数分片在模型
+- Interactive：持续 stdin/stdout 会话、slash commands、下一消息图文资源组合、流式展示和人工交互；工具名称及参数分片在模型
   生成期间动态预览，完整响应后按调用顺序定稿；sync/async 子智能体的审批和提问通过 root interaction
   inbox 在同一非阻塞输入循环中处理，终端只展开主智能体行动轨迹。
 - Print：stdout 输出最终文本，reasoning delta 以终端样式显示。

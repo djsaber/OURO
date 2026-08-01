@@ -8,6 +8,7 @@ from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
+from ouro.cli.interactive_attachments import InteractiveAttachmentDraft
 from ouro.cli.interactive_commands import handle_command
 from ouro.cli.interactive_input import InputFunc, PromptFunc, write_terminal_prompt
 from ouro.cli.interactive_io import (
@@ -123,6 +124,7 @@ async def _run_interactive_session(
     current_interaction_mode = interaction_mode
     initial_model = runtime.current_model().key
     plugin_run_task: asyncio.Task[RunResult] | None = None
+    attachments = InteractiveAttachmentDraft()
     coordinator = InteractionCoordinator(
         runtime=runtime,
         output=output,
@@ -131,7 +133,7 @@ async def _run_interactive_session(
         prompt_func=prompt_func,
         agents=agents,
     )
-    output_func("OURO interactive. Type /help for commands, /exit to quit.")
+    output_func("OURO interactive. Type /help for commands, /attach to add resources.")
 
     try:
         while True:
@@ -148,7 +150,7 @@ async def _run_interactive_session(
                 plugin_run_task = None
             try:
                 raw_line = await coordinator.read_prompt(
-                    f"{_CYAN}ouro>{_RESET} ",
+                    _interactive_prompt(attachments.count),
                     root_session_id=_interaction_root_session_id(runtime, session_id),
                 )
             except EOFError:
@@ -193,6 +195,7 @@ async def _run_interactive_session(
 
             if line.startswith("/"):
                 try:
+                    previous_session_id = session_id
                     command_result = await handle_command(
                         line,
                         runtime,
@@ -201,11 +204,14 @@ async def _run_interactive_session(
                         initial_model,
                         plugins,
                         interaction_mode=current_interaction_mode,
+                        attachments=attachments,
                     )
                 except OuroError as exc:
                     await _report_runtime_error(runtime, output, output_func, exc)
                     continue
                 session_id = command_result.session_id
+                if session_id != previous_session_id:
+                    attachments.retain_for_session(session_id)
                 if command_result.approval_mode is not None:
                     current_approval_mode = command_result.approval_mode
                 if command_result.interaction_mode is not None:
@@ -246,6 +252,7 @@ async def _run_interactive_session(
 
             try:
                 await output.start_waiting()
+                resource_refs = attachments.resource_refs(session_id)
                 result = await runtime.run(
                     line,
                     session_id=session_id,
@@ -253,10 +260,13 @@ async def _run_interactive_session(
                     queue_mode=queue_mode,
                     approval_mode=current_approval_mode if session_id is None else None,
                     interaction_mode=current_interaction_mode if session_id is None else None,
+                    resource_refs=resource_refs,
                 )
                 # Preserve the durable Session identity even when approval or AskUser
                 # continuation fails after the initial RunResult has been returned.
                 session_id = result.session.session_id
+                if resource_refs:
+                    attachments.clear()
                 if plugin_run_task is not None and any(
                     event.event_type in {"follow_up_input_queued", "steering_input_queued"}
                     for event in result.events
@@ -325,6 +335,11 @@ async def _stop_plugin_run(
 def _interactive_title(prompt: str) -> str:
     normalized = " ".join(prompt.split())
     return normalized[:60] if normalized else "New session"
+
+
+def _interactive_prompt(attachment_count: int) -> str:
+    pending = f" [{attachment_count}]" if attachment_count else ""
+    return f"{_CYAN}ouro{pending}>{_RESET} "
 
 
 def _interaction_root_session_id(

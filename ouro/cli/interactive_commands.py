@@ -9,9 +9,14 @@ from ouro.cli.context_output import (
     render_context_snapshot,
     render_context_status,
 )
+from ouro.cli.interactive_attachments import (
+    InteractiveAttachmentDraft,
+    attachment_path,
+    format_attachment,
+)
 from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
-from ouro.core.errors import PersistenceError
+from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.interactions import SessionInteractionMode
 from ouro.skills import discover_available_skills
 
@@ -41,6 +46,7 @@ async def handle_command(
     initial_model: str | None = None,
     plugins: PluginService | None = None,
     interaction_mode: SessionInteractionMode = "interactive",
+    attachments: InteractiveAttachmentDraft | None = None,
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -96,6 +102,20 @@ async def handle_command(
         return _session_events(runtime, session_id)
     if command == "/skills":
         return _available_skills(runtime, session_id)
+    if command == "/attach":
+        return _attach_resource(
+            runtime,
+            session_id,
+            argument,
+            attachments=attachments,
+            initial_model=initial_model,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+    if command == "/attachments":
+        return _pending_attachments(session_id, attachments)
+    if command == "/detach":
+        return _detach_resource(session_id, argument, attachments)
     plugin_result = await _plugin_command(
         plugins,
         command.removeprefix("/"),
@@ -130,6 +150,9 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/history - Show current session messages.",
         "/events - Show current session events.",
         "/skills - List available skills.",
+        "/attach <path> - Attach a local image or text resource to the next message.",
+        "/attachments - Show resources attached to the next message.",
+        "/detach <number|all> - Remove resources from the next message.",
         "/follow <prompt> - Queue at the next run boundary (default).",
         "/steer <prompt> - Queue at the next model-turn boundary.",
         "/abort - Abort the active request when supported.",
@@ -151,6 +174,100 @@ def _help_text(plugins: PluginService | None = None) -> str:
                 else:
                     lines.append(f"/{item.command_id}{description}")
     return "\n".join(lines)
+
+
+def _attach_resource(
+    runtime: RuntimeService,
+    session_id: str | None,
+    argument: str,
+    *,
+    attachments: InteractiveAttachmentDraft | None,
+    initial_model: str | None,
+    approval_mode: SessionApprovalMode,
+    interaction_mode: SessionInteractionMode,
+) -> CommandResult:
+    if attachments is None or runtime.resources is None:
+        return CommandResult(
+            session_id=session_id,
+            output="Interactive resource attachments are unavailable.",
+        )
+    if not argument:
+        return CommandResult(session_id=session_id, output="Usage: /attach <path>")
+
+    source = attachment_path(argument)
+    target_session_id = session_id
+    if target_session_id is None:
+        created = runtime.create_session(
+            title=source.name or "New session",
+            initial_model=initial_model,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+        target_session_id = created.session_id
+
+    try:
+        imported = runtime.resources.import_resource(target_session_id, source)
+    except (OuroError, ValueError) as exc:
+        return CommandResult(session_id=target_session_id, output=f"Error: {exc}")
+    position, added = attachments.add(target_session_id, imported.resource)
+    rendered = format_attachment(imported.resource, position)
+    output = (
+        f"Attached for next message: {rendered}"
+        if added
+        else f"Already attached for next message: {rendered}"
+    )
+    if imported.diagnostics:
+        warnings = "\n".join(f"Warning: {item.message}" for item in imported.diagnostics)
+        output = f"{output}\n{warnings}"
+    return CommandResult(session_id=target_session_id, output=output)
+
+
+def _pending_attachments(
+    session_id: str | None,
+    attachments: InteractiveAttachmentDraft | None,
+) -> CommandResult:
+    resources = attachments.resources(session_id) if attachments is not None else ()
+    if not resources:
+        return CommandResult(session_id=session_id, output="No attachments for the next message.")
+    lines = ["Attachments for the next message:"]
+    lines.extend(format_attachment(resource, index) for index, resource in enumerate(resources, 1))
+    return CommandResult(session_id=session_id, output="\n".join(lines))
+
+
+def _detach_resource(
+    session_id: str | None,
+    argument: str,
+    attachments: InteractiveAttachmentDraft | None,
+) -> CommandResult:
+    if attachments is None:
+        return CommandResult(
+            session_id=session_id,
+            output="Interactive resource attachments are unavailable.",
+        )
+    if not argument:
+        return CommandResult(session_id=session_id, output="Usage: /detach <number|all>")
+    if argument.casefold() == "all":
+        count = len(attachments.resources(session_id))
+        attachments.clear()
+        suffix = "attachment" if count == 1 else "attachments"
+        return CommandResult(
+            session_id=session_id,
+            output=f"Detached {count} {suffix} from the next message.",
+        )
+    try:
+        position = int(argument)
+    except ValueError:
+        return CommandResult(session_id=session_id, output="Usage: /detach <number|all>")
+    removed = attachments.detach(session_id, position)
+    if removed is None:
+        return CommandResult(
+            session_id=session_id,
+            output=f"Attachment not found for the next message: {argument}",
+        )
+    return CommandResult(
+        session_id=session_id,
+        output=f"Detached from next message: {removed.source.name}",
+    )
 
 
 async def _plugin_command(

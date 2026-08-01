@@ -307,6 +307,18 @@ depends on deserializing historical Run or Delegation records.
 模型附件当前支持有大小上限的 UTF-8 文本/JSON/XML，以及 vision Endpoint 上的 PNG、JPEG、GIF、WebP。
 PDF 可存储和导出，但在接入专用解析 adapter 前不能直接投影给模型。
 
+Interactive 可直接把本地资源组合到下一条用户消息，不需要手工复制 resource id：
+
+```text
+ouro> /attach "C:\design\reference.png"
+ouro [1]> 基于这张图片反推一份可复现其构图、光线、材质和镜头语言的生成提示词。
+```
+
+使用 `/attachments` 查看下一条消息的附件，使用 `/detach <number|all>` 取消。待发送附件严格绑定
+当前 Session；切换 Session 会清空 draft。若当前 Endpoint 未声明 vision，提交会明确失败并保留附件，
+可通过 `/model provider/endpoint` 切换后重试。图片内容仍只在请求级物化，canonical message 只保存
+resource id。
+
 Interactive 中普通输入默认按 follow-up 提交；使用 `/follow <prompt>` 或 `/steer <prompt>` 可显式选择排队
 交付模式。`/context` 显示最近一次真实 Provider 请求的长度，`/context full` 显示该请求实际使用的完整 system
 prompt、messages 和 tools。follow-up 在当前 Run 结束后进入后续 Run，steer 在当前完整 model turn 结束后进入同一

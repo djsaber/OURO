@@ -34,6 +34,8 @@ This project records user-visible and framework-contract changes in this file.
 - Tool-controlled `auto`/`deny` permissions for indispensable Harness control tools, isolated from
   user overrides, Session approval modes, and restrictive tool policies.
 - Request-local text and image resource projection from canonical Session resource references.
+- Interactive next-message attachments with `/attach`, `/attachments`, and `/detach`, reusing the
+  canonical resource projection and preserving the draft when endpoint capability validation fails.
 - Cursor-based incremental Session message and event queries.
 - Cross-platform CI, branch coverage enforcement, and security/contribution guidance.
 
