@@ -11,8 +11,11 @@ from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import (
+    ContentBlock,
     MessageRecord,
     ProviderContinuationArtifact,
+    SkillActivationContent,
+    TextContent,
     ToolResultReference,
 )
 from ouro.core.provider import ModelMetadata, Usage
@@ -93,6 +96,7 @@ class RunLifecycle:
         session: SessionRecord,
         run: RunRecord,
         prompt: str,
+        skill_activation: SkillActivationContent | None = None,
         sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
@@ -104,12 +108,17 @@ class RunLifecycle:
             )
         if self._validate_resource_refs is not None:
             self._validate_resource_refs(session.session_id, unique_resource_refs)
-        message = MessageRecord.text(
+        content: list[ContentBlock] = []
+        if skill_activation is not None:
+            content.append(skill_activation)
+        if prompt:
+            content.append(TextContent(text=prompt))
+        message = MessageRecord(
             session_id=session.session_id,
             run_id=run.run_id,
             role="user",
-            text=prompt,
             sequence=sequence,
+            content=content,
         )
         if unique_resource_refs:
             message = message.model_copy(update={"resource_refs": unique_resource_refs})

@@ -7,6 +7,7 @@ from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_semantics import SemanticTag
+from ouro.core.messages import SkillActivationContent
 from ouro.core.session_controls import SessionInputMode, SessionInputRole
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
@@ -21,7 +22,8 @@ QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
 
 class QueuedInput(OuroModel):
     queue_id: str = Field(default_factory=lambda: new_id("queued"))
-    prompt: str = Field(min_length=1)
+    prompt: str = ""
+    skill_activation: SkillActivationContent | None = None
     mode: QueuedInputMode = "follow_up"
     title: str | None = None
     resource_refs: tuple[str, ...] = ()
@@ -124,6 +126,13 @@ class QueuedInput(OuroModel):
             raise ValueError("prompt-policy checked input requires a prospective run id")
         if self.extension_generations and not self.extension_catalog_id:
             raise ValueError("queued extension generations require a catalog id")
+        if not self.prompt.strip() and self.skill_activation is None:
+            raise ValueError("queued input requires a prompt or skill activation")
+        if self.skill_activation is not None:
+            if self.source != "user" or self.message_role != "user":
+                raise ValueError("skill activation is only valid on direct user input")
+            if self.mode != "follow_up":
+                raise ValueError("skill activation cannot steer an active run")
         return self
 
 
@@ -142,6 +151,7 @@ class QueuedInputQueue:
         *,
         snapshot: RuntimeSessionSnapshot,
         prompt: str,
+        skill_activation: SkillActivationContent | None = None,
         mode: QueuedInputMode = "follow_up",
         title: str | None,
         resource_refs: tuple[str, ...] = (),
@@ -167,6 +177,7 @@ class QueuedInputQueue:
         item = QueuedInput(
             queue_id=queue_id or new_id("queued"),
             prompt=prompt,
+            skill_activation=skill_activation,
             mode=mode,
             title=title,
             resource_refs=resource_refs,
@@ -308,7 +319,18 @@ class QueuedInputQueue:
         if not isinstance(item, dict):
             return None
         prompt = item.get("prompt")
-        if not isinstance(prompt, str) or not prompt:
+        if not isinstance(prompt, str):
+            return None
+        raw_skill_activation = item.get("skill_activation")
+        try:
+            skill_activation = (
+                SkillActivationContent.model_validate(raw_skill_activation)
+                if isinstance(raw_skill_activation, dict)
+                else None
+            )
+        except ValidationError:
+            return None
+        if not prompt.strip() and skill_activation is None:
             return None
         title = item.get("title")
         raw_mode = item.get("mode")
@@ -350,6 +372,7 @@ class QueuedInputQueue:
             return QueuedInput(
                 queue_id=str(item.get("queue_id") or new_id("queued")),
                 prompt=prompt,
+                skill_activation=skill_activation,
                 mode=raw_mode,
                 title=title if isinstance(title, str) else None,
                 resource_refs=resource_refs,

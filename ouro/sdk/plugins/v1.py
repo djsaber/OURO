@@ -324,6 +324,14 @@ class PromptAttachmentMetadata:
 
 
 @dataclass(frozen=True)
+class PromptSkillActivationMetadata:
+    name: str
+    source: Literal["user", "workspace", "plugin"]
+    location: str
+    content_digest: str
+
+
+@dataclass(frozen=True)
 class PromptPolicyCall:
     session_id: str
     prospective_run_id: str
@@ -333,6 +341,7 @@ class PromptPolicyCall:
     attachments: tuple[PromptAttachmentMetadata, ...] = ()
     catalog_id: str | None = None
     execution_contracts: Mapping[str, str] = field(default_factory=dict)
+    skill_activation: PromptSkillActivationMetadata | None = None
 
 
 @dataclass(frozen=True)
@@ -765,6 +774,7 @@ __all__ = [
     "PromptPolicyCall",
     "PromptPolicyContribution",
     "PromptPolicyDecision",
+    "PromptSkillActivationMetadata",
     "RunOutcome",
     "RunFinishedObservation",
     "RunOrigin",

@@ -115,6 +115,11 @@ identity 精确路由，并覆盖决议提交与 canonical inbox 投影收敛之
 OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时按需加载完整内容和资源。当前支持本地发现、
 集中启停、校验、安装、更新和安全移除。
 
+Interactive 终端支持 `/skills` 查询当前扩展目录，以及 `/skill <name> [task]` 对一次 Run 显式激活技能。
+CLI 只解析命令；Runtime 在该 Run 的冻结目录中完成可调用性校验和精确加载，并把技能正文固化为用户角色的
+类型化消息内容。无参数调用、忙碌 Session 的 follow-up 排队和进程恢复使用同一语义；排队后技能文件或插件
+generation 变化不会替换已接受的正文。显式激活不扩大工具权限，也不形成跨 turn 的 Session 模式。
+
 MCP 客户端通过官方 Python SDK 处理协议与 session，并支持 stdio、Streamable HTTP 和 legacy SSE；其中
 legacy SSE 数据通道由 OURO 适配为 SDK session stream，使读取和 POST 失败统一进入连接重建。客户端覆盖握手、
 能力协商、工具分页发现与变化通知、调用、超时取消、健康检查、重连、凭据注入、隔离诊断和关闭。远程工具

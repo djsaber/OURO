@@ -45,7 +45,7 @@ from ouro.core.errors import (
 )
 from ouro.core.events import EventRecord
 from ouro.core.message_semantics import SemanticTag
-from ouro.core.messages import MessageRecord, ModelMessage
+from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, Usage
 from ouro.core.state import RunRecord, SessionRecord
@@ -712,6 +712,7 @@ class ContextPreparationService:
             tail_token_budget=tail_budget,
             force=force,
             token_estimator=self.context_builder.token_estimator,
+            protected_run_id=run.run_id if run.kind == "agent" else None,
         )
         if not plan.messages_to_compact:
             if trigger == "auto" and before_tokens > budget:
@@ -1003,7 +1004,7 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
             label += f" ({message.semantic_tag})"
         if message.metadata.get("incomplete"):
             label += " (interrupted/incomplete)"
-        parts.append(f"[{label}] {message.text_content}")
+        parts.append(f"[{label}] {model_visible_message(message).text_content}")
         if message.tool_calls:
             serialized_calls = [call.model_dump(mode="json") for call in message.tool_calls]
             parts.append(f"[Assistant tool calls] {serialized_calls}")

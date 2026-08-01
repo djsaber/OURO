@@ -193,6 +193,7 @@ async def _run_interactive_session(
             elif line.startswith("/follow "):
                 line = line.removeprefix("/follow ").strip()
 
+            skill_invocation = None
             if line.startswith("/"):
                 try:
                     previous_session_id = session_id
@@ -205,6 +206,7 @@ async def _run_interactive_session(
                         plugins,
                         interaction_mode=current_interaction_mode,
                         attachments=attachments,
+                        queue_mode=queue_mode,
                     )
                 except OuroError as exc:
                     await _report_runtime_error(runtime, output, output_func, exc)
@@ -248,13 +250,17 @@ async def _run_interactive_session(
                                 session_input,
                                 session_id=session_id,
                             )
-                continue
+                if command_result.skill_invocation is None:
+                    continue
+                skill_invocation = command_result.skill_invocation
+                line = skill_invocation.arguments
 
             try:
                 await output.start_waiting()
                 resource_refs = attachments.resource_refs(session_id)
                 result = await runtime.run(
                     line,
+                    skill_invocation=skill_invocation,
                     session_id=session_id,
                     initial_model=initial_model if session_id is None else None,
                     queue_mode=queue_mode,

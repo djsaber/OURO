@@ -499,6 +499,8 @@ CLI 命令使用资源层级表达职责：
 - `resource import/list/show/export/remove` 管理 Session 资源；
 - Interactive `/attach`、`/attachments`、`/detach` 管理只属于当前 Session 下一条用户消息的 composer
   attachment state；提交仍统一进入 `RuntimeService.run(..., resource_refs=...)`；
+- Interactive `/skills` 从 `RuntimeService.available_skills()` 查询当前扩展 Catalog，`/skill <name> [task]`
+  只把终端语法适配为 `SkillInvocationRequest`，随后与普通用户输入共用 `RuntimeService.run`；
 - `agent definition list/show/tools/create/update/delete/copy` 通过 provider-independent composition 管理定义；
 - `agent list/show/spawn/wait/send/interrupt/close/tree/interactions` 通过 LocalApplication/AgentService
   管理 durable subagent；
@@ -517,6 +519,18 @@ notify-only，避免启动它无法持续拥有交互/subscription 的 parent de
 Interactive 的 attachment draft 同样只属于 CLI adapter。它保存待提交的 `ResourceView` 与稳定顺序，
 不保存图片字节、不编码 Provider payload、不替代 Session resource reference；只有 `RuntimeService.run` 接受输入后
 才清空，能力或资源错误会保留 draft 供切换 Endpoint 后重试。Session 切换会清除旧 Session 的待发送选择。
+
+显式技能激活同样遵守 Host adapter 边界。CLI 不发现或读取 `SKILL.md`，不拼接模型提示词；Application 在
+prospective Run 的 `ExtensionCatalogLease` 中解析名称，校验 `enabled` 与 `user_invocable`，再按 Catalog 记录的
+精确路径加载。激活结果以 `SkillActivationContent` 固化名称、来源、位置、基础目录、正文和内容摘要，并与可选
+用户任务共同作为 user message 持久化。Provider 投影才把该类型块转为带边界的用户角色文本，因此
+`disable_model_invocation` 不会误阻止用户显式选择，技能正文也不会被提升为 system 指令。
+
+`/skill` 是单次 Run 输入，不建立 Session 级粘性状态；无尾随任务也合法。active Run 接收该输入时只允许
+follow-up queue，不允许 steer。队列在接受时保存完整激活快照和 Catalog contract，Prompt Policy 只获得有界的
+技能身份与摘要；恢复、热更新和后续消费不重新读取正文。当前 Agent Run 的所有 frame 在压缩时受到保护，避免
+激活说明在同一 Run 尚未结束时被摘要替换。技能激活不解释 `allowed_tools`，也不修改工具目录、Tool Policy、
+审批或权限。
 
 Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
@@ -653,7 +667,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   connected server 生成 contract，已发现 Tool 冻结进 Catalog，server 的后续变化只在下一 generation 可见。
 - `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；shutdown 关闭 session、HTTP
   client、stdio 管道和子进程。
-- 外部 Agent Skills frontmatter 在 skills parser 边界校验，核心运行只接收类型化 `SkillMetadata` 和指令文本。
+- 外部 Agent Skills frontmatter 在 skills parser 边界校验；`skills` 层拥有发现、解析和按冻结元数据精确加载，
+  Application 拥有显式激活、Run/Queue/Policy 编排，Core 只拥有可持久化内容块及 Provider 投影不变量，Host 只做
+  输入与展示适配。
 
 ## 未来演进触发条件
 

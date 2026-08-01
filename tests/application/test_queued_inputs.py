@@ -4,6 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
+from ouro.core.messages import SkillActivationContent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
 
@@ -102,6 +103,42 @@ def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
     assert repeated.queue_id == first.queue_id
     queue.acknowledge(snapshot, first.queue_id)
     assert queue.peek(store.load_session(session.session_id)) is None
+
+
+def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Skill queue")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    activation = SkillActivationContent(
+        name="reviewer",
+        source="workspace",
+        location=str(tmp_path / "skills" / "reviewer" / "SKILL.md"),
+        base_directory=str(tmp_path / "skills" / "reviewer"),
+        instructions="Review carefully.",
+        content_digest=f"sha256:{'a' * 64}",
+    )
+
+    queued_session, queued, _ = queue.enqueue(
+        snapshot=store.load_session(session.session_id),
+        prompt="",
+        skill_activation=activation,
+        title=None,
+    )
+    restored = queue.peek(store.load_session(queued_session.session_id))
+
+    assert queued.skill_activation == activation
+    assert restored is not None
+    assert restored.skill_activation == activation
+    with pytest.raises(ValidationError, match="cannot steer"):
+        queue.enqueue(
+            snapshot=store.load_session(session.session_id),
+            prompt="task",
+            skill_activation=activation,
+            title=None,
+            mode="steer",
+        )
 
 
 def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -> None:

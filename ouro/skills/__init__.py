@@ -8,7 +8,7 @@ from ouro.skills.context import (
     discover_skill_catalog,
     skill_catalog_from_roots,
 )
-from ouro.skills.loader import SkillLoader
+from ouro.skills.loader import SkillLoader, load_skill_from_metadata
 from ouro.skills.manager import (
     ManagedSkillResult,
     SkillManagementResult,
@@ -34,5 +34,6 @@ __all__ = [
     "default_skill_roots",
     "discover_available_skills",
     "discover_skill_catalog",
+    "load_skill_from_metadata",
     "skill_catalog_from_roots",
 ]

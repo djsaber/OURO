@@ -43,6 +43,7 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.application.session_recovery import SessionRecoveryService
 from ouro.application.sessions import SessionService
+from ouro.application.skill_activations import SkillActivationService, SkillInvocationRequest
 from ouro.application.supervisor_models import HostInputReceipt
 from ouro.application.tool_calls import ToolCallCoordinator
 from ouro.application.usage import UsageService
@@ -85,7 +86,7 @@ from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, SkillActivationContent
 from ouro.core.observers import (
     Observation,
     ObserverRegistry,
@@ -96,6 +97,7 @@ from ouro.core.prompt_policies import (
     PromptAttachmentMetadata,
     PromptPolicyCall,
     PromptPolicyRegistry,
+    PromptSkillActivationMetadata,
 )
 from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.results import RunResult
@@ -196,6 +198,7 @@ class RuntimeService:
         self._closed = False
         self.tools = tools
         self.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        self.skill_activations = SkillActivationService()
         self.default_workspace = (
             str(Path(default_workspace).expanduser().resolve())
             if default_workspace is not None
@@ -370,6 +373,16 @@ class RuntimeService:
 
     def _skill_instructions_for_run(self, run_id: str) -> str:
         return render_agent_skills_prompt(self._skills_for_run(run_id))
+
+    def _resolve_skill_activation_for_run(
+        self,
+        run_id: str,
+        request: SkillInvocationRequest,
+    ) -> SkillActivationContent:
+        return self.skill_activations.resolve_user_activation(
+            self._skills_for_run(run_id),
+            request,
+        )
 
     def _compaction_for_run(self, run_id: str) -> CompactionStrategyRegistry:
         snapshot = self._extension_snapshots.get(run_id)
@@ -608,6 +621,17 @@ class RuntimeService:
 
         return self.models.list_models()
 
+    def available_skills(self) -> tuple[SkillMetadata, ...]:
+        """Return the current Host view without exposing discovery to interface layers."""
+
+        if self._extension_catalog is None:
+            return self.skill_activations.list_for_host(self.skills)
+        lease = self._extension_catalog.snapshot()
+        try:
+            return self.skill_activations.list_for_host(lease.skills)
+        finally:
+            lease.close()
+
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         if session_id is None:
             return self.models.default_model()
@@ -757,6 +781,7 @@ class RuntimeService:
         self,
         prompt: str,
         *,
+        skill_invocation: SkillInvocationRequest | None = None,
         session_id: str | None = None,
         title: str | None = None,
         initial_model: str | None = None,
@@ -777,6 +802,19 @@ class RuntimeService:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         if initial_model is not None and session_id is not None:
             raise ValueError("initial_model can only be set when creating a session")
+        if skill_invocation is not None:
+            if prompt and prompt != skill_invocation.arguments:
+                raise ValueError("prompt must match the skill invocation arguments")
+            prompt = skill_invocation.arguments
+        queued_skill_activation = any(
+            item.skill_activation is not None for item in (_queued_inputs or ())
+        )
+        if not prompt.strip() and skill_invocation is None and not queued_skill_activation:
+            raise ValueError("run input requires a prompt or skill invocation")
+        if skill_invocation is not None and _input_attribution is not None:
+            raise ValueError("skill invocation is only valid on direct user input")
+        if skill_invocation is not None and queue_mode != "follow_up":
+            raise ValueError("skill invocation cannot steer an active run")
         if isinstance(_input_attribution, DelegatedTaskInput) and _prepared_run is None:
             raise ValueError("delegated task input requires a prepared child run")
         if _prepared_run is not None:
@@ -797,6 +835,7 @@ class RuntimeService:
                 "and pass its session with session_id"
             )
         preapproved_new_run: RunRecord | None = None
+        resolved_skill_activation: SkillActivationContent | None = None
         if session_id is None:
             if _input_attribution is None:
                 selected_model = (
@@ -805,7 +844,7 @@ class RuntimeService:
                     else self.models.default_model()
                 )
                 candidate_session = SessionRecord(
-                    title=title or _title_from_prompt(prompt),
+                    title=title or _title_from_input(prompt, skill_invocation),
                     workspace=self.default_workspace,
                     current_model=selected_model.key,
                     approval_mode=approval_mode or "inherit",
@@ -822,10 +861,22 @@ class RuntimeService:
                         self._extension_catalog.snapshot()
                     )
                 try:
+                    if skill_invocation is not None:
+                        resolved_skill_activation = self._resolve_skill_activation_for_run(
+                            preapproved_new_run.run_id,
+                            skill_invocation,
+                        )
                     await self._evaluate_prompt_policies(
                         session=candidate_session,
                         run=preapproved_new_run,
-                        inputs=[QueuedInput(prompt=prompt, title=title, source="user")],
+                        inputs=[
+                            QueuedInput(
+                                prompt=prompt,
+                                title=title,
+                                source="user",
+                                skill_activation=resolved_skill_activation,
+                            )
+                        ],
                     )
                     session = self.create_session(
                         title=candidate_session.title,
@@ -839,7 +890,7 @@ class RuntimeService:
                     raise
             else:
                 session = self.create_session(
-                    title=title or _title_from_prompt(prompt),
+                    title=title or _title_from_input(prompt, skill_invocation),
                     initial_model=initial_model,
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
@@ -869,6 +920,7 @@ class RuntimeService:
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
+                    skill_invocation=skill_invocation,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -948,6 +1000,7 @@ class RuntimeService:
                     snapshot=snapshot,
                     active_run=active_run,
                     prompt=prompt,
+                    skill_invocation=skill_invocation,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -979,6 +1032,7 @@ class RuntimeService:
                     snapshot=locked_snapshot,
                     active_run=locked_active_run,
                     prompt=prompt,
+                    skill_invocation=skill_invocation,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1010,9 +1064,28 @@ class RuntimeService:
                 self.store.refresh_catalog(session.session_id)
             session, active_adapter = self._resolve_session_adapter(session)
             existing_messages = locked_snapshot.messages
+            run = run.model_copy(update={"model": active_adapter.model.model_id})
+            self._restore_run_tool_cap(run)
+            if preapproved_new_run is not None:
+                run = self._bind_extension_snapshot(
+                    run,
+                    self._extension_snapshots.get(run.run_id),
+                )
+            elif _queued_inputs and _queued_inputs[0].prompt_policy_checked:
+                run = await self._attach_queued_extension_snapshot(run, _queued_inputs)
+            elif _prepared_run is not None and "extension_generations" in run.metadata:
+                await self._ensure_extension_snapshot(run)
+            else:
+                run = self._attach_extension_snapshot(run)
+            if skill_invocation is not None and resolved_skill_activation is None:
+                resolved_skill_activation = self._resolve_skill_activation_for_run(
+                    run.run_id,
+                    skill_invocation,
+                )
             pending_inputs = _queued_inputs or [
                 QueuedInput(
                     prompt=prompt,
+                    skill_activation=resolved_skill_activation,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
@@ -1062,6 +1135,10 @@ class RuntimeService:
                     ),
                 )
             ]
+            if skill_invocation is not None and (
+                len(pending_inputs) != 1 or pending_inputs[0].source != "user"
+            ):
+                raise ValueError("skill invocation requires one direct user input")
             for pending_input in pending_inputs:
                 self._validate_model_resource_refs(
                     session,
@@ -1069,19 +1146,6 @@ class RuntimeService:
                     adapter=active_adapter,
                     message_role=pending_input.message_role,
                 )
-            run = run.model_copy(update={"model": active_adapter.model.model_id})
-            self._restore_run_tool_cap(run)
-            if preapproved_new_run is not None:
-                run = self._bind_extension_snapshot(
-                    run,
-                    self._extension_snapshots.get(run.run_id),
-                )
-            elif _queued_inputs and _queued_inputs[0].prompt_policy_checked:
-                run = await self._attach_queued_extension_snapshot(run, pending_inputs)
-            elif _prepared_run is not None and "extension_generations" in run.metadata:
-                await self._ensure_extension_snapshot(run)
-            else:
-                run = self._attach_extension_snapshot(run)
             if preapproved_new_run is None and not (
                 _queued_inputs and _queued_inputs[0].prompt_policy_checked
             ):
@@ -1135,6 +1199,16 @@ class RuntimeService:
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
                         "resource_refs": list(queued_input.resource_refs),
+                        "skill_name": (
+                            queued_input.skill_activation.name
+                            if queued_input.skill_activation is not None
+                            else None
+                        ),
+                        "skill_content_digest": (
+                            queued_input.skill_activation.content_digest
+                            if queued_input.skill_activation is not None
+                            else None
+                        ),
                     },
                 )
 
@@ -1483,6 +1557,7 @@ class RuntimeService:
         snapshot: RuntimeSessionSnapshot,
         active_run: RunRecord | None,
         prompt: str,
+        skill_invocation: SkillInvocationRequest | None = None,
         title: str | None,
         mode: QueuedInputMode,
         resource_refs: tuple[str, ...] = (),
@@ -1490,6 +1565,8 @@ class RuntimeService:
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         source = _attributed_input_source(attribution) if attribution is not None else "user"
         message_role = _input_message_role(attribution)
+        if skill_invocation is not None and (source != "user" or mode != "follow_up"):
+            raise ValueError("skill invocation requires direct follow-up user input")
         queue_id = (
             attribution.queue_id
             if isinstance(attribution, HostSessionInput) and attribution.queue_id is not None
@@ -1500,6 +1577,7 @@ class RuntimeService:
         extension_snapshot: ExtensionCatalogLease | None = None
         extension_catalog_id: str | None = None
         extension_generations: tuple[dict[str, object], ...] = ()
+        resolved_skill_activation: SkillActivationContent | None = None
         if prompt_policy_checked:
             prospective = RunRecord(
                 session_id=snapshot.session.session_id,
@@ -1517,6 +1595,11 @@ class RuntimeService:
             else:
                 prospective = self._attach_extension_snapshot(prospective)
             try:
+                if skill_invocation is not None:
+                    resolved_skill_activation = self._resolve_skill_activation_for_run(
+                        prospective.run_id,
+                        skill_invocation,
+                    )
                 await self._evaluate_prompt_policies(
                     session=snapshot.session,
                     run=prospective,
@@ -1524,6 +1607,7 @@ class RuntimeService:
                         QueuedInput(
                             queue_id=queue_id,
                             prompt=prompt,
+                            skill_activation=resolved_skill_activation,
                             title=title,
                             mode=mode,
                             resource_refs=resource_refs,
@@ -1555,6 +1639,7 @@ class RuntimeService:
             session, queued_input, queue_size = self.queued_inputs.enqueue(
                 snapshot=snapshot,
                 prompt=prompt,
+                skill_activation=resolved_skill_activation,
                 title=title,
                 mode=mode,
                 resource_refs=resource_refs,
@@ -1637,6 +1722,16 @@ class RuntimeService:
             "delegation_id": queued_input.delegation_id,
             "plugin_id": queued_input.plugin_id,
             "contribution_id": queued_input.contribution_id,
+            "skill_name": (
+                queued_input.skill_activation.name
+                if queued_input.skill_activation is not None
+                else None
+            ),
+            "skill_content_digest": (
+                queued_input.skill_activation.content_digest
+                if queued_input.skill_activation is not None
+                else None
+            ),
         }
         if active_run is None:
             emitted.append(
@@ -1705,6 +1800,8 @@ class RuntimeService:
 
     @staticmethod
     def _same_approved_queue_contract(first: QueuedInput, item: QueuedInput) -> bool:
+        if first.skill_activation is not None or item.skill_activation is not None:
+            return first.queue_id == item.queue_id
         return (
             item.prompt_policy_checked
             and item.extension_catalog_id == first.extension_catalog_id
@@ -1935,6 +2032,7 @@ class RuntimeService:
             session=session,
             run=run,
             prompt=item.prompt,
+            skill_activation=item.skill_activation,
             sequence=sequence,
             resource_refs=item.resource_refs,
             metadata=metadata,
@@ -2021,6 +2119,16 @@ class RuntimeService:
                     input_source=item.source,
                     workspace=self.default_workspace,
                     attachments=attachments,
+                    skill_activation=(
+                        PromptSkillActivationMetadata(
+                            name=item.skill_activation.name,
+                            source=item.skill_activation.source,
+                            location=item.skill_activation.location,
+                            content_digest=item.skill_activation.content_digest,
+                        )
+                        if item.skill_activation is not None
+                        else None
+                    ),
                     catalog_id=snapshot.catalog_id if snapshot is not None else None,
                     execution_contracts=execution_contracts,
                 )
@@ -2939,6 +3047,13 @@ def _session_input_event_type(source: QueuedInputSource) -> str:
     return "user_message_added"
 
 
-def _title_from_prompt(prompt: str) -> str:
+def _title_from_input(
+    prompt: str,
+    skill_invocation: SkillInvocationRequest | None,
+) -> str:
     stripped = " ".join(prompt.split())
-    return stripped[:60] if stripped else "New session"
+    if stripped:
+        return stripped[:60]
+    if skill_invocation is not None:
+        return f"Skill: {skill_invocation.name}"[:60]
+    return "New session"

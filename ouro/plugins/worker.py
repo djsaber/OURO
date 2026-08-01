@@ -655,6 +655,16 @@ class WorkerPluginInstance:
                             }
                             for item in call.attachments
                         ],
+                        "skill_activation": (
+                            {
+                                "name": call.skill_activation.name,
+                                "source": call.skill_activation.source,
+                                "location": call.skill_activation.location,
+                                "content_digest": call.skill_activation.content_digest,
+                            }
+                            if call.skill_activation is not None
+                            else None
+                        ),
                         "catalog_id": call.catalog_id,
                         "execution_contracts": dict(call.execution_contracts),
                     },

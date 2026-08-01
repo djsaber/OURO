@@ -83,16 +83,7 @@ class SkillLoader:
             metadata = self.load_catalog().by_name().get(skill_name)
         if metadata is None:
             raise KeyError(f"unknown skill: {skill_name}")
-
-        result = self.parser.parse(metadata.location, source=metadata.source)
-        if result.skill is None:
-            messages = "; ".join(item.message for item in result.diagnostics)
-            raise ValueError(f"skill is no longer loadable: {skill_name}: {messages}")
-        return LoadedSkill(
-            metadata=result.skill.metadata.model_copy(update={"enabled": metadata.enabled}),
-            content=result.skill.body,
-            resources=self._resource_paths(Path(metadata.location).parent),
-        )
+        return load_skill_from_metadata(metadata, parser=self.parser)
 
     def _skill_paths(self) -> list[Path]:
         if not self.root.exists() or not self.root.is_dir():
@@ -147,13 +138,39 @@ class SkillLoader:
             stack.extend((child, depth + 1) for child in reversed(next_directories))
         return sorted(found, key=lambda path: (len(path.parts), str(path).casefold()))
 
-    def _resource_paths(self, skill_dir: Path) -> list[str]:
-        resources: list[str] = []
-        for path in sorted(skill_dir.rglob("*"), key=lambda item: str(item).casefold()):
-            if not path.is_file() or path.name == "SKILL.md":
-                continue
-            relative = path.relative_to(skill_dir)
-            if any(part in _SKIP_DIRECTORIES for part in relative.parts):
-                continue
-            resources.append(relative.as_posix())
-        return resources
+
+def load_skill_from_metadata(
+    metadata: SkillMetadata,
+    *,
+    parser: SkillDocumentParser | None = None,
+) -> LoadedSkill:
+    """Load exactly the catalog-selected skill without repeating root discovery."""
+
+    active_parser = parser or SkillDocumentParser()
+    result = active_parser.parse(metadata.location, source=metadata.source)
+    if result.skill is None:
+        messages = "; ".join(item.message for item in result.diagnostics)
+        raise ValueError(f"skill is no longer loadable: {metadata.name}: {messages}")
+
+    parsed_metadata = result.skill.metadata.model_copy(update={"enabled": metadata.enabled})
+    if parsed_metadata != metadata:
+        raise ValueError(
+            f"skill metadata changed after catalog discovery: {metadata.name}; retry the request"
+        )
+    return LoadedSkill(
+        metadata=parsed_metadata,
+        content=result.skill.body,
+        resources=_resource_paths(Path(metadata.location).parent),
+    )
+
+
+def _resource_paths(skill_dir: Path) -> list[str]:
+    resources: list[str] = []
+    for path in sorted(skill_dir.rglob("*"), key=lambda item: str(item).casefold()):
+        if not path.is_file() or path.name == "SKILL.md":
+            continue
+        relative = path.relative_to(skill_dir)
+        if any(part in _SKIP_DIRECTORIES for part in relative.parts):
+            continue
+        resources.append(relative.as_posix())
+    return resources

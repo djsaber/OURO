@@ -190,6 +190,7 @@ def plan_compaction(
     tail_token_budget: int,
     force: bool = False,
     token_estimator: TokenEstimator | None = None,
+    protected_run_id: str | None = None,
 ) -> CompactionPlan:
     """Select a canonical prefix while preserving the latest context frame verbatim."""
 
@@ -201,9 +202,21 @@ def plan_compaction(
     if len(frames) <= 1:
         return CompactionPlan(retained_messages=uncovered, covered_message_ids=prior_ids)
 
-    retained_frames: list[list[MessageRecord]] = [frames[-1]]
-    retained_tokens = _messages_tokens(frames[-1], estimator)
-    candidate_frames = list(frames[:-1])
+    protected_index = next(
+        (
+            index
+            for index, frame in enumerate(frames)
+            if protected_run_id is not None
+            and any(message.run_id == protected_run_id for message in frame)
+        ),
+        len(frames) - 1,
+    )
+    retained_frames = list(frames[protected_index:])
+    retained_tokens = _messages_tokens(
+        [message for frame in retained_frames for message in frame],
+        estimator,
+    )
+    candidate_frames = list(frames[:protected_index])
     while candidate_frames:
         frame = candidate_frames[-1]
         frame_tokens = _messages_tokens(frame, estimator)
@@ -212,7 +225,7 @@ def plan_compaction(
         retained_frames.insert(0, candidate_frames.pop())
         retained_tokens += frame_tokens
 
-    if force and not candidate_frames and len(retained_frames) > 1:
+    if force and protected_run_id is None and not candidate_frames and len(retained_frames) > 1:
         candidate_frames.append(retained_frames.pop(0))
 
     messages_to_compact = [message for frame in candidate_frames for message in frame]

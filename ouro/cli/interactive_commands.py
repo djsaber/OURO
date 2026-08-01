@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
+from pydantic import ValidationError
+
+from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.runtime import RuntimeService
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.cli.context_output import (
     NO_PREPARED_CONTEXT,
     render_context_snapshot,
@@ -18,7 +22,6 @@ from ouro.config import BUILTIN_FAUX_PROVIDER_ID
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.errors import OuroError, PersistenceError
 from ouro.core.interactions import SessionInteractionMode
-from ouro.skills import discover_available_skills
 
 if TYPE_CHECKING:
     from ouro.application.plugins import PluginService
@@ -36,6 +39,7 @@ class CommandResult:
     interaction_mode: SessionInteractionMode | None = None
     initial_model: str | None = None
     session_inputs: tuple[AttributedSessionInput, ...] = ()
+    skill_invocation: SkillInvocationRequest | None = None
 
 
 async def handle_command(
@@ -47,6 +51,7 @@ async def handle_command(
     plugins: PluginService | None = None,
     interaction_mode: SessionInteractionMode = "interactive",
     attachments: InteractiveAttachmentDraft | None = None,
+    queue_mode: QueuedInputMode = "follow_up",
 ) -> CommandResult:
     command, _, argument = line.partition(" ")
     command = command.lower()
@@ -102,6 +107,8 @@ async def handle_command(
         return _session_events(runtime, session_id)
     if command == "/skills":
         return _available_skills(runtime, session_id)
+    if command == "/skill":
+        return _skill_invocation_command(session_id, argument, queue_mode=queue_mode)
     if command == "/attach":
         return _attach_resource(
             runtime,
@@ -150,6 +157,7 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/history - Show current session messages.",
         "/events - Show current session events.",
         "/skills - List available skills.",
+        "/skill <name> [task] - Run one task with an explicitly selected skill.",
         "/attach <path> - Attach a local image or text resource to the next message.",
         "/attachments - Show resources attached to the next message.",
         "/detach <number|all> - Remove resources from the next message.",
@@ -497,6 +505,8 @@ def _session_history(runtime: RuntimeService, session_id: str | None) -> Command
     lines = ["History:"]
     for message in page.messages:
         text = message.text_content.replace("\n", " ")
+        if message.skill_activations:
+            text = f"/skill {message.skill_activations[0].name} {text}".rstrip()
         lines.append(f"[{message.role}] {text[:120]}")
     if page.next_cursor is not None:
         lines.append("History truncated to the first 100 messages.")
@@ -521,23 +531,50 @@ def _session_events(runtime: RuntimeService, session_id: str | None) -> CommandR
 
 
 def _available_skills(runtime: RuntimeService, session_id: str | None) -> CommandResult:
-    home = runtime.environment.home
-    if home is None:
-        return CommandResult(
-            session_id=session_id,
-            output="Skill discovery is unavailable without a deployment home.",
-        )
-    try:
-        catalog = discover_available_skills(home=home)
-    except Exception as exc:  # noqa: BLE001
-        return CommandResult(session_id=session_id, output=f"Could not list skills: {exc}")
+    catalog = runtime.available_skills()
     if not catalog:
         return CommandResult(session_id=session_id, output="No skills available.")
     lines = ["Available skills:"]
-    for skill in sorted(catalog, key=lambda item: item.name):
+    for skill in catalog:
         state = "enabled" if skill.enabled else "disabled"
-        lines.append(f"- {skill.name} [{skill.source}] [{state}] {skill.location}")
+        invocation = "user-invocable" if skill.user_invocable else "not-user-invocable"
+        lines.append(
+            f"- {skill.name} [{skill.source}] [{state}] [{invocation}] {skill.description}"
+        )
+        hint = f" {skill.argument_hint}" if skill.argument_hint else ""
+        lines.append(f"  /skill {skill.name}{hint}")
     return CommandResult(session_id=session_id, output="\n".join(lines))
+
+
+def _skill_invocation_command(
+    session_id: str | None,
+    argument: str,
+    *,
+    queue_mode: QueuedInputMode,
+) -> CommandResult:
+    if queue_mode == "steer":
+        return CommandResult(
+            session_id=session_id,
+            output="Skill activation cannot steer an active run; use /skill as a follow-up.",
+        )
+    argument = argument.lstrip()
+    name, separator, arguments = argument.partition(" ")
+    if not name:
+        return CommandResult(
+            session_id=session_id,
+            output="Usage: /skill <name> [task]",
+        )
+    try:
+        request = SkillInvocationRequest(
+            name=name,
+            arguments=arguments.lstrip() if separator else "",
+        )
+    except ValidationError:
+        return CommandResult(
+            session_id=session_id,
+            output="Skill names must use lowercase letters, digits, and single hyphens.",
+        )
+    return CommandResult(session_id=session_id, skill_invocation=request)
 
 
 async def _abort_session(runtime: RuntimeService, session_id: str | None) -> CommandResult:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 
 class OuroError(Exception):
     """Base error for OURO runtime failures."""
@@ -105,3 +107,20 @@ class ContextBlockedError(ContextOverflowError):
 
 class SkillManagementError(OuroError):
     """An Agent Skill management operation was invalid or unsafe."""
+
+
+SkillActivationErrorCode = Literal[
+    "unknown_skill",
+    "disabled_skill",
+    "not_user_invocable",
+    "unloadable_skill",
+]
+
+
+class SkillActivationError(OuroError):
+    """A user-selected Agent Skill could not become canonical Run input."""
+
+    def __init__(self, code: SkillActivationErrorCode, skill_name: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.skill_name = skill_name

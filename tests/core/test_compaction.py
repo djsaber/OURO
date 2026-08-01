@@ -90,6 +90,32 @@ def test_compaction_plan_uses_model_turn_ids_inside_one_long_user_task() -> None
     assert plan.retained_messages == messages[3:]
 
 
+def test_compaction_plan_preserves_every_frame_from_the_active_run() -> None:
+    old = [
+        _message("user", "old request", 1).model_copy(update={"run_id": "run_old"}),
+        _message("assistant", "old answer", 2).model_copy(update={"run_id": "run_old"}),
+    ]
+    active = [
+        _message("user", "skill request", 3).model_copy(update={"run_id": "run_active"}),
+        _message("assistant", "first round", 4).model_copy(
+            update={"run_id": "run_active", "turn_id": "turn_1"}
+        ),
+        _message("assistant", "second round", 5).model_copy(
+            update={"run_id": "run_active", "turn_id": "turn_2"}
+        ),
+    ]
+
+    plan = plan_compaction(
+        [*old, *active],
+        None,
+        tail_token_budget=1,
+        protected_run_id="run_active",
+    )
+
+    assert plan.messages_to_compact == old
+    assert plan.retained_messages == active
+
+
 def test_compaction_frames_keep_unidentified_tool_exchange_atomic() -> None:
     assistant = _message("assistant", "", 1).model_copy(
         update={"tool_calls": [ToolCallRequest(id="call_1", name="Read")]}

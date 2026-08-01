@@ -1134,6 +1134,16 @@ def _adapt_prompt_policy(
                     for item in call.attachments
                     if isinstance(item, PromptAttachmentMetadata)
                 ),
+                skill_activation=(
+                    sdk.PromptSkillActivationMetadata(
+                        name=call.skill_activation.name,
+                        source=call.skill_activation.source,
+                        location=call.skill_activation.location,
+                        content_digest=call.skill_activation.content_digest,
+                    )
+                    if call.skill_activation is not None
+                    else None
+                ),
                 catalog_id=call.catalog_id,
                 execution_contracts=MappingProxyType(dict(call.execution_contracts)),
             )

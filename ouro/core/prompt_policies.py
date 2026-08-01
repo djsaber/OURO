@@ -20,24 +20,31 @@ class PromptAttachmentMetadata(OuroModel):
     size: int = Field(ge=0)
 
 
+class PromptSkillActivationMetadata(OuroModel):
+    name: str = Field(min_length=1)
+    source: Literal["user", "workspace", "plugin"]
+    location: str = Field(min_length=1)
+    content_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+
+
 class PromptPolicyCall(OuroModel):
     """Bounded pre-persistence view of one prospective model input."""
 
     session_id: str
     prospective_run_id: str
-    prompt: str = Field(min_length=1)
+    prompt: str = ""
     input_source: PromptInputSource = "user"
     workspace: str | None = None
     attachments: tuple[PromptAttachmentMetadata, ...] = ()
+    skill_activation: PromptSkillActivationMetadata | None = None
     catalog_id: str | None = None
     execution_contracts: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("prompt")
-    @classmethod
-    def validate_prompt(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("prompt policy input cannot be blank")
-        return value
+    @model_validator(mode="after")
+    def validate_input(self) -> PromptPolicyCall:
+        if not self.prompt.strip() and self.skill_activation is None:
+            raise ValueError("prompt policy input requires a prompt or skill activation")
+        return self
 
 
 class PromptPolicyDecision(OuroModel):
@@ -247,4 +254,5 @@ __all__ = [
     "PromptPolicyHandler",
     "PromptPolicyRegistration",
     "PromptPolicyRegistry",
+    "PromptSkillActivationMetadata",
 ]

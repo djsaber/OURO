@@ -242,6 +242,8 @@ def estimate_message_tokens(
         active_estimator(block.text)
         if isinstance(block, TextContent)
         else _estimate_image_tokens(block)
+        if isinstance(block, ImageContent)
+        else 0
         for block in model_message.content
     )
     protocol_payload = {
