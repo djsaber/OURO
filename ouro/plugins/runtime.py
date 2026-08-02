@@ -43,6 +43,7 @@ from ouro.plugins.dependencies import (
     active_dependents,
     builtin_desired_enabled,
     desired_dependant_closure,
+    plugin_root_sort_key,
     resolve_plugin_dependencies,
 )
 from ouro.plugins.execution_contracts import (
@@ -226,7 +227,8 @@ class PluginRuntimeResource:
                     for plugin_id, contract in self.builtin_contracts.items()
                     if builtin_desired_enabled(state, contract)
                 ),
-            }
+            },
+            key=lambda plugin_id: plugin_root_sort_key(plugin_id, state),
         )
         for plugin_id in desired_roots:
             try:
@@ -623,7 +625,7 @@ class PluginRuntimeResource:
                 sources[node.plugin_id] = generation
                 rebuilt.append(generation)
 
-            catalog = self._build_catalog(sources)
+            catalog = self._build_catalog(sources, state=recovery_state)
             if not catalog.matches(expected_generations):
                 raise PluginExecutionContractUnavailableError(
                     "required plugin execution contract does not match"
@@ -909,7 +911,7 @@ class PluginRuntimeResource:
                 if plugin_id not in requested_removals and plugin_id not in build_ids
             }
             next_generations.update(candidates)
-            catalog = self._build_catalog(next_generations)
+            catalog = self._build_catalog(next_generations, state=candidate_state)
             self.store.commit_candidate_state(expected, candidate_state)
 
             previous = {
@@ -1111,12 +1113,25 @@ class PluginRuntimeResource:
     def _build_catalog(
         self,
         generations: dict[str, ActivePluginGeneration],
+        *,
+        state: PluginStateDocument | None = None,
     ) -> ExtensionCatalog:
         self._ensure_catalog()
         assert self._catalog_base is not None
+        if not generations:
+            ordered_ids: tuple[str, ...] = ()
+        elif state is None:
+            raise ValueError("plugin state is required to order active generations")
+        else:
+            graph = self._resolve_dependencies(state, roots=set(generations))
+            ordered_ids = graph.activation_order
+            if set(ordered_ids) != set(generations):
+                raise PluginDependencyError(
+                    "active plugin generations do not match the resolved dependency graph"
+                )
         return build_extension_catalog(
             self._catalog_base,
-            tuple(generations[plugin_id] for plugin_id in sorted(generations)),
+            tuple(generations[plugin_id] for plugin_id in ordered_ids),
         )
 
     def _publish_catalog(self, catalog: ExtensionCatalog) -> None:
@@ -1437,6 +1452,7 @@ class PluginRuntimeResource:
                     data_store=data_store,
                     session_state_store=session_state_store,
                     artifact_root=self.store.home / "artifacts",
+                    host_home=self.store.home,
                 )
                 instance = factory(context)
                 if inspect.isawaitable(instance):

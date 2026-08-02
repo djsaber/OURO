@@ -113,6 +113,10 @@ class Plugin:
 configuration、插件私有 data 或 canonical Session 数据。没有本地用户数据根的 Host 可以返回 `None`，依赖文件
 制品的插件应在激活时明确失败。
 
+`PluginContext.host_home` 是 composition root 提供的只读位置描述，表示当前 Host 配置后的 `OURO_HOME`；它
+不等同于插件私有 data、artifact 写入授权或 workspace。需要定位 Host 全局约定文件的可信 in-process builtin
+可以使用它，普通插件状态仍应通过 `PluginContext.data` 管理。
+
 当前稳定 contribution 包括 Tool、Command、Observer、Context Provider、Prompt Policy、Turn Policy、Compaction
 Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool Policy 和 Session Controller。插件不能
 动态注册新的 extension point。13 类能力均必须对应明确 Host 语义消费者；完整 producer/consumer/contract 证据见
@@ -342,8 +346,8 @@ uv run ouro plugin import-report ./community-package --json
 - [`inprocess-observer`](../examples/plugins/inprocess-observer)：非阻塞类型化 Observer；
 - [`inprocess-prompt-policy`](../examples/plugins/inprocess-prompt-policy)：持久化前拒绝提示的 Prompt Policy；
 - 内置 Plan 模式位于 `ouro/builtin_plugins/plan_mode`，展示了产品内置插件如何复用与用户插件相同的 Context/Tool Policy、Generation 与可恢复工具契约；
-- 内置 System Information 插件位于 `ouro/builtin_plugins/system_information`，展示了请求级 system prompt
-  fragment、运行环境边界和默认启用 builtin 的组合方式；
+- 内置 Agent Context 插件位于 `ouro/builtin_plugins/agent_context`，展示了分层 `AGENTS.md`、请求级 system
+  prompt fragment、运行环境边界和默认启用 builtin 的组合方式；
 - [`worker-tool`](../examples/plugins/worker-tool)：stdio worker Tool。
 
 五个 `examples/plugins` package 由测试执行真实 validate/authorize/enable 生命周期；内置 Plan 则由 builtin

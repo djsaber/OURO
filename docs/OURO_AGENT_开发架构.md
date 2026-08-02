@@ -309,6 +309,12 @@ Context Fragment 还可声明 `target="system_prompt"`。这类请求级片段�
 投影为与 message target 相同的 semantic envelope，再进入统一 token 估算、请求快照和 ProviderContext digest。
 Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
 
+内置 `dev.ouro.agent_context` 通过两个相互隔离的 Context Provider 实现这一契约：`agent-instructions` 在每次
+请求中发现并按用户级、Git 根到 workspace 的顺序拼接标准 `AGENTS.md`；`runtime-facts` 保持原系统环境信息
+并以更高排序值留在末尾。加载器只拥有静态操作准则，不接管 `MEMORY.md` 的记忆生命周期、`SYSTEM.md` 的
+整段替换语义或 `SKILL.md` 的渐进加载。`PluginContext.host_home` 由 composition root 显式提供配置后的
+`OURO_HOME`，避免 builtin 从 artifact 私有路径反推 Host 布局。
+
 脚手架正文以原文持久化；构建统一 ProviderContext 时，Core 对 message 与 system-prompt fragment 使用同一个
 semantic envelope renderer，把经过校验的 `semantic_tag` 投影成 `<semantic-tag>...</semantic-tag>`。提供方声明
 标签语义但不手写包络。正文中只有可能改变当前同名包络边界的标记会转义，其他内容保持原样；标签只能使用
@@ -630,6 +636,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - Runtime 在直接用户提示持久化前取得 `ExtensionCatalogLease`，并把同一 Catalog 贯穿 Prompt Policy、context、model
   tool list、tool execution、Observer、turn completion、compaction 和 continuation。current pointer 仅在短同步临界区交换；旧 Catalog
   由自身 lease 自然 drain，插件 import、worker/MCP 启停、回调和 I/O 均不在 pointer lock 内。
+- Catalog generation 采用显式稳定顺序：依赖始终早于依赖方，彼此独立时 user plugin 早于环境级 builtin，
+  同类再按 plugin id 排序；插件清单同样先展示 user plugin。新增 builtin 的名字不能偶然改变用户插件在 Run
+  metadata 或 CLI 中的位置。
 - 插件生命周期 mutation 由单一 runtime lock 串行化；候选 generation set、required MCP 与 Catalog 全部成功后，
   Store 以 expected state 比较提交，并在无 `await` 的发布段打开新 gate、交换 pointer。Background Service 不进入
   Run Catalog，发布后按“旧代停止、新代启动”串行转交。

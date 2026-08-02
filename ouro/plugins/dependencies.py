@@ -69,7 +69,8 @@ def plan_desired_plugin_activation(
                 for plugin_id, contract in builtin_contracts.items()
                 if builtin_desired_enabled(state, contract)
             ),
-        }
+        },
+        key=lambda plugin_id: plugin_root_sort_key(plugin_id, state),
     )
     ordered: list[LockedPluginDependency] = []
     added: set[str] = set()
@@ -193,9 +194,18 @@ def resolve_plugin_dependencies(
                 )
             )
 
-    for plugin_id in sorted(requested):
+    for plugin_id in sorted(
+        requested,
+        key=lambda candidate_id: plugin_root_sort_key(candidate_id, state),
+    ):
         visit(plugin_id)
     return PluginLockGraph(tuple(ordered))
+
+
+def plugin_root_sort_key(plugin_id: str, state: PluginStateDocument) -> tuple[int, str]:
+    # User plugins are explicit additions and appear before unrelated ambient builtins.
+    # The depth-first resolver still places every dependency before its dependant.
+    return (0 if plugin_id in state.plugins else 1, plugin_id)
 
 
 def active_dependents(

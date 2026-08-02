@@ -128,6 +128,7 @@ class PluginContext:
     diagnostics: DiagnosticEmitter
     permissions: frozenset[str] = frozenset()
     artifact_root: str | None = None
+    host_home: str | None = None
     session_state: PluginSessionStateStore | None = None
 
 

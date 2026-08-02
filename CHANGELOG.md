@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Builtin `dev.ouro.agent_context` plugin with request-time, broad-to-specific `AGENTS.md`
+  discovery across user, OURO home, Git-root, and workspace scopes; strict UTF-8 and bounded
+  context assembly; and the unchanged runtime-facts injection from the renamed System Information
+  builtin.
 - Builtin `dev.ouro.goal_mode` plugin with `/goal` create/status/pause/resume/replace/cancel
   lifecycle commands, explicit model create/read/settle tools, durable Goal state, bounded-Run
   continuation, canonical token accounting, optional user-owned budgets, and Plan-mode claim
@@ -43,6 +47,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Plugin inventories now list user plugins before ambient builtins. Run generation snapshots remain
+  dependency-aware and place user plugins before unrelated builtins, eliminating accidental ordering
+  changes when builtin identities are renamed.
 - Plugin Session inputs now model producer provenance and model-visible role independently.
   Synthetic remains the default, while commands such as `/goal` creation/replacement can project
   the current explicit user intent as `user` without losing plugin execution-contract attribution.

@@ -199,7 +199,13 @@ class PluginService:
                 for definition in self.builtin_plugins.list()
             }
         )
-        return [summaries[plugin_id] for plugin_id in sorted(summaries)]
+        return sorted(
+            summaries.values(),
+            key=lambda summary: (
+                summary.plugin_class == "builtin",
+                summary.plugin_id,
+            ),
+        )
 
     def show(self, plugin_id: str) -> PluginDetail:
         definition = self.builtin_plugins.get(plugin_id)

@@ -1,4 +1,4 @@
-"""Builtin request-time system information context."""
+"""Builtin request-time Agent context."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from ouro.sdk.plugins.v1 import (
     ContributionSet,
     PluginContext,
 )
+
+from .instructions import AgentInstructionLoader, render_agent_instructions
 
 Clock = Callable[[], datetime]
 
@@ -50,14 +52,17 @@ class RuntimeFacts:
         )
 
 
-class SystemInformationPlugin:
+class AgentContextPlugin:
     def __init__(
         self,
         *,
+        instructions: AgentInstructionLoader | None = None,
+        ouro_home: str | Path | None = None,
         facts: RuntimeFacts | None = None,
         clock: Clock | None = None,
         fallback_working_directory: str | Path | None = None,
     ) -> None:
+        self._instructions = instructions or AgentInstructionLoader(ouro_home=ouro_home)
         self._facts = facts or RuntimeFacts.collect()
         self._clock = clock or (lambda: datetime.now().astimezone())
         self._fallback_working_directory = (
@@ -70,12 +75,19 @@ class SystemInformationPlugin:
         return ContributionSet(
             context_providers=[
                 ContextContribution(
+                    id="agent-instructions",
+                    handler=self.agent_instructions,
+                    priority=9_000,
+                    timeout_seconds=5,
+                    failure_mode="omit",
+                ),
+                ContextContribution(
                     id="runtime-facts",
                     handler=self.system_information,
                     priority=10_000,
                     timeout_seconds=5,
                     failure_mode="omit",
-                )
+                ),
             ]
         )
 
@@ -85,18 +97,30 @@ class SystemInformationPlugin:
     async def stop(self, reason, deadline) -> None:
         del reason, deadline
 
+    def agent_instructions(self, call: ContextCall) -> ContextOutput:
+        text = render_agent_instructions(self._instructions.load(call.workspace))
+        return ContextOutput(
+            fragments=(
+                ContextFragment(
+                    text=text,
+                    semantic_tag="ouro-agent-instructions",
+                    target="system_prompt",
+                ),
+            )
+        )
+
     def system_information(self, call: ContextCall) -> ContextOutput:
         return ContextOutput(
             fragments=(
                 ContextFragment(
-                    text=self._render(call, self._clock()),
+                    text=self._render_system_information(call, self._clock()),
                     semantic_tag="ouro-system-information",
                     target="system_prompt",
                 ),
             )
         )
 
-    def _render(self, call: ContextCall, current: datetime) -> str:
+    def _render_system_information(self, call: ContextCall, current: datetime) -> str:
         timezone = _timezone_description(current)
         working_directory = call.workspace or self._fallback_working_directory
         values = (
@@ -124,13 +148,12 @@ def _timezone_description(current: datetime) -> str:
     return f"{name} (UTC{sign}{hours:02d}:{minutes:02d})"
 
 
-def create_plugin(context: PluginContext) -> SystemInformationPlugin:
-    del context
-    return SystemInformationPlugin()
+def create_plugin(context: PluginContext) -> AgentContextPlugin:
+    return AgentContextPlugin(ouro_home=context.host_home)
 
 
 __all__ = [
+    "AgentContextPlugin",
     "RuntimeFacts",
-    "SystemInformationPlugin",
     "create_plugin",
 ]

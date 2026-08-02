@@ -63,9 +63,14 @@ OpenAI-compatible/Anthropic-compatible 自定义模型选择开启、关闭和�
 明确失败，不会被近似成相邻等级。可展示 reasoning 与工具续接状态独立保存，签名或私有 continuation 只在
 同 provider/protocol/model 的工具回合中重放。
 
-上下文由 canonical messages 投影生成。系统提示词、Skills 指令、压缩摘要和最近原子模型回合在请求前
+上下文由 canonical messages 投影生成。系统提示词、分层 `AGENTS.md` 指令、Skills 指令、压缩摘要和最近原子模型回合在请求前
 组合；超过硬预算时明确失败或暂停，不静默丢弃 canonical history。摘要压缩使用独立记录保存覆盖范围、
 来源 digest、策略和 usage。
+
+默认启用的 Agent Context builtin 在请求时把用户级共享规则、`OURO_HOME/AGENTS.md` 和 Git 根到当前
+workspace 的项目 `AGENTS.md` 从宽到窄追加到 system prompt，并继续在尾部提供原有运行环境事实。该路径不
+加载普通项目文档、产品私有规则名、Memory 或 Skills；规则内容不写入 canonical history，编辑后在下一次
+真实模型请求生效。
 
 统一 Provider 只接收纯模型语义 `ModelMessage`，不会看到 Session 持久化 identity、metadata 或资源引用。
 OURO 在每次模型请求前维护请求快照和类型化 token 指标；Provider 完成后在该审计事实上补记供应商报告的 input

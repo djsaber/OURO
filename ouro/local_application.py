@@ -24,6 +24,7 @@ from ouro.application.supervisor import RuntimeSupervisor
 from ouro.application.usage import UsageService
 from ouro.billing import LocalUsageLedger
 from ouro.builtin_plugins import LOCAL_BUILTIN_PLUGINS
+from ouro.builtin_plugins.migrations import migrate_builtin_plugin_state
 from ouro.builtin_plugins.session_state_migration import migrate_builtin_session_state
 from ouro.config import CompactionConfig, CredentialRef, CredentialResolver
 from ouro.config.agents import AgentDefinitionsConfigManager
@@ -456,6 +457,7 @@ def build_local_plugin_service(
 
     store = PluginPackageStore(resolve_local_home(home))
     store.initialize()
+    migrate_builtin_plugin_state(store)
     if session_store is not None:
         migrate_builtin_session_state(store.home, session_store)
     return PluginService(
@@ -506,6 +508,7 @@ def _build_local_plugin_runtime(
 ) -> tuple[PluginRuntimeResource, PluginService]:
     store = PluginPackageStore(home)
     store.initialize()
+    migrate_builtin_plugin_state(store)
     if session_store is not None:
         migrate_builtin_session_state(home, session_store)
     commands = PluginCommandRegistry()

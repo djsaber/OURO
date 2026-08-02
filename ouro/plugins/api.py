@@ -506,6 +506,7 @@ def build_plugin_context(
     data_store: ScopedPluginDataStore | None = None,
     session_state_store: BoundPluginSessionStateStore | None = None,
     artifact_root: Path | None = None,
+    host_home: Path | None = None,
 ) -> sdk.PluginContext:
     return sdk.PluginContext(
         identity=sdk.PluginIdentity(
@@ -537,6 +538,7 @@ def build_plugin_context(
             if artifact_root is not None
             else None
         ),
+        host_home=(str(host_home.resolve(strict=False)) if host_home is not None else None),
         session_state=session_state_store,
     )
 
