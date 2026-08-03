@@ -180,6 +180,10 @@ usage/budget、pending interaction 及 result/delivery 状态的有界根树快�
 而是组合 Supervisor 已有的 per-Session subscription：root relation event 负责动态发现 child，child stream 只用
 activity change 触发树摘要，text/reasoning/tool delta 仍留在各自 Session stream。终态 child 退出 live subscription
 但保留历史节点；慢 Host 收到 lag diagnostic 后按 canonical snapshot/revision 重连，关闭订阅不会取消 child。
+交互式 Host 必须通过这一根树投影发现 descendant approval/user-input，并用 DTO 中完整的 delegation、child Session、
+child Run、tool call 和 request identity 调用 AgentService 解析；不能把 child 的 per-Session sequence 混入 parent
+事件投影，也不能只展示 parent 的 `waiting_child` 而留下用户不可达的 child 交互。CLI、TUI 与后续 Desktop 共用
+同一 application 事实源，只在各自 Host 层决定提示形态。
 AgentService 产生的关系事件与 Runtime 事件统一经过 `RuntimeEventRecorder` 的先持久化、后观察边界，不能直接写
 Store 绕过 Host/Observer 边界。
 
@@ -193,6 +197,12 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 只取一条，`all_at_once` 在同一边界取出全部符合时机的消息，二者都保持符合条件消息的入队顺序。审批或
 用户输入请求恢复完成后，application 必须先释放原 Run 的 session run lock，才能为 follow-up 获取新锁并启动
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
+
+Host 通过 `RuntimeService.pending_user_inputs` 读取类型化的直接用户待消费视图，不解释 Session metadata。
+入队事件只携带 queue identity 与状态，不复制 prompt；canonical user message 持久化后，`user_message_added`
+或 `queued_input_consumed` 携带稳定 `message_id`，Host 再通过 `SessionService.message` 读取唯一消息。TUI 因此
+不得在提交时乐观插入对话：未消费输入只显示在队列视图，收到 canonical message identity 后才按事件顺序进入
+conversation。进程恢复时同样从 durable queue 重建视图，不维护第二份界面队列事实。
 
 队列 producer 来源是类型化的 `user | host | plugin | delegation`，与 model role 正交：直接用户输入和专用
 `DelegatedTaskInput` 写为 `role=user`，后者还携带稳定 `delegation_id`，且只允许启动已准备好的 child Run。
@@ -244,7 +254,9 @@ identity、owner、这些归一化语义、schema 校验后的参数及 Session/
 放开 `OURO_HOME` 的配置、会话或插件私有数据，Bash cwd 限制也不等同于操作系统沙箱。
 Shell 的 stdout/stderr 从进程启动起并发排空，并在 pipe 消费边界共享一个硬保留预算；超过预算后继续 drain，
 但不保留超额内容。每个流保留独立 truncated 标志，timeout/abort 终止进程树后只做有界 EOF 等待。Builtin Shell
-只负责方言包装、PowerShell CLIXML 解码与结果投影。
+只负责方言包装、PowerShell CLIXML 解码与结果投影。已解析出的 shell executable 必须以 argv 直接交给
+`ToolExecutionContext.run_process`；不得再经 `create_subprocess_shell` 套一层平台 shell，否则 Windows 的 quoting、
+进程树所有权和 pipe EOF 不再对应实际工具进程，可能在已有完整输出后仍被错误标记为 timeout。
 
 用户交互策略与批准策略正交保存：`SessionRecord.interaction_mode` 为 `interactive | unattended`。AFK 是
 application/Host 的命名预设，原子设置 `approval_mode=auto` 与 `interaction_mode=unattended`，Core 不持久化第三个

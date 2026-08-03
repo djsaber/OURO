@@ -132,6 +132,8 @@ class SessionRepository(Protocol):
         limit: int = 100,
     ) -> tuple[list[MessageRecord], int | None]: ...
 
+    def load_message(self, session_id: str, message_id: str) -> MessageRecord: ...
+
     def load_events_page(
         self,
         session_id: str,

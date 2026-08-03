@@ -12,6 +12,7 @@ from textual.message import Message
 from textual.widgets import TextArea
 
 from ouro.application.models import AvailableModel
+from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.session_models import SessionCatalogEntry
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
@@ -30,7 +31,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
-from ouro.tui.state import PendingInteraction, TuiSessionProjection
+from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
 from ouro.tui.widgets import (
     AskUserPanel,
     BrandHeader,
@@ -38,6 +39,7 @@ from ouro.tui.widgets import (
     Composer,
     ConversationView,
     InteractionBar,
+    QueuedInputPanel,
     StatusLine,
 )
 
@@ -236,6 +238,23 @@ class OuroTuiApp(App[int]):
         border-bottom: solid #b68a3b;
     }
 
+    #queued-input-panel {
+        height: auto;
+        max-height: 8;
+        margin: 0 1;
+        padding: 0 1 1 1;
+        color: #d6d9df;
+        background: transparent;
+        scrollbar-background: transparent;
+        scrollbar-color: #505967;
+        scrollbar-size-vertical: 1;
+    }
+
+    #queued-input-content {
+        height: auto;
+        background: transparent;
+    }
+
     StatusLine {
         height: 1;
         padding: 0 2;
@@ -324,6 +343,7 @@ class OuroTuiApp(App[int]):
         )
         self._resume_session_id = resume_session_id
         self._projection: TuiSessionProjection | None = None
+        self._interaction: PendingInteraction | None = None
         self._models: tuple[AvailableModel, ...] = ()
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
@@ -342,6 +362,7 @@ class OuroTuiApp(App[int]):
             yield AskUserPanel()
             yield InteractionBar()
             yield Composer()
+            yield QueuedInputPanel()
             yield StatusLine()
 
     def on_mount(self) -> None:
@@ -409,6 +430,9 @@ class OuroTuiApp(App[int]):
 
     async def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
         self._runtime_events_ready_posted = False
+        if self._host_closing or not self.query(ConversationView):
+            self._pending_runtime_events.clear()
+            return
         await self._flush_pending_runtime_events()
 
     async def _flush_pending_runtime_events(self) -> None:
@@ -438,7 +462,7 @@ class OuroTuiApp(App[int]):
 
         diagnostics: list[str] = []
         latest_update = None
-        interaction_changed = False
+        queue_changed = False
         assistant_visible = bool(projection.assistant_text)
         conversation = self.query_one(ConversationView)
         for event in events:
@@ -449,6 +473,20 @@ class OuroTuiApp(App[int]):
             if update is None:
                 continue
             latest_update = update
+            if event.event_type in {"user_message_added", "queued_input_consumed"}:
+                message_id = event.payload.get("message_id")
+                if isinstance(message_id, str):
+                    user_message = self._controller.message(event.session_id, message_id)
+                    if user_message.role == "user" and user_message.text_content:
+                        await conversation.add_user(user_message.text_content)
+                        assistant_visible = False
+            if event.event_type in {
+                "follow_up_input_queued",
+                "steering_input_queued",
+                "user_message_added",
+                "queued_input_consumed",
+            }:
+                queue_changed = True
             if update.reasoning_delta:
                 await conversation.append_reasoning(update.reasoning_delta)
             if update.assistant_delta:
@@ -458,22 +496,23 @@ class OuroTuiApp(App[int]):
                 await conversation.append_assistant("\n\n")
             if update.activity.tool_calls != previous_tools:
                 await conversation.sync_tools(update.activity.tool_calls)
-            interaction_changed = interaction_changed or update.interaction_changed
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
 
         if latest_update is None:
+            self._refresh_interaction()
             return
         if latest_update.activity.activity != "streaming_reasoning":
             conversation.finish_reasoning()
+        if queue_changed:
+            self._sync_queued_inputs(latest_update.event.session_id)
         self._sync_activity(latest_update.activity)
-        if interaction_changed:
-            self._sync_interaction(projection.pending_interaction)
+        self._refresh_interaction()
         for diagnostic in diagnostics:
             await conversation.add_notice(diagnostic, error=True)
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
-        interaction = self._projection.pending_interaction if self._projection else None
+        interaction = self._interaction
         if interaction is not None and interaction.kind == "approval":
             self.query_one(InteractionBar).focus()
             return
@@ -482,21 +521,24 @@ class OuroTuiApp(App[int]):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
-        await self.query_one(ConversationView).add_user(message.text)
-        self.query_one(BrandHeader).set_activity("queued")
+        active_run = self._has_active_run()
+        if not active_run:
+            self.query_one(BrandHeader).set_activity("queued")
+        mode_label = "guide" if message.mode == "steer" else "follow-up"
         self.query_one(StatusLine).set_detail(
-            "Submitting…" if self._projection is None else "Queueing follow-up…"
+            "Submitting…" if self._projection is None else f"Queueing {mode_label}…"
         )
         if self._projection is None:
             self.query_one(Composer).disabled = True
             self._waiting_for_session_event = True
-        self._run_prompt(message.text)
+        self._run_prompt(message.text, message.mode)
 
     @work(group="run")
-    async def _run_prompt(self, prompt: str) -> None:
+    async def _run_prompt(self, prompt: str, queue_mode: QueuedInputMode) -> None:
         try:
-            result = await self._controller.submit(prompt)
+            result = await self._controller.submit(prompt, queue_mode=queue_mode)
             await self._apply_run_result(result)
+            self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             self.query_one(BrandHeader).set_activity("failed")
             self.query_one(StatusLine).set_detail("Run failed")
@@ -504,7 +546,7 @@ class OuroTuiApp(App[int]):
         finally:
             self._waiting_for_session_event = False
             composer = self.query_one(Composer)
-            interaction = self._projection.pending_interaction if self._projection else None
+            interaction = self._interaction
             composer.disabled = interaction is not None and interaction.kind == "approval"
             if interaction is not None and interaction.kind == "approval":
                 self.query_one(InteractionBar).focus()
@@ -527,6 +569,14 @@ class OuroTuiApp(App[int]):
             await self.query_one(ConversationView).append_assistant(result.final_text)
         self._active_title = result.session.title
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self._refresh_interaction()
+
+    def _sync_queued_inputs(self, session_id: str | None = None) -> None:
+        panel = self.query_one(QueuedInputPanel)
+        if session_id is None and self._controller.session_id is None:
+            panel.set_inputs(())
+            return
+        panel.set_inputs(self._controller.queued_user_inputs(session_id))
 
     def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if message.text_area is not self.query_one(Composer):
@@ -552,7 +602,7 @@ class OuroTuiApp(App[int]):
     async def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
         popup = self.query_one(CommandPopup)
         composer = self.query_one(Composer)
-        interaction = self._projection.pending_interaction if self._projection else None
+        interaction = self._interaction
         ask_user = self.query_one(AskUserPanel)
         if (
             interaction is not None
@@ -598,11 +648,12 @@ class OuroTuiApp(App[int]):
             return
         try:
             result = await self._controller.resolve_approval(
-                run_id=interaction.run_id,
-                approval_id=approval_id,
+                interaction=interaction,
                 approved=approved,
             )
-            await self._apply_run_result(result)
+            if result is not None:
+                await self._apply_run_result(result)
+            self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             self.query_one(InteractionBar).resume()
@@ -611,15 +662,17 @@ class OuroTuiApp(App[int]):
     async def _answer_question(self, interaction: PendingInteraction, answer: JsonValue) -> None:
         self.query_one(Composer).disabled = True
         try:
-            result = await self._controller.answer(run_id=interaction.run_id, answer=answer)
-            await self._apply_run_result(result)
+            result = await self._controller.answer(interaction=interaction, answer=answer)
+            if result is not None:
+                await self._apply_run_result(result)
+            self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             self.query_one(AskUserPanel).resume()
         finally:
             composer = self.query_one(Composer)
             composer.disabled = False
-            current = self._projection.pending_interaction if self._projection else None
+            current = self._interaction
             panel = self.query_one(AskUserPanel)
             if current is not None and current.kind == "question" and panel.display:
                 if panel.awaiting_freeform:
@@ -633,7 +686,7 @@ class OuroTuiApp(App[int]):
         self._resolve_approval(message.interaction, message.approved)
 
     def on_ask_user_panel_completed(self, message: AskUserPanel.Completed) -> None:
-        interaction = self._projection.pending_interaction if self._projection else None
+        interaction = self._interaction
         if interaction is not None and interaction.kind == "question":
             self._answer_question(interaction, message.answer)
 
@@ -649,6 +702,17 @@ class OuroTuiApp(App[int]):
         self.query_one(BrandHeader).set_activity(activity.activity)
         detail = f"{len(activity.tool_calls)} tool(s)" if activity.tool_calls else ""
         self.query_one(StatusLine).set_detail(detail)
+
+    def _refresh_interaction(self) -> PendingInteraction | None:
+        primary = self._projection.pending_interaction if self._projection else None
+        agent_interactions = self._controller.agent_interactions()
+        interaction = primary or (
+            project_agent_interaction(agent_interactions[0]) if agent_interactions else None
+        )
+        if interaction != self._interaction:
+            self._interaction = interaction
+            self._sync_interaction(interaction)
+        return interaction
 
     def _sync_interaction(self, interaction: PendingInteraction | None) -> None:
         interaction_bar = self.query_one(InteractionBar)
@@ -702,10 +766,12 @@ class OuroTuiApp(App[int]):
             return
         self._controller.new_session()
         self._projection = None
+        self._interaction = None
         self._active_title = "New session"
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(BrandHeader).set_activity("idle")
         self._sync_interaction(None)
+        self.query_one(QueuedInputPanel).set_inputs(())
         await self.query_one(ConversationView).show_welcome()
 
     def action_new_session(self) -> None:
@@ -746,6 +812,7 @@ class OuroTuiApp(App[int]):
     async def _open_session(self, session_id: str) -> None:
         loaded = self._controller.load_session(session_id)
         await self.query_one(ConversationView).load_messages(loaded.messages)
+        self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
         self._restore_projection(loaded)
         session = loaded.detail.session
         self._active_title = session.title
@@ -760,7 +827,8 @@ class OuroTuiApp(App[int]):
         projection.restore(loaded.events)
         self._projection = projection
         self._sync_activity(projection.activity)
-        self._sync_interaction(projection.pending_interaction)
+        self._interaction = None
+        self._refresh_interaction()
         self.run_worker(
             self.query_one(ConversationView).sync_tools(projection.activity.tool_calls),
             group="restore-tools",

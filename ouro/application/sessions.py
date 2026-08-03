@@ -229,6 +229,11 @@ class SessionService:
             next_cursor=next_cursor,
         )
 
+    def message(self, session_id: str, message_id: str) -> MessageRecord:
+        """Read one canonical message by its stable event-facing identity."""
+
+        return self._store.load_message(session_id, message_id)
+
     def event_page(
         self,
         session_id: str,

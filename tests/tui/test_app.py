@@ -18,7 +18,14 @@ from ouro.core.provider import (
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
-from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, builtin_tools
+from ouro.tools import (
+    Tool,
+    ToolDefinition,
+    ToolInputRequest,
+    ToolRegistry,
+    ToolResult,
+    builtin_tools,
+)
 from ouro.tui.app import OuroTuiApp
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.screens import HelpScreen
@@ -30,6 +37,7 @@ from ouro.tui.widgets import (
     Composer,
     ConversationView,
     InteractionBar,
+    QueuedInputPanel,
     ToolActivityRow,
     WelcomePanel,
 )
@@ -120,6 +128,78 @@ class ReasoningBurstThenBlockProvider:
         yield ProviderStreamEvent(type="text_delta", text="visible while running")
         self.visible_chunk_sent.set()
         await self.release.wait()
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
+class QueuedSubagentApprovalProvider:
+    """Keep a child active long enough to queue input, then request approval."""
+
+    provider_id = "queued-subagent-approval"
+
+    def __init__(self) -> None:
+        self.child_started = asyncio.Event()
+        self.release_child = asyncio.Event()
+        self.root_round = 0
+        self.child_round = 0
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, messages
+        names = [str(item["name"]) for item in (tools or [])]
+        if "SpawnAgent" not in names:
+            if self.child_round == 0:
+                self.child_round += 1
+                self.child_started.set()
+                await self.release_child.wait()
+                yield ProviderStreamEvent.from_tool_call(
+                    {
+                        "id": "child_approval_call",
+                        "name": "Danger",
+                        "arguments": {},
+                    }
+                )
+                yield ProviderStreamEvent(type="done")
+                return
+            yield ProviderStreamEvent(type="text_delta", text="child completed")
+            yield ProviderStreamEvent(type="done")
+            return
+
+        if self.root_round == 0:
+            self.root_round += 1
+            yield ProviderStreamEvent.from_tool_call(
+                {
+                    "id": "spawn_child_call",
+                    "name": "SpawnAgent",
+                    "arguments": {
+                        "agent_id": "general",
+                        "task": "Run the Danger test tool and report completion.",
+                        "description": "TUI child approval test",
+                        "execution_mode": "sync",
+                    },
+                }
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        if self.root_round == 1:
+            self.root_round += 1
+            yield ProviderStreamEvent(type="text_delta", text="parent resumed")
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="queued input consumed")
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -252,6 +332,41 @@ def _blocking_application(
             ModelMetadata(model_id="blocking", provider_id=provider.provider_id),
         ),
         tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+def _queued_subagent_approval_application(
+    tmp_path: Path,
+    provider: QueuedSubagentApprovalProvider,
+) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = ToolRegistry()
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Danger",
+                description="A test tool that requires approval.",
+                permission_mode="approval",
+                effect="state_changing",
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                content="danger completed",
+            ),
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="faux", provider_id=provider.provider_id),
+        ),
+        tools=tools,
         default_workspace=tmp_path,
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
@@ -445,6 +560,176 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
         assert app._projection is not None
         assert app._projection.assistant_text == "first second"
         assert app._projection.activity.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
+    tmp_path: Path,
+) -> None:
+    provider = BlockingStreamProvider()
+    application = _blocking_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press(*"first", "enter")
+        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+        await pilot.pause(0.2)
+
+        app.query_one(Composer).load_text("follow next")
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+
+        queue_panel = app.query_one(QueuedInputPanel)
+        conversation = app.query_one(ConversationView)
+        assert queue_panel.display is True
+        assert "FOLLOW" in queue_panel.query_one("#queued-input-content").render().plain
+        assert "follow next" in queue_panel.query_one("#queued-input-content").render().plain
+        assert queue_panel.region.y >= app.query_one(Composer).region.bottom
+        assert [turn.render().plain for turn in conversation.query(".user-turn")] == [
+            "YOU\nfirst"
+        ]
+
+        provider.release.set()
+        await pilot.pause(1)
+
+        assert queue_panel.display is False
+        user_turns = list(conversation.query(".user-turn"))
+        assistant_turns = list(conversation.query(AssistantTurn))
+        assert [turn.render().plain for turn in user_turns] == [
+            "YOU\nfirst",
+            "YOU\nfollow next",
+        ]
+        children = list(conversation.children)
+        assert children.index(assistant_turns[0]) < children.index(user_turns[1])
+        assert children.index(user_turns[1]) < children.index(assistant_turns[1])
+
+        snapshot = application.runtime.store.load_runtime_session(
+            app._controller.session_id or ""
+        )
+        queued_message = next(
+            message for message in snapshot.messages if message.text_content == "follow next"
+        )
+        assert queued_message.metadata["queued_input_mode"] == "follow_up"
+        assert len(snapshot.runs) == 2
+
+
+@pytest.mark.asyncio
+async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: Path) -> None:
+    provider = QueuedSubagentApprovalProvider()
+    application = _queued_subagent_approval_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 38)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press(*"start child", "enter")
+        await asyncio.wait_for(provider.child_started.wait(), timeout=2)
+        await pilot.pause(0.2)
+
+        app.query_one(Composer).load_text("follow after child")
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+        assert app.query_one(QueuedInputPanel).display is True
+
+        provider.release_child.set()
+        await pilot.pause(1)
+
+        interaction = app._interaction
+        assert interaction is not None
+        assert interaction.kind == "approval"
+        assert interaction.is_subagent is True
+        assert interaction.tool_name == "Danger"
+        approval_panel = app.query_one(InteractionBar)
+        assert approval_panel.display is True
+        assert "Subagent General" in approval_panel.render().plain
+
+        await pilot.press("enter")
+        await pilot.pause(2)
+
+        assert app._interaction is None
+        assert app.query_one(InteractionBar).display is False
+        assert app.query_one(QueuedInputPanel).display is False
+        rendered = "\n".join(
+            turn.markdown.source for turn in app.query_one(ConversationView).query(AssistantTurn)
+        )
+        assert "parent resumed" in rendered
+        assert "queued input consumed" in rendered
+
+
+@pytest.mark.asyncio
+async def test_ctrl_enter_guides_the_active_run_at_the_next_model_turn(
+    tmp_path: Path,
+) -> None:
+    provider = BlockingStreamProvider()
+    application = _blocking_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press(*"first", "enter")
+        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+        await pilot.pause(0.2)
+
+        app.query_one(Composer).load_text("guide now")
+        await pilot.press("ctrl+enter")
+        await pilot.pause(0.3)
+
+        queue_panel = app.query_one(QueuedInputPanel)
+        queue_text = queue_panel.query_one("#queued-input-content").render().plain
+        assert queue_panel.display is True
+        assert "GUIDE" in queue_text
+        assert "guide now" in queue_text
+        assert all(
+            "guide now" not in turn.render().plain
+            for turn in app.query_one(ConversationView).query(".user-turn")
+        )
+
+        provider.release.set()
+        await pilot.pause(1)
+
+        assert queue_panel.display is False
+        snapshot = application.runtime.store.load_runtime_session(
+            app._controller.session_id or ""
+        )
+        guided_message = next(
+            message for message in snapshot.messages if message.text_content == "guide now"
+        )
+        assert guided_message.metadata["queued_input_mode"] == "steer"
+        assert len(snapshot.runs) == 1
+
+
+@pytest.mark.asyncio
+async def test_resumed_session_restores_its_durable_user_input_queue(
+    tmp_path: Path,
+) -> None:
+    application = _approval_application(tmp_path, tmp_path / "pending.txt")
+    await application.start()
+    waiting = await application.runtime.run("Start approval")
+    await application.runtime.run(
+        "Continue after approval",
+        session_id=waiting.session.session_id,
+    )
+    app = OuroTuiApp(
+        application=application,
+        approval_mode="approval",
+        resume_session_id=waiting.session.session_id,
+    )
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause(0.7)
+
+        queue_panel = app.query_one(QueuedInputPanel)
+        queue_text = queue_panel.query_one("#queued-input-content").render().plain
+        assert queue_panel.display is True
+        assert "FOLLOW" in queue_text
+        assert "Continue after approval" in queue_text
+        assert all(
+            "Continue after approval" not in turn.render().plain
+            for turn in app.query_one(ConversationView).query(".user-turn")
+        )
 
 
 @pytest.mark.asyncio

@@ -58,6 +58,10 @@ This project records user-visible and framework-contract changes in this file.
 - Tool approval now uses a focus-owning choice panel with a visible selection, arrow-key navigation,
   Enter confirmation, and Y/N shortcuts. The Composer is disabled while approval is pending, so
   approval keystrokes cannot be submitted as follow-up user messages.
+- TUI approvals and questions now cover the complete synchronous subagent tree. Descendant
+  interactions are projected by their canonical delegation/child/run/request identities and routed
+  through AgentService, so a parent in `waiting_child` cannot hide an approval while queued input
+  remains pending.
 - Parallel tool approvals are now projected as an ordered queue and resolved with their explicit
   Run and approval identifiers. Approving one tool advances directly to the next pending tool
   instead of losing the remaining requests or resolving a different tool than the panel displays.
@@ -68,6 +72,10 @@ This project records user-visible and framework-contract changes in this file.
   with the live event sink, avoiding silent responses when observer delivery is delayed. The TUI no
   longer shadows Textual's private `_closing` lifecycle state, and `/` now opens a filterable,
   keyboard-driven command popup backed by the same command catalog as dispatch and help.
+- TUI running-session input now uses a durable queue view below the Composer instead of optimistically
+  inserting unconsumed text into the conversation. Enter submits a follow-up for the next Run boundary,
+  Ctrl+Enter submits guidance for the next model-turn boundary, and canonical message identities place
+  consumed input into the transcript in Runtime event order, including after process recovery.
 - TUI streaming is now protected by a blocking-provider regression test that observes the first
   Markdown chunk before the Run completes. Built-in AskUser and common plugin input requests now
   share a keyboard-first question form with single-select, multi-select, multi-question, and
@@ -77,6 +85,10 @@ This project records user-visible and framework-contract changes in this file.
   terminate live delivery. Independent bounded mailboxes and sink timeouts remain intact. The TUI
   yields after crossing each event into Textual and renders each available prefix as one coalesced
   Markdown and activity update.
+- Builtin command tools now launch the already-selected shell executable directly with an argv
+  contract. This removes the redundant platform-shell layer that could leave Windows pipe/process
+  ownership unsettled, mark a completed PowerShell command as timed out, and keep its TUI row in
+  `running` despite valid output.
 - Plugin inventories now list user plugins before ambient builtins. Run generation snapshots remain
   dependency-aware and place user plugins before unrelated builtins, eliminating accidental ordering
   changes when builtin identities are renamed.

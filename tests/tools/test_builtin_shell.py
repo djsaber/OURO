@@ -3,6 +3,7 @@ import shlex
 import subprocess
 import sys
 from asyncio import create_task, sleep
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 import pytest
@@ -223,18 +224,19 @@ def test_bash_and_sh_commands_bind_the_selected_executable() -> None:
 @pytest.mark.asyncio
 async def test_command_result_identifies_shell_and_preserves_both_output_streams() -> None:
     shell = CommandShell("bash", "/opt/bin/bash", "Bash", "Bash")
-    seen_commands: list[str] = []
+    seen_arguments: list[tuple[str, ...]] = []
 
     class RecordingContext(ToolExecutionContext):
-        async def run_shell(
+        async def run_process(
             self,
-            command: str,
+            arguments: Sequence[str],
             *,
             cwd: str | Path | None = None,
             timeout_seconds: float = 30.0,
+            environment: Mapping[str, str] | None = None,
         ) -> ToolProcessResult:
-            del cwd, timeout_seconds
-            seen_commands.append(command)
+            del cwd, timeout_seconds, environment
+            seen_arguments.append(tuple(arguments))
             return ToolProcessResult(
                 stdout="standard output",
                 stderr="diagnostic output",
@@ -255,7 +257,7 @@ async def test_command_result_identifies_shell_and_preserves_both_output_streams
     assert outcome.result.structured["shell"] == "bash"
     assert outcome.result.structured["executable"] == "/opt/bin/bash"
     assert outcome.result.structured["returncode"] == 7
-    assert seen_commands == [shell.prepare_command("run something")]
+    assert seen_arguments == [shell.prepare_arguments("run something")]
 
 
 @pytest.mark.asyncio
@@ -284,6 +286,7 @@ async def test_detected_shell_executes_its_own_syntax(tmp_path) -> None:
     assert outcome.result.content.strip() == "shell-ok"
     assert outcome.result.structured["shell"] == shell.kind
     assert Path(outcome.result.structured["executable"]) == Path(shell.executable)
+    assert outcome.result.structured["timed_out"] is False
 
 
 @pytest.mark.asyncio

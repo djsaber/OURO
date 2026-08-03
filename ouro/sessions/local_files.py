@@ -548,6 +548,24 @@ class LocalSessionStore:
                 limit=limit,
             )
 
+    def load_message(self, session_id: str, message_id: str) -> MessageRecord:
+        with self.session_mutation(session_id):
+            path = self._require_session_dir(session_id) / "messages.jsonl"
+            try:
+                for line in self._read_jsonl(path):
+                    message = decode_versioned_record_json(
+                        MessageRecord,
+                        line,
+                        label=f"message in session {session_id}",
+                    )
+                    if message.message_id == message_id:
+                        return message
+            except (OSError, ValidationError, ValueError) as exc:
+                raise PersistenceError(
+                    f"could not load message {message_id} from session {session_id}: {exc}"
+                ) from exc
+        raise PersistenceError(f"message not found in session {session_id}: {message_id}")
+
     def load_events_page(
         self,
         session_id: str,

@@ -12,6 +12,10 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Label, Markdown, Static, TextArea
 
+from ouro.application.queued_inputs import (
+    QueuedInputMode,
+    QueuedUserInputView,
+)
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
 from ouro.tui.commands import TuiCommand
@@ -510,6 +514,11 @@ class InteractionBar(Static):
             return
         content = Text()
         content.append("? APPROVAL\n", style="bold #d9a441")
+        if interaction.is_subagent:
+            content.append(
+                f"Subagent {interaction.agent_name or interaction.delegation_id}\n",
+                style="#6f7a87",
+            )
         content.append(f"{interaction.tool_name} wants to run\n\n", style="bold")
         options = (
             ("Allow", "Run this tool", "#77b083"),
@@ -767,10 +776,42 @@ class CommandPopup(Static):
         self.update(content)
 
 
+class QueuedInputPanel(VerticalScroll):
+    """Live projection of direct user inputs awaiting a Runtime boundary."""
+
+    def __init__(self) -> None:
+        super().__init__(id="queued-input-panel")
+        self.display = False
+        self._content = Static(id="queued-input-content")
+
+    def compose(self) -> ComposeResult:
+        yield self._content
+
+    def set_inputs(self, inputs: tuple[QueuedUserInputView, ...]) -> None:
+        if not inputs:
+            self.display = False
+            self._content.update("")
+            return
+        content = Text()
+        content.append(f"QUEUED INPUTS  {len(inputs)}\n", style="bold #788492")
+        for index, item in enumerate(inputs, start=1):
+            label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
+            tone = "#6ca7d9" if item.mode == "follow_up" else "#d9a441"
+            prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
+            content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
+            content.append(prompt, style="#d6d9df")
+            if index < len(inputs):
+                content.append("\n")
+        self._content.update(content)
+        self.display = True
+        self.scroll_end(animate=False)
+
+
 class Composer(TextArea):
     BINDINGS = [
         *TextArea.BINDINGS,
         Binding("enter", "submit", "Send", show=False, priority=True),
+        Binding("ctrl+enter", "submit_steer", "Guide", show=False, priority=True),
         Binding("shift+enter", "newline", "New line", show=False, priority=True),
         Binding("up", "history_previous", show=False, priority=True),
         Binding("down", "history_next", show=False, priority=True),
@@ -778,9 +819,10 @@ class Composer(TextArea):
     ]
 
     class Submitted(Message):
-        def __init__(self, text: str) -> None:
+        def __init__(self, text: str, mode: QueuedInputMode) -> None:
             super().__init__()
             self.text = text
+            self.mode = mode
 
     class CommandSubmitted(Message):
         def __init__(self, text: str) -> None:
@@ -807,6 +849,12 @@ class Composer(TextArea):
         self._history_index = 0
 
     def action_submit(self) -> None:
+        self._submit("follow_up")
+
+    def action_submit_steer(self) -> None:
+        self._submit("steer")
+
+    def _submit(self, mode: QueuedInputMode) -> None:
         value = self.text.strip()
         if not value:
             return
@@ -816,7 +864,7 @@ class Composer(TextArea):
         self._history.append(value)
         self._history_index = len(self._history)
         self.clear()
-        self.post_message(self.Submitted(value))
+        self.post_message(self.Submitted(value, mode))
 
     def action_newline(self) -> None:
         self.insert("\n")
@@ -858,7 +906,10 @@ class Composer(TextArea):
 
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
-        yield Static("Enter send · Shift+Enter newline", id="key-hints")
+        yield Static(
+            "Enter follow · Ctrl+Enter guide · Shift+Enter newline",
+            id="key-hints",
+        )
         yield Static("", id="status-detail")
 
     def set_detail(self, detail: str) -> None:

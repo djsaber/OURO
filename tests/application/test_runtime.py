@@ -1716,6 +1716,11 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
 
     pending = await runtime.run("Write file")
     second = await runtime.run("Another prompt", session_id=pending.session.session_id)
+    await runtime.run(
+        "Guide the active run",
+        session_id=pending.session.session_id,
+        queue_mode="steer",
+    )
     snapshot = store.load_session(pending.session.session_id)
 
     assert second.run.run_id == pending.run.run_id
@@ -1723,6 +1728,13 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
     assert [run.status for run in snapshot.runs] == ["waiting_approval"]
     assert [message.text_content for message in snapshot.messages] == ["Write file", ""]
     assert snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Another prompt"
+    assert [
+        (item.prompt, item.mode)
+        for item in runtime.pending_user_inputs(pending.session.session_id)
+    ] == [
+        ("Another prompt", "follow_up"),
+        ("Guide the active run", "steer"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -1762,6 +1774,7 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
         "second",
     ]
     assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
+    assert runtime.pending_user_inputs(session.session_id) == ()
 
 
 @pytest.mark.asyncio

@@ -7,8 +7,11 @@ from pathlib import Path
 
 from pydantic import JsonValue
 
+from ouro.application.agent_models import AgentInteractionView
+from ouro.application.agents import AgentService
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.models import AvailableModel
+from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import SessionCatalogEntry, SessionDetail
 from ouro.core.approvals import SessionApprovalMode
@@ -18,6 +21,7 @@ from ouro.core.messages import MessageRecord
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
+from ouro.tui.state import PendingInteraction
 
 EventPublisher = Callable[[EventRecord], None]
 LifecyclePublisher = Callable[["TuiLifecycleStatus"], None]
@@ -71,6 +75,7 @@ class LoadedSession:
     detail: SessionDetail
     messages: tuple[MessageRecord, ...]
     events: tuple[EventRecord, ...]
+    queued_inputs: tuple[QueuedUserInputView, ...] = ()
 
 
 class TuiController:
@@ -191,7 +196,12 @@ class TuiController:
         if application is not None and self._close_application:
             await application.close()
 
-    async def submit(self, prompt: str) -> RunResult:
+    async def submit(
+        self,
+        prompt: str,
+        *,
+        queue_mode: QueuedInputMode = "follow_up",
+    ) -> RunResult:
         runtime = self._runtime()
         is_new_session = self._session_id is None
         if is_new_session:
@@ -200,6 +210,7 @@ class TuiController:
             result = await runtime.run(
                 prompt,
                 session_id=self._session_id,
+                queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
@@ -219,31 +230,79 @@ class TuiController:
     async def resolve_approval(
         self,
         *,
-        run_id: str,
-        approval_id: str,
+        interaction: PendingInteraction,
         approved: bool,
         reason: str = "User rejected",
-    ) -> RunResult:
+    ) -> RunResult | None:
+        if interaction.request_id is None:
+            raise ValueError("approval request is missing its canonical identity")
+        if interaction.delegation_id is not None:
+            agents = self._agents()
+            if interaction.session_id is None:
+                raise ValueError("subagent approval is missing its canonical identity")
+            await agents.resolve_agent_approval(
+                interaction.delegation_id,
+                child_session_id=interaction.session_id,
+                child_run_id=interaction.run_id,
+                tool_call_id=interaction.tool_call_id,
+                approval_id=interaction.request_id,
+                approved=approved,
+                reason=reason,
+            )
+            return None
         return await self._runtime().approve_tool(
             session_id=self._require_session(),
-            run_id=run_id,
-            approval_id=approval_id,
+            run_id=interaction.run_id,
+            approval_id=interaction.request_id,
             approved=approved,
             reason=reason,
         )
 
-    async def answer(self, *, run_id: str, answer: JsonValue) -> RunResult:
+    async def answer(
+        self,
+        *,
+        interaction: PendingInteraction,
+        answer: JsonValue,
+    ) -> RunResult | None:
+        if interaction.delegation_id is not None:
+            agents = self._agents()
+            if interaction.session_id is None or interaction.request_id is None:
+                raise ValueError("subagent input request is missing its canonical identity")
+            await agents.resolve_agent_input(
+                interaction.delegation_id,
+                child_session_id=interaction.session_id,
+                child_run_id=interaction.run_id,
+                tool_call_id=interaction.tool_call_id,
+                request_id=interaction.request_id,
+                answer=answer,
+            )
+            return None
         return await self._runtime().answer_user(
             session_id=self._require_session(),
-            run_id=run_id,
+            run_id=interaction.run_id,
             answer=answer,
         )
+
+    def agent_interactions(self) -> tuple[AgentInteractionView, ...]:
+        if self._session_id is None or self._application is None:
+            return ()
+        if self._application.agents is None:
+            return ()
+        session = self._runtime().sessions.open(self._session_id, recover=False).session
+        return self._application.agents.list_agent_interactions(session.root_session_id)
 
     def new_session(self) -> None:
         self._session_id = None
 
     def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         return self._runtime().sessions.catalog().entries
+
+    def queued_user_inputs(self, session_id: str | None = None) -> tuple[QueuedUserInputView, ...]:
+        target_session_id = session_id or self._require_session()
+        return self._runtime().pending_user_inputs(target_session_id)
+
+    def message(self, session_id: str, message_id: str) -> MessageRecord:
+        return self._runtime().sessions.message(session_id, message_id)
 
     def models(self) -> tuple[AvailableModel, ...]:
         return tuple(self._runtime().available_models())
@@ -286,7 +345,12 @@ class TuiController:
                 cursor = event_page.next_cursor
         self._session_id = session_id
         self._initial_model = None
-        return LoadedSession(detail=detail, messages=tuple(messages), events=tuple(events))
+        return LoadedSession(
+            detail=detail,
+            messages=tuple(messages),
+            events=tuple(events),
+            queued_inputs=self.queued_user_inputs(session_id),
+        )
 
     def _runtime(self) -> RuntimeService:
         if not self._started or self._application is None:
@@ -297,6 +361,11 @@ class TuiController:
         if self._session_id is None:
             raise RuntimeError("no active session")
         return self._session_id
+
+    def _agents(self) -> AgentService:
+        if self._application is None or self._application.agents is None:
+            raise RuntimeError("subagent interaction service is unavailable")
+        return self._application.agents
 
     async def _receive_event(self, event: EventRecord) -> None:
         """Cross one persisted Runtime event into Textual's message pump."""

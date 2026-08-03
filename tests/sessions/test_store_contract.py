@@ -12,7 +12,7 @@ from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextBuilder
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
-from ouro.core.errors import MigrationRequiredError
+from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
@@ -77,6 +77,9 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     assert (first.sequence, second.sequence) == (1, 2)
     assert session_store.latest_event_sequence(session.session_id) == 2
     assert session_store.load_resource_references(session.session_id) == [reference]
+    assert session_store.load_message(session.session_id, message.message_id) == message
+    with pytest.raises(PersistenceError, match="message not found"):
+        session_store.load_message(session.session_id, "msg_missing")
 
     first_page, cursor = session_store.load_events_page(session.session_id, limit=1)
     assert [event.event_type for event in first_page] == ["run_started"]

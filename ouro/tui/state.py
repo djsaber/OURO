@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ouro.application.agent_models import AgentInteractionView
 from ouro.application.runtime_activity import queued_runtime_activity, reduce_runtime_activity
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
@@ -18,6 +19,13 @@ class PendingInteraction:
     tool_name: str
     request_id: str | None = None
     request: object | None = None
+    session_id: str | None = None
+    delegation_id: str | None = None
+    agent_name: str | None = None
+
+    @property
+    def is_subagent(self) -> bool:
+        return self.delegation_id is not None
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,7 @@ class TuiSessionProjection:
                     tool_call_id=tool_call_id,
                     tool_name=_string(payload.get("tool_name")) or "tool",
                     request_id=approval_id,
+                    session_id=event.session_id,
                 )
                 interaction_changed = True
         elif event.event_type == "ask_user_requested" and event.run_id is not None:
@@ -110,6 +119,7 @@ class TuiSessionProjection:
                         tool_call_id=tool_call_id,
                         tool_name=_string(payload.get("tool_name")) or "tool",
                         request=payload.get("request"),
+                        session_id=event.session_id,
                     )
                 )
                 interaction_changed = True
@@ -161,6 +171,22 @@ def question_text(interaction: PendingInteraction) -> str:
     if isinstance(request, str) and request.strip():
         return request.strip()
     return f"{interaction.tool_name} is waiting for your input"
+
+
+def project_agent_interaction(interaction: AgentInteractionView) -> PendingInteraction:
+    """Adapt the canonical agent-tree interaction DTO to the TUI interaction model."""
+
+    return PendingInteraction(
+        kind="approval" if interaction.kind == "approval" else "question",
+        run_id=interaction.child_run_id,
+        tool_call_id=interaction.tool_call_id,
+        tool_name=interaction.tool_name,
+        request_id=interaction.request_id,
+        request=interaction.input_request,
+        session_id=interaction.child_session_id,
+        delegation_id=interaction.delegation_id,
+        agent_name=interaction.agent_name,
+    )
 
 
 def _string(value: object) -> str | None:

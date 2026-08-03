@@ -5,6 +5,7 @@ from typing import Any, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
+from ouro.application.dto import ApplicationDTO
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
@@ -18,6 +19,15 @@ QUEUED_INPUTS_KEY = "follow_up_queue"
 
 QueuedInputMode = SessionInputMode
 QueuedInputSource = Literal["user", "host", "plugin", "delegation"]
+
+
+class QueuedUserInputView(ApplicationDTO):
+    """Host-safe view of one direct user input awaiting a consumption boundary."""
+
+    queue_id: str
+    prompt: str
+    mode: QueuedInputMode
+    queued_at: datetime
 
 
 class QueuedInput(OuroModel):

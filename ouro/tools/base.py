@@ -4,7 +4,7 @@ import asyncio
 import os
 import signal
 import subprocess
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -74,6 +74,7 @@ class ToolProcessResult:
 _DEFAULT_PROCESS_OUTPUT_LIMIT = 100_000
 _PROCESS_READ_SIZE = 64 * 1024
 _PROCESS_SHUTDOWN_TIMEOUT_SECONDS = 5.0
+_PROCESS_PIPE_SETTLE_TIMEOUT_SECONDS = 0.5
 
 
 @dataclass
@@ -219,6 +220,54 @@ class ToolExecutionContext:
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
             )
+        return await self._collect_process(process, timeout_seconds=timeout_seconds)
+
+    async def run_process(
+        self,
+        arguments: Sequence[str],
+        *,
+        cwd: str | Path | None = None,
+        timeout_seconds: float = 30.0,
+        environment: Mapping[str, str] | None = None,
+    ) -> ToolProcessResult:
+        """Run one resolved executable without inserting an intermediary shell.
+
+        Builtin command tools already know the selected shell executable and its
+        argument contract. Launching that executable through another platform shell
+        changes quoting and process ownership on Windows, so the Host process boundary
+        accepts argv directly and supervises the process it actually owns.
+        """
+
+        self.raise_if_aborted()
+        if not arguments:
+            raise ValueError("process arguments cannot be empty")
+        process_environment = dict(environment) if environment is not None else None
+        if os.name == "nt":
+            process = await asyncio.create_subprocess_exec(
+                *arguments,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=process_environment,
+                creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
+            )
+        else:
+            process = await asyncio.create_subprocess_exec(
+                *arguments,
+                cwd=cwd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=process_environment,
+                start_new_session=True,
+            )
+        return await self._collect_process(process, timeout_seconds=timeout_seconds)
+
+    async def _collect_process(
+        self,
+        process: asyncio.subprocess.Process,
+        *,
+        timeout_seconds: float,
+    ) -> ToolProcessResult:
         assert process.stdout is not None
         assert process.stderr is not None
         output = _BoundedProcessOutput(self.max_output_chars or _DEFAULT_PROCESS_OUTPUT_LIMIT)
@@ -286,16 +335,37 @@ async def _settle_process_tasks(
 ) -> None:
     _, pending = await asyncio.wait(
         tasks,
-        timeout=_PROCESS_SHUTDOWN_TIMEOUT_SECONDS,
+        timeout=_PROCESS_PIPE_SETTLE_TIMEOUT_SECONDS,
     )
     if not pending:
         return
     with suppress(ProcessLookupError):
         process.kill()
-    _, still_pending = await asyncio.wait(pending, timeout=1.0)
-    for task in still_pending:
+    _close_process_transports(process)
+    for task in pending:
         task.cancel()
-    await asyncio.gather(*still_pending, return_exceptions=True)
+    await asyncio.gather(*pending, return_exceptions=True)
+
+
+def _close_process_transports(process: asyncio.subprocess.Process) -> None:
+    """Close parent-owned asyncio pipe handles after forced process termination.
+
+    ``StreamReader`` has no public close API. On Windows, cancelling a pending
+    Proactor read without closing its transport leaks the OS pipe handle, so the
+    process boundary closes the transports it created before cancelling readers.
+    """
+
+    process_transport = getattr(process, "_transport", None)
+    get_pipe_transport = getattr(process_transport, "get_pipe_transport", None)
+    if callable(get_pipe_transport):
+        for file_descriptor in (1, 2):
+            pipe_transport = get_pipe_transport(file_descriptor)
+            close_pipe = getattr(pipe_transport, "close", None)
+            if callable(close_pipe):
+                close_pipe()
+    close_process = getattr(process_transport, "close", None)
+    if callable(close_process):
+        close_process()
 
 
 async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:

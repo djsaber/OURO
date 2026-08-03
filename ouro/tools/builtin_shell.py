@@ -35,11 +35,13 @@ class CommandShell:
     tool_name: str
     display_name: str
 
-    def prepare_command(self, command: str) -> str:
+    def prepare_arguments(self, command: str) -> tuple[str, ...]:
+        """Bind command text to the selected executable as a direct argv contract."""
+
         if self.kind in ("powershell", "windows_powershell"):
-            return _powershell_command_line(self.executable, command)
+            return _powershell_arguments(self.executable, command)
         if self.kind == "bash":
-            arguments = [
+            return (
                 self.executable,
                 "--noprofile",
                 "--norc",
@@ -47,11 +49,25 @@ class CommandShell:
                 "pipefail",
                 "-c",
                 command,
-            ]
-            return f"BASH_ENV= ENV= {shlex.join(arguments)}"
+            )
         if self.kind == "sh":
-            return f"ENV= {shlex.join([self.executable, '-c', command])}"
-        return f"chcp 65001 >NUL & {command}"
+            return (self.executable, "-c", command)
+        return (self.executable, "/D", "/S", "/C", f"chcp 65001 >NUL & {command}")
+
+    def execution_environment(self) -> Mapping[str, str]:
+        environment = dict(os.environ)
+        if self.kind in {"bash", "sh"}:
+            environment.pop("BASH_ENV", None)
+            environment.pop("ENV", None)
+        return environment
+
+    def prepare_command(self, command: str) -> str:
+        arguments = self.prepare_arguments(command)
+        if self.kind in ("powershell", "windows_powershell", "cmd"):
+            return subprocess.list2cmdline(arguments)
+        if self.kind == "bash":
+            return f"BASH_ENV= ENV= {shlex.join(arguments)}"
+        return f"ENV= {shlex.join(arguments)}"
 
 
 def detect_command_shell(
@@ -178,10 +194,11 @@ async def _execute_command(
     timeout_raw = invocation.arguments.get("timeout_seconds", 30)
     timeout_seconds = float(timeout_raw) if isinstance(timeout_raw, int | float) else 30.0
     cwd = context.resolve_working_directory(requested_cwd)
-    process_result = await context.run_shell(
-        shell.prepare_command(command),
+    process_result = await context.run_process(
+        shell.prepare_arguments(command),
         cwd=cwd,
         timeout_seconds=timeout_seconds,
+        environment=shell.execution_environment(),
     )
 
     stdout = process_result.stdout
@@ -286,7 +303,7 @@ def _command_description(shell: CommandShell) -> str:
     return "Complete Windows cmd.exe command text; Bash and PowerShell syntax are invalid."
 
 
-def _powershell_command_line(executable: str, command: str) -> str:
+def _powershell_arguments(executable: str, command: str) -> tuple[str, ...]:
     encoded_command = base64.b64encode(command.encode("utf-8")).decode("ascii")
     script = (
         "$ErrorActionPreference = 'Stop'\n"
@@ -307,17 +324,15 @@ def _powershell_command_line(executable: str, command: str) -> str:
         "}\n"
     )
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
-    return subprocess.list2cmdline(
-        [
-            executable,
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-OutputFormat",
-            "Text",
-            "-EncodedCommand",
-            encoded,
-        ]
+    return (
+        executable,
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-OutputFormat",
+        "Text",
+        "-EncodedCommand",
+        encoded,
     )
 
 

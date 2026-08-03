@@ -645,6 +645,17 @@ class SQLiteSessionStore:
             limit=limit,
         )
 
+    def load_message(self, session_id: str, message_id: str) -> MessageRecord:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            row = connection.execute(
+                "SELECT payload FROM messages WHERE session_id = ? AND message_id = ?",
+                (session_id, message_id),
+            ).fetchone()
+        if row is None:
+            raise PersistenceError(f"message not found in session {session_id}: {message_id}")
+        return self._validate_model(MessageRecord, row[0], f"message {message_id}")
+
     def load_events_page(
         self,
         session_id: str,

@@ -25,6 +25,7 @@ from ouro.application.queued_inputs import (
     QueuedInputMode,
     QueuedInputQueue,
     QueuedInputSource,
+    QueuedUserInputView,
 )
 from ouro.application.recovery import RunRecoveryService
 from ouro.application.run_continuations import (
@@ -633,6 +634,21 @@ class RuntimeService:
             return self.skill_activations.list_for_host(lease.skills)
         finally:
             lease.close()
+
+    def pending_user_inputs(self, session_id: str) -> tuple[QueuedUserInputView, ...]:
+        """Return direct user inputs still waiting at a Run or model-turn boundary."""
+
+        snapshot = self.store.load_runtime_session(session_id)
+        return tuple(
+            QueuedUserInputView(
+                queue_id=item.queue_id,
+                prompt=item.prompt,
+                mode=item.mode,
+                queued_at=item.queued_at,
+            )
+            for item in self.queued_inputs.eligible(snapshot)
+            if item.source == "user"
+        )
 
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         if session_id is None:
@@ -1973,6 +1989,7 @@ class RuntimeService:
                 event_type="queued_input_consumed",
                 payload={
                     "queue_id": item.queue_id,
+                    "message_id": input_message.message_id,
                     "mode": item.mode,
                     "turn_id": turn_id,
                     "source": item.source,
