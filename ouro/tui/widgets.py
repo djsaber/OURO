@@ -15,6 +15,7 @@ from textual.widgets import Label, Markdown, Static, TextArea
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
 from ouro.tui.commands import TuiCommand
+from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
 
@@ -58,6 +59,15 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
+
+
+def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
+    visible = names[:limit]
+    summary = ", ".join(visible)
+    remaining = len(names) - len(visible)
+    if remaining:
+        summary += f", +{remaining}"
+    return summary
 
 
 class _MarkdownWriter(Protocol):
@@ -221,30 +231,118 @@ class ToolActivityRow(Static):
         self.update(text)
 
 
+class WelcomePanel(Static):
+    def __init__(self, status: TuiSystemStatus | None = None) -> None:
+        super().__init__(classes="welcome")
+        self._status = status or TuiSystemStatus()
+
+    def set_system_status(self, status: TuiSystemStatus) -> None:
+        self._status = status
+        self._render_panel()
+
+    def on_mount(self) -> None:
+        self._render_panel()
+
+    def _render_panel(self) -> None:
+        status = self._status
+        content = Text()
+        content.append("◆ OURO\n\n", style="bold #d9a441")
+        content.append(
+            "Tell me what you want to accomplish. Use ",
+            style="#aeb5bf",
+        )
+        content.append("/", style="bold")
+        content.append(" for commands, ", style="#aeb5bf")
+        content.append("Ctrl+P", style="bold")
+        content.append(" for actions, and ", style="#aeb5bf")
+        content.append("Ctrl+S", style="bold")
+        content.append(" for sessions.\n\n", style="#aeb5bf")
+        content.append("SYSTEM\n", style="bold #788492")
+
+        provider_names = _compact_names(status.provider_ids) or "none configured"
+        content.append("Models   ", style="bold #788492")
+        content.append(provider_names, style="#d6d9df")
+        content.append(
+            f" · {status.model_count} model(s)\n",
+            style="#8f9aa8",
+        )
+        content.append("Skills   ", style="bold #788492")
+        content.append(f"{status.skill_count} available", style="#8f9aa8")
+        if status.skill_names:
+            content.append(f" · {_compact_names(status.skill_names)}", style="#647180")
+        content.append("\n")
+        content.append("Plugins  ", style="bold #788492")
+        content.append(
+            f"{status.plugin_active_count}/{status.plugin_total_count} active",
+            style="#8f9aa8",
+        )
+        if status.plugin_active_names:
+            content.append(
+                f" · {_compact_names(status.plugin_active_names)}",
+                style="#647180",
+            )
+        if status.plugin_issue_count:
+            content.append(
+                f" · {status.plugin_issue_count} need attention",
+                style="#e08a8a",
+            )
+        content.append("\n")
+        content.append("MCP      ", style="bold #788492")
+        if status.mcp_total_count:
+            content.append(
+                f"{status.mcp_connected_count}/{status.mcp_total_count} connected"
+                f" · {status.mcp_tool_count} tool(s)",
+                style="#8f9aa8",
+            )
+            if status.mcp_failed_count:
+                content.append(
+                    f" · {status.mcp_failed_count} failed",
+                    style="#e08a8a",
+                )
+        else:
+            content.append("not configured", style="#647180")
+        content.append("\n")
+        content.append("Health   ", style="bold #788492")
+        if status.startup_diagnostic_count:
+            content.append(
+                f"{status.startup_diagnostic_count} startup diagnostic(s)",
+                style="#e08a8a",
+            )
+        else:
+            content.append("Ready", style="#77b083")
+        self.update(content)
+
+
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
+        self._system_status = TuiSystemStatus()
+        self._welcome: WelcomePanel | None = None
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
 
     async def show_welcome(self) -> None:
         await self.remove_children()
+        self._welcome = None
         self._assistant = None
         self._tools.clear()
-        await self.mount(
-            Static(
-                "[bold #d9a441]◆ OURO[/]\n\n"
-                "Tell me what you want to accomplish. Use [bold]/[/] for commands, "
-                "[bold]Ctrl+P[/] for actions, and [bold]Ctrl+S[/] for sessions.",
-                classes="welcome",
-                markup=True,
-            )
-        )
+        await self._mount_welcome()
+
+    def set_system_status(self, status: TuiSystemStatus) -> None:
+        self._system_status = status
+        if self._welcome is not None:
+            self._welcome.set_system_status(status)
+
+    async def _mount_welcome(self) -> None:
+        self._welcome = WelcomePanel(self._system_status)
+        await self.mount(self._welcome)
 
     async def load_messages(self, messages: Iterable[MessageRecord]) -> None:
         await self.remove_children()
+        self._welcome = None
         self._assistant = None
         self._tools.clear()
+        await self._mount_welcome()
         for message in messages:
             text = message.text_content
             if message.role not in {"user", "assistant"}:

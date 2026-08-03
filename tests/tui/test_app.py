@@ -20,15 +20,18 @@ from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolInputRequest, ToolRegistry, builtin_tools
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.screens import HelpScreen
 from ouro.tui.widgets import (
     AskUserPanel,
     AssistantTurn,
+    BrandHeader,
     CommandPopup,
     Composer,
     ConversationView,
     InteractionBar,
     ToolActivityRow,
+    WelcomePanel,
 )
 
 
@@ -341,6 +344,60 @@ def _question_application(
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
     return LocalApplication.from_runtime(runtime)
+
+
+@pytest.mark.asyncio
+async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("Hello")
+        await conversation.append_assistant("Hi")
+        await conversation.add_notice("Status changed")
+        header = app.query_one(BrandHeader)
+        conversation.set_system_status(
+            TuiSystemStatus(
+                provider_ids=("deepseek", "openai"),
+                model_count=3,
+                skill_count=7,
+                skill_names=("browser", "documents", "github", "imagegen"),
+                plugin_active_count=2,
+                plugin_total_count=3,
+                plugin_issue_count=1,
+                plugin_active_names=("Goals", "Guardian"),
+                mcp_connected_count=3,
+                mcp_total_count=3,
+                mcp_tool_count=8,
+            )
+        )
+        await pilot.pause()
+
+        welcome = conversation.query_one(WelcomePanel)
+        status_text = welcome.render().plain
+        assert "deepseek, openai · 3 model(s)" in status_text
+        assert "7 available · browser, documents, github, +1" in status_text
+        assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
+        assert "3/3 connected · 8 tool(s)" in status_text
+        assert "MCP" not in header.render().plain
+        assert header.styles.border_left[0] == ""
+        assert welcome.styles.border_left[0] == "thick"
+        assert conversation.styles.scrollbar_size_vertical == 1
+        assert all(turn.styles.border_left[0] == "" for turn in conversation.query(".turn"))
+        assert all(
+            notice.styles.border_left[0] == "" for notice in conversation.query(".notice")
+        )
+
+        for panel in (
+            app.query_one(Composer),
+            app.query_one(InteractionBar),
+            app.query_one(AskUserPanel),
+        ):
+            assert panel.styles.border_left[0] == ""
+            assert panel.styles.border_right[0] == ""
+            assert panel.styles.border_top[0] == "solid"
+            assert panel.styles.border_bottom[0] == "solid"
 
 
 @pytest.mark.asyncio

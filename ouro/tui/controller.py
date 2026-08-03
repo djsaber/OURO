@@ -40,12 +40,30 @@ class McpServerStatus:
 
 
 @dataclass(frozen=True)
+class TuiSystemStatus:
+    provider_ids: tuple[str, ...] = ()
+    model_count: int = 0
+    skill_count: int = 0
+    skill_names: tuple[str, ...] = ()
+    plugin_active_count: int = 0
+    plugin_total_count: int = 0
+    plugin_issue_count: int = 0
+    plugin_active_names: tuple[str, ...] = ()
+    mcp_connected_count: int = 0
+    mcp_total_count: int = 0
+    mcp_tool_count: int = 0
+    mcp_failed_count: int = 0
+    startup_diagnostic_count: int = 0
+
+
+@dataclass(frozen=True)
 class TuiBootstrap:
     models: tuple[AvailableModel, ...]
     current_model: AvailableModel
     sessions: tuple[SessionCatalogEntry, ...]
     startup_report: ApplicationStartupReport
     mcp_servers: tuple[McpServerStatus, ...] = ()
+    system_status: TuiSystemStatus = TuiSystemStatus()
 
 
 @dataclass(frozen=True)
@@ -110,21 +128,60 @@ class TuiController:
         await self._application.start()
         self._started = True
         runtime = self._application.runtime
+        models = tuple(runtime.available_models())
+        plugin_summaries = (
+            tuple(self._application.plugins.list())
+            if self._application.plugins is not None
+            else ()
+        )
+        skills = runtime.available_skills()
+        active_plugins = tuple(
+            item for item in plugin_summaries if item.status in {"active", "ready"}
+        )
+        plugin_issue_statuses = {
+            "invalid",
+            "incompatible",
+            "needs_configuration",
+            "needs_code_trust",
+            "needs_authorization",
+            "degraded",
+            "blocked",
+            "failed",
+        }
+        mcp_servers = tuple(
+            McpServerStatus(
+                server_id=record.config.server_id,
+                name=record.config.name,
+                transport=record.config.transport,
+                status=record.status,
+                tool_count=len(record.tool_names),
+                error=record.error,
+            )
+            for record in self._application.mcp.startup_records
+        )
+        connected_mcp = tuple(item for item in mcp_servers if item.status == "connected")
         return TuiBootstrap(
-            models=tuple(runtime.available_models()),
+            models=models,
             current_model=runtime.current_model(),
             sessions=runtime.sessions.catalog().entries,
             startup_report=self._application.startup_report,
-            mcp_servers=tuple(
-                McpServerStatus(
-                    server_id=record.config.server_id,
-                    name=record.config.name,
-                    transport=record.config.transport,
-                    status=record.status,
-                    tool_count=len(record.tool_names),
-                    error=record.error,
-                )
-                for record in self._application.mcp.startup_records
+            mcp_servers=mcp_servers,
+            system_status=TuiSystemStatus(
+                provider_ids=tuple(sorted({model.provider_id for model in models})),
+                model_count=len(models),
+                skill_count=len(skills),
+                skill_names=tuple(sorted(item.name for item in skills)),
+                plugin_active_count=len(active_plugins),
+                plugin_total_count=len(plugin_summaries),
+                plugin_issue_count=sum(
+                    item.status in plugin_issue_statuses for item in plugin_summaries
+                ),
+                plugin_active_names=tuple(sorted(item.name for item in active_plugins)),
+                mcp_connected_count=len(connected_mcp),
+                mcp_total_count=len(mcp_servers),
+                mcp_tool_count=sum(item.tool_count for item in connected_mcp),
+                mcp_failed_count=sum(item.status == "failed" for item in mcp_servers),
+                startup_diagnostic_count=len(self._application.startup_report.diagnostics),
             ),
         )
 

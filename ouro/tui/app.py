@@ -82,6 +82,7 @@ class OuroTuiApp(App[int]):
         scrollbar-color: #505967;
         scrollbar-color-hover: #6a7482;
         scrollbar-background: transparent;
+        scrollbar-size-vertical: 1;
     }
 
     .welcome {
@@ -103,12 +104,10 @@ class OuroTuiApp(App[int]):
 
     .user-turn {
         padding: 0 1;
-        border-left: thick #4d7699;
     }
 
     .assistant-turn {
         padding: 0 1;
-        border-left: thick #9a7533;
     }
 
     .turn-label {
@@ -162,13 +161,11 @@ class OuroTuiApp(App[int]):
         margin: 0 1 1 1;
         padding: 0 1;
         color: #d9a441;
-        border-left: thick #7c6536;
         background: transparent;
     }
 
     .error-notice {
         color: #e08a8a;
-        border-left: thick #a14f4f;
     }
 
     #interaction-bar {
@@ -178,11 +175,15 @@ class OuroTuiApp(App[int]):
         padding: 1 2;
         color: #d6d9df;
         background: transparent;
-        border: tall #7c6536;
+        border-top: solid #7c6536;
+        border-right: none;
+        border-bottom: solid #7c6536;
+        border-left: none;
     }
 
     #interaction-bar:focus {
-        border: tall #b68a3b;
+        border-top: solid #b68a3b;
+        border-bottom: solid #b68a3b;
     }
 
     #ask-user-panel {
@@ -192,11 +193,15 @@ class OuroTuiApp(App[int]):
         padding: 1 2;
         color: #d6d9df;
         background: transparent;
-        border: tall #7c6536;
+        border-top: solid #7c6536;
+        border-right: none;
+        border-bottom: solid #7c6536;
+        border-left: none;
     }
 
     #ask-user-panel:focus {
-        border: tall #b68a3b;
+        border-top: solid #b68a3b;
+        border-bottom: solid #b68a3b;
     }
 
     #command-popup {
@@ -217,13 +222,18 @@ class OuroTuiApp(App[int]):
         padding: 0 1;
         color: #e5e7eb;
         background: transparent;
-        border: tall #505967;
+        border-top: solid #505967;
+        border-right: none;
+        border-bottom: solid #505967;
+        border-left: none;
         scrollbar-background: transparent;
         scrollbar-color: #505967;
+        scrollbar-size-vertical: 1;
     }
 
     #composer:focus {
-        border: tall #b68a3b;
+        border-top: solid #b68a3b;
+        border-bottom: solid #b68a3b;
     }
 
     StatusLine {
@@ -361,7 +371,7 @@ class OuroTuiApp(App[int]):
                 await conversation.show_welcome()
         else:
             await conversation.show_welcome()
-        await self._show_startup_status(bootstrap)
+        self._apply_system_status(bootstrap)
         composer = self.query_one(Composer)
         composer.disabled = False
         composer.focus()
@@ -394,22 +404,8 @@ class OuroTuiApp(App[int]):
         self.query_one(BrandHeader).set_activity(message.status.activity)
         self.query_one(StatusLine).set_detail(message.status.detail)
 
-    async def _show_startup_status(self, bootstrap: TuiBootstrap) -> None:
-        if not bootstrap.mcp_servers:
-            return
-        connected = tuple(item for item in bootstrap.mcp_servers if item.status == "connected")
-        failed = tuple(item for item in bootstrap.mcp_servers if item.status == "failed")
-        tool_count = sum(item.tool_count for item in connected)
-        summary = f"MCP · {len(connected)} connected · {tool_count} tool(s)"
-        if failed:
-            summary += f" · {len(failed)} failed"
-        conversation = self.query_one(ConversationView)
-        await conversation.add_notice(summary, error=bool(failed))
-        for server in failed:
-            await conversation.add_notice(
-                f"MCP · {server.name} [{server.server_id}] · {server.error or 'connection failed'}",
-                error=True,
-            )
+    def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
+        self.query_one(ConversationView).set_system_status(bootstrap.system_status)
 
     async def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
         self._runtime_events_ready_posted = False
