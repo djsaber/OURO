@@ -123,6 +123,29 @@ class OuroTuiApp(App[int]):
         padding: 0;
     }
 
+    .reasoning-view {
+        height: auto;
+        margin: 0 0 1 1;
+        padding: 0 1;
+        color: #8f9aa8;
+        border-left: solid #505967;
+        background: transparent;
+    }
+
+    .reasoning-label {
+        height: 1;
+        color: #788492;
+        text-style: bold;
+    }
+
+    .reasoning-markdown {
+        height: auto;
+        padding: 0;
+        color: #8f9aa8;
+        text-style: dim italic;
+        background: transparent;
+    }
+
     Markdown, MarkdownBlock, MarkdownFence, MarkdownTable {
         background: transparent;
     }
@@ -150,11 +173,16 @@ class OuroTuiApp(App[int]):
 
     #interaction-bar {
         height: auto;
-        min-height: 1;
-        padding: 0 2;
+        max-height: 10;
+        margin: 0 1;
+        padding: 1 2;
         color: #d6d9df;
         background: transparent;
-        border-top: solid #6b5934;
+        border: tall #7c6536;
+    }
+
+    #interaction-bar:focus {
+        border: tall #b68a3b;
     }
 
     #ask-user-panel {
@@ -412,33 +440,36 @@ class OuroTuiApp(App[int]):
             composer.disabled = False
             composer.focus()
 
-        assistant_parts: list[str] = []
         diagnostics: list[str] = []
         latest_update = None
         interaction_changed = False
         assistant_visible = bool(projection.assistant_text)
+        conversation = self.query_one(ConversationView)
         for event in events:
             if event.event_type == "run_started":
                 assistant_visible = False
+            previous_tools = projection.activity.tool_calls
             update = projection.apply(event)
             if update is None:
                 continue
             latest_update = update
+            if update.reasoning_delta:
+                await conversation.append_reasoning(update.reasoning_delta)
             if update.assistant_delta:
-                assistant_parts.append(update.assistant_delta)
+                await conversation.append_assistant(update.assistant_delta)
                 assistant_visible = True
             if update.round_break and assistant_visible:
-                assistant_parts.append("\n\n")
+                await conversation.append_assistant("\n\n")
+            if update.activity.tool_calls != previous_tools:
+                await conversation.sync_tools(update.activity.tool_calls)
             interaction_changed = interaction_changed or update.interaction_changed
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
 
         if latest_update is None:
             return
-        conversation = self.query_one(ConversationView)
-        if assistant_parts:
-            await conversation.append_assistant("".join(assistant_parts))
-        await conversation.sync_tools(latest_update.activity.tool_calls)
+        if latest_update.activity.activity != "streaming_reasoning":
+            conversation.finish_reasoning()
         self._sync_activity(latest_update.activity)
         if interaction_changed:
             self._sync_interaction(projection.pending_interaction)
@@ -447,6 +478,9 @@ class OuroTuiApp(App[int]):
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
         interaction = self._projection.pending_interaction if self._projection else None
+        if interaction is not None and interaction.kind == "approval":
+            self.query_one(InteractionBar).focus()
+            return
         if interaction is not None and interaction.kind == "question":
             panel = self.query_one(AskUserPanel)
             if panel.display and panel.awaiting_freeform:
@@ -474,8 +508,8 @@ class OuroTuiApp(App[int]):
         finally:
             self._waiting_for_session_event = False
             composer = self.query_one(Composer)
-            composer.disabled = False
             interaction = self._projection.pending_interaction if self._projection else None
+            composer.disabled = interaction is not None and interaction.kind == "approval"
             if interaction is not None and interaction.kind == "approval":
                 self.query_one(InteractionBar).focus()
             elif interaction is not None and interaction.kind == "question":
@@ -553,12 +587,29 @@ class OuroTuiApp(App[int]):
         self.query_one(CommandPopup).hide()
 
     @work(exclusive=True, group="interaction")
-    async def _resolve_approval(self, approved: bool) -> None:
+    async def _resolve_approval(
+        self,
+        interaction: PendingInteraction,
+        approved: bool,
+    ) -> None:
+        approval_id = interaction.request_id
+        if approval_id is None:
+            await self.query_one(ConversationView).add_notice(
+                "Approval request has no identifier",
+                error=True,
+            )
+            self.query_one(InteractionBar).resume()
+            return
         try:
-            result = await self._controller.resolve_approval(approved=approved)
+            result = await self._controller.resolve_approval(
+                run_id=interaction.run_id,
+                approval_id=approval_id,
+                approved=approved,
+            )
             await self._apply_run_result(result)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.query_one(InteractionBar).resume()
 
     @work(exclusive=True, group="interaction")
     async def _answer_question(self, interaction: PendingInteraction, answer: JsonValue) -> None:
@@ -583,7 +634,7 @@ class OuroTuiApp(App[int]):
                 composer.focus()
 
     def on_interaction_bar_decision(self, message: InteractionBar.Decision) -> None:
-        self._resolve_approval(message.approved)
+        self._resolve_approval(message.interaction, message.approved)
 
     def on_ask_user_panel_completed(self, message: AskUserPanel.Completed) -> None:
         interaction = self._projection.pending_interaction if self._projection else None
@@ -610,14 +661,17 @@ class OuroTuiApp(App[int]):
         if interaction is not None and interaction.kind == "question":
             interaction_bar.show_interaction(None)
             ask_user.show_request(project_question_form(interaction.tool_name, interaction.request))
+            composer.disabled = False
             composer.placeholder = "Choose an option above…"
             return
         ask_user.hide_panel()
         interaction_bar.show_interaction(interaction)
         composer.placeholder = "Message OURO…"
         if interaction is not None and interaction.kind == "approval":
+            composer.disabled = True
             interaction_bar.focus()
         else:
+            composer.disabled = False
             composer.focus()
 
     async def _dispatch_command(self, value: str) -> None:

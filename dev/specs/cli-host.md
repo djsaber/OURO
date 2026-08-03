@@ -65,6 +65,12 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
 文件、SQLite 或工具业务规则。高频 Markdown 使用 Textual `Markdown.get_stream` 合并增量，流对象随 assistant
 控件卸载显式关闭。
 
+每个 assistant turn 分别拥有 reasoning 与 answer 两个 Markdown stream。`model_reasoning_delta` 只追加到 dim
+reasoning 区域，不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
+`streaming_reasoning` 后收敛为 `THOUGHT`。后续模型轮次再次产生 reasoning 时复用同一区域并恢复 live 状态。
+历史恢复读取 canonical `MessageRecord.reasoning_content`，不从展示文本或事件 payload 反推第二份历史状态；没有
+可见 reasoning 时不创建空白过程块。
+
 当前交互合同：
 
 - Enter 提交，Shift+Enter 换行，单行边界的 Up/Down 浏览提交历史；
@@ -72,8 +78,9 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
   dispatch 共用 `ouro.tui.commands` 的单一目录；
 - Ctrl+N 新会话，Ctrl+S 会话选择，Ctrl+M 模型选择，Ctrl+P 动作面板，`?` 帮助；
 - 运行中普通提交沿用 Runtime 的 follow-up 排队语义，Host 不复制队列规则；
-- 审批条接管焦点并使用 Y/N；工具输入请求投影为独立问题视窗，支持 Up/Down、数字键、Space、Enter、
-  单选、多选和 Other 自由输入，决议后焦点返回 composer；
+- 审批选择面板接管焦点并禁用 Composer，使用 Up/Down 或 Left/Right 移动、Enter 确认，Y/N 保留为直接快捷键；
+  当前选项必须用可见 marker 标识，决议提交期间禁止重复输入，失败时保留选择并恢复面板。工具输入请求投影为
+  独立问题视窗，支持 Up/Down、数字键、Space、Enter、单选、多选和 Other 自由输入，决议后焦点返回 composer；
 - Ctrl+C 在 active Run 中调用协作式 abort，否则退出并由 `LocalApplication.close` 清理资源；
 - `/new`、`/sessions`、`/model`、`/clear`、`/abort`、`/help`、`/quit` 与动作面板共享同一 Host action。
 
@@ -86,8 +93,17 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
 请求显示有界 JSON 预览并降级为自由输入。该适配只决定 Host 表现和回答编码，不判断工具业务语义；最终回答仍由
 Runtime 恢复原始 waiting Run。自由输入期间以 `/` 开头的文本是回答，不得触发 TUI slash command。
 
-实时渲染的回归用例必须让 Provider 在首个 `model_text_delta` 后保持阻塞，并在 `runtime.run()` 尚未返回时验证
-Markdown 已更新。只用立即返回的 Faux Provider 或只断言最终 `RunResult`，不能作为实时流证据。
+同一工具批次可以同时产生多个 `approval_requested`。TUI 投影必须按 canonical event sequence 保存全部未决交互，
+面板始终展示队首，并把该对象携带的 `run_id` 与 `approval_id` 原样提交给 Runtime；不能用单一可覆盖字段，也不能依赖
+Runtime 的隐式“当前审批”选择。一个审批解决后移除对应 ID 并立即展示下一项，只有队列清空后才恢复 Composer。
+
+Conversation 是按事件序列增长的时间线，而不是一个可永久回写的 assistant 文本块。首次出现工具活动行时，当前
+assistant segment 必须封口；下一轮 `model_reasoning_delta` 或 `model_text_delta` 创建位于工具行之后的新 segment。
+高频 delta 可以合并，但只能合并连续且不跨工具状态边界的前缀，不得为减少刷新而重排事件。
+
+实时渲染的回归用例必须分别让 Provider 在首个 `model_text_delta` 和首个 `model_reasoning_delta` 后保持阻塞，
+并在 `runtime.run()` 尚未返回时验证对应 Markdown 已更新。只用立即返回的 Faux Provider 或只断言最终
+`RunResult`，不能作为实时流证据。
 
 Runtime event sink 使用独立有界队列，不能假设入队等于已交付。sink mailbox 必须先完整注册，再创建消费任务；
 任务入口直接接收所属 mailbox，不能在启动后反查尚可能未完成的 registry。该顺序是公开运行约束，因为 Textual

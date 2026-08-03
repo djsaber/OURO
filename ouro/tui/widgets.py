@@ -16,7 +16,7 @@ from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
 from ouro.tui.commands import TuiCommand
 from ouro.tui.question_forms import QuestionField, QuestionForm
-from ouro.tui.state import PendingInteraction, question_text
+from ouro.tui.state import PendingInteraction
 
 _SPINNER = ("◌", "◔", "◑", "◕")
 _BUSY_ACTIVITIES = {
@@ -112,15 +112,18 @@ class BrandHeader(Static):
         self.update(content)
 
 
-class AssistantTurn(Vertical):
+class ReasoningView(Vertical):
+    """A reasoning stream with presentation state independent from the answer."""
+
     def __init__(self, *, initial: str = "") -> None:
-        super().__init__(classes="turn assistant-turn")
-        self._initial = initial
-        self.markdown = Markdown(initial, classes="assistant-markdown")
+        super().__init__(classes="reasoning-view")
+        self.display = bool(initial)
+        self.label = Label("THOUGHT", classes="reasoning-label")
+        self.markdown = Markdown(initial, classes="reasoning-markdown")
         self._stream: _MarkdownWriter | None = None
 
     def compose(self) -> ComposeResult:
-        yield Label("OURO", classes="turn-label assistant-label")
+        yield self.label
         yield self.markdown
 
     def on_mount(self) -> None:
@@ -134,10 +137,53 @@ class AssistantTurn(Vertical):
     async def append(self, text: str) -> None:
         if not text:
             return
+        self.display = True
+        self.label.update("THINKING")
         if self._stream is None:
             await self.markdown.append(text)
             return
         await self._stream.write(text)
+
+    def finish(self) -> None:
+        if self.display:
+            self.label.update("THOUGHT")
+
+
+class AssistantTurn(Vertical):
+    def __init__(self, *, initial: str = "", reasoning: str = "") -> None:
+        super().__init__(classes="turn assistant-turn")
+        self.reasoning = ReasoningView(initial=reasoning)
+        self.markdown = Markdown(initial, classes="assistant-markdown")
+        self._stream: _MarkdownWriter | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Label("OURO", classes="turn-label assistant-label")
+        yield self.reasoning
+        yield self.markdown
+
+    def on_mount(self) -> None:
+        self._stream = Markdown.get_stream(self.markdown)
+
+    async def on_unmount(self) -> None:
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
+
+    async def append(self, text: str) -> None:
+        if not text:
+            return
+        self.reasoning.finish()
+        if self._stream is None:
+            await self.markdown.append(text)
+            return
+        await self._stream.write(text)
+
+    async def append_reasoning(self, text: str) -> None:
+        await self.reasoning.append(text)
+
+    def finish_reasoning(self) -> None:
+        self.reasoning.finish()
+
 
 class ToolActivityRow(Static):
     def __init__(self, tool: RuntimeToolCallActivity) -> None:
@@ -201,12 +247,19 @@ class ConversationView(VerticalScroll):
         self._tools.clear()
         for message in messages:
             text = message.text_content
-            if not text or message.role not in {"user", "assistant"}:
+            if message.role not in {"user", "assistant"}:
                 continue
             if message.role == "user":
+                if not text:
+                    continue
                 await self.add_user(text)
             else:
-                turn = AssistantTurn(initial=text)
+                if not text and not message.reasoning_content:
+                    continue
+                turn = AssistantTurn(
+                    initial=text,
+                    reasoning=message.reasoning_content,
+                )
                 await self.mount(turn)
         self.scroll_end(animate=False)
 
@@ -227,15 +280,33 @@ class ConversationView(VerticalScroll):
         await self._assistant.append(text)
         self.scroll_end(animate=False)
 
+    async def append_reasoning(self, text: str) -> None:
+        if self._assistant is None:
+            self._assistant = AssistantTurn()
+            await self.mount(self._assistant)
+        await self._assistant.append_reasoning(text)
+        self.scroll_end(animate=False)
+
+    def finish_reasoning(self) -> None:
+        if self._assistant is not None:
+            self._assistant.finish_reasoning()
+
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
+        mounted = False
         for tool in tools:
             row = self._tools.get(tool.tool_call_id)
             if row is None:
                 row = ToolActivityRow(tool)
                 self._tools[tool.tool_call_id] = row
                 await self.mount(row)
+                mounted = True
             else:
                 row.apply_tool(tool)
+        if mounted:
+            # A tool call is a chronological boundary between model rounds.
+            # Later model output must mount after the tool rows, not mutate the
+            # assistant segment that preceded them.
+            self._assistant = None
         self.scroll_end(animate=False)
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:
@@ -245,53 +316,114 @@ class ConversationView(VerticalScroll):
 
 
 class InteractionBar(Static):
+    """Keyboard-first approval choice with an explicit selected option."""
+
     can_focus = True
     BINDINGS = [
+        Binding("up", "previous_option", show=False),
+        Binding("down", "next_option", show=False),
+        Binding("left", "previous_option", show=False),
+        Binding("right", "next_option", show=False),
+        Binding("enter", "accept", "Choose", show=False),
         Binding("y", "approve", "Allow", show=False),
+        Binding("shift+y", "approve", "Allow", show=False),
         Binding("n", "reject", "Deny", show=False),
+        Binding("shift+n", "reject", "Deny", show=False),
     ]
 
     class Decision(Message):
-        def __init__(self, approved: bool) -> None:
+        def __init__(self, interaction: PendingInteraction, approved: bool) -> None:
             super().__init__()
+            self.interaction = interaction
             self.approved = approved
 
     def __init__(self) -> None:
         super().__init__(id="interaction-bar")
         self.display = False
+        self._interaction: PendingInteraction | None = None
+        self._identity: tuple[str, str] | None = None
+        self._selected = 0
+
+    @property
+    def selected_approved(self) -> bool:
+        return self._selected == 0
 
     def show_interaction(self, interaction: PendingInteraction | None) -> None:
-        if interaction is None:
+        if interaction is None or interaction.kind != "approval":
             self.display = False
+            self.disabled = False
+            self._interaction = None
+            self._identity = None
+            self._selected = 0
             self.update("")
             return
+        identity = (interaction.run_id, interaction.request_id or interaction.tool_call_id)
+        if identity != self._identity:
+            self._selected = 0
+        self._interaction = interaction
+        self._identity = identity
+        self.disabled = False
         self.display = True
-        if interaction.kind == "approval":
-            self.update(
-                Text.assemble(
-                    ("? APPROVAL  ", "bold #d9a441"),
-                    (interaction.tool_name, "bold"),
-                    " wants to run  ",
-                    ("Y", "bold #77b083"),
-                    " allow  ",
-                    ("N", "bold #d87575"),
-                    " deny",
-                )
-            )
+        self._render_approval()
+
+    def resume(self) -> None:
+        if self._interaction is None:
             return
-        self.update(
-            Text.assemble(
-                ("? INPUT  ", "bold #d9a441"),
-                question_text(interaction),
-                ("  Type your answer below", "#8f9aa8"),
-            )
-        )
+        self.disabled = False
+        self.display = True
+        self._render_approval()
+        self.focus()
+
+    def action_previous_option(self) -> None:
+        self._move_selection(-1)
+
+    def action_next_option(self) -> None:
+        self._move_selection(1)
+
+    def action_accept(self) -> None:
+        self._decide(self.selected_approved)
 
     def action_approve(self) -> None:
-        self.post_message(self.Decision(True))
+        self._selected = 0
+        self._render_approval()
+        self._decide(True)
 
     def action_reject(self) -> None:
-        self.post_message(self.Decision(False))
+        self._selected = 1
+        self._render_approval()
+        self._decide(False)
+
+    def _move_selection(self, offset: int) -> None:
+        if self._interaction is None or self.disabled:
+            return
+        self._selected = (self._selected + offset) % 2
+        self._render_approval()
+
+    def _decide(self, approved: bool) -> None:
+        interaction = self._interaction
+        if interaction is None or self.disabled:
+            return
+        self.disabled = True
+        self.post_message(self.Decision(interaction, approved))
+
+    def _render_approval(self) -> None:
+        interaction = self._interaction
+        if interaction is None:
+            return
+        content = Text()
+        content.append("? APPROVAL\n", style="bold #d9a441")
+        content.append(f"{interaction.tool_name} wants to run\n\n", style="bold")
+        options = (
+            ("Allow", "Run this tool", "#77b083"),
+            ("Deny", "Reject this tool", "#d87575"),
+        )
+        for index, (label, description, tone) in enumerate(options):
+            active = index == self._selected
+            content.append("› " if active else "  ", style="#d9a441" if active else "")
+            content.append(f"{index + 1}. {label}", style=f"bold {tone}" if active else "bold")
+            content.append(f"  {description}\n", style="#aeb5bf" if active else "#6f7a87")
+        content.append("\n↑/↓ or ←/→ move · Enter choose · Y/N direct", style="#6f7a87")
+        self.update(content)
 
 
 class AskUserPanel(Static):

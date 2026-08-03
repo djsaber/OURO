@@ -51,6 +51,19 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI assistant turns now render provider-visible reasoning and final answers through independent
+  Markdown streams. Reasoning appears immediately while the model is still running, transitions
+  from `THINKING` to `THOUGHT` when the phase completes, and is restored from canonical assistant
+  message history without mixing it into the final answer.
+- Tool approval now uses a focus-owning choice panel with a visible selection, arrow-key navigation,
+  Enter confirmation, and Y/N shortcuts. The Composer is disabled while approval is pending, so
+  approval keystrokes cannot be submitted as follow-up user messages.
+- Parallel tool approvals are now projected as an ordered queue and resolved with their explicit
+  Run and approval identifiers. Approving one tool advances directly to the next pending tool
+  instead of losing the remaining requests or resolving a different tool than the panel displays.
+- TUI conversation rendering now preserves canonical event order across model rounds. Tool rows
+  seal the preceding assistant segment, so reasoning or text emitted after tool completion appears
+  after that tool row rather than being appended above it.
 - TUI submission now gives immediate queued feedback and idempotently reconciles `RunResult.events`
   with the live event sink, avoiding silent responses when observer delivery is delayed. The TUI no
   longer shadows Textual's private `_closing` lifecycle state, and `/` now opens a filterable,

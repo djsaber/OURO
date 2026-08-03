@@ -159,10 +159,18 @@ class TuiController:
             return None
         return await self._runtime().abort_run(session_id=self._session_id)
 
-    async def resolve_approval(self, *, approved: bool, reason: str = "User rejected") -> RunResult:
-        interaction = self._require_session()
+    async def resolve_approval(
+        self,
+        *,
+        run_id: str,
+        approval_id: str,
+        approved: bool,
+        reason: str = "User rejected",
+    ) -> RunResult:
         return await self._runtime().approve_tool(
-            session_id=interaction,
+            session_id=self._require_session(),
+            run_id=run_id,
+            approval_id=approval_id,
             approved=approved,
             reason=reason,
         )

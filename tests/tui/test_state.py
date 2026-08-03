@@ -31,6 +31,21 @@ def test_projection_accumulates_stream_and_ignores_duplicate_events() -> None:
     assert projection.activity.status == "completed"
 
 
+def test_projection_exposes_reasoning_stream_separately_from_answer() -> None:
+    projection = TuiSessionProjection("ses_test")
+
+    projection.apply(_event(1, "run_started", trigger="user"))
+    first = projection.apply(_event(2, "model_reasoning_delta", reasoning_content="Inspecting "))
+    second = projection.apply(
+        _event(3, "model_reasoning_delta", reasoning_content="the event path.")
+    )
+
+    assert first is not None and first.reasoning_delta == "Inspecting "
+    assert second is not None and second.reasoning_delta == "the event path."
+    assert projection.reasoning_text == "Inspecting the event path."
+    assert projection.assistant_text == ""
+
+
 def test_projection_tracks_tool_lifecycle_and_approval() -> None:
     projection = TuiSessionProjection("ses_test")
     projection.apply(_event(1, "run_started", trigger="user"))
@@ -90,6 +105,46 @@ def test_projection_tracks_tool_lifecycle_and_approval() -> None:
 
     assert projection.pending_interaction is None
     assert projection.activity.tool_calls[0].status == "completed"
+
+
+def test_projection_queues_parallel_approvals_in_event_order() -> None:
+    projection = TuiSessionProjection("ses_test")
+    projection.apply(_event(1, "run_started", trigger="user"))
+
+    for sequence, call_id, approval_id, tool_name in (
+        (2, "call_1", "approval_1", "FirstTool"),
+        (3, "call_2", "approval_2", "SecondTool"),
+    ):
+        projection.apply(
+            _event(
+                sequence,
+                "approval_requested",
+                approval_id=approval_id,
+                tool_call_id=call_id,
+                tool_name=tool_name,
+            )
+        )
+
+    assert [item.request_id for item in projection.pending_interactions] == [
+        "approval_1",
+        "approval_2",
+    ]
+    assert projection.pending_interaction is not None
+    assert projection.pending_interaction.tool_name == "FirstTool"
+
+    resolved = projection.apply(
+        _event(
+            4,
+            "approval_resolved",
+            approval_id="approval_1",
+            tool_call_id="call_1",
+            tool_call_status="ready",
+        )
+    )
+
+    assert resolved is not None and resolved.interaction_changed is True
+    assert projection.pending_interaction is not None
+    assert projection.pending_interaction.tool_name == "SecondTool"
 
 
 def test_projection_exposes_structured_user_question() -> None:

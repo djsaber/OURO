@@ -82,7 +82,8 @@ TUI 只负责输入意图、焦点、视觉状态和 Runtime 事实渲染；Sess
 
 ### P1. 过程可视化
 
-- reasoning live preview 与完成后折叠；
+- [完成] reasoning 独立 Markdown stream、live 状态与 canonical history 恢复；
+- reasoning 长内容有界预览、完成后折叠与展开控制；
 - tool 参数有界摘要、结果详情和并行批次分组；
 - compaction、subagent、重试和后台任务使用统一 activity 视觉语法；
 - MCP 运行期 reconnect、失败详情和重试入口。
@@ -127,6 +128,8 @@ TUI 只负责输入意图、焦点、视觉状态和 Runtime 事实渲染；Sess
 8. [完成] 覆盖结构化回答、插件标量回答、焦点与 slash 前缀自由回答。
 9. [完成] 以超过 sink 容量的 reasoning burst 复现实时事件丢失，并修复 eager task 下的 sink 生命周期；
 10. [完成] TUI 按 UI 帧合并 Runtime 事件前缀，并直接断言 Run 完成前的 Markdown 控件 source。
+11. [完成] 将工具审批升级为焦点独占的方向键选择面板，并阻止审批按键进入 Composer。
+12. [完成] 将并行审批投影为有序队列并显式提交 approval ID；按事件序列分段渲染模型输出与工具活动。
 
 本轮修复将 live event sink 与 `RunResult.events` 归入同一个幂等投影入口，并移除了对 Textual 私有
 `_closing` 字段的覆盖。Slash popup 由 Composer change 事件自动驱动，命令目录同时供 popup、dispatch、帮助和

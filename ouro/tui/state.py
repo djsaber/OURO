@@ -40,12 +40,23 @@ class TuiSessionProjection:
     activity: RuntimeActivitySnapshot = field(init=False)
     assistant_text: str = ""
     reasoning_text: str = ""
-    pending_interaction: PendingInteraction | None = None
+    _pending_interactions: dict[str, PendingInteraction] = field(
+        default_factory=dict,
+        init=False,
+    )
     _last_sequence: int = field(default=-1, init=False)
     _run_id: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.activity = queued_runtime_activity(self.session_id)
+
+    @property
+    def pending_interactions(self) -> tuple[PendingInteraction, ...]:
+        return tuple(self._pending_interactions.values())
+
+    @property
+    def pending_interaction(self) -> PendingInteraction | None:
+        return next(iter(self._pending_interactions.values()), None)
 
     def restore(self, events: tuple[EventRecord, ...]) -> None:
         for event in sorted(events, key=lambda item: (item.sequence, item.event_id)):
@@ -68,7 +79,7 @@ class TuiSessionProjection:
             self._run_id = event.run_id
             self.assistant_text = ""
             self.reasoning_text = ""
-            self.pending_interaction = None
+            self._pending_interactions.clear()
         elif event.event_type == "model_text_delta":
             assistant_delta = _string(payload.get("text")) or ""
             self.assistant_text += assistant_delta
@@ -79,36 +90,45 @@ class TuiSessionProjection:
             round_break = _positive_int(payload.get("tool_call_count"))
         elif event.event_type == "approval_requested" and event.run_id is not None:
             tool_call_id = _string(payload.get("tool_call_id"))
-            if tool_call_id is not None:
-                self.pending_interaction = PendingInteraction(
+            approval_id = _string(payload.get("approval_id"))
+            if tool_call_id is not None and approval_id is not None:
+                self._pending_interactions[approval_id] = PendingInteraction(
                     kind="approval",
                     run_id=event.run_id,
                     tool_call_id=tool_call_id,
                     tool_name=_string(payload.get("tool_name")) or "tool",
-                    request_id=_string(payload.get("approval_id")),
+                    request_id=approval_id,
                 )
                 interaction_changed = True
         elif event.event_type == "ask_user_requested" and event.run_id is not None:
             tool_call_id = _string(payload.get("tool_call_id"))
             if tool_call_id is not None:
-                self.pending_interaction = PendingInteraction(
-                    kind="question",
-                    run_id=event.run_id,
-                    tool_call_id=tool_call_id,
-                    tool_name=_string(payload.get("tool_name")) or "tool",
-                    request=payload.get("request"),
+                self._pending_interactions[f"question:{event.run_id}:{tool_call_id}"] = (
+                    PendingInteraction(
+                        kind="question",
+                        run_id=event.run_id,
+                        tool_call_id=tool_call_id,
+                        tool_name=_string(payload.get("tool_name")) or "tool",
+                        request=payload.get("request"),
+                    )
                 )
                 interaction_changed = True
         elif event.event_type in {"approval_resolved", "ask_user_resolved"}:
-            if (
-                self.pending_interaction is not None
-                and self.pending_interaction.tool_call_id == _string(payload.get("tool_call_id"))
-            ):
-                self.pending_interaction = None
+            approval_id = _string(payload.get("approval_id"))
+            tool_call_id = _string(payload.get("tool_call_id"))
+            removed = tuple(
+                key
+                for key, interaction in self._pending_interactions.items()
+                if (approval_id is not None and interaction.request_id == approval_id)
+                or (approval_id is None and interaction.tool_call_id == tool_call_id)
+            )
+            for key in removed:
+                del self._pending_interactions[key]
+            if removed:
                 interaction_changed = True
         elif event.event_type in {"run_completed", "run_aborted", "run_failed"}:
-            if self.pending_interaction is not None:
-                self.pending_interaction = None
+            if self._pending_interactions:
+                self._pending_interactions.clear()
                 interaction_changed = True
 
         if event.event_type in {"diagnostic", "persistence_warning"}:
