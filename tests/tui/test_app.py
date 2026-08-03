@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from textual.containers import VerticalScroll
+from textual.widgets import OptionList, Static
 
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.application.session_models import SessionContextStatus
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.context import ContextMetrics
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
     ProviderStreamEvent,
 )
+from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -27,8 +33,9 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiSystemStatus
-from ouro.tui.screens import HelpScreen
+from ouro.tui.controller import TuiModelConfiguration, TuiSystemStatus
+from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
+from ouro.tui.state import TuiSessionProjection
 from ouro.tui.widgets import (
     AskUserPanel,
     AssistantTurn,
@@ -38,6 +45,7 @@ from ouro.tui.widgets import (
     ConversationView,
     InteractionBar,
     QueuedInputPanel,
+    StatusLine,
     ToolActivityRow,
     WelcomePanel,
 )
@@ -226,6 +234,31 @@ def _application(tmp_path: Path, text: str = "**Hello** from OURO") -> LocalAppl
                 ]
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+def _thinking_application(tmp_path: Path) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(
+                model_id="thinking-model",
+                provider_id="faux",
+                reasoning=ReasoningCapability(
+                    activation="toggle",
+                    supported_efforts=("low", "high"),
+                    default=ReasoningRequest(mode="enabled", effort="low"),
+                    output="summary",
+                ),
+            ),
         ),
         tools=ToolRegistry(),
         default_workspace=tmp_path,
@@ -485,6 +518,11 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
                 mcp_connected_count=3,
                 mcp_total_count=3,
                 mcp_tool_count=8,
+                usage_request_count=4,
+                usage_input_tokens=12_300,
+                usage_output_tokens=1_200,
+                usage_estimated_cost=0.0421,
+                usage_priced_request_count=4,
             )
         )
         await pilot.pause()
@@ -495,10 +533,16 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert "7 available · browser, documents, github, +1" in status_text
         assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
         assert "3/3 connected · 8 tool(s)" in status_text
+        assert "4 request(s) · 12.3K in / 1.2K out · $0.0421" in status_text
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
         assert welcome.styles.border_left[0] == "thick"
         assert conversation.styles.scrollbar_size_vertical == 1
+        composer = app.query_one(Composer)
+        assert composer.styles.scrollbar_size_vertical == 1
+        assert composer.region.height == 3
+        assert composer.content_region.height == 1
+        assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
         assert all(turn.styles.border_left[0] == "" for turn in conversation.query(".turn"))
         assert all(
             notice.styles.border_left[0] == "" for notice in conversation.query(".notice")
@@ -513,6 +557,37 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_right[0] == ""
             assert panel.styles.border_top[0] == "solid"
             assert panel.styles.border_bottom[0] == "solid"
+
+        status_line = app.query_one(StatusLine)
+        status_line.set_context(
+            SessionContextStatus(
+                context_id="ctx_1",
+                session_id="session_1",
+                run_id="run_1",
+                turn_id="turn_1",
+                model_round=1,
+                provider_id="deepseek",
+                model_id="deepseek-chat",
+                prepared_at=datetime.now(UTC),
+                metrics=ContextMetrics(
+                    estimated_input_tokens=3_000,
+                    estimated_fixed_tokens=100,
+                    context_window_tokens=128_000,
+                    reserved_output_tokens=8_000,
+                    input_budget_tokens=120_000,
+                    estimated_remaining_tokens=117_000,
+                    estimated_utilization_ratio=0.025,
+                ),
+            )
+        )
+        context_detail = status_line.query_one("#context-detail", Static)
+        assert context_detail.render().plain == "Context ~3.0K/120K · 2%"
+
+        for index in range(40):
+            await conversation.add_notice(f"Overflow {index}")
+        await pilot.pause()
+        assert conversation.region.right == app.screen.region.right
+        assert conversation.vertical_scrollbar.region.right == app.screen.region.right - 1
 
 
 @pytest.mark.asyncio
@@ -532,6 +607,8 @@ async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Pa
         assert app._projection.assistant_text == "**Hello** from OURO"
         assert app._projection.activity.status == "completed"
         assert app._controller.session_id is not None
+        context = app.query_one(StatusLine).query_one("#context-detail", Static).render().plain
+        assert context.startswith("Context ~")
 
 
 @pytest.mark.asyncio
@@ -865,6 +942,118 @@ async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
         await pilot.press("a", "shift+enter", "b")
 
         assert app.query_one(Composer).text == "a\nb"
+
+
+@pytest.mark.asyncio
+async def test_model_configuration_screen_validates_and_returns_typed_draft(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results: list[TuiModelConfiguration | None] = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        screen = ModelConfigurationScreen((Choice("custom", "custom"),))
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+
+        assert screen.query_one("#model-config-panel", VerticalScroll).max_scroll_y > 0
+
+        await pilot.press("tab")
+        await pilot.press(*"new-endpoint", "enter")
+        await pilot.press(*"provider-model", "enter")
+        await pilot.press("ctrl+u", *"100", "enter")
+        await pilot.press("ctrl+u", *"200", "enter")
+        await pilot.pause()
+
+        assert results == []
+        assert "cannot exceed" in screen.query_one("#model-config-error", Static).render().plain
+        assert all(item.styles.scrollbar_size_vertical == 1 for item in screen.query(OptionList))
+
+        await pilot.press("ctrl+u", *"50", "tab", "tab", "space", "ctrl+s")
+        await pilot.pause(0.2)
+
+        assert len(results) == 1
+        draft = results[0]
+        assert draft is not None
+        assert draft.provider_id == "custom"
+        assert draft.endpoint_id == "new-endpoint"
+        assert draft.model_id == "provider-model"
+        assert draft.context_window == 100
+        assert draft.max_output_tokens == 50
+        assert draft.supports_vision is True
+
+
+@pytest.mark.asyncio
+async def test_model_picker_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+m")
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.highlighted == 0
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert app._active_model == "faux"
+
+
+@pytest.mark.asyncio
+async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"approval", "enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press(*"afk", "enter")
+        await pilot.pause()
+        assert app._controller.session_approval_preset() == "afk"
+
+        await pilot.press("slash", *"thinking", "enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press(*"high", "enter")
+        await pilot.pause()
+        reasoning = app._controller.session_reasoning()
+        assert reasoning.requested.effort == "high"
+        assert reasoning.effective.effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_abort_and_quit_commands_have_independent_lifecycles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    aborted = False
+
+    async def fake_abort() -> None:
+        nonlocal aborted
+        aborted = True
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(app._controller, "abort", fake_abort)
+        app._projection = TuiSessionProjection("session_1")
+
+        await app._dispatch_command("/abort")
+        await pilot.pause()
+
+        assert aborted is True
+        assert app.is_running is True
+
+        await app._dispatch_command("/quite")
+        await pilot.pause()
+        assert app.is_running is False
 
 
 @pytest.mark.asyncio

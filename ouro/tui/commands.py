@@ -29,11 +29,30 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Browse durable sessions",
         aliases=("/resume",),
     ),
-    TuiCommand("/model", "Change model", "Select a configured model", "[selector]"),
+    TuiCommand(
+        "/model",
+        "Select or configure model",
+        "Select a model or configure a new endpoint",
+        "[selector|new]",
+    ),
+    TuiCommand(
+        "/approval",
+        "Session approval",
+        "Set tool approval policy for this session",
+        "[inherit|auto|approval|deny|afk]",
+        aliases=("/approval-mode",),
+    ),
+    TuiCommand(
+        "/thinking",
+        "Model thinking",
+        "Set reasoning mode or effort for this session",
+        "[default|enabled|disabled|effort]",
+        aliases=("/reasoning",),
+    ),
     TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
     TuiCommand("/abort", "Abort run", "Stop the active run"),
     TuiCommand("/help", "Keyboard help", "Show shortcuts and commands", aliases=("/?",)),
-    TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit",)),
+    TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit", "/quite")),
 )
 
 

@@ -16,6 +16,7 @@ from ouro.application.queued_inputs import (
     QueuedInputMode,
     QueuedUserInputView,
 )
+from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
 from ouro.tui.commands import TuiCommand
@@ -72,6 +73,15 @@ def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
     if remaining:
         summary += f", +{remaining}"
     return summary
+
+
+def _compact_count(value: int) -> str:
+    for divisor, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if value >= divisor:
+            scaled = value / divisor
+            precision = 0 if scaled >= 100 else 1
+            return f"{scaled:.{precision}f}{suffix}"
+    return str(value)
 
 
 class _MarkdownWriter(Protocol):
@@ -305,6 +315,16 @@ class WelcomePanel(Static):
                 )
         else:
             content.append("not configured", style="#647180")
+        content.append("\n")
+        content.append("Usage    ", style="bold #788492")
+        content.append(f"{status.usage_request_count} request(s)", style="#8f9aa8")
+        content.append(
+            f" · {_compact_count(status.usage_input_tokens)} in"
+            f" / {_compact_count(status.usage_output_tokens)} out",
+            style="#647180",
+        )
+        if status.usage_priced_request_count:
+            content.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
         content.append("\n")
         content.append("Health   ", style="bold #788492")
         if status.startup_diagnostic_count:
@@ -910,7 +930,26 @@ class StatusLine(Horizontal):
             "Enter follow · Ctrl+Enter guide · Shift+Enter newline",
             id="key-hints",
         )
+        yield Static("Context —", id="context-detail")
         yield Static("", id="status-detail")
 
     def set_detail(self, detail: str) -> None:
         self.query_one("#status-detail", Static).update(detail)
+
+    def set_context(self, status: SessionContextStatus | None) -> None:
+        if status is None:
+            label = "Context —"
+        else:
+            metrics = status.metrics
+            reported = status.provider_reported_input_tokens
+            used = reported if reported is not None else metrics.estimated_input_tokens
+            prefix = "" if reported is not None else "~"
+            budget = metrics.input_budget_tokens
+            if budget is None:
+                label = f"Context {prefix}{_compact_count(used)}"
+            else:
+                ratio = used / budget
+                label = (
+                    f"Context {prefix}{_compact_count(used)}/{_compact_count(budget)} · {ratio:.0%}"
+                )
+        self.query_one("#context-detail", Static).update(label)

@@ -4,20 +4,26 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, cast, get_args
 
 from pydantic import JsonValue
 
 from ouro.application.agent_models import AgentInteractionView
 from ouro.application.agents import AgentService
+from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import ProviderView
 from ouro.application.dto import ApplicationStartupReport
-from ouro.application.models import AvailableModel
+from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import SessionCatalogEntry, SessionDetail
-from ouro.core.approvals import SessionApprovalMode
+from ouro.application.usage_models import UsageTotals
+from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
+from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
@@ -25,6 +31,9 @@ from ouro.tui.state import PendingInteraction
 
 EventPublisher = Callable[[EventRecord], None]
 LifecyclePublisher = Callable[["TuiLifecycleStatus"], None]
+
+TuiApprovalPreset = Literal["inherit", "auto", "approval", "deny", "afk"]
+TUI_APPROVAL_PRESETS = cast(tuple[TuiApprovalPreset, ...], get_args(TuiApprovalPreset))
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,24 @@ class TuiSystemStatus:
     mcp_tool_count: int = 0
     mcp_failed_count: int = 0
     startup_diagnostic_count: int = 0
+    usage_request_count: int = 0
+    usage_input_tokens: int = 0
+    usage_output_tokens: int = 0
+    usage_estimated_cost: float = 0.0
+    usage_priced_request_count: int = 0
+
+
+@dataclass(frozen=True)
+class TuiModelConfiguration:
+    """Validated model-endpoint intent collected by the TUI."""
+
+    provider_id: str
+    endpoint_id: str
+    model_id: str
+    context_window: int
+    max_output_tokens: int
+    supports_tools: bool = True
+    supports_vision: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +119,7 @@ class TuiController:
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
         application: LocalApplication | None = None,
+        configuration: ConfigurationFacade | None = None,
         close_application: bool = True,
     ) -> None:
         self._publish_event = publish_event
@@ -99,9 +127,13 @@ class TuiController:
         self._home = home
         self._system_prompt = system_prompt
         self._session_backend = session_backend
+        self._default_approval_mode = approval_mode
+        self._default_interaction_mode = interaction_mode
         self._approval_mode = approval_mode
+        self._reasoning_request = ReasoningRequest()
         self._interaction_mode = interaction_mode
         self._application = application
+        self._configuration = configuration
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
@@ -133,7 +165,10 @@ class TuiController:
         await self._application.start()
         self._started = True
         runtime = self._application.runtime
+        if self._configuration is None and runtime.environment.home is not None:
+            self._configuration = ConfigurationFacade(runtime.environment.home)
         models = tuple(runtime.available_models())
+        usage = self.usage_totals()
         plugin_summaries = (
             tuple(self._application.plugins.list())
             if self._application.plugins is not None
@@ -187,6 +222,11 @@ class TuiController:
                 mcp_tool_count=sum(item.tool_count for item in connected_mcp),
                 mcp_failed_count=sum(item.status == "failed" for item in mcp_servers),
                 startup_diagnostic_count=len(self._application.startup_report.diagnostics),
+                usage_request_count=usage.request_count,
+                usage_input_tokens=usage.input_tokens,
+                usage_output_tokens=usage.output_tokens,
+                usage_estimated_cost=usage.estimated_cost,
+                usage_priced_request_count=usage.priced_request_count,
             ),
         )
 
@@ -212,6 +252,9 @@ class TuiController:
                 session_id=self._session_id,
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
+                initial_reasoning_request=(
+                    self._reasoning_request if is_new_session else None
+                ),
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
             )
@@ -293,6 +336,10 @@ class TuiController:
 
     def new_session(self) -> None:
         self._session_id = None
+        self._initial_model = None
+        self._approval_mode = self._default_approval_mode
+        self._interaction_mode = self._default_interaction_mode
+        self._reasoning_request = ReasoningRequest()
 
     def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         return self._runtime().sessions.catalog().entries
@@ -307,14 +354,133 @@ class TuiController:
     def models(self) -> tuple[AvailableModel, ...]:
         return tuple(self._runtime().available_models())
 
+    def model_providers(self) -> tuple[ProviderView, ...]:
+        configuration = self._require_configuration()
+        return tuple(
+            provider for provider in configuration.provider_catalog().providers if provider.enabled
+        )
+
+    def configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
+        """Create one endpoint through the canonical configuration application service."""
+
+        configuration = self._require_configuration()
+        endpoints = configuration.endpoint_catalog(model.provider_id).endpoints
+        if any(endpoint.endpoint_id == model.endpoint_id for endpoint in endpoints):
+            raise ConfigError(
+                f"model endpoint already exists: {model.provider_id}/{model.endpoint_id}"
+            )
+        configuration.save_endpoint(
+            model.provider_id,
+            model.endpoint_id,
+            model=model.model_id,
+            context_window=model.context_window,
+            max_output_tokens=model.max_output_tokens,
+            supports_tools=model.supports_tools,
+            supports_vision=model.supports_vision,
+        )
+        return self._runtime().resolve_model(f"{model.provider_id}/{model.endpoint_id}")
+
+    def usage_totals(self) -> UsageTotals:
+        usage = self._runtime().usage
+        return usage.summarize().totals if usage is not None else UsageTotals()
+
     def select_model(self, selector: str) -> AvailableModel:
         runtime = self._runtime()
         model = runtime.resolve_model(selector)
         if self._session_id is None:
+            runtime.model_reasoning(model.key, self._reasoning_request)
             self._initial_model = model.key
         else:
             runtime.switch_session_model(self._session_id, model.key)
         return model
+
+    def session_approval_mode(self) -> SessionApprovalMode:
+        """Return the draft or persisted approval policy for the visible Session."""
+
+        if self._session_id is None:
+            return self._approval_mode
+        return self._runtime().sessions.open(
+            self._session_id,
+            recover=False,
+        ).session.approval_mode
+
+    def set_session_approval_mode(
+        self,
+        approval_mode: SessionApprovalMode,
+    ) -> SessionApprovalMode:
+        """Set the next-Session draft or persist an idle Session's approval policy."""
+
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if self._session_id is None:
+            self._approval_mode = approval_mode
+        else:
+            self._runtime().set_session_approval_mode(self._session_id, approval_mode)
+        return approval_mode
+
+    def session_approval_preset(self) -> TuiApprovalPreset:
+        """Project the Session policy pair as one mutually exclusive TUI preset."""
+
+        if self._session_id is None:
+            approval_mode = self._approval_mode
+            interaction_mode = self._interaction_mode
+        else:
+            session = self._runtime().sessions.open(
+                self._session_id,
+                recover=False,
+            ).session
+            approval_mode = session.approval_mode
+            interaction_mode = session.interaction_mode
+        if approval_mode == "auto" and interaction_mode == "unattended":
+            return "afk"
+        return approval_mode
+
+    def set_session_approval_preset(
+        self,
+        preset: TuiApprovalPreset,
+    ) -> TuiApprovalPreset:
+        """Apply one approval preset without leaving stale unattended behavior."""
+
+        if preset not in TUI_APPROVAL_PRESETS:
+            raise ValueError(f"invalid TUI approval preset: {preset}")
+        approval_mode: SessionApprovalMode = "auto" if preset == "afk" else preset
+        interaction_mode: SessionInteractionMode = (
+            "unattended" if preset == "afk" else "interactive"
+        )
+        if self._session_id is None:
+            self._approval_mode = approval_mode
+            self._interaction_mode = interaction_mode
+        else:
+            self._runtime().set_session_policies(
+                self._session_id,
+                approval_mode=approval_mode,
+                interaction_mode=interaction_mode,
+            )
+        return preset
+
+    def session_reasoning(self) -> ModelReasoningState:
+        """Return endpoint-resolved reasoning for the draft or persisted Session."""
+
+        runtime = self._runtime()
+        if self._session_id is not None:
+            return runtime.session_reasoning(self._session_id)
+        model = self._initial_model or runtime.current_model().key
+        return runtime.model_reasoning(model, self._reasoning_request)
+
+    def set_session_reasoning(
+        self,
+        reasoning_request: ReasoningRequest,
+    ) -> ModelReasoningState:
+        """Validate and set draft or persisted reasoning through RuntimeService."""
+
+        runtime = self._runtime()
+        if self._session_id is None:
+            model = self._initial_model or runtime.current_model().key
+            state = runtime.model_reasoning(model, reasoning_request)
+            self._reasoning_request = state.requested
+            return state
+        runtime.set_session_reasoning(self._session_id, reasoning_request)
+        return runtime.session_reasoning(self._session_id)
 
     def load_session(self, session_id: str) -> LoadedSession:
         sessions = self._runtime().sessions
@@ -366,6 +532,12 @@ class TuiController:
         if self._application is None or self._application.agents is None:
             raise RuntimeError("subagent interaction service is unavailable")
         return self._application.agents
+
+    def _require_configuration(self) -> ConfigurationFacade:
+        self._runtime()
+        if self._configuration is None:
+            raise RuntimeError("model configuration is unavailable for this Runtime")
+        return self._configuration
 
     async def _receive_event(self, event: EventRecord) -> None:
         """Cross one persisted Runtime event into Textual's message pump."""

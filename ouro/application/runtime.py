@@ -825,6 +825,22 @@ class RuntimeService:
         self.sessions.set_interaction_mode(session_id, interaction_mode)
         return self.store.load_session_record(session_id)
 
+    def set_session_policies(
+        self,
+        session_id: str,
+        *,
+        approval_mode: SessionApprovalMode,
+        interaction_mode: SessionInteractionMode,
+    ) -> SessionRecord:
+        """Persist one idle Session's approval and interaction policies atomically."""
+
+        self.sessions.set_policies(
+            session_id,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+        return self.store.load_session_record(session_id)
+
     def set_session_afk_mode(self, session_id: str, *, enabled: bool) -> SessionRecord:
         """Apply or clear the AFK policy preset for an idle Session."""
 

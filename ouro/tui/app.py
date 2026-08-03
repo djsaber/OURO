@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -11,7 +12,7 @@ from textual.containers import Vertical
 from textual.message import Message
 from textual.widgets import TextArea
 
-from ouro.application.models import AvailableModel
+from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.session_models import SessionCatalogEntry
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
@@ -19,18 +20,22 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
+from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.commands import matching_commands, resolve_command
 from ouro.tui.controller import (
+    TUI_APPROVAL_PRESETS,
     LoadedSession,
+    TuiApprovalPreset,
     TuiBootstrap,
     TuiController,
     TuiLifecycleStatus,
+    TuiSystemStatus,
 )
 from ouro.tui.question_forms import project_question_form
-from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
+from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
 from ouro.tui.widgets import (
     AskUserPanel,
@@ -54,6 +59,29 @@ class LifecycleStatusReceived(Message):
         self.status = status
 
 
+_CONFIGURE_MODEL = "__ouro_configure_model__"
+
+_APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
+    "inherit": "Use each tool's configured permission policy",
+    "auto": "Allow host-controlled tools; keep user input interactive",
+    "approval": "Ask before every host-controlled tool call",
+    "deny": "Block every host-controlled tool call",
+    "afk": "Auto-approve tools and resolve user input without waiting",
+}
+
+_REASONING_REQUESTS: dict[str, ReasoningRequest] = {
+    "default": ReasoningRequest(),
+    "enabled": ReasoningRequest(mode="enabled"),
+    "disabled": ReasoningRequest(mode="disabled"),
+    "minimal": ReasoningRequest(mode="enabled", effort="minimal"),
+    "low": ReasoningRequest(mode="enabled", effort="low"),
+    "medium": ReasoningRequest(mode="enabled", effort="medium"),
+    "high": ReasoningRequest(mode="enabled", effort="high"),
+    "xhigh": ReasoningRequest(mode="enabled", effort="xhigh"),
+    "max": ReasoningRequest(mode="enabled", effort="max"),
+}
+
+
 class OuroTuiApp(App[int]):
     TITLE = "OURO"
     SUB_TITLE = "Agent"
@@ -63,6 +91,14 @@ class OuroTuiApp(App[int]):
         background: transparent;
         color: #d6d9df;
         layout: vertical;
+    }
+
+    VerticalScroll, TextArea, OptionList {
+        scrollbar-background: transparent;
+        scrollbar-color: #505967;
+        scrollbar-color-hover: #6a7482;
+        scrollbar-size-vertical: 1;
+        scrollbar-gutter: stable;
     }
 
     #brand-header {
@@ -78,13 +114,10 @@ class OuroTuiApp(App[int]):
     }
 
     #conversation {
+        width: 100%;
         height: 1fr;
-        padding: 1 2 0 2;
+        padding: 1 1 0 2;
         background: transparent;
-        scrollbar-color: #505967;
-        scrollbar-color-hover: #6a7482;
-        scrollbar-background: transparent;
-        scrollbar-size-vertical: 1;
     }
 
     .welcome {
@@ -217,20 +250,15 @@ class OuroTuiApp(App[int]):
     }
 
     #composer {
-        height: auto;
-        min-height: 3;
-        max-height: 9;
+        height: 3;
         margin: 0 1;
-        padding: 0 1;
+        padding: 0 0 0 1;
         color: #e5e7eb;
         background: transparent;
         border-top: solid #505967;
         border-right: none;
         border-bottom: solid #505967;
         border-left: none;
-        scrollbar-background: transparent;
-        scrollbar-color: #505967;
-        scrollbar-size-vertical: 1;
     }
 
     #composer:focus {
@@ -242,12 +270,9 @@ class OuroTuiApp(App[int]):
         height: auto;
         max-height: 8;
         margin: 0 1;
-        padding: 0 1 1 1;
+        padding: 0 0 1 1;
         color: #d6d9df;
         background: transparent;
-        scrollbar-background: transparent;
-        scrollbar-color: #505967;
-        scrollbar-size-vertical: 1;
     }
 
     #queued-input-content {
@@ -263,9 +288,10 @@ class OuroTuiApp(App[int]):
     }
 
     #key-hints { width: 1fr; }
-    #status-detail { width: auto; text-align: right; }
+    #context-detail { width: auto; text-align: right; }
+    #status-detail { width: auto; margin-left: 2; text-align: right; }
 
-    ChoiceScreen, HelpScreen {
+    ChoiceScreen, ModelConfigurationScreen, HelpScreen {
         align: center middle;
         background: #000000 45%;
     }
@@ -295,7 +321,81 @@ class OuroTuiApp(App[int]):
         height: 16;
         background: #17191d;
         border-bottom: tall #7c6536;
-        padding: 0 1 1 1;
+        padding: 0 0 1 1;
+    }
+
+    #model-config-panel {
+        width: 72;
+        max-width: 90%;
+        height: auto;
+        max-height: 95%;
+        padding: 1 0 1 2;
+        color: #d6d9df;
+        background: #17191d;
+        border: tall #7c6536;
+    }
+
+    #model-config-title {
+        height: 2;
+        color: #d9a441;
+        text-style: bold;
+    }
+
+    .model-config-label {
+        height: 1;
+        margin-top: 1;
+        color: #8f9aa8;
+    }
+
+    #model-config-panel Input, #model-config-panel Select {
+        background: #202329;
+        border: none;
+    }
+
+    .model-config-fields {
+        height: 4;
+        margin-top: 1;
+    }
+
+    .model-config-number-field {
+        width: 1fr;
+        height: 4;
+        margin-right: 1;
+    }
+
+    .model-config-number-label {
+        height: 1;
+        color: #8f9aa8;
+    }
+
+    .model-config-capabilities {
+        height: 3;
+    }
+
+    .model-config-capabilities Checkbox {
+        width: 1fr;
+    }
+
+    #model-config-error {
+        height: auto;
+        min-height: 1;
+        color: #e08a8a;
+    }
+
+    #model-config-hint {
+        height: 1;
+        color: #6f7a87;
+    }
+
+    .model-config-actions {
+        height: 3;
+        align-horizontal: right;
+    }
+
+    .model-config-actions Button {
+        width: auto;
+        min-width: 12;
+        margin-left: 1;
     }
 
     #help-panel {
@@ -313,7 +413,8 @@ class OuroTuiApp(App[int]):
         Binding("ctrl+s", "sessions", "Sessions", show=False),
         Binding("ctrl+m", "models", "Model", show=False),
         Binding("ctrl+p", "actions", "Actions", show=False),
-        Binding("ctrl+c", "abort_or_quit", "Abort / quit", show=False, priority=True),
+        Binding("ctrl+c", "abort", "Abort", show=False, priority=True),
+        Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("question_mark", "help", "Help", show=False),
     ]
 
@@ -348,6 +449,7 @@ class OuroTuiApp(App[int]):
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
         self._active_title = "New session"
+        self._system_status = TuiSystemStatus()
         self._host_closing = False
         self._waiting_for_session_event = False
         self._dismissed_command_text: str | None = None
@@ -362,8 +464,8 @@ class OuroTuiApp(App[int]):
             yield AskUserPanel()
             yield InteractionBar()
             yield Composer()
-            yield QueuedInputPanel()
             yield StatusLine()
+            yield QueuedInputPanel()
 
     def on_mount(self) -> None:
         self.query_one(BrandHeader).set_activity("starting")
@@ -426,7 +528,8 @@ class OuroTuiApp(App[int]):
         self.query_one(StatusLine).set_detail(message.status.detail)
 
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
-        self.query_one(ConversationView).set_system_status(bootstrap.system_status)
+        self._system_status = bootstrap.system_status
+        self.query_one(ConversationView).set_system_status(self._system_status)
 
     async def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
         self._runtime_events_ready_posted = False
@@ -569,7 +672,20 @@ class OuroTuiApp(App[int]):
             await self.query_one(ConversationView).append_assistant(result.final_text)
         self._active_title = result.session.title
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self._refresh_usage_status()
         self._refresh_interaction()
+
+    def _refresh_usage_status(self) -> None:
+        usage = self._controller.usage_totals()
+        self._system_status = replace(
+            self._system_status,
+            usage_request_count=usage.request_count,
+            usage_input_tokens=usage.input_tokens,
+            usage_output_tokens=usage.output_tokens,
+            usage_estimated_cost=usage.estimated_cost,
+            usage_priced_request_count=usage.priced_request_count,
+        )
+        self.query_one(ConversationView).set_system_status(self._system_status)
 
     def _sync_queued_inputs(self, session_id: str | None = None) -> None:
         panel = self.query_one(QueuedInputPanel)
@@ -701,7 +817,9 @@ class OuroTuiApp(App[int]):
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         self.query_one(BrandHeader).set_activity(activity.activity)
         detail = f"{len(activity.tool_calls)} tool(s)" if activity.tool_calls else ""
-        self.query_one(StatusLine).set_detail(detail)
+        status_line = self.query_one(StatusLine)
+        status_line.set_context(activity.context_status)
+        status_line.set_detail(detail)
 
     def _refresh_interaction(self) -> PendingInteraction | None:
         primary = self._projection.pending_interaction if self._projection else None
@@ -743,20 +861,33 @@ class OuroTuiApp(App[int]):
             )
             return
         if command.name == "/quit":
-            self.exit(0)
+            await self.action_quit()
         elif command.name == "/new":
             await self._new_session()
         elif command.name == "/sessions":
             self.action_sessions()
         elif command.name == "/model":
-            if argument:
+            if argument.casefold() in {"add", "configure", "new"}:
+                await self._configure_model()
+            elif argument:
                 await self._select_model(argument)
             else:
                 self.action_models()
+        elif command.name == "/approval":
+            if argument:
+                await self._set_approval_mode(argument.casefold())
+            else:
+                self.action_approval_settings()
+        elif command.name == "/thinking":
+            if argument:
+                await self._set_reasoning(argument.casefold())
+            else:
+                self.action_thinking_settings()
         elif command.name == "/clear":
+            self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
         elif command.name == "/abort":
-            self.action_abort_or_quit()
+            self.action_abort()
         elif command.name == "/help":
             self.action_help()
 
@@ -770,6 +901,7 @@ class OuroTuiApp(App[int]):
         self._active_title = "New session"
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(BrandHeader).set_activity("idle")
+        self.query_one(StatusLine).set_context(None)
         self._sync_interaction(None)
         self.query_one(QueuedInputPanel).set_inputs(())
         await self.query_one(ConversationView).show_welcome()
@@ -841,19 +973,62 @@ class OuroTuiApp(App[int]):
     @work(exclusive=True, group="navigation")
     async def _choose_model(self) -> None:
         self._models = self._controller.models()
-        choices = tuple(
+        choices = (
             Choice(
-                value=model.key,
-                label=model.display_name or model.model_id,
-                description=f"{model.provider_id} · {model.endpoint_id} · {model.key}",
-            )
-            for model in self._models
+                value=_CONFIGURE_MODEL,
+                label="＋ Configure a new model",
+                description="Add an endpoint to an existing provider",
+            ),
+            *tuple(
+                Choice(
+                    value=model.key,
+                    label=model.display_name or model.model_id,
+                    description=f"{model.provider_id} · {model.endpoint_id} · {model.key}",
+                )
+                for model in self._models
+            ),
         )
         selected = await self.push_screen_wait(
             ChoiceScreen(title="MODELS", placeholder="Filter models…", choices=choices)
         )
-        if selected is not None:
+        if selected == _CONFIGURE_MODEL:
+            await self._configure_model()
+        elif selected is not None:
             await self._select_model(selected)
+
+    async def _configure_model(self) -> None:
+        if self._has_active_run():
+            self.notify("Abort the active run before configuring models", severity="warning")
+            return
+        try:
+            providers = self._controller.model_providers()
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        if not providers:
+            await self.query_one(ConversationView).add_notice(
+                "No enabled provider is configured. Configure a provider before adding models.",
+                error=True,
+            )
+            return
+        provider_choices = tuple(
+            Choice(
+                value=provider.provider_id,
+                label=provider.provider_id,
+                description=f"{provider.provider_type} · {provider.endpoint_count} endpoint(s)",
+            )
+            for provider in providers
+        )
+        configured = await self.push_screen_wait(ModelConfigurationScreen(provider_choices))
+        if configured is None:
+            return
+        try:
+            model = self._controller.configure_model(configured)
+        except Exception as exc:  # noqa: BLE001 - configuration validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._models = self._controller.models()
+        await self._select_model(model.key)
 
     async def _select_model(self, selector: str) -> None:
         try:
@@ -863,7 +1038,108 @@ class OuroTuiApp(App[int]):
             return
         self._active_model = model.display_name or model.model_id
         self.query_one(BrandHeader).set_context(model=self._active_model)
+        self.query_one(StatusLine).set_context(None)
         self.notify(f"Model: {self._active_model}")
+
+    def action_approval_settings(self) -> None:
+        self._choose_approval_mode()
+
+    @work(exclusive=True, group="navigation")
+    async def _choose_approval_mode(self) -> None:
+        if self._has_active_run():
+            self.notify(
+                "Abort the active run before changing approval settings",
+                severity="warning",
+            )
+            return
+        try:
+            current = self._controller.session_approval_preset()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        choices = tuple(
+            Choice(
+                value=mode,
+                label=("● " if mode == current else "  ") + mode,
+                description=_APPROVAL_DESCRIPTIONS[mode],
+            )
+            for mode in TUI_APPROVAL_PRESETS
+        )
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title="SESSION APPROVAL",
+                placeholder="Filter approval modes…",
+                choices=choices,
+            )
+        )
+        if selected is not None:
+            await self._set_approval_mode(selected)
+
+    async def _set_approval_mode(self, value: str) -> None:
+        if value not in TUI_APPROVAL_PRESETS:
+            available = "|".join(TUI_APPROVAL_PRESETS)
+            await self.query_one(ConversationView).add_notice(
+                f"Usage: /approval <{available}>",
+                error=True,
+            )
+            return
+        try:
+            mode = self._controller.set_session_approval_preset(value)
+        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self.notify(f"Approval: {mode}")
+
+    def action_thinking_settings(self) -> None:
+        self._choose_reasoning()
+
+    @work(exclusive=True, group="navigation")
+    async def _choose_reasoning(self) -> None:
+        if self._has_active_run():
+            self.notify(
+                "Abort the active run before changing thinking settings",
+                severity="warning",
+            )
+            return
+        try:
+            state = self._controller.session_reasoning()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        current = _reasoning_value(state.requested)
+        choices = tuple(
+            Choice(
+                value=value,
+                label=("● " if value == current else "  ") + value,
+                description=_reasoning_description(value, state),
+            )
+            for value in _available_reasoning_values(state)
+        )
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title="MODEL THINKING",
+                placeholder="Filter thinking modes…",
+                choices=choices,
+            )
+        )
+        if selected is not None:
+            await self._set_reasoning(selected)
+
+    async def _set_reasoning(self, value: str) -> None:
+        request = _REASONING_REQUESTS.get(value)
+        if request is None:
+            available = "|".join(_REASONING_REQUESTS)
+            await self.query_one(ConversationView).add_notice(
+                f"Usage: /thinking <{available}>",
+                error=True,
+            )
+            return
+        try:
+            state = self._controller.set_session_reasoning(request)
+        except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self.notify(_format_reasoning_state(state))
 
     def action_actions(self) -> None:
         self._choose_action()
@@ -872,7 +1148,15 @@ class OuroTuiApp(App[int]):
     async def _choose_action(self) -> None:
         action_commands = tuple(
             command
-            for name in ("/new", "/sessions", "/model", "/abort", "/help")
+            for name in (
+                "/new",
+                "/sessions",
+                "/model",
+                "/approval",
+                "/thinking",
+                "/abort",
+                "/help",
+            )
             if (command := resolve_command(name)[0]) is not None
         )
         choices = tuple(
@@ -887,17 +1171,13 @@ class OuroTuiApp(App[int]):
     def action_help(self) -> None:
         self.push_screen(HelpScreen())
 
-    def action_abort_or_quit(self) -> None:
-        projection = self._projection
-        if projection is not None and projection.activity.status in {
-            "queued",
-            "running",
-            "waiting_user",
-            "waiting_approval",
-            "waiting_child",
-        }:
-            self._abort_run()
+    def action_abort(self) -> None:
+        if not self._has_active_run():
+            self.notify("No active run to abort")
             return
+        self._abort_run()
+
+    async def action_quit(self) -> None:
         self.exit(0)
 
     def _has_active_run(self) -> bool:
@@ -915,6 +1195,38 @@ class OuroTuiApp(App[int]):
             await self._controller.abort()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
+
+
+def _reasoning_value(request: ReasoningRequest) -> str:
+    return request.effort or request.mode
+
+
+def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
+    capability = state.capability
+    if capability.activation == "unsupported":
+        return ("default",)
+    activation = (
+        ("default", "enabled", "disabled")
+        if capability.activation == "toggle"
+        else ("default", "enabled")
+    )
+    return (*activation, *capability.supported_efforts)
+
+
+def _reasoning_description(value: str, state: ModelReasoningState) -> str:
+    if value == "default":
+        return f"Use endpoint default (effective: {_reasoning_value(state.effective)})"
+    if value == "enabled":
+        return "Enable thinking without overriding the endpoint effort"
+    if value == "disabled":
+        return "Disable thinking for future model turns"
+    return f"Enable thinking with {value} effort"
+
+
+def _format_reasoning_state(state: ModelReasoningState) -> str:
+    requested = _reasoning_value(state.requested)
+    effective = _reasoning_value(state.effective)
+    return f"Thinking: {requested} (effective: {effective})"
 
 
 def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:

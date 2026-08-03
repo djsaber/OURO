@@ -256,6 +256,28 @@ def test_afk_preset_updates_both_session_policies_atomically(tmp_path) -> None:
     assert disabled.session.interaction_mode == "interactive"
 
 
+def test_policy_pair_can_leave_afk_for_a_specific_approval_mode_atomically(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(
+        title="AFK",
+        approval_mode="auto",
+        interaction_mode="unattended",
+    ).session
+
+    updated = sessions.set_policies(
+        source.session_id,
+        approval_mode="approval",
+        interaction_mode="interactive",
+    )
+
+    assert updated.session.approval_mode == "approval"
+    assert updated.session.interaction_mode == "interactive"
+
+
 def test_branch_inherits_session_interaction_mode(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

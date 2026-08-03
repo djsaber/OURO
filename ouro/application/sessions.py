@@ -312,6 +312,25 @@ class SessionService:
             raise ValueError(f"invalid session interaction mode: {interaction_mode}")
         return self._update_session(session_id, interaction_mode=interaction_mode)
 
+    def set_policies(
+        self,
+        session_id: str,
+        *,
+        approval_mode: SessionApprovalMode,
+        interaction_mode: SessionInteractionMode,
+    ) -> SessionMutationResult:
+        """Persist the approval and interaction policy pair atomically."""
+
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
+        return self._update_session(
+            session_id,
+            approval_mode=approval_mode,
+            interaction_mode=interaction_mode,
+        )
+
     def set_reasoning_request(
         self,
         session_id: str,
@@ -324,7 +343,7 @@ class SessionService:
     def set_afk_mode(self, session_id: str, *, enabled: bool) -> SessionMutationResult:
         """Apply the AFK policy preset atomically to an idle Session."""
 
-        return self._update_session(
+        return self.set_policies(
             session_id,
             approval_mode="auto" if enabled else "inherit",
             interaction_mode="unattended" if enabled else "interactive",
