@@ -9,6 +9,7 @@ from pathlib import Path
 from ouro.application.agent_definitions import AgentDefinitionService
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import MCPRuntimeServerView
 from ouro.application.dto import ApplicationStartupReport, Diagnostic
 from ouro.application.events import RuntimeEventSink
 from ouro.application.plugins import PluginService
@@ -39,7 +40,7 @@ from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
-from ouro.mcp import MCPRuntimeResource
+from ouro.mcp import MCPRuntimeResource, MCPServerRecord
 from ouro.plugins.contributions import ContributionCoordinator
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
@@ -237,6 +238,21 @@ class LocalApplication:
             for record in self.mcp.startup_failures
         )
         return ApplicationStartupReport(diagnostics=tuple(diagnostics))
+
+    def mcp_runtime_servers(self) -> tuple[MCPRuntimeServerView, ...]:
+        return tuple(_mcp_runtime_server_view(record) for record in self.mcp.records)
+
+    async def start_mcp_server(self, server_id: str) -> MCPRuntimeServerView:
+        return _mcp_runtime_server_view(await self.mcp.start_server(server_id))
+
+    async def stop_mcp_server(self, server_id: str) -> MCPRuntimeServerView:
+        return _mcp_runtime_server_view(await self.mcp.stop_server(server_id))
+
+    async def restart_mcp_server(self, server_id: str) -> MCPRuntimeServerView:
+        return _mcp_runtime_server_view(await self.mcp.restart_server(server_id))
+
+    async def refresh_mcp_server_tools(self, server_id: str) -> MCPRuntimeServerView:
+        return _mcp_runtime_server_view(await self.mcp.refresh_server_tools(server_id))
 
     async def close(self) -> None:
         if self._closed:
@@ -554,3 +570,14 @@ def _configured_compaction_adapter(
             None,
             f"configured endpoint unavailable: {type(exc).__name__}: {exc}",
         )
+
+
+def _mcp_runtime_server_view(record: MCPServerRecord) -> MCPRuntimeServerView:
+    return MCPRuntimeServerView(
+        server_id=record.config.server_id,
+        name=record.config.name,
+        transport=record.config.transport,
+        status=record.status,
+        tool_count=len(record.tool_names),
+        error=record.error,
+    )

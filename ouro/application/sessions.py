@@ -634,11 +634,28 @@ class SessionService:
         return active
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
-        with self._store.session_mutation(source_session_id):
-            return self._branch_locked(source_session_id, message_id)
+        self._load_snapshot(source_session_id, recover=False)
+        lock = self._store.acquire_session_lock(source_session_id, new_id("branch"))
+        if lock is None:
+            raise SessionBusyError(
+                f"cannot branch Session while a live Run owns it: {source_session_id}"
+            )
+        try:
+            with self._store.session_mutation(source_session_id):
+                return self._branch_locked(source_session_id, message_id)
+        finally:
+            lock.release()
 
     def _branch_locked(self, source_session_id: str, message_id: str) -> SessionBranchResult:
         source = self._load_snapshot(source_session_id, recover=False)
+        if (
+            source.session.active_run_id is not None
+            or source.session.status in {"running", "waiting_approval", "waiting_user"}
+            or any(run.status in ACTIVE_RUN_STATUSES for run in source.runs)
+        ):
+            raise SessionBusyError(
+                f"cannot branch Session while it has an active Run: {source_session_id}"
+            )
         selected_messages, source_message = select_branch_messages(
             source.messages,
             message_id,

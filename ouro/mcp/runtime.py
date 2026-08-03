@@ -47,6 +47,25 @@ class MCPRuntimeResource:
         await self.manager.close()
 
     @property
+    def records(self) -> tuple[MCPServerRecord, ...]:
+        """Return the current process-owned server lifecycle records."""
+
+        return tuple(self.manager.list())
+
+    async def start_server(self, server_id: str) -> MCPServerRecord:
+        return await self.manager.start(server_id)
+
+    async def stop_server(self, server_id: str) -> MCPServerRecord:
+        return await self.manager.stop(server_id)
+
+    async def restart_server(self, server_id: str) -> MCPServerRecord:
+        return await self.manager.restart(server_id)
+
+    async def refresh_server_tools(self, server_id: str) -> MCPServerRecord:
+        await self.manager.refresh_tools(server_id)
+        return self.manager.get(server_id)
+
+    @property
     def startup_configs(self) -> tuple[MCPServerConfig, ...]:
         """Enabled auto-start servers that this process resource will connect."""
 

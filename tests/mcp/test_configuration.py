@@ -8,12 +8,31 @@ from pydantic import ValidationError
 from ouro.core.errors import ConfigError
 from ouro.mcp import (
     MCPConfigStore,
+    MCPManager,
     MCPRuntimeResource,
     MCPServerConfig,
     MCPServerConfigUpdate,
     mcp_config_to_public_dict,
 )
 from ouro.tools import ToolRegistry
+
+
+@pytest.mark.asyncio
+async def test_runtime_resource_exposes_host_lifecycle_without_manager_access() -> None:
+    manager = MCPManager()
+    manager.configure(
+        MCPServerConfig(
+            server_id="disabled",
+            name="Disabled",
+            command="python",
+            enabled=False,
+        )
+    )
+    resource = MCPRuntimeResource(manager)
+
+    assert resource.records[0].status == "disabled"
+    assert (await resource.start_server("disabled")).status == "disabled"
+    assert (await resource.stop_server("disabled")).status == "disabled"
 
 
 def test_mcp_config_store_round_trips_without_overwriting_other_sections(tmp_path) -> None:

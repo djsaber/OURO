@@ -6,12 +6,14 @@ from typing import Any
 
 from ouro.application.configuration_models import (
     AgentRuntimeConfigView,
+    CompactionConfigInput,
     CompactionConfigView,
     ConfigurationChange,
     ConfigurationOverview,
     LoadedSkillView,
     MCPConfigCatalogView,
     MCPConnectionCheckView,
+    MCPServerConfigInput,
     MCPServerConfigView,
     PermissionConfigView,
     ProviderCatalogView,
@@ -51,7 +53,9 @@ from ouro.config import (
     INTEGRATED_PROVIDER_TYPES,
     AgentDefinitionsConfigManager,
     AgentRuntimeConfig,
+    CompactionConfig,
     CompactionConfigManager,
+    CompactionModelConfig,
     EndpointReasoningConfig,
     PermissionConfigManager,
     PromptConfigManager,
@@ -68,6 +72,7 @@ from ouro.config import (
     provider_templates as available_provider_templates,
 )
 from ouro.config.skills import SkillInstallScope
+from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
@@ -142,8 +147,12 @@ class ConfigurationFacade:
     def save_mcp_server(
         self,
         server_id: str,
-        update: MCPServerConfigUpdate,
+        update: MCPServerConfigUpdate | MCPServerConfigInput,
     ) -> MCPConfigCatalogView:
+        if isinstance(update, MCPServerConfigInput):
+            update = MCPServerConfigUpdate.model_validate(
+                update.model_dump(mode="python", exclude_unset=True)
+            )
         self.mcp.update(server_id, update)
         return self.mcp_catalog(change=configuration_change("mcp", "updated", "next_runtime"))
 
@@ -784,6 +793,36 @@ class ConfigurationFacade:
             config,
             config_path=self.compaction.file.path,
             change=configuration_change("compaction", "model_updated", "next_runtime"),
+        )
+
+    def save_compaction(self, draft: CompactionConfigInput) -> CompactionConfigView:
+        """Atomically replace the complete compaction policy and model configuration."""
+
+        try:
+            config = CompactionConfig(
+                strategy_id=draft.strategy_id,
+                fallback_strategy_id=draft.fallback_strategy_id,
+                policy=CompactionPolicy(
+                    auto_enabled=draft.auto_enabled,
+                    trigger_ratio=draft.trigger_ratio,
+                    target_ratio=draft.target_ratio,
+                    summary_output_tokens=draft.summary_output_tokens,
+                ),
+                model=CompactionModelConfig(
+                    provider_id=draft.provider_id,
+                    endpoint_id=draft.endpoint_id,
+                    temperature=draft.temperature,
+                    max_output_tokens=draft.max_output_tokens,
+                    reasoning=draft.reasoning,
+                ),
+            )
+        except ValueError as exc:
+            raise ConfigError(f"invalid compaction config: {exc}") from exc
+        saved = self.compaction.save(config)
+        return compaction_view(
+            saved,
+            config_path=self.compaction.file.path,
+            change=configuration_change("compaction", "updated", "next_runtime"),
         )
 
     def skill_policy(

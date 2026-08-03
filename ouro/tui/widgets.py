@@ -748,7 +748,7 @@ class AskUserPanel(Static):
         self.update(content)
 
 
-class CommandPopup(Static):
+class CommandPopup(VerticalScroll):
     """Non-focus-stealing Slash command popup controlled by the Composer."""
 
     def __init__(self) -> None:
@@ -756,6 +756,10 @@ class CommandPopup(Static):
         self.display = False
         self._commands: tuple[TuiCommand, ...] = ()
         self._selected = 0
+        self._content = Static(id="command-popup-content")
+
+    def compose(self) -> ComposeResult:
+        yield self._content
 
     @property
     def selected_command(self) -> TuiCommand | None:
@@ -773,7 +777,7 @@ class CommandPopup(Static):
         self.display = False
         self._commands = ()
         self._selected = 0
-        self.update("")
+        self._content.update("")
 
     def navigate(self, offset: int) -> None:
         if not self._commands:
@@ -783,7 +787,7 @@ class CommandPopup(Static):
 
     def _render_commands(self) -> None:
         if not self._commands:
-            self.update(Text("  No matching commands", style="#8f9aa8"))
+            self._content.update(Text("  No matching commands", style="#8f9aa8"))
             return
         content = Text()
         for index, command in enumerate(self._commands):
@@ -793,7 +797,8 @@ class CommandPopup(Static):
             content.append(f"  {command.description}", style="#aeb5bf" if selected else "#6f7a87")
             if index < len(self._commands) - 1:
                 content.append("\n")
-        self.update(content)
+        self._content.update(content)
+        self.call_after_refresh(self.scroll_to, y=self._selected, animate=False)
 
 
 class QueuedInputPanel(VerticalScroll):

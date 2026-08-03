@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from pydantic import JsonValue
 from textual import work
-from textual.app import App, ComposeResult
+from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
@@ -24,7 +25,8 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
-from ouro.tui.commands import matching_commands, resolve_command
+from ouro.tui.commands import TuiCommand, matching_commands, resolve_command
+from ouro.tui.configuration_workflows import ConfigurationWorkflowsApp
 from ouro.tui.controller import (
     TUI_APPROVAL_PRESETS,
     LoadedSession,
@@ -60,7 +62,6 @@ class LifecycleStatusReceived(Message):
 
 
 _CONFIGURE_MODEL = "__ouro_configure_model__"
-
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
     "auto": "Allow host-controlled tools; keep user input interactive",
@@ -82,7 +83,7 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
 }
 
 
-class OuroTuiApp(App[int]):
+class OuroTuiApp(ConfigurationWorkflowsApp):
     TITLE = "OURO"
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
@@ -249,6 +250,11 @@ class OuroTuiApp(App[int]):
         border: tall #7c6536;
     }
 
+    #command-popup-content {
+        width: 1fr;
+        height: auto;
+    }
+
     #composer {
         height: 3;
         margin: 0 1;
@@ -291,7 +297,9 @@ class OuroTuiApp(App[int]):
     #context-detail { width: auto; text-align: right; }
     #status-detail { width: auto; margin-left: 2; text-align: right; }
 
-    ChoiceScreen, ModelConfigurationScreen, HelpScreen {
+    ChoiceScreen, ModelConfigurationScreen, ToolExecutionConfigurationScreen,
+    CompactionConfigurationScreen,
+    MCPConfigurationScreen, SkillInstallScreen, ConfirmScreen, HelpScreen {
         align: center middle;
         background: #000000 45%;
     }
@@ -396,6 +404,78 @@ class OuroTuiApp(App[int]):
         width: auto;
         min-width: 12;
         margin-left: 1;
+    }
+
+    .configuration-panel {
+        width: 76;
+        max-width: 92%;
+        height: auto;
+        max-height: 95%;
+        padding: 1 0 1 2;
+        color: #d6d9df;
+        background: #17191d;
+        border: tall #7c6536;
+    }
+
+    .mcp-configuration-panel { height: 95%; }
+
+    .configuration-title {
+        height: 2;
+        color: #d9a441;
+        text-style: bold;
+    }
+
+    .configuration-label {
+        height: 1;
+        margin-top: 1;
+        color: #8f9aa8;
+    }
+
+    .configuration-panel Input, .configuration-panel Select {
+        background: #202329;
+        border: none;
+    }
+
+    .configuration-note {
+        height: auto;
+        margin-top: 1;
+        color: #8f9aa8;
+    }
+
+    .configuration-error {
+        height: auto;
+        min-height: 1;
+        color: #e08a8a;
+    }
+
+    .configuration-hint {
+        height: 1;
+        color: #6f7a87;
+    }
+
+    .configuration-actions {
+        height: 3;
+        align-horizontal: right;
+    }
+
+    .configuration-actions Button {
+        width: auto;
+        min-width: 12;
+        margin-left: 1;
+    }
+
+    .configuration-checks { height: 3; margin-top: 1; }
+    .configuration-checks Checkbox { width: 1fr; }
+    .configuration-number-row { height: 4; margin-top: 1; }
+    .configuration-number-field { width: 1fr; height: 4; margin-right: 1; }
+
+    .confirm-panel {
+        width: 64;
+        max-width: 90%;
+        height: auto;
+        padding: 2 3;
+        background: #17191d;
+        border: tall #7c6536;
     }
 
     #help-panel {
@@ -711,7 +791,8 @@ class OuroTuiApp(App[int]):
             and "\n" not in value
             and not any(character.isspace() for character in value)
         ):
-            popup.show_commands(matching_commands(value))
+            commands = (*matching_commands(value), *self._matching_plugin_commands(value))
+            popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
         else:
             popup.hide()
 
@@ -855,10 +936,7 @@ class OuroTuiApp(App[int]):
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
         if command is None:
-            command_name = value.partition(" ")[0]
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown command: {command_name}. Use /help to see available commands."
-            )
+            self._run_plugin_command(value)
             return
         if command.name == "/quit":
             await self.action_quit()
@@ -866,6 +944,8 @@ class OuroTuiApp(App[int]):
             await self._new_session()
         elif command.name == "/sessions":
             self.action_sessions()
+        elif command.name == "/fork":
+            self._fork_session(argument or None)
         elif command.name == "/model":
             if argument.casefold() in {"add", "configure", "new"}:
                 await self._configure_model()
@@ -883,6 +963,22 @@ class OuroTuiApp(App[int]):
                 await self._set_reasoning(argument.casefold())
             else:
                 self.action_thinking_settings()
+        elif command.name == "/compact":
+            if argument:
+                await self.query_one(ConversationView).add_notice(
+                    "Usage: /compact",
+                    error=True,
+                )
+            else:
+                self._compact_session()
+        elif command.name == "/config":
+            self._choose_configuration(argument or None)
+        elif command.name == "/tools":
+            self._choose_tools(argument or None)
+        elif command.name == "/mcp":
+            self._choose_mcp(argument or None)
+        elif command.name == "/skills":
+            self._choose_skills(argument or None)
         elif command.name == "/clear":
             self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
@@ -890,6 +986,103 @@ class OuroTuiApp(App[int]):
             self.action_abort()
         elif command.name == "/help":
             self.action_help()
+
+    def _matching_plugin_commands(self, query: str) -> tuple[TuiCommand, ...]:
+        try:
+            commands = self._controller.plugin_commands()
+        except Exception:  # noqa: BLE001 - startup may not have completed yet.
+            return ()
+        name_counts = {
+            item.name: sum(candidate.name == item.name for candidate in commands)
+            for item in commands
+        }
+        matches: list[TuiCommand] = []
+        for item in commands:
+            short_name = f"/{item.name}"
+            name = (
+                short_name
+                if name_counts[item.name] == 1 and resolve_command(short_name)[0] is None
+                else f"/{item.command_id}"
+            )
+            command = TuiCommand(
+                name=name,
+                title=item.description or f"Plugin command · {item.plugin_id}",
+                description=f"Plugin: {item.plugin_id}",
+                argument_hint=item.usage or None,
+            )
+            if command.matches(query):
+                matches.append(command)
+        return tuple(matches)
+
+    @work(exclusive=True, group="plugin-command")
+    async def _run_plugin_command(self, value: str) -> None:
+        command_text, _, argument = value.strip().partition(" ")
+        selector = command_text.removeprefix("/")
+        creating_projection = self._projection is None
+        if creating_projection:
+            self._waiting_for_session_event = True
+            self.query_one(Composer).disabled = True
+        try:
+            result = await self._controller.execute_plugin_command(selector, argument.strip())
+            if result is None:
+                await self.query_one(ConversationView).add_notice(
+                    f"Unknown command: {command_text}. Use /help to see available commands."
+                )
+                return
+            execution = result.execution
+            if execution.output:
+                await self.query_one(ConversationView).add_notice(execution.output)
+            elif execution.data:
+                await self.query_one(ConversationView).add_notice(
+                    json.dumps(execution.data, ensure_ascii=False, indent=2)
+                )
+            for run_result in result.run_results:
+                await self._apply_run_result(run_result)
+                self._sync_queued_inputs(run_result.session.session_id)
+            if (
+                not result.run_results
+                and self._projection is None
+                and self._controller.session_id is not None
+            ):
+                await self._open_session(self._controller.session_id)
+        except Exception as exc:  # noqa: BLE001 - plugin failures are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+        finally:
+            if creating_projection:
+                self._waiting_for_session_event = False
+                composer = self.query_one(Composer)
+                composer.disabled = False
+                composer.focus()
+
+    @work(exclusive=True, group="compaction")
+    async def _compact_session(self) -> None:
+        if self._has_active_run():
+            self.notify("Abort the active run before compacting context", severity="warning")
+            return
+        if self._controller.session_id is None:
+            self.notify("No active session to compact")
+            return
+        composer = self.query_one(Composer)
+        composer.disabled = True
+        self.query_one(BrandHeader).set_activity("compacting")
+        self.query_one(StatusLine).set_detail("Compacting context…")
+        try:
+            result = await self._controller.compact()
+            await self._flush_pending_runtime_events()
+            await self._apply_runtime_events(result.events)
+            self._refresh_usage_status()
+            if result.skipped or result.compaction is None:
+                self.notify("No complete older turn is eligible for compaction")
+            else:
+                self.notify(
+                    f"Context compacted: {len(result.compaction.covered_message_ids)} message(s)"
+                )
+        except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
+            self.query_one(BrandHeader).set_activity("failed")
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+        finally:
+            composer.disabled = False
+            composer.focus()
 
     async def _new_session(self) -> None:
         if self._has_active_run():
@@ -953,6 +1146,52 @@ class OuroTuiApp(App[int]):
             session_title=self._active_title,
             model=self._active_model,
         )
+
+    @work(exclusive=True, group="navigation")
+    async def _fork_session(self, message_id: str | None = None) -> None:
+        if self._has_active_run():
+            self.notify("Abort the active run before forking the session", severity="warning")
+            return
+        if self._controller.session_id is None:
+            self.notify("No active session to fork")
+            return
+        selected = message_id
+        if selected is None:
+            try:
+                points = self._controller.branch_points()
+            except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return
+            if not points:
+                self.notify("No dialogue messages are available as fork points")
+                return
+            selected = await self.push_screen_wait(
+                ChoiceScreen(
+                    title="FORK SESSION",
+                    placeholder="Filter canonical messages…",
+                    choices=tuple(
+                        Choice(
+                            message.message_id,
+                            _branch_point_label(message),
+                            (
+                                f"message {message.sequence} · {message.message_id} · "
+                                "history through this boundary"
+                            ),
+                        )
+                        for message in reversed(points)
+                    ),
+                )
+            )
+        if selected is None:
+            return
+        source_session_id = self._controller.session_id
+        try:
+            result = self._controller.branch_session(selected)
+            await self._open_session(result.session.session_id)
+        except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self.notify(f"Session forked: {source_session_id} → {result.session.session_id}")
 
     def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
@@ -1151,9 +1390,12 @@ class OuroTuiApp(App[int]):
             for name in (
                 "/new",
                 "/sessions",
+                "/fork",
                 "/model",
                 "/approval",
                 "/thinking",
+                "/compact",
+                "/config",
                 "/abort",
                 "/help",
             )
@@ -1227,6 +1469,18 @@ def _format_reasoning_state(state: ModelReasoningState) -> str:
     requested = _reasoning_value(state.requested)
     effective = _reasoning_value(state.effective)
     return f"Thinking: {requested} (effective: {effective})"
+
+
+def _branch_point_label(message: MessageRecord) -> str:
+    speaker = "YOU" if message.role == "user" else "OURO"
+    preview = " ".join(message.text_content.split())
+    if not preview and message.tool_calls:
+        preview = "tool request · " + ", ".join(call.name for call in message.tool_calls)
+    if not preview:
+        preview = "empty message"
+    if len(preview) > 72:
+        preview = preview[:69].rstrip() + "…"
+    return f"{speaker} · {preview}"
 
 
 def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:

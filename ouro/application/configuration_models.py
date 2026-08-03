@@ -11,7 +11,7 @@ from ouro.core.agents import AgentSpawnPolicy
 from ouro.core.provider import ProviderRetryPolicy
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
-from ouro.core.tools import PermissionMode
+from ouro.core.tools import PermissionMode, ToolEffect
 
 ConfigurationSection = Literal[
     "providers",
@@ -37,6 +37,8 @@ MCPConnectionStatus = Literal[
     "stopped",
     "disabled",
 ]
+MCPTransportInput = Literal["stdio", "http", "sse"]
+SkillInstallScopeInput = Literal["user", "workspace"]
 
 
 class ConfigurationChange(ApplicationDTO):
@@ -195,6 +197,22 @@ class CompactionConfigView(ApplicationDTO):
     change: ConfigurationChange | None = None
 
 
+class CompactionConfigInput(ApplicationDTO):
+    """Complete Host-neutral replacement for durable compaction options."""
+
+    strategy_id: str
+    fallback_strategy_id: str | None = None
+    auto_enabled: bool = True
+    trigger_ratio: float
+    target_ratio: float
+    summary_output_tokens: int
+    provider_id: str | None = None
+    endpoint_id: str | None = None
+    temperature: float | None = None
+    max_output_tokens: int | None = None
+    reasoning: ReasoningRequest | None = None
+
+
 class MCPServerConfigView(ApplicationDTO):
     server_id: str
     name: str
@@ -218,6 +236,39 @@ class MCPServerConfigView(ApplicationDTO):
     tool_effect_overrides: dict[str, Literal["read_only", "state_changing", "unknown"]] = Field(
         default_factory=dict
     )
+
+
+class MCPServerConfigInput(ApplicationDTO):
+    """Host-neutral partial command for one canonical MCP server configuration."""
+
+    name: str | None = None
+    transport: MCPTransportInput | None = None
+    command: str | None = None
+    args: list[str] | None = None
+    env: dict[str, str] | None = None
+    inherit_env: list[str] | None = None
+    cwd: str | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+    credential_refs: dict[str, str] | None = None
+    enabled: bool | None = None
+    auto_start: bool | None = None
+    auto_reconnect: bool | None = None
+    max_reconnect_attempts: int | None = None
+    reconnect_backoff_seconds: float | None = None
+    timeout_seconds: float | None = None
+    health_check_interval_seconds: float | None = None
+    permission_mode: PermissionMode | None = None
+    tool_effect_overrides: dict[str, ToolEffect] | None = None
+
+
+class MCPRuntimeServerView(ApplicationDTO):
+    server_id: str
+    name: str
+    transport: MCPTransportInput
+    status: MCPConnectionStatus
+    tool_count: int = 0
+    error: str | None = None
 
 
 class MCPConfigCatalogView(ApplicationDTO):

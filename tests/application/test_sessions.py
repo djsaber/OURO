@@ -612,16 +612,33 @@ def test_branch_refuses_to_publish_dangling_resource_references(tmp_path) -> Non
         sessions.branch(source.session_id, message.message_id)
 
 
-@pytest.mark.parametrize("status", ["running", "waiting_approval", "waiting_user"])
-def test_branch_reads_durable_history_from_an_active_source(tmp_path, status) -> None:
-    store, sessions = _service(tmp_path)
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+@pytest.mark.parametrize(
+    "status",
+    ("queued", "running", "waiting_approval", "waiting_user", "waiting_child"),
+)
+def test_branch_rejects_durable_active_run(tmp_path, backend: str, status: str) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
     source = SessionRecord(
         title="Active source",
-        status=status,
+        status="running" if status in {"queued", "running", "waiting_child"} else status,
         active_run_id="run_active",
         reasoning_request=ReasoningRequest(mode="enabled", effort="high"),
     )
     store.create_session(source)
+    store.save_run(
+        RunRecord(
+            run_id="run_active",
+            session_id=source.session_id,
+            status=status,
+        )
+    )
     message = MessageRecord.text(
         session_id=source.session_id,
         run_id="run_active",
@@ -631,11 +648,39 @@ def test_branch_reads_durable_history_from_an_active_source(tmp_path, status) ->
     )
     store.append_message(message)
 
-    branch = sessions.branch(source.session_id, message.message_id)
+    with pytest.raises(SessionBusyError, match="active Run"):
+        sessions.branch(source.session_id, message.message_id)
 
-    assert branch.session.parent_session_id == source.session_id
-    assert branch.session.reasoning_request == source.reasoning_request
-    assert store.load_session(source.session_id).session.status == status
+    assert [record.session_id for record in store.list_sessions()] == [source.session_id]
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_branch_rejects_concurrent_live_owner(tmp_path, backend: str) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(title="Live source").session
+    message = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="durable point",
+        sequence=1,
+    )
+    store.append_message(message)
+    live_lock = store.acquire_session_lock(source.session_id, "run_live")
+    assert live_lock is not None
+
+    try:
+        with pytest.raises(SessionBusyError, match="live Run owns"):
+            sessions.branch(source.session_id, message.message_id)
+    finally:
+        live_lock.release()
+
+    assert [record.session_id for record in store.list_sessions()] == [source.session_id]
 
 
 def test_branch_publish_failure_leaves_source_unchanged_and_no_partial_branch(

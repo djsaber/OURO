@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import CompactionConfigInput
 from ouro.config import openai_effort_reasoning
 from ouro.core.errors import ConfigError
 from ouro.local_application import LocalApplication
@@ -144,6 +145,45 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     assert overview.queued_inputs.consumption_mode == "all_at_once"
     assert overview.run_budget.max_elapsed_seconds == 60
     assert overview.compaction.model.temperature == 0.1
+
+
+def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+
+    saved = facade.save_compaction(
+        CompactionConfigInput(
+            strategy_id="builtin.llm_summary",
+            auto_enabled=False,
+            trigger_ratio=0.75,
+            target_ratio=0.25,
+            summary_output_tokens=4096,
+            provider_id="faux",
+            endpoint_id="summary",
+            temperature=0.2,
+            max_output_tokens=2048,
+        )
+    )
+
+    assert saved.policy == {
+        "auto_enabled": False,
+        "trigger_ratio": 0.75,
+        "target_ratio": 0.25,
+        "summary_output_tokens": 4096,
+    }
+    assert saved.model.provider_id == "faux"
+    assert saved.model.max_output_tokens == 2048
+    assert saved.change is not None and saved.change.effective_from == "next_runtime"
+
+    with pytest.raises(ConfigError, match="target_ratio"):
+        facade.save_compaction(
+            CompactionConfigInput(
+                strategy_id="builtin.llm_summary",
+                trigger_ratio=0.4,
+                target_ratio=0.5,
+                summary_output_tokens=4096,
+            )
+        )
+    assert facade.compaction_config() == saved.model_copy(update={"change": None})
 
 
 def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) -> None:

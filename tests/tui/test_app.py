@@ -7,8 +7,9 @@ from pathlib import Path
 
 import pytest
 from textual.containers import VerticalScroll
-from textual.widgets import OptionList, Static
+from textual.widgets import Input, OptionList, Static
 
+from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
@@ -33,7 +34,17 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp
-from ouro.tui.controller import TuiModelConfiguration, TuiSystemStatus
+from ouro.tui.configuration_screens import (
+    CompactionConfigurationScreen,
+    MCPConfigurationScreen,
+    SkillInstallScreen,
+    ToolExecutionConfigurationScreen,
+)
+from ouro.tui.controller import (
+    TuiModelConfiguration,
+    TuiPluginCommandExecution,
+    TuiSystemStatus,
+)
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.widgets import (
@@ -544,9 +555,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.content_region.height == 1
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
         assert all(turn.styles.border_left[0] == "" for turn in conversation.query(".turn"))
-        assert all(
-            notice.styles.border_left[0] == "" for notice in conversation.query(".notice")
-        )
+        assert all(notice.styles.border_left[0] == "" for notice in conversation.query(".notice"))
 
         for panel in (
             app.query_one(Composer),
@@ -612,6 +621,85 @@ async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("h", "e", "l", "l", "o", "enter")
+        await pilot.pause(0.8)
+        await pilot.press("slash", *"compact", "enter")
+        await pilot.pause(0.8)
+
+        session_id = app._controller.session_id
+        assert session_id is not None
+        recent_run = application.runtime.sessions.open(session_id).recent_run
+        assert recent_run is not None
+        assert recent_run.kind == "compaction"
+        assert recent_run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("f", "o", "r", "k", "enter")
+        await pilot.pause(0.8)
+        source_session_id = app._controller.session_id
+        assert source_session_id is not None
+
+        await pilot.press("slash", *"fork", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("down", "up", "enter")
+        await pilot.pause(0.8)
+
+        branch_session_id = app._controller.session_id
+        assert branch_session_id is not None
+        assert branch_session_id != source_session_id
+        branch = application.runtime.store.load_session(branch_session_id)
+        assert branch.session.parent_session_id == source_session_id
+        assert branch.session.forked_from_message_id is not None
+        assert len(branch.messages) == 2
+
+
+@pytest.mark.asyncio
+async def test_fork_command_refuses_active_tui_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("f", "o", "r", "k", "enter")
+        await pilot.pause(0.8)
+        source_session_id = app._controller.session_id
+        assert source_session_id is not None
+        assert app._projection is not None
+        app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
+
+        def unexpected_branch(_message_id: str) -> None:
+            raise AssertionError("active TUI session reached the branch service")
+
+        monkeypatch.setattr(app._controller, "branch_session", unexpected_branch)
+        app._fork_session("msg_not_reached")
+        await pilot.pause()
+
+        assert app._controller.session_id == source_session_id
+        assert not isinstance(app.screen, ChoiceScreen)
+
+
+@pytest.mark.asyncio
 async def test_first_markdown_chunk_renders_while_provider_is_still_running(
     tmp_path: Path,
 ) -> None:
@@ -664,9 +752,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert "FOLLOW" in queue_panel.query_one("#queued-input-content").render().plain
         assert "follow next" in queue_panel.query_one("#queued-input-content").render().plain
         assert queue_panel.region.y >= app.query_one(Composer).region.bottom
-        assert [turn.render().plain for turn in conversation.query(".user-turn")] == [
-            "YOU\nfirst"
-        ]
+        assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["YOU\nfirst"]
 
         provider.release.set()
         await pilot.pause(1)
@@ -682,9 +768,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert children.index(assistant_turns[0]) < children.index(user_turns[1])
         assert children.index(user_turns[1]) < children.index(assistant_turns[1])
 
-        snapshot = application.runtime.store.load_runtime_session(
-            app._controller.session_id or ""
-        )
+        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
         queued_message = next(
             message for message in snapshot.messages if message.text_content == "follow next"
         )
@@ -768,9 +852,7 @@ async def test_ctrl_enter_guides_the_active_run_at_the_next_model_turn(
         await pilot.pause(1)
 
         assert queue_panel.display is False
-        snapshot = application.runtime.store.load_runtime_session(
-            app._controller.session_id or ""
-        )
+        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
         guided_message = next(
             message for message in snapshot.messages if message.text_content == "guide now"
         )
@@ -1029,6 +1111,181 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+
+        await pilot.press("slash", *"tools", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ToolExecutionConfigurationScreen)
+        await pilot.press("escape")
+
+        await pilot.press("slash", *"config", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, CompactionConfigurationScreen)
+        await pilot.press("escape")
+
+        await pilot.press("slash", *"mcp", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, MCPConfigurationScreen)
+        await pilot.press("escape")
+
+        await pilot.press("slash", *"skills", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, SkillInstallScreen)
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results = []
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.5)
+        screen = MCPConfigurationScreen()
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+        screen.query_one("#mcp-server-id", Input).value = "local"
+        screen.query_one("#mcp-name", Input).value = "Local server"
+        screen.query_one("#mcp-target", Input).value = "python"
+        screen.query_one("#mcp-args", Input).value = "not-json"
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert results == []
+        assert "valid JSON" in screen.query_one(".configuration-error", Static).render().plain
+
+        screen.query_one("#mcp-args", Input).value = '["-m", "server"]'
+        screen.query_one("#mcp-tool-effects", Input).value = '{"read":"read_only"}'
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        assert len(results) == 1
+        draft = results[0]
+        assert draft is not None
+        assert draft.server_id == "local"
+        assert draft.transport == "stdio"
+        assert draft.target == "python"
+        assert draft.args == ["-m", "server"]
+        assert draft.tool_effect_overrides == {"read": "read_only"}
+
+
+@pytest.mark.asyncio
+async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results = []
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        screen = CompactionConfigurationScreen(
+            app._controller.compaction_configuration(),
+            models=app._controller.models(),
+            strategy_ids=app._controller.compaction_strategies(),
+        )
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+        screen.query_one("#compaction-trigger", Input).value = "0.4"
+        screen.query_one("#compaction-target", Input).value = "0.5"
+
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert results == []
+        assert "lower than" in screen.query_one(".configuration-error", Static).render().plain
+
+        screen.query_one("#compaction-target", Input).value = "0.2"
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        assert len(results) == 1
+        assert results[0].trigger_ratio == 0.4
+        assert results[0].target_ratio == 0.2
+
+
+@pytest.mark.asyncio
+async def test_plugin_commands_complete_and_execute_through_controller_boundary(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    executed: list[tuple[str, str]] = []
+
+    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+        executed.append((selector, argument))
+        return TuiPluginCommandExecution(
+            execution=PluginCommandExecutionView(command_id="dev.ouro.demo:hello", output="hello")
+        )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(
+            app._controller,
+            "plugin_commands",
+            lambda: (
+                PluginCommandView(
+                    command_id="dev.ouro.demo:hello",
+                    plugin_id="dev.ouro.demo",
+                    name="hello",
+                    description="Say hello",
+                ),
+            ),
+        )
+        monkeypatch.setattr(app._controller, "execute_plugin_command", execute)
+
+        await pilot.press("slash")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        popup_text = popup.query_one("#command-popup-content", Static).render().plain
+        assert "/hello" in popup_text
+        app.query_one(Composer).clear()
+
+        await pilot.press("slash", *"hello world", "enter")
+        await pilot.pause()
+
+        assert executed == [("hello", "world")]
+        notices = "\n".join(item.render().plain for item in app.query(".notice"))
+        assert "hello" in notices
+
+
+@pytest.mark.asyncio
+async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    enabled = await application.plugins.enable("dev.ouro.goal_mode")
+    assert enabled.status == "active"
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash")
+        await pilot.pause()
+
+        popup = app.query_one(CommandPopup)
+        content = popup.query_one("#command-popup-content", Static).render().plain
+        assert "/goal" in content
+
+
+@pytest.mark.asyncio
 async def test_abort_and_quit_commands_have_independent_lifecycles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1069,11 +1326,20 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         popup = app.query_one(CommandPopup)
         assert popup.display is True
         assert popup.selected_command is not None
-        assert popup.selected_command.name == "/new"
+        assert popup.selected_command.name == "/abort"
 
         await pilot.press("down")
         assert popup.selected_command is not None
-        assert popup.selected_command.name == "/sessions"
+        assert popup.selected_command.name == "/approval"
+
+        for _ in range(20):
+            if popup.selected_command is not None and popup.selected_command.name == "/tools":
+                break
+            await pilot.press("down")
+        await pilot.pause()
+        assert popup.selected_command is not None
+        assert popup.selected_command.name == "/tools"
+        assert popup.scroll_y > 0
 
         await pilot.press("escape")
         assert popup.display is False

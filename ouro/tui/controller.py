@@ -11,20 +11,42 @@ from pydantic import JsonValue
 from ouro.application.agent_models import AgentInteractionView
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
-from ouro.application.configuration_models import ProviderView
+from ouro.application.configuration_models import (
+    CompactionConfigInput,
+    CompactionConfigView,
+    MCPConnectionCheckView,
+    MCPRuntimeServerView,
+    MCPServerConfigInput,
+    MCPServerConfigView,
+    MCPTransportInput,
+    ProviderView,
+    SkillCatalogView,
+    SkillInstallScopeInput,
+    SkillManagementView,
+    SkillValidationView,
+    ToolExecutionConfigView,
+)
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.models import AvailableModel, ModelReasoningState
+from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime import RuntimeService
-from ouro.application.session_models import SessionCatalogEntry, SessionDetail
+from ouro.application.session_models import (
+    SessionBranchResult,
+    SessionCatalogEntry,
+    SessionDetail,
+)
 from ouro.application.usage_models import UsageTotals
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
+from ouro.core.compaction import CompactionCommandResult
 from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
+from ouro.core.tool_batches import ToolExecutionMode
+from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.tui.state import PendingInteraction
@@ -85,6 +107,85 @@ class TuiModelConfiguration:
     max_output_tokens: int
     supports_tools: bool = True
     supports_vision: bool = False
+
+
+@dataclass(frozen=True)
+class TuiToolConfiguration:
+    name: str
+    display_name: str
+    source: str
+    effect: ToolEffect
+    default_permission: PermissionMode | None
+    permission_override: PermissionMode | None
+    permission_control: str
+    available: bool = True
+
+    @property
+    def effective_permission(self) -> PermissionMode | None:
+        if self.permission_control == "tool":
+            return self.default_permission
+        return self.permission_override or self.default_permission
+
+
+@dataclass(frozen=True)
+class TuiToolExecutionConfiguration:
+    mode: ToolExecutionMode
+    max_concurrency: int
+    workspace_only: bool
+    max_output_chars: int
+
+
+@dataclass(frozen=True)
+class TuiMCPServerConfiguration:
+    server_id: str
+    name: str
+    transport: MCPTransportInput
+    target: str | None
+    args: list[str] | None
+    env: dict[str, str] | None
+    inherit_env: list[str] | None
+    cwd: str | None
+    headers: dict[str, str] | None
+    credential_refs: dict[str, str] | None
+    enabled: bool
+    auto_start: bool
+    auto_reconnect: bool
+    max_reconnect_attempts: int
+    reconnect_backoff_seconds: float
+    timeout_seconds: float
+    health_check_interval_seconds: float
+    permission_mode: PermissionMode
+    tool_effect_overrides: dict[str, ToolEffect] | None
+
+
+@dataclass(frozen=True)
+class TuiSkillInstallConfiguration:
+    source: str
+    scope: SkillInstallScopeInput
+    selector: str | None = None
+    install_all: bool = False
+    force: bool = False
+    ref: str | None = None
+
+
+@dataclass(frozen=True)
+class TuiCompactionConfiguration:
+    strategy_id: str
+    fallback_strategy_id: str | None
+    auto_enabled: bool
+    trigger_ratio: float
+    target_ratio: float
+    summary_output_tokens: int
+    model_key: str | None
+    temperature: float | None
+    max_output_tokens: int | None
+    reasoning: ReasoningRequest | None
+
+
+@dataclass(frozen=True)
+class TuiPluginCommandExecution:
+    execution: PluginCommandExecutionView
+    run_results: tuple[RunResult, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,9 +271,7 @@ class TuiController:
         models = tuple(runtime.available_models())
         usage = self.usage_totals()
         plugin_summaries = (
-            tuple(self._application.plugins.list())
-            if self._application.plugins is not None
-            else ()
+            tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
         skills = runtime.available_skills()
         active_plugins = tuple(
@@ -188,17 +287,7 @@ class TuiController:
             "blocked",
             "failed",
         }
-        mcp_servers = tuple(
-            McpServerStatus(
-                server_id=record.config.server_id,
-                name=record.config.name,
-                transport=record.config.transport,
-                status=record.status,
-                tool_count=len(record.tool_names),
-                error=record.error,
-            )
-            for record in self._application.mcp.startup_records
-        )
+        mcp_servers = self.mcp_servers()
         connected_mcp = tuple(item for item in mcp_servers if item.status == "connected")
         return TuiBootstrap(
             models=models,
@@ -252,9 +341,7 @@ class TuiController:
                 session_id=self._session_id,
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
-                initial_reasoning_request=(
-                    self._reasoning_request if is_new_session else None
-                ),
+                initial_reasoning_request=(self._reasoning_request if is_new_session else None),
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
             )
@@ -344,6 +431,19 @@ class TuiController:
     def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         return self._runtime().sessions.catalog().entries
 
+    def branch_points(self) -> tuple[MessageRecord, ...]:
+        """Return canonical dialogue messages that can name a branch boundary."""
+
+        session_id = self._require_session()
+        return tuple(
+            message
+            for message in self._session_messages(session_id)
+            if message.role in {"user", "assistant"}
+        )
+
+    def branch_session(self, message_id: str) -> SessionBranchResult:
+        return self._runtime().sessions.branch(self._require_session(), message_id)
+
     def queued_user_inputs(self, session_id: str | None = None) -> tuple[QueuedUserInputView, ...]:
         target_session_id = session_id or self._require_session()
         return self._runtime().pending_user_inputs(target_session_id)
@@ -380,6 +480,276 @@ class TuiController:
         )
         return self._runtime().resolve_model(f"{model.provider_id}/{model.endpoint_id}")
 
+    def tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
+        """Combine live tool contracts with durable permission overrides."""
+
+        definitions = {item.name: item for item in self._runtime().tools.definitions()}
+        overrides = self._require_configuration().permission_config().tools
+        names = sorted(set(definitions).union(overrides))
+        items: list[TuiToolConfiguration] = []
+        for name in names:
+            definition = definitions.get(name)
+            if definition is None:
+                items.append(
+                    TuiToolConfiguration(
+                        name=name,
+                        display_name=name,
+                        source="unavailable",
+                        effect="unknown",
+                        default_permission=None,
+                        permission_override=overrides.get(name),
+                        permission_control="host",
+                        available=False,
+                    )
+                )
+                continue
+            items.append(
+                TuiToolConfiguration(
+                    name=name,
+                    display_name=definition.display_name or name,
+                    source=definition.source,
+                    effect=definition.effect,
+                    default_permission=definition.permission_mode,
+                    permission_override=overrides.get(name),
+                    permission_control=definition.permission_control,
+                )
+            )
+        return tuple(items)
+
+    def set_tool_permission(
+        self,
+        tool_name: str,
+        mode: PermissionMode | None,
+    ) -> TuiToolConfiguration | None:
+        current = next(
+            (item for item in self.tool_configurations() if item.name == tool_name),
+            None,
+        )
+        if current is None:
+            raise ConfigError(f"tool not found: {tool_name}")
+        if mode is not None and current.permission_control == "tool":
+            raise ConfigError(f"tool permission is controlled by its contract: {tool_name}")
+        configuration = self._require_configuration()
+        if mode is None:
+            configuration.clear_tool_permission(tool_name)
+        else:
+            configuration.set_tool_permission(tool_name, mode)
+        return next(
+            (item for item in self.tool_configurations() if item.name == tool_name),
+            None,
+        )
+
+    def tool_execution_configuration(self) -> ToolExecutionConfigView:
+        return self._require_configuration().tool_execution_config()
+
+    def update_tool_execution(
+        self,
+        draft: TuiToolExecutionConfiguration,
+    ) -> ToolExecutionConfigView:
+        return self._require_configuration().update_tool_execution(
+            mode=draft.mode,
+            max_concurrency=draft.max_concurrency,
+            workspace_only=draft.workspace_only,
+            max_output_chars=draft.max_output_chars,
+        )
+
+    def mcp_configurations(self) -> tuple[MCPServerConfigView, ...]:
+        return tuple(self._require_configuration().mcp_catalog().servers)
+
+    def mcp_configuration(self, server_id: str) -> MCPServerConfigView:
+        return self._require_configuration().mcp_server(server_id)
+
+    def save_mcp_configuration(
+        self,
+        draft: TuiMCPServerConfiguration,
+    ) -> MCPServerConfigView:
+        payload: dict[str, object] = {
+            "name": draft.name,
+            "transport": draft.transport,
+            "enabled": draft.enabled,
+            "auto_start": draft.auto_start,
+            "auto_reconnect": draft.auto_reconnect,
+            "max_reconnect_attempts": draft.max_reconnect_attempts,
+            "reconnect_backoff_seconds": draft.reconnect_backoff_seconds,
+            "timeout_seconds": draft.timeout_seconds,
+            "health_check_interval_seconds": draft.health_check_interval_seconds,
+            "permission_mode": draft.permission_mode,
+        }
+        if draft.target is not None:
+            payload["command" if draft.transport == "stdio" else "url"] = draft.target
+        for field_name in (
+            "args",
+            "env",
+            "inherit_env",
+            "cwd",
+            "headers",
+            "credential_refs",
+            "tool_effect_overrides",
+        ):
+            value = getattr(draft, field_name)
+            if value is not None:
+                payload[field_name] = value
+        update = MCPServerConfigInput.model_validate(payload)
+        catalog = self._require_configuration().save_mcp_server(draft.server_id, update)
+        return next(item for item in catalog.servers if item.server_id == draft.server_id)
+
+    def remove_mcp_configuration(self, server_id: str) -> None:
+        self._require_configuration().remove_mcp_server(server_id)
+
+    async def check_mcp_server(self, server_id: str) -> MCPConnectionCheckView:
+        return await self._require_configuration().check_mcp_server(server_id)
+
+    def mcp_servers(self) -> tuple[McpServerStatus, ...]:
+        self._runtime()
+        assert self._application is not None
+        return tuple(self._mcp_status(record) for record in self._application.mcp_runtime_servers())
+
+    async def start_mcp_server(self, server_id: str) -> McpServerStatus:
+        self._runtime()
+        assert self._application is not None
+        return self._mcp_status(await self._application.start_mcp_server(server_id))
+
+    async def stop_mcp_server(self, server_id: str) -> McpServerStatus:
+        self._runtime()
+        assert self._application is not None
+        return self._mcp_status(await self._application.stop_mcp_server(server_id))
+
+    async def restart_mcp_server(self, server_id: str) -> McpServerStatus:
+        self._runtime()
+        assert self._application is not None
+        return self._mcp_status(await self._application.restart_mcp_server(server_id))
+
+    async def refresh_mcp_tools(self, server_id: str) -> McpServerStatus:
+        self._runtime()
+        assert self._application is not None
+        record = await self._application.refresh_mcp_server_tools(server_id)
+        return self._mcp_status(record)
+
+    def skill_catalog(self) -> SkillCatalogView:
+        return self._require_configuration().skill_catalog(include_disabled=True)
+
+    def install_skills(
+        self,
+        draft: TuiSkillInstallConfiguration,
+    ) -> SkillManagementView:
+        return self._require_configuration().install_skills(
+            draft.source,
+            scope=draft.scope,
+            selector=draft.selector,
+            install_all=draft.install_all,
+            force=draft.force,
+            ref=draft.ref,
+        )
+
+    def update_skill(self, name: str) -> SkillManagementView:
+        return self._require_configuration().update_skill(name)
+
+    def remove_skill(self, name: str) -> SkillManagementView:
+        return self._require_configuration().remove_skill(name)
+
+    def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillManagementView:
+        return self._require_configuration().set_skill_enabled(name, enabled=enabled)
+
+    def validate_skill(self, name: str) -> SkillValidationView:
+        skill = self._require_configuration().skill(name).skill
+        return self._require_configuration().validate_skills(skill.location)
+
+    def compaction_configuration(self) -> CompactionConfigView:
+        return self._require_configuration().compaction_config()
+
+    def compaction_strategies(self) -> tuple[str, ...]:
+        return tuple(item.strategy_id for item in self._runtime().compaction_strategies.list())
+
+    def save_compaction_configuration(
+        self,
+        draft: TuiCompactionConfiguration,
+    ) -> CompactionConfigView:
+        provider_id: str | None = None
+        endpoint_id: str | None = None
+        if draft.model_key is not None:
+            provider_id, separator, endpoint_id = draft.model_key.partition("/")
+            if not separator or not provider_id or not endpoint_id:
+                raise ConfigError(f"invalid compaction model route: {draft.model_key}")
+        return self._require_configuration().save_compaction(
+            CompactionConfigInput(
+                strategy_id=draft.strategy_id,
+                fallback_strategy_id=draft.fallback_strategy_id,
+                auto_enabled=draft.auto_enabled,
+                trigger_ratio=draft.trigger_ratio,
+                target_ratio=draft.target_ratio,
+                summary_output_tokens=draft.summary_output_tokens,
+                provider_id=provider_id,
+                endpoint_id=endpoint_id,
+                temperature=draft.temperature,
+                max_output_tokens=draft.max_output_tokens,
+                reasoning=draft.reasoning,
+            )
+        )
+
+    async def compact(self) -> CompactionCommandResult:
+        return await self._runtime().compact(session_id=self._require_session())
+
+    def plugin_commands(self) -> tuple[PluginCommandView, ...]:
+        application = self._application
+        if application is None or application.plugins is None:
+            return ()
+        return tuple(application.plugins.list_commands())
+
+    async def execute_plugin_command(
+        self,
+        selector: str,
+        argument: str,
+    ) -> TuiPluginCommandExecution | None:
+        application = self._application
+        if application is None or application.plugins is None:
+            return None
+        commands = self.plugin_commands()
+        matches = (
+            tuple(item for item in commands if item.command_id == selector)
+            if ":" in selector
+            else tuple(item for item in commands if item.name == selector)
+        )
+        if not matches:
+            return None
+        if len(matches) > 1:
+            choices = ", ".join(f"/{item.command_id}" for item in matches)
+            raise ValueError(f"Ambiguous plugin command /{selector}; use one of: {choices}")
+        selected = matches[0]
+        runtime = self._runtime()
+        if self._session_id is None and selected.requires_session:
+            created = runtime.create_session(
+                title=_plugin_session_title(selected.name, argument),
+                initial_model=self._initial_model,
+                reasoning_request=self._reasoning_request,
+                approval_mode=self._approval_mode,
+                interaction_mode=self._interaction_mode,
+            )
+            self._session_id = created.session_id
+            self._initial_model = None
+        execution = await application.plugins.execute_command(
+            selected.command_id,
+            argument,
+            session_id=self._session_id,
+            workspace=runtime.default_workspace,
+        )
+        if self._session_id is None and execution.session_inputs:
+            first = execution.session_inputs[0]
+            created = runtime.create_session(
+                title=first.title or _plugin_session_title(selected.name, argument),
+                initial_model=self._initial_model,
+                reasoning_request=self._reasoning_request,
+                approval_mode=self._approval_mode,
+                interaction_mode=self._interaction_mode,
+            )
+            self._session_id = created.session_id
+            self._initial_model = None
+        results: list[RunResult] = []
+        for session_input in execution.session_inputs:
+            results.append(
+                await runtime.submit_plugin_input(session_input, session_id=self._session_id)
+            )
+        return TuiPluginCommandExecution(execution=execution, run_results=tuple(results))
+
     def usage_totals(self) -> UsageTotals:
         usage = self._runtime().usage
         return usage.summarize().totals if usage is not None else UsageTotals()
@@ -399,10 +769,14 @@ class TuiController:
 
         if self._session_id is None:
             return self._approval_mode
-        return self._runtime().sessions.open(
-            self._session_id,
-            recover=False,
-        ).session.approval_mode
+        return (
+            self._runtime()
+            .sessions.open(
+                self._session_id,
+                recover=False,
+            )
+            .session.approval_mode
+        )
 
     def set_session_approval_mode(
         self,
@@ -425,10 +799,14 @@ class TuiController:
             approval_mode = self._approval_mode
             interaction_mode = self._interaction_mode
         else:
-            session = self._runtime().sessions.open(
-                self._session_id,
-                recover=False,
-            ).session
+            session = (
+                self._runtime()
+                .sessions.open(
+                    self._session_id,
+                    recover=False,
+                )
+                .session
+            )
             approval_mode = session.approval_mode
             interaction_mode = session.interaction_mode
         if approval_mode == "auto" and interaction_mode == "unattended":
@@ -485,14 +863,7 @@ class TuiController:
     def load_session(self, session_id: str) -> LoadedSession:
         sessions = self._runtime().sessions
         detail = sessions.open(session_id)
-        messages: list[MessageRecord] = []
-        cursor = 0
-        while True:
-            message_page = sessions.message_page(session_id, cursor=cursor, limit=200)
-            messages.extend(message_page.messages)
-            if message_page.next_cursor is None:
-                break
-            cursor = message_page.next_cursor
+        messages = self._session_messages(session_id)
 
         events: list[EventRecord] = []
         run_id = detail.recent_run.run_id if detail.recent_run is not None else None
@@ -518,6 +889,17 @@ class TuiController:
             queued_inputs=self.queued_user_inputs(session_id),
         )
 
+    def _session_messages(self, session_id: str) -> list[MessageRecord]:
+        sessions = self._runtime().sessions
+        messages: list[MessageRecord] = []
+        cursor = 0
+        while True:
+            page = sessions.message_page(session_id, cursor=cursor, limit=200)
+            messages.extend(page.messages)
+            if page.next_cursor is None:
+                return messages
+            cursor = page.next_cursor
+
     def _runtime(self) -> RuntimeService:
         if not self._started or self._application is None:
             raise RuntimeError("TUI controller is not started")
@@ -536,8 +918,19 @@ class TuiController:
     def _require_configuration(self) -> ConfigurationFacade:
         self._runtime()
         if self._configuration is None:
-            raise RuntimeError("model configuration is unavailable for this Runtime")
+            raise RuntimeError("configuration is unavailable for this Runtime")
         return self._configuration
+
+    @staticmethod
+    def _mcp_status(record: MCPRuntimeServerView) -> McpServerStatus:
+        return McpServerStatus(
+            server_id=record.server_id,
+            name=record.name,
+            transport=record.transport,
+            status=record.status,
+            tool_count=record.tool_count,
+            error=record.error,
+        )
 
     async def _receive_event(self, event: EventRecord) -> None:
         """Cross one persisted Runtime event into Textual's message pump."""
@@ -546,3 +939,8 @@ class TuiController:
             self._session_id = event.session_id
         self._publish_event(event)
         await asyncio.sleep(0)
+
+
+def _plugin_session_title(name: str, argument: str) -> str:
+    normalized = " ".join(argument.split())
+    return normalized[:60] if normalized else f"/{name}"

@@ -233,6 +233,9 @@ class HelpScreen(ModalScreen[None]):
 [bold #d9a441]Slash commands[/]
 
 {slash_command_help()}
+
+Active plugin commands also appear in slash-command completion. Unique names use
+their short form; ambiguous or conflicting names use /plugin.id:command.
 """
         yield Static(
             content,
