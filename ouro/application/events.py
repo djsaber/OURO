@@ -45,7 +45,7 @@ class ApplicationEventPublisher(Protocol):
 class _SinkObserver:
     callback: RuntimeEventSink
     queue: asyncio.Queue[EventRecord | None]
-    task: asyncio.Task[None]
+    task: asyncio.Task[None] | None = None
     enabled: bool = True
 
 
@@ -235,7 +235,7 @@ class RuntimeEventRecorder:
             await self._join_sink_queues()
         sink_tasks: list[asyncio.Task[None]] = []
         for observer in self._sink_observers:
-            if not observer.task.done():
+            if observer.task is not None and not observer.task.done():
                 observer.queue.put_nowait(None)
                 sink_tasks.append(observer.task)
         if sink_tasks:
@@ -268,23 +268,21 @@ class RuntimeEventRecorder:
     def _ensure_sink_observers_started(self) -> None:
         while len(self._sink_observers) < len(self._sink_callbacks):
             callback = self._sink_callbacks[len(self._sink_observers)]
-            queue: asyncio.Queue[EventRecord | None] = asyncio.Queue(
-                maxsize=self._observer_queue_size
+            observer = _SinkObserver(
+                callback=callback,
+                queue=asyncio.Queue(maxsize=self._observer_queue_size),
             )
-            task = asyncio.create_task(
-                self._run_sink_observer(callback, queue),
-                name=f"ouro-event-sink-{len(self._sink_observers)}",
+            # Eager task factories may enter the consumer before create_task()
+            # returns, so its complete lifecycle state must already be published.
+            self._sink_observers.append(observer)
+            observer.task = asyncio.create_task(
+                self._run_sink_observer(observer),
+                name=f"ouro-event-sink-{len(self._sink_observers) - 1}",
             )
-            self._sink_observers.append(_SinkObserver(callback=callback, queue=queue, task=task))
 
-    async def _run_sink_observer(
-        self,
-        callback: RuntimeEventSink,
-        queue: asyncio.Queue[EventRecord | None],
-    ) -> None:
-        observer = next(item for item in self._sink_observers if item.callback is callback)
+    async def _run_sink_observer(self, observer: _SinkObserver) -> None:
         while True:
-            event = await queue.get()
+            event = await observer.queue.get()
             try:
                 if event is None:
                     return
@@ -292,7 +290,7 @@ class RuntimeEventRecorder:
                     continue
                 try:
                     await asyncio.wait_for(
-                        _invoke_sink(callback, event),
+                        _invoke_sink(observer.callback, event),
                         timeout=self._sink_timeout_seconds,
                     )
                 except TimeoutError:
@@ -312,7 +310,7 @@ class RuntimeEventRecorder:
                         error_message=redact_text(str(exc)),
                     )
             finally:
-                queue.task_done()
+                observer.queue.task_done()
 
     def _disable_sink(
         self,

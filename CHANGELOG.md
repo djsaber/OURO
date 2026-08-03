@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Textual 8.2 / Rich 15 full-screen TUI foundation behind `ouro tui`, with terminal-native styling,
+  coalesced streaming Markdown, canonical Runtime activity/tool projection, session and model
+  pickers, queued running input, approvals, AskUser answers, MCP startup status, abort, command
+  palette, shortcuts, and explicit application resource cleanup.
 - Builtin `dev.ouro.agent_context` plugin with request-time, broad-to-specific `AGENTS.md`
   discovery across user, OURO home, Git-root, and workspace scopes; strict UTF-8 and bounded
   context assembly; and the unchanged runtime-facts injection from the renamed System Information
@@ -47,6 +51,19 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI submission now gives immediate queued feedback and idempotently reconciles `RunResult.events`
+  with the live event sink, avoiding silent responses when observer delivery is delayed. The TUI no
+  longer shadows Textual's private `_closing` lifecycle state, and `/` now opens a filterable,
+  keyboard-driven command popup backed by the same command catalog as dispatch and help.
+- TUI streaming is now protected by a blocking-provider regression test that observes the first
+  Markdown chunk before the Run completes. Built-in AskUser and common plugin input requests now
+  share a keyboard-first question form with single-select, multi-select, multi-question, and
+  free-form answers; unknown plugin request shapes degrade to bounded free-form prompts.
+- Runtime Host-sink workers now register their mailbox state before task creation, so Textual's
+  eager asyncio task factory cannot start a consumer against an incomplete registry and silently
+  terminate live delivery. Independent bounded mailboxes and sink timeouts remain intact. The TUI
+  yields after crossing each event into Textual and renders each available prefix as one coalesced
+  Markdown and activity update.
 - Plugin inventories now list user plugins before ambient builtins. Run generation snapshots remain
   dependency-aware and place user plugins before unrelated builtins, eliminating accidental ordering
   changes when builtin identities are renamed.

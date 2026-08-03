@@ -77,6 +77,7 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     )
     subparsers = parser.add_subparsers(dest="command")
 
+    _add_tui_parser(subparsers)
     _add_run_parser(subparsers)
     _add_agent_parser(subparsers)
     _add_session_parser(subparsers)
@@ -90,6 +91,15 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     _add_usage_parser(subparsers)
 
     return parser
+
+
+def _add_tui_parser(subparsers: argparse._SubParsersAction) -> None:
+    tui = subparsers.add_parser(
+        "tui",
+        help="Start the full-screen terminal interface",
+        description="Start the Textual-based OURO terminal interface.",
+    )
+    tui.add_argument("--session", dest="tui_session_id", help="Resume a durable Session")
 
 
 def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:

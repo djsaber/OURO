@@ -125,6 +125,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
+    if args.command == "tui":
+        from ouro.tui.entry import run_tui
+
+        return run_tui(
+            home=args.home,
+            system_prompt=args.system_prompt,
+            session_backend=args.session_backend,
+            approval_mode="auto" if args.interactive_afk else args.interactive_approval_mode,
+            interaction_mode="unattended" if args.interactive_afk else "interactive",
+            resume_session_id=args.tui_session_id,
+        )
     if args.command == "run":
         return _run_command(args)
     if args.command == "agent":

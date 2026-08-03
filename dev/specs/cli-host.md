@@ -11,6 +11,7 @@ CLI 是组合根和终端界面适配器。它解析参数、构建 application 
 
 ```text
 ouro [interactive]
+ouro tui
 ouro run
 ouro session
 ouro agent
@@ -52,6 +53,59 @@ Run 结束、异常、EOF 和 Host 退出时必须清理。
 
 `/model <provider/endpoint>` 在已有空闲 Session 上持久化切换；没有 Session 时只更新 Host 的下一会话选择。
 首条普通消息通过 application 的新会话参数原子校验并持久化该模型，不得为了选择模型提前创建空 Session。
+
+### TUI
+
+`ouro tui [--session <session_id>]` 启动 Textual full-screen Host。迁移期间，无子命令入口继续指向已稳定的
+stdin/stdout Interactive；TUI 达到资源附件、子智能体交互、MCP 状态和恢复/重同步等价后，才单独评审默认入口
+切换，不能让入口迁移与功能迁移互相掩盖。
+
+TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Runtime event sink 接收事实；业务运行状态
+必须复用 application 的 `reduce_runtime_activity` 投影。Textual 控件只持有视觉状态、焦点和草稿，不解析 Session
+文件、SQLite 或工具业务规则。高频 Markdown 使用 Textual `Markdown.get_stream` 合并增量，流对象随 assistant
+控件卸载显式关闭。
+
+当前交互合同：
+
+- Enter 提交，Shift+Enter 换行，单行边界的 Up/Down 浏览提交历史；
+- Composer 以 `/` 开头时自动打开命令窗并实时过滤；Up/Down 选择、Enter 执行、Escape 关闭，命令窗、帮助和
+  dispatch 共用 `ouro.tui.commands` 的单一目录；
+- Ctrl+N 新会话，Ctrl+S 会话选择，Ctrl+M 模型选择，Ctrl+P 动作面板，`?` 帮助；
+- 运行中普通提交沿用 Runtime 的 follow-up 排队语义，Host 不复制队列规则；
+- 审批条接管焦点并使用 Y/N；工具输入请求投影为独立问题视窗，支持 Up/Down、数字键、Space、Enter、
+  单选、多选和 Other 自由输入，决议后焦点返回 composer；
+- Ctrl+C 在 active Run 中调用协作式 abort，否则退出并由 `LocalApplication.close` 清理资源；
+- `/new`、`/sessions`、`/model`、`/clear`、`/abort`、`/help`、`/quit` 与动作面板共享同一 Host action。
+
+提交后的 UI 收敛不能只依赖异步 event sink：实时 sink 提供低延迟，`RunResult.events` 在 Worker 完成时执行同一
+幂等投影，保证 sink 延迟或隔离失败时仍能显示规范结果。Host 自有生命周期字段不得使用 Textual Widget 的
+`_closing` 等私有名称。
+
+问题视窗只依赖 TUI 自有的 `QuestionForm` 投影，不依赖具体工具 Widget。内置 `AskUser` 适配器保留其
+`answers -> question_id -> labels[]` 回答合同；插件提供的常见单问题或问题列表 JSON 复用同一视窗，无法识别的
+请求显示有界 JSON 预览并降级为自由输入。该适配只决定 Host 表现和回答编码，不判断工具业务语义；最终回答仍由
+Runtime 恢复原始 waiting Run。自由输入期间以 `/` 开头的文本是回答，不得触发 TUI slash command。
+
+实时渲染的回归用例必须让 Provider 在首个 `model_text_delta` 后保持阻塞，并在 `runtime.run()` 尚未返回时验证
+Markdown 已更新。只用立即返回的 Faux Provider 或只断言最终 `RunResult`，不能作为实时流证据。
+
+Runtime event sink 使用独立有界队列，不能假设入队等于已交付。sink mailbox 必须先完整注册，再创建消费任务；
+任务入口直接接收所属 mailbox，不能在启动后反查尚可能未完成的 registry。该顺序是公开运行约束，因为 Textual
+在支持时启用 `asyncio.eager_task_factory`，`create_task()` 可在返回前同步执行协程。真正超时、抛错或耗尽有界
+队列的 sink 仍按独立失败边界禁用，不能反向阻塞 durable event、其他 Observer 或其他 Session；插件 Observer
+继续使用独立 dispatcher。TUI 注册 async sink，回调只把事件放入 UI 自有前缀缓冲、发布至多一个 ready
+message，并在跨入 Textual message pump 后让出一次调度，不为每个事件执行线程跳转。
+
+ready message 每次原子取走当前事件前缀：投影仍按 sequence 逐事件执行，文本增量合并为一次
+`MarkdownStream.write`，工具列表、activity 和 pending interaction 只按该前缀的最终规范快照刷新。该合并只减少
+展示工作，不丢弃投影事实；`RunResult.events` 仍通过 sequence 幂等补齐未交付尾部。流式验收还必须覆盖超过 sink
+容量的 reasoning burst，并直接断言 Run 完成前 `Markdown.source` 已包含可见文本且没有
+`event_sink_failed`。该用例必须走 Textual 的 production `run_async` 路径，不能只用不会安装 eager task factory
+的 `run_test` 测试循环。
+
+TUI 的实现与验收证据位于 `ouro/tui` 和 `tests/tui`。尚未接通的设计目标不得用占位状态伪装完成，按
+TUI 设计文档的实施顺序继续增加资源附件、MCP live reconnect、compaction/subagent 详情、显式 steer 和 cursor
+重同步。MCP auto-start 已显示 connecting 动画及 connected/failed/tool-count 汇总，但不代替运行期连接面板。
 
 `/context` 与 `/context full` 读取同一个 application 最近 Provider 请求快照：前者显示记录的 metrics，后者
 通过 `SessionService.context` 输出经 digest 校验的完整 `ProviderContext`。`session context [--content]` 使用

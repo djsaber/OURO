@@ -12,6 +12,8 @@ dependencies = [
     "pathspec>=1.1.1",
     "pydantic>=2.13",
     "pyyaml>=6.0.2",
+    "rich>=15,<16",
+    "textual>=8.2,<9",
     "wcmatch>=11.0",
 ]
 

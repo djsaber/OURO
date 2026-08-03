@@ -459,3 +459,36 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
 
     await recorder.close()
     assert store.load_session(session.session_id).events == []
+
+
+@pytest.mark.asyncio
+async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Eager host")
+    store.create_session(session)
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
+    seen: list[str] = []
+
+    async def capture(event: EventRecord) -> None:
+        seen.append(event.event_type)
+
+    recorder.add_event_sink(capture)
+    loop = asyncio.get_running_loop()
+    previous_factory = loop.get_task_factory()
+    loop.set_task_factory(asyncio.eager_task_factory)
+    try:
+        await recorder.emit(
+            [],
+            0,
+            session_id=session.session_id,
+            run_id="run_eager",
+            event_type="run_started",
+            payload={"trigger": "user"},
+        )
+        await asyncio.wait_for(recorder.drain(), timeout=0.5)
+
+        assert seen == ["run_started"]
+    finally:
+        loop.set_task_factory(previous_factory)
+        await asyncio.wait_for(recorder.close(), timeout=0.5)

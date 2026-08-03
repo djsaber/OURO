@@ -51,6 +51,7 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
             "sdk",
             "skills",
             "tools",
+            "tui",
         }
     ),
     "config": frozenset({"core", "local_io", "local_locks", "prompts"}),
@@ -84,6 +85,15 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "sessions": frozenset({"core", "local_io", "local_locks"}),
     "skills": frozenset({"config", "core"}),
     "tools": frozenset({"core"}),
+    "tui": frozenset(
+        {
+            "application",
+            "core",
+            "deployment",
+            "local_application",
+            "tools",
+        }
+    ),
 }
 
 

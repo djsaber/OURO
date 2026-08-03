@@ -5,7 +5,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 ## 当前能力
 
-- 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
+- stdin/stdout 交互模式、Textual 全屏 TUI，以及 `run --print`、`run --json` 两种非交互模式。
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
@@ -62,6 +62,10 @@ uv run mypy ouro
 uv run ouro --home ./.ouro-dev
 uv run ouro --home ./.ouro-dev --approval-mode auto
 uv run ouro --home ./.ouro-dev --afk
+
+# 全屏 TUI（迁移阶段使用显式子命令）
+uv run ouro --home ./.ouro-dev tui
+uv run ouro --home ./.ouro-dev tui --session <session_id>
 
 # 单次运行
 uv run ouro run --print --home ./.ouro-dev "hello"
