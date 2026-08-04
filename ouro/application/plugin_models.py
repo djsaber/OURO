@@ -84,12 +84,19 @@ class PluginActionResult(OuroModel):
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
 
 
+class PluginCommandArgumentView(OuroModel):
+    value: str
+    description: str
+    usage: str = ""
+
+
 class PluginCommandView(OuroModel):
     command_id: str
     plugin_id: str
     name: str
     description: str = ""
     usage: str = ""
+    argument_options: tuple[PluginCommandArgumentView, ...] = ()
     requires_session: bool = False
 
 

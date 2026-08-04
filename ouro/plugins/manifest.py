@@ -168,10 +168,25 @@ class ToolContributionSpec(OuroModel):
         return value
 
 
+class CommandArgumentOptionSpec(OuroModel):
+    value: str
+    description: str
+    usage: str = ""
+
+    @field_validator("value")
+    @classmethod
+    def _validate_value(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or any(character.isspace() for character in normalized):
+            raise ValueError("command argument option must be one non-empty token")
+        return normalized
+
+
 class CommandContributionSpec(OuroModel):
     id: str
     description: str
     usage: str = ""
+    argument_options: list[CommandArgumentOptionSpec] = Field(default_factory=list)
     optional: bool = False
     requires_session: bool = False
 
@@ -179,6 +194,13 @@ class CommandContributionSpec(OuroModel):
     @classmethod
     def _validate_id(cls, value: str) -> str:
         return _validate_local_id(value)
+
+    @model_validator(mode="after")
+    def _validate_argument_options(self) -> CommandContributionSpec:
+        values = [item.value.casefold() for item in self.argument_options]
+        if len(values) != len(set(values)):
+            raise ValueError("command argument options must be unique")
+        return self
 
 
 class SessionControlClaimSpec(OuroModel):

@@ -1220,7 +1220,17 @@ async def test_commands_and_background_services_use_owned_lifecycle(tmp_path) ->
         source,
         runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
         contributes={
-            "commands": [{"id": "hello", "description": "Say hello."}],
+            "commands": [
+                {
+                    "id": "hello",
+                    "description": "Say hello.",
+                    "usage": "[formal|casual]",
+                    "argument_options": [
+                        {"value": "formal", "description": "Use a formal greeting."},
+                        {"value": "casual", "description": "Use a casual greeting."},
+                    ],
+                }
+            ],
             "background_services": [{"id": "watcher"}],
         },
     )
@@ -1254,7 +1264,10 @@ def create_plugin(context): return Plugin(context)
     service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
 
-    assert service.list_commands()[0].command_id == "dev.ouro.echo:hello"
+    command_view = service.list_commands()[0]
+    assert command_view.command_id == "dev.ouro.echo:hello"
+    assert command_view.usage == "[formal|casual]"
+    assert [item.value for item in command_view.argument_options] == ["formal", "casual"]
     with runtime.snapshot() as snapshot:
         contracts = snapshot.generations[0].contract_hashes
         assert "dev.ouro.echo/background_services/watcher" in contracts

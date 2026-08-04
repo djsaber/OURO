@@ -575,7 +575,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   Desktop 可映射为 action，但 core 不定义 UI extension DSL。当前 Interactive 中 builtin 优先，canonical
   `/<plugin_id>:<name>` 始终可用，唯一 local name 才获得 `/<name>` 短别名。Manifest 的
   `requires_session=true` 显式声明 handler 前置条件；Interactive 在首条 Session 级命令前懒创建并绑定 Session，
-  无状态命令不触发该行为。
+  无状态命令不触发该行为。参数型命令可在 Manifest 声明 Host-neutral 的单 token `argument_options`；这是命令契约与
+  `usage` 的结构化补充，由各 Host 自行映射为补全或选单，不把 TUI 状态和渲染组件带入插件 API。
 - Session 级长期控制统一由 `SessionControlCoordinator` 仲裁。插件以 `session_controllers` 声明 canonical controller、
   `domain + exclusive|shared` claims 和生命周期，Command/Tool 只返回 transition intent；Host 不读取 Plan、Goal 或
   私有 state 来判断冲突。Tool/Context/Prompt Policy/Tool Policy/Turn Policy/Continuation/Observer 可用 `active_when` 绑定 controller，

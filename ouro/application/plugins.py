@@ -8,6 +8,7 @@ from ouro.application.plugin_models import (
     CompatibilityItemView,
     CompatibilityReportView,
     PluginActionResult,
+    PluginCommandArgumentView,
     PluginCommandExecutionView,
     PluginCommandView,
     PluginDetail,
@@ -291,6 +292,14 @@ class PluginService:
                     name=item.name,
                     description=item.description,
                     usage=item.usage,
+                    argument_options=tuple(
+                        PluginCommandArgumentView(
+                            value=option.value,
+                            description=option.description,
+                            usage=option.usage,
+                        )
+                        for option in item.argument_options
+                    ),
                     requires_session=item.requires_session,
                 )
                 for item in snapshot.commands.list()

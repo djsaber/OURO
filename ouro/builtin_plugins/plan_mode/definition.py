@@ -54,6 +54,20 @@ PLAN_MODE_PLUGIN = BuiltinPluginDefinition(
                         "id": "plan",
                         "description": "Enter plan mode for the current Session.",
                         "usage": "[on|off|status]",
+                        "argument_options": [
+                            {
+                                "value": "on",
+                                "description": "Enter Plan mode for this Session.",
+                            },
+                            {
+                                "value": "off",
+                                "description": "Leave Plan mode and return to normal execution.",
+                            },
+                            {
+                                "value": "status",
+                                "description": "Show the current Plan mode phase.",
+                            },
+                        ],
                         "requires_session": True,
                     }
                 ],

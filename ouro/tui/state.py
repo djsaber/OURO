@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from ouro.application.agent_models import AgentInteractionView
-from ouro.application.runtime_activity import queued_runtime_activity, reduce_runtime_activity
+from ouro.application.runtime_activity import reduce_runtime_activity
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
 
@@ -56,7 +56,11 @@ class TuiSessionProjection:
     _run_id: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
-        self.activity = queued_runtime_activity(self.session_id)
+        self.activity = RuntimeActivitySnapshot(
+            session_id=self.session_id,
+            status="idle",
+            activity="idle",
+        )
 
     @property
     def pending_interactions(self) -> tuple[PendingInteraction, ...]:

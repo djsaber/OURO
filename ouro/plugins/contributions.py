@@ -35,6 +35,7 @@ from ouro.plugins.manifest import PluginManifest
 from ouro.plugins.models import PluginClass, PluginGenerationRecord
 from ouro.plugins.registry import (
     PluginCommand,
+    PluginCommandArgument,
     PluginCommandRegistry,
     bind_plugin_command,
 )
@@ -455,6 +456,16 @@ class ContributionCoordinator:
                 ),
                 generation_id=owner.generation_id,
                 allow_session_inputs=_allows_session_inputs(manifest),
+                description=declarations[command_id].description,
+                usage=declarations[command_id].usage,
+                argument_options=tuple(
+                    PluginCommandArgument(
+                        value=item.value,
+                        description=item.description,
+                        usage=item.usage,
+                    )
+                    for item in declarations[command_id].argument_options
+                ),
                 requires_session=declarations[command_id].requires_session,
             )
             for command_id, command in actual.items()

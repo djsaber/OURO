@@ -220,6 +220,12 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
     "commands": [{
       "id": "mode",
       "description": "Control this Session mode.",
+      "usage": "[on|off|status]",
+      "argument_options": [
+        {"value": "on", "description": "Enter this mode."},
+        {"value": "off", "description": "Leave this mode."},
+        {"value": "status", "description": "Show the current mode."}
+      ],
       "requires_session": true
     }],
     "session_controllers": [{
@@ -245,6 +251,11 @@ Manifest 中可把需要随模式启停的贡献绑定到 controller：
 这类命令时，会用当前模型、审批与交互策略懒创建 Session 后再执行。默认值为 `false`，查询全局状态等无 Session
 命令仍可在 `call.session_id=None` 下运行，也不会仅因执行命令而产生空 Session。SDK handler 不重复声明该字段，
 Manifest 是 Host 路由前置条件的唯一来源。
+
+参数型 Command 应在 Manifest 用 `argument_options` 声明可选择的首个参数，而不是要求 Host 解析面向人的 `usage`
+字符串。每个 `value` 是一个无空白 token，`description` 说明行为；若该选项后仍可跟参数，用该项的 `usage` 描述剩余
+语法。CLI 可以继续只显示整体 `usage`，TUI 则会用结构化选项提供过滤、上下键选择和输入联动。自由文本参数不需要
+伪装成枚举项，保留在 Command 的整体 `usage` 中即可。
 
 同一 claim domain 的排他 controller 会在 activate 前得到确定冲突；插件不能用 `replace` 抢占其他 owner。为用户提供
 友好的 `off` 命令，但它仍应返回 release transition。Host 的 `/control status` 与 `/control release ... [--force]`

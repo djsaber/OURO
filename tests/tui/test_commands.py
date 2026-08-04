@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from ouro.tui.commands import matching_commands, resolve_command
+from ouro.tui.commands import (
+    TuiCommand,
+    TuiCommandArgument,
+    argument_suggestion,
+    matching_arguments,
+    matching_commands,
+    resolve_command,
+)
 
 
 def test_matching_commands_filters_prefixes_and_aliases() -> None:
@@ -37,3 +44,31 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert typo_alias is not None and typo_alias.name == "/quit"
     assert alias_argument == ""
     assert unknown is None
+
+
+def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
+    command = TuiCommand(
+        "/goal",
+        "Goal",
+        "Control the current Goal",
+        "[status|pause|replace] | <request>",
+        argument_options=(
+            TuiCommandArgument("status", "Show the current Goal"),
+            TuiCommandArgument("pause", "Pause the active Goal"),
+            TuiCommandArgument(
+                "replace",
+                "Replace the current Goal",
+                "[--token-budget N] <request>",
+            ),
+        ),
+    )
+
+    assert [item.value for item in matching_arguments(command, "pau")] == ["pause"]
+    assert [item.value for item in matching_arguments(command, "replace new goal")] == ["replace"]
+    assert argument_suggestion(command, "", command.argument_options[0]) == (
+        "[status|pause|replace] | <request>"
+    )
+    assert argument_suggestion(command, "pau", command.argument_options[1]) == "se"
+    assert argument_suggestion(command, "replace ", command.argument_options[2]) == (
+        "[--token-budget N] <request>"
+    )

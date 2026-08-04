@@ -102,7 +102,17 @@ class _CommandContractAdapter:
     def contracts(self, context: ContributionContractContext) -> dict[str, object]:
         return {
             f"{context.manifest.plugin_id}/commands/{command.name}": {
-                "description": command.description
+                "description": command.description,
+                "usage": command.usage,
+                "argument_options": [
+                    {
+                        "value": item.value,
+                        "description": item.description,
+                        "usage": item.usage,
+                    }
+                    for item in command.argument_options
+                ],
+                "requires_session": command.requires_session,
             }
             for command in context.commands
         }

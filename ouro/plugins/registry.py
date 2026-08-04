@@ -55,11 +55,19 @@ PluginCommandHandler = Callable[
 
 
 @dataclass(frozen=True)
+class PluginCommandArgument:
+    value: str
+    description: str
+    usage: str = ""
+
+
+@dataclass(frozen=True)
 class PluginCommand:
     name: str
     handler: PluginCommandHandler
     description: str = ""
     usage: str = ""
+    argument_options: tuple[PluginCommandArgument, ...] = ()
     plugin_id: str = ""
     source: PluginSource = "third_party"
     timeout_seconds: float = 5.0

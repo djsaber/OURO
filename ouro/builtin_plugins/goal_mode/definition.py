@@ -67,6 +67,30 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             "resume [--token-budget N] | cancel | "
                             "replace [--token-budget N] <request>"
                         ),
+                        "argument_options": [
+                            {
+                                "value": "status",
+                                "description": "Show the current Goal.",
+                            },
+                            {
+                                "value": "pause",
+                                "description": "Pause the active Goal.",
+                            },
+                            {
+                                "value": "resume",
+                                "description": "Resume a paused or blocked Goal.",
+                                "usage": "[--token-budget N]",
+                            },
+                            {
+                                "value": "cancel",
+                                "description": "Cancel and remove the current Goal.",
+                            },
+                            {
+                                "value": "replace",
+                                "description": "Replace the current Goal with a new objective.",
+                                "usage": "[--token-budget N] <request>",
+                            },
+                        ],
                         "requires_session": True,
                     }
                 ],

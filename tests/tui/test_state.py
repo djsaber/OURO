@@ -14,6 +14,14 @@ def _event(sequence: int, event_type: str, **payload: object) -> EventRecord:
     )
 
 
+def test_projection_without_run_is_idle() -> None:
+    projection = TuiSessionProjection("ses_test")
+
+    assert projection.activity.status == "idle"
+    assert projection.activity.activity == "idle"
+    assert projection.activity.run_id is None
+
+
 def test_projection_accumulates_stream_and_ignores_duplicate_events() -> None:
     projection = TuiSessionProjection("ses_test")
 

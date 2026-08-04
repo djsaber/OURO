@@ -9,12 +9,17 @@ import pytest
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Static
 
-from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
+from ouro.application.plugin_models import (
+    PluginCommandArgumentView,
+    PluginCommandExecutionView,
+    PluginCommandView,
+)
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextMetrics
+from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent
 from ouro.core.provider import (
     ModelMetadata,
@@ -656,7 +661,7 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
         source_session_id = app._controller.session_id
         assert source_session_id is not None
 
-        await pilot.press("slash", *"fork", "enter")
+        await pilot.press("slash", *"fork", "enter", "enter")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("down", "up", "enter")
@@ -1091,19 +1096,11 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
-        await pilot.press("slash", *"approval", "enter")
-        await pilot.pause()
-
-        assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press(*"afk", "enter")
+        await pilot.press("slash", *"approval", "enter", *"afk", "enter")
         await pilot.pause()
         assert app._controller.session_approval_preset() == "afk"
 
-        await pilot.press("slash", *"thinking", "enter")
-        await pilot.pause()
-
-        assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press(*"high", "enter")
+        await pilot.press("slash", *"thinking", "enter", *"high", "enter")
         await pilot.pause()
         reasoning = app._controller.session_reasoning()
         assert reasoning.requested.effort == "high"
@@ -1119,7 +1116,7 @@ async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
 
-        await pilot.press("slash", *"tools", "enter")
+        await pilot.press("slash", *"tools", "enter", "enter")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("enter")
@@ -1127,7 +1124,7 @@ async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
         assert isinstance(app.screen, ToolExecutionConfigurationScreen)
         await pilot.press("escape")
 
-        await pilot.press("slash", *"config", "enter")
+        await pilot.press("slash", *"config", "enter", "enter")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("enter")
@@ -1135,7 +1132,7 @@ async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
 
-        await pilot.press("slash", *"mcp", "enter")
+        await pilot.press("slash", *"mcp", "enter", "enter")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("enter")
@@ -1143,7 +1140,7 @@ async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
         assert isinstance(app.screen, MCPConfigurationScreen)
         await pilot.press("escape")
 
-        await pilot.press("slash", *"skills", "enter")
+        await pilot.press("slash", *"skills", "enter", "enter")
         await pilot.pause()
         assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("enter")
@@ -1273,6 +1270,14 @@ async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) 
     assert application.plugins is not None
     enabled = await application.plugins.enable("dev.ouro.goal_mode")
     assert enabled.status == "active"
+    goal = next(item for item in application.plugins.list_commands() if item.name == "goal")
+    assert [item.value for item in goal.argument_options] == [
+        "status",
+        "pause",
+        "resume",
+        "cancel",
+        "replace",
+    ]
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -1301,6 +1306,14 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
         await pilot.pause(0.5)
         monkeypatch.setattr(app._controller, "abort", fake_abort)
         app._projection = TuiSessionProjection("session_1")
+        app._projection.apply(
+            EventRecord(
+                session_id="session_1",
+                run_id="run_1",
+                event_type="run_started",
+                sequence=1,
+            )
+        )
 
         await app._dispatch_command("/abort")
         await pilot.pause()
@@ -1355,6 +1368,146 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, HelpScreen)
+
+
+@pytest.mark.asyncio
+async def test_command_selection_enters_parameter_editor_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    executed: list[tuple[str, str]] = []
+
+    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+        executed.append((selector, argument))
+        return TuiPluginCommandExecution(
+            execution=PluginCommandExecutionView(command_id="dev.ouro.plan_mode:plan")
+        )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(
+            app._controller,
+            "plugin_commands",
+            lambda: (
+                PluginCommandView(
+                    command_id="dev.ouro.plan_mode:plan",
+                    plugin_id="dev.ouro.plan_mode",
+                    name="plan",
+                    description="Enter Plan mode",
+                    usage="[on|off|status]",
+                    argument_options=(
+                        PluginCommandArgumentView(value="on", description="Enter Plan mode"),
+                        PluginCommandArgumentView(value="off", description="Leave Plan mode"),
+                        PluginCommandArgumentView(value="status", description="Show mode status"),
+                    ),
+                ),
+            ),
+        )
+        monkeypatch.setattr(app._controller, "execute_plugin_command", execute)
+
+        await pilot.press("slash", "p", "l", "a", "n", "enter")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        assert composer.text == "/plan "
+        assert composer.suggestion == "[on|off|status]"
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/plan"
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "on"
+        assert executed == []
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert composer.text == "/plan off"
+        assert executed == []
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert executed == [("plan", "off")]
+
+
+@pytest.mark.asyncio
+async def test_space_after_parameterized_command_opens_linked_argument_menu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(
+            app._controller,
+            "plugin_commands",
+            lambda: (
+                PluginCommandView(
+                    command_id="dev.ouro.goal_mode:goal",
+                    plugin_id="dev.ouro.goal_mode",
+                    name="goal",
+                    description="Control a Goal",
+                    usage="[status|pause|resume|cancel|replace] | <request>",
+                    argument_options=(
+                        PluginCommandArgumentView(
+                            value="status", description="Show the current Goal"
+                        ),
+                        PluginCommandArgumentView(
+                            value="pause", description="Pause the active Goal"
+                        ),
+                        PluginCommandArgumentView(
+                            value="resume", description="Resume a paused Goal"
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        await pilot.press("slash", "g", "o", "a", "l", "space")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        assert composer.text == "/goal "
+        assert composer.suggestion == "[status|pause|resume|cancel|replace] | <request>"
+        assert popup.argument_command is not None
+
+        await pilot.press("p", "a", "u")
+        await pilot.pause()
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "pause"
+        assert composer.suggestion == "se"
+        content = popup.query_one("#command-popup-content", Static).render().plain
+        assert "pause" in content
+        assert "status" not in content
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == "/goal pause"
+
+
+@pytest.mark.asyncio
+async def test_plan_command_without_run_restores_idle_tui_state(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    enabled = await application.plugins.enable("dev.ouro.plan_mode")
+    assert enabled.status == "active"
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", "p", "l", "a", "n", "space", "o", "n", "enter")
+        await pilot.pause(0.8)
+
+        assert app._projection is not None
+        assert app._projection.activity.status == "idle"
+        assert app._projection.activity.activity == "idle"
+        assert app._has_active_run() is False
+        assert app.query_one(Composer).disabled is False
+        header = app.query_one(BrandHeader).render().plain
+        assert "Ready" in header
+        assert "Queued" not in header
 
 
 @pytest.mark.asyncio

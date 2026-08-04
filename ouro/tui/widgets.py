@@ -19,7 +19,7 @@ from ouro.application.queued_inputs import (
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
-from ouro.tui.commands import TuiCommand
+from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
@@ -749,12 +749,14 @@ class AskUserPanel(Static):
 
 
 class CommandPopup(VerticalScroll):
-    """Non-focus-stealing Slash command popup controlled by the Composer."""
+    """Non-focus-stealing command and argument popup controlled by the Composer."""
 
     def __init__(self) -> None:
         super().__init__(id="command-popup")
         self.display = False
         self._commands: tuple[TuiCommand, ...] = ()
+        self._argument_command: TuiCommand | None = None
+        self._arguments: tuple[TuiCommandArgument, ...] = ()
         self._selected = 0
         self._content = Static(id="command-popup-content")
 
@@ -763,27 +765,67 @@ class CommandPopup(VerticalScroll):
 
     @property
     def selected_command(self) -> TuiCommand | None:
-        if not self._commands:
+        if self._argument_command is not None or not self._commands:
             return None
         return self._commands[self._selected]
 
+    @property
+    def argument_command(self) -> TuiCommand | None:
+        return self._argument_command
+
+    @property
+    def selected_argument(self) -> TuiCommandArgument | None:
+        if self._argument_command is None or not self._arguments:
+            return None
+        return self._arguments[self._selected]
+
     def show_commands(self, commands: tuple[TuiCommand, ...]) -> None:
+        selected_name = self.selected_command.name if self.selected_command is not None else None
         self._commands = commands
-        self._selected = min(self._selected, max(0, len(commands) - 1))
+        self._argument_command = None
+        self._arguments = ()
+        self._selected = next(
+            (index for index, item in enumerate(commands) if item.name == selected_name),
+            0,
+        )
         self.display = True
         self._render_commands()
+
+    def show_arguments(
+        self,
+        command: TuiCommand,
+        arguments: tuple[TuiCommandArgument, ...],
+    ) -> None:
+        selected_value = (
+            self.selected_argument.value if self.selected_argument is not None else None
+        )
+        self._commands = ()
+        self._argument_command = command
+        self._arguments = arguments
+        self._selected = next(
+            (index for index, item in enumerate(arguments) if item.value == selected_value),
+            0,
+        )
+        self.display = True
+        self._render_arguments()
 
     def hide(self) -> None:
         self.display = False
         self._commands = ()
+        self._argument_command = None
+        self._arguments = ()
         self._selected = 0
         self._content.update("")
 
     def navigate(self, offset: int) -> None:
-        if not self._commands:
+        items = self._arguments if self._argument_command is not None else self._commands
+        if not items:
             return
-        self._selected = (self._selected + offset) % len(self._commands)
-        self._render_commands()
+        self._selected = (self._selected + offset) % len(items)
+        if self._argument_command is not None:
+            self._render_arguments()
+        else:
+            self._render_commands()
 
     def _render_commands(self) -> None:
         if not self._commands:
@@ -796,6 +838,31 @@ class CommandPopup(VerticalScroll):
             content.append(command.usage, style="bold #d9a441" if selected else "bold")
             content.append(f"  {command.description}", style="#aeb5bf" if selected else "#6f7a87")
             if index < len(self._commands) - 1:
+                content.append("\n")
+        self._content.update(content)
+        self.call_after_refresh(self.scroll_to, y=self._selected, animate=False)
+
+    def _render_arguments(self) -> None:
+        command = self._argument_command
+        if command is None:
+            return
+        if not self._arguments:
+            content = Text()
+            content.append("› ", style="#d9a441")
+            content.append(command.argument_hint or "argument", style="bold #7f8996")
+            content.append(f"  {command.description}", style="#6f7a87")
+            self._content.update(content)
+            return
+        content = Text()
+        for index, argument in enumerate(self._arguments):
+            selected = index == self._selected
+            content.append("› " if selected else "  ", style="#d9a441" if selected else "")
+            content.append(argument.usage, style="bold #d9a441" if selected else "bold")
+            content.append(
+                f"  {argument.description}",
+                style="#aeb5bf" if selected else "#6f7a87",
+            )
+            if index < len(self._arguments) - 1:
                 content.append("\n")
         self._content.update(content)
         self.call_after_refresh(self.scroll_to, y=self._selected, animate=False)

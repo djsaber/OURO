@@ -25,7 +25,15 @@ from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
-from ouro.tui.commands import TuiCommand, matching_commands, resolve_command
+from ouro.tui.commands import (
+    TUI_COMMANDS,
+    TuiCommand,
+    TuiCommandArgument,
+    argument_suggestion,
+    matching_arguments,
+    matching_commands,
+    resolve_command,
+)
 from ouro.tui.configuration_workflows import ConfigurationWorkflowsApp
 from ouro.tui.controller import (
     TUI_APPROVAL_PRESETS,
@@ -270,6 +278,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     #composer:focus {
         border-top: solid #b68a3b;
         border-bottom: solid #b68a3b;
+    }
+
+    #composer .text-area--suggestion {
+        color: #626b78;
     }
 
     #queued-input-panel {
@@ -778,6 +790,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if message.text_area is not self.query_one(Composer):
             return
         value = message.text_area.text
+        message.text_area.suggestion = ""
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
         if ask_user.display and ask_user.awaiting_freeform:
@@ -786,15 +799,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if value == self._dismissed_command_text:
             return
         self._dismissed_command_text = None
-        if (
-            value.startswith("/")
-            and "\n" not in value
-            and not any(character.isspace() for character in value)
-        ):
-            commands = (*matching_commands(value), *self._matching_plugin_commands(value))
-            popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
-        else:
+        if not value.startswith("/") or "\n" in value:
             popup.hide()
+            return
+        _command_text, separator, argument = value.partition(" ")
+        if not separator:
+            commands = matching_commands(value, self._command_catalog())
+            popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
+            return
+        command, _normalized_argument = resolve_command(value, self._command_catalog())
+        if command is None or not command.takes_arguments:
+            popup.hide()
+            return
+        arguments = matching_arguments(command, argument)
+        popup.show_arguments(command, arguments)
+        message.text_area.suggestion = argument_suggestion(
+            command,
+            argument,
+            popup.selected_argument,
+        )
 
     async def on_composer_command_submitted(self, message: Composer.CommandSubmitted) -> None:
         popup = self.query_one(CommandPopup)
@@ -813,6 +836,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ask_user.accept_freeform(message.text)
             return
         selected = popup.selected_command
+        if selected is not None and selected.takes_arguments:
+            self._edit_command(f"{selected.name} ")
+            return
+        argument_command = popup.argument_command
+        selected_argument = popup.selected_argument
+        if argument_command is not None and selected_argument is not None:
+            _command_text, _separator, argument = message.text.partition(" ")
+            head, head_separator, remainder = argument.strip().partition(" ")
+            option_is_complete = head.casefold() == selected_argument.value.casefold()
+            if not option_is_complete or (
+                selected_argument.requires_value and (not head_separator or not remainder.strip())
+            ):
+                suffix = " " if selected_argument.requires_value else ""
+                self._edit_command(f"{argument_command.name} {selected_argument.value}{suffix}")
+                return
         value = selected.name if selected is not None else message.text
         composer.clear()
         popup.hide()
@@ -822,11 +860,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             composer.focus()
 
     def on_composer_command_navigated(self, message: Composer.CommandNavigated) -> None:
-        self.query_one(CommandPopup).navigate(message.offset)
+        popup = self.query_one(CommandPopup)
+        popup.navigate(message.offset)
+        command = popup.argument_command
+        if command is None:
+            return
+        composer = self.query_one(Composer)
+        _command_text, _separator, argument = composer.text.partition(" ")
+        composer.suggestion = argument_suggestion(
+            command,
+            argument,
+            popup.selected_argument,
+        )
 
     def on_composer_command_dismissed(self, _message: Composer.CommandDismissed) -> None:
         composer = self.query_one(Composer)
         self._dismissed_command_text = composer.text
+        composer.suggestion = ""
         self.query_one(CommandPopup).hide()
 
     @work(exclusive=True, group="interaction")
@@ -933,6 +983,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             composer.disabled = False
             composer.focus()
 
+    def _edit_command(self, value: str) -> None:
+        composer = self.query_one(Composer)
+        composer.load_text(value)
+        composer.move_cursor((0, len(value)))
+        composer.focus()
+
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
         if command is None:
@@ -987,7 +1043,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/help":
             self.action_help()
 
-    def _matching_plugin_commands(self, query: str) -> tuple[TuiCommand, ...]:
+    def _command_catalog(self) -> tuple[TuiCommand, ...]:
+        return (*TUI_COMMANDS, *self._plugin_commands())
+
+    def _plugin_commands(self) -> tuple[TuiCommand, ...]:
         try:
             commands = self._controller.plugin_commands()
         except Exception:  # noqa: BLE001 - startup may not have completed yet.
@@ -1009,9 +1068,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 title=item.description or f"Plugin command · {item.plugin_id}",
                 description=f"Plugin: {item.plugin_id}",
                 argument_hint=item.usage or None,
+                argument_options=tuple(
+                    TuiCommandArgument(
+                        value=option.value,
+                        description=option.description,
+                        argument_hint=option.usage or None,
+                    )
+                    for option in item.argument_options
+                ),
             )
-            if command.matches(query):
-                matches.append(command)
+            matches.append(command)
         return tuple(matches)
 
     @work(exclusive=True, group="plugin-command")
