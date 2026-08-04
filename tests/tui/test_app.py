@@ -557,7 +557,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
         assert welcome.styles.border_left[0] == "thick"
-        assert app.screen.styles.background.hex == "#000000"
+        assert app.screen.styles.background.hex == "#0C0C0C"
         assert app.screen.region.x == 0
         assert app.screen.region.y == 0
         assert app.screen.region.width == 100

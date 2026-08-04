@@ -96,18 +96,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
+    $ouro-background: #0c0c0c;
+
     Screen {
         width: 100%;
         height: 100%;
         margin: 0;
         padding: 0;
-        background: #000000;
+        background: $ouro-background;
         color: #d6d9df;
         layout: vertical;
     }
 
     VerticalScroll, TextArea, OptionList {
-        scrollbar-background: #000000;
+        scrollbar-background: $ouro-background;
         scrollbar-color: #505967;
         scrollbar-color-hover: #6a7482;
         scrollbar-size-vertical: 1;
@@ -118,21 +120,21 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         width: 100%;
         height: 1;
         dock: top;
-        background: #000000;
+        background: $ouro-background;
         color: #d6d9df;
     }
 
     #main {
         width: 100%;
         height: 1fr;
-        background: #000000;
+        background: $ouro-background;
     }
 
     #conversation {
         width: 100%;
         height: 1fr;
         padding: 1 1 0 2;
-        background: #000000;
+        background: $ouro-background;
     }
 
     .welcome {
@@ -141,7 +143,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 2 0;
         padding: 1 2;
         color: #aeb5bf;
-        background: #000000;
+        background: $ouro-background;
         border-left: thick #d9a441;
     }
 
@@ -260,7 +262,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 0 1;
         padding: 1;
         color: #d6d9df;
-        background: #000000;
+        background: $ouro-background;
         border-top: solid #7c6536;
         border-right: none;
         border-bottom: none;
@@ -279,7 +281,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 0 1;
         padding: 0 0 0 1;
         color: #e5e7eb;
-        background: #000000;
+        background: $ouro-background;
         border-top: solid #505967;
         border-right: none;
         border-bottom: solid #505967;
@@ -301,19 +303,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 0 1;
         padding: 0 0 1 1;
         color: #d6d9df;
-        background: #000000;
+        background: $ouro-background;
     }
 
     #queued-input-content {
         height: auto;
-        background: #000000;
+        background: $ouro-background;
     }
 
     StatusLine {
         height: 1;
         padding: 0 2;
         color: #6f7a87;
-        background: #000000;
+        background: $ouro-background;
     }
 
     #key-hints { width: 1fr; }
@@ -324,7 +326,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     CompactionConfigurationScreen,
     MCPConfigurationScreen, SkillInstallScreen, ConfirmScreen, HelpScreen {
         align: center middle;
-        background: #000000 45%;
+        background: $ouro-background 45%;
     }
 
     #choice-title {
