@@ -26,14 +26,15 @@ from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
 
-_SPINNER = ("◌", "◔", "◑", "◕")
-_OURO_LOGO_ROWS = (
-    (" ██████   ██    ██  ", "██████    ██████ "),
-    ("██    ██  ██    ██  ", "██   ██  ██    ██"),
-    ("██    ██  ██    ██  ", "██████   ██    ██"),
-    ("██    ██  ██    ██  ", "██  ██   ██    ██"),
-    (" ██████    ██████   ", "██   ██   ██████ "),
-)
+_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_OURO_LOGO = """
+ ██████╗ ▓▓╗   ▓▓╗██████╗  ▓▓▓▓▓▓╗ 
+██╔═══██╗▓▓║   ▓▓║██╔══██╗▓▓╔═══▓▓╗
+██║   ██║▓▓║   ▓▓║██████╔╝▓▓║   ▓▓║
+██║   ██║▓▓║   ▓▓║██╔══██╗▓▓║   ▓▓║
+╚██████╔╝╚▓▓▓▓▓▓╔╝██║  ██║╚▓▓▓▓▓▓╔╝
+ ╚═════╝  ╚═════╝ ╚═╝  ╚═╝ ╚═════╝
+"""
 _BUSY_ACTIVITIES = {
     "starting",
     "mcp_connecting",
@@ -269,9 +270,7 @@ class WelcomePanel(Static):
     def _render_panel(self) -> None:
         status = self._status
         content = Text()
-        for muted_half, bright_half in _OURO_LOGO_ROWS:
-            content.append(muted_half, style="bold #7c6536")
-            content.append(f"{bright_half}\n", style="bold #d9a441")
+        content.append(_OURO_LOGO, style="bold #d9a441")
         content.append("\n\n")
         content.append(
             "Tell me what you want to accomplish. Use ",
