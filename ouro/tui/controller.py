@@ -76,6 +76,7 @@ class McpServerStatus:
 
 @dataclass(frozen=True)
 class TuiSystemStatus:
+    workspace: str | None = None
     provider_ids: tuple[str, ...] = ()
     model_count: int = 0
     skill_count: int = 0
@@ -296,6 +297,7 @@ class TuiController:
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
             system_status=TuiSystemStatus(
+                workspace=runtime.default_workspace,
                 provider_ids=tuple(sorted({model.provider_id for model in models})),
                 model_count=len(models),
                 skill_count=len(skills),

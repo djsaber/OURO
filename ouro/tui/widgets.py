@@ -8,6 +8,8 @@ from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.events import Resize
+from textual.geometry import Region
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Label, Markdown, Static, TextArea
@@ -25,6 +27,13 @@ from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
 
 _SPINNER = ("◌", "◔", "◑", "◕")
+_OURO_LOGO_ROWS = (
+    (" ██████   ██    ██  ", "██████    ██████ "),
+    ("██    ██  ██    ██  ", "██   ██  ██    ██"),
+    ("██    ██  ██    ██  ", "██████   ██    ██"),
+    ("██    ██  ██    ██  ", "██  ██   ██    ██"),
+    (" ██████    ██████   ", "██   ██   ██████ "),
+)
 _BUSY_ACTIVITIES = {
     "starting",
     "mcp_connecting",
@@ -260,7 +269,10 @@ class WelcomePanel(Static):
     def _render_panel(self) -> None:
         status = self._status
         content = Text()
-        content.append("◆ OURO\n\n", style="bold #d9a441")
+        for muted_half, bright_half in _OURO_LOGO_ROWS:
+            content.append(muted_half, style="bold #7c6536")
+            content.append(f"{bright_half}\n", style="bold #d9a441")
+        content.append("\n\n")
         content.append(
             "Tell me what you want to accomplish. Use ",
             style="#aeb5bf",
@@ -273,6 +285,9 @@ class WelcomePanel(Static):
         content.append(" for sessions.\n\n", style="#aeb5bf")
         content.append("SYSTEM\n", style="bold #788492")
 
+        content.append("Workspace ", style="bold #788492")
+        content.append(status.workspace or "not set", style="#d6d9df")
+        content.append("\n")
         provider_names = _compact_names(status.provider_ids) or "none configured"
         content.append("Models   ", style="bold #788492")
         content.append(provider_names, style="#d6d9df")
@@ -749,7 +764,7 @@ class AskUserPanel(Static):
 
 
 class CommandPopup(VerticalScroll):
-    """Non-focus-stealing command and argument popup controlled by the Composer."""
+    """Composer-controlled popup whose keyboard navigation owns its hidden scrolling."""
 
     def __init__(self) -> None:
         super().__init__(id="command-popup")
@@ -762,6 +777,11 @@ class CommandPopup(VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield self._content
+
+    def on_resize(self, _: Resize) -> None:
+        width = self.scrollable_content_region.width
+        if width > 0 and self._content.content_region.width != width:
+            self._content.styles.width = width
 
     @property
     def selected_command(self) -> TuiCommand | None:
@@ -831,16 +851,18 @@ class CommandPopup(VerticalScroll):
         if not self._commands:
             self._content.update(Text("  No matching commands", style="#8f9aa8"))
             return
-        content = Text()
+        rows: list[Text] = []
         for index, command in enumerate(self._commands):
             selected = index == self._selected
-            content.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            content.append(command.usage, style="bold #d9a441" if selected else "bold")
-            content.append(f"  {command.description}", style="#aeb5bf" if selected else "#6f7a87")
-            if index < len(self._commands) - 1:
-                content.append("\n")
-        self._content.update(content)
-        self.call_after_refresh(self.scroll_to, y=self._selected, animate=False)
+            row = Text()
+            row.append("› " if selected else "  ", style="#d9a441" if selected else "")
+            row.append(command.usage, style="bold #d9a441" if selected else "bold")
+            row.append(
+                f"  {command.description}",
+                style="#aeb5bf" if selected else "#6f7a87",
+            )
+            rows.append(row)
+        self._render_rows(tuple(rows))
 
     def _render_arguments(self) -> None:
         command = self._argument_command
@@ -853,19 +875,47 @@ class CommandPopup(VerticalScroll):
             content.append(f"  {command.description}", style="#6f7a87")
             self._content.update(content)
             return
-        content = Text()
+        rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
-            content.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            content.append(argument.usage, style="bold #d9a441" if selected else "bold")
-            content.append(
+            row = Text()
+            row.append("› " if selected else "  ", style="#d9a441" if selected else "")
+            row.append(argument.usage, style="bold #d9a441" if selected else "bold")
+            row.append(
                 f"  {argument.description}",
                 style="#aeb5bf" if selected else "#6f7a87",
             )
-            if index < len(self._arguments) - 1:
-                content.append("\n")
-        self._content.update(content)
-        self.call_after_refresh(self.scroll_to, y=self._selected, animate=False)
+            rows.append(row)
+        self._render_rows(tuple(rows))
+
+    def _render_rows(self, rows: tuple[Text, ...]) -> None:
+        self._content.update(Text("\n").join(rows))
+        self.call_after_refresh(self._scroll_selected_into_view, rows)
+
+    def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
+        if not rows or self._selected >= len(rows):
+            return
+        width = self.scrollable_content_region.width
+        if width <= 0:
+            return
+        if self._content.content_region.width != width:
+            self._content.styles.width = width
+            self.call_after_refresh(self._scroll_selected_into_view, rows)
+            return
+        heights = tuple(max(1, len(row.wrap(self.app.console, width))) for row in rows)
+        selected_region = Region(
+            0,
+            sum(heights[: self._selected]),
+            width,
+            heights[self._selected],
+        )
+        self.scroll_to_region(
+            selected_region,
+            animate=False,
+            # The popup suppresses scrollbar chrome, but selection still owns its viewport.
+            force=True,
+            x_axis=False,
+        )
 
 
 class QueuedInputPanel(VerticalScroll):

@@ -521,8 +521,10 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await conversation.append_assistant("Hi")
         await conversation.add_notice("Status changed")
         header = app.query_one(BrandHeader)
+        assert f"Workspace {tmp_path}" in conversation.query_one(WelcomePanel).render().plain
         conversation.set_system_status(
             TuiSystemStatus(
+                workspace=str(tmp_path),
                 provider_ids=("deepseek", "openai"),
                 model_count=3,
                 skill_count=7,
@@ -545,6 +547,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
 
         welcome = conversation.query_one(WelcomePanel)
         status_text = welcome.render().plain
+        assert "██████" in status_text
+        assert f"SYSTEM\nWorkspace {tmp_path}" in status_text
         assert "deepseek, openai · 3 model(s)" in status_text
         assert "7 available · browser, documents, github, +1" in status_text
         assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
@@ -553,8 +557,27 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
         assert welcome.styles.border_left[0] == "thick"
+        assert app.screen.styles.background.hex == "#000000"
+        assert app.screen.region.x == 0
+        assert app.screen.region.y == 0
+        assert app.screen.region.width == 100
+        assert app.screen.region.height == 32
+        assert header.region.x == 0
+        assert header.region.right == app.screen.region.right
+        main = app.query_one("#main")
+        assert main.region.x == 0
+        assert main.region.right == app.screen.region.right
+        assert main.region.bottom == app.screen.region.bottom
         assert conversation.styles.scrollbar_size_vertical == 1
         composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        assert composer.styles.background == popup.styles.background
+        assert popup.styles.overflow_y == "hidden"
+        assert popup.show_vertical_scrollbar is False
+        assert popup.styles.border_left[0] == ""
+        assert popup.styles.border_right[0] == ""
+        assert popup.styles.border_top[0] == "solid"
+        assert popup.styles.border_bottom[0] == ""
         assert composer.styles.scrollbar_size_vertical == 1
         assert composer.region.height == 3
         assert composer.content_region.height == 1
@@ -1338,12 +1361,17 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
         popup = app.query_one(CommandPopup)
         assert popup.display is True
+        popup_content = popup.query_one("#command-popup-content", Static)
+        assert popup_content.content_region.width == popup.scrollable_content_region.width
+        assert "abort" in app.export_screenshot()
         assert popup.selected_command is not None
         assert popup.selected_command.name == "/abort"
 
         await pilot.press("down")
+        await pilot.pause()
         assert popup.selected_command is not None
         assert popup.selected_command.name == "/approval"
+        assert popup.scroll_y == 0
 
         for _ in range(20):
             if popup.selected_command is not None and popup.selected_command.name == "/tools":

@@ -97,13 +97,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     Screen {
-        background: transparent;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        background: #000000;
         color: #d6d9df;
         layout: vertical;
     }
 
     VerticalScroll, TextArea, OptionList {
-        scrollbar-background: transparent;
+        scrollbar-background: #000000;
         scrollbar-color: #505967;
         scrollbar-color-hover: #6a7482;
         scrollbar-size-vertical: 1;
@@ -111,31 +115,33 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #brand-header {
+        width: 100%;
         height: 1;
         dock: top;
-        background: transparent;
+        background: #000000;
         color: #d6d9df;
     }
 
     #main {
+        width: 100%;
         height: 1fr;
-        background: transparent;
+        background: #000000;
     }
 
     #conversation {
         width: 100%;
         height: 1fr;
         padding: 1 1 0 2;
-        background: transparent;
+        background: #000000;
     }
 
     .welcome {
-        width: 72;
+        width: 86;
         max-width: 100%;
         margin: 2 0;
         padding: 1 2;
         color: #aeb5bf;
-        background: transparent;
+        background: #000000;
         border-left: thick #d9a441;
     }
 
@@ -252,14 +258,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         height: auto;
         max-height: 15;
         margin: 0 1;
-        padding: 1 2;
+        padding: 1;
         color: #d6d9df;
-        background: #17191d;
-        border: tall #7c6536;
+        background: #000000;
+        border-top: solid #7c6536;
+        border-right: none;
+        border-bottom: none;
+        border-left: none;
+        overflow-y: hidden;
+        scrollbar-gutter: auto;
     }
 
     #command-popup-content {
-        width: 1fr;
+        width: auto;
         height: auto;
     }
 
@@ -268,7 +279,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 0 1;
         padding: 0 0 0 1;
         color: #e5e7eb;
-        background: transparent;
+        background: #000000;
         border-top: solid #505967;
         border-right: none;
         border-bottom: solid #505967;
@@ -290,19 +301,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         margin: 0 1;
         padding: 0 0 1 1;
         color: #d6d9df;
-        background: transparent;
+        background: #000000;
     }
 
     #queued-input-content {
         height: auto;
-        background: transparent;
+        background: #000000;
     }
 
     StatusLine {
         height: 1;
         padding: 0 2;
         color: #6f7a87;
-        background: transparent;
+        background: #000000;
     }
 
     #key-hints { width: 1fr; }
