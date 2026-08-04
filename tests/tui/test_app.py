@@ -848,8 +848,14 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_ctrl_enter_guides_the_active_run_at_the_next_model_turn(
+@pytest.mark.parametrize(
+    "submit_key",
+    ("ctrl+enter", "ctrl+j"),
+    ids=("enhanced-terminal", "legacy-windows-terminal"),
+)
+async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
     tmp_path: Path,
+    submit_key: str,
 ) -> None:
     provider = BlockingStreamProvider()
     application = _blocking_application(tmp_path, provider)
@@ -862,21 +868,22 @@ async def test_ctrl_enter_guides_the_active_run_at_the_next_model_turn(
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
         await pilot.pause(0.2)
 
-        app.query_one(Composer).load_text("guide now")
-        await pilot.press("ctrl+enter")
-        await pilot.pause(0.3)
-
         queue_panel = app.query_one(QueuedInputPanel)
-        queue_text = queue_panel.query_one("#queued-input-content").render().plain
-        assert queue_panel.display is True
-        assert "GUIDE" in queue_text
-        assert "guide now" in queue_text
-        assert all(
-            "guide now" not in turn.render().plain
-            for turn in app.query_one(ConversationView).query(".user-turn")
-        )
+        try:
+            app.query_one(Composer).load_text("guide now")
+            await pilot.press(submit_key)
+            await pilot.pause(0.3)
 
-        provider.release.set()
+            queue_text = queue_panel.query_one("#queued-input-content").render().plain
+            assert queue_panel.display is True
+            assert "GUIDE" in queue_text
+            assert "guide now" in queue_text
+            assert all(
+                "guide now" not in turn.render().plain
+                for turn in app.query_one(ConversationView).query(".user-turn")
+            )
+        finally:
+            provider.release.set()
         await pilot.pause(1)
 
         assert queue_panel.display is False

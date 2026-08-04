@@ -953,7 +953,8 @@ class Composer(TextArea):
     BINDINGS = [
         *TextArea.BINDINGS,
         Binding("enter", "submit", "Send", show=False, priority=True),
-        Binding("ctrl+enter", "submit_steer", "Guide", show=False, priority=True),
+        # Terminals without enhanced key reporting encode Ctrl+Enter as LF / Ctrl+J.
+        Binding("ctrl+enter,ctrl+j", "submit_steer", "Guide", show=False, priority=True),
         Binding("shift+enter", "newline", "New line", show=False, priority=True),
         Binding("up", "history_previous", show=False, priority=True),
         Binding("down", "history_next", show=False, priority=True),
