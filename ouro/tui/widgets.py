@@ -107,24 +107,40 @@ class _MarkdownWriter(Protocol):
 
 
 class BrandHeader(Static):
+    """Static brand identity and session title docked at the top of the screen."""
+
     def __init__(self) -> None:
         super().__init__(id="brand-header")
+        self._session_title = "New session"
+
+    def on_mount(self) -> None:
+        self._render_header()
+
+    def set_context(self, *, session_title: str | None = None) -> None:
+        if session_title is not None:
+            self._session_title = session_title
+        self._render_header()
+
+    def _render_header(self) -> None:
+        content = Text()
+        content.append(" ◆ OURO ", style="bold #d9a441")
+        content.append(self._session_title, style="bold")
+        self.update(content)
+
+
+class ActivityIndicator(Static):
+    """Animated activity and model status shown beside the composer."""
+
+    def __init__(self) -> None:
+        super().__init__(id="activity-indicator")
         self._frame = 0
         self._activity = "idle"
         self._model = "starting"
-        self._session_title = "New session"
         self._timer: Timer | None = None
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(0.12, self._tick, pause=True)
-        self._render_header()
-
-    def set_context(self, *, model: str | None = None, session_title: str | None = None) -> None:
-        if model is not None:
-            self._model = model
-        if session_title is not None:
-            self._session_title = session_title
-        self._render_header()
+        self._render_indicator()
 
     def set_activity(self, activity: str) -> None:
         self._activity = activity
@@ -134,21 +150,24 @@ class BrandHeader(Static):
             else:
                 self._timer.pause()
                 self._frame = 0
-        self._render_header()
+        self._render_indicator()
+
+    def set_model(self, model: str) -> None:
+        self._model = model
+        self._render_indicator()
 
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(_SPINNER)
-        self._render_header()
+        self._render_indicator()
 
-    def _render_header(self) -> None:
+    def _render_indicator(self) -> None:
         busy = self._activity in _BUSY_ACTIVITIES
         mark = _SPINNER[self._frame] if busy else "◆"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         content = Text()
-        content.append(f" {mark} OURO ", style="bold #d9a441")
-        content.append(f" {self._session_title}", style="bold")
-        content.append(f"  {label}", style="#8f9aa8")
-        content.append(f"  {self._model} ", style="#647180")
+        content.append(f" {mark} ", style="bold #d9a441" if busy else "#8f9aa8")
+        content.append(label, style="#8f9aa8")
+        content.append(f"  {self._model}", style="#647180")
         self.update(content)
 
 
@@ -343,6 +362,18 @@ def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
     return max(0, int((ended_at - tool.started_at).total_seconds()))
 
 
+_SYSTEM_LABEL_WIDTH = 9
+_TIP_KEY_WIDTH = 11
+_INPUT_TIPS = (
+    ("Enter", "Send a follow-up message"),
+    ("Ctrl+Enter", "Guide the active run"),
+    ("Shift+Enter", "Insert a new line"),
+    ("/", "Commands"),
+    ("Ctrl+P", "Actions"),
+    ("Ctrl+S", "Sessions"),
+)
+
+
 class WelcomePanel(Static):
     def __init__(self, status: TuiSystemStatus | None = None) -> None:
         super().__init__(classes="welcome")
@@ -360,34 +391,31 @@ class WelcomePanel(Static):
         content = Text()
         content.append(_OURO_LOGO, style="bold #d9a441")
         content.append("\n\n")
-        content.append(
-            "Tell me what you want to accomplish. Use ",
-            style="#aeb5bf",
-        )
-        content.append("/", style="bold")
-        content.append(" for commands, ", style="#aeb5bf")
-        content.append("Ctrl+P", style="bold")
-        content.append(" for actions, and ", style="#aeb5bf")
-        content.append("Ctrl+S", style="bold")
-        content.append(" for sessions.\n\n", style="#aeb5bf")
+        content.append("Tell me what you want to accomplish.", style="#aeb5bf")
+        content.append("\n\n")
+        content.append("TIPS\n", style="bold #788492")
+        for key, description in _INPUT_TIPS:
+            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="bold #788492")
+            content.append(f"{description}\n", style="#8f9aa8")
+        content.append("\n")
         content.append("SYSTEM\n", style="bold #788492")
 
-        content.append("Workspace ", style="bold #788492")
+        content.append(f"{'Workspace'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         content.append(status.workspace or "not set", style="#d6d9df")
         content.append("\n")
         provider_names = _compact_names(status.provider_ids) or "none configured"
-        content.append("Models   ", style="bold #788492")
+        content.append(f"{'Models'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         content.append(provider_names, style="#d6d9df")
         content.append(
             f" · {status.model_count} model(s)\n",
             style="#8f9aa8",
         )
-        content.append("Skills   ", style="bold #788492")
+        content.append(f"{'Skills'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         content.append(f"{status.skill_count} available", style="#8f9aa8")
         if status.skill_names:
             content.append(f" · {_compact_names(status.skill_names)}", style="#647180")
         content.append("\n")
-        content.append("Plugins  ", style="bold #788492")
+        content.append(f"{'Plugins'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         content.append(
             f"{status.plugin_active_count}/{status.plugin_total_count} active",
             style="#8f9aa8",
@@ -403,7 +431,7 @@ class WelcomePanel(Static):
                 style="#e08a8a",
             )
         content.append("\n")
-        content.append("MCP      ", style="bold #788492")
+        content.append(f"{'MCP'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         if status.mcp_total_count:
             content.append(
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected"
@@ -418,7 +446,7 @@ class WelcomePanel(Static):
         else:
             content.append("not configured", style="#647180")
         content.append("\n")
-        content.append("Usage    ", style="bold #788492")
+        content.append(f"{'Usage'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         content.append(f"{status.usage_request_count} request(s)", style="#8f9aa8")
         content.append(
             f" · {_compact_count(status.usage_input_tokens)} in"
@@ -428,7 +456,7 @@ class WelcomePanel(Static):
         if status.usage_priced_request_count:
             content.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
         content.append("\n")
-        content.append("Health   ", style="bold #788492")
+        content.append(f"{'Health'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         if status.startup_diagnostic_count:
             content.append(
                 f"{status.startup_diagnostic_count} startup diagnostic(s)",
@@ -1196,12 +1224,15 @@ class Composer(TextArea):
 
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
-        yield Static(
-            "Enter follow · Ctrl+Enter guide · Shift+Enter newline",
-            id="key-hints",
-        )
+        yield ActivityIndicator()
         yield Static("Context —", id="context-detail")
         yield Static("", id="status-detail")
+
+    def set_activity(self, activity: str) -> None:
+        self.query_one(ActivityIndicator).set_activity(activity)
+
+    def set_model(self, model: str) -> None:
+        self.query_one(ActivityIndicator).set_model(model)
 
     def set_detail(self, detail: str) -> None:
         self.query_one("#status-detail", Static).update(detail)

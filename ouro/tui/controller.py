@@ -261,7 +261,7 @@ class TuiController:
             self._publish_lifecycle(
                 TuiLifecycleStatus(
                     activity="mcp_connecting",
-                    detail=f"MCP · connecting {len(startup_configs)} server(s)",
+                    detail="",
                 )
             )
         self._application.runtime.add_event_sink(self._receive_event)

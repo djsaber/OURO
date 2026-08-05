@@ -51,6 +51,7 @@ from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
 from ouro.tui.widgets import (
+    ActivityIndicator,
     AskUserPanel,
     BrandHeader,
     CommandPopup,
@@ -167,6 +168,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         height: 1fr;
         padding: 1 1 0 2;
         background: $ouro-background;
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
     }
 
     .welcome {
@@ -348,7 +352,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         background: $ouro-background;
     }
 
-    #key-hints { width: 1fr; }
+    #activity-indicator { width: 1fr; }
     #context-detail { width: auto; text-align: right; }
     #status-detail { width: auto; margin-left: 2; text-align: right; }
 
@@ -607,7 +611,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return _OuroHostScreen(self._begin_host_close)
 
     def on_mount(self) -> None:
-        self.query_one(BrandHeader).set_activity("starting")
+        self.query_one(StatusLine).set_activity("starting")
         self.query_one(Composer).disabled = True
         self.run_worker(self._start(), name="tui-start", exclusive=True)
 
@@ -629,7 +633,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             bootstrap = await self._controller.start()
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
-            self.query_one(BrandHeader).set_activity("failed")
+            self.query_one(StatusLine).set_activity("failed")
             await conversation.add_notice(f"OURO could not start: {exc}", error=True)
             self.query_one(StatusLine).set_detail("startup failed")
             return
@@ -654,8 +658,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             bootstrap.current_model.display_name or bootstrap.current_model.model_id
         )
         header = self.query_one(BrandHeader)
-        header.set_context(model=self._active_model)
-        header.set_activity("idle")
+        header.set_context(session_title=self._active_title)
+        status_line = self.query_one(StatusLine)
+        status_line.set_model(self._active_model)
+        status_line.set_activity("idle")
         diagnostics = bootstrap.startup_report.diagnostics
         if diagnostics:
             self.query_one(StatusLine).set_detail(f"{len(diagnostics)} startup diagnostic(s)")
@@ -690,7 +696,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.post_message(LifecycleStatusReceived(status))
 
     def on_lifecycle_status_received(self, message: LifecycleStatusReceived) -> None:
-        self.query_one(BrandHeader).set_activity(message.status.activity)
+        self.query_one(StatusLine).set_activity(message.status.activity)
         self.query_one(StatusLine).set_detail(message.status.detail)
 
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
@@ -837,7 +843,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         active_run = self._has_active_run()
         if not active_run:
-            self.query_one(BrandHeader).set_activity("queued")
+            self.query_one(StatusLine).set_activity("queued")
         mode_label = "guide" if message.mode == "steer" else "follow-up"
         self.query_one(StatusLine).set_detail(
             "Submitting…" if self._projection is None else f"Queueing {mode_label}…"
@@ -854,7 +860,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._apply_run_result(result)
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
-            self.query_one(BrandHeader).set_activity("failed")
+            self.query_one(StatusLine).set_activity("failed")
             self.query_one(StatusLine).set_detail("Run failed")
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
         finally:
@@ -1068,7 +1074,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.focus()
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
-        self.query_one(BrandHeader).set_activity(activity.activity)
+        self.query_one(StatusLine).set_activity(activity.activity)
         detail = f"{len(activity.tool_calls)} tool(s)" if activity.tool_calls else ""
         status_line = self.query_one(StatusLine)
         status_line.set_context(activity.context_status)
@@ -1261,7 +1267,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         composer = self.query_one(Composer)
         composer.disabled = True
-        self.query_one(BrandHeader).set_activity("compacting")
+        self.query_one(StatusLine).set_activity("compacting")
         self.query_one(StatusLine).set_detail("Compacting context…")
         try:
             result = await self._controller.compact()
@@ -1275,7 +1281,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     f"Context compacted: {len(result.compaction.covered_message_ids)} message(s)"
                 )
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
-            self.query_one(BrandHeader).set_activity("failed")
+            self.query_one(StatusLine).set_activity("failed")
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
         finally:
             composer.disabled = False
@@ -1290,7 +1296,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._interaction = None
         self._active_title = "New session"
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
-        self.query_one(BrandHeader).set_activity("idle")
+        self.query_one(StatusLine).set_activity("idle")
         self.query_one(StatusLine).set_context(None)
         self._sync_interaction(None)
         self.query_one(QueuedInputPanel).set_inputs(())
@@ -1339,10 +1345,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         session = loaded.detail.session
         self._active_title = session.title
         self._active_model = session.current_model or self._active_model
-        self.query_one(BrandHeader).set_context(
-            session_title=self._active_title,
-            model=self._active_model,
-        )
+        self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self.query_one(StatusLine).set_model(self._active_model)
 
     @work(exclusive=True, group="navigation")
     async def _fork_session(self, message_id: str | None = None) -> None:
@@ -1473,7 +1477,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._active_model = model.display_name or model.model_id
-        self.query_one(BrandHeader).set_context(model=self._active_model)
+        self.query_one(StatusLine).set_model(self._active_model)
         self.query_one(StatusLine).set_context(None)
         self.notify(f"Model: {self._active_model}")
 

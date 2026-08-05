@@ -53,6 +53,7 @@ from ouro.tui.controller import (
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import TuiSessionProjection
 from ouro.tui.widgets import (
+    ActivityIndicator,
     AskUserPanel,
     AssistantTurn,
     BrandHeader,
@@ -1719,9 +1720,9 @@ async def test_plan_command_without_run_restores_idle_tui_state(tmp_path: Path) 
         assert app._projection.activity.activity == "idle"
         assert app._has_active_run() is False
         assert app.query_one(Composer).disabled is False
-        header = app.query_one(BrandHeader).render().plain
-        assert "Ready" in header
-        assert "Queued" not in header
+        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
+        assert "Ready" in indicator.render().plain
+        assert "Queued" not in indicator.render().plain
 
 
 @pytest.mark.asyncio
