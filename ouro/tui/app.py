@@ -127,6 +127,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     $ouro-background: #0c0c0c;
+    $ouro-panel: #171717;
+    $ouro-interaction: #5b8fd9;
 
     Screen {
         width: 100%;
@@ -180,22 +182,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     .turn {
         width: 100%;
         height: auto;
-        margin-bottom: 1;
+        margin-bottom: 2;
         background: transparent;
     }
 
     .user-turn {
-        padding: 0 1;
+        margin: 1 1 2 1;
+        padding: 1 2;
+        color: #e5e7eb;
+        background: $ouro-panel;
+        border-left: thick $ouro-interaction;
     }
 
     .assistant-turn {
-        padding: 0 1;
-    }
-
-    .turn-label {
-        height: 1;
-        color: #d9a441;
-        text-style: bold;
+        padding: 0 2;
     }
 
     .assistant-markdown {
@@ -206,10 +206,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     .reasoning-view {
         height: auto;
-        margin: 0 0 1 1;
-        padding: 0 1;
+        margin: 0;
+        padding: 0;
         color: #8f9aa8;
-        border-left: solid #505967;
         background: transparent;
     }
 
@@ -221,10 +220,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     .reasoning-content {
         height: auto;
-        padding: 0;
+        margin: 0 0 1 1;
+        padding: 0 1;
         color: #8f9aa8;
         text-style: dim italic;
         background: transparent;
+        border-left: solid #505967;
     }
 
     Markdown, MarkdownBlock, MarkdownFence, MarkdownTable {
@@ -232,7 +233,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     .tool-row {
-        height: 1;
+        height: auto;
         margin: 0 0 1 2;
         color: #aeb5bf;
         background: transparent;
@@ -288,15 +289,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     #command-popup {
         height: auto;
-        max-height: 15;
-        margin: 0 1;
-        padding: 1;
+        max-height: 14;
+        margin: 0 2;
+        padding: 1 2;
         color: #d6d9df;
-        background: $ouro-background;
-        border-top: solid #7c6536;
-        border-right: none;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid #34373d;
         border-bottom: none;
-        border-left: none;
+        border-left: thick $ouro-interaction;
         overflow-y: hidden;
         scrollbar-gutter: auto;
     }
@@ -307,20 +308,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #composer {
-        height: 3;
-        margin: 0 1;
-        padding: 0 0 0 1;
+        height: 4;
+        margin: 0 2;
+        padding: 1 2;
         color: #e5e7eb;
-        background: $ouro-background;
-        border-top: solid #505967;
-        border-right: none;
-        border-bottom: solid #505967;
-        border-left: none;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid #34373d;
+        border-bottom: none;
+        border-left: thick #4d5560;
     }
 
     #composer:focus {
-        border-top: solid #b68a3b;
-        border-bottom: solid #b68a3b;
+        border-left: thick $ouro-interaction;
+        border-right: solid #3f4650;
     }
 
     #composer .text-area--suggestion {
@@ -1104,7 +1105,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         ask_user.hide_panel()
         interaction_bar.show_interaction(interaction)
-        composer.placeholder = "Message OURO…"
+        composer.placeholder = "Ask anything…"
         if interaction is not None and interaction.kind == "approval":
             composer.disabled = True
             interaction_bar.focus()

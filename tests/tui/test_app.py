@@ -576,22 +576,24 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.styles.background == popup.styles.background
         assert popup.styles.overflow_y == "hidden"
         assert popup.show_vertical_scrollbar is False
-        assert popup.styles.border_left[0] == ""
-        assert popup.styles.border_right[0] == ""
-        assert popup.styles.border_top[0] == "solid"
+        assert popup.styles.border_left[0] == "thick"
+        assert popup.styles.border_right[0] == "solid"
+        assert popup.styles.border_top[0] == ""
         assert popup.styles.border_bottom[0] == ""
         assert composer.styles.scrollbar_size_vertical == 1
-        assert composer.region.height == 3
-        assert composer.content_region.height == 1
+        assert composer.region.height == 4
+        assert composer.content_region.height == 2
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
-        assert all(turn.styles.border_left[0] == "" for turn in conversation.query(".turn"))
+        assert conversation.query_one(".user-turn").styles.border_left[0] == "thick"
+        assert conversation.query_one(AssistantTurn).styles.border_left[0] == ""
         assert all(notice.styles.border_left[0] == "" for notice in conversation.query(".notice"))
 
-        for panel in (
-            app.query_one(Composer),
-            app.query_one(InteractionBar),
-            app.query_one(AskUserPanel),
-        ):
+        assert composer.styles.border_left[0] == "thick"
+        assert composer.styles.border_right[0] == "solid"
+        assert composer.styles.border_top[0] == ""
+        assert composer.styles.border_bottom[0] == ""
+
+        for panel in (app.query_one(InteractionBar), app.query_one(AskUserPanel)):
             assert panel.styles.border_left[0] == ""
             assert panel.styles.border_right[0] == ""
             assert panel.styles.border_top[0] == "solid"
@@ -764,11 +766,17 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         )
 
         await app._apply_runtime_events(events)
+        await pilot.pause()
 
         expected = "".join(fragments)
-        reasoning = app.query_one(AssistantTurn).reasoning
+        turn = app.query_one(AssistantTurn)
+        reasoning = turn.reasoning
         assert reasoning.text == expected
         assert reasoning._content.render().plain == expected
+        assert reasoning.label.render().plain == "THINKING"
+        assert reasoning.label.region.x == turn.content_region.x
+        assert reasoning._content.region.x > reasoning.label.region.x
+        assert not turn.query(".assistant-label")
 
 
 @pytest.mark.asyncio
@@ -903,7 +911,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert "FOLLOW" in queue_panel.query_one("#queued-input-content").render().plain
         assert "follow next" in queue_panel.query_one("#queued-input-content").render().plain
         assert queue_panel.region.y >= app.query_one(Composer).region.bottom
-        assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["YOU\nfirst"]
+        assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["first"]
 
         provider.release.set()
         await pilot.pause(1)
@@ -912,8 +920,8 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         user_turns = list(conversation.query(".user-turn"))
         assistant_turns = list(conversation.query(AssistantTurn))
         assert [turn.render().plain for turn in user_turns] == [
-            "YOU\nfirst",
-            "YOU\nfollow next",
+            "first",
+            "follow next",
         ]
         children = list(conversation.children)
         assert children.index(assistant_turns[0]) < children.index(user_turns[1])
@@ -1101,8 +1109,10 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         assert turn.reasoning.display is True
         assert turn.reasoning.text == reasoning_text
         assert turn.reasoning._content.render().plain == reasoning_text
+        assert turn.reasoning.label.render().plain == "THOUGHT"
         assert turn.markdown.source == "Final answer"
         assert turn._stream is None
+        assert not turn.query(".assistant-label")
 
 
 @pytest.mark.asyncio
@@ -1136,9 +1146,9 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
             for turn in turns
         ]
         assert transcript == [
-            ("user", "YOU\nFirst question"),
+            ("user", "First question"),
             ("assistant", "First answer"),
-            ("user", "YOU\nSecond question"),
+            ("user", "Second question"),
             ("assistant", "Second answer"),
         ]
         assert all(turn._stream is None for turn in conversation.query(AssistantTurn))
@@ -1537,6 +1547,9 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         popup_content = popup.query_one("#command-popup-content", Static)
         assert popup_content.content_region.width == popup.scrollable_content_region.width
         assert "abort" in app.export_screenshot()
+        popup_text = popup_content.render().plain
+        assert "[selector|new]" not in popup_text
+        assert "[tool]" not in popup_text
         assert popup.selected_command is not None
         assert popup.selected_command.name == "/abort"
 
@@ -1811,6 +1824,11 @@ async def test_tool_row_stays_between_model_rounds_in_event_order(tmp_path: Path
         assert len(turns) == 2
         assert turns[0].markdown.source.strip() == "Preparing."
         assert turns[1].markdown.source == "Done."
+        tool_text = tool_row.render().plain
+        assert "Write  " in tool_text
+        assert target.name in tool_text
+        assert "1 line · overwrite  completed" in tool_text
+        assert "s" in tool_text
         assert children.index(turns[0]) < children.index(tool_row) < children.index(turns[1])
 
 

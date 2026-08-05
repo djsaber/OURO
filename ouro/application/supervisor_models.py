@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, model_validator
 
 from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.application.event_models import RuntimeEventView
@@ -78,6 +78,11 @@ class RuntimeToolCallActivity(ApplicationDTO):
     tool_name: str
     status: ToolCallStatus
     source_index: int = Field(ge=0)
+    arguments: dict[str, JsonValue] = Field(default_factory=dict)
+    result_data: dict[str, JsonValue] = Field(default_factory=dict)
+    requested_at: datetime | None = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
 
 class RuntimeActivitySnapshot(ApplicationDTO):

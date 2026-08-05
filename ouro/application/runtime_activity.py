@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any, cast
+from datetime import datetime
+from typing import Any, Literal, cast
+
+from pydantic import JsonValue
 
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import (
@@ -13,7 +16,7 @@ from ouro.application.supervisor_models import (
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
-from ouro.core.tool_batches import ToolCallStatus
+from ouro.core.tool_batches import ToolBatchCall, ToolCallStatus
 from ouro.sessions.base import SessionSnapshot
 
 _MODEL_ACTIVITIES = {
@@ -199,7 +202,13 @@ def reduce_runtime_activity(
             tool_calls=(),
         )
     elif event_type == "tool_call_requested":
-        updates["tool_calls"] = _upsert_tool_call(current.tool_calls, payload, "planned")
+        updates["tool_calls"] = _upsert_tool_call(
+            current.tool_calls,
+            payload,
+            "planned",
+            transition="requested",
+            occurred_at=event.created_at,
+        )
     elif event_type == "approval_requested":
         updates["tool_calls"] = _update_tool_call_status(
             current.tool_calls,
@@ -241,7 +250,10 @@ def reduce_runtime_activity(
             run_phase="tool_execution",
             batch_phase="executing",
         )
-        started_calls = _tool_calls_from_payload(payload.get("tool_calls"))
+        started_calls = _tool_calls_from_payload(
+            payload.get("tool_calls"),
+            existing=current.tool_calls,
+        )
         updates["tool_calls"] = (
             started_calls
             if started_calls is not None
@@ -254,12 +266,24 @@ def reduce_runtime_activity(
         )
     elif event_type == "tool_call_started":
         updates.update(activity="executing_tools", status="running")
-        updates["tool_calls"] = _upsert_tool_call(current.tool_calls, payload, "running")
+        updates["tool_calls"] = _upsert_tool_call(
+            current.tool_calls,
+            payload,
+            "running",
+            transition="started",
+            occurred_at=event.created_at,
+        )
     elif event_type == "tool_call_completed":
         call_status = _tool_call_status(payload.get("status")) or (
             "failed" if payload.get("is_error") is True else "completed"
         )
-        updates["tool_calls"] = _upsert_tool_call(current.tool_calls, payload, call_status)
+        updates["tool_calls"] = _upsert_tool_call(
+            current.tool_calls,
+            payload,
+            call_status,
+            transition="ended",
+            occurred_at=event.created_at,
+        )
     elif event_type == "tool_batch_results_committing":
         updates.update(
             activity="committing_results",
@@ -337,19 +361,7 @@ def _overlay_run(
         "run_phase": run.phase,
         "batch_id": batch.batch_id if batch is not None else None,
         "batch_phase": batch.phase if batch is not None else None,
-        "tool_calls": (
-            tuple(
-                RuntimeToolCallActivity(
-                    tool_call_id=call.request.id,
-                    tool_name=call.request.name,
-                    status=call.status,
-                    source_index=call.request.source_index,
-                )
-                for call in sorted(batch.calls, key=lambda item: item.request.source_index)
-            )
-            if batch is not None
-            else ()
-        ),
+        "tool_calls": _overlay_tool_calls(current.tool_calls, batch.calls) if batch else (),
     }
     if run.status == "queued":
         updates["activity"] = "queued"
@@ -392,6 +404,9 @@ def _upsert_tool_call(
     calls: tuple[RuntimeToolCallActivity, ...],
     payload: dict[str, Any],
     status: ToolCallStatus,
+    *,
+    transition: Literal["requested", "started", "ended"],
+    occurred_at: datetime,
 ) -> tuple[RuntimeToolCallActivity, ...]:
     tool_call_id = _string_or_none(payload.get("tool_call_id"))
     if tool_call_id is None:
@@ -399,18 +414,22 @@ def _upsert_tool_call(
     tool_name = str(payload.get("tool_name") or "unknown")
     source_index = payload.get("source_index")
     normalized_index = source_index if isinstance(source_index, int) and source_index >= 0 else 0
+    arguments = _json_object(payload.get("arguments"))
+    result_data = _json_object(payload.get("result_data"))
     updated: list[RuntimeToolCallActivity] = []
     matched = False
     for item in calls:
         if item.tool_call_id == tool_call_id:
-            updated.append(
-                item.model_copy(
-                    update={
-                        "tool_name": tool_name if tool_name != "unknown" else item.tool_name,
-                        "status": status,
-                    }
-                )
-            )
+            changes: dict[str, object] = {
+                "tool_name": tool_name if tool_name != "unknown" else item.tool_name,
+                "status": status,
+            }
+            if arguments is not None:
+                changes["arguments"] = arguments
+            if result_data is not None:
+                changes["result_data"] = result_data
+            changes[f"{transition}_at"] = occurred_at
+            updated.append(item.model_copy(update=changes))
             matched = True
         else:
             updated.append(item)
@@ -421,6 +440,11 @@ def _upsert_tool_call(
                 tool_name=tool_name,
                 status=status,
                 source_index=normalized_index,
+                arguments=arguments or {},
+                result_data=result_data or {},
+                requested_at=occurred_at if transition == "requested" else None,
+                started_at=occurred_at if transition == "started" else None,
+                ended_at=occurred_at if transition == "ended" else None,
             )
         )
     return tuple(sorted(updated, key=lambda item: (item.source_index, item.tool_call_id)))
@@ -439,10 +463,15 @@ def _update_tool_call_status(
     )
 
 
-def _tool_calls_from_payload(value: object) -> tuple[RuntimeToolCallActivity, ...] | None:
+def _tool_calls_from_payload(
+    value: object,
+    *,
+    existing: tuple[RuntimeToolCallActivity, ...] = (),
+) -> tuple[RuntimeToolCallActivity, ...] | None:
     if not isinstance(value, list):
         return None
     calls: list[RuntimeToolCallActivity] = []
+    existing_by_id = {item.tool_call_id: item for item in existing}
     for item in value:
         if not isinstance(item, dict):
             return None
@@ -458,15 +487,64 @@ def _tool_calls_from_payload(value: object) -> tuple[RuntimeToolCallActivity, ..
             or source_index < 0
         ):
             return None
+        previous = existing_by_id.get(tool_call_id)
+        arguments = _json_object(item.get("arguments"))
         calls.append(
             RuntimeToolCallActivity(
                 tool_call_id=tool_call_id,
                 tool_name=tool_name,
                 status=status,
                 source_index=source_index,
+                arguments=arguments or (previous.arguments if previous is not None else {}),
+                result_data=previous.result_data if previous is not None else {},
+                requested_at=previous.requested_at if previous is not None else None,
+                started_at=previous.started_at if previous is not None else None,
+                ended_at=previous.ended_at if previous is not None else None,
             )
         )
     return tuple(sorted(calls, key=lambda item: (item.source_index, item.tool_call_id)))
+
+
+def _overlay_tool_calls(
+    projected: tuple[RuntimeToolCallActivity, ...],
+    durable: Iterable[ToolBatchCall],
+) -> tuple[RuntimeToolCallActivity, ...]:
+    projected_by_id = {item.tool_call_id: item for item in projected}
+    calls: list[RuntimeToolCallActivity] = []
+    for call in durable:
+        previous = projected_by_id.get(call.request.id)
+        invocation = call.invocation
+        result = call.result
+        requested_at = invocation.requested_at if invocation is not None else None
+        if requested_at is None and previous is not None:
+            requested_at = previous.requested_at
+        ended_at = result.ended_at if result is not None else None
+        if ended_at is None and previous is not None:
+            ended_at = previous.ended_at
+        calls.append(
+            RuntimeToolCallActivity(
+                tool_call_id=call.request.id,
+                tool_name=call.request.name,
+                status=call.status,
+                source_index=call.request.source_index,
+                arguments=cast("dict[str, JsonValue]", dict(call.request.arguments)),
+                result_data=(
+                    cast("dict[str, JsonValue]", dict(result.structured))
+                    if result is not None
+                    else {}
+                ),
+                requested_at=requested_at,
+                started_at=previous.started_at if previous is not None else None,
+                ended_at=ended_at,
+            )
+        )
+    return tuple(sorted(calls, key=lambda item: (item.source_index, item.tool_call_id)))
+
+
+def _json_object(value: object) -> dict[str, JsonValue] | None:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        return None
+    return cast("dict[str, JsonValue]", dict(value))
 
 
 def runtime_activity_for_status(status: SupervisorRunStatus) -> RuntimeActivity:

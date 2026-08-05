@@ -2567,6 +2567,7 @@ class RuntimeService:
                     "status": "failed" if result.is_error else "completed",
                     "is_error": result.is_error,
                     "source_index": waiting_call.request.source_index,
+                    "result_data": result.structured,
                 },
             )
             resumed = await self._continue_resolved_batch(

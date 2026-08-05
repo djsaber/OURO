@@ -52,6 +52,7 @@ def test_runtime_activity_reduces_model_interaction_and_tool_execution() -> None
                 "tool_call_id": "call_1",
                 "tool_name": "Read",
                 "source_index": 0,
+                "arguments": {"path": "README.md"},
             },
         ),
         _event(
@@ -136,6 +137,7 @@ def test_runtime_activity_reduces_model_interaction_and_tool_execution() -> None
                 "tool_name": "Read",
                 "source_index": 0,
                 "is_error": False,
+                "result_data": {"line_count": 12},
             },
         ),
         _event(
@@ -150,7 +152,13 @@ def test_runtime_activity_reduces_model_interaction_and_tool_execution() -> None
     assert activity.activity == "committing_results"
     assert activity.run_phase == "result_commit"
     assert activity.batch_phase == "committing_results"
-    assert activity.tool_calls[0].status == "completed"
+    tool = activity.tool_calls[0]
+    assert tool.status == "completed"
+    assert tool.arguments == {"path": "README.md"}
+    assert tool.result_data == {"line_count": 12}
+    assert tool.requested_at is not None
+    assert tool.started_at is not None
+    assert tool.ended_at is not None
 
     activity = reduce_runtime_activity(
         activity,

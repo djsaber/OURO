@@ -599,6 +599,7 @@ class ToolCallCoordinator:
                             "status": completed_call.status,
                             "is_error": result.is_error,
                             "source_index": completed_call.request.source_index,
+                            "result_data": result.structured,
                         },
                     )
 

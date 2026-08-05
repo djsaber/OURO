@@ -65,6 +65,7 @@ def test_projection_tracks_tool_lifecycle_and_approval() -> None:
             tool_call_id="call_1",
             tool_name="Write",
             source_index=0,
+            arguments={"path": "notes.md", "content": "one\ntwo"},
         )
     )
     requested = projection.apply(
@@ -108,11 +109,19 @@ def test_projection_tracks_tool_lifecycle_and_approval() -> None:
             tool_name="Write",
             status="completed",
             source_index=0,
+            result_data={"path": "notes.md", "mode": "overwrite"},
         )
     )
 
     assert projection.pending_interaction is None
-    assert projection.activity.tool_calls[0].status == "completed"
+    tool = projection.activity.tool_calls[0]
+    assert tool.status == "completed"
+    assert tool.arguments == {"path": "notes.md", "content": "one\ntwo"}
+    assert tool.result_data == {"path": "notes.md", "mode": "overwrite"}
+    assert tool.requested_at is not None
+    assert tool.started_at is not None
+    assert tool.ended_at is not None
+    assert tool.requested_at <= tool.started_at <= tool.ended_at
 
 
 def test_projection_queues_parallel_approvals_in_event_order() -> None:

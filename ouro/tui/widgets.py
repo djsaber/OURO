@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable, Iterable
+from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import JsonValue
@@ -29,6 +30,7 @@ from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
+from ouro.tui.tool_presentations import ToolLineState, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 _OURO_LOGO = """
@@ -201,7 +203,6 @@ class AssistantTurn(Vertical):
         self._stream: _MarkdownWriter | None = None
 
     def compose(self) -> ComposeResult:
-        yield Label("OURO", classes="turn-label assistant-label")
         yield self.reasoning
         yield self.markdown
 
@@ -232,36 +233,114 @@ class ToolActivityRow(Static):
     def __init__(self, tool: RuntimeToolCallActivity) -> None:
         super().__init__(classes="tool-row")
         self.tool_call_id = tool.tool_call_id
+        self._tool = tool
+        self._frame = 0
+        self._timer: Timer | None = None
         self.apply_tool(tool)
 
+    def on_mount(self) -> None:
+        if self._is_active:
+            self._timer = self.set_interval(0.1, self._tick)
+
+    def on_unmount(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
     def apply_tool(self, tool: RuntimeToolCallActivity) -> None:
+        self._tool = tool
+        self._sync_timer()
+        self._render_tool()
+
+    def _sync_timer(self) -> None:
+        if not self.is_attached:
+            return
+        if self._is_active and self._timer is None:
+            self._timer = self.set_interval(0.1, self._tick)
+        elif not self._is_active and self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    @property
+    def _is_active(self) -> bool:
+        return self._tool.status in {
+            "planned",
+            "ready",
+            "resolving_input",
+            "running",
+            "waiting_child",
+        }
+
+    def _tick(self) -> None:
+        self._frame = (self._frame + 1) % len(_SPINNER)
+        self._render_tool()
+
+    def _render_tool(self) -> None:
+        tool = self._tool
+        active = self._is_active
         marks = {
-            "planned": "·",
-            "ready": "·",
             "awaiting_approval": "?",
             "waiting_user": "?",
-            "resolving_input": "◌",
-            "running": "◌",
             "completed": "✓",
             "failed": "×",
             "rejected": "×",
             "aborted": "×",
             "unknown_outcome": "!",
-            "waiting_child": "◌",
         }
-        styles = {
+        mark = _SPINNER[self._frame] if active else marks.get(tool.status, "·")
+        state_styles = {
             "completed": "#77b083",
             "failed": "#d87575",
             "rejected": "#d87575",
             "aborted": "#d87575",
+            "unknown_outcome": "#d9a441",
             "awaiting_approval": "#d9a441",
             "waiting_user": "#d9a441",
         }
+        status_labels = {
+            "planned": "queued",
+            "ready": "ready",
+            "awaiting_approval": "approval required",
+            "waiting_user": "waiting for input",
+            "resolving_input": "resolving input",
+            "running": "running",
+            "completed": "completed",
+            "failed": "failed",
+            "rejected": "rejected",
+            "aborted": "aborted",
+            "unknown_outcome": "outcome unknown",
+            "waiting_child": "waiting for subagent",
+        }
+        accent = state_styles.get(tool.status, "#6ca7d9" if active else "#8f9aa8")
+        presentation = present_tool(tool)
         text = Text()
-        text.append(f"  {marks.get(tool.status, '·')} ", style=styles.get(tool.status, "#8f9aa8"))
-        text.append(tool.tool_name, style="bold")
-        text.append(f"  {tool.status.replace('_', ' ')}", style="#647180")
+        text.append(f"  {mark} ", style=f"bold {accent}")
+        text.append(tool.tool_name, style="bold #d6d9df")
+        if presentation.subject:
+            text.append(f"  {presentation.subject}", style="#8f9aa8")
+        if presentation.summary:
+            text.append(f"  ·  {presentation.summary}", style="#788492")
+        text.append(f"  {status_labels[tool.status]}", style=accent)
+        elapsed = _tool_elapsed_seconds(tool)
+        if elapsed is not None:
+            text.append(f" · {elapsed}s", style="#647180")
+        line_styles: dict[ToolLineState, str] = {
+            "pending": "#788492",
+            "active": "#6ca7d9",
+            "done": "#77b083",
+            "muted": "#647180",
+        }
+        for line in presentation.lines:
+            text.append(f"\n    {line.marker} ", style=line_styles[line.state])
+            text.append(line.text, style="#8f9aa8" if line.state != "done" else "#788492")
         self.update(text)
+
+
+def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
+    if tool.started_at is None:
+        return None
+    ended_at = tool.ended_at or datetime.now(UTC)
+    return max(0, int((ended_at - tool.started_at).total_seconds()))
 
 
 class WelcomePanel(Static):
@@ -362,8 +441,9 @@ class WelcomePanel(Static):
 
 def _user_turn(text: str) -> Static:
     return Static(
-        Text.assemble(("YOU\n", "bold #6ca7d9"), text),
+        text,
         classes="turn user-turn",
+        markup=False,
     )
 
 
@@ -869,12 +949,12 @@ class CommandPopup(VerticalScroll):
         rows: list[Text] = []
         for index, command in enumerate(self._commands):
             selected = index == self._selected
-            row = Text()
+            row = Text(style="on #29251d" if selected else "")
             row.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            row.append(command.usage, style="bold #d9a441" if selected else "bold")
+            row.append(command.name, style="bold #e3b45a" if selected else "bold #d6d9df")
             row.append(
-                f"  {command.description}",
-                style="#aeb5bf" if selected else "#6f7a87",
+                f"  {command.title}",
+                style="#d6d9df" if selected else "#6f7a87",
             )
             rows.append(row)
         self._render_rows(tuple(rows))
@@ -886,16 +966,15 @@ class CommandPopup(VerticalScroll):
         if not self._arguments:
             content = Text()
             content.append("› ", style="#d9a441")
-            content.append(command.argument_hint or "argument", style="bold #7f8996")
-            content.append(f"  {command.description}", style="#6f7a87")
+            content.append(command.title, style="bold #d6d9df")
             self._content.update(content)
             return
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
-            row = Text()
+            row = Text(style="on #29251d" if selected else "")
             row.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            row.append(argument.usage, style="bold #d9a441" if selected else "bold")
+            row.append(argument.value, style="bold #e3b45a" if selected else "bold #d6d9df")
             row.append(
                 f"  {argument.description}",
                 style="#aeb5bf" if selected else "#6f7a87",
@@ -904,6 +983,10 @@ class CommandPopup(VerticalScroll):
         self._render_rows(tuple(rows))
 
     def _render_rows(self, rows: tuple[Text, ...]) -> None:
+        width = self.scrollable_content_region.width
+        if width > 0:
+            for row in rows:
+                row.truncate(width, overflow="ellipsis", pad=True)
         self._content.update(Text("\n").join(rows))
         self.call_after_refresh(self._scroll_selected_into_view, rows)
 
@@ -1002,7 +1085,7 @@ class Composer(TextArea):
     ) -> None:
         super().__init__(
             id="composer",
-            placeholder="Message OURO…",
+            placeholder="Ask anything…",
             soft_wrap=True,
             show_line_numbers=False,
             compact=True,
