@@ -649,6 +649,43 @@ async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        session_id = "ses_reasoning_markup"
+        app._projection = TuiSessionProjection(session_id)
+        fragments = (" [", "data", '-theme="')
+        events = (
+            EventRecord(
+                session_id=session_id,
+                run_id="run_reasoning_markup",
+                event_type="run_started",
+                sequence=1,
+                payload={"trigger": "user"},
+            ),
+            *(
+                EventRecord(
+                    session_id=session_id,
+                    run_id="run_reasoning_markup",
+                    event_type="model_reasoning_delta",
+                    sequence=sequence,
+                    payload={"reasoning_content": fragment},
+                )
+                for sequence, fragment in enumerate(fragments, start=2)
+            ),
+        )
+
+        await app._apply_runtime_events(events)
+
+        expected = "".join(fragments)
+        reasoning = app.query_one(AssistantTurn).reasoning
+        assert reasoning.text == expected
+        assert reasoning._content.render().plain == expected
+
+
+@pytest.mark.asyncio
 async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
     tmp_path: Path,
 ) -> None:
@@ -960,11 +997,12 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
+    reasoning_text = 'Prior reasoning with [data-theme="'
     message = MessageRecord(
         session_id="ses_history",
         role="assistant",
         content=[TextContent(text="Final answer")],
-        reasoning_content="Prior reasoning",
+        reasoning_content=reasoning_text,
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -974,7 +1012,8 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
 
         turn = app.query_one(AssistantTurn)
         assert turn.reasoning.display is True
-        assert turn.reasoning.text == "Prior reasoning"
+        assert turn.reasoning.text == reasoning_text
+        assert turn.reasoning._content.render().plain == reasoning_text
         assert turn.markdown.source == "Final answer"
 
 

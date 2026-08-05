@@ -158,7 +158,11 @@ class ReasoningView(Vertical):
         self.display = bool(initial)
         self.label = Label("THOUGHT", classes="reasoning-label")
         self.text = initial
-        self._content = Static(initial, classes="reasoning-content")
+        self._content = Static(
+            initial,
+            classes="reasoning-content",
+            markup=False,
+        )
 
     def compose(self) -> ComposeResult:
         yield self.label
