@@ -944,14 +944,14 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
             assert app._projection.assistant_text == ""
             assert app._projection.activity.activity == "streaming_reasoning"
             turn = app.query_one(AssistantTurn)
-            assert turn.reasoning.markdown.source == "Inspecting "
+            assert turn.reasoning.text == "Inspecting "
             assert turn.markdown.source == ""
         finally:
             provider.release.set()
         await pilot.pause(0.5)
 
         turn = app.query_one(AssistantTurn)
-        assert turn.reasoning.markdown.source == "Inspecting the event path."
+        assert turn.reasoning.text == "Inspecting the event path."
         assert turn.markdown.source == "Done."
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
@@ -974,7 +974,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
 
         turn = app.query_one(AssistantTurn)
         assert turn.reasoning.display is True
-        assert turn.reasoning.markdown.source == "Prior reasoning"
+        assert turn.reasoning.text == "Prior reasoning"
         assert turn.markdown.source == "Final answer"
 
 

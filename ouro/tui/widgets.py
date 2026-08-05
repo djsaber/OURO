@@ -147,36 +147,30 @@ class BrandHeader(Static):
 
 
 class ReasoningView(Vertical):
-    """A reasoning stream with presentation state independent from the answer."""
+    """A plain-text reasoning stream with presentation state independent from the answer.
+
+    Thinking output is shown verbatim rather than parsed as Markdown, so code fences and
+    markup inside reasoning are never reformatted into blocks or syntax highlighting.
+    """
 
     def __init__(self, *, initial: str = "") -> None:
         super().__init__(classes="reasoning-view")
         self.display = bool(initial)
         self.label = Label("THOUGHT", classes="reasoning-label")
-        self.markdown = Markdown(initial, classes="reasoning-markdown")
-        self._stream: _MarkdownWriter | None = None
+        self.text = initial
+        self._content = Static(initial, classes="reasoning-content")
 
     def compose(self) -> ComposeResult:
         yield self.label
-        yield self.markdown
-
-    def on_mount(self) -> None:
-        self._stream = Markdown.get_stream(self.markdown)
-
-    async def on_unmount(self) -> None:
-        if self._stream is not None:
-            await self._stream.stop()
-            self._stream = None
+        yield self._content
 
     async def append(self, text: str) -> None:
         if not text:
             return
         self.display = True
         self.label.update("THINKING")
-        if self._stream is None:
-            await self.markdown.append(text)
-            return
-        await self._stream.write(text)
+        self.text += text
+        self._content.update(self.text)
 
     def finish(self) -> None:
         if self.display:

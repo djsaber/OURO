@@ -51,10 +51,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- TUI assistant turns now render provider-visible reasoning and final answers through independent
-  Markdown streams. Reasoning appears immediately while the model is still running, transitions
-  from `THINKING` to `THOUGHT` when the phase completes, and is restored from canonical assistant
-  message history without mixing it into the final answer.
+- TUI assistant turns render provider-visible reasoning as plain text and final answers through
+  independent Markdown streams. Reasoning appears immediately while the model is still running,
+  transitions from `THINKING` to `THOUGHT` when the phase completes, and is restored from canonical
+  assistant message history without mixing it into the final answer. Thinking output is rendered
+  verbatim instead of being parsed as Markdown, so code fences and markup are shown as-is.
 - Tool approval now uses a focus-owning choice panel with a visible selection, arrow-key navigation,
   Enter confirmation, and Y/N shortcuts. The Composer is disabled while approval is pending, so
   approval keystrokes cannot be submitted as follow-up user messages.

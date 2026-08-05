@@ -189,7 +189,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         text-style: bold;
     }
 
-    .reasoning-markdown {
+    .reasoning-content {
         height: auto;
         padding: 0;
         color: #8f9aa8;
