@@ -99,8 +99,8 @@ class ConfigurationWorkflowsApp(App[int]):
     @work(exclusive=True, group="configuration")
     async def _configure_compaction(self) -> None:
         try:
-            config = self._controller.compaction_configuration()
-            models = self._controller.models()
+            config = await self._controller.compaction_configuration()
+            models = await self._controller.models()
             strategies = self._controller.compaction_strategies()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
@@ -115,7 +115,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if draft is None:
             return
         try:
-            saved = self._controller.save_compaction_configuration(draft)
+            saved = await self._controller.save_compaction_configuration(draft)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -129,7 +129,7 @@ class ConfigurationWorkflowsApp(App[int]):
     @work(exclusive=True, group="configuration")
     async def _choose_tools(self, selector: str | None = None) -> None:
         try:
-            tools = self._controller.tool_configurations()
+            tools = await self._controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -188,7 +188,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if permission is None:
             return
         try:
-            self._controller.set_tool_permission(
+            await self._controller.set_tool_permission(
                 tool.name,
                 _TOOL_PERMISSION_CHOICES[permission],
             )
@@ -199,7 +199,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _configure_tool_execution(self) -> None:
         try:
-            current = self._controller.tool_execution_configuration()
+            current = await self._controller.tool_execution_configuration()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -207,7 +207,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if draft is None:
             return
         try:
-            updated = self._controller.update_tool_execution(draft)
+            updated = await self._controller.update_tool_execution(draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -217,7 +217,7 @@ class ConfigurationWorkflowsApp(App[int]):
     @work(exclusive=True, group="configuration")
     async def _choose_mcp(self, selector: str | None = None) -> None:
         try:
-            configs = self._controller.mcp_configurations()
+            configs = await self._controller.mcp_configurations()
             runtime = {item.server_id: item for item in self._controller.mcp_servers()}
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
@@ -257,7 +257,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _manage_mcp(self, server_id: str) -> None:
         try:
-            config = self._controller.mcp_configuration(server_id)
+            config = await self._controller.mcp_configuration(server_id)
             status = next(
                 (item for item in self._controller.mcp_servers() if item.server_id == server_id),
                 None,
@@ -302,7 +302,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if draft is None:
             return
         try:
-            saved = self._controller.save_mcp_configuration(draft)
+            saved = await self._controller.save_mcp_configuration(draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -358,7 +358,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if not confirmed:
             return
         try:
-            self._controller.remove_mcp_configuration(server_id)
+            await self._controller.remove_mcp_configuration(server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -368,7 +368,7 @@ class ConfigurationWorkflowsApp(App[int]):
     @work(exclusive=True, group="configuration")
     async def _choose_skills(self, selector: str | None = None) -> None:
         try:
-            catalog = self._controller.skill_catalog()
+            catalog = await self._controller.skill_catalog()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -403,8 +403,9 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _manage_skill(self, name: str) -> None:
         try:
+            catalog = await self._controller.skill_catalog()
             skill = next(
-                (item for item in self._controller.skill_catalog().skills if item.name == name),
+                (item for item in catalog.skills if item.name == name),
                 None,
             )
         except Exception as exc:  # noqa: BLE001
@@ -452,7 +453,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if draft is None:
             return
         try:
-            result = self._controller.install_skills(draft)
+            result = await self._controller.install_skills(draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -461,7 +462,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _set_skill_enabled(self, name: str, *, enabled: bool) -> None:
         try:
-            self._controller.set_skill_enabled(name, enabled=enabled)
+            await self._controller.set_skill_enabled(name, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -469,7 +470,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _validate_skill(self, name: str) -> None:
         try:
-            result = self._controller.validate_skill(name)
+            result = await self._controller.validate_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -484,7 +485,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     async def _update_skill(self, name: str) -> None:
         try:
-            self._controller.update_skill(name)
+            await self._controller.update_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -501,7 +502,7 @@ class ConfigurationWorkflowsApp(App[int]):
         if not confirmed:
             return
         try:
-            self._controller.remove_skill(name)
+            await self._controller.remove_skill(name)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return

@@ -238,7 +238,18 @@ class QueuedInputQueue:
     ) -> list[QueuedInput]:
         """Return valid eligible items without acknowledging durable queue state."""
 
-        raw_queue = self._raw_queue(snapshot.session.metadata)
+        return self.eligible_session(snapshot.session, mode=mode, limit=limit)
+
+    def eligible_session(
+        self,
+        session: SessionRecord,
+        *,
+        mode: QueuedInputMode | None = None,
+        limit: int | None = None,
+    ) -> list[QueuedInput]:
+        """Read queue metadata without loading unrelated messages or Run records."""
+
+        raw_queue = self._raw_queue(session.metadata)
         valid: list[QueuedInput] = []
         saw_invalid = False
         for raw_item in raw_queue:
@@ -251,7 +262,7 @@ class QueuedInputQueue:
                 if limit is not None and len(valid) >= limit:
                     break
         if saw_invalid:
-            self._remove_invalid(snapshot.session.session_id)
+            self._remove_invalid(session.session_id)
         return valid
 
     def peek(self, snapshot: RuntimeSessionSnapshot) -> QueuedInput | None:

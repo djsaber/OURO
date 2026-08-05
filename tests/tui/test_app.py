@@ -171,6 +171,7 @@ class QueuedSubagentApprovalProvider:
     def __init__(self) -> None:
         self.child_started = asyncio.Event()
         self.release_child = asyncio.Event()
+        self.queued_input_consumed = asyncio.Event()
         self.root_round = 0
         self.child_round = 0
 
@@ -223,6 +224,7 @@ class QueuedSubagentApprovalProvider:
             yield ProviderStreamEvent(type="text_delta", text="parent resumed")
             yield ProviderStreamEvent(type="done")
             return
+        self.queued_input_consumed.set()
         yield ProviderStreamEvent(type="text_delta", text="queued input consumed")
         yield ProviderStreamEvent(type="done")
 
@@ -956,7 +958,8 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         assert "Subagent General" in approval_panel.render().plain
 
         await pilot.press("enter")
-        await pilot.pause(2)
+        await asyncio.wait_for(provider.queued_input_consumed.wait(), timeout=5)
+        await pilot.pause(0.5)
 
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
@@ -1291,11 +1294,11 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
         await pilot.pause(0.5)
         await pilot.press("slash", *"approval", "enter", *"afk", "enter")
         await pilot.pause()
-        assert app._controller.session_approval_preset() == "afk"
+        assert await app._controller.session_approval_preset() == "afk"
 
         await pilot.press("slash", *"thinking", "enter", *"high", "enter")
         await pilot.pause()
-        reasoning = app._controller.session_reasoning()
+        reasoning = await app._controller.session_reasoning()
         assert reasoning.requested.effort == "high"
         assert reasoning.effective.effort == "high"
 
@@ -1389,8 +1392,8 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
     async with app.run_test(size=(100, 42)) as pilot:
         await pilot.pause(0.5)
         screen = CompactionConfigurationScreen(
-            app._controller.compaction_configuration(),
-            models=app._controller.models(),
+            await app._controller.compaction_configuration(),
+            models=await app._controller.models(),
             strategy_ids=app._controller.compaction_strategies(),
         )
         app.push_screen(screen, callback=results.append)

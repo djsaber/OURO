@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -11,6 +11,8 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
+from textual.messages import Prune
+from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import TextArea
 
@@ -77,6 +79,14 @@ _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_failed",
     "run_paused",
 }
+_AGENT_INTERACTION_EVENTS = {
+    "agent_spawned",
+    "agent_wait_requested",
+    "agent_wait_resolved",
+    "agent_result_ready",
+    "agent_result_delivered",
+    "agent_closed",
+}
 _CONFIGURE_MODEL = "__ouro_configure_model__"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
@@ -97,6 +107,18 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "xhigh": ReasoningRequest(mode="enabled", effort="xhigh"),
     "max": ReasoningRequest(mode="enabled", effort="max"),
 }
+
+
+class _OuroHostScreen(Screen):
+    """Mark the Host as closing before Textual detaches its widget tree."""
+
+    def __init__(self, on_prune: Callable[[], None]) -> None:
+        super().__init__(id="_default")
+        self._on_host_prune = on_prune
+
+    async def on_prune(self, event: Prune) -> None:
+        self._on_host_prune()
+        await super().on_prune(event)
 
 
 class OuroTuiApp(ConfigurationWorkflowsApp):
@@ -581,17 +603,26 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield StatusLine()
             yield QueuedInputPanel()
 
+    def get_default_screen(self) -> Screen:
+        return _OuroHostScreen(self._begin_host_close)
+
     def on_mount(self) -> None:
         self.query_one(BrandHeader).set_activity("starting")
         self.query_one(Composer).disabled = True
         self.run_worker(self._start(), name="tui-start", exclusive=True)
 
     async def on_unmount(self) -> None:
+        self._begin_host_close()
+        await self._controller.close()
+
+    def _begin_host_close(self) -> None:
+        if self._host_closing:
+            return
         self._host_closing = True
         if self._runtime_events_timer is not None:
             self._runtime_events_timer.stop()
             self._runtime_events_timer = None
-        await self._controller.close()
+        self.workers.cancel_all()
 
     async def _start(self) -> None:
         conversation = self.query_one(ConversationView)
@@ -702,6 +733,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         diagnostics: list[str] = []
         latest_update = None
         queue_changed = False
+        refresh_agent_interactions = any(
+            event.session_id != projection.session_id
+            or event.event_type in _AGENT_INTERACTION_EVENTS
+            for event in events
+        )
         assistant_visible = bool(projection.assistant_text)
         conversation = self.query_one(ConversationView)
         stream_kind: str | None = None
@@ -738,7 +774,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await flush_stream()
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
-                    user_message = self._controller.message(event.session_id, message_id)
+                    user_message = await self._controller.message(event.session_id, message_id)
                     if user_message.role == "user" and user_message.text_content:
                         await conversation.add_user(user_message.text_content)
                         assistant_visible = False
@@ -768,7 +804,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
 
         if latest_update is None:
-            self._refresh_interaction()
+            await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
             return
         if latest_update.activity.activity != "streaming_reasoning":
             conversation.finish_reasoning()
@@ -781,9 +817,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         }:
             await conversation.finish_assistant()
         if queue_changed:
-            self._sync_queued_inputs(latest_update.event.session_id)
+            await self._sync_queued_inputs(latest_update.event.session_id)
         self._sync_activity(latest_update.activity)
-        self._refresh_interaction()
+        await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
         for diagnostic in diagnostics:
             await conversation.add_notice(diagnostic, error=True)
 
@@ -814,7 +850,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             result = await self._controller.submit(prompt, queue_mode=queue_mode)
             await self._apply_run_result(result)
-            self._sync_queued_inputs(result.session.session_id)
+            await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             self.query_one(BrandHeader).set_activity("failed")
             self.query_one(StatusLine).set_detail("Run failed")
@@ -848,11 +884,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await conversation.finish_assistant()
         self._active_title = result.session.title
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
-        self._refresh_usage_status()
-        self._refresh_interaction()
+        await self._refresh_usage_status()
+        await self._refresh_interaction()
 
-    def _refresh_usage_status(self) -> None:
-        usage = self._controller.usage_totals()
+    async def _refresh_usage_status(self) -> None:
+        usage = await self._controller.usage_totals()
         self._system_status = replace(
             self._system_status,
             usage_request_count=usage.request_count,
@@ -863,12 +899,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
 
-    def _sync_queued_inputs(self, session_id: str | None = None) -> None:
+    async def _sync_queued_inputs(self, session_id: str | None = None) -> None:
         panel = self.query_one(QueuedInputPanel)
         if session_id is None and self._controller.session_id is None:
             panel.set_inputs(())
             return
-        panel.set_inputs(self._controller.queued_user_inputs(session_id))
+        panel.set_inputs(await self._controller.queued_user_inputs(session_id))
 
     def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if message.text_area is not self.query_one(Composer):
@@ -984,7 +1020,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             if result is not None:
                 await self._apply_run_result(result)
-            self._refresh_interaction()
+            await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             self.query_one(InteractionBar).resume()
@@ -996,7 +1032,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             result = await self._controller.answer(interaction=interaction, answer=answer)
             if result is not None:
                 await self._apply_run_result(result)
-            self._refresh_interaction()
+            await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             self.query_one(AskUserPanel).resume()
@@ -1036,9 +1072,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_context(activity.context_status)
         status_line.set_detail(detail)
 
-    def _refresh_interaction(self) -> PendingInteraction | None:
+    async def _refresh_interaction(
+        self,
+        *,
+        refresh_agents: bool = False,
+    ) -> PendingInteraction | None:
         primary = self._projection.pending_interaction if self._projection else None
-        agent_interactions = self._controller.agent_interactions()
+        current_is_agent = self._interaction is not None and self._interaction.is_subagent
+        agent_interactions = (
+            await self._controller.agent_interactions()
+            if primary is None and (refresh_agents or current_is_agent)
+            else ()
+        )
         interaction = primary or (
             project_agent_interaction(agent_interactions[0]) if agent_interactions else None
         )
@@ -1120,7 +1165,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/skills":
             self._choose_skills(argument or None)
         elif command.name == "/clear":
-            self._refresh_usage_status()
+            await self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
         elif command.name == "/abort":
             self.action_abort()
@@ -1188,7 +1233,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             for run_result in result.run_results:
                 await self._apply_run_result(run_result)
-                self._sync_queued_inputs(run_result.session.session_id)
+                await self._sync_queued_inputs(run_result.session.session_id)
             if (
                 not result.run_results
                 and self._projection is None
@@ -1220,7 +1265,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             result = await self._controller.compact()
             await self._flush_pending_runtime_events()
             await self._apply_runtime_events(result.events)
-            self._refresh_usage_status()
+            await self._refresh_usage_status()
             if result.skipped or result.compaction is None:
                 self.notify("No complete older turn is eligible for compaction")
             else:
@@ -1261,7 +1306,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _choose_session(self) -> None:
         try:
-            self._sessions = self._controller.sessions()
+            self._sessions = await self._controller.sessions()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1285,10 +1330,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._open_session(selected)
 
     async def _open_session(self, session_id: str) -> None:
-        loaded = self._controller.load_session(session_id)
+        loaded = await self._controller.load_session(session_id)
         await self.query_one(ConversationView).load_messages(loaded.messages)
         self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
-        self._restore_projection(loaded)
+        await self._restore_projection(loaded)
         session = loaded.detail.session
         self._active_title = session.title
         self._active_model = session.current_model or self._active_model
@@ -1308,7 +1353,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         selected = message_id
         if selected is None:
             try:
-                points = self._controller.branch_points()
+                points = await self._controller.branch_points()
             except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return
@@ -1336,20 +1381,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         source_session_id = self._controller.session_id
         try:
-            result = self._controller.branch_session(selected)
+            result = await self._controller.branch_session(selected)
             await self._open_session(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self.notify(f"Session forked: {source_session_id} → {result.session.session_id}")
 
-    def _restore_projection(self, loaded: LoadedSession) -> None:
+    async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
         projection.restore(loaded.events)
         self._projection = projection
         self._sync_activity(projection.activity)
         self._interaction = None
-        self._refresh_interaction()
+        await self._refresh_interaction(refresh_agents=True)
         self.run_worker(
             self.query_one(ConversationView).sync_tools(projection.activity.tool_calls),
             group="restore-tools",
@@ -1361,7 +1406,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     @work(exclusive=True, group="navigation")
     async def _choose_model(self) -> None:
-        self._models = self._controller.models()
+        self._models = await self._controller.models()
         choices = (
             Choice(
                 value=_CONFIGURE_MODEL,
@@ -1390,7 +1435,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify("Abort the active run before configuring models", severity="warning")
             return
         try:
-            providers = self._controller.model_providers()
+            providers = await self._controller.model_providers()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1412,16 +1457,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if configured is None:
             return
         try:
-            model = self._controller.configure_model(configured)
+            model = await self._controller.configure_model(configured)
         except Exception as exc:  # noqa: BLE001 - configuration validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        self._models = self._controller.models()
+        self._models = await self._controller.models()
         await self._select_model(model.key)
 
     async def _select_model(self, selector: str) -> None:
         try:
-            model = self._controller.select_model(selector)
+            model = await self._controller.select_model(selector)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1442,7 +1487,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         try:
-            current = self._controller.session_approval_preset()
+            current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1473,7 +1518,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         try:
-            mode = self._controller.set_session_approval_preset(value)
+            mode = await self._controller.set_session_approval_preset(value)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1491,7 +1536,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         try:
-            state = self._controller.session_reasoning()
+            state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -1524,7 +1569,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         try:
-            state = self._controller.set_session_reasoning(request)
+            state = await self._controller.set_session_reasoning(request)
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return

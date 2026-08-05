@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from types import MappingProxyType
 
 import pytest
@@ -192,3 +194,43 @@ async def test_inprocess_and_worker_observers_reject_return_values() -> None:
         await contributions.observers[0].handler(OBSERVATIONS[1][1])
     with pytest.raises(WorkerProtocolError, match="must be empty"):
         _validate_worker_result("observer.observe", {"control": "not-allowed"})
+
+
+@pytest.mark.asyncio
+async def test_sync_sdk_observer_does_not_block_the_event_loop() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+    handler_threads: list[int] = []
+
+    def blocking_handler(_observation: sdk.Observation) -> None:
+        handler_threads.append(threading.get_ident())
+        entered.set()
+        release.wait()
+
+    contributions = adapt_sdk_contributions(
+        sdk.ContributionSet(
+            observers=[
+                sdk.ObserverContribution(
+                    id="blocking",
+                    event="context_prepared",
+                    handler=blocking_handler,
+                )
+            ]
+        )
+    )
+    watchdog = threading.Timer(1, release.set)
+    watchdog.start()
+    event_loop_thread = threading.get_ident()
+    observation = asyncio.create_task(contributions.observers[0].handler(OBSERVATIONS[1][1]))
+
+    try:
+        handler_entered = await asyncio.to_thread(entered.wait, 2)
+        event_loop_remained_responsive = not observation.done()
+    finally:
+        release.set()
+        watchdog.cancel()
+    await observation
+
+    assert handler_entered is True
+    assert event_loop_remained_responsive is True
+    assert handler_threads != [event_loop_thread]

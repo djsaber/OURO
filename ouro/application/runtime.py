@@ -638,7 +638,7 @@ class RuntimeService:
     def pending_user_inputs(self, session_id: str) -> tuple[QueuedUserInputView, ...]:
         """Return direct user inputs still waiting at a Run or model-turn boundary."""
 
-        snapshot = self.store.load_runtime_session(session_id)
+        session = self.store.load_session_record(session_id)
         return tuple(
             QueuedUserInputView(
                 queue_id=item.queue_id,
@@ -646,7 +646,7 @@ class RuntimeService:
                 mode=item.mode,
                 queued_at=item.queued_at,
             )
-            for item in self.queued_inputs.eligible(snapshot)
+            for item in self.queued_inputs.eligible_session(session)
             if item.source == "user"
         )
 

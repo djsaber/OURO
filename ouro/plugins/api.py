@@ -13,9 +13,10 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType, ModuleType
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from uuid import uuid4
 
+from ouro.core.callbacks import invoke_callback
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
 from ouro.core.context_providers import (
     ContextFragment,
@@ -576,13 +577,12 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        raw = _invoke_sdk_tool_handler(
+        args, kwargs = _sdk_tool_handler_arguments(
             contribution.handler,
             call,
             _SDKToolExecutionContext(context),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
+        raw = await invoke_callback(contribution.handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):
@@ -629,13 +629,12 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        raw = _invoke_sdk_tool_handler(
+        args, kwargs = _sdk_tool_handler_arguments(
             contribution.resume_handler,
             call,
             _SDKToolExecutionContext(context),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
+        raw = await invoke_callback(contribution.resume_handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):
@@ -733,19 +732,19 @@ class _SDKToolExecutionContext:
         return str(resolved) if resolved is not None else None
 
 
-def _invoke_sdk_tool_handler(
+def _sdk_tool_handler_arguments(
     handler,
     call: sdk.ToolCall | sdk.ToolResumeCall,
     context: sdk.ToolExecutionContext,
-):
+) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(inspect.signature(handler).parameters.values())
     except (TypeError, ValueError):
-        return handler(call)
+        return (call,), {}
     if any(parameter.kind == inspect.Parameter.VAR_KEYWORD for parameter in parameters):
-        return handler(call, context=context)
+        return (call,), {"context": context}
     if any(parameter.name == "context" for parameter in parameters):
-        return handler(call, context=context)
+        return (call,), {"context": context}
     positional = [
         parameter
         for parameter in parameters
@@ -753,15 +752,16 @@ def _invoke_sdk_tool_handler(
         in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
     ]
     if len(positional) >= 2:
-        return handler(call, context)
-    return handler(call)
+        return (call, context), {}
+    return (call,), {}
 
 
 def _adapt_observer(contribution: sdk.ObserverContribution) -> ObserverRegistration:
     async def handler(observation: Observation) -> None:
-        raw: object = contribution.handler(_sdk_observation(observation))
-        if inspect.isawaitable(raw):
-            raw = await cast("Awaitable[object]", raw)
+        raw: object = await invoke_callback(
+            contribution.handler,
+            _sdk_observation(observation),
+        )
         if raw is not None:
             raise TypeError("observer handler must return None")
 
@@ -852,16 +852,15 @@ def _sdk_observation(observation: Observation) -> sdk.Observation:
 
 def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
     async def handler(request: PluginCommandRequest) -> PluginCommandResult:
-        raw = contribution.handler(
+        raw = await invoke_callback(
+            contribution.handler,
             sdk.CommandCall(
                 command_id=request.command_id,
                 argument=request.argument,
                 session_id=request.session_id,
                 workspace=request.workspace,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if isinstance(raw, str):
             return PluginCommandResult(command_id=request.command_id, output=raw)
         if isinstance(raw, sdk.CommandOutput):
@@ -907,7 +906,8 @@ def _adapt_session_controller(
     contribution: sdk.SessionControllerContribution,
 ) -> PluginSessionController:
     async def invoke(handler, call: PluginSessionControllerCall):
-        raw = handler(
+        raw = await invoke_callback(
+            handler,
             sdk.SessionControllerCall(
                 session_id=call.session_id,
                 session_kind=call.session_kind,
@@ -917,10 +917,8 @@ def _adapt_session_controller(
                 payload=call.payload,
                 reason=call.reason,
                 workspace=call.workspace,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if not isinstance(raw, sdk.SessionControllerOutput):
             raise TypeError("session controller handler must return SessionControllerOutput")
         return PluginSessionControllerOutput(
@@ -944,17 +942,16 @@ def _adapt_session_controller(
 
 def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegistration:
     async def handler(call: ContextProviderCall) -> ContextProviderResult:
-        raw = contribution.handler(
+        raw = await invoke_callback(
+            contribution.handler,
             sdk.ContextCall(
                 session_id=call.session_id,
                 run_id=call.run_id,
                 message_count=call.message_count,
                 model_round=call.model_round,
                 workspace=call.workspace,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if isinstance(raw, sdk.ContextOutput):
             values = raw.fragments
         elif isinstance(raw, str):
@@ -995,7 +992,8 @@ class _SDKCompactionStrategy:
 
     async def compact(self, request: CompactionRequest, *, signal=None) -> CompactionArtifact:
         del signal
-        raw = self._handler(
+        raw = await invoke_callback(
+            self._handler,
             sdk.CompactionCall(
                 session_id=request.session_id,
                 run_id=request.run_id,
@@ -1006,10 +1004,8 @@ class _SDKCompactionStrategy:
                 ),
                 input_token_budget=request.input_token_budget,
                 summary_output_tokens=request.summary_output_tokens,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         return CompactionArtifact(summary=raw.summary, usage=dict(raw.usage))
 
 
@@ -1020,14 +1016,10 @@ class _SDKBackgroundService:
         self._stop = contribution.stop
 
     async def start(self) -> None:
-        result = self._start()
-        if inspect.isawaitable(result):
-            await result
+        await invoke_callback(self._start)
 
     async def stop(self) -> None:
-        result = self._stop()
-        if inspect.isawaitable(result):
-            await result
+        await invoke_callback(self._stop)
 
 
 def _adapt_continuation_policy(
@@ -1043,9 +1035,7 @@ def _adapt_continuation_policy(
             error=outcome.error,
             usage=MappingProxyType(dict(outcome.usage)),
         )
-        raw = contribution.handler(sdk_outcome)
-        if inspect.isawaitable(raw):
-            raw = await raw
+        raw = await invoke_callback(contribution.handler, sdk_outcome)
         if not isinstance(raw, sdk.ContinuationDecision):
             raise TypeError("continuation policy must return ContinuationDecision")
         return ContinuationDecision(
@@ -1084,7 +1074,8 @@ def _adapt_tool_policy(
     contribution: sdk.ToolPolicyContribution,
 ) -> ToolPolicyRegistration:
     async def handler(call: ToolPolicyCall) -> ToolPolicyDecision:
-        raw = contribution.handler(
+        raw = await invoke_callback(
+            contribution.handler,
             sdk.ToolPolicyCall(
                 session_id=call.session_id,
                 run_id=call.run_id,
@@ -1098,10 +1089,8 @@ def _adapt_tool_policy(
                 batch_behavior=call.batch_behavior,
                 permission_control=call.permission_control,
                 workspace=call.workspace,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if not isinstance(raw, sdk.ToolPolicyDecision):
             raise TypeError("tool policy must return ToolPolicyDecision")
         return ToolPolicyDecision(action=raw.action, reason=raw.reason)
@@ -1120,7 +1109,8 @@ def _adapt_prompt_policy(
     contribution: sdk.PromptPolicyContribution,
 ) -> PromptPolicyRegistration:
     async def handler(call: PromptPolicyCall) -> PromptPolicyDecision:
-        raw = contribution.handler(
+        raw = await invoke_callback(
+            contribution.handler,
             sdk.PromptPolicyCall(
                 session_id=call.session_id,
                 prospective_run_id=call.prospective_run_id,
@@ -1148,10 +1138,8 @@ def _adapt_prompt_policy(
                 ),
                 catalog_id=call.catalog_id,
                 execution_contracts=MappingProxyType(dict(call.execution_contracts)),
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if not isinstance(raw, sdk.PromptPolicyDecision):
             raise TypeError("prompt policy must return PromptPolicyDecision")
         return PromptPolicyDecision(action=raw.action, reason=raw.reason)
@@ -1170,17 +1158,16 @@ def _adapt_turn_policy(
     contribution: sdk.TurnPolicyContribution,
 ) -> TurnPolicyRegistration:
     async def handler(candidate: TurnCompletionCandidate) -> TurnPolicyDecision:
-        raw = contribution.handler(
+        raw = await invoke_callback(
+            contribution.handler,
             sdk.TurnCompletionCall(
                 session_id=candidate.session_id,
                 run_id=candidate.run_id,
                 turn_id=candidate.turn_id,
                 assistant_text=candidate.assistant_text,
                 assistant_reasoning=candidate.assistant_reasoning,
-            )
+            ),
         )
-        if inspect.isawaitable(raw):
-            raw = await raw
         if not isinstance(raw, sdk.TurnPolicyDecision):
             raise TypeError("turn policy must return TurnPolicyDecision")
         return TurnPolicyDecision(action=raw.action, feedback=raw.feedback)

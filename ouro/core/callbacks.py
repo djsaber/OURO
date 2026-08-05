@@ -3,7 +3,25 @@ from __future__ import annotations
 import asyncio
 import inspect
 from collections.abc import Callable
+from functools import partial
 from typing import Any
+
+
+async def invoke_callback(
+    handler: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Invoke a callback without letting synchronous work block the event loop."""
+
+    callback = partial(handler, *args, **kwargs)
+    if inspect.iscoroutinefunction(handler):
+        result = callback()
+    else:
+        result = await asyncio.to_thread(callback)
+    if inspect.isawaitable(result):
+        return await result
+    return result
 
 
 async def invoke_bounded_callback[InputT](
@@ -15,12 +33,7 @@ async def invoke_bounded_callback[InputT](
     """Invoke an async callback directly or isolate a synchronous one in a thread."""
 
     async with asyncio.timeout(timeout_seconds):
-        if inspect.iscoroutinefunction(handler):
-            return await handler(argument)
-        result = await asyncio.to_thread(handler, argument)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+        return await invoke_callback(handler, argument)
 
 
-__all__ = ["invoke_bounded_callback"]
+__all__ = ["invoke_bounded_callback", "invoke_callback"]

@@ -14,6 +14,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ouro.core.base import OuroModel
+from ouro.core.callbacks import invoke_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.tools import (
@@ -420,10 +421,8 @@ class Tool(OuroModel):
         signal: AbortSignal | None = None,
     ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
-        raw_result = _call_handler(self.handler, invocation, context)
-        if isinstance(raw_result, Awaitable):
-            return await raw_result
-        return raw_result
+        args, kwargs = _handler_arguments(self.handler, invocation, context)
+        return await invoke_callback(self.handler, *args, **kwargs)
 
     async def resume(
         self,
@@ -437,55 +436,53 @@ class Tool(OuroModel):
         if self.resume_handler is None:
             raise RuntimeError(f"tool does not support resume: {self.definition.name}")
         context = context or ToolExecutionContext(signal=signal)
-        raw_result = _call_resume_handler(
+        args, kwargs = _resume_handler_arguments(
             self.resume_handler,
             invocation,
             resolution,
             request,
             context,
         )
-        if isinstance(raw_result, Awaitable):
-            return await raw_result
-        return raw_result
+        return await invoke_callback(self.resume_handler, *args, **kwargs)
 
 
-def _call_handler(
+def _handler_arguments(
     handler: ToolHandler,
     invocation: ToolInvocation,
     context: ToolExecutionContext,
-) -> ToolExecutionResult | Awaitable[ToolExecutionResult]:
+) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(signature(handler).parameters.values())
     except (TypeError, ValueError):
-        return handler(invocation)
+        return (invocation,), {}
 
     if any(parameter.kind == Parameter.VAR_KEYWORD for parameter in parameters):
-        return handler(invocation, context=context, signal=context.signal)
+        return (invocation,), {"context": context, "signal": context.signal}
     if any(parameter.name == "context" for parameter in parameters):
-        return handler(invocation, context=context)
+        return (invocation,), {"context": context}
     if any(parameter.name == "signal" for parameter in parameters):
-        return handler(invocation, signal=context.signal)
+        return (invocation,), {"signal": context.signal}
     positional = [
         parameter
         for parameter in parameters
         if parameter.kind in (Parameter.POSITIONAL_ONLY, Parameter.POSITIONAL_OR_KEYWORD)
     ]
     if len(positional) >= 2:
-        return handler(invocation, context)
-    return handler(invocation)
+        return (invocation, context), {}
+    return (invocation,), {}
 
 
-def _call_resume_handler(
+def _resume_handler_arguments(
     handler: ToolResumeHandler,
     invocation: ToolInvocation,
     resolution: ToolInputResolution,
     request: ToolInputRequest,
     context: ToolExecutionContext,
-) -> ToolExecutionResult | Awaitable[ToolExecutionResult]:
+) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(signature(handler).parameters.values())
     except (TypeError, ValueError):
-        return handler(invocation, resolution, request)
+        return (invocation, resolution, request), {}
 
     keyword_arguments: dict[str, object] = {}
     names = {parameter.name for parameter in parameters}
@@ -495,4 +492,4 @@ def _call_resume_handler(
         keyword_arguments["context"] = context
     if "signal" in names:
         keyword_arguments["signal"] = context.signal
-    return handler(invocation, resolution, **keyword_arguments)
+    return (invocation, resolution), keyword_arguments

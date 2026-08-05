@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -99,7 +101,7 @@ async def test_controller_configures_new_model_through_application_facade(
     )
 
     try:
-        model = controller.configure_model(draft)
+        model = await controller.configure_model(draft)
         saved = configuration.endpoint("custom", "new")
 
         assert model.key == "custom/new"
@@ -109,7 +111,7 @@ async def test_controller_configures_new_model_through_application_facade(
         assert saved.supports_tools is True
         assert saved.supports_vision is True
         with pytest.raises(ConfigError, match="already exists"):
-            controller.configure_model(draft)
+            await controller.configure_model(draft)
     finally:
         await controller.close()
 
@@ -128,15 +130,15 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
     await controller.start()
 
     try:
-        tools = {item.name: item for item in controller.tool_configurations()}
+        tools = {item.name: item for item in await controller.tool_configurations()}
         assert tools["Read"].effect == "read_only"
         assert tools["Write"].effect == "state_changing"
 
-        updated = controller.set_tool_permission("Write", "deny")
+        updated = await controller.set_tool_permission("Write", "deny")
         assert updated is not None and updated.permission_override == "deny"
         assert configuration.permission_config().tools["Write"] == "deny"
 
-        execution = controller.update_tool_execution(
+        execution = await controller.update_tool_execution(
             TuiToolExecutionConfiguration(
                 mode="parallel",
                 max_concurrency=3,
@@ -173,7 +175,7 @@ async def test_controller_separates_mcp_config_from_current_runtime_lifecycle(
         assert runtime_before.server_id == "local"
         assert runtime_before.status == "configured"
 
-        saved = controller.save_mcp_configuration(
+        saved = await controller.save_mcp_configuration(
             TuiMCPServerConfiguration(
                 server_id="local",
                 name="Renamed",
@@ -226,12 +228,16 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
     await controller.start()
 
     try:
-        skill = next(item for item in controller.skill_catalog().skills if item.name == "demo")
+        skill = next(
+            item for item in (await controller.skill_catalog()).skills if item.name == "demo"
+        )
         assert skill.enabled is True
-        assert controller.validate_skill("demo").valid is True
+        assert (await controller.validate_skill("demo")).valid is True
 
-        controller.set_skill_enabled("demo", enabled=False)
-        disabled = next(item for item in controller.skill_catalog().skills if item.name == "demo")
+        await controller.set_skill_enabled("demo", enabled=False)
+        disabled = next(
+            item for item in (await controller.skill_catalog()).skills if item.name == "demo"
+        )
         assert disabled.enabled is False
     finally:
         await controller.close()
@@ -251,8 +257,8 @@ async def test_controller_persists_complete_compaction_options_and_requires_sess
     await controller.start()
 
     try:
-        model = controller.models()[0]
-        saved = controller.save_compaction_configuration(
+        model = (await controller.models())[0]
+        saved = await controller.save_compaction_configuration(
             TuiCompactionConfiguration(
                 strategy_id="builtin.llm_summary",
                 fallback_strategy_id=None,
@@ -339,12 +345,12 @@ async def test_controller_forks_at_canonical_message_without_mutating_source(
     try:
         source_result = await controller.submit("fork this conversation")
         source_session_id = source_result.session.session_id
-        points = controller.branch_points()
+        points = await controller.branch_points()
         assert [message.role for message in points] == ["user", "assistant"]
 
-        branch = controller.branch_session(points[-1].message_id)
+        branch = await controller.branch_session(points[-1].message_id)
         source_after = application.runtime.store.load_session(source_session_id)
-        loaded = controller.load_session(branch.session.session_id)
+        loaded = await controller.load_session(branch.session.session_id)
 
         assert branch.session.parent_session_id == source_session_id
         assert branch.session.forked_from_message_id == points[-1].message_id
@@ -354,6 +360,101 @@ async def test_controller_forks_at_canonical_message_without_mutating_source(
         assert [message.message_id for message in source_after.messages] == [
             message.message_id for message in points
         ]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_load_session_does_not_block_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        result = await controller.submit("open this conversation")
+        entered = threading.Event()
+        release = threading.Event()
+        reader_threads: list[int] = []
+        original_open = application.runtime.sessions.open
+
+        def blocking_open(session_id: str, *, recover: bool = True):
+            reader_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            return original_open(session_id, recover=recover)
+
+        monkeypatch.setattr(application.runtime.sessions, "open", blocking_open)
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        loading = asyncio.create_task(controller.load_session(result.session.session_id))
+
+        try:
+            reader_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not loading.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        loaded = await loading
+
+        assert reader_entered is True
+        assert event_loop_remained_responsive is True
+        assert reader_threads != [event_loop_thread]
+        assert loaded.detail.session.session_id == result.session.session_id
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_configuration_reads_do_not_block_the_event_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        entered = threading.Event()
+        release = threading.Event()
+        reader_threads: list[int] = []
+        original_catalog = configuration.skill_catalog
+
+        def blocking_catalog(*, include_disabled: bool = False):
+            reader_threads.append(threading.get_ident())
+            entered.set()
+            release.wait()
+            return original_catalog(include_disabled=include_disabled)
+
+        monkeypatch.setattr(configuration, "skill_catalog", blocking_catalog)
+        watchdog = threading.Timer(1, release.set)
+        watchdog.start()
+        event_loop_thread = threading.get_ident()
+        loading = asyncio.create_task(controller.skill_catalog())
+
+        try:
+            reader_entered = await asyncio.to_thread(entered.wait, 2)
+            event_loop_remained_responsive = not loading.done()
+        finally:
+            release.set()
+            watchdog.cancel()
+        await loading
+
+        assert reader_entered is True
+        assert event_loop_remained_responsive is True
+        assert reader_threads != [event_loop_thread]
     finally:
         await controller.close()
 
@@ -371,9 +472,9 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
     await controller.start()
 
     try:
-        assert controller.session_approval_preset() == "inherit"
-        controller.set_session_approval_preset("afk")
-        draft_reasoning = controller.set_session_reasoning(
+        assert await controller.session_approval_preset() == "inherit"
+        await controller.set_session_approval_preset("afk")
+        draft_reasoning = await controller.set_session_reasoning(
             ReasoningRequest(mode="enabled", effort="high")
         )
         assert draft_reasoning.effective.effort == "high"
@@ -383,8 +484,10 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
         assert result.session.interaction_mode == "unattended"
         assert result.session.reasoning_request.effort == "high"
 
-        controller.set_session_approval_preset("deny")
-        persisted_reasoning = controller.set_session_reasoning(ReasoningRequest(mode="disabled"))
+        await controller.set_session_approval_preset("deny")
+        persisted_reasoning = await controller.set_session_reasoning(
+            ReasoningRequest(mode="disabled")
+        )
         record = application.runtime.store.load_session_record(result.session.session_id)
         assert record.approval_mode == "deny"
         assert record.interaction_mode == "interactive"
@@ -392,7 +495,7 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
         assert persisted_reasoning.effective.mode == "disabled"
 
         controller.new_session()
-        assert controller.session_approval_preset() == "inherit"
-        assert controller.session_reasoning().requested == ReasoningRequest()
+        assert await controller.session_approval_preset() == "inherit"
+        assert (await controller.session_reasoning()).requested == ReasoningRequest()
     finally:
         await controller.close()

@@ -250,7 +250,8 @@ class TuiController:
         if self._started:
             raise RuntimeError("TUI controller is already started")
         if self._application is None:
-            self._application = LocalApplication.build(
+            self._application = await asyncio.to_thread(
+                LocalApplication.build,
                 self._home,
                 system_prompt=self._system_prompt,
                 session_backend=self._session_backend,
@@ -270,7 +271,7 @@ class TuiController:
         if self._configuration is None and runtime.environment.home is not None:
             self._configuration = ConfigurationFacade(runtime.environment.home)
         models = tuple(runtime.available_models())
-        usage = self.usage_totals()
+        usage = await self.usage_totals()
         plugin_summaries = (
             tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
@@ -293,7 +294,7 @@ class TuiController:
         return TuiBootstrap(
             models=models,
             current_model=runtime.current_model(),
-            sessions=runtime.sessions.catalog().entries,
+            sessions=await self.sessions(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
             system_status=TuiSystemStatus(
@@ -415,12 +416,18 @@ class TuiController:
             answer=answer,
         )
 
-    def agent_interactions(self) -> tuple[AgentInteractionView, ...]:
-        if self._session_id is None or self._application is None:
+    async def agent_interactions(self) -> tuple[AgentInteractionView, ...]:
+        session_id = self._session_id
+        if session_id is None or self._application is None:
             return ()
         if self._application.agents is None:
             return ()
-        session = self._runtime().sessions.open(self._session_id, recover=False).session
+        interactions = await asyncio.to_thread(self._read_agent_interactions, session_id)
+        return interactions if self._session_id == session_id else ()
+
+    def _read_agent_interactions(self, session_id: str) -> tuple[AgentInteractionView, ...]:
+        assert self._application is not None and self._application.agents is not None
+        session = self._runtime().sessions.open(session_id, recover=False).session
         return self._application.agents.list_agent_interactions(session.root_session_id)
 
     def new_session(self) -> None:
@@ -430,41 +437,62 @@ class TuiController:
         self._interaction_mode = self._default_interaction_mode
         self._reasoning_request = ReasoningRequest()
 
-    def sessions(self) -> tuple[SessionCatalogEntry, ...]:
-        return self._runtime().sessions.catalog().entries
+    async def sessions(self) -> tuple[SessionCatalogEntry, ...]:
+        runtime = self._runtime()
+        return await asyncio.to_thread(lambda: runtime.sessions.catalog().entries)
 
-    def branch_points(self) -> tuple[MessageRecord, ...]:
+    async def branch_points(self) -> tuple[MessageRecord, ...]:
         """Return canonical dialogue messages that can name a branch boundary."""
 
         session_id = self._require_session()
-        return tuple(
-            message
-            for message in self._session_messages(session_id)
-            if message.role in {"user", "assistant"}
+        return await asyncio.to_thread(
+            lambda: tuple(
+                message
+                for message in self._session_messages(session_id)
+                if message.role in {"user", "assistant"}
+            )
         )
 
-    def branch_session(self, message_id: str) -> SessionBranchResult:
-        return self._runtime().sessions.branch(self._require_session(), message_id)
+    async def branch_session(self, message_id: str) -> SessionBranchResult:
+        sessions = self._runtime().sessions
+        session_id = self._require_session()
+        return await asyncio.to_thread(sessions.branch, session_id, message_id)
 
-    def queued_user_inputs(self, session_id: str | None = None) -> tuple[QueuedUserInputView, ...]:
+    async def queued_user_inputs(
+        self,
+        session_id: str | None = None,
+    ) -> tuple[QueuedUserInputView, ...]:
         target_session_id = session_id or self._require_session()
+        return await asyncio.to_thread(self._queued_user_inputs, target_session_id)
+
+    def _queued_user_inputs(self, session_id: str) -> tuple[QueuedUserInputView, ...]:
+        target_session_id = session_id
         return self._runtime().pending_user_inputs(target_session_id)
 
-    def message(self, session_id: str, message_id: str) -> MessageRecord:
-        return self._runtime().sessions.message(session_id, message_id)
+    async def message(self, session_id: str, message_id: str) -> MessageRecord:
+        runtime = self._runtime()
+        return await asyncio.to_thread(runtime.sessions.message, session_id, message_id)
 
-    def models(self) -> tuple[AvailableModel, ...]:
-        return tuple(self._runtime().available_models())
+    async def models(self) -> tuple[AvailableModel, ...]:
+        runtime = self._runtime()
+        return await asyncio.to_thread(lambda: tuple(runtime.available_models()))
 
-    def model_providers(self) -> tuple[ProviderView, ...]:
+    async def model_providers(self) -> tuple[ProviderView, ...]:
         configuration = self._require_configuration()
-        return tuple(
-            provider for provider in configuration.provider_catalog().providers if provider.enabled
+        return await asyncio.to_thread(
+            lambda: tuple(
+                provider
+                for provider in configuration.provider_catalog().providers
+                if provider.enabled
+            )
         )
 
-    def configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
+    async def configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
         """Create one endpoint through the canonical configuration application service."""
 
+        return await asyncio.to_thread(self._configure_model, model)
+
+    def _configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
         configuration = self._require_configuration()
         endpoints = configuration.endpoint_catalog(model.provider_id).endpoints
         if any(endpoint.endpoint_id == model.endpoint_id for endpoint in endpoints):
@@ -482,9 +510,12 @@ class TuiController:
         )
         return self._runtime().resolve_model(f"{model.provider_id}/{model.endpoint_id}")
 
-    def tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
+    async def tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
         """Combine live tool contracts with durable permission overrides."""
 
+        return await asyncio.to_thread(self._tool_configurations)
+
+    def _tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
         definitions = {item.name: item for item in self._runtime().tools.definitions()}
         overrides = self._require_configuration().permission_config().tools
         names = sorted(set(definitions).union(overrides))
@@ -518,13 +549,20 @@ class TuiController:
             )
         return tuple(items)
 
-    def set_tool_permission(
+    async def set_tool_permission(
+        self,
+        tool_name: str,
+        mode: PermissionMode | None,
+    ) -> TuiToolConfiguration | None:
+        return await asyncio.to_thread(self._set_tool_permission, tool_name, mode)
+
+    def _set_tool_permission(
         self,
         tool_name: str,
         mode: PermissionMode | None,
     ) -> TuiToolConfiguration | None:
         current = next(
-            (item for item in self.tool_configurations() if item.name == tool_name),
+            (item for item in self._tool_configurations() if item.name == tool_name),
             None,
         )
         if current is None:
@@ -537,31 +575,42 @@ class TuiController:
         else:
             configuration.set_tool_permission(tool_name, mode)
         return next(
-            (item for item in self.tool_configurations() if item.name == tool_name),
+            (item for item in self._tool_configurations() if item.name == tool_name),
             None,
         )
 
-    def tool_execution_configuration(self) -> ToolExecutionConfigView:
-        return self._require_configuration().tool_execution_config()
+    async def tool_execution_configuration(self) -> ToolExecutionConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.tool_execution_config)
 
-    def update_tool_execution(
+    async def update_tool_execution(
         self,
         draft: TuiToolExecutionConfiguration,
     ) -> ToolExecutionConfigView:
-        return self._require_configuration().update_tool_execution(
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(
+            configuration.update_tool_execution,
             mode=draft.mode,
             max_concurrency=draft.max_concurrency,
             workspace_only=draft.workspace_only,
             max_output_chars=draft.max_output_chars,
         )
 
-    def mcp_configurations(self) -> tuple[MCPServerConfigView, ...]:
-        return tuple(self._require_configuration().mcp_catalog().servers)
+    async def mcp_configurations(self) -> tuple[MCPServerConfigView, ...]:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(lambda: tuple(configuration.mcp_catalog().servers))
 
-    def mcp_configuration(self, server_id: str) -> MCPServerConfigView:
-        return self._require_configuration().mcp_server(server_id)
+    async def mcp_configuration(self, server_id: str) -> MCPServerConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.mcp_server, server_id)
 
-    def save_mcp_configuration(
+    async def save_mcp_configuration(
+        self,
+        draft: TuiMCPServerConfiguration,
+    ) -> MCPServerConfigView:
+        return await asyncio.to_thread(self._save_mcp_configuration, draft)
+
+    def _save_mcp_configuration(
         self,
         draft: TuiMCPServerConfiguration,
     ) -> MCPServerConfigView:
@@ -595,8 +644,9 @@ class TuiController:
         catalog = self._require_configuration().save_mcp_server(draft.server_id, update)
         return next(item for item in catalog.servers if item.server_id == draft.server_id)
 
-    def remove_mcp_configuration(self, server_id: str) -> None:
-        self._require_configuration().remove_mcp_server(server_id)
+    async def remove_mcp_configuration(self, server_id: str) -> None:
+        configuration = self._require_configuration()
+        await asyncio.to_thread(configuration.remove_mcp_server, server_id)
 
     async def check_mcp_server(self, server_id: str) -> MCPConnectionCheckView:
         return await self._require_configuration().check_mcp_server(server_id)
@@ -627,14 +677,17 @@ class TuiController:
         record = await self._application.refresh_mcp_server_tools(server_id)
         return self._mcp_status(record)
 
-    def skill_catalog(self) -> SkillCatalogView:
-        return self._require_configuration().skill_catalog(include_disabled=True)
+    async def skill_catalog(self) -> SkillCatalogView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.skill_catalog, include_disabled=True)
 
-    def install_skills(
+    async def install_skills(
         self,
         draft: TuiSkillInstallConfiguration,
     ) -> SkillManagementView:
-        return self._require_configuration().install_skills(
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(
+            configuration.install_skills,
             draft.source,
             scope=draft.scope,
             selector=draft.selector,
@@ -643,26 +696,45 @@ class TuiController:
             ref=draft.ref,
         )
 
-    def update_skill(self, name: str) -> SkillManagementView:
-        return self._require_configuration().update_skill(name)
+    async def update_skill(self, name: str) -> SkillManagementView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.update_skill, name)
 
-    def remove_skill(self, name: str) -> SkillManagementView:
-        return self._require_configuration().remove_skill(name)
+    async def remove_skill(self, name: str) -> SkillManagementView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.remove_skill, name)
 
-    def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillManagementView:
-        return self._require_configuration().set_skill_enabled(name, enabled=enabled)
+    async def set_skill_enabled(
+        self,
+        name: str,
+        *,
+        enabled: bool,
+    ) -> SkillManagementView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
 
-    def validate_skill(self, name: str) -> SkillValidationView:
-        skill = self._require_configuration().skill(name).skill
-        return self._require_configuration().validate_skills(skill.location)
+    async def validate_skill(self, name: str) -> SkillValidationView:
+        return await asyncio.to_thread(self._validate_skill, name)
 
-    def compaction_configuration(self) -> CompactionConfigView:
-        return self._require_configuration().compaction_config()
+    def _validate_skill(self, name: str) -> SkillValidationView:
+        configuration = self._require_configuration()
+        skill = configuration.skill(name).skill
+        return configuration.validate_skills(skill.location)
+
+    async def compaction_configuration(self) -> CompactionConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.compaction_config)
 
     def compaction_strategies(self) -> tuple[str, ...]:
         return tuple(item.strategy_id for item in self._runtime().compaction_strategies.list())
 
-    def save_compaction_configuration(
+    async def save_compaction_configuration(
+        self,
+        draft: TuiCompactionConfiguration,
+    ) -> CompactionConfigView:
+        return await asyncio.to_thread(self._save_compaction_configuration, draft)
+
+    def _save_compaction_configuration(
         self,
         draft: TuiCompactionConfiguration,
     ) -> CompactionConfigView:
@@ -752,35 +824,43 @@ class TuiController:
             )
         return TuiPluginCommandExecution(execution=execution, run_results=tuple(results))
 
-    def usage_totals(self) -> UsageTotals:
+    async def usage_totals(self) -> UsageTotals:
+        return await asyncio.to_thread(self._usage_totals)
+
+    def _usage_totals(self) -> UsageTotals:
         usage = self._runtime().usage
         return usage.summarize().totals if usage is not None else UsageTotals()
 
-    def select_model(self, selector: str) -> AvailableModel:
+    async def select_model(self, selector: str) -> AvailableModel:
         runtime = self._runtime()
-        model = runtime.resolve_model(selector)
-        if self._session_id is None:
-            runtime.model_reasoning(model.key, self._reasoning_request)
+        session_id = self._session_id
+        reasoning_request = self._reasoning_request
+
+        def select() -> AvailableModel:
+            model = runtime.resolve_model(selector)
+            if session_id is None:
+                runtime.model_reasoning(model.key, reasoning_request)
+            else:
+                runtime.switch_session_model(session_id, model.key)
+            return model
+
+        model = await asyncio.to_thread(select)
+        if session_id is None:
             self._initial_model = model.key
-        else:
-            runtime.switch_session_model(self._session_id, model.key)
         return model
 
-    def session_approval_mode(self) -> SessionApprovalMode:
+    async def session_approval_mode(self) -> SessionApprovalMode:
         """Return the draft or persisted approval policy for the visible Session."""
 
-        if self._session_id is None:
+        session_id = self._session_id
+        if session_id is None:
             return self._approval_mode
-        return (
-            self._runtime()
-            .sessions.open(
-                self._session_id,
-                recover=False,
-            )
-            .session.approval_mode
+        sessions = self._runtime().sessions
+        return await asyncio.to_thread(
+            lambda: sessions.open(session_id, recover=False).session.approval_mode
         )
 
-    def set_session_approval_mode(
+    async def set_session_approval_mode(
         self,
         approval_mode: SessionApprovalMode,
     ) -> SessionApprovalMode:
@@ -788,26 +868,25 @@ class TuiController:
 
         if approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")
-        if self._session_id is None:
+        session_id = self._session_id
+        if session_id is None:
             self._approval_mode = approval_mode
         else:
-            self._runtime().set_session_approval_mode(self._session_id, approval_mode)
+            runtime = self._runtime()
+            await asyncio.to_thread(runtime.set_session_approval_mode, session_id, approval_mode)
         return approval_mode
 
-    def session_approval_preset(self) -> TuiApprovalPreset:
+    async def session_approval_preset(self) -> TuiApprovalPreset:
         """Project the Session policy pair as one mutually exclusive TUI preset."""
 
-        if self._session_id is None:
+        session_id = self._session_id
+        if session_id is None:
             approval_mode = self._approval_mode
             interaction_mode = self._interaction_mode
         else:
-            session = (
-                self._runtime()
-                .sessions.open(
-                    self._session_id,
-                    recover=False,
-                )
-                .session
+            sessions = self._runtime().sessions
+            session = await asyncio.to_thread(
+                lambda: sessions.open(session_id, recover=False).session
             )
             approval_mode = session.approval_mode
             interaction_mode = session.interaction_mode
@@ -815,7 +894,7 @@ class TuiController:
             return "afk"
         return approval_mode
 
-    def set_session_approval_preset(
+    async def set_session_approval_preset(
         self,
         preset: TuiApprovalPreset,
     ) -> TuiApprovalPreset:
@@ -827,42 +906,64 @@ class TuiController:
         interaction_mode: SessionInteractionMode = (
             "unattended" if preset == "afk" else "interactive"
         )
-        if self._session_id is None:
+        session_id = self._session_id
+        if session_id is None:
             self._approval_mode = approval_mode
             self._interaction_mode = interaction_mode
         else:
-            self._runtime().set_session_policies(
-                self._session_id,
+            runtime = self._runtime()
+            await asyncio.to_thread(
+                runtime.set_session_policies,
+                session_id,
                 approval_mode=approval_mode,
                 interaction_mode=interaction_mode,
             )
         return preset
 
-    def session_reasoning(self) -> ModelReasoningState:
+    async def session_reasoning(self) -> ModelReasoningState:
         """Return endpoint-resolved reasoning for the draft or persisted Session."""
 
         runtime = self._runtime()
-        if self._session_id is not None:
-            return runtime.session_reasoning(self._session_id)
-        model = self._initial_model or runtime.current_model().key
-        return runtime.model_reasoning(model, self._reasoning_request)
+        session_id = self._session_id
+        if session_id is not None:
+            return await asyncio.to_thread(runtime.session_reasoning, session_id)
+        initial_model = self._initial_model
+        reasoning_request = self._reasoning_request
 
-    def set_session_reasoning(
+        def resolve() -> ModelReasoningState:
+            model = initial_model or runtime.current_model().key
+            return runtime.model_reasoning(model, reasoning_request)
+
+        return await asyncio.to_thread(resolve)
+
+    async def set_session_reasoning(
         self,
         reasoning_request: ReasoningRequest,
     ) -> ModelReasoningState:
         """Validate and set draft or persisted reasoning through RuntimeService."""
 
         runtime = self._runtime()
-        if self._session_id is None:
-            model = self._initial_model or runtime.current_model().key
-            state = runtime.model_reasoning(model, reasoning_request)
+        session_id = self._session_id
+        if session_id is None:
+            initial_model = self._initial_model
+
+            def resolve() -> ModelReasoningState:
+                model = initial_model or runtime.current_model().key
+                return runtime.model_reasoning(model, reasoning_request)
+
+            state = await asyncio.to_thread(resolve)
             self._reasoning_request = state.requested
             return state
-        runtime.set_session_reasoning(self._session_id, reasoning_request)
-        return runtime.session_reasoning(self._session_id)
+        await asyncio.to_thread(runtime.set_session_reasoning, session_id, reasoning_request)
+        return await asyncio.to_thread(runtime.session_reasoning, session_id)
 
-    def load_session(self, session_id: str) -> LoadedSession:
+    async def load_session(self, session_id: str) -> LoadedSession:
+        loaded = await asyncio.to_thread(self._read_session, session_id)
+        self._session_id = session_id
+        self._initial_model = None
+        return loaded
+
+    def _read_session(self, session_id: str) -> LoadedSession:
         sessions = self._runtime().sessions
         detail = sessions.open(session_id)
         messages = self._session_messages(session_id)
@@ -882,13 +983,11 @@ class TuiController:
                 if event_page.next_cursor is None:
                     break
                 cursor = event_page.next_cursor
-        self._session_id = session_id
-        self._initial_model = None
         return LoadedSession(
             detail=detail,
             messages=tuple(messages),
             events=tuple(events),
-            queued_inputs=self.queued_user_inputs(session_id),
+            queued_inputs=self._queued_user_inputs(session_id),
         )
 
     def _session_messages(self, session_id: str) -> list[MessageRecord]:

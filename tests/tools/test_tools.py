@@ -1,4 +1,5 @@
 import asyncio
+import threading
 
 import pytest
 
@@ -414,6 +415,53 @@ async def test_sync_tool_exception_returns_error_result() -> None:
     assert outcome.result.is_error is True
     assert "sync handler failure" in outcome.result.content
     assert outcome.result.structured.get("error_type") == "ValueError"
+
+
+@pytest.mark.asyncio
+async def test_sync_tool_handler_does_not_block_the_event_loop() -> None:
+    registry = ToolRegistry()
+    entered = threading.Event()
+    release = threading.Event()
+    handler_threads: list[int] = []
+
+    def blocking_handler(invocation: ToolInvocation) -> ToolResult:
+        handler_threads.append(threading.get_ident())
+        entered.set()
+        release.wait()
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="done",
+        )
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Blocking", description="Blocks synchronously."),
+            handler=blocking_handler,
+        )
+    )
+    watchdog = threading.Timer(1, release.set)
+    watchdog.start()
+    event_loop_thread = threading.get_ident()
+    execution = asyncio.create_task(
+        ToolExecutor(registry).execute(
+            ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Blocking")
+        )
+    )
+
+    try:
+        handler_entered = await asyncio.to_thread(entered.wait, 2)
+        event_loop_remained_responsive = not execution.done()
+    finally:
+        release.set()
+        watchdog.cancel()
+    outcome = await execution
+
+    assert handler_entered is True
+    assert event_loop_remained_responsive is True
+    assert handler_threads != [event_loop_thread]
+    assert outcome.result is not None
+    assert outcome.result.content == "done"
 
 
 @pytest.mark.asyncio
