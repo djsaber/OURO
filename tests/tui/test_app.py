@@ -558,7 +558,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert "4 request(s) · 12.3K in / 1.2K out · $0.0421" in status_text
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
-        assert welcome.styles.border_left[0] == "thick"
+        assert welcome.styles.border_left[0] == ""
         assert app.screen.styles.background.hex == "#0C0C0C"
         assert app.screen.region.x == 0
         assert app.screen.region.y == 0
@@ -576,19 +576,19 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.styles.background == popup.styles.background
         assert popup.styles.overflow_y == "hidden"
         assert popup.show_vertical_scrollbar is False
-        assert popup.styles.border_left[0] == "thick"
+        assert popup.styles.border_left[0] == "solid"
         assert popup.styles.border_right[0] == "solid"
         assert popup.styles.border_top[0] == ""
         assert popup.styles.border_bottom[0] == ""
         assert composer.styles.scrollbar_size_vertical == 1
-        assert composer.region.height == 4
-        assert composer.content_region.height == 2
+        assert composer.region.height == 3
+        assert composer.content_region.height == 1
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
-        assert conversation.query_one(".user-turn").styles.border_left[0] == "thick"
+        assert conversation.query_one(".user-turn").styles.border_left[0] == "solid"
         assert conversation.query_one(AssistantTurn).styles.border_left[0] == ""
         assert all(notice.styles.border_left[0] == "" for notice in conversation.query(".notice"))
 
-        assert composer.styles.border_left[0] == "thick"
+        assert composer.styles.border_left[0] == "solid"
         assert composer.styles.border_right[0] == "solid"
         assert composer.styles.border_top[0] == ""
         assert composer.styles.border_bottom[0] == ""

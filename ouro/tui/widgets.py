@@ -946,12 +946,16 @@ class CommandPopup(VerticalScroll):
         if not self._commands:
             self._content.update(Text("  No matching commands", style="#8f9aa8"))
             return
+        name_width = max(len(command.name) for command in self._commands)
         rows: list[Text] = []
         for index, command in enumerate(self._commands):
             selected = index == self._selected
             row = Text(style="on #29251d" if selected else "")
             row.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            row.append(command.name, style="bold #e3b45a" if selected else "bold #d6d9df")
+            row.append(
+                command.name.ljust(name_width),
+                style="bold #e3b45a" if selected else "bold #d6d9df",
+            )
             row.append(
                 f"  {command.title}",
                 style="#d6d9df" if selected else "#6f7a87",
@@ -969,12 +973,16 @@ class CommandPopup(VerticalScroll):
             content.append(command.title, style="bold #d6d9df")
             self._content.update(content)
             return
+        value_width = max(len(argument.value) for argument in self._arguments)
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
             row = Text(style="on #29251d" if selected else "")
             row.append("› " if selected else "  ", style="#d9a441" if selected else "")
-            row.append(argument.value, style="bold #e3b45a" if selected else "bold #d6d9df")
+            row.append(
+                argument.value.ljust(value_width),
+                style="bold #e3b45a" if selected else "bold #d6d9df",
+            )
             row.append(
                 f"  {argument.description}",
                 style="#aeb5bf" if selected else "#6f7a87",

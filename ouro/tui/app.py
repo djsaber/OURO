@@ -176,7 +176,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         padding: 1 2;
         color: #aeb5bf;
         background: $ouro-background;
-        border-left: thick #d9a441;
     }
 
     .turn {
@@ -191,7 +190,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         padding: 1 2;
         color: #e5e7eb;
         background: $ouro-panel;
-        border-left: thick $ouro-interaction;
+        border-left: solid $ouro-interaction;
     }
 
     .assistant-turn {
@@ -297,7 +296,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid #34373d;
         border-bottom: none;
-        border-left: thick $ouro-interaction;
+        border-left: solid #4d5560;
         overflow-y: hidden;
         scrollbar-gutter: auto;
     }
@@ -308,7 +307,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #composer {
-        height: 4;
+        height: 3;
         margin: 0 2;
         padding: 1 2;
         color: #e5e7eb;
@@ -316,11 +315,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid #34373d;
         border-bottom: none;
-        border-left: thick #4d5560;
+        border-left: solid #4d5560;
     }
 
     #composer:focus {
-        border-left: thick $ouro-interaction;
+        border-left: solid $ouro-interaction;
         border-right: solid #3f4650;
     }
 
@@ -660,6 +659,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         diagnostics = bootstrap.startup_report.diagnostics
         if diagnostics:
             self.query_one(StatusLine).set_detail(f"{len(diagnostics)} startup diagnostic(s)")
+        else:
+            self.query_one(StatusLine).set_detail("")
 
     def _publish_runtime_event(self, event: EventRecord) -> None:
         if self._host_closing:
