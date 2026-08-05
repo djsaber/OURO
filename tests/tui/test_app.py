@@ -594,10 +594,10 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.styles.border_bottom[0] == ""
 
         for panel in (app.query_one(InteractionBar), app.query_one(AskUserPanel)):
-            assert panel.styles.border_left[0] == ""
-            assert panel.styles.border_right[0] == ""
-            assert panel.styles.border_top[0] == "solid"
-            assert panel.styles.border_bottom[0] == "solid"
+            assert panel.styles.border_left[0] == "solid"
+            assert panel.styles.border_right[0] == "solid"
+            assert panel.styles.border_top[0] == ""
+            assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
         status_line.set_context(

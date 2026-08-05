@@ -253,37 +253,37 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     #interaction-bar {
         height: auto;
         max-height: 10;
-        margin: 0 1;
+        margin: 0 2;
         padding: 1 2;
         color: #d6d9df;
-        background: transparent;
-        border-top: solid #7c6536;
-        border-right: none;
-        border-bottom: solid #7c6536;
-        border-left: none;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid #34373d;
+        border-bottom: none;
+        border-left: solid #4d5560;
     }
 
     #interaction-bar:focus {
-        border-top: solid #b68a3b;
-        border-bottom: solid #b68a3b;
+        border-left: solid $ouro-interaction;
+        border-right: solid #3f4650;
     }
 
     #ask-user-panel {
         height: auto;
         max-height: 18;
-        margin: 0 1;
+        margin: 0 2;
         padding: 1 2;
         color: #d6d9df;
-        background: transparent;
-        border-top: solid #7c6536;
-        border-right: none;
-        border-bottom: solid #7c6536;
-        border-left: none;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid #34373d;
+        border-bottom: none;
+        border-left: solid #4d5560;
     }
 
     #ask-user-panel:focus {
-        border-top: solid #b68a3b;
-        border-bottom: solid #b68a3b;
+        border-left: solid $ouro-interaction;
+        border-right: solid #3f4650;
     }
 
     #command-popup {

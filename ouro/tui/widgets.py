@@ -643,13 +643,13 @@ class InteractionBar(Static):
         if interaction is None:
             return
         content = Text()
-        content.append("? APPROVAL\n", style="bold #d9a441")
+        content.append("? APPROVAL\n", style="bold #e3b45a")
         if interaction.is_subagent:
             content.append(
                 f"Subagent {interaction.agent_name or interaction.delegation_id}\n",
                 style="#6f7a87",
             )
-        content.append(f"{interaction.tool_name} wants to run\n\n", style="bold")
+        content.append(f"{interaction.tool_name} wants to run\n\n", style="bold #d6d9df")
         options = (
             ("Allow", "Run this tool", "#77b083"),
             ("Deny", "Reject this tool", "#d87575"),
@@ -657,8 +657,14 @@ class InteractionBar(Static):
         for index, (label, description, tone) in enumerate(options):
             active = index == self._selected
             content.append("› " if active else "  ", style="#d9a441" if active else "")
-            content.append(f"{index + 1}. {label}", style=f"bold {tone}" if active else "bold")
-            content.append(f"  {description}\n", style="#aeb5bf" if active else "#6f7a87")
+            content.append(
+                f"{index + 1}. {label}",
+                style=f"bold {tone}" if active else "bold #d6d9df",
+            )
+            content.append(
+                f"  {description}\n",
+                style="#d6d9df" if active else "#6f7a87",
+            )
         content.append("\n↑/↓ or ←/→ move · Enter choose · Y/N direct", style="#6f7a87")
         self.update(content)
 
@@ -829,9 +835,9 @@ class AskUserPanel(Static):
         content = Text()
         content.append(
             f"? {question.header.upper()}  {self._question_index + 1}/{total}\n",
-            style="bold #d9a441",
+            style="bold #e3b45a",
         )
-        content.append(f"{question.prompt}\n\n", style="bold")
+        content.append(f"{question.prompt}\n\n", style="bold #d6d9df")
         for index, option in enumerate(question.options):
             active = index == self._cursor
             checked = index in self._selected
@@ -840,14 +846,20 @@ class AskUserPanel(Static):
             else:
                 marker = "●" if active else "○"
             content.append("› " if active else "  ", style="#d9a441" if active else "")
-            content.append(f"{index + 1}. {marker} {option.label}", style="bold" if active else "")
-            content.append(f"  {option.description}\n", style="#aeb5bf" if active else "#6f7a87")
+            content.append(
+                f"{index + 1}. {marker} {option.label}",
+                style="bold #d6d9df" if active else "",
+            )
+            content.append(
+                f"  {option.description}\n",
+                style="#d6d9df" if active else "#6f7a87",
+            )
         other_index = len(question.options)
         other_active = self._cursor == other_index
         content.append("› " if other_active else "  ", style="#d9a441" if other_active else "")
         content.append(
             f"{other_index + 1}. Other…",
-            style="bold #d9a441" if other_active else "bold",
+            style="bold #e3b45a" if other_active else "bold #d6d9df",
         )
         hint = (
             "\n\n↑/↓ move · Space toggle · Enter continue"
