@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterable
+import asyncio
+from collections.abc import Callable, Iterable
 from typing import Protocol
 
 from pydantic import JsonValue
 from rich.text import Text
+from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,6 +24,7 @@ from ouro.application.queued_inputs import (
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
+from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
@@ -992,7 +995,11 @@ class Composer(TextArea):
     class CommandDismissed(Message):
         pass
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clipboard_reader: Callable[[], str] = read_system_clipboard,
+    ) -> None:
         super().__init__(
             id="composer",
             placeholder="Message OURO…",
@@ -1002,6 +1009,31 @@ class Composer(TextArea):
         )
         self._history: list[str] = []
         self._history_index = 0
+        self._clipboard_reader = clipboard_reader
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 3:
+            return
+        event.prevent_default()
+        event.stop()
+        self.focus()
+        self._paste_system_clipboard()
+
+    @work(group="composer-clipboard")
+    async def _paste_system_clipboard(self) -> None:
+        try:
+            text = await asyncio.to_thread(self._clipboard_reader)
+        except ClipboardReadError as exc:
+            self.notify(str(exc), severity="warning", markup=False)
+            return
+        if not text or self.read_only:
+            return
+        result = self.replace(
+            text,
+            *self.selection,
+            maintain_selection_offset=False,
+        )
+        self.move_cursor(result.end_location)
 
     def action_submit(self) -> None:
         self._submit("follow_up")

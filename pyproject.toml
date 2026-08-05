@@ -11,6 +11,7 @@ dependencies = [
     "mcp>=1.28,<2",
     "pathspec>=1.1.1",
     "pydantic>=2.13",
+    "pyperclip>=1.11,<2",
     "pyyaml>=6.0.2",
     "rich>=15,<16",
     "textual>=8.2,<9",
@@ -28,6 +29,7 @@ dev = [
     "pytest-cov>=7",
     "ruff>=0.15",
     "types-jsonschema>=4.26",
+    "types-pyperclip>=1.11.0.20260508",
     "types-pyyaml>=6.0.12",
 ]
 
