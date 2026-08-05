@@ -11,6 +11,29 @@ from ouro.core.events import EventRecord
 InteractionKind = Literal["approval", "question"]
 
 
+@dataclass
+class _TextAccumulator:
+    """Accumulate streamed text without copying the full prefix for every delta."""
+
+    _parts: list[str] = field(default_factory=list)
+    _value: str | None = ""
+
+    @property
+    def value(self) -> str:
+        if self._value is None:
+            self._value = "".join(self._parts)
+        return self._value
+
+    def append(self, text: str) -> None:
+        if text:
+            self._parts.append(text)
+            self._value = None
+
+    def replace(self, text: str) -> None:
+        self._parts = [text] if text else []
+        self._value = text
+
+
 @dataclass(frozen=True)
 class PendingInteraction:
     kind: InteractionKind
@@ -46,8 +69,8 @@ class TuiSessionProjection:
 
     session_id: str
     activity: RuntimeActivitySnapshot = field(init=False)
-    assistant_text: str = ""
-    reasoning_text: str = ""
+    _assistant_text: _TextAccumulator = field(default_factory=_TextAccumulator, init=False)
+    _reasoning_text: _TextAccumulator = field(default_factory=_TextAccumulator, init=False)
     _pending_interactions: dict[str, PendingInteraction] = field(
         default_factory=dict,
         init=False,
@@ -70,6 +93,22 @@ class TuiSessionProjection:
     def pending_interaction(self) -> PendingInteraction | None:
         return next(iter(self._pending_interactions.values()), None)
 
+    @property
+    def assistant_text(self) -> str:
+        return self._assistant_text.value
+
+    @assistant_text.setter
+    def assistant_text(self, text: str) -> None:
+        self._assistant_text.replace(text)
+
+    @property
+    def reasoning_text(self) -> str:
+        return self._reasoning_text.value
+
+    @reasoning_text.setter
+    def reasoning_text(self, text: str) -> None:
+        self._reasoning_text.replace(text)
+
     def restore(self, events: tuple[EventRecord, ...]) -> None:
         for event in sorted(events, key=lambda item: (item.sequence, item.event_id)):
             self.apply(event)
@@ -89,15 +128,15 @@ class TuiSessionProjection:
 
         if event.event_type == "run_started" and event.run_id != self._run_id:
             self._run_id = event.run_id
-            self.assistant_text = ""
-            self.reasoning_text = ""
+            self._assistant_text.replace("")
+            self._reasoning_text.replace("")
             self._pending_interactions.clear()
         elif event.event_type == "model_text_delta":
             assistant_delta = _string(payload.get("text")) or ""
-            self.assistant_text += assistant_delta
+            self._assistant_text.append(assistant_delta)
         elif event.event_type == "model_reasoning_delta":
             reasoning_delta = _string(payload.get("reasoning_content")) or ""
-            self.reasoning_text += reasoning_delta
+            self._reasoning_text.append(reasoning_delta)
         elif event.event_type == "model_message_completed":
             round_break = _positive_int(payload.get("tool_call_count"))
         elif event.event_type == "approval_requested" and event.run_id is not None:

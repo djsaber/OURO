@@ -649,6 +649,90 @@ async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        for index in range(40):
+            await conversation.add_notice(f"History {index}")
+        await pilot.pause()
+
+        assert conversation.is_vertical_scroll_end is True
+
+        conversation.scroll_to(y=0, animate=False, immediate=True)
+        await pilot.pause()
+        held_position = conversation.scroll_y
+        await conversation.add_notice("New streamed content while reviewing history")
+        await pilot.pause()
+
+        assert conversation.scroll_y == held_position
+        assert conversation.is_vertical_scroll_end is False
+
+        conversation.scroll_to(
+            y=conversation.max_scroll_y,
+            animate=False,
+            immediate=True,
+        )
+        await pilot.pause()
+        await conversation.add_notice("New streamed content after returning to bottom")
+        await pilot.pause()
+
+        assert conversation.is_vertical_scroll_end is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_event_burst_is_coalesced_before_markdown_rendering(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        rendered_batches: list[str] = []
+        append_assistant = conversation.append_assistant
+
+        async def record_rendered_batch(text: str) -> None:
+            rendered_batches.append(text)
+            await append_assistant(text)
+
+        conversation.append_assistant = record_rendered_batch  # type: ignore[method-assign]
+        session_id = "ses_render_burst"
+        app._projection = TuiSessionProjection(session_id)
+        events = (
+            EventRecord(
+                session_id=session_id,
+                run_id="run_render_burst",
+                event_type="run_started",
+                sequence=1,
+                payload={"trigger": "user"},
+            ),
+            *(
+                EventRecord(
+                    session_id=session_id,
+                    run_id="run_render_burst",
+                    event_type="model_text_delta",
+                    sequence=sequence,
+                    payload={"text": f"chunk-{sequence}\n"},
+                )
+                for sequence in range(2, 202)
+            ),
+        )
+
+        for event in events:
+            app._publish_runtime_event(event)
+        await pilot.pause(0.2)
+
+        expected = "".join(f"chunk-{sequence}\n" for sequence in range(2, 202))
+        assert rendered_batches == [expected]
+        assert app._projection.assistant_text == expected
+
+
+@pytest.mark.asyncio
 async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
@@ -1015,6 +1099,46 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         assert turn.reasoning.text == reasoning_text
         assert turn.reasoning._content.render().plain == reasoning_text
         assert turn.markdown.source == "Final answer"
+        assert turn._stream is None
+
+
+@pytest.mark.asyncio
+async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    messages = tuple(
+        MessageRecord(
+            session_id="ses_history_order",
+            role=role,
+            content=[TextContent(text=text)],
+        )
+        for role, text in (
+            ("user", "First question"),
+            ("assistant", "First answer"),
+            ("user", "Second question"),
+            ("assistant", "Second answer"),
+        )
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages)
+        await pilot.pause()
+
+        turns = list(conversation.query(".turn"))
+        transcript = [
+            ("assistant", turn.markdown.source)
+            if isinstance(turn, AssistantTurn)
+            else ("user", turn.render().plain)
+            for turn in turns
+        ]
+        assert transcript == [
+            ("user", "YOU\nFirst question"),
+            ("assistant", "First answer"),
+            ("user", "YOU\nSecond question"),
+            ("assistant", "Second answer"),
+        ]
+        assert all(turn._stream is None for turn in conversation.query(AssistantTurn))
 
 
 @pytest.mark.asyncio

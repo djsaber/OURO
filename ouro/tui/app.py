@@ -11,6 +11,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.message import Message
+from textual.timer import Timer
 from textual.widgets import TextArea
 
 from ouro.application.models import AvailableModel, ModelReasoningState
@@ -69,6 +70,13 @@ class LifecycleStatusReceived(Message):
         self.status = status
 
 
+_RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
+_RUNTIME_RENDER_BOUNDARY_EVENTS = {
+    "run_completed",
+    "run_aborted",
+    "run_failed",
+    "run_paused",
+}
 _CONFIGURE_MODEL = "__ouro_configure_model__"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
@@ -560,6 +568,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._dismissed_command_text: str | None = None
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_events_ready_posted = False
+        self._runtime_events_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield BrandHeader()
@@ -579,6 +588,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def on_unmount(self) -> None:
         self._host_closing = True
+        if self._runtime_events_timer is not None:
+            self._runtime_events_timer.stop()
+            self._runtime_events_timer = None
         await self._controller.close()
 
     async def _start(self) -> None:
@@ -621,6 +633,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing:
             return
         self._pending_runtime_events.append(event)
+        if event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS:
+            if self._runtime_events_timer is not None:
+                self._runtime_events_timer.stop()
+                self._runtime_events_timer = None
+            self._post_runtime_events_ready()
+            return
+        if not self._runtime_events_ready_posted and self._runtime_events_timer is None:
+            self._runtime_events_timer = self.set_timer(
+                _RUNTIME_RENDER_INTERVAL_SECONDS,
+                self._post_runtime_events_ready,
+            )
+
+    def _post_runtime_events_ready(self) -> None:
+        self._runtime_events_timer = None
+        if self._host_closing or not self._pending_runtime_events:
+            return
         if not self._runtime_events_ready_posted:
             self._runtime_events_ready_posted = self.post_message(RuntimeEventsReady())
 
@@ -644,6 +672,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._flush_pending_runtime_events()
 
     async def _flush_pending_runtime_events(self) -> None:
+        if self._runtime_events_timer is not None:
+            self._runtime_events_timer.stop()
+            self._runtime_events_timer = None
         if not self._pending_runtime_events:
             return
         events = tuple(self._pending_runtime_events)
@@ -673,6 +704,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         queue_changed = False
         assistant_visible = bool(projection.assistant_text)
         conversation = self.query_one(ConversationView)
+        stream_kind: str | None = None
+        stream_parts: list[str] = []
+
+        async def flush_stream() -> None:
+            nonlocal stream_kind
+            if not stream_parts:
+                return
+            text = "".join(stream_parts)
+            stream_parts.clear()
+            if stream_kind == "reasoning":
+                await conversation.append_reasoning(text)
+            else:
+                await conversation.append_assistant(text)
+            stream_kind = None
+
+        async def append_stream(kind: str, text: str) -> None:
+            nonlocal stream_kind
+            if stream_kind is not None and stream_kind != kind:
+                await flush_stream()
+            stream_kind = kind
+            stream_parts.append(text)
+
         for event in events:
             if event.event_type == "run_started":
                 assistant_visible = False
@@ -682,6 +735,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 continue
             latest_update = update
             if event.event_type in {"user_message_added", "queued_input_consumed"}:
+                await flush_stream()
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     user_message = self._controller.message(event.session_id, message_id)
@@ -696,22 +750,36 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             }:
                 queue_changed = True
             if update.reasoning_delta:
-                await conversation.append_reasoning(update.reasoning_delta)
+                await append_stream("reasoning", update.reasoning_delta)
             if update.assistant_delta:
-                await conversation.append_assistant(update.assistant_delta)
+                await append_stream("assistant", update.assistant_delta)
                 assistant_visible = True
             if update.round_break and assistant_visible:
-                await conversation.append_assistant("\n\n")
+                await append_stream("assistant", "\n\n")
             if update.activity.tool_calls != previous_tools:
+                await flush_stream()
                 await conversation.sync_tools(update.activity.tool_calls)
             if update.diagnostic:
                 diagnostics.append(update.diagnostic)
+
+        await flush_stream()
+
+        if self._host_closing or not conversation.is_attached:
+            return
 
         if latest_update is None:
             self._refresh_interaction()
             return
         if latest_update.activity.activity != "streaming_reasoning":
             conversation.finish_reasoning()
+        if latest_update.activity.status in {
+            "completed",
+            "aborted",
+            "failed",
+            "paused",
+            "recoverable",
+        }:
+            await conversation.finish_assistant()
         if queue_changed:
             self._sync_queued_inputs(latest_update.event.session_id)
         self._sync_activity(latest_update.activity)
@@ -753,19 +821,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
         finally:
             self._waiting_for_session_event = False
-            composer = self.query_one(Composer)
-            interaction = self._interaction
-            composer.disabled = interaction is not None and interaction.kind == "approval"
-            if interaction is not None and interaction.kind == "approval":
-                self.query_one(InteractionBar).focus()
-            elif interaction is not None and interaction.kind == "question":
-                panel = self.query_one(AskUserPanel)
-                if panel.awaiting_freeform:
-                    composer.focus()
+            if not self._host_closing and self.query(Composer):
+                composer = self.query_one(Composer)
+                interaction = self._interaction
+                composer.disabled = interaction is not None and interaction.kind == "approval"
+                if interaction is not None and interaction.kind == "approval":
+                    self.query_one(InteractionBar).focus()
+                elif interaction is not None and interaction.kind == "question":
+                    panel = self.query_one(AskUserPanel)
+                    if panel.awaiting_freeform:
+                        composer.focus()
+                    else:
+                        panel.focus()
                 else:
-                    panel.focus()
-            else:
-                composer.focus()
+                    composer.focus()
 
     async def _apply_run_result(self, result: RunResult) -> None:
         await self._flush_pending_runtime_events()
@@ -774,7 +843,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._projection = TuiSessionProjection(result.session.session_id)
         if result.final_text and not self._projection.assistant_text:
             self._projection.assistant_text = result.final_text
-            await self.query_one(ConversationView).append_assistant(result.final_text)
+            conversation = self.query_one(ConversationView)
+            await conversation.append_assistant(result.final_text)
+            await conversation.finish_assistant()
         self._active_title = result.session.title
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self._refresh_usage_status()

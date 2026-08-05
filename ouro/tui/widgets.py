@@ -12,6 +12,7 @@ from textual.events import Resize
 from textual.geometry import Region
 from textual.message import Message
 from textual.timer import Timer
+from textual.widget import Widget
 from textual.widgets import Label, Markdown, Static, TextArea
 
 from ouro.application.queued_inputs import (
@@ -157,7 +158,8 @@ class ReasoningView(Vertical):
         super().__init__(classes="reasoning-view")
         self.display = bool(initial)
         self.label = Label("THOUGHT", classes="reasoning-label")
-        self.text = initial
+        self._text_parts = [initial] if initial else []
+        self._text_cache: str | None = initial
         self._content = Static(
             initial,
             classes="reasoning-content",
@@ -168,12 +170,19 @@ class ReasoningView(Vertical):
         yield self.label
         yield self._content
 
+    @property
+    def text(self) -> str:
+        if self._text_cache is None:
+            self._text_cache = "".join(self._text_parts)
+        return self._text_cache
+
     async def append(self, text: str) -> None:
         if not text:
             return
         self.display = True
         self.label.update("THINKING")
-        self.text += text
+        self._text_parts.append(text)
+        self._text_cache = None
         self._content.update(self.text)
 
     def finish(self) -> None:
@@ -193,22 +202,21 @@ class AssistantTurn(Vertical):
         yield self.reasoning
         yield self.markdown
 
-    def on_mount(self) -> None:
-        self._stream = Markdown.get_stream(self.markdown)
-
     async def on_unmount(self) -> None:
-        if self._stream is not None:
-            await self._stream.stop()
-            self._stream = None
+        await self.finish()
 
     async def append(self, text: str) -> None:
         if not text:
             return
         self.reasoning.finish()
         if self._stream is None:
-            await self.markdown.append(text)
-            return
+            self._stream = Markdown.get_stream(self.markdown)
         await self._stream.write(text)
+
+    async def finish(self) -> None:
+        if self._stream is not None:
+            await self._stream.stop()
+            self._stream = None
 
     async def append_reasoning(self, text: str) -> None:
         await self.reasoning.append(text)
@@ -349,6 +357,13 @@ class WelcomePanel(Static):
         self.update(content)
 
 
+def _user_turn(text: str) -> Static:
+    return Static(
+        Text.assemble(("YOU\n", "bold #6ca7d9"), text),
+        classes="turn user-turn",
+    )
+
+
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
@@ -357,12 +372,16 @@ class ConversationView(VerticalScroll):
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
 
+    def on_mount(self) -> None:
+        self.anchor()
+
     async def show_welcome(self) -> None:
         await self.remove_children()
         self._welcome = None
         self._assistant = None
         self._tools.clear()
         await self._mount_welcome()
+        self.anchor()
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._system_status = status
@@ -375,10 +394,10 @@ class ConversationView(VerticalScroll):
 
     async def load_messages(self, messages: Iterable[MessageRecord]) -> None:
         await self.remove_children()
-        self._welcome = None
         self._assistant = None
         self._tools.clear()
-        await self._mount_welcome()
+        self._welcome = WelcomePanel(self._system_status)
+        transcript: list[Widget] = [self._welcome]
         for message in messages:
             text = message.text_content
             if message.role not in {"user", "assistant"}:
@@ -386,7 +405,7 @@ class ConversationView(VerticalScroll):
             if message.role == "user":
                 if not text:
                     continue
-                await self.add_user(text)
+                transcript.append(_user_turn(text))
             else:
                 if not text and not message.reasoning_content:
                     continue
@@ -394,36 +413,33 @@ class ConversationView(VerticalScroll):
                     initial=text,
                     reasoning=message.reasoning_content,
                 )
-                await self.mount(turn)
-        self.scroll_end(animate=False)
+                transcript.append(turn)
+        await self.mount_all(transcript)
+        self.anchor()
 
     async def add_user(self, text: str) -> None:
         self._assistant = None
-        await self.mount(
-            Static(
-                Text.assemble(("YOU\n", "bold #6ca7d9"), text),
-                classes="turn user-turn",
-            )
-        )
-        self.scroll_end(animate=False)
+        await self.mount(_user_turn(text))
 
     async def append_assistant(self, text: str) -> None:
         if self._assistant is None:
             self._assistant = AssistantTurn()
             await self.mount(self._assistant)
         await self._assistant.append(text)
-        self.scroll_end(animate=False)
 
     async def append_reasoning(self, text: str) -> None:
         if self._assistant is None:
             self._assistant = AssistantTurn()
             await self.mount(self._assistant)
         await self._assistant.append_reasoning(text)
-        self.scroll_end(animate=False)
 
     def finish_reasoning(self) -> None:
         if self._assistant is not None:
             self._assistant.finish_reasoning()
+
+    async def finish_assistant(self) -> None:
+        if self._assistant is not None:
+            await self._assistant.finish()
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         mounted = False
@@ -440,13 +456,12 @@ class ConversationView(VerticalScroll):
             # A tool call is a chronological boundary between model rounds.
             # Later model output must mount after the tool rows, not mutate the
             # assistant segment that preceded them.
+            await self.finish_assistant()
             self._assistant = None
-        self.scroll_end(animate=False)
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:
         classes = "notice error-notice" if error else "notice"
         await self.mount(Static(message, classes=classes))
-        self.scroll_end(animate=False)
 
 
 class InteractionBar(Static):
