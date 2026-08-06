@@ -24,7 +24,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
-from ouro.core.reasoning import ReasoningRequest
+from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
@@ -51,7 +51,6 @@ from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
 from ouro.tui.widgets import (
-    ActivityIndicator,
     AskUserPanel,
     BrandHeader,
     CommandPopup,
@@ -640,6 +639,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(StatusLine).set_detail("startup failed")
             return
         self._apply_bootstrap(bootstrap)
+        await self._refresh_reasoning_indicator()
         if self._resume_session_id is not None:
             try:
                 await self._open_session(self._resume_session_id)
@@ -669,6 +669,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(StatusLine).set_detail(f"{len(diagnostics)} startup diagnostic(s)")
         else:
             self.query_one(StatusLine).set_detail("")
+
+    def _apply_reasoning_state(self, state: ModelReasoningState) -> None:
+        """Project the effective thinking level onto the status line."""
+        if state.capability.activation == "unsupported":
+            value, peak = None, False
+        else:
+            value = _reasoning_value(state.effective)
+            peak = _reasoning_peak(state)
+        self.query_one(StatusLine).set_reasoning(value, peak=peak)
+
+    async def _refresh_reasoning_indicator(self) -> None:
+        """Refresh the status line thinking level after a model or session change."""
+        try:
+            state = await self._controller.session_reasoning()
+        except Exception:  # noqa: BLE001 - reasoning is optional status, not a blocker.
+            return
+        self._apply_reasoning_state(state)
 
     def _publish_runtime_event(self, event: EventRecord) -> None:
         if self._host_closing:
@@ -1211,9 +1228,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
             return tuple(options)
         for index, widget in enumerate(conversation.query(".user-turn"), start=1):
-            options.append(
-                TuiCommandArgument(f"#{index}", _summarize(widget.render().plain))
-            )
+            options.append(TuiCommandArgument(f"#{index}", _summarize(str(widget.render()))))
         return tuple(options)
 
     def _plugin_commands(self) -> tuple[TuiCommand, ...]:
@@ -1393,6 +1408,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._active_model = session.current_model or self._active_model
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(StatusLine).set_model(self._active_model)
+        await self._refresh_reasoning_indicator()
 
     @work(exclusive=True, group="navigation")
     async def _fork_session(self, message_id: str | None = None) -> None:
@@ -1524,6 +1540,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._active_model = model.display_name or model.model_id
         self.query_one(StatusLine).set_model(self._active_model)
+        await self._refresh_reasoning_indicator()
         self.query_one(StatusLine).set_context(None)
         self.notify(f"Model: {self._active_model}")
 
@@ -1626,6 +1643,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self.notify(_format_reasoning_state(state))
+        self._apply_reasoning_state(state)
 
     def action_actions(self) -> None:
         self._choose_action()
@@ -1688,6 +1706,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
 def _reasoning_value(request: ReasoningRequest) -> str:
     return request.effort or request.mode
+
+
+_EFFORT_RANK = {effort: rank for rank, effort in enumerate(REASONING_EFFORTS)}
+
+
+def _reasoning_peak(state: ModelReasoningState) -> bool:
+    """Whether the effective effort is the highest the endpoint supports."""
+    efforts = state.capability.supported_efforts
+    effort = state.effective.effort
+    if not efforts or effort is None:
+        return False
+    return effort is max(efforts, key=lambda candidate: _EFFORT_RANK[candidate])
 
 
 def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:

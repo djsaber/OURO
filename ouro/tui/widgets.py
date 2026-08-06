@@ -136,6 +136,8 @@ class ActivityIndicator(Static):
         self._frame = 0
         self._activity = "idle"
         self._model = "starting"
+        self._reasoning: str | None = None
+        self._reasoning_peak = False
         self._timer: Timer | None = None
 
     def on_mount(self) -> None:
@@ -156,6 +158,16 @@ class ActivityIndicator(Static):
         self._model = model
         self._render_indicator()
 
+    def set_reasoning(self, value: str | None, *, peak: bool = False) -> None:
+        """Show the effective thinking level beside the model.
+
+        ``peak`` highlights the level when it is the highest effort the current
+        endpoint supports, signalling that reasoning is maxed out.
+        """
+        self._reasoning = value
+        self._reasoning_peak = peak
+        self._render_indicator()
+
     def _tick(self) -> None:
         self._frame = (self._frame + 1) % len(_SPINNER)
         self._render_indicator()
@@ -168,6 +180,9 @@ class ActivityIndicator(Static):
         content.append(f" {mark} ", style="bold #d9a441" if busy else "#8f9aa8")
         content.append(label, style="#8f9aa8")
         content.append(f"  {self._model}", style="#647180")
+        if self._reasoning:
+            style = "bold #d9a441" if self._reasoning_peak else "#647180"
+            content.append(f"  {self._reasoning}", style=style)
         self.update(content)
 
 
@@ -1310,6 +1325,9 @@ class StatusLine(Horizontal):
 
     def set_model(self, model: str) -> None:
         self.query_one(ActivityIndicator).set_model(model)
+
+    def set_reasoning(self, value: str | None, *, peak: bool = False) -> None:
+        self.query_one(ActivityIndicator).set_reasoning(value, peak=peak)
 
     def set_detail(self, detail: str) -> None:
         self.query_one("#status-detail", Static).update(detail)

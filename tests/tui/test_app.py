@@ -1546,6 +1546,41 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(ActivityIndicator)
+
+        # The endpoint default effort is low — not the highest supported — so
+        # the level is shown without the peak highlight.
+        assert indicator._reasoning == "low"
+        assert indicator._reasoning_peak is False
+        assert "low" in indicator.render().plain
+
+        # Raising to high (the highest effort this endpoint supports) peaks the
+        # indicator so the level is highlighted.
+        await pilot.press("slash", *"thinking", "enter", *"high", "enter")
+        await pilot.pause()
+        assert indicator._reasoning == "high"
+        assert indicator._reasoning_peak is True
+        assert "high" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(ActivityIndicator)
+        # The default faux endpoint declares no reasoning capability, so no
+        # thinking level is projected onto the status line.
+        assert indicator._reasoning is None
+
+
+@pytest.mark.asyncio
 async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
     tmp_path: Path,
 ) -> None:
