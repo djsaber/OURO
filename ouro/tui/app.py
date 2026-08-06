@@ -171,6 +171,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         scrollbar-background: transparent;
         scrollbar-color: transparent;
         scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     .welcome {
@@ -185,7 +187,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     .turn {
         width: 100%;
         height: auto;
-        margin-bottom: 2;
+        margin-bottom: 1;
         background: transparent;
     }
 

@@ -571,7 +571,12 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert main.region.x == 0
         assert main.region.right == app.screen.region.right
         assert main.region.bottom == app.screen.region.bottom
-        assert conversation.styles.scrollbar_size_vertical == 1
+        assert conversation.styles.scrollbar_size_vertical == 0
+        # Hidden scrollbar must not collapse the layout: virtual width should
+        # follow the content area, and the welcome panel keeps its CSS width.
+        assert conversation.virtual_size.width >= conversation.content_region.width
+        assert welcome.region.width >= 80
+        assert conversation.scroll_y >= 0
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.styles.background == popup.styles.background
@@ -629,7 +634,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             await conversation.add_notice(f"Overflow {index}")
         await pilot.pause()
         assert conversation.region.right == app.screen.region.right
-        assert conversation.vertical_scrollbar.region.right == app.screen.region.right - 1
+        assert conversation.vertical_scrollbar.region.width == 0
 
 
 @pytest.mark.asyncio

@@ -123,7 +123,7 @@ class BrandHeader(Static):
 
     def _render_header(self) -> None:
         content = Text()
-        content.append(" ◆ OURO ", style="bold #d9a441")
+        content.append(" ▣ OURO ", style="bold #d9a441")
         content.append(self._session_title, style="bold")
         self.update(content)
 
@@ -162,7 +162,7 @@ class ActivityIndicator(Static):
 
     def _render_indicator(self) -> None:
         busy = self._activity in _BUSY_ACTIVITIES
-        mark = _SPINNER[self._frame] if busy else "◆"
+        mark = _SPINNER[self._frame] if busy else "▣"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         content = Text()
         content.append(f" {mark} ", style="bold #d9a441" if busy else "#8f9aa8")
