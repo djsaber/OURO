@@ -475,6 +475,46 @@ def _user_turn(text: str) -> Static:
     )
 
 
+def _tool_activities_from_messages(
+    messages: Iterable[MessageRecord],
+) -> dict[str, RuntimeToolCallActivity]:
+    """Pair assistant tool-call requests with their tool_result outcomes.
+
+    A persisted tool call spans two messages: the assistant message carrying
+    ``tool_calls`` and a following ``tool_result`` message carrying the
+    outcome reference. This rebuilds the same ``RuntimeToolCallActivity``
+    shape the live event stream produces, so ``ToolActivityRow`` renders
+    history and live runs through one code path.
+
+    ``MessageRecord`` does not store tool ``result_data``, so summaries that
+    depend on results (read line counts, todo state) degrade to
+    argument-only display.
+    """
+    activities: dict[str, RuntimeToolCallActivity] = {}
+    for message in messages:
+        if message.role == "assistant":
+            for call in message.tool_calls:
+                activities[call.id] = RuntimeToolCallActivity(
+                    tool_call_id=call.id,
+                    tool_name=call.name,
+                    status="unknown_outcome",
+                    source_index=call.source_index,
+                    arguments=call.arguments,
+                    requested_at=message.created_at,
+                )
+        elif message.role == "tool_result" and message.tool_result is not None:
+            ref = message.tool_result
+            activity = activities.get(ref.tool_call_id)
+            if activity is not None:
+                activities[ref.tool_call_id] = activity.model_copy(
+                    update={
+                        "status": "failed" if ref.is_error else "completed",
+                        "ended_at": message.created_at,
+                    }
+                )
+    return activities
+
+
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
@@ -509,22 +549,32 @@ class ConversationView(VerticalScroll):
         self._tools.clear()
         self._welcome = WelcomePanel(self._system_status)
         transcript: list[Widget] = [self._welcome]
-        for message in messages:
-            text = message.text_content
-            if message.role not in {"user", "assistant"}:
-                continue
+
+        materialized = list(messages)
+        tool_activities = _tool_activities_from_messages(materialized)
+
+        for message in materialized:
             if message.role == "user":
+                text = message.text_content
                 if not text:
                     continue
                 transcript.append(_user_turn(text))
-            else:
-                if not text and not message.reasoning_content:
-                    continue
-                turn = AssistantTurn(
-                    initial=text,
-                    reasoning=message.reasoning_content,
-                )
-                transcript.append(turn)
+            elif message.role == "assistant":
+                text = message.text_content
+                if text or message.reasoning_content:
+                    transcript.append(
+                        AssistantTurn(
+                            initial=text,
+                            reasoning=message.reasoning_content,
+                        )
+                    )
+                for call in message.tool_calls:
+                    activity = tool_activities.get(call.id)
+                    if activity is None:
+                        continue
+                    row = ToolActivityRow(activity)
+                    self._tools[call.id] = row
+                    transcript.append(row)
         await self.mount_all(transcript)
         self.anchor()
 

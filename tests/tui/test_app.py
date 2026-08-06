@@ -20,13 +20,14 @@ from ouro.application.session_models import SessionContextStatus
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ModelMessage, TextContent
+from ouro.core.messages import MessageRecord, ModelMessage, TextContent, ToolResultReference
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
@@ -1158,6 +1159,121 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
             ("assistant", "Second answer"),
         ]
         assert all(turn._stream is None for turn in conversation.query(AssistantTurn))
+
+
+@pytest.mark.asyncio
+async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) -> None:
+    """Loading a persisted session must render tool calls, not just text.
+
+    A tool call spans two messages: an assistant message carrying the request
+    (``tool_calls``) and a following ``tool_result`` message carrying the
+    outcome reference. ``load_messages`` must pair them and render a
+    ``ToolActivityRow`` in the right dialogue position.
+    """
+    app = OuroTuiApp(application=_application(tmp_path))
+    tool_call_id = "tool_history_read"
+    messages = (
+        MessageRecord(
+            session_id="ses_tools",
+            role="user",
+            content=[TextContent(text="Read the config")],
+        ),
+        MessageRecord(
+            session_id="ses_tools",
+            role="assistant",
+            content=[],
+            tool_calls=[
+                ToolCallRequest(
+                    id=tool_call_id,
+                    name="read",
+                    arguments={"path": "config.json"},
+                )
+            ],
+        ),
+        MessageRecord(
+            session_id="ses_tools",
+            role="tool_result",
+            tool_result=ToolResultReference(
+                tool_call_id=tool_call_id,
+                tool_name="read",
+                is_error=False,
+            ),
+        ),
+        MessageRecord(
+            session_id="ses_tools",
+            role="assistant",
+            content=[TextContent(text="The config has 3 lines.")],
+        ),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages)
+        await pilot.pause()
+
+        tool_rows = list(conversation.query(ToolActivityRow))
+        assert len(tool_rows) == 1
+        assert tool_rows[0].tool_call_id == tool_call_id
+        assert tool_rows[0]._tool.status == "completed"
+
+        rendered = tool_rows[0].render().plain
+        assert "read" in rendered
+        assert "config.json" in rendered
+
+        # Dialogue order: user text, tool row, assistant text — interleaved.
+        children = [
+            child
+            for child in conversation.children
+            if isinstance(child, (AssistantTurn, ToolActivityRow))
+            or "user-turn" in child.classes
+        ]
+        kinds = [
+            "tool" if isinstance(child, ToolActivityRow)
+            else ("user" if "user-turn" in child.classes else "assistant")
+            for child in children
+        ]
+        assert kinds == ["user", "tool", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
+    """A tool_result with is_error must surface as a failed tool row."""
+    app = OuroTuiApp(application=_application(tmp_path))
+    tool_call_id = "tool_history_fail"
+    messages = (
+        MessageRecord(
+            session_id="ses_fail",
+            role="assistant",
+            content=[],
+            tool_calls=[
+                ToolCallRequest(
+                    id=tool_call_id,
+                    name="write",
+                    arguments={"path": "/readonly/x"},
+                )
+            ],
+        ),
+        MessageRecord(
+            session_id="ses_fail",
+            role="tool_result",
+            tool_result=ToolResultReference(
+                tool_call_id=tool_call_id,
+                tool_name="write",
+                is_error=True,
+            ),
+        ),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages)
+        await pilot.pause()
+
+        tool_rows = list(conversation.query(ToolActivityRow))
+        assert len(tool_rows) == 1
+        assert tool_rows[0]._tool.status == "failed"
 
 
 @pytest.mark.asyncio
