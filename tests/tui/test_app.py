@@ -522,11 +522,13 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         conversation = app.query_one(ConversationView)
-        await conversation.add_user("Hello")
-        await conversation.append_assistant("Hi")
-        await conversation.add_notice("Status changed")
         header = app.query_one(BrandHeader)
-        assert f"Workspace {tmp_path}" in conversation.query_one(WelcomePanel).render().plain
+
+        # Startup enters the empty state: the LOGO welcome frame is the sole
+        # content of the conversation area and projects the workspace status.
+        welcome = conversation.query_one(WelcomePanel)
+        assert "██████" in welcome.render().plain
+        assert f"Workspace {tmp_path}" in welcome.render().plain
         conversation.set_system_status(
             TuiSystemStatus(
                 workspace=str(tmp_path),
@@ -552,7 +554,6 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
 
         welcome = conversation.query_one(WelcomePanel)
         status_text = welcome.render().plain
-        assert "██████" in status_text
         assert f"SYSTEM\nWorkspace {tmp_path}" in status_text
         assert "deepseek, openai · 3 model(s)" in status_text
         assert "7 available · browser, documents, github, +1" in status_text
@@ -579,6 +580,15 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert conversation.virtual_size.width >= conversation.content_region.width
         assert welcome.region.width >= 80
         assert conversation.scroll_y >= 0
+
+        # Once dialogue content arrives the welcome frame yields to the
+        # conversation — visual layering keeps the LOGO only at startup and
+        # when a new session begins, never alongside messages.
+        await conversation.add_user("Hello")
+        await conversation.append_assistant("Hi")
+        await conversation.add_notice("Status changed")
+        assert not conversation.query(WelcomePanel)
+
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.styles.background == popup.styles.background
@@ -1226,11 +1236,11 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         children = [
             child
             for child in conversation.children
-            if isinstance(child, (AssistantTurn, ToolActivityRow))
-            or "user-turn" in child.classes
+            if isinstance(child, (AssistantTurn, ToolActivityRow)) or "user-turn" in child.classes
         ]
         kinds = [
-            "tool" if isinstance(child, ToolActivityRow)
+            "tool"
+            if isinstance(child, ToolActivityRow)
             else ("user" if "user-turn" in child.classes else "assistant")
             for child in children
         ]

@@ -547,11 +547,11 @@ class ConversationView(VerticalScroll):
         await self.remove_children()
         self._assistant = None
         self._tools.clear()
-        self._welcome = WelcomePanel(self._system_status)
-        transcript: list[Widget] = [self._welcome]
+        self._welcome = None
 
         materialized = list(messages)
         tool_activities = _tool_activities_from_messages(materialized)
+        transcript: list[Widget] = []
 
         for message in materialized:
             if message.role == "user":
@@ -575,20 +575,45 @@ class ConversationView(VerticalScroll):
                     row = ToolActivityRow(activity)
                     self._tools[call.id] = row
                     transcript.append(row)
+
+        if not transcript:
+            # A loaded session with no visible dialogue is still an empty state.
+            await self._mount_welcome()
+            self.anchor()
+            return
+
         await self.mount_all(transcript)
         self.anchor()
 
+    async def _dismiss_welcome(self) -> None:
+        """Transition from the empty welcome state to the conversation state.
+
+        The welcome panel is an empty-state placeholder shown only while the
+        conversation has no content. As soon as any dialogue content arrives —
+        a user message, an assistant turn, a tool call, or a notice — the
+        welcome panel yields to the conversation, so the LOGO welcome frame
+        stays visible only at startup and when a new session begins.
+        """
+        if self._welcome is None:
+            return
+        welcome = self._welcome
+        self._welcome = None
+        await welcome.remove()
+
     async def add_user(self, text: str) -> None:
+        await self._dismiss_welcome()
         self._assistant = None
         await self.mount(_user_turn(text))
 
     async def append_assistant(self, text: str) -> None:
+        await self._dismiss_welcome()
         if self._assistant is None:
             self._assistant = AssistantTurn()
             await self.mount(self._assistant)
         await self._assistant.append(text)
 
     async def append_reasoning(self, text: str) -> None:
+        await self._dismiss_welcome()
         if self._assistant is None:
             self._assistant = AssistantTurn()
             await self.mount(self._assistant)
@@ -603,6 +628,7 @@ class ConversationView(VerticalScroll):
             await self._assistant.finish()
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
+        await self._dismiss_welcome()
         mounted = False
         for tool in tools:
             row = self._tools.get(tool.tool_call_id)
@@ -621,6 +647,7 @@ class ConversationView(VerticalScroll):
             self._assistant = None
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:
+        await self._dismiss_welcome()
         classes = "notice error-notice" if error else "notice"
         await self.mount(Static(message, classes=classes))
 
