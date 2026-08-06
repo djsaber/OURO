@@ -1177,13 +1177,44 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/clear":
             await self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
+        elif command.name == "/navigate":
+            self._navigate_to(argument)
         elif command.name == "/abort":
             self.action_abort()
         elif command.name == "/help":
             self.action_help()
 
     def _command_catalog(self) -> tuple[TuiCommand, ...]:
-        return (*TUI_COMMANDS, *self._plugin_commands())
+        catalog = list(TUI_COMMANDS)
+        navigate_options = self._navigate_options()
+        for index, command in enumerate(catalog):
+            if command.name == "/navigate":
+                catalog[index] = TuiCommand(
+                    name=command.name,
+                    title=command.title,
+                    description=command.description,
+                    argument_hint=command.argument_hint,
+                    aliases=command.aliases,
+                    argument_options=navigate_options,
+                )
+                break
+        return (*catalog, *self._plugin_commands())
+
+    def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
+        """Build /navigate argument options from the live dialogue state."""
+        options = [
+            TuiCommandArgument("top", "Jump to the first message"),
+            TuiCommandArgument("bottom", "Jump to the latest message"),
+        ]
+        try:
+            conversation = self.query_one(ConversationView)
+        except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
+            return tuple(options)
+        for index, widget in enumerate(conversation.query(".user-turn"), start=1):
+            options.append(
+                TuiCommandArgument(f"#{index}", _summarize(widget.render().plain))
+            )
+        return tuple(options)
 
     def _plugin_commands(self) -> tuple[TuiCommand, ...]:
         try:
@@ -1312,6 +1343,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify("Abort the active run before switching sessions", severity="warning")
             return
         self._choose_session()
+
+    def _navigate_to(self, target: str) -> None:
+        """Scroll the conversation to the target identified by the /navigate argument."""
+        conversation = self.query_one(ConversationView)
+        if target == "top":
+            conversation.scroll_home(animate=False)
+        elif target == "bottom":
+            conversation.anchor()
+        elif target.startswith("#") and target[1:].isdigit():
+            user_turns = list(conversation.query(".user-turn"))
+            index = int(target[1:]) - 1
+            if 0 <= index < len(user_turns):
+                conversation.scroll_to_widget(user_turns[index], top=True, animate=False)
 
     @work(exclusive=True, group="navigation")
     async def _choose_session(self) -> None:
@@ -1694,3 +1738,11 @@ def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageReco
         for message in messages
         if message.role in {"user", "assistant"} and bool(message.text_content)
     )
+
+
+def _summarize(text: str, limit: int = 60) -> str:
+    """Collapse whitespace and truncate so user messages fit a single menu line."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1] + "…"

@@ -128,6 +128,12 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "[skill]",
     ),
     TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
+    TuiCommand(
+        "/navigate",
+        "Navigate dialogue",
+        "Jump to the top, bottom, or a specific user message",
+        "[target]",
+    ),
     TuiCommand("/abort", "Abort run", "Stop the active run"),
     TuiCommand("/help", "Keyboard help", "Show shortcuts and commands", aliases=("/?",)),
     TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit", "/quite")),

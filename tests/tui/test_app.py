@@ -40,6 +40,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
@@ -1274,6 +1275,105 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
         tool_rows = list(conversation.query(ToolActivityRow))
         assert len(tool_rows) == 1
         assert tool_rows[0]._tool.status == "failed"
+
+
+@pytest.mark.asyncio
+async def test_navigate_command_in_catalog() -> None:
+    """The /navigate command is registered in the command catalog."""
+    assert any(cmd.name == "/navigate" for cmd in TUI_COMMANDS)
+
+
+def _scrollable_messages() -> tuple[MessageRecord, ...]:
+    """Build a transcript tall enough to scroll inside a small terminal."""
+    return tuple(
+        MessageRecord(
+            session_id="ses_nav",
+            role=role,
+            content=[TextContent(text=text)],
+        )
+        for i in range(15)
+        for role, text in (
+            ("user", f"Question {i}"),
+            ("assistant", f"Answer {i} with enough detail to occupy a line"),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_navigate_to_top_scrolls_to_first_message(tmp_path: Path) -> None:
+    """Selecting Top jumps the conversation to the first message."""
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
+        assert conversation.scroll_y > 0  # anchored at the bottom after load
+
+        await app._dispatch_command("/navigate top")
+        await pilot.pause()
+        assert conversation.scroll_y == 0
+
+
+@pytest.mark.asyncio
+async def test_navigate_to_bottom_scrolls_to_latest(tmp_path: Path) -> None:
+    """Selecting Bottom re-anchors the conversation to the latest message."""
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
+
+        conversation.scroll_home(animate=False, immediate=True)
+        await pilot.pause()
+        assert conversation.scroll_y == 0
+
+        await app._dispatch_command("/navigate bottom")
+        await pilot.pause()
+        assert conversation.scroll_y == conversation.max_scroll_y
+
+
+@pytest.mark.asyncio
+async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> None:
+    """Picking the first user message scrolls it to the top of the viewport."""
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
+        assert conversation.scroll_y > 0  # at the bottom
+
+        await app._dispatch_command("/navigate #1")
+        await pilot.pause()
+
+        # scroll_to_widget(top=True) aligns the first user message to the
+        # top of the conversation content area, so it must be visible there.
+        first_user = list(conversation.query(".user-turn"))[0]
+        content_top = conversation.content_region.y
+        assert abs(first_user.region.y - content_top) <= 1
+
+
+@pytest.mark.asyncio
+async def test_navigate_options_list_user_messages(tmp_path: Path) -> None:
+    """The /navigate argument options include top, bottom, and every user message."""
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
+
+        options = app._navigate_options()
+        values = [opt.value for opt in options]
+        assert values[:2] == ["top", "bottom"]
+        # 15 user messages → #1 through #15
+        assert values[2:] == [f"#{i}" for i in range(1, 16)]
 
 
 @pytest.mark.asyncio
