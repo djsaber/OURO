@@ -371,10 +371,11 @@ _OURO_TUI_CSS = """
     }
 
     /* All modal menus share one flat chrome with the composer and command
-       menu: a low-contrast panel with a lowlight rail on the left and a
-       muted edge on the right. The theme accent lives only in the title
-       text, so the rail reads as structure and the title as emphasis — the
-       same "quiet frame + bright header" contrast as the input box. */
+       menu: a low-contrast panel with a muted edge on the right. The left
+       rail is segmented — the title carries the theme accent, the body
+       carries the lowlight — so the header reads as emphasis and the body
+       as structure, matching the "quiet frame + bright header" contrast of
+       the input box. */
     #choice-panel {
         width: 72;
         max-width: 90%;
@@ -384,7 +385,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-border-left;
+        border-left: none;
     }
 
     #choice-title {
@@ -395,6 +396,7 @@ _OURO_TUI_CSS = """
         text-style: bold;
         background: transparent;
         border: none;
+        border-left: solid $ouro-theme;
     }
 
     #choice-filter {
@@ -402,6 +404,7 @@ _OURO_TUI_CSS = """
         padding: 0 2;
         background: transparent;
         border: none;
+        border-left: solid $ouro-border-left;
     }
 
     #choice-list {
@@ -410,6 +413,7 @@ _OURO_TUI_CSS = """
         padding: 0 1 1 1;
         background: transparent;
         border: none;
+        border-left: solid $ouro-border-left;
         /* The menu is keyboard-first: arrow navigation keeps the highlighted
            option in view, so the scrollbar is pure chrome and is hidden to
            match the flat panels used elsewhere. */
@@ -436,6 +440,7 @@ _OURO_TUI_CSS = """
         color: #6f7a87;
         background: transparent;
         border: none;
+        border-left: solid $ouro-border-left;
     }
 
     #model-config-panel {

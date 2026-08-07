@@ -2227,9 +2227,11 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
 
     Every menu (Ctrl+P actions, Ctrl+S/M/pickers via ChoiceScreen, and /help)
     must share one visual idiom with the input box and command menu: a
-    low-contrast panel, a theme accent rail on the left, a muted right edge,
-    and no tall accent border. This guards the unified style against regression
-    to the old bordered look.
+    low-contrast panel with a muted right edge and no tall accent border.
+    The choice menu carries the theme accent as a segmented left rail —
+    the title segment is themed, the body segments are lowlight — so the
+    header reads as emphasis and the body as structure. This guards the
+    unified style against regression to the old bordered look.
     """
     app = OuroTuiApp(application=_application(tmp_path))
 
@@ -2244,10 +2246,16 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         panel = app.screen.query_one("#choice-panel")
 
         assert panel.styles.background == composer.styles.background
-        assert panel.styles.border_left[0] == "solid"
+        # The panel itself has no left rail — it is segmented onto the children.
+        assert panel.styles.border_left[0] == ""
         assert panel.styles.border_right[0] == "solid"
         assert panel.styles.border_top[0] == ""
         assert panel.styles.border_bottom[0] == ""
+        # Title segment carries the theme accent; body segments carry the
+        # lowlight, giving the "bright header + quiet body" contrast.
+        assert app.screen.query_one("#choice-title").styles.border_left[0] == "solid"
+        assert app.screen.query_one("#choice-list").styles.border_left[0] == "solid"
+        assert app.screen.query_one("#choice-hint").styles.border_left[0] == "solid"
         # No inherited tall accent border on the stack children.
         assert app.screen.query_one("#choice-title").styles.border_top[0] == ""
         assert app.screen.query_one("#choice-list").styles.border_bottom[0] == ""
