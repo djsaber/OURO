@@ -370,9 +370,11 @@ _OURO_TUI_CSS = """
         background: $ouro-background 45%;
     }
 
-    /* All modal menus share one flat chrome: a low-contrast panel with a
-       theme accent rail on the left and a muted edge on the right — the same
-       "colored box + light background" idiom as the composer and command menu. */
+    /* All modal menus share one flat chrome with the composer and command
+       menu: a low-contrast panel with a lowlight rail on the left and a
+       muted edge on the right. The theme accent lives only in the title
+       text, so the rail reads as structure and the title as emphasis — the
+       same "quiet frame + bright header" contrast as the input box. */
     #choice-panel {
         width: 72;
         max-width: 90%;
@@ -382,7 +384,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-theme;
+        border-left: solid $ouro-border-left;
     }
 
     #choice-title {
@@ -447,7 +449,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-theme;
+        border-left: solid $ouro-border-left;
     }
 
     #model-config-title {
@@ -600,7 +602,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-theme;
+        border-left: solid $ouro-border-left;
     }
 """
 
