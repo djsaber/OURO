@@ -401,7 +401,8 @@ _OURO_TUI_CSS = """
 
     #choice-filter {
         width: 100%;
-        padding: 0 2;
+        height: 3;
+        padding: 1 2;
         background: transparent;
         border: none;
         border-left: solid $ouro-theme;
