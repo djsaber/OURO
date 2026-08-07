@@ -404,7 +404,7 @@ _OURO_TUI_CSS = """
         padding: 0 2;
         background: transparent;
         border: none;
-        border-left: solid $ouro-border-left;
+        border-left: solid $ouro-theme;
     }
 
     #choice-list {
