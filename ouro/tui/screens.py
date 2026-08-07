@@ -38,9 +38,10 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._choices = choices
 
     def compose(self) -> ComposeResult:
-        yield Static(self._title, id="choice-title")
-        yield Input(placeholder=self._placeholder, id="choice-filter")
-        yield OptionList(*self._options(self._choices), id="choice-list")
+        with Vertical(id="choice-panel"):
+            yield Static(self._title, id="choice-title")
+            yield Input(placeholder=self._placeholder, id="choice-filter")
+            yield OptionList(*self._options(self._choices), id="choice-list")
 
     def on_mount(self) -> None:
         self.query_one("#choice-filter", Input).focus()
@@ -222,26 +223,32 @@ class HelpScreen(ModalScreen[None]):
     ]
 
     def compose(self) -> ComposeResult:
-        content = f"""[bold #d9a441]OURO shortcuts[/]
-
-[bold]Enter[/] send                     [bold]Shift+Enter[/] new line
-[bold]Ctrl+N[/] new session             [bold]Ctrl+S[/] session picker
-[bold]Ctrl+M[/] model picker            [bold]Ctrl+P[/] action palette
-[bold]Ctrl+C[/] abort active run        [bold]Ctrl+Q[/] quit
-[bold]?[/] help
-
-[bold #d9a441]Slash commands[/]
-
-{slash_command_help()}
-
-Active plugin commands also appear in slash-command completion. Unique names use
-their short form; ambiguous or conflicting names use /plugin.id:command.
-"""
-        yield Static(
-            content,
-            id="help-panel",
-            markup=True,
+        # Build the panel from a Text so padding tracks visible width, not
+        # markup length — keeping the shortcut columns aligned in the flat panel.
+        text = Text()
+        text.append("OURO shortcuts\n\n", style="bold #d9a441")
+        pairs = (
+            ("Enter", "send", "Shift+Enter", "new line"),
+            ("Ctrl+N", "new session", "Ctrl+S", "session picker"),
+            ("Ctrl+M", "model picker", "Ctrl+P", "action palette"),
+            ("Ctrl+C", "abort run", "Ctrl+Q", "quit"),
         )
+        for left_key, left_desc, right_key, right_desc in pairs:
+            text.append(left_key, style="bold")
+            text.append(f" {left_desc}")
+            text.append(" " * max(0, 24 - len(left_key) - len(left_desc) - 1))
+            text.append(right_key, style="bold")
+            text.append(f" {right_desc}\n")
+        text.append("?", style="bold")
+        text.append(" help\n\n")
+        text.append("Slash commands\n\n", style="bold #d9a441")
+        text.append(slash_command_help(), style="#aeb5bf")
+        text.append(
+            "\n\nPlugin commands also appear in slash completion; unique names "
+            "use the short form, ambiguous ones use /plugin.id:command.",
+            style="#8f9aa8",
+        )
+        yield Static(text, id="help-panel")
 
     def action_close(self) -> None:
         self.dismiss(None)

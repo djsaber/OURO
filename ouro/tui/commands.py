@@ -199,4 +199,5 @@ def argument_suggestion(
 
 
 def slash_command_help() -> str:
-    return "   ".join(command.usage for command in TUI_COMMANDS)
+    """Render command usage as a wrap-friendly, bullet-separated cloud."""
+    return " · ".join(command.usage for command in TUI_COMMANDS)

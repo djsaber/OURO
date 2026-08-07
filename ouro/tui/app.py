@@ -126,9 +126,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
     CSS = """
+    /* Design tokens — one source of truth for the flat OURO chrome. */
     $ouro-background: #0c0c0c;
     $ouro-panel: #171717;
     $ouro-interaction: #5b8fd9;
+    $ouro-accent: #d9a441;
+    $ouro-border-left: #4d5560;
+    $ouro-border-right: #34373d;
+    $ouro-border-focus: #3f4650;
+    $ouro-highlight: #242424;
 
     Screen {
         width: 100%;
@@ -247,7 +253,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         height: auto;
         margin: 0 1 1 1;
         padding: 0 1;
-        color: #d9a441;
+        color: $ouro-accent;
         background: transparent;
     }
 
@@ -263,14 +269,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         color: #d6d9df;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid #34373d;
+        border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid #4d5560;
+        border-left: solid $ouro-border-left;
     }
 
     #interaction-bar:focus {
         border-left: solid $ouro-interaction;
-        border-right: solid #3f4650;
+        border-right: solid $ouro-border-focus;
     }
 
     #ask-user-panel {
@@ -281,14 +287,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         color: #d6d9df;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid #34373d;
+        border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid #4d5560;
+        border-left: solid $ouro-border-left;
     }
 
     #ask-user-panel:focus {
         border-left: solid $ouro-interaction;
-        border-right: solid #3f4650;
+        border-right: solid $ouro-border-focus;
     }
 
     #command-popup {
@@ -299,9 +305,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         color: #d6d9df;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid #34373d;
+        border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid #4d5560;
+        border-left: solid $ouro-border-left;
         overflow-y: hidden;
         scrollbar-gutter: auto;
     }
@@ -318,14 +324,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         color: #e5e7eb;
         background: $ouro-panel;
         border-top: none;
-        border-right: solid #34373d;
+        border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid #4d5560;
+        border-left: solid $ouro-border-left;
     }
 
     #composer:focus {
         border-left: solid $ouro-interaction;
-        border-right: solid #3f4650;
+        border-right: solid $ouro-border-focus;
     }
 
     #composer .text-area--suggestion {
@@ -364,32 +370,56 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         background: $ouro-background 45%;
     }
 
-    #choice-title {
+    /* All modal menus share one flat chrome: a low-contrast panel with a
+       gold accent rail on the left and a muted edge on the right — the same
+       "colored box + light background" idiom as the composer and command menu. */
+    #choice-panel {
         width: 72;
         max-width: 90%;
-        height: 3;
+        height: auto;
+        max-height: 80%;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-accent;
+    }
+
+    #choice-title {
+        width: 100%;
+        height: 2;
         padding: 1 2 0 2;
-        color: #d9a441;
+        color: $ouro-accent;
         text-style: bold;
-        background: #17191d;
-        border-top: tall #7c6536;
+        background: transparent;
+        border: none;
     }
 
     #choice-filter {
-        width: 72;
-        max-width: 90%;
-        background: #17191d;
-        border: none;
+        width: 100%;
         padding: 0 2;
+        background: transparent;
+        border: none;
     }
 
     #choice-list {
-        width: 72;
-        max-width: 90%;
+        width: 100%;
         height: 16;
-        background: #17191d;
-        border-bottom: tall #7c6536;
-        padding: 0 0 1 1;
+        padding: 0 1 1 1;
+        background: transparent;
+        border: none;
+    }
+
+    #choice-list .option-list--option-highlighted {
+        color: $ouro-accent;
+        background: $ouro-highlight;
+        text-style: bold;
+    }
+
+    #choice-list:focus .option-list--option-highlighted {
+        color: $ouro-accent;
+        background: #2a2a2a;
+        text-style: bold;
     }
 
     #model-config-panel {
@@ -397,15 +427,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         max-width: 90%;
         height: auto;
         max-height: 95%;
-        padding: 1 0 1 2;
+        padding: 1 2;
         color: #d6d9df;
-        background: #17191d;
-        border: tall #7c6536;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-accent;
     }
 
     #model-config-title {
         height: 2;
-        color: #d9a441;
+        color: $ouro-accent;
         text-style: bold;
     }
 
@@ -416,7 +449,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #model-config-panel Input, #model-config-panel Select {
-        background: #202329;
+        background: $ouro-highlight;
         border: none;
     }
 
@@ -471,17 +504,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         max-width: 92%;
         height: auto;
         max-height: 95%;
-        padding: 1 0 1 2;
+        padding: 1 2;
         color: #d6d9df;
-        background: #17191d;
-        border: tall #7c6536;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-accent;
     }
 
     .mcp-configuration-panel { height: 95%; }
 
     .configuration-title {
         height: 2;
-        color: #d9a441;
+        color: $ouro-accent;
         text-style: bold;
     }
 
@@ -492,7 +528,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     .configuration-panel Input, .configuration-panel Select {
-        background: #202329;
+        background: $ouro-highlight;
         border: none;
     }
 
@@ -534,17 +570,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         max-width: 90%;
         height: auto;
         padding: 2 3;
-        background: #17191d;
-        border: tall #7c6536;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-accent;
     }
 
     #help-panel {
         width: 72;
         max-width: 90%;
         height: auto;
-        padding: 2 3;
-        background: #17191d;
-        border: tall #7c6536;
+        padding: 1 2;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-accent;
     }
     """
 

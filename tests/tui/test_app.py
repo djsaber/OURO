@@ -2219,3 +2219,54 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
         ).events
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == "Safely"
+
+
+@pytest.mark.asyncio
+async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: Path) -> None:
+    """Ctrl+P and /help menus use the same flat chrome as the composer.
+
+    Every menu (Ctrl+P actions, Ctrl+S/M/pickers via ChoiceScreen, and /help)
+    must share one visual idiom with the input box and command menu: a
+    low-contrast panel, a gold accent rail on the left, a muted right edge, and
+    no tall gold border. This guards the unified style against regression to
+    the old bordered look.
+    """
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        composer = app.query_one(Composer)
+
+        # Ctrl+P opens the shared ChoiceScreen action palette.
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        panel = app.screen.query_one("#choice-panel")
+
+        assert panel.styles.background == composer.styles.background
+        assert panel.styles.border_left[0] == "solid"
+        assert panel.styles.border_right[0] == "solid"
+        assert panel.styles.border_top[0] == ""
+        assert panel.styles.border_bottom[0] == ""
+        # No inherited tall gold border on the stack children.
+        assert app.screen.query_one("#choice-title").styles.border_top[0] == ""
+        assert app.screen.query_one("#choice-list").styles.border_bottom[0] == ""
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # /help opens the HelpScreen with the same flat chrome.
+        await pilot.press("slash", *"help", "enter")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        help_panel = app.screen.query_one("#help-panel")
+        assert help_panel.styles.background == composer.styles.background
+        assert help_panel.styles.border_left[0] == "solid"
+        assert help_panel.styles.border_right[0] == "solid"
+        assert help_panel.styles.border_top[0] == ""
+        assert help_panel.styles.border_bottom[0] == ""
+        # The help text still surfaces the shortcuts and slash commands.
+        rendered = help_panel.render().plain
+        assert "OURO shortcuts" in rendered
+        assert "Ctrl+P" in rendered
+        assert "/help" in rendered
