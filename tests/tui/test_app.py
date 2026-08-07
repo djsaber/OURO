@@ -2227,9 +2227,9 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
 
     Every menu (Ctrl+P actions, Ctrl+S/M/pickers via ChoiceScreen, and /help)
     must share one visual idiom with the input box and command menu: a
-    low-contrast panel, a gold accent rail on the left, a muted right edge, and
-    no tall gold border. This guards the unified style against regression to
-    the old bordered look.
+    low-contrast panel, a theme accent rail on the left, a muted right edge,
+    and no tall accent border. This guards the unified style against regression
+    to the old bordered look.
     """
     app = OuroTuiApp(application=_application(tmp_path))
 
@@ -2248,9 +2248,14 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert panel.styles.border_right[0] == "solid"
         assert panel.styles.border_top[0] == ""
         assert panel.styles.border_bottom[0] == ""
-        # No inherited tall gold border on the stack children.
+        # No inherited tall accent border on the stack children.
         assert app.screen.query_one("#choice-title").styles.border_top[0] == ""
         assert app.screen.query_one("#choice-list").styles.border_bottom[0] == ""
+        # The interaction hint renders below the menu, not clipped to zero
+        # lines by padding eating the fixed height.
+        choice_hint = app.screen.query_one("#choice-hint")
+        assert choice_hint.region.height >= 1
+        assert "Enter" in choice_hint.render().plain
 
         await pilot.press("escape")
         await pilot.pause()

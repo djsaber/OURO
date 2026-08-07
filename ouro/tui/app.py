@@ -50,6 +50,7 @@ from ouro.tui.controller import (
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
+from ouro.tui.theme import THEME_ACCENT
 from ouro.tui.widgets import (
     AskUserPanel,
     BrandHeader,
@@ -121,16 +122,15 @@ class _OuroHostScreen(Screen):
         await super().on_prune(event)
 
 
-class OuroTuiApp(ConfigurationWorkflowsApp):
-    TITLE = "OURO"
-    SUB_TITLE = "Agent"
-    ENABLE_COMMAND_PALETTE = False
-    CSS = """
-    /* Design tokens — one source of truth for the flat OURO chrome. */
+_OURO_TUI_CSS = """
+    /* Design tokens — one source of truth for the flat OURO chrome.
+       $ouro-theme is the single accent color: borders, titles, the logo, and
+       active highlights all derive from it, so the whole TUI recolors by
+       changing one value. The value is injected from THEME_ACCENT so the CSS
+       and Rich-text styling share one source of truth (see theme.py). */
     $ouro-background: #0c0c0c;
     $ouro-panel: #171717;
-    $ouro-interaction: #5b8fd9;
-    $ouro-accent: #d9a441;
+    $ouro-theme: __THEME_ACCENT__;
     $ouro-border-left: #4d5560;
     $ouro-border-right: #34373d;
     $ouro-border-focus: #3f4650;
@@ -201,7 +201,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         padding: 1 2;
         color: #e5e7eb;
         background: $ouro-panel;
-        border-left: solid $ouro-interaction;
+        border-left: solid $ouro-theme;
     }
 
     .assistant-turn {
@@ -253,7 +253,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         height: auto;
         margin: 0 1 1 1;
         padding: 0 1;
-        color: $ouro-accent;
+        color: $ouro-theme;
         background: transparent;
     }
 
@@ -275,7 +275,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #interaction-bar:focus {
-        border-left: solid $ouro-interaction;
+        border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
     }
 
@@ -293,7 +293,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #ask-user-panel:focus {
-        border-left: solid $ouro-interaction;
+        border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
     }
 
@@ -330,7 +330,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     #composer:focus {
-        border-left: solid $ouro-interaction;
+        border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
     }
 
@@ -371,7 +371,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     }
 
     /* All modal menus share one flat chrome: a low-contrast panel with a
-       gold accent rail on the left and a muted edge on the right — the same
+       theme accent rail on the left and a muted edge on the right — the same
        "colored box + light background" idiom as the composer and command menu. */
     #choice-panel {
         width: 72;
@@ -382,14 +382,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-accent;
+        border-left: solid $ouro-theme;
     }
 
     #choice-title {
         width: 100%;
         height: 2;
         padding: 1 2 0 2;
-        color: $ouro-accent;
+        color: $ouro-theme;
         text-style: bold;
         background: transparent;
         border: none;
@@ -404,22 +404,36 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     #choice-list {
         width: 100%;
-        height: 16;
+        max-height: 16;
         padding: 0 1 1 1;
         background: transparent;
         border: none;
+        /* The menu is keyboard-first: arrow navigation keeps the highlighted
+           option in view, so the scrollbar is pure chrome and is hidden to
+           match the flat panels used elsewhere. */
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     #choice-list .option-list--option-highlighted {
-        color: $ouro-accent;
+        color: $ouro-theme;
         background: $ouro-highlight;
-        text-style: bold;
     }
 
     #choice-list:focus .option-list--option-highlighted {
-        color: $ouro-accent;
+        color: $ouro-theme;
         background: #2a2a2a;
-        text-style: bold;
+    }
+
+    #choice-hint {
+        height: 2;
+        padding: 0 2 1 2;
+        color: #6f7a87;
+        background: transparent;
+        border: none;
     }
 
     #model-config-panel {
@@ -433,12 +447,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-accent;
+        border-left: solid $ouro-theme;
     }
 
     #model-config-title {
         height: 2;
-        color: $ouro-accent;
+        color: $ouro-theme;
         text-style: bold;
     }
 
@@ -510,14 +524,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-accent;
+        border-left: solid $ouro-theme;
     }
 
     .mcp-configuration-panel { height: 95%; }
 
     .configuration-title {
         height: 2;
-        color: $ouro-accent;
+        color: $ouro-theme;
         text-style: bold;
     }
 
@@ -574,7 +588,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-accent;
+        border-left: solid $ouro-theme;
     }
 
     #help-panel {
@@ -586,9 +600,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-accent;
+        border-left: solid $ouro-theme;
     }
-    """
+"""
+
+
+class OuroTuiApp(ConfigurationWorkflowsApp):
+    TITLE = "OURO"
+    SUB_TITLE = "Agent"
+    ENABLE_COMMAND_PALETTE = False
+    CSS = _OURO_TUI_CSS.replace("__THEME_ACCENT__", THEME_ACCENT)
 
     BINDINGS = [
         Binding("ctrl+n", "new_session", "New session", show=False),

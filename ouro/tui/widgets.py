@@ -30,9 +30,11 @@ from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
+from ouro.tui.theme import THEME_ACCENT, THEME_ACCENT_BRIGHT
 from ouro.tui.tool_presentations import ToolLineState, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
 _OURO_LOGO = """
  ██████╗ ▓▓╗   ▓▓╗██████╗  ▓▓▓▓▓▓╗ 
 ██╔═══██╗▓▓║   ▓▓║██╔══██╗▓▓╔═══▓▓╗
@@ -123,7 +125,7 @@ class BrandHeader(Static):
 
     def _render_header(self) -> None:
         content = Text()
-        content.append(" ▣ OURO ", style="bold #d9a441")
+        content.append(" ▣ OURO ", style=f"bold {THEME_ACCENT}")
         content.append(self._session_title, style="bold")
         self.update(content)
 
@@ -177,11 +179,11 @@ class ActivityIndicator(Static):
         mark = _SPINNER[self._frame] if busy else "▣"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         content = Text()
-        content.append(f" {mark} ", style="bold #d9a441" if busy else "#8f9aa8")
+        content.append(f" {mark} ", style=f"bold {THEME_ACCENT}" if busy else "#8f9aa8")
         content.append(label, style="#8f9aa8")
         content.append(f"  {self._model}", style="#647180")
         if self._reasoning:
-            style = "bold #d9a441" if self._reasoning_peak else "#647180"
+            style = f"bold {THEME_ACCENT}" if self._reasoning_peak else "#647180"
             content.append(f"  {self._reasoning}", style=style)
         self.update(content)
 
@@ -327,9 +329,9 @@ class ToolActivityRow(Static):
             "failed": "#d87575",
             "rejected": "#d87575",
             "aborted": "#d87575",
-            "unknown_outcome": "#d9a441",
-            "awaiting_approval": "#d9a441",
-            "waiting_user": "#d9a441",
+            "unknown_outcome": THEME_ACCENT,
+            "awaiting_approval": THEME_ACCENT,
+            "waiting_user": THEME_ACCENT,
         }
         status_labels = {
             "planned": "queued",
@@ -345,7 +347,7 @@ class ToolActivityRow(Static):
             "unknown_outcome": "outcome unknown",
             "waiting_child": "waiting for subagent",
         }
-        accent = state_styles.get(tool.status, "#6ca7d9" if active else "#8f9aa8")
+        accent = state_styles.get(tool.status, THEME_ACCENT if active else "#8f9aa8")
         presentation = present_tool(tool)
         text = Text()
         text.append(f"  {mark} ", style=f"bold {accent}")
@@ -360,7 +362,7 @@ class ToolActivityRow(Static):
             text.append(f" · {elapsed}s", style="#647180")
         line_styles: dict[ToolLineState, str] = {
             "pending": "#788492",
-            "active": "#6ca7d9",
+            "active": THEME_ACCENT,
             "done": "#77b083",
             "muted": "#647180",
         }
@@ -404,7 +406,7 @@ class WelcomePanel(Static):
     def _render_panel(self) -> None:
         status = self._status
         content = Text()
-        content.append(_OURO_LOGO, style="bold #d9a441")
+        content.append(_OURO_LOGO, style=f"bold {THEME_ACCENT}")
         content.append("\n\n")
         content.append("Tell me what you want to accomplish.", style="#aeb5bf")
         content.append("\n\n")
@@ -763,7 +765,7 @@ class InteractionBar(Static):
         if interaction is None:
             return
         content = Text()
-        content.append("? APPROVAL\n", style="bold #e3b45a")
+        content.append("? APPROVAL\n", style=f"bold {THEME_ACCENT_BRIGHT}")
         if interaction.is_subagent:
             content.append(
                 f"Subagent {interaction.agent_name or interaction.delegation_id}\n",
@@ -776,7 +778,7 @@ class InteractionBar(Static):
         )
         for index, (label, description, tone) in enumerate(options):
             active = index == self._selected
-            content.append("› " if active else "  ", style="#d9a441" if active else "")
+            content.append("› " if active else "  ", style=THEME_ACCENT if active else "")
             content.append(
                 f"{index + 1}. {label}",
                 style=f"bold {tone}" if active else "bold #d6d9df",
@@ -955,7 +957,7 @@ class AskUserPanel(Static):
         content = Text()
         content.append(
             f"? {question.header.upper()}  {self._question_index + 1}/{total}\n",
-            style="bold #e3b45a",
+            style=f"bold {THEME_ACCENT_BRIGHT}",
         )
         content.append(f"{question.prompt}\n\n", style="bold #d6d9df")
         for index, option in enumerate(question.options):
@@ -965,7 +967,7 @@ class AskUserPanel(Static):
                 marker = "[x]" if checked else "[ ]"
             else:
                 marker = "●" if active else "○"
-            content.append("› " if active else "  ", style="#d9a441" if active else "")
+            content.append("› " if active else "  ", style=THEME_ACCENT if active else "")
             content.append(
                 f"{index + 1}. {marker} {option.label}",
                 style="bold #d6d9df" if active else "",
@@ -976,10 +978,10 @@ class AskUserPanel(Static):
             )
         other_index = len(question.options)
         other_active = self._cursor == other_index
-        content.append("› " if other_active else "  ", style="#d9a441" if other_active else "")
+        content.append("› " if other_active else "  ", style=THEME_ACCENT if other_active else "")
         content.append(
             f"{other_index + 1}. Other…",
-            style="bold #e3b45a" if other_active else "bold #d6d9df",
+            style=f"bold {THEME_ACCENT_BRIGHT}" if other_active else "bold #d6d9df",
         )
         hint = (
             "\n\n↑/↓ move · Space toggle · Enter continue"
@@ -1082,11 +1084,11 @@ class CommandPopup(VerticalScroll):
         rows: list[Text] = []
         for index, command in enumerate(self._commands):
             selected = index == self._selected
-            row = Text(style="on #29251d" if selected else "")
-            row.append("› " if selected else "  ", style="#d9a441" if selected else "")
+            row = Text(style="on #242424" if selected else "")
+            row.append("› " if selected else "  ", style=THEME_ACCENT if selected else "")
             row.append(
                 command.name.ljust(name_width),
-                style="bold #e3b45a" if selected else "bold #d6d9df",
+                style=f"bold {THEME_ACCENT_BRIGHT}" if selected else "bold #d6d9df",
             )
             row.append(
                 f"  {command.title}",
@@ -1101,7 +1103,7 @@ class CommandPopup(VerticalScroll):
             return
         if not self._arguments:
             content = Text()
-            content.append("› ", style="#d9a441")
+            content.append("› ", style=THEME_ACCENT)
             content.append(command.title, style="bold #d6d9df")
             self._content.update(content)
             return
@@ -1109,11 +1111,11 @@ class CommandPopup(VerticalScroll):
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
-            row = Text(style="on #29251d" if selected else "")
-            row.append("› " if selected else "  ", style="#d9a441" if selected else "")
+            row = Text(style="on #242424" if selected else "")
+            row.append("› " if selected else "  ", style=THEME_ACCENT if selected else "")
             row.append(
                 argument.value.ljust(value_width),
-                style="bold #e3b45a" if selected else "bold #d6d9df",
+                style=f"bold {THEME_ACCENT_BRIGHT}" if selected else "bold #d6d9df",
             )
             row.append(
                 f"  {argument.description}",
@@ -1176,7 +1178,7 @@ class QueuedInputPanel(VerticalScroll):
         content.append(f"QUEUED INPUTS  {len(inputs)}\n", style="bold #788492")
         for index, item in enumerate(inputs, start=1):
             label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
-            tone = "#6ca7d9" if item.mode == "follow_up" else "#d9a441"
+            tone = THEME_ACCENT if item.mode == "follow_up" else THEME_ACCENT_BRIGHT
             prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
             content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
             content.append(prompt, style="#d6d9df")
