@@ -532,7 +532,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-theme;
+        border-left: solid $ouro-border-left;
     }
 
     .mcp-configuration-panel { height: 95%; }
@@ -596,7 +596,7 @@ _OURO_TUI_CSS = """
         border-top: none;
         border-right: solid $ouro-border-right;
         border-bottom: none;
-        border-left: solid $ouro-theme;
+        border-left: solid $ouro-border-left;
     }
 
     #help-panel {
