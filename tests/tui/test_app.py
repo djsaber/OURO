@@ -742,12 +742,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
-        approval_mode = status_line.query_one("#approval-mode", Static).render()
-        assert approval_mode.plain == "Approval: inherit"
-        assert status_line.query_one("#approval-mode", Static).styles.color == Color.parse(
-            "#647180"
-        )
         ready = status_line.query_one(ActivityIndicator).render()
+        assert "Ready • inherit • faux" in ready.plain
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
             app.tui_theme.accent
         )
@@ -827,25 +823,31 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
-        indicator = app.query_one(StatusLine).query_one("#approval-mode", Static)
+        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
 
         await app._set_approval_mode("auto")
         automatic = indicator.render()
-        assert automatic.plain == "Approval: auto"
-        assert indicator.styles.color == Color.parse("#b97878")
+        assert "Ready • auto • faux" in automatic.plain
+        assert automatic.get_style_at_offset(automatic.plain.index("auto")).foreground == (
+            Color.parse("#b97878")
+        )
 
         await app._set_approval_mode("afk")
         unattended = indicator.render()
-        assert unattended.plain == "Approval: AFK"
-        assert indicator.styles.color == Color.parse("#b97878")
+        assert "Ready • afk • faux" in unattended.plain
+        assert unattended.get_style_at_offset(unattended.plain.index("afk")).foreground == (
+            Color.parse("#b97878")
+        )
 
         await app._set_approval_mode("approval")
         protected = indicator.render()
-        assert protected.plain == "Approval: approval"
-        assert indicator.styles.color == Color.parse("#647180")
+        assert "Ready • approval • faux" in protected.plain
+        assert protected.get_style_at_offset(protected.plain.index("approval")).foreground == (
+            Color.parse("#647180")
+        )
 
         await app._new_session()
-        assert indicator.render().plain == "Approval: inherit"
+        assert "Ready • inherit • faux" in indicator.render().plain
 
 
 @pytest.mark.asyncio

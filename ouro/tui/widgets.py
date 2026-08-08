@@ -141,6 +141,7 @@ class ActivityIndicator(Static):
         super().__init__(id="activity-indicator")
         self._frame = 0
         self._activity = "idle"
+        self._approval_mode: TuiApprovalPreset = "inherit"
         self._model = "starting"
         self._reasoning: str | None = None
         self._reasoning_peak = False
@@ -162,6 +163,10 @@ class ActivityIndicator(Static):
 
     def set_model(self, model: str) -> None:
         self._model = model
+        self._render_indicator()
+
+    def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
+        self._approval_mode = mode
         self._render_indicator()
 
     def set_reasoning(self, value: str | None, *, peak: bool = False) -> None:
@@ -193,10 +198,15 @@ class ActivityIndicator(Static):
             style=f"bold {accent}" if busy or ready else "#8f9aa8",
         )
         content.append(label, style=accent if ready else "#8f9aa8")
-        content.append(f"  {self._model}", style="#647180")
+        content.append(" • ", style="#4d5560")
+        approval_style = "#b97878" if self._approval_mode in {"auto", "afk"} else "#647180"
+        content.append(self._approval_mode, style=approval_style)
+        content.append(" • ", style="#4d5560")
+        content.append(self._model, style="#647180")
         if self._reasoning:
             style = f"bold {accent}" if self._reasoning_peak else "#647180"
-            content.append(f"  {self._reasoning}", style=style)
+            content.append(" • ", style="#4d5560")
+            content.append(self._reasoning, style=style)
         self.update(content)
 
 
@@ -1368,7 +1378,6 @@ class Composer(TextArea):
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
-        yield Static("Approval: inherit", id="approval-mode")
         yield Static("Context —", id="context-detail")
         yield Static("", id="status-detail")
 
@@ -1385,10 +1394,7 @@ class StatusLine(Horizontal):
         self.query_one("#status-detail", Static).update(detail)
 
     def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
-        label = "AFK" if mode == "afk" else mode
-        indicator = self.query_one("#approval-mode", Static)
-        indicator.update(f"Approval: {label}")
-        indicator.styles.color = "#b97878" if mode in {"auto", "afk"} else "#647180"
+        self.query_one(ActivityIndicator).set_approval_mode(mode)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         if status is None:

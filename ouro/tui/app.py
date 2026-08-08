@@ -381,7 +381,6 @@ _OURO_TUI_CSS = """
     }
 
     #activity-indicator { width: 1fr; }
-    #approval-mode { width: auto; margin-right: 2; text-align: right; }
     #context-detail { width: auto; text-align: right; }
     #status-detail { width: auto; margin-left: 2; text-align: right; }
 
