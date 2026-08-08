@@ -64,9 +64,10 @@ from ouro.tui.controller import (
     TuiPluginCommandExecution,
     TuiSystemStatus,
 )
+from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import TuiSessionProjection
-from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
+from ouro.tui.theme import TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -726,7 +727,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         status_line = app.query_one(StatusLine)
         ready = status_line.query_one(ActivityIndicator).render()
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
-            DEFAULT_TUI_THEME.accent
+            app.tui_theme.accent
         )
         status_line.set_context(
             SessionContextStatus(
@@ -826,7 +827,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         assert "0/1 connected · 0 tool(s) · 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
             starting_status.plain.index("connecting"),
-        ).foreground == Color.parse(DEFAULT_TUI_THEME.accent)
+        ).foreground == Color.parse(app.tui_theme.accent)
 
         session.initialize_gate.set()
         await pilot.pause(0.6)
@@ -834,7 +835,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         assert "1/1 connected · 1 tool(s)" in connected_status.plain
         assert connected_status.get_style_at_offset(
             connected_status.plain.index("connected"),
-        ).foreground == Color.parse(DEFAULT_TUI_THEME.accent)
+        ).foreground == Color.parse(app.tui_theme.accent)
         assert "live__search" in application.runtime.tools.names()
 
         session.tools.append(LiveMcpSession._tool("fetch"))
@@ -2662,7 +2663,19 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         theme_options = app.screen.query_one(OptionList)
         assert theme_options.option_count == len(TUI_THEMES)
 
-        await pilot.press("down", "down", "enter")
+        await pilot.press("down")
+        await pilot.pause()
+
+        sage = TUI_THEMES["sage"]
+        assert app.tui_theme == sage
+        assert not (tmp_path / "config" / "tui.json").exists()
+        preview = app.query_one(BrandHeader).render()
+        assert preview.get_style_at_offset(preview.plain.index("OURO")).foreground == Color.parse(
+            sage.accent
+        )
+        assert app.query_one(Composer).styles.border_left[1] == Color.parse(sage.accent)
+
+        await pilot.press("down", "enter")
         await pilot.pause(0.2)
 
         iris = TUI_THEMES["iris"]
@@ -2678,3 +2691,30 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     assert restarted.tui_theme == TUI_THEMES["iris"]
+
+
+@pytest.mark.asyncio
+async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path) -> None:
+    preferences = TuiPreferencesStore(tmp_path)
+    preferences.save(TuiPreferences(theme="iris"))
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p", "enter")
+        await pilot.pause()
+        assert app.screen.query_one(OptionList).highlighted == 2
+
+        await pilot.press("down")
+        await pilot.pause()
+
+        assert app.tui_theme == TUI_THEMES["rosewood"]
+
+        await pilot.press("escape")
+        await pilot.pause(0.2)
+
+        assert app.tui_theme == TUI_THEMES["iris"]
+        assert app.query_one(Composer).styles.border_left[1] == Color.parse(
+            TUI_THEMES["iris"].accent
+        )
+        assert preferences.load() == TuiPreferences(theme="iris")

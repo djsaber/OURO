@@ -54,6 +54,41 @@ _THEMES = (
         accent="#968264",
         accent_bright="#a79375",
     ),
+    TuiTheme(
+        theme_id="fjord",
+        label="Fjord",
+        description="Deep misted teal",
+        accent="#5f898d",
+        accent_bright="#709a9e",
+    ),
+    TuiTheme(
+        theme_id="slate",
+        label="Slate",
+        description="Cool architectural blue-gray",
+        accent="#718398",
+        accent_bright="#8294a9",
+    ),
+    TuiTheme(
+        theme_id="plum",
+        label="Plum",
+        description="Reserved muted mauve",
+        accent="#8c728d",
+        accent_bright="#9d839e",
+    ),
+    TuiTheme(
+        theme_id="terracotta",
+        label="Terracotta",
+        description="Soft mineral clay",
+        accent="#9b705f",
+        accent_bright="#ac816f",
+    ),
+    TuiTheme(
+        theme_id="olive",
+        label="Olive",
+        description="Calm weathered green",
+        accent="#858765",
+        accent_bright="#969876",
+    ),
 )
 
 TUI_THEMES: Mapping[str, TuiTheme] = {theme.theme_id: theme for theme in _THEMES}

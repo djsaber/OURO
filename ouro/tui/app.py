@@ -1832,6 +1832,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._dispatch_command(selected)
 
     async def _choose_theme(self) -> None:
+        original_theme = self._tui_theme
         choices = tuple(
             Choice(
                 theme.theme_id,
@@ -1846,13 +1847,26 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 title="THEME COLOR",
                 placeholder="Filter theme colors…",
                 choices=choices,
+                initial_value=original_theme.theme_id,
+                on_highlight=self._preview_tui_theme,
             )
         )
-        if selected is None or selected == self._tui_theme.theme_id:
+        if selected is None:
+            self._apply_tui_theme(original_theme)
             return
-        await self._set_tui_theme(selected)
+        if selected == original_theme.theme_id:
+            self._apply_tui_theme(original_theme)
+            return
+        await self._set_tui_theme(selected, restore_theme=original_theme)
 
-    async def _set_tui_theme(self, theme_id: str) -> None:
+    def _preview_tui_theme(self, theme_id: str) -> None:
+        theme = TUI_THEMES.get(theme_id)
+        if theme is not None:
+            self._apply_tui_theme(theme)
+
+    async def _set_tui_theme(
+        self, theme_id: str, *, restore_theme: TuiTheme | None = None
+    ) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
             await self.query_one(ConversationView).add_notice(
@@ -1862,18 +1876,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             self._preferences_store.save(TuiPreferences(theme=theme_id))
         except OuroError as exc:
+            if restore_theme is not None:
+                self._apply_tui_theme(restore_theme)
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
+        self._apply_tui_theme(theme)
+        self.notify(f"Theme color: {theme.label}")
+
+    def _apply_tui_theme(self, theme: TuiTheme) -> None:
         self._tui_theme = theme
         self.refresh_css(animate=False)
         self._refresh_theme_content()
-        self.notify(f"Theme color: {theme.label}")
 
     def _refresh_theme_content(self) -> None:
-        for widget in self.screen.walk_children():
-            refresh_theme = getattr(widget, "refresh_theme", None)
-            if callable(refresh_theme):
-                refresh_theme()
+        for screen in self.screen_stack:
+            for widget in screen.walk_children():
+                refresh_theme = getattr(widget, "refresh_theme", None)
+                if callable(refresh_theme):
+                    refresh_theme()
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

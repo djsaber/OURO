@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from rich.text import Text
@@ -33,11 +34,21 @@ class ChoiceScreen(ModalScreen[str | None]):
         Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
     ]
 
-    def __init__(self, *, title: str, placeholder: str, choices: tuple[Choice, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        title: str,
+        placeholder: str,
+        choices: tuple[Choice, ...],
+        initial_value: str | None = None,
+        on_highlight: Callable[[str], None] | None = None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._placeholder = placeholder
         self._choices = choices
+        self._initial_value = initial_value
+        self._on_highlight = on_highlight
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -50,7 +61,14 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.query_one("#choice-filter", Input).focus()
         options = self.query_one("#choice-list", OptionList)
         if options.option_count:
-            options.highlighted = 0
+            options.highlighted = next(
+                (
+                    index
+                    for index, choice in enumerate(self._choices)
+                    if choice.value == self._initial_value
+                ),
+                0,
+            )
 
     def on_input_changed(self, event: Input.Changed) -> None:
         needle = event.value.casefold().strip()
@@ -75,6 +93,10 @@ class ChoiceScreen(ModalScreen[str | None]):
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         if event.option.id is not None:
             self.dismiss(str(event.option.id))
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if self._on_highlight is not None and event.option.id is not None:
+            self._on_highlight(str(event.option.id))
 
     def action_cancel(self) -> None:
         self.dismiss(None)

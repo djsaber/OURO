@@ -11,7 +11,18 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 
 
 def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
-    assert len(TUI_THEMES) == 5
+    assert tuple(TUI_THEMES) == (
+        "harbor",
+        "sage",
+        "iris",
+        "rosewood",
+        "sandstone",
+        "fjord",
+        "slate",
+        "plum",
+        "terracotta",
+        "olive",
+    )
     assert DEFAULT_TUI_THEME.theme_id in TUI_THEMES
     assert len({theme.accent for theme in TUI_THEMES.values()}) == len(TUI_THEMES)
     assert all(theme.accent.startswith("#") for theme in TUI_THEMES.values())
