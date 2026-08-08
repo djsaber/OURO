@@ -9,6 +9,8 @@ from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord, ToolCallS
 from ouro.core.tools import ToolResult
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
+_RECONCILABLE_RUN_STATUSES = {"recoverable", "failed", "aborted"}
+
 
 class RunRecoveryService:
     """Close interrupted tool protocol exchanges before a new run starts."""
@@ -39,7 +41,7 @@ class RunRecoveryService:
         }
 
         for run in snapshot.runs:
-            if run.status != "recoverable":
+            if run.status not in _RECONCILABLE_RUN_STATUSES:
                 continue
             batch = run.active_tool_batch
             calls_by_id = (
@@ -104,14 +106,25 @@ class RunRecoveryService:
         tool_name: str,
         call: ToolBatchCall | None,
     ) -> ToolResult:
-        if call is not None and call.result is not None:
+        if (
+            call is not None
+            and call.result is not None
+            and call.result.tool_call_id == tool_call_id
+            and call.result.tool_name == tool_name
+        ):
             return call.result
+        invalid_result_identity = call is not None and call.result is not None
         outcome_unknown = call is not None and call.status in {
             "running",
             "resolving_input",
             "unknown_outcome",
         }
-        if outcome_unknown:
+        if invalid_result_identity:
+            content = (
+                "Tool execution produced a durable result for a different tool call. "
+                "The invalid result was discarded to preserve the tool protocol."
+            )
+        elif outcome_unknown:
             content = (
                 "Tool execution was interrupted and its outcome is unknown. "
                 "Do not repeat side-effecting work without first verifying external state."
@@ -126,6 +139,7 @@ class RunRecoveryService:
             structured={
                 "recovered_interruption": True,
                 "outcome_unknown": outcome_unknown,
+                "invalid_result_identity": invalid_result_identity,
             },
             ended_at=utc_now(),
         )

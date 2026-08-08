@@ -682,7 +682,8 @@ class RunLifecycle:
     ) -> None:
         with self.store.session_mutation(session.session_id):
             latest_run = self.store.load_run(session.session_id, run.run_id)
-            if not allow_interrupted or latest_run.status not in {"aborted", "recoverable"}:
+            reconcilable_statuses = {"aborted", "failed", "recoverable"}
+            if not allow_interrupted or latest_run.status not in reconcilable_statuses:
                 self._require_active(latest_run)
             self.store.append_message(message)
             self._persist_appended_message(
@@ -707,7 +708,8 @@ class RunLifecycle:
         latest_session = self.store.load_session_record(session.session_id)
         latest_run = self.store.load_run(session.session_id, run.run_id)
         if latest_run.status not in ACTIVE_RUN_STATUSES or latest_run.abort_requested:
-            if not allow_interrupted or latest_run.status not in {"aborted", "recoverable"}:
+            reconcilable_statuses = {"aborted", "failed", "recoverable"}
+            if not allow_interrupted or latest_run.status not in reconcilable_statuses:
                 self._require_active(latest_run)
             updated_session = latest_session.model_copy(
                 update={

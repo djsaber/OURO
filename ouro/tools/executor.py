@@ -205,15 +205,7 @@ class ToolExecutor:
                 invocation=invocation,
                 input_request=execution_result,
             )
-        result = execution_result
-        content, truncated = context.limit_output(result.content)
-        if truncated:
-            result = result.model_copy(
-                update={
-                    "content": content,
-                    "metadata": {**result.metadata, "output_truncated": True},
-                }
-            )
+        result = _validated_tool_result(invocation, execution_result, context)
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
     async def resume(
@@ -288,17 +280,7 @@ class ToolExecutor:
                 invocation=invocation,
                 input_request=execution_result,
             )
-        content, truncated = context.limit_output(execution_result.content)
-        result = (
-            execution_result.model_copy(
-                update={
-                    "content": content,
-                    "metadata": {**execution_result.metadata, "output_truncated": True},
-                }
-            )
-            if truncated
-            else execution_result
-        )
+        result = _validated_tool_result(invocation, execution_result, context)
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
     def rejected_result(
@@ -322,7 +304,21 @@ def _error_outcome(
     error_type: str,
     error_message: str,
 ) -> ToolExecutionOutcome:
-    result = ToolResult(
+    result = _error_result(
+        invocation,
+        error_type=error_type,
+        error_message=error_message,
+    )
+    return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+
+def _error_result(
+    invocation: ToolInvocation,
+    *,
+    error_type: str,
+    error_message: str,
+) -> ToolResult:
+    return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
         is_error=True,
@@ -333,7 +329,39 @@ def _error_outcome(
         },
         ended_at=utc_now(),
     )
-    return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+
+def _validated_tool_result(
+    invocation: ToolInvocation,
+    value: object,
+    context: ToolExecutionContext,
+) -> ToolResult:
+    """Keep extension output inside the invocation that owns its protocol id."""
+
+    if not isinstance(value, ToolResult):
+        return _error_result(
+            invocation,
+            error_type="ToolResultContractError",
+            error_message=(
+                "tool handler must return ToolResult or ToolInputRequest, "
+                f"not {type(value).__name__}"
+            ),
+        )
+    if value.tool_call_id != invocation.tool_call_id or value.tool_name != invocation.tool_name:
+        return _error_result(
+            invocation,
+            error_type="ToolResultContractError",
+            error_message="tool result identity does not match the current invocation",
+        )
+    content, truncated = context.limit_output(value.content)
+    if not truncated:
+        return value
+    return value.model_copy(
+        update={
+            "content": content,
+            "metadata": {**value.metadata, "output_truncated": True},
+        }
+    )
 
 
 def _tool_contract_error(

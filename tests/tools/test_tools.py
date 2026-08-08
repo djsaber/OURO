@@ -418,6 +418,62 @@ async def test_sync_tool_exception_returns_error_result() -> None:
 
 
 @pytest.mark.asyncio
+async def test_tool_result_identity_mismatch_becomes_current_call_error() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="BrokenIdentity", description="Returns the wrong id."),
+            handler=lambda _invocation: ToolResult(
+                tool_call_id="different_call",
+                tool_name="DifferentTool",
+                content="invalid",
+            ),
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_call_id="expected_call",
+        tool_name="BrokenIdentity",
+    )
+
+    outcome = await ToolExecutor(registry).execute(invocation)
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.tool_call_id == "expected_call"
+    assert outcome.result.tool_name == "BrokenIdentity"
+    assert outcome.result.is_error is True
+    assert outcome.result.structured["error_type"] == "ToolResultContractError"
+
+
+@pytest.mark.asyncio
+async def test_invalid_tool_return_becomes_model_readable_error() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="InvalidReturn", description="Returns no result."),
+            handler=lambda _invocation: None,
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="ses_1",
+        run_id="run_1",
+        tool_call_id="expected_call",
+        tool_name="InvalidReturn",
+    )
+
+    outcome = await ToolExecutor(registry).execute(invocation)
+
+    assert outcome.status == "completed"
+    assert outcome.result is not None
+    assert outcome.result.tool_call_id == "expected_call"
+    assert outcome.result.tool_name == "InvalidReturn"
+    assert outcome.result.is_error is True
+    assert outcome.result.structured["error_type"] == "ToolResultContractError"
+
+
+@pytest.mark.asyncio
 async def test_sync_tool_handler_does_not_block_the_event_loop() -> None:
     registry = ToolRegistry()
     entered = threading.Event()

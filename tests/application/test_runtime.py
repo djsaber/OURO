@@ -1127,6 +1127,62 @@ async def test_runtime_reconciles_interrupted_tool_exchange_before_next_run(tmp_
 
 
 @pytest.mark.asyncio
+async def test_runtime_reconciles_failed_tool_exchange_before_next_run(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Failed tool", status="failed")
+    run = RunRecord(
+        session_id=session.session_id,
+        status="failed",
+        phase="tool_execution",
+        error="tool batch handling failed",
+    )
+    request = ToolCallRequest(id="call_failed", name="Read", arguments={"path": "note.txt"})
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id=run.run_id,
+        turn_id="turn_failed",
+        role="assistant",
+        text="",
+        sequence=1,
+    ).model_copy(update={"tool_calls": [request]})
+    session = session.model_copy(
+        update={
+            "last_run_id": run.run_id,
+            "message_count": 1,
+            "last_message_id": assistant.message_id,
+        }
+    )
+    store.create_session(session)
+    store.save_run(run)
+    store.append_message(assistant)
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    result = await runtime.run("Continue", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id)
+
+    assert result.run.status == "completed"
+    recovered_result = snapshot.messages[1]
+    assert recovered_result.role == "tool_result"
+    assert recovered_result.tool_result is not None
+    assert recovered_result.tool_result.tool_call_id == "call_failed"
+    assert recovered_result.tool_result.is_error is True
+    assert [message.role for message in provider.messages[:3]] == [
+        "assistant",
+        "tool_result",
+        "user",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -1196,6 +1252,82 @@ async def test_runtime_commits_checkpointed_tool_result_during_recovery(tmp_path
         recovered_run.active_tool_batch.calls[0].result_message_id
         == snapshot.messages[1].message_id
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_discards_checkpointed_result_for_different_tool_call(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Recover invalid checkpoint", status="running")
+    request = ToolCallRequest(id="call_expected", name="Read", arguments={"path": "note.txt"})
+    invalid_checkpoint = ToolResult(
+        tool_call_id="call_other",
+        tool_name="Write",
+        content="wrong result",
+    )
+    assistant = MessageRecord.text(
+        session_id=session.session_id,
+        run_id="run_invalid_checkpoint",
+        turn_id="turn_invalid_checkpoint",
+        role="assistant",
+        text="",
+        sequence=1,
+    ).model_copy(update={"tool_calls": [request]})
+    batch = ToolCallBatchRecord(
+        turn_id="turn_invalid_checkpoint",
+        assistant_message_id=assistant.message_id,
+        phase="committing_results",
+        calls=[
+            ToolBatchCall(
+                request=request,
+                status="completed",
+                result=invalid_checkpoint,
+            )
+        ],
+    )
+    interrupted = RunRecord(
+        run_id="run_invalid_checkpoint",
+        session_id=session.session_id,
+        status="running",
+        phase="result_commit",
+        active_tool_batch=batch,
+    )
+    session = session.model_copy(
+        update={
+            "active_run_id": interrupted.run_id,
+            "last_run_id": interrupted.run_id,
+            "message_count": 1,
+            "last_message_id": assistant.message_id,
+        }
+    )
+    store.create_session(session)
+    store.save_run(interrupted)
+    store.append_message(assistant)
+    provider = CapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="capture", provider_id="capture"),
+        ),
+        tools=_tools(),
+    )
+
+    await runtime.run("Continue", session_id=session.session_id)
+    snapshot = store.load_session(session.session_id)
+    recovered = snapshot.messages[1].tool_result
+    recovered_run = next(run for run in snapshot.runs if run.run_id == interrupted.run_id)
+
+    assert recovered is not None
+    assert recovered.tool_call_id == request.id
+    assert recovered.tool_name == request.name
+    assert recovered.is_error is True
+    assert recovered_run.active_tool_batch is not None
+    durable_result = recovered_run.active_tool_batch.calls[0].result
+    assert durable_result is not None
+    assert durable_result.structured["invalid_result_identity"] is True
 
 
 @pytest.mark.asyncio
@@ -1729,8 +1861,7 @@ async def test_runtime_returns_active_run_instead_of_starting_second_run(tmp_pat
     assert [message.text_content for message in snapshot.messages] == ["Write file", ""]
     assert snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Another prompt"
     assert [
-        (item.prompt, item.mode)
-        for item in runtime.pending_user_inputs(pending.session.session_id)
+        (item.prompt, item.mode) for item in runtime.pending_user_inputs(pending.session.session_id)
     ] == [
         ("Another prompt", "follow_up"),
         ("Guide the active run", "steer"),
@@ -2118,9 +2249,14 @@ async def test_runtime_can_continue_session_after_abort(tmp_path) -> None:
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
+        "tool_result",
         "user",
         "assistant",
     ]
+    aborted_result = snapshot.messages[2]
+    assert aborted_result.tool_result is not None
+    assert aborted_result.tool_result.tool_call_id == "call_1"
+    assert aborted_result.tool_result.is_error is True
 
 
 @pytest.mark.asyncio
