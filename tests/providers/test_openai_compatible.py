@@ -174,6 +174,12 @@ async def test_httpx_transport_streams_sse_json() -> None:
     assert [chunk["choices"][0]["delta"]["content"] for chunk in chunks] == ["he", "llo"]
     assert requests[0].headers["accept"] == "text/event-stream"
     assert json.loads(requests[0].content)["stream"] is True
+    assert requests[0].extensions["timeout"] == {
+        "connect": 12,
+        "read": None,
+        "write": 12,
+        "pool": 12,
+    }
 
 
 @pytest.mark.asyncio

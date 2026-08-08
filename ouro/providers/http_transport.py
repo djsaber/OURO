@@ -120,13 +120,19 @@ class HttpxProviderHTTPTransport:
             "accept": "text/event-stream",
             **headers,
         }
+        stream_timeout = httpx.Timeout(
+            connect=timeout,
+            read=None,
+            write=timeout,
+            pool=timeout,
+        )
         try:
             async with self._client().stream(
                 "POST",
                 url,
                 headers=dict(request_headers),
                 json=dict(payload),
-                timeout=timeout,
+                timeout=stream_timeout,
             ) as response:
                 async for item in _stream_sse_json(response):
                     yield item
