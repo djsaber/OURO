@@ -1236,7 +1236,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         _message: AskUserPanel.FreeformRequested,
     ) -> None:
         composer = self.query_one(Composer)
-        composer.placeholder = "Type another answer…"
+        self._sync_composer_placeholder()
         composer.focus()
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
@@ -1245,6 +1245,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line = self.query_one(StatusLine)
         status_line.set_context(activity.context_status)
         status_line.set_detail(detail)
+        self._sync_composer_placeholder()
 
     async def _refresh_interaction(
         self,
@@ -1274,17 +1275,33 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             interaction_bar.show_interaction(None)
             ask_user.show_request(project_question_form(interaction.tool_name, interaction.request))
             composer.disabled = False
-            composer.placeholder = "Choose an option above…"
+            self._sync_composer_placeholder()
             return
         ask_user.hide_panel()
         interaction_bar.show_interaction(interaction)
-        composer.placeholder = "Ask anything…"
+        self._sync_composer_placeholder()
         if interaction is not None and interaction.kind == "approval":
             composer.disabled = True
             interaction_bar.focus()
         else:
             composer.disabled = False
             composer.focus()
+
+    def _sync_composer_placeholder(self) -> None:
+        """Project run and interaction state onto the composer hint."""
+
+        interaction = self._interaction
+        if interaction is not None and interaction.kind == "question":
+            placeholder = (
+                Composer.FREEFORM_PLACEHOLDER
+                if self.query_one(AskUserPanel).awaiting_freeform
+                else Composer.QUESTION_PLACEHOLDER
+            )
+        elif self._has_active_run():
+            placeholder = Composer.ACTIVE_RUN_PLACEHOLDER
+        else:
+            placeholder = Composer.DEFAULT_PLACEHOLDER
+        self.query_one(Composer).placeholder = placeholder
 
     def _edit_command(self, value: str) -> None:
         composer = self.query_one(Composer)

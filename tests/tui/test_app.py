@@ -660,13 +660,24 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
 
         welcome = conversation.query_one(WelcomePanel)
-        status_text = welcome.render().plain
+        welcome_text = welcome.render()
+        status_text = welcome_text.plain
         assert f"SYSTEM\nWorkspace {tmp_path}" in status_text
+        assert "Tell me what you want to accomplish." not in status_text
+        assert "Enter" not in status_text
+        assert "Ctrl+Enter" not in status_text
+        assert "Shift+Enter" not in status_text
+        assert "/       Commands" in status_text
+        assert "Ctrl+P  Actions" in status_text
+        assert "Ctrl+S  Sessions" in status_text
+        assert "Health" not in status_text
         assert "deepseek, openai · 3 model(s)" in status_text
         assert "7 available · browser, documents, github, +1" in status_text
         assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
         assert "3/3 connected · 8 tool(s)" in status_text
         assert "4 request(s) · 12.3K in / 1.2K out · $0.0421" in status_text
+        assert not welcome_text.get_style_at_offset(status_text.index("Ctrl+P")).bold
+        assert not welcome_text.get_style_at_offset(status_text.index("Workspace")).bold
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
         assert welcome.styles.border_left[0] == ""
@@ -1187,6 +1198,33 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
         assert app._projection is not None
         assert app._projection.assistant_text == "first second"
         assert app._projection.activity.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
+    provider = BlockingStreamProvider()
+    app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        composer = app.query_one(Composer)
+        assert composer.placeholder == "Ask anything…"
+
+        await pilot.click("#composer")
+        await pilot.press(*"stream", "enter")
+        try:
+            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+            await pilot.pause(0.2)
+            assert composer.placeholder == (
+                "Enter queues a follow-up · Ctrl+Enter guides the active run…"
+            )
+        finally:
+            provider.release.set()
+        await pilot.pause(0.5)
+
+        assert app._projection is not None
+        assert app._projection.activity.status == "completed"
+        assert composer.placeholder == "Ask anything…"
 
 
 @pytest.mark.asyncio

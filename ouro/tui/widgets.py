@@ -396,11 +396,8 @@ def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
 
 
 _SYSTEM_LABEL_WIDTH = 9
-_TIP_KEY_WIDTH = 11
+_TIP_KEY_WIDTH = 6
 _INPUT_TIPS = (
-    ("Enter", "Send a follow-up message"),
-    ("Ctrl+Enter", "Guide the active run"),
-    ("Shift+Enter", "Insert a new line"),
     ("/", "Commands"),
     ("Ctrl+P", "Actions"),
     ("Ctrl+S", "Sessions"),
@@ -428,31 +425,29 @@ class WelcomePanel(Static):
         content = Text()
         content.append(_OURO_LOGO, style=f"bold {accent}")
         content.append("\n\n")
-        content.append("Tell me what you want to accomplish.", style="#aeb5bf")
-        content.append("\n\n")
         content.append("TIPS\n", style="bold #788492")
         for key, description in _INPUT_TIPS:
-            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="bold #788492")
+            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="#788492")
             content.append(f"{description}\n", style="#8f9aa8")
         content.append("\n")
         content.append("SYSTEM\n", style="bold #788492")
 
-        content.append(f"{'Workspace'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'Workspace'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         content.append(status.workspace or "not set", style="#d6d9df")
         content.append("\n")
         provider_names = _compact_names(status.provider_ids) or "none configured"
-        content.append(f"{'Models'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'Models'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         content.append(provider_names, style="#d6d9df")
         content.append(
             f" · {status.model_count} model(s)\n",
             style="#8f9aa8",
         )
-        content.append(f"{'Skills'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'Skills'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         content.append(f"{status.skill_count} available", style="#8f9aa8")
         if status.skill_names:
             content.append(f" · {_compact_names(status.skill_names)}", style="#647180")
         content.append("\n")
-        content.append(f"{'Plugins'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'Plugins'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         content.append(
             f"{status.plugin_active_count}/{status.plugin_total_count} active",
             style="#8f9aa8",
@@ -468,7 +463,7 @@ class WelcomePanel(Static):
                 style="#e08a8a",
             )
         content.append("\n")
-        content.append(f"{'MCP'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'MCP'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         if status.mcp_total_count:
             content.append(
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
@@ -488,7 +483,7 @@ class WelcomePanel(Static):
         else:
             content.append("not configured", style="#647180")
         content.append("\n")
-        content.append(f"{'Usage'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
+        content.append(f"{'Usage'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
         content.append(f"{status.usage_request_count} request(s)", style="#8f9aa8")
         content.append(
             f" · {_compact_count(status.usage_input_tokens)} in"
@@ -497,15 +492,6 @@ class WelcomePanel(Static):
         )
         if status.usage_priced_request_count:
             content.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
-        content.append("\n")
-        content.append(f"{'Health'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
-        if status.startup_diagnostic_count:
-            content.append(
-                f"{status.startup_diagnostic_count} startup diagnostic(s)",
-                style="#e08a8a",
-            )
-        else:
-            content.append("Ready", style="#77b083")
         self.update(content)
 
 
@@ -1241,6 +1227,11 @@ class QueuedInputPanel(VerticalScroll):
 
 
 class Composer(TextArea):
+    DEFAULT_PLACEHOLDER = "Ask anything…"
+    ACTIVE_RUN_PLACEHOLDER = "Enter queues a follow-up · Ctrl+Enter guides the active run…"
+    QUESTION_PLACEHOLDER = "Choose an option above…"
+    FREEFORM_PLACEHOLDER = "Type another answer…"
+
     BINDINGS = [
         *TextArea.BINDINGS,
         Binding("enter", "submit", "Send", show=False, priority=True),
@@ -1278,7 +1269,7 @@ class Composer(TextArea):
     ) -> None:
         super().__init__(
             id="composer",
-            placeholder="Ask anything…",
+            placeholder=self.DEFAULT_PLACEHOLDER,
             soft_wrap=True,
             show_line_numbers=False,
             compact=True,

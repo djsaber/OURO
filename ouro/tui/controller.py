@@ -90,7 +90,6 @@ class TuiSystemStatus:
     mcp_tool_count: int = 0
     mcp_connecting_count: int = 0
     mcp_failed_count: int = 0
-    startup_diagnostic_count: int = 0
     usage_request_count: int = 0
     usage_input_tokens: int = 0
     usage_output_tokens: int = 0
@@ -329,7 +328,6 @@ class TuiController:
                         item.status in plugin_issue_statuses for item in plugin_summaries
                     ),
                     plugin_active_names=tuple(sorted(item.name for item in active_plugins)),
-                    startup_diagnostic_count=len(self._application.startup_report.diagnostics),
                     usage_request_count=usage.request_count,
                     usage_input_tokens=usage.input_tokens,
                     usage_output_tokens=usage.output_tokens,
