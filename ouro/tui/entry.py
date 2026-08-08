@@ -6,6 +6,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.interactions import SessionInteractionMode
 from ouro.deployment import SessionBackend
 from ouro.tui.app import OuroTuiApp
+from ouro.tui.terminal import set_terminal_title
 
 
 def run_tui(
@@ -19,6 +20,7 @@ def run_tui(
 ) -> int:
     """Run the full-screen Textual Host and return its process exit code."""
 
+    set_terminal_title("OURO")
     result = OuroTuiApp(
         home=home,
         system_prompt=system_prompt,

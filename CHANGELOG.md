@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Starting `ouro tui` now labels the active terminal tab `OURO` through the standard terminal-title
+  control sequence, while non-interactive or unsupported output remains unaffected.
 - TUI context usage now follows the latest prepared Provider-context estimate used by `/context`
   and compaction, rather than substituting provider billing usage that may exclude cached input.
 - TUI conversations now render through a viewport-sized transcript surface, so short dialogue
