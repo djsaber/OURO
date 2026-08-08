@@ -1413,7 +1413,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception:  # noqa: BLE001 - startup may not have completed yet.
             return ()
         return tuple(
-            TuiCommandArgument(skill.name, skill.description, skill.argument_hint)
+            TuiCommandArgument(
+                skill.name,
+                skill.description,
+                skill.argument_hint or "<instruction>",
+            )
             for skill in skills
         )
 

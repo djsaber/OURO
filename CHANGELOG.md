@@ -54,6 +54,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Selecting a Skill from the TUI `/skill` argument menu now always opens an instruction editor
+  with a trailing space and inline instruction hint, including Skills that do not declare a custom
+  `argument-hint`.
 - The TUI queued-input extension now renders queued messages directly without a redundant panel
   title or count, while preserving per-item order and FOLLOW/GUIDE semantics.
 - The TUI activity line now places the lowercase effective Session approval preset between activity

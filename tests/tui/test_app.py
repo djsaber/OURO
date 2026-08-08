@@ -2357,6 +2357,38 @@ Review the requested code carefully.
 
 
 @pytest.mark.asyncio
+async def test_skill_selection_prompts_for_instructions_without_metadata_hint(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "skills" / "imagegen"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        """---
+name: imagegen
+description: Generate or edit raster images.
+---
+Create the requested image.
+""",
+        encoding="utf-8",
+    )
+    skill = SkillLoader(skill_root.parent).load_metadata()[0]
+    app = OuroTuiApp(application=_application(tmp_path, skills=(skill,)))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"skill", "enter")
+        await pilot.pause()
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        assert composer.text == "/skill imagegen "
+        assert composer.suggestion == "<instruction>"
+        assert app.query_one(CommandPopup).display is True
+
+
+@pytest.mark.asyncio
 async def test_command_selection_enters_parameter_editor_before_execution(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
