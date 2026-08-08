@@ -1291,8 +1291,10 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         queue_panel = app.query_one(QueuedInputPanel)
         conversation = app.query_one(ConversationView)
         assert queue_panel.display is True
-        assert "FOLLOW" in queue_panel.query_one("#queued-input-content").render().plain
-        assert "follow next" in queue_panel.query_one("#queued-input-content").render().plain
+        queue_text = queue_panel.query_one("#queued-input-content").render().plain
+        assert "QUEUED INPUTS" not in queue_text
+        assert "FOLLOW" in queue_text
+        assert "follow next" in queue_text
         composer = app.query_one(Composer)
         status_line = app.query_one(StatusLine)
         assert queue_panel.region.y >= composer.region.bottom

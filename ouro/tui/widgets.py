@@ -1227,7 +1227,6 @@ class QueuedInputPanel(VerticalScroll):
             return
         theme = theme_for(self)
         content = Text()
-        content.append(f"QUEUED INPUTS  {len(inputs)}\n", style="bold #788492")
         for index, item in enumerate(inputs, start=1):
             label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
             tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
