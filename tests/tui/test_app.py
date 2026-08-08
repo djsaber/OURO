@@ -59,6 +59,7 @@ from ouro.tui.configuration_screens import (
     ToolExecutionConfigurationScreen,
 )
 from ouro.tui.controller import (
+    TuiController,
     TuiModelConfiguration,
     TuiPluginCommandExecution,
     TuiSystemStatus,
@@ -241,6 +242,34 @@ class LiveMcpFactory:
         self.tools_changed = tools_changed
         self.connection_lost = connection_lost
         yield self.session
+
+
+class ToolCapturingProvider:
+    provider_id = "tool-capturing"
+
+    def __init__(self) -> None:
+        self.tool_batches: list[list[dict[str, object]]] = []
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, messages
+        self.tool_batches.append(list(tools or []))
+        yield ProviderStreamEvent(type="text_delta", text="Tools inspected.")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
 
 
 class QueuedSubagentApprovalProvider:
@@ -783,6 +812,69 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         assert "live__search" not in application.runtime.tools.names()
 
     assert app._mcp_status_timer is None
+
+
+@pytest.mark.asyncio
+async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
+    tmp_path: Path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ToolCapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="tool-capturing", provider_id=provider.provider_id),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    application = LocalApplication.from_runtime(runtime)
+    session = LiveMcpSession()
+    manager = MCPManager(
+        registry=runtime.tools,
+        client_factory=LiveMcpFactory(session),
+    )
+    manager.configure(
+        MCPServerConfig(
+            server_id="live",
+            name="Live MCP",
+            command="unused-in-test",
+            auto_start=True,
+            auto_reconnect=False,
+            timeout_seconds=1,
+            health_check_interval_seconds=60,
+        )
+    )
+    application.mcp = MCPRuntimeResource(manager)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+
+    await controller.start()
+    try:
+        session.initialize_gate.set()
+        connected = await asyncio.wait_for(manager.start("live"), timeout=1)
+        assert connected.status == "connected"
+
+        await controller.submit("inspect tools")
+
+        assert "live__search" in {
+            str(tool["name"]) for tool in provider.tool_batches[-1]
+        }
+
+        await manager.stop("live")
+        await controller.submit("inspect tools again")
+
+        assert "live__search" not in {
+            str(tool["name"]) for tool in provider.tool_batches[-1]
+        }
+    finally:
+        await controller.close()
 
 
 @pytest.mark.asyncio

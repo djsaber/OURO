@@ -1091,9 +1091,18 @@ class PluginRuntimeResource:
 
     def _ensure_catalog(self) -> ExtensionCatalog:
         with self._catalog_pointer_lock:
-            if self._current_catalog is not None:
-                return self._current_catalog
-            self._catalog_base = ExtensionCatalogBase.capture(
+            current = self._current_catalog
+            # Background MCP discovery mutates the Host registry after plugin
+            # startup. New leases follow that baseline; existing leases keep the
+            # previously published immutable Catalog.
+            if (
+                current is not None
+                and self._catalog_base is not None
+                and self._catalog_base.tool_registry_revision
+                == self.coordinator.tools.revision
+            ):
+                return current
+            catalog_base = ExtensionCatalogBase.capture(
                 tools=self.coordinator.tools,
                 observers=self.coordinator.observers,
                 context_providers=self.coordinator.context_providers,
@@ -1105,9 +1114,16 @@ class PluginRuntimeResource:
                 tool_policies=self.coordinator.tool_policies,
                 skills=self.base_skills,
             )
-            catalog = build_extension_catalog(self._catalog_base, ())
+            catalog = (
+                build_extension_catalog(catalog_base, ())
+                if current is None
+                else current.rebase(catalog_base)
+            )
+            self._catalog_base = catalog_base
             self._current_catalog = catalog
             self._catalogs[catalog.catalog_id] = catalog
+            if current is not None and current.lease_count == 0:
+                self._catalogs.pop(current.catalog_id, None)
             return catalog
 
     def _build_catalog(

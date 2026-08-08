@@ -155,6 +155,7 @@ class ContributionOwnerRecord:
 @dataclass(frozen=True)
 class ExtensionCatalogBase:
     tools: tuple[dict[str, Tool], dict[str, str]]
+    tool_registry_revision: int
     observers: list[ObserverRegistration]
     context_providers: list[ContextProviderRegistration]
     commands: dict[str, PluginCommand]
@@ -188,6 +189,7 @@ class ExtensionCatalogBase:
             raise ValueError("Host baseline contains duplicate skill names")
         return cls(
             tools=tools.snapshot(),
+            tool_registry_revision=tools.revision,
             observers=observers.snapshot(),
             context_providers=(context_providers or ContextProviderRegistry()).snapshot(),
             commands=commands.snapshot() if commands is not None else {},
@@ -268,6 +270,11 @@ class ExtensionCatalog:
         with self._lock:
             self._lease_count += 1
         return ExtensionCatalogLease(self, tuple(leases), on_close=on_close)
+
+    def rebase(self, base: ExtensionCatalogBase) -> ExtensionCatalog:
+        """Project the same plugin generations over a new Host baseline."""
+
+        return build_extension_catalog(base, self._generation_sources)
 
     def contract_hash(self, canonical_identity: str) -> str | None:
         owner = self.owners.get(canonical_identity)

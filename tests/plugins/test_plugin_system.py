@@ -1449,6 +1449,40 @@ def test_failed_candidate_catalog_leaves_previous_catalog_immutable() -> None:
     assert tools.names() == ["host__run"]
 
 
+@pytest.mark.asyncio
+async def test_new_catalog_lease_rebases_changed_host_tools_without_mutating_old_lease(
+    tmp_path,
+) -> None:
+    runtime, tools, *_ = _runtime(tmp_path)
+    await runtime.start()
+    old_lease = runtime.snapshot()
+    try:
+        tools.register(
+            Tool(
+                definition=ToolDefinition(
+                    name="live__search",
+                    description="Search through a live MCP connection.",
+                    source="mcp",
+                ),
+                handler=lambda invocation: ToolResult(
+                    tool_call_id=invocation.tool_call_id,
+                    tool_name=invocation.tool_name,
+                ),
+            )
+        )
+
+        current_lease = runtime.snapshot()
+        try:
+            assert old_lease.tools.names() == []
+            assert current_lease.tools.names() == ["live__search"]
+            assert current_lease.catalog_id != old_lease.catalog_id
+        finally:
+            current_lease.close()
+    finally:
+        old_lease.close()
+        await runtime.close()
+
+
 def test_same_version_different_content_is_side_by_side_and_diagnostic(tmp_path) -> None:
     first = tmp_path / "first"
     second = tmp_path / "second"

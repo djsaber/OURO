@@ -11,8 +11,15 @@ class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, Tool] = {}
         self._owners: dict[str, str] = {}
+        self._revision = 0
         self._frozen = False
         self._active_controller_ids: Callable[[], set[str]] | None = None
+
+    @property
+    def revision(self) -> int:
+        """Return the structural revision of this registry."""
+
+        return self._revision
 
     def freeze(self) -> None:
         self._frozen = True
@@ -48,6 +55,7 @@ class ToolRegistry:
             updated[name] = tool
         self._tools = updated
         self._owners = owners
+        self._revision += 1
 
     def replace_owner(self, owner: str, tools: Iterable[Tool]) -> None:
         """Atomically replace every tool owned by one extension generation."""
@@ -74,6 +82,7 @@ class ToolRegistry:
             owners[name] = owner
         self._tools = updated
         self._owners = owners
+        self._revision += 1
 
     def unregister_owner(self, owner: str) -> None:
         self.replace_owner(owner, ())
@@ -84,6 +93,7 @@ class ToolRegistry:
     def restore(self, snapshot: tuple[dict[str, Tool], dict[str, str]]) -> None:
         self._require_mutable()
         self._tools, self._owners = dict(snapshot[0]), dict(snapshot[1])
+        self._revision += 1
 
     def unregister(self, names: Iterable[str]) -> None:
         self.replace(names, ())

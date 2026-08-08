@@ -51,6 +51,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- New Run extension Catalogs now rebase on the current Host tool-registry revision, so MCP tools
+  discovered by background connections reach subsequent model requests while existing Run leases
+  keep their original immutable execution contract.
 - Runtime URL redaction now treats malformed authorities in untrusted tool output as opaque data,
   so embedded web scripts cannot break observer delivery, disable TUI live events, or fail the
   active tool batch while diagnostics are being projected.
