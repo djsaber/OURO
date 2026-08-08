@@ -494,6 +494,7 @@ _OURO_TUI_CSS = """
 
     StatusLine {
         height: 1;
+        margin: 0;
         padding: 0 2;
         color: #6f7a87;
         background: $ouro-background;

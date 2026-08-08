@@ -837,6 +837,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
+        assert status_line.region.y == composer.region.bottom
+        assert status_line.region.bottom == app.query_one("#main").region.bottom
         ready = status_line.query_one(ActivityIndicator).render()
         assert "Ready • inherit • faux" in ready.plain
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
@@ -1434,7 +1436,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         composer = app.query_one(Composer)
         status_line = app.query_one(StatusLine)
         assert queue_panel.region.y >= composer.region.bottom
-        assert status_line.region.y >= queue_panel.region.bottom
+        assert status_line.region.y == queue_panel.region.bottom
         assert status_line.region.bottom == app.query_one("#main").region.bottom
         assert queue_panel.region.x == composer.region.x
         assert queue_panel.region.right == composer.region.right
