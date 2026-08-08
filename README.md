@@ -382,9 +382,10 @@ Session 中保存的原始 Run usage。
 
 ## MCP Server
 
-MCP server 配置保存在 `OURO_HOME/config/config.json` 的 `mcp.servers`。启用且 `auto_start` 的 server 会在
-交互模式、`run` 以及工具审批恢复前连接；发现的工具以 `<server_id>__<tool_name>` 暴露给模型，并在 Host
-退出时关闭。server 必须显式设置 `auto_start: true` 才会进入默认 Host，MCP 工具权限默认为 `approval`。
+MCP server 配置保存在 `OURO_HOME/config/config.json` 的 `mcp.servers`。启用且 `auto_start` 的 server 会随
+Host 启动在后台连接，不阻塞交互模式、`run` 或工具审批恢复。连接成功后，发现的工具会原子地以
+`<server_id>__<tool_name>` 加入当前工具注册表；连接前或连接失败时其他 Agent 功能保持可用，Host 退出时统一关闭。
+server 必须显式设置 `auto_start: true` 才会进入默认 Host，MCP 工具权限默认为 `approval`。
 
 配置可通过 CLI 完整管理，无需直接修改 JSON：
 
@@ -439,8 +440,11 @@ stdio 与 HTTP/SSE 之间切换时，CLI 会原子移除旧 transport 的不兼�
 ```
 
 stdio 中 `credential_refs` 的 key 是注入子进程的环境变量名；HTTP/SSE 中则是请求 header 名。环境变量的
-值应包含完整 header 值，例如 `MCP_AUTHORIZATION="Bearer ..."`。单个 MCP 启动失败只产生脱敏 warning，
-不会阻止没有依赖该 server 的普通 Run。`inline:` 引用会以明文保存在本地配置中，公开 CLI 输出统一显示为
+值应包含完整 header 值，例如 `MCP_AUTHORIZATION="Bearer ..."`。MCP 状态由单一连接 owner 实时维护为
+`starting`、`connected`、`reconnecting`、`failed` 或 `stopped`；运行中 Host 的 MCP 状态查询读取同一实时记录。
+TUI 会在自身生命周期内同步该内存快照，实时更新连接中、已连接、失败和当前可用工具数量。
+单个 MCP 连接失败不会进入同步启动失败，也不会阻止没有依赖该 server 的普通 Run。`inline:` 引用会以明文保存在
+本地配置中，公开 CLI 输出统一显示为
 `inline:***`，因此生产配置应优先使用 `env:`。
 
 ## 配置、Agent 指令与 Skills

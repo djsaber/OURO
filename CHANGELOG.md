@@ -51,6 +51,16 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Auto-start MCP servers now connect under background owner tasks without delaying Host startup;
+  live starting/connected/reconnecting/failed state and atomic tool projection share the Manager's
+  single source of truth. The TUI now reconciles that live in-process snapshot and updates connection
+  and discovered-tool status without requiring a restart or configuration action; normal connection
+  labels use the active TUI theme accent while failures retain their error color.
+- Streaming provider HTTP connections no longer apply the request timeout as a passive SSE read
+  deadline, so long reasoning gaps do not become false model connection failures.
+- Tool execution now enforces `ToolResult` identity at the executor and recovery boundaries, turns
+  handler/contract failures into model-readable results, and closes interrupted exchanges from
+  failed or aborted Runs before the next model request.
 - TUI assistant turns render provider-visible reasoning as plain text and final answers through
   independent Markdown streams. Reasoning appears immediately while the model is still running,
   transitions from `THINKING` to `THOUGHT` when the phase completes, and is restored from canonical

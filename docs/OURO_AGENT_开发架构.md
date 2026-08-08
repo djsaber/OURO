@@ -235,7 +235,9 @@ delta，Core 不接受完整 `tool_call` event；`done` 只表达响应结束和
 `ToolInvocation`。对 child，parent Run 解析出的最低 permission mode 也随 EffectiveToolRef 冻结，后续配置只能收紧。
 每个尚未执行的 invocation 在 handler 启动前再次评估当前 permission 和 ToolPolicy；若变为 deny 则不启动 handler，
 若变为 approval 则回到同一 ToolBatchCall 的 durable approval 状态。内置、插件和 MCP 工具都通过这一边界。新增会话策略
-只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。每个 Tool contract 还显式携带
+只需扩展 Core 策略类型和解析函数，执行与入口层不承载策略分支。handler 抛错、返回非 `ToolResult`，或返回的
+`tool_call_id`/`tool_name` 与当前 invocation 不一致时，`ToolExecutor` 必须在 contract 边界转换为绑定当前调用的错误结果，
+不能让异常或错误身份进入消息历史。每个 Tool contract 还显式携带
 `effect = read_only | state_changing | unknown` 和 `batch_behavior = compatible | exclusive`。builtin 与插件
 在定义处声明 effect；MCP 依次采用用户 override、协议 `readOnlyHint` 或 `unknown`，不按名称和描述猜测。
 归一化后的 effect、batch behavior 和 resumable 能力都进入 execution contract hash。工具策略只接收 canonical
@@ -287,7 +289,9 @@ application/Host 的命名预设，原子设置 `approval_mode=auto` 与 `intera
 path 与连接要求，产品档案声明允许/默认协议；厂商模板只组合产品类型、协议和 Endpoint 数据，不进入 adapter
 factory 分支。OpenAI 与 Anthropic 协议实现共享 provider-neutral HTTP JSON/SSE transport 和重试执行器：只在
 尚未发出模型流事件时重试明确分类为 transient 的失败，开始输出后禁止重放。结构化 `response_format` 受
-Endpoint capability gate 约束，重试计划通过 durable runtime event 暴露给 Host。
+Endpoint capability gate 约束，重试计划通过 durable runtime event 暴露给 Host。流式请求只对 connect、write 和
+连接池等待应用 Endpoint timeout；已建立 SSE 连接没有被动 read deadline，长时间模型思考由调用取消和协议终止边界管理，
+不能因一段时间没有可见 chunk 被误判为连接失败。
 
 模型思考使用四段式边界：core 的 `ReasoningRequest` 表达统一意图，Endpoint 的 `ReasoningCapability` 表达
 真实能力，config 的 `ReasoningProfileConfig` 声明解析后 variant 对应的原生请求片段，provider encoder 只负责编码。
@@ -622,8 +626,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   来源生成 provenance。安装阶段只校验包、路径、schema、MCP 描述符和兼容范围，不 import 或启动插件代码；
   激活前重新验证存储树和 digest，避免被修改的“不可变”包进入执行边界。
 - plugin state 内容不满足当前 schema/编码契约时，启动读取在 mutation lock 内隔离原文件并以空 Catalog 降级；
-  文件系统 I/O 错误保持为类型化 persistence failure，不能触发隔离。`LocalApplication.startup_report` 将插件与 MCP
-  启动诊断统一投影给 Host，普通输出、JSON、Interactive、TUI 与 Desktop 不得静默忽略系统扩展降级。
+  文件系统 I/O 错误保持为类型化 persistence failure，不能触发隔离。`LocalApplication.startup_report` 投影同步插件、
+  Runtime 和 Agent 恢复诊断；进程级 MCP 因后台启动而通过 Manager 的实时 record/diagnostics 独立投影。各 Host 的
+  MCP 状态查询必须读取该实时投影，不得把仍在连接误报为失败。
 - code trust 精确绑定 digest，capability grant 绑定 permission/contribution fingerprint；撤权先关闭 generation
   gate 并发布不含受影响 generation closure 的新 Catalog，再异步 drain owner。配置使用包含 credential binding
   reference 的内容寻址 immutable revision，selected digest 通过 active revision id 引用；配置/选版与候选 Catalog
@@ -679,7 +684,8 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
 - `ouro.mcp` 是官方 MCP Python SDK 的唯一适配边界；协议对象不得进入 core、application 或 tools。stdio 与
   Streamable HTTP 使用 SDK transport；`ouro.mcp.sse_transport` 只拥有 legacy SSE 的 GET/POST 数据通道，
   并将其适配回 SDK session stream。
-- 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；Manager 的 start/stop 只通过事件
+- 每个 MCP server 由单一 owner task 打开、监督并关闭 transport context；`start_background` 只确保 owner 已调度并
+  立即返回实时 record，显式 `start` 则等待共享的首次连接结果。Manager 的 start/stop 只通过事件
   协调 owner，session stream 的连接丢失同样只发送事件唤醒 owner，避免跨任务退出 AnyIO 取消域。legacy SSE
   的读取与 POST 失败进入同一生命周期；长连接读取不承担存活性判断，统一由 owner 的有界 health ping 监督。
 - MCP 工具以 `<server_id>__<remote_name>` 形成稳定 identity，通过 ToolRegistry 原子替换 projection，并继续
@@ -687,8 +693,10 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   覆盖 effect；override 改变会产生不同 contract hash。
 - Plugin MCP 由 generation resource owner 启停：required 连接失败中止候选，optional 失败投影 degraded；只有
   connected server 生成 contract，已发现 Tool 冻结进 Catalog，server 的后续变化只在下一 generation 可见。
-- `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；shutdown 关闭 session、HTTP
-  client、stdio 管道和子进程。
+- `MCPRuntimeResource` 把 Manager 适配到 RuntimeSupervisor 的通用受管资源协议；Host start 只调度所有 auto-start
+  server，不等待网络或子进程握手，startup records 始终从 Manager 当前状态读取。连接成功后的工具投影与重连移除
+  仍由 owner 原子完成；shutdown 关闭 session、HTTP client、stdio 管道和子进程。TUI 只在自身挂载生命周期内按有界
+  间隔读取这一进程内快照，并在摘要变化时重绘连接和工具计数；轮询不执行网络调用，也不拥有第二份 MCP 状态。
 - 外部 Agent Skills frontmatter 在 skills parser 边界校验；`skills` 层拥有发现、解析和按冻结元数据精确加载，
   Application 拥有显式激活、Run/Queue/Policy 编排，Core 只拥有可持久化内容块及 Provider 投影不变量，Host 只做
   输入与展示适配。
