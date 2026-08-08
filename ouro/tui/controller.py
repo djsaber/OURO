@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast, get_args
 
@@ -88,6 +88,7 @@ class TuiSystemStatus:
     mcp_connected_count: int = 0
     mcp_total_count: int = 0
     mcp_tool_count: int = 0
+    mcp_connecting_count: int = 0
     mcp_failed_count: int = 0
     startup_diagnostic_count: int = 0
     usage_request_count: int = 0
@@ -95,6 +96,25 @@ class TuiSystemStatus:
     usage_output_tokens: int = 0
     usage_estimated_cost: float = 0.0
     usage_priced_request_count: int = 0
+
+
+def project_mcp_system_status(
+    status: TuiSystemStatus,
+    servers: tuple[McpServerStatus, ...],
+) -> TuiSystemStatus:
+    """Project one live MCP snapshot into the shared TUI system summary."""
+
+    connected = tuple(server for server in servers if server.status == "connected")
+    return replace(
+        status,
+        mcp_connected_count=len(connected),
+        mcp_total_count=len(servers),
+        mcp_tool_count=sum(server.tool_count for server in connected),
+        mcp_connecting_count=sum(
+            server.status in {"starting", "reconnecting"} for server in servers
+        ),
+        mcp_failed_count=sum(server.status == "failed" for server in servers),
+    )
 
 
 @dataclass(frozen=True)
@@ -290,35 +310,33 @@ class TuiController:
             "failed",
         }
         mcp_servers = self.mcp_servers()
-        connected_mcp = tuple(item for item in mcp_servers if item.status == "connected")
         return TuiBootstrap(
             models=models,
             current_model=runtime.current_model(),
             sessions=await self.sessions(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=TuiSystemStatus(
-                workspace=runtime.default_workspace,
-                provider_ids=tuple(sorted({model.provider_id for model in models})),
-                model_count=len(models),
-                skill_count=len(skills),
-                skill_names=tuple(sorted(item.name for item in skills)),
-                plugin_active_count=len(active_plugins),
-                plugin_total_count=len(plugin_summaries),
-                plugin_issue_count=sum(
-                    item.status in plugin_issue_statuses for item in plugin_summaries
+            system_status=project_mcp_system_status(
+                TuiSystemStatus(
+                    workspace=runtime.default_workspace,
+                    provider_ids=tuple(sorted({model.provider_id for model in models})),
+                    model_count=len(models),
+                    skill_count=len(skills),
+                    skill_names=tuple(sorted(item.name for item in skills)),
+                    plugin_active_count=len(active_plugins),
+                    plugin_total_count=len(plugin_summaries),
+                    plugin_issue_count=sum(
+                        item.status in plugin_issue_statuses for item in plugin_summaries
+                    ),
+                    plugin_active_names=tuple(sorted(item.name for item in active_plugins)),
+                    startup_diagnostic_count=len(self._application.startup_report.diagnostics),
+                    usage_request_count=usage.request_count,
+                    usage_input_tokens=usage.input_tokens,
+                    usage_output_tokens=usage.output_tokens,
+                    usage_estimated_cost=usage.estimated_cost,
+                    usage_priced_request_count=usage.priced_request_count,
                 ),
-                plugin_active_names=tuple(sorted(item.name for item in active_plugins)),
-                mcp_connected_count=len(connected_mcp),
-                mcp_total_count=len(mcp_servers),
-                mcp_tool_count=sum(item.tool_count for item in connected_mcp),
-                mcp_failed_count=sum(item.status == "failed" for item in mcp_servers),
-                startup_diagnostic_count=len(self._application.startup_report.diagnostics),
-                usage_request_count=usage.request_count,
-                usage_input_tokens=usage.input_tokens,
-                usage_output_tokens=usage.output_tokens,
-                usage_estimated_cost=usage.estimated_cost,
-                usage_priced_request_count=usage.priced_request_count,
+                mcp_servers,
             ),
         )
 

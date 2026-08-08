@@ -451,10 +451,15 @@ class WelcomePanel(Static):
         content.append(f"{'MCP'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="bold #788492")
         if status.mcp_total_count:
             content.append(
-                f"{status.mcp_connected_count}/{status.mcp_total_count} connected"
-                f" · {status.mcp_tool_count} tool(s)",
-                style="#8f9aa8",
+                f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
+                style=THEME_ACCENT,
             )
+            content.append(f" · {status.mcp_tool_count} tool(s)", style="#8f9aa8")
+            if status.mcp_connecting_count:
+                content.append(
+                    f" · {status.mcp_connecting_count} connecting",
+                    style=THEME_ACCENT,
+                )
             if status.mcp_failed_count:
                 content.append(
                     f" · {status.mcp_failed_count} failed",

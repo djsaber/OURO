@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 from textual import work
 from textual.app import App
 
@@ -19,6 +17,7 @@ from ouro.tui.controller import (
     TuiController,
     TuiSystemStatus,
     TuiToolConfiguration,
+    project_mcp_system_status,
 )
 from ouro.tui.screens import Choice, ChoiceScreen
 from ouro.tui.widgets import ConversationView, StatusLine
@@ -510,14 +509,7 @@ class ConfigurationWorkflowsApp(App[int]):
 
     def _refresh_mcp_system_status(self) -> None:
         runtime = self._controller.mcp_servers()
-        connected = tuple(item for item in runtime if item.status == "connected")
-        self._system_status = replace(
-            self._system_status,
-            mcp_connected_count=len(connected),
-            mcp_total_count=len(runtime),
-            mcp_tool_count=sum(item.tool_count for item in connected),
-            mcp_failed_count=sum(item.status == "failed" for item in runtime),
-        )
+        self._system_status = project_mcp_system_status(self._system_status, runtime)
         self.query_one(ConversationView).set_system_status(self._system_status)
 
 

@@ -46,6 +46,7 @@ from ouro.tui.controller import (
     TuiController,
     TuiLifecycleStatus,
     TuiSystemStatus,
+    project_mcp_system_status,
 )
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
@@ -74,6 +75,7 @@ class LifecycleStatusReceived(Message):
 
 
 _RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
+_MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_completed",
     "run_aborted",
@@ -667,6 +669,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_events_ready_posted = False
         self._runtime_events_timer: Timer | None = None
+        self._mcp_status_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         yield BrandHeader()
@@ -685,6 +688,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def on_mount(self) -> None:
         self.query_one(StatusLine).set_activity("starting")
         self.query_one(Composer).disabled = True
+        self._mcp_status_timer = self.set_interval(
+            _MCP_STATUS_SYNC_INTERVAL_SECONDS,
+            self._sync_mcp_status,
+            pause=True,
+        )
         self.run_worker(self._start(), name="tui-start", exclusive=True)
 
     async def on_unmount(self) -> None:
@@ -698,6 +706,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._runtime_events_timer is not None:
             self._runtime_events_timer.stop()
             self._runtime_events_timer = None
+        if self._mcp_status_timer is not None:
+            self._mcp_status_timer.stop()
+            self._mcp_status_timer = None
         self.workers.cancel_all()
 
     async def _start(self) -> None:
@@ -720,6 +731,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         else:
             await conversation.show_welcome()
         self._apply_system_status(bootstrap)
+        if bootstrap.mcp_servers and self._mcp_status_timer is not None:
+            self._mcp_status_timer.resume()
         composer = self.query_one(Composer)
         composer.disabled = False
         composer.focus()
@@ -792,6 +805,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
         self._system_status = bootstrap.system_status
         self.query_one(ConversationView).set_system_status(self._system_status)
+
+    def _sync_mcp_status(self) -> None:
+        """Refresh the visible summary from the process-owned live MCP records."""
+
+        if self._host_closing:
+            return
+        status = project_mcp_system_status(
+            self._system_status,
+            self._controller.mcp_servers(),
+        )
+        if status == self._system_status:
+            return
+        self._system_status = status
+        self.query_one(ConversationView).set_system_status(status)
 
     async def on_runtime_events_ready(self, _message: RuntimeEventsReady) -> None:
         self._runtime_events_ready_posted = False

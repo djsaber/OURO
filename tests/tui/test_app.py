@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Static
 
@@ -29,6 +31,15 @@ from ouro.core.provider import (
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
+from ouro.mcp import (
+    MCPManager,
+    MCPRemoteTool,
+    MCPRemoteToolResult,
+    MCPRuntimeResource,
+    MCPServerCapabilities,
+    MCPServerConfig,
+    MCPServerInfo,
+)
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import (
@@ -54,6 +65,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import TuiSessionProjection
+from ouro.tui.theme import THEME_ACCENT
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -164,6 +176,71 @@ class ReasoningBurstThenBlockProvider:
             model_id=model.model_id,
             message="ok",
         )
+
+
+class LiveMcpSession:
+    def __init__(self) -> None:
+        self.initialize_gate = asyncio.Event()
+        self.tools = [self._tool("search")]
+
+    async def initialize(self) -> MCPServerInfo:
+        await self.initialize_gate.wait()
+        return MCPServerInfo(
+            name="Live MCP",
+            version="1.0",
+            protocol_version="2025-11-25",
+            capabilities=MCPServerCapabilities(tools=True, tools_list_changed=True),
+        )
+
+    async def list_tools(
+        self,
+        cursor: str | None = None,
+    ) -> tuple[list[MCPRemoteTool], str | None]:
+        del cursor
+        return list(self.tools), None
+
+    async def call_tool(
+        self,
+        name: str,
+        arguments: dict[str, object],
+    ) -> MCPRemoteToolResult:
+        del name, arguments
+        return MCPRemoteToolResult(content="ok")
+
+    async def ping(self) -> None:
+        return None
+
+    @staticmethod
+    def _tool(name: str) -> MCPRemoteTool:
+        return MCPRemoteTool(
+            name=name,
+            title=name.title(),
+            description=f"{name.title()} through MCP.",
+            input_schema={"type": "object"},
+            annotations={"readOnlyHint": True},
+        )
+
+
+class LiveMcpFactory:
+    def __init__(self, session: LiveMcpSession) -> None:
+        self.session = session
+        self.tools_changed = lambda: None
+        self.connection_lost = lambda _error: None
+
+    @asynccontextmanager
+    async def open(
+        self,
+        config,
+        *,
+        resolve_credential,
+        diagnostic,
+        tools_changed,
+        connection_lost,
+    ):
+        del config, resolve_credential, diagnostic
+        self.tools_changed = tools_changed
+        self.connection_lost = connection_lost
+        yield self.session
 
 
 class QueuedSubagentApprovalProvider:
@@ -647,6 +724,61 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
         assert conversation.region.right == app.screen.region.right
         assert conversation.vertical_scrollbar.region.width == 0
+
+
+@pytest.mark.asyncio
+async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    session = LiveMcpSession()
+    factory = LiveMcpFactory(session)
+    manager = MCPManager(
+        registry=application.runtime.tools,
+        client_factory=factory,
+    )
+    manager.configure(
+        MCPServerConfig(
+            server_id="live",
+            name="Live MCP",
+            command="unused-in-test",
+            auto_start=True,
+            auto_reconnect=False,
+            timeout_seconds=1,
+            health_check_interval_seconds=60,
+        )
+    )
+    application.mcp = MCPRuntimeResource(manager)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        welcome = app.query_one(ConversationView).query_one(WelcomePanel)
+        starting_status = welcome.render()
+        assert "0/1 connected · 0 tool(s) · 1 connecting" in starting_status.plain
+        assert starting_status.get_style_at_offset(
+            starting_status.plain.index("connecting"),
+        ).foreground == Color.parse(THEME_ACCENT)
+
+        session.initialize_gate.set()
+        await pilot.pause(0.6)
+        connected_status = welcome.render()
+        assert "1/1 connected · 1 tool(s)" in connected_status.plain
+        assert connected_status.get_style_at_offset(
+            connected_status.plain.index("connected"),
+        ).foreground == Color.parse(THEME_ACCENT)
+        assert "live__search" in application.runtime.tools.names()
+
+        session.tools.append(LiveMcpSession._tool("fetch"))
+        factory.tools_changed()
+        await pilot.pause(0.6)
+        assert "1/1 connected · 2 tool(s)" in welcome.render().plain
+        assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
+
+        factory.connection_lost("connection lost")
+        await pilot.pause(0.6)
+        assert "0/1 connected · 0 tool(s) · 1 failed" in welcome.render().plain
+        assert "live__search" not in application.runtime.tools.names()
+
+    assert app._mcp_status_timer is None
 
 
 @pytest.mark.asyncio
