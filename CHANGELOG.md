@@ -51,6 +51,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Runtime URL redaction now treats malformed authorities in untrusted tool output as opaque data,
+  so embedded web scripts cannot break observer delivery, disable TUI live events, or fail the
+  active tool batch while diagnostics are being projected.
 - TUI status and context information now remain anchored at the bottom while queued input extends
   the Composer with matching panel chrome and balanced vertical spacing. Ready uses the active
   theme color, the Session picker omits internal route identities and truncates long titles, and

@@ -45,16 +45,20 @@ def redact_text(value: str) -> str:
 
 
 def public_url(value: str) -> str:
+    """Return a credential-free URL projection for arbitrary untrusted text."""
+
     try:
         parsed = urlsplit(value)
+        if not parsed.scheme or not parsed.hostname:
+            return "***"
+        host = parsed.hostname
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
     except ValueError:
+        # urllib validates some authority fields lazily (notably ``port``), so
+        # parsing alone does not establish that a URL is safe to project.
         return "***"
-    if not parsed.scheme or not parsed.hostname:
-        return "***"
-    host = parsed.hostname
-    if parsed.port is not None:
-        host = f"{host}:{parsed.port}"
-    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
 
 
 def redact_data(value: object, *, key: str | None = None) -> object:

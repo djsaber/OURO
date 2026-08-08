@@ -462,6 +462,45 @@ async def test_stable_runtime_event_payload_is_validated_before_persistence(tmp_
 
 
 @pytest.mark.asyncio
+async def test_tool_output_with_malformed_url_does_not_break_event_delivery(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Untrusted tool output")
+    store.create_session(session)
+    recorder = RuntimeEventRecorder(store=store, observers=ObserverRegistry())
+    seen: list[str] = []
+    recorder.add_event_sink(lambda event: seen.append(event.event_type))
+
+    emitted = []
+    sequence = await recorder.emit(
+        emitted,
+        0,
+        session_id=session.session_id,
+        run_id="run_1",
+        event_type="tool_call_completed",
+        payload={
+            "tool_call_id": "call_1",
+            "result_data": {
+                "content": (
+                    "https://example.com:i=5e3}n;"
+                    "if(window.crsRequestData={url:r.toString()},i>=0){let"
+                )
+            },
+        },
+    )
+    await recorder.drain()
+
+    assert sequence == 1
+    assert [event.event_type for event in emitted] == ["tool_call_completed"]
+    assert seen == ["tool_call_completed"]
+    assert not any(
+        event.event_type == "event_sink_failed"
+        for event in store.load_session(session.session_id).events
+    )
+    await recorder.close()
+
+
+@pytest.mark.asyncio
 async def test_host_sink_worker_starts_with_eager_task_factory(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
