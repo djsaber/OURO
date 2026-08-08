@@ -454,6 +454,11 @@ _OURO_TUI_CSS = """
         border-right: solid $ouro-border-right;
         border-bottom: none;
         border-left: solid $ouro-border-left;
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     #composer:focus {
@@ -463,6 +468,10 @@ _OURO_TUI_CSS = """
 
     #composer .text-area--suggestion {
         color: #626b78;
+    }
+
+    #composer .text-area--cursor-line {
+        background: transparent;
     }
 
     #queued-input-panel {

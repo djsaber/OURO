@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Simplified the TUI composer surface by removing its focused-line fill and hiding scrollbar chrome
+  while preserving text scrolling.
 - Right-clicking an arbitrary TUI page selection now copies its plain text through the system
   clipboard boundary, clears the selection highlight, and shows a themed success notification only
   after a successful copy; Composer right-click paste remains unchanged, and failed copies retain

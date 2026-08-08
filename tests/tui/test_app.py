@@ -812,7 +812,12 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert popup.styles.border_right[0] == "solid"
         assert popup.styles.border_top[0] == ""
         assert popup.styles.border_bottom[0] == ""
-        assert composer.styles.scrollbar_size_vertical == 1
+        assert composer.styles.scrollbar_size_vertical == 0
+        assert composer.show_vertical_scrollbar is False
+        assert (
+            composer.get_component_rich_style("text-area--cursor-line").bgcolor
+            == composer.rich_style.bgcolor
+        )
         assert composer.region.height == 3
         assert composer.content_region.height == 1
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
