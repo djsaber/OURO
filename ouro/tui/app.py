@@ -383,10 +383,10 @@ _OURO_TUI_CSS = """
         max-height: 12;
         overflow-y: auto;
         scrollbar-background: transparent;
-        scrollbar-color: #505967;
-        scrollbar-color-hover: #6a7482;
-        scrollbar-size-vertical: 1;
-        scrollbar-gutter: stable;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     #plan-confirmation-body {

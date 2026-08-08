@@ -2996,6 +2996,7 @@ async def test_long_plan_keeps_confirmation_controls_visible_and_scrolls_indepen
         controls = panel.query_one("#plan-confirmation-controls", Static)
 
         assert document.max_scroll_y > 0
+        assert document.styles.scrollbar_size_vertical == 0
         assert controls.region.y >= document.region.bottom
         assert controls.region.bottom <= panel.content_region.bottom
         assert "Accept" in controls.render().plain

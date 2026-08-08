@@ -55,7 +55,8 @@ This project records user-visible and framework-contract changes in this file.
 ### Changed
 
 - Long Plan confirmation documents now scroll independently from the fixed approval controls, so
-  actions and keyboard hints remain visible while Page Up/Page Down or the scrollbar reads the Plan.
+  actions and keyboard hints remain visible while Page Up/Page Down or the mouse wheel reads the
+  Plan; the keyboard-first document viewport hides scrollbar chrome to match other flat TUI panels.
 - The TUI now recognizes builtin `ExitPlanMode` input by canonical tool provenance and presents a
   keyboard-first Plan approval workflow instead of raw request JSON. The panel shows only the Plan
   body with preserved line breaks in a scrollable view, provides action and implementation-option
