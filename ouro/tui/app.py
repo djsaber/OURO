@@ -156,6 +156,44 @@ _OURO_TUI_CSS = """
         layout: vertical;
     }
 
+    /* Textual mounts notifications as screen-level system widgets. Keep that
+       framework lifecycle, but project the chrome through the same frontend
+       tokens as OURO's composer and menus. Severity changes only the rail
+       color; geometry and surfaces remain stable. */
+    ToastRack {
+        dock: top;
+        align: right top;
+        margin-top: 1;
+        margin-bottom: 0;
+    }
+
+    Toast {
+        width: auto;
+        min-width: 28;
+        max-width: 50%;
+        height: auto;
+        margin: 0 2 1 0;
+        padding: 1 2;
+        color: #d6d9df;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-theme;
+    }
+
+    Toast.-information {
+        border-left: solid $ouro-theme;
+    }
+
+    Toast.-warning {
+        border-left: solid #968264;
+    }
+
+    Toast.-error {
+        border-left: solid #b97878;
+    }
+
     VerticalScroll, TextArea, OptionList {
         scrollbar-background: $ouro-background;
         scrollbar-color: #505967;

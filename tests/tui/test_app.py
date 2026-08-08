@@ -2823,6 +2823,32 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_notifications_use_themed_chrome_at_top_right(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        app.notify("Approval: auto", timeout=30)
+        await pilot.pause()
+
+        rack = app.screen.query_one("#textual-toastrack")
+        toast = rack.query_one("Toast")
+        composer = app.query_one(Composer)
+
+        assert rack.styles.dock == "top"
+        assert toast.styles.background == composer.styles.background
+        assert toast.styles.border_left == (
+            "solid",
+            Color.parse(app.tui_theme.accent),
+        )
+        assert toast.styles.border_right == ("solid", Color.parse("#34373d"))
+        assert toast.styles.border_top[0] == ""
+        assert toast.styles.border_bottom[0] == ""
+        assert toast.region.y < app.screen.region.height // 2
+        assert toast.region.x >= app.screen.region.width // 2
+
+
+@pytest.mark.asyncio
 async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
     tmp_path: Path,
 ) -> None:
