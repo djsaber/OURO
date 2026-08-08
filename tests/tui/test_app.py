@@ -760,6 +760,43 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        status_line = app.query_one(StatusLine)
+        status_line.set_context(
+            SessionContextStatus(
+                context_id="ctx_1",
+                session_id="session_1",
+                run_id="run_1",
+                turn_id="turn_1",
+                model_round=1,
+                provider_id="anthropic",
+                model_id="claude-test",
+                prepared_at=datetime.now(UTC),
+                completed_at=datetime.now(UTC),
+                metrics=ContextMetrics(
+                    estimated_input_tokens=48_000,
+                    estimated_fixed_tokens=1_000,
+                    context_window_tokens=128_000,
+                    reserved_output_tokens=8_000,
+                    input_budget_tokens=120_000,
+                    estimated_remaining_tokens=72_000,
+                    estimated_utilization_ratio=0.4,
+                ),
+                # Provider usage can exclude cached input and therefore is not
+                # the current prepared context size shown by /context.
+                provider_reported_input_tokens=800,
+            )
+        )
+
+        context_detail = status_line.query_one("#context-detail", Static)
+        assert context_detail.render().plain == "Context ~48.0K/120K · 40%"
+
+
+@pytest.mark.asyncio
 async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path) -> None:
     application = _application(tmp_path)
     session = LiveMcpSession()

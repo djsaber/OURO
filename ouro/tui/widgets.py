@@ -1352,15 +1352,13 @@ class StatusLine(Horizontal):
             label = "Context —"
         else:
             metrics = status.metrics
-            reported = status.provider_reported_input_tokens
-            used = reported if reported is not None else metrics.estimated_input_tokens
-            prefix = "" if reported is not None else "~"
+            used = metrics.estimated_input_tokens
             budget = metrics.input_budget_tokens
             if budget is None:
-                label = f"Context {prefix}{_compact_count(used)}"
+                label = f"Context ~{_compact_count(used)}"
             else:
                 ratio = used / budget
                 label = (
-                    f"Context {prefix}{_compact_count(used)}/{_compact_count(budget)} · {ratio:.0%}"
+                    f"Context ~{_compact_count(used)}/{_compact_count(budget)} · {ratio:.0%}"
                 )
         self.query_one("#context-detail", Static).update(label)
