@@ -27,7 +27,7 @@ from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.messages import MessageRecord
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
-from ouro.tui.controller import TuiSystemStatus
+from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
 from ouro.tui.theme import theme_for
@@ -1368,6 +1368,7 @@ class Composer(TextArea):
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
+        yield Static("Approval: inherit", id="approval-mode")
         yield Static("Context —", id="context-detail")
         yield Static("", id="status-detail")
 
@@ -1382,6 +1383,12 @@ class StatusLine(Horizontal):
 
     def set_detail(self, detail: str) -> None:
         self.query_one("#status-detail", Static).update(detail)
+
+    def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
+        label = "AFK" if mode == "afk" else mode
+        indicator = self.query_one("#approval-mode", Static)
+        indicator.update(f"Approval: {label}")
+        indicator.styles.color = "#b97878" if mode in {"auto", "afk"} else "#647180"
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         if status is None:

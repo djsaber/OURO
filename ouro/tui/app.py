@@ -381,6 +381,7 @@ _OURO_TUI_CSS = """
     }
 
     #activity-indicator { width: 1fr; }
+    #approval-mode { width: auto; margin-right: 2; text-align: right; }
     #context-detail { width: auto; text-align: right; }
     #status-detail { width: auto; margin-left: 2; text-align: right; }
 
@@ -778,6 +779,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await conversation.show_welcome()
         else:
             await conversation.show_welcome()
+        await self._refresh_approval_indicator()
         self._apply_system_status(bootstrap)
         if bootstrap.mcp_servers and self._mcp_status_timer is not None:
             self._mcp_status_timer.resume()
@@ -1576,6 +1578,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_activity("idle")
         self.query_one(StatusLine).set_context(None)
         self._sync_interaction(None)
+        await self._refresh_approval_indicator()
         self.query_one(QueuedInputPanel).set_inputs(())
         await self.query_one(ConversationView).show_welcome()
 
@@ -1635,6 +1638,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._active_model = session.current_model or self._active_model
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(StatusLine).set_model(self._active_model)
+        await self._refresh_approval_indicator()
         await self._refresh_reasoning_indicator()
 
     @work(exclusive=True, group="navigation")
@@ -1818,7 +1822,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
+        self.query_one(StatusLine).set_approval_mode(mode)
         self.notify(f"Approval: {mode}")
+
+    async def _refresh_approval_indicator(self) -> None:
+        try:
+            mode = await self._controller.session_approval_preset()
+        except Exception:  # noqa: BLE001 - status projection must not block the Host.
+            return
+        self.query_one(StatusLine).set_approval_mode(mode)
 
     def action_thinking_settings(self) -> None:
         self._choose_reasoning()

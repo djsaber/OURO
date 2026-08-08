@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The TUI bottom status line now shows the effective Session approval preset, with a restrained
+  warning color for automatic and unattended AFK operation.
 - TUI slash commands now focus on conversation actions: model and explicit Skill selection use the
   inline argument menu, `/skill` creates canonical durable Skill activations, and persistent tool,
   MCP, Skill-management, and general configuration workflows live exclusively under Actions.

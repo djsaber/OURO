@@ -742,6 +742,11 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
+        approval_mode = status_line.query_one("#approval-mode", Static).render()
+        assert approval_mode.plain == "Approval: inherit"
+        assert status_line.query_one("#approval-mode", Static).styles.color == Color.parse(
+            "#647180"
+        )
         ready = status_line.query_one(ActivityIndicator).render()
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
             app.tui_theme.accent
@@ -812,6 +817,35 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
 
         context_detail = status_line.query_one("#context-detail", Static)
         assert context_detail.render().plain == "Context ~48.0K/120K · 40%"
+
+
+@pytest.mark.asyncio
+async def test_status_line_projects_approval_presets_with_muted_risk_color(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(StatusLine).query_one("#approval-mode", Static)
+
+        await app._set_approval_mode("auto")
+        automatic = indicator.render()
+        assert automatic.plain == "Approval: auto"
+        assert indicator.styles.color == Color.parse("#b97878")
+
+        await app._set_approval_mode("afk")
+        unattended = indicator.render()
+        assert unattended.plain == "Approval: AFK"
+        assert indicator.styles.color == Color.parse("#b97878")
+
+        await app._set_approval_mode("approval")
+        protected = indicator.render()
+        assert protected.plain == "Approval: approval"
+        assert indicator.styles.color == Color.parse("#647180")
+
+        await app._new_session()
+        assert indicator.render().plain == "Approval: inherit"
 
 
 @pytest.mark.asyncio
