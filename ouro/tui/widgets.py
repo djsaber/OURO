@@ -1037,7 +1037,7 @@ class AskUserPanel(Static):
         self._render_question()
 
 
-class PlanConfirmationPanel(Static):
+class PlanConfirmationPanel(Vertical):
     """Keyboard-first decision workflow for the builtin ExitPlanMode request."""
 
     can_focus = True
@@ -1047,6 +1047,8 @@ class PlanConfirmationPanel(Static):
         Binding("down", "next_option", show=False),
         Binding("left", "previous_option", show=False),
         Binding("right", "next_option", show=False),
+        Binding("pageup", "scroll_plan_up", show=False),
+        Binding("pagedown", "scroll_plan_down", show=False),
         Binding("enter", "accept", show=False),
         Binding("escape", "back", show=False),
         Binding("1", "choose(0)", show=False),
@@ -1066,10 +1068,23 @@ class PlanConfirmationPanel(Static):
         super().__init__(id="plan-confirmation-panel")
         self.display = False
         self.disabled = True
+        self._title = Static(id="plan-confirmation-title")
+        self._plan_body = Static(id="plan-confirmation-body")
+        self._document = VerticalScroll(
+            self._plan_body,
+            id="plan-confirmation-document",
+            can_focus=False,
+        )
+        self._controls = Static(id="plan-confirmation-controls")
         self._request: PlanConfirmationRequest | None = None
         self._stage: Literal["action", "option", "feedback"] = "action"
         self._cursor = 0
         self._awaiting_feedback = False
+
+    def compose(self) -> ComposeResult:
+        yield self._title
+        yield self._document
+        yield self._controls
 
     @property
     def awaiting_feedback(self) -> bool:
@@ -1089,7 +1104,7 @@ class PlanConfirmationPanel(Static):
         self.disabled = False
         self.display = True
         self._render_panel()
-        self.scroll_home(animate=False)
+        self._document.scroll_home(animate=False)
         self.focus()
 
     def hide_panel(self) -> None:
@@ -1099,7 +1114,9 @@ class PlanConfirmationPanel(Static):
         self._stage = "action"
         self._cursor = 0
         self._awaiting_feedback = False
-        self.update("")
+        self._title.update("")
+        self._plan_body.update("")
+        self._controls.update("")
 
     def resume(self) -> None:
         if self._request is None:
@@ -1128,6 +1145,12 @@ class PlanConfirmationPanel(Static):
     def action_next_option(self) -> None:
         self._move_cursor(1)
 
+    def action_scroll_plan_up(self) -> None:
+        self._document.scroll_page_up(animate=False)
+
+    def action_scroll_plan_down(self) -> None:
+        self._document.scroll_page_down(animate=False)
+
     def action_choose(self, index: int) -> None:
         if index < 0 or index >= len(self._choices()):
             return
@@ -1150,7 +1173,7 @@ class PlanConfirmationPanel(Static):
             if len(request.options) > 1:
                 self._stage = "option"
                 self._cursor = 0
-                self._render_panel()
+                self._render_controls(request)
                 return
             option_label = request.options[0].label if request.options else None
             self._complete(PlanConfirmationAnswer(action="accept", option=option_label))
@@ -1158,7 +1181,7 @@ class PlanConfirmationPanel(Static):
         if action == "revise":
             self._stage = "feedback"
             self._awaiting_feedback = True
-            self._render_panel()
+            self._render_controls(request)
             self.post_message(self.FeedbackRequested())
             return
         self._complete(PlanConfirmationAnswer(action="reject"))
@@ -1169,7 +1192,7 @@ class PlanConfirmationPanel(Static):
         self._stage = "action"
         self._cursor = 0
         self._awaiting_feedback = False
-        self._render_panel()
+        self._render_controls(self._request)
         self.focus()
 
     def refresh_theme(self) -> None:
@@ -1180,7 +1203,8 @@ class PlanConfirmationPanel(Static):
         if not choices or self.disabled or self._stage == "feedback":
             return
         self._cursor = (self._cursor + offset) % len(choices)
-        self._render_panel()
+        assert self._request is not None
+        self._render_controls(self._request)
 
     def _choices(self) -> tuple[object, ...]:
         if self._request is None:
@@ -1200,10 +1224,14 @@ class PlanConfirmationPanel(Static):
         if request is None:
             return
         theme = theme_for(self)
+        title = Text("? PLAN APPROVAL", style=f"bold {theme.accent_bright}")
+        self._title.update(title)
+        self._plan_body.update(Text(request.plan, style="#d6d9df"))
+        self._render_controls(request)
+
+    def _render_controls(self, request: PlanConfirmationRequest) -> None:
+        theme = theme_for(self)
         content = Text()
-        content.append("? PLAN APPROVAL\n\n", style=f"bold {theme.accent_bright}")
-        content.append(request.plan, style="#d6d9df")
-        content.append("\n\n")
         if request.error:
             content.append(f"{request.error}\n\n", style="#b97878")
         if self._stage == "action":
@@ -1223,7 +1251,7 @@ class PlanConfirmationPanel(Static):
                     tone=tone,
                 )
             content.append(
-                "\n↑/↓ or ←/→ move · Enter choose · 1-3 direct",
+                "\nPgUp/PgDn plan · ↑/↓ or ←/→ move · Enter choose · 1-3 direct",
                 style="#6f7a87",
             )
         elif self._stage == "option":
@@ -1237,7 +1265,7 @@ class PlanConfirmationPanel(Static):
                     tone=theme.accent,
                 )
             content.append(
-                "\n↑/↓ or ←/→ move · Enter choose · 1-3 direct · Esc back",
+                "\nPgUp/PgDn plan · ↑/↓ or ←/→ move · Enter choose · 1-3 direct · Esc back",
                 style="#6f7a87",
             )
         else:
@@ -1246,7 +1274,7 @@ class PlanConfirmationPanel(Static):
                 "Type the requested plan changes below, then press Enter",
                 style="#6f7a87",
             )
-        self.update(content)
+        self._controls.update(content)
 
     def _append_option(
         self,

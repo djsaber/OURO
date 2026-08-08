@@ -351,8 +351,14 @@ class QueuedSubagentApprovalProvider:
 class TuiPlanConfirmationProvider:
     provider_id = "tui-plan-confirmation"
 
-    def __init__(self, options: list[dict[str, str]] | None = None) -> None:
+    def __init__(
+        self,
+        options: list[dict[str, str]] | None = None,
+        *,
+        plan: str = "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify.",
+    ) -> None:
         self.options = options or []
+        self.plan = plan
         self.stream_count = 0
         self.plan_path: str | None = None
 
@@ -379,7 +385,7 @@ class TuiPlanConfirmationProvider:
                 name="Write",
                 arguments={
                     "path": self.plan_path,
-                    "content": "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify.",
+                    "content": self.plan,
                 },
             )
         elif self.stream_count == 1:
@@ -691,6 +697,7 @@ def _plan_confirmation_application(
     tmp_path: Path,
     *,
     options: list[dict[str, str]] | None = None,
+    plan: str = "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify.",
 ) -> LocalApplication:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -700,7 +707,7 @@ def _plan_confirmation_application(
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
-            TuiPlanConfirmationProvider(options),
+            TuiPlanConfirmationProvider(options, plan=plan),
             ModelMetadata(model_id="faux", provider_id="tui-plan-confirmation"),
         ),
         tools=tools,
@@ -2864,19 +2871,20 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
                 break
             await pilot.pause(0.1)
         ask_user = app.query_one(AskUserPanel)
-        rendered = panel.render().plain
+        plan_body = panel.query_one("#plan-confirmation-body", Static).render().plain
+        controls = panel.query_one("#plan-confirmation-controls", Static).render().plain
 
         assert panel.display is True
         assert panel.has_focus is True
         assert ask_user.display is False
-        assert "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify." in rendered
-        assert "C:/private/session/plan.md" not in rendered
-        assert "plan_digest" not in rendered
-        assert '"actions"' not in rendered
-        assert "Accept" in rendered
-        assert "Revise" in rendered
-        assert "Reject" in rendered
-        assert "↑/↓ or ←/→ move · Enter choose · 1-3 direct" in rendered
+        assert plan_body == "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify."
+        assert "C:/private/session/plan.md" not in plan_body
+        assert "plan_digest" not in plan_body
+        assert '"actions"' not in plan_body
+        assert "Accept" in controls
+        assert "Revise" in controls
+        assert "Reject" in controls
+        assert "↑/↓ or ←/→ move · Enter choose · 1-3 direct" in controls
         assert panel.selected_action == "accept"
 
         await pilot.press("down", "enter")
@@ -2938,10 +2946,10 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
         await pilot.press("enter")
         await pilot.pause()
 
-        rendered = panel.render().plain
-        assert "Choose an implementation approach" in rendered
-        assert "Safe rollout" in rendered
-        assert "Direct rollout" in rendered
+        controls = panel.query_one("#plan-confirmation-controls", Static).render().plain
+        assert "Choose an implementation approach" in controls
+        assert "Safe rollout" in controls
+        assert "Direct rollout" in controls
 
         await pilot.press("2")
         await pilot.pause(0.8)
@@ -2957,6 +2965,52 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
             "action": "accept",
             "option": "Direct rollout",
         }
+
+
+@pytest.mark.asyncio
+async def test_long_plan_keeps_confirmation_controls_visible_and_scrolls_independently(
+    tmp_path: Path,
+) -> None:
+    long_plan = "# Long plan\n\n" + "\n".join(
+        f"{index}. Verify implementation step {index}." for index in range(1, 50)
+    )
+    application = _plan_confirmation_application(tmp_path, plan=long_plan)
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    app = OuroTuiApp(application=application, approval_mode="auto")
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"plan", "space", "o", "n", "enter")
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press("p", "l", "a", "n", "enter")
+
+        panel = app.query_one(PlanConfirmationPanel)
+        for _ in range(30):
+            if panel.display:
+                break
+            await pilot.pause(0.1)
+        document = panel.query_one("#plan-confirmation-document", VerticalScroll)
+        controls = panel.query_one("#plan-confirmation-controls", Static)
+
+        assert document.max_scroll_y > 0
+        assert controls.region.y >= document.region.bottom
+        assert controls.region.bottom <= panel.content_region.bottom
+        assert "Accept" in controls.render().plain
+        assert "Revise" in controls.render().plain
+        assert "Reject" in controls.render().plain
+
+        await pilot.press("pagedown")
+        await pilot.pause()
+        plan_scroll_y = document.scroll_y
+        assert plan_scroll_y > 0
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert panel.selected_action == "revise"
+        assert document.scroll_y == plan_scroll_y
 
 
 @pytest.mark.asyncio

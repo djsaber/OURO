@@ -370,12 +370,32 @@ _OURO_TUI_CSS = """
         border-right: solid $ouro-border-right;
         border-bottom: none;
         border-left: solid $ouro-border-left;
+        overflow: hidden;
+    }
+
+    #plan-confirmation-title {
+        height: 1;
+        margin-bottom: 1;
+    }
+
+    #plan-confirmation-document {
+        height: auto;
+        max-height: 12;
         overflow-y: auto;
         scrollbar-background: transparent;
         scrollbar-color: #505967;
         scrollbar-color-hover: #6a7482;
         scrollbar-size-vertical: 1;
         scrollbar-gutter: stable;
+    }
+
+    #plan-confirmation-body {
+        height: auto;
+    }
+
+    #plan-confirmation-controls {
+        height: auto;
+        margin-top: 1;
     }
 
     #plan-confirmation-panel:focus {
