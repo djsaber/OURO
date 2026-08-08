@@ -42,6 +42,9 @@ class PendingInteraction:
     tool_name: str
     request_id: str | None = None
     request: object | None = None
+    canonical_tool_id: str | None = None
+    plugin_id: str | None = None
+    plugin_class: Literal["builtin", "user"] | None = None
     session_id: str | None = None
     delegation_id: str | None = None
     agent_name: str | None = None
@@ -162,6 +165,9 @@ class TuiSessionProjection:
                         tool_call_id=tool_call_id,
                         tool_name=_string(payload.get("tool_name")) or "tool",
                         request=payload.get("request"),
+                        canonical_tool_id=_string(payload.get("canonical_tool_id")),
+                        plugin_id=_string(payload.get("plugin_id")),
+                        plugin_class=_plugin_class(payload.get("plugin_class")),
                         session_id=event.session_id,
                     )
                 )
@@ -226,6 +232,9 @@ def project_agent_interaction(interaction: AgentInteractionView) -> PendingInter
         tool_name=interaction.tool_name,
         request_id=interaction.request_id,
         request=interaction.input_request,
+        canonical_tool_id=interaction.canonical_tool_id,
+        plugin_id=interaction.plugin_id,
+        plugin_class=interaction.plugin_class,
         session_id=interaction.child_session_id,
         delegation_id=interaction.delegation_id,
         agent_name=interaction.agent_name,
@@ -238,3 +247,7 @@ def _string(value: object) -> str | None:
 
 def _positive_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def _plugin_class(value: object) -> Literal["builtin", "user"] | None:
+    return value if value in {"builtin", "user"} else None

@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal, cast
 
+from ouro.core.tools import ToolInvocation
 from ouro.sdk.plugins.v1 import JsonValue
 
 type PlanConfirmationAction = Literal["accept", "revise", "reject"]
@@ -16,6 +17,8 @@ PLAN_CONFIRMATION_ACTIONS: tuple[PlanConfirmationAction, ...] = (
     "revise",
     "reject",
 )
+_PLAN_MODE_PLUGIN_ID = "dev.ouro.plan_mode"
+_EXIT_PLAN_MODE_TOOL_ID = f"{_PLAN_MODE_PLUGIN_ID}/tools/exit"
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,23 @@ class PlanConfirmationAnswer:
         return answer
 
 
+def parse_builtin_plan_confirmation(
+    invocation: ToolInvocation | None,
+    data: object,
+) -> PlanConfirmationRequest | None:
+    """Parse only requests emitted by OURO's canonical builtin ExitPlanMode tool."""
+
+    recognized = (
+        invocation is not None
+        and invocation.plugin_class == "builtin"
+        and invocation.plugin_id == _PLAN_MODE_PLUGIN_ID
+        and invocation.canonical_tool_id == _EXIT_PLAN_MODE_TOOL_ID
+        and isinstance(data, dict)
+        and data.get("type") == PLAN_CONFIRMATION_TYPE
+    )
+    return PlanConfirmationRequest.from_json(data) if recognized else None
+
+
 __all__ = [
     "PLAN_CONFIRMATION_ACTIONS",
     "PLAN_CONFIRMATION_TYPE",
@@ -144,4 +164,5 @@ __all__ = [
     "PlanConfirmationAnswer",
     "PlanConfirmationRequest",
     "PlanOption",
+    "parse_builtin_plan_confirmation",
 ]

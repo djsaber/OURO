@@ -565,6 +565,7 @@ class ToolCallCoordinator:
                             "tool_name": completed_call.request.name,
                             "request": completed_call.input_request.data,
                             "source_index": completed_call.request.source_index,
+                            **_interaction_tool_identity(completed_call.invocation),
                         },
                     )
                 elif completed_call is not None and outcome.status == "waiting_child":
@@ -660,6 +661,7 @@ class ToolCallCoordinator:
                         "source_index": resolving_call.request.source_index,
                         "interaction_mode": session.interaction_mode,
                         "will_suspend": False,
+                        **_interaction_tool_identity(resolving_call.invocation),
                     },
                 )
             resolved = await self._resolve_unattended_input(
@@ -1422,6 +1424,7 @@ class ToolCallCoordinator:
                     "request": outcome.input_request.data
                     if outcome.input_request is not None
                     else None,
+                    **_interaction_tool_identity(outcome.invocation),
                 },
             )
             return ToolBatchCall(
@@ -1596,6 +1599,16 @@ def _interaction_error_outcome(
         ended_at=utc_now(),
     )
     return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+
+def _interaction_tool_identity(invocation: ToolInvocation | None) -> dict[str, JsonValue]:
+    """Project the canonical identity required by Host interaction adapters."""
+
+    return {
+        "canonical_tool_id": invocation.canonical_tool_id if invocation is not None else None,
+        "plugin_id": invocation.plugin_id if invocation is not None else None,
+        "plugin_class": invocation.plugin_class if invocation is not None else None,
+    }
 
 
 def _canonical_tool_id(name: str, metadata: dict[str, object]) -> str:

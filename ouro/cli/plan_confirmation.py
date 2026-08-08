@@ -6,21 +6,16 @@ from collections.abc import Callable
 from enum import Enum
 
 from ouro.builtin_plugins.plan_mode.interaction import (
-    PLAN_CONFIRMATION_TYPE,
     PlanConfirmationAction,
     PlanConfirmationAnswer,
     PlanConfirmationRequest,
     PlanOption,
+    parse_builtin_plan_confirmation,
 )
 from ouro.cli.interactive_output import OutputFunc
-from ouro.core.tools import ToolInvocation
 from ouro.sdk.plugins.v1 import JsonValue
 
 InputFunc = Callable[[str], str]
-
-_PLAN_MODE_PLUGIN_ID = "dev.ouro.plan_mode"
-_EXIT_PLAN_MODE_TOOL_ID = f"{_PLAN_MODE_PLUGIN_ID}/tools/exit"
-
 
 class PlanConfirmationControl(Enum):
     ABORT = "abort"
@@ -28,23 +23,6 @@ class PlanConfirmationControl(Enum):
 
 
 type PlanConfirmationInput = dict[str, JsonValue] | PlanConfirmationControl
-
-
-def parse_builtin_plan_confirmation(
-    invocation: ToolInvocation | None,
-    data: object,
-) -> PlanConfirmationRequest | None:
-    """Parse requests only when they come from OURO's builtin ExitPlanMode tool."""
-
-    recognized = (
-        invocation is not None
-        and invocation.plugin_class == "builtin"
-        and invocation.plugin_id == _PLAN_MODE_PLUGIN_ID
-        and invocation.canonical_tool_id == _EXIT_PLAN_MODE_TOOL_ID
-        and isinstance(data, dict)
-        and data.get("type") == PLAN_CONFIRMATION_TYPE
-    )
-    return PlanConfirmationRequest.from_json(data) if recognized else None
 
 
 def collect_plan_confirmation(

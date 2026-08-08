@@ -345,6 +345,12 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
     assert waiting_call.input_request is not None
     assert waiting_call.input_request.data["type"] == "plan_confirmation"
     assert waiting_call.input_request.data["plan"].startswith("# Proposed plan")
+    requested = next(
+        event for event in waiting.events if event.event_type == "ask_user_requested"
+    )
+    assert requested.payload["canonical_tool_id"] == f"{PLUGIN_ID}/tools/exit"
+    assert requested.payload["plugin_id"] == PLUGIN_ID
+    assert requested.payload["plugin_class"] == "builtin"
     await first_application.close()
 
     final_provider = FinalProvider()

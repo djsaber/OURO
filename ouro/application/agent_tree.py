@@ -191,6 +191,17 @@ class AgentTreeProjector:
                         input_request=(
                             call.input_request.data if call.input_request is not None else None
                         ),
+                        canonical_tool_id=(
+                            call.invocation.canonical_tool_id
+                            if call.invocation is not None
+                            else None
+                        ),
+                        plugin_id=(
+                            call.invocation.plugin_id if call.invocation is not None else None
+                        ),
+                        plugin_class=(
+                            call.invocation.plugin_class if call.invocation is not None else None
+                        ),
                     )
                 )
         return tuple(interactions)

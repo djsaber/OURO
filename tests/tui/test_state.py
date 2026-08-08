@@ -174,11 +174,16 @@ def test_projection_exposes_structured_user_question() -> None:
             tool_call_id="call_ask",
             tool_name="AskUser",
             request={"question": "Which environment should OURO use?"},
+            canonical_tool_id="ouro.host/tools/AskUser",
+            plugin_id=None,
+            plugin_class=None,
         )
     )
 
     assert update is not None and update.pending_interaction is not None
     assert update.pending_interaction.kind == "question"
+    assert update.pending_interaction.canonical_tool_id == "ouro.host/tools/AskUser"
+    assert update.pending_interaction.plugin_id is None
     assert question_text(update.pending_interaction) == "Which environment should OURO use?"
 
 

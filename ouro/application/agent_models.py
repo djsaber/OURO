@@ -171,6 +171,9 @@ class AgentInteractionView(ApplicationDTO):
     requested_at: str
     arguments_preview: str = ""
     input_request: JsonValue = None
+    canonical_tool_id: str | None = None
+    plugin_id: str | None = None
+    plugin_class: Literal["builtin", "user"] | None = None
 
 
 class AgentReadView(ApplicationDTO):
