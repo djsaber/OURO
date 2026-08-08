@@ -165,6 +165,11 @@ _OURO_TUI_CSS = """
         align: right top;
         margin-top: 1;
         margin-bottom: 0;
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size-vertical: 0;
+        scrollbar-gutter: auto;
     }
 
     Toast {
@@ -172,7 +177,7 @@ _OURO_TUI_CSS = """
         min-width: 28;
         max-width: 50%;
         height: auto;
-        margin: 0 2 1 0;
+        margin: 0 1 1 0;
         padding: 1 2;
         color: #d6d9df;
         background: $ouro-panel;

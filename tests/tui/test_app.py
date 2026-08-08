@@ -2844,7 +2844,9 @@ async def test_notifications_use_themed_chrome_at_top_right(tmp_path: Path) -> N
         assert toast.styles.border_right == ("solid", Color.parse("#34373d"))
         assert toast.styles.border_top[0] == ""
         assert toast.styles.border_bottom[0] == ""
-        assert toast.region.y < app.screen.region.height // 2
+        top_inset = toast.region.y - app.screen.region.y
+        right_inset = app.screen.region.right - toast.region.right
+        assert top_inset == right_inset == 1
         assert toast.region.x >= app.screen.region.width // 2
 
 

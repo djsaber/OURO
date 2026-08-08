@@ -54,9 +54,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- TUI notifications now appear in the upper-right with the same restrained panel surface,
-  single-cell side rails, and theme-aware accent used by OURO's composer and menus; warning and
-  error rails retain muted semantic colors without changing the shared geometry.
+- TUI notifications now appear in the upper-right with equal top and right insets, the same
+  restrained panel surface, single-cell side rails, and theme-aware accent used by OURO's composer
+  and menus; warning and error rails retain muted semantic colors without changing the geometry.
 - Selecting a Skill from the TUI `/skill` argument menu now always opens an instruction editor
   with a trailing space and inline instruction hint, including Skills that do not declare a custom
   `argument-hint`.
