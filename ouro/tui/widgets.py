@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
+from math import ceil
 from typing import Literal, Protocol
 
 from pydantic import JsonValue
@@ -87,6 +88,9 @@ _ACTIVITY_LABELS = {
     "paused": "Paused",
     "recoverable": "Recovery required",
 }
+_CONTEXT_PROGRESS_WIDTH = 11
+_MUTED_TONE = "#6f7a87"
+_WARNING_TONE = "#968264"
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
@@ -1648,7 +1652,7 @@ class Composer(TextArea):
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
-        yield Static("Context —", id="context-detail")
+        yield Static("—", id="context-detail")
         yield Static("", id="status-detail")
 
     def set_activity(self, activity: str) -> None:
@@ -1668,19 +1672,26 @@ class StatusLine(Horizontal):
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         if status is None:
-            label = "Context —"
+            content = Text("—")
         else:
             metrics = status.metrics
             used = metrics.estimated_input_tokens
             budget = metrics.input_budget_tokens
             if budget is None:
-                label = f"Context ~{_compact_count(used)}"
+                content = Text(_compact_count(used))
             else:
                 ratio = used / budget
-                label = (
-                    f"Context ~{_compact_count(used)}/{_compact_count(budget)} · {ratio:.0%}"
+                bounded_ratio = min(ratio, 1.0)
+                completed = ceil(bounded_ratio * _CONTEXT_PROGRESS_WIDTH)
+                content = Text(f"{_compact_count(used)} ")
+                content.append("█" * completed, style=theme_for(self).accent)
+                content.append(
+                    "░" * (_CONTEXT_PROGRESS_WIDTH - completed),
+                    style="#34373d",
                 )
-        self.query_one("#context-detail", Static).update(label)
+                percentage_tone = _WARNING_TONE if ratio > 0.8 else _MUTED_TONE
+                content.append(f" {ratio:.0%}", style=percentage_tone)
+        self.query_one("#context-detail", Static).update(content)
 
 
 def _user_message_text(message: MessageRecord) -> str:

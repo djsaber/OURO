@@ -864,7 +864,11 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             )
         )
         context_detail = status_line.query_one("#context-detail", Static)
-        assert context_detail.render().plain == "Context ~3.0K/120K · 2%"
+        context = context_detail.render()
+        assert context.plain == "3.0K █░░░░░░░░░░ 2%"
+        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
+            app.tui_theme.accent
+        )
 
         for index in range(40):
             await conversation.add_notice(f"Overflow {index}")
@@ -880,34 +884,70 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         status_line = app.query_one(StatusLine)
-        status_line.set_context(
-            SessionContextStatus(
-                context_id="ctx_1",
-                session_id="session_1",
-                run_id="run_1",
-                turn_id="turn_1",
-                model_round=1,
-                provider_id="anthropic",
-                model_id="claude-test",
-                prepared_at=datetime.now(UTC),
-                completed_at=datetime.now(UTC),
-                metrics=ContextMetrics(
-                    estimated_input_tokens=48_000,
-                    estimated_fixed_tokens=1_000,
-                    context_window_tokens=128_000,
-                    reserved_output_tokens=8_000,
-                    input_budget_tokens=120_000,
-                    estimated_remaining_tokens=72_000,
-                    estimated_utilization_ratio=0.4,
-                ),
-                # Provider usage can exclude cached input and therefore is not
-                # the current prepared context size shown by /context.
-                provider_reported_input_tokens=800,
-            )
+        context_status = SessionContextStatus(
+            context_id="ctx_1",
+            session_id="session_1",
+            run_id="run_1",
+            turn_id="turn_1",
+            model_round=1,
+            provider_id="anthropic",
+            model_id="claude-test",
+            prepared_at=datetime.now(UTC),
+            completed_at=datetime.now(UTC),
+            metrics=ContextMetrics(
+                estimated_input_tokens=48_000,
+                estimated_fixed_tokens=1_000,
+                context_window_tokens=128_000,
+                reserved_output_tokens=8_000,
+                input_budget_tokens=120_000,
+                estimated_remaining_tokens=72_000,
+                estimated_utilization_ratio=0.4,
+            ),
+            # Provider usage can exclude cached input and therefore is not
+            # the current prepared context size shown by /context.
+            provider_reported_input_tokens=800,
         )
+        status_line.set_context(context_status)
 
         context_detail = status_line.query_one("#context-detail", Static)
-        assert context_detail.render().plain == "Context ~48.0K/120K · 40%"
+        context = context_detail.render()
+        assert context.plain == "48.0K █████░░░░░░ 40%"
+        percentage_offset = context.plain.index("40%")
+        assert context.get_style_at_offset(percentage_offset).foreground == Color.parse("#6f7a87")
+
+        at_warning_boundary = ContextMetrics(
+            estimated_input_tokens=96_000,
+            estimated_fixed_tokens=1_000,
+            context_window_tokens=128_000,
+            reserved_output_tokens=8_000,
+            input_budget_tokens=120_000,
+            estimated_remaining_tokens=24_000,
+            estimated_utilization_ratio=0.8,
+        )
+        status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
+        boundary = context_detail.render()
+        assert boundary.plain == "96.0K █████████░░ 80%"
+        assert boundary.get_style_at_offset(boundary.plain.index("80%")).foreground == Color.parse(
+            "#6f7a87"
+        )
+
+        above_warning_boundary = ContextMetrics(
+            estimated_input_tokens=97_200,
+            estimated_fixed_tokens=1_000,
+            context_window_tokens=128_000,
+            reserved_output_tokens=8_000,
+            input_budget_tokens=120_000,
+            estimated_remaining_tokens=22_800,
+            estimated_utilization_ratio=0.81,
+        )
+        status_line.set_context(
+            context_status.model_copy(update={"metrics": above_warning_boundary})
+        )
+        warning = context_detail.render()
+        assert warning.plain == "97.2K █████████░░ 81%"
+        assert warning.get_style_at_offset(warning.plain.index("81%")).foreground == Color.parse(
+            "#968264"
+        )
 
 
 @pytest.mark.asyncio
@@ -1081,7 +1121,8 @@ async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Pa
         assert app._projection.activity.status == "completed"
         assert app._controller.session_id is not None
         context = app.query_one(StatusLine).query_one("#context-detail", Static).render().plain
-        assert context.startswith("Context ~")
+        assert "Context" not in context
+        assert "~" not in context
 
 
 @pytest.mark.asyncio

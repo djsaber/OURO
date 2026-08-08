@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI context usage now renders as a compact theme-colored progress bar without redundant labels
+  or approximation marks, and highlights utilization above 80% with the warning tone.
 - Simplified the TUI composer surface by removing its focused-line fill and hiding scrollbar chrome
   while preserving text scrolling.
 - Right-clicking an arbitrary TUI page selection now copies its plain text through the system
