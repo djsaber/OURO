@@ -425,11 +425,6 @@ class WelcomePanel(Static):
         content = Text()
         content.append(_OURO_LOGO, style=f"bold {accent}")
         content.append("\n\n")
-        content.append("TIPS\n", style="bold #788492")
-        for key, description in _INPUT_TIPS:
-            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="#788492")
-            content.append(f"{description}\n", style="#8f9aa8")
-        content.append("\n")
         content.append("SYSTEM\n", style="bold #788492")
 
         content.append(f"{'Workspace'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
@@ -492,6 +487,11 @@ class WelcomePanel(Static):
         )
         if status.usage_priced_request_count:
             content.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
+        content.append("\n\n")
+        content.append("TIPS\n", style="bold #788492")
+        for key, description in _INPUT_TIPS:
+            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="#788492")
+            content.append(f"{description}\n", style="#8f9aa8")
         self.update(content)
 
 

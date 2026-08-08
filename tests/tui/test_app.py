@@ -663,6 +663,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         welcome_text = welcome.render()
         status_text = welcome_text.plain
         assert f"SYSTEM\nWorkspace {tmp_path}" in status_text
+        assert status_text.index("SYSTEM") < status_text.index("TIPS")
         assert "Tell me what you want to accomplish." not in status_text
         assert "Enter" not in status_text
         assert "Ctrl+Enter" not in status_text

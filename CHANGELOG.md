@@ -54,10 +54,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- The TUI welcome page now keeps only command, action, and Session shortcuts; removes the generic
-  prompt and Health row; and uses regular-weight detail labels. During an active Run, the Composer
-  placeholder moves follow-up and guidance key hints to the point where those actions are relevant,
-  then restores the default prompt when the Run ends.
+- The TUI welcome page now presents System information before its reduced command, action, and
+  Session tips; removes the generic prompt and Health row; and uses regular-weight detail labels.
+  During an active Run, the Composer placeholder moves follow-up and guidance key hints to the
+  point where those actions are relevant, then restores the default prompt when the Run ends.
 - Starting `ouro tui` now labels the active terminal tab `OURO` through the standard terminal-title
   control sequence, while non-interactive or unsupported output remains unaffected.
 - TUI context usage now follows the latest prepared Provider-context estimate used by `/context`
