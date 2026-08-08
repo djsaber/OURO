@@ -54,6 +54,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Right-clicking an arbitrary TUI page selection now copies its plain text through the system
+  clipboard boundary, clears the selection highlight, and shows a themed success notification only
+  after a successful copy; Composer right-click paste remains unchanged, and failed copies retain
+  the selection for retry.
 - Long Plan confirmation documents now scroll independently from the fixed approval controls, so
   actions and keyboard hints remain visible while Page Up/Page Down or the mouse wheel reads the
   Plan; the keyboard-first document viewport hides scrollbar chrome to match other flat TUI panels.

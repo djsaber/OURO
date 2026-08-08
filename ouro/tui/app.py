@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 from collections.abc import Callable, Sequence
@@ -8,7 +9,7 @@ from pathlib import Path
 
 from pydantic import JsonValue
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -33,6 +34,7 @@ from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
+from ouro.tui.clipboard import ClipboardWriteError, write_system_clipboard
 from ouro.tui.commands import (
     TUI_COMMANDS,
     TuiCommand,
@@ -124,11 +126,30 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
 
 
 class _OuroHostScreen(Screen):
-    """Mark the Host as closing before Textual detaches its widget tree."""
+    """Own Host-level lifecycle and page-selection interactions."""
 
-    def __init__(self, on_prune: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_prune: Callable[[], None],
+        *,
+        clipboard_writer: Callable[[str], None] = write_system_clipboard,
+    ) -> None:
         super().__init__(id="_default")
         self._on_host_prune = on_prune
+        self._clipboard_writer = clipboard_writer
+
+    async def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 3 or not (selected_text := self.get_selected_text()):
+            return
+        event.prevent_default()
+        event.stop()
+        try:
+            await asyncio.to_thread(self._clipboard_writer, selected_text)
+        except ClipboardWriteError as exc:
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        self.clear_selection()
+        self.notify("Copied to clipboard", markup=False)
 
     async def on_prune(self, event: Prune) -> None:
         self._on_host_prune()
