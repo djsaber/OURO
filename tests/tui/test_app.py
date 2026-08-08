@@ -75,7 +75,6 @@ from ouro.tui.widgets import (
     BrandHeader,
     CommandPopup,
     Composer,
-    ComposerFooterGap,
     ConversationView,
     InteractionBar,
     PlanConfirmationPanel,
@@ -838,16 +837,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
-        composer_gap = app.query_one(ComposerFooterGap)
-        assert composer_gap.region.y == composer.region.bottom
-        assert status_line.region.y == composer_gap.region.bottom
+        assert status_line.region.y == composer.region.bottom
         assert status_line.region.bottom == app.query_one("#main").region.bottom
-        assert composer_gap.region.x == composer.region.x
-        assert composer_gap.region.right == composer.region.right
-        transition = composer_gap.render()
-        assert transition.plain == "▆" * composer_gap.content_size.width
-        assert transition.spans[0].style == f"#0c0c0c on {app.tui_theme.accent}"
-        assert transition.spans[1].style == "#0c0c0c on #171717"
         ready = status_line.query_one(ActivityIndicator).render()
         assert "Ready • inherit • faux" in ready.plain
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
@@ -1443,11 +1434,9 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert "FOLLOW" in queue_text
         assert "follow next" in queue_text
         composer = app.query_one(Composer)
-        composer_gap = app.query_one(ComposerFooterGap)
         status_line = app.query_one(StatusLine)
         assert queue_panel.region.y >= composer.region.bottom
-        assert composer_gap.region.y == queue_panel.region.bottom
-        assert status_line.region.y == composer_gap.region.bottom
+        assert status_line.region.y == queue_panel.region.bottom
         assert status_line.region.bottom == app.query_one("#main").region.bottom
         assert queue_panel.region.x == composer.region.x
         assert queue_panel.region.right == composer.region.right

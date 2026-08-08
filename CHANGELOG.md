@@ -54,8 +54,6 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
-- The TUI composer stack now ends in a dedicated sub-cell transition row, leaving a deliberate
-  three-quarter-cell visual gap before the bottom status line without relying on coarse margins.
 - TUI context usage now renders as a compact theme-colored progress bar without redundant labels
   or approximation marks, and highlights utilization above 80% with the warning tone.
 - Simplified the TUI composer surface by removing its focused-line fill and hiding scrollbar chrome

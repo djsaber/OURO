@@ -1516,30 +1516,6 @@ class QueuedInputPanel(VerticalScroll):
         self.scroll_end(animate=False)
 
 
-class ComposerFooterGap(Static):
-    """Sub-cell transition between the composer stack and bottom status line."""
-
-    def __init__(self) -> None:
-        super().__init__(id="composer-footer-gap")
-
-    def refresh_theme(self) -> None:
-        self.refresh()
-
-    def render(self) -> Text:
-        width = self.content_size.width
-        if width <= 0:
-            return Text()
-        theme = theme_for(self)
-        background = "#0c0c0c"
-        transition = Text()
-        transition.append("▆", style=f"{background} on {theme.accent}")
-        if width > 2:
-            transition.append("▆" * (width - 2), style=f"{background} on #171717")
-        if width > 1:
-            transition.append("▆", style=f"{background} on #34373d")
-        return transition
-
-
 class Composer(TextArea):
     DEFAULT_PLACEHOLDER = "Ask anything…"
     ACTIVE_RUN_PLACEHOLDER = "Enter queues a follow-up · Ctrl+Enter guides the active run…"

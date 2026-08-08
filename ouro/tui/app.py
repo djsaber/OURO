@@ -66,7 +66,6 @@ from ouro.tui.widgets import (
     BrandHeader,
     CommandPopup,
     Composer,
-    ComposerFooterGap,
     ConversationView,
     InteractionBar,
     PlanConfirmationPanel,
@@ -493,13 +492,6 @@ _OURO_TUI_CSS = """
         background: transparent;
     }
 
-    #composer-footer-gap {
-        width: 100%;
-        height: 1;
-        margin: 0 2;
-        background: $ouro-background;
-    }
-
     StatusLine {
         height: 1;
         margin: 0;
@@ -844,7 +836,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield InteractionBar()
             yield Composer()
             yield QueuedInputPanel()
-            yield ComposerFooterGap()
             yield StatusLine()
 
     def get_driver_class(self) -> type[Driver]:
