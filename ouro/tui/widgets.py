@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
-from typing import Protocol
+from typing import Literal, Protocol
 
 from pydantic import JsonValue
 from rich.text import Text
@@ -24,6 +24,11 @@ from ouro.application.queued_inputs import (
 )
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.builtin_plugins.plan_mode.interaction import (
+    PlanConfirmationAction,
+    PlanConfirmationAnswer,
+    PlanConfirmationRequest,
+)
 from ouro.core.messages import MessageRecord
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
@@ -724,6 +729,7 @@ class InteractionBar(Static):
     def __init__(self) -> None:
         super().__init__(id="interaction-bar")
         self.display = False
+        self.disabled = True
         self._interaction: PendingInteraction | None = None
         self._identity: tuple[str, str] | None = None
         self._selected = 0
@@ -735,7 +741,7 @@ class InteractionBar(Static):
     def show_interaction(self, interaction: PendingInteraction | None) -> None:
         if interaction is None or interaction.kind != "approval":
             self.display = False
-            self.disabled = False
+            self.disabled = True
             self._interaction = None
             self._identity = None
             self._selected = 0
@@ -854,6 +860,7 @@ class AskUserPanel(Static):
     def __init__(self) -> None:
         super().__init__(id="ask-user-panel")
         self.display = False
+        self.disabled = True
         self._request: QuestionForm | None = None
         self._question_index = 0
         self._cursor = 0
@@ -881,7 +888,7 @@ class AskUserPanel(Static):
 
     def hide_panel(self) -> None:
         self.display = False
-        self.disabled = False
+        self.disabled = True
         self._request = None
         self._awaiting_freeform = False
         self.update("")
@@ -1028,6 +1035,241 @@ class AskUserPanel(Static):
 
     def refresh_theme(self) -> None:
         self._render_question()
+
+
+class PlanConfirmationPanel(Static):
+    """Keyboard-first decision workflow for the builtin ExitPlanMode request."""
+
+    can_focus = True
+    can_focus_children = False
+    BINDINGS = [
+        Binding("up", "previous_option", show=False),
+        Binding("down", "next_option", show=False),
+        Binding("left", "previous_option", show=False),
+        Binding("right", "next_option", show=False),
+        Binding("enter", "accept", show=False),
+        Binding("escape", "back", show=False),
+        Binding("1", "choose(0)", show=False),
+        Binding("2", "choose(1)", show=False),
+        Binding("3", "choose(2)", show=False),
+    ]
+
+    class Completed(Message):
+        def __init__(self, answer: JsonValue) -> None:
+            super().__init__()
+            self.answer = answer
+
+    class FeedbackRequested(Message):
+        pass
+
+    def __init__(self) -> None:
+        super().__init__(id="plan-confirmation-panel")
+        self.display = False
+        self.disabled = True
+        self._request: PlanConfirmationRequest | None = None
+        self._stage: Literal["action", "option", "feedback"] = "action"
+        self._cursor = 0
+        self._awaiting_feedback = False
+
+    @property
+    def awaiting_feedback(self) -> bool:
+        return self._awaiting_feedback
+
+    @property
+    def selected_action(self) -> PlanConfirmationAction | None:
+        if self._request is None or self._stage != "action":
+            return None
+        return self._request.actions[self._cursor]
+
+    def show_request(self, request: PlanConfirmationRequest) -> None:
+        self._request = request
+        self._stage = "action"
+        self._cursor = 0
+        self._awaiting_feedback = False
+        self.disabled = False
+        self.display = True
+        self._render_panel()
+        self.scroll_home(animate=False)
+        self.focus()
+
+    def hide_panel(self) -> None:
+        self.display = False
+        self.disabled = True
+        self._request = None
+        self._stage = "action"
+        self._cursor = 0
+        self._awaiting_feedback = False
+        self.update("")
+
+    def resume(self) -> None:
+        if self._request is None:
+            return
+        self.disabled = False
+        self.display = True
+        self._render_panel()
+        if self._awaiting_feedback:
+            self.post_message(self.FeedbackRequested())
+        else:
+            self.focus()
+
+    def accept_feedback(self, value: str) -> None:
+        if self._request is None or not self._awaiting_feedback:
+            return
+        feedback = value.strip()
+        if not feedback:
+            return
+        self._awaiting_feedback = False
+        self._stage = "action"
+        self._complete(PlanConfirmationAnswer(action="revise", feedback=feedback))
+
+    def action_previous_option(self) -> None:
+        self._move_cursor(-1)
+
+    def action_next_option(self) -> None:
+        self._move_cursor(1)
+
+    def action_choose(self, index: int) -> None:
+        if index < 0 or index >= len(self._choices()):
+            return
+        self._cursor = index
+        self.action_accept()
+
+    def action_accept(self) -> None:
+        request = self._request
+        if request is None or self.disabled or self._stage == "feedback":
+            return
+        if self._stage == "option":
+            selected_option = request.options[self._cursor]
+            self._complete(
+                PlanConfirmationAnswer(action="accept", option=selected_option.label)
+            )
+            return
+
+        action = request.actions[self._cursor]
+        if action == "accept":
+            if len(request.options) > 1:
+                self._stage = "option"
+                self._cursor = 0
+                self._render_panel()
+                return
+            option_label = request.options[0].label if request.options else None
+            self._complete(PlanConfirmationAnswer(action="accept", option=option_label))
+            return
+        if action == "revise":
+            self._stage = "feedback"
+            self._awaiting_feedback = True
+            self._render_panel()
+            self.post_message(self.FeedbackRequested())
+            return
+        self._complete(PlanConfirmationAnswer(action="reject"))
+
+    def action_back(self) -> None:
+        if self._request is None or self.disabled or self._stage == "action":
+            return
+        self._stage = "action"
+        self._cursor = 0
+        self._awaiting_feedback = False
+        self._render_panel()
+        self.focus()
+
+    def refresh_theme(self) -> None:
+        self._render_panel()
+
+    def _move_cursor(self, offset: int) -> None:
+        choices = self._choices()
+        if not choices or self.disabled or self._stage == "feedback":
+            return
+        self._cursor = (self._cursor + offset) % len(choices)
+        self._render_panel()
+
+    def _choices(self) -> tuple[object, ...]:
+        if self._request is None:
+            return ()
+        if self._stage == "action":
+            return self._request.actions
+        if self._stage == "option":
+            return self._request.options
+        return ()
+
+    def _complete(self, answer: PlanConfirmationAnswer) -> None:
+        self.disabled = True
+        self.post_message(self.Completed(answer.to_json()))
+
+    def _render_panel(self) -> None:
+        request = self._request
+        if request is None:
+            return
+        theme = theme_for(self)
+        content = Text()
+        content.append("? PLAN APPROVAL\n\n", style=f"bold {theme.accent_bright}")
+        content.append(request.plan, style="#d6d9df")
+        content.append("\n\n")
+        if request.error:
+            content.append(f"{request.error}\n\n", style="#b97878")
+        if self._stage == "action":
+            content.append("Choose how Plan mode should continue\n\n", style="#aeb5bf")
+            presentations = {
+                "accept": ("Accept", "Approve the plan and exit Plan mode", "#77b083"),
+                "revise": ("Revise", "Keep planning and provide feedback", theme.accent),
+                "reject": ("Reject", "Reject the plan and keep Plan mode active", "#b97878"),
+            }
+            for index, action in enumerate(request.actions):
+                label, description, tone = presentations[action]
+                self._append_option(
+                    content,
+                    index=index,
+                    label=label,
+                    description=description,
+                    tone=tone,
+                )
+            content.append(
+                "\n↑/↓ or ←/→ move · Enter choose · 1-3 direct",
+                style="#6f7a87",
+            )
+        elif self._stage == "option":
+            content.append("Choose an implementation approach\n\n", style="#aeb5bf")
+            for index, option in enumerate(request.options):
+                self._append_option(
+                    content,
+                    index=index,
+                    label=option.label,
+                    description=option.description,
+                    tone=theme.accent,
+                )
+            content.append(
+                "\n↑/↓ or ←/→ move · Enter choose · 1-3 direct · Esc back",
+                style="#6f7a87",
+            )
+        else:
+            content.append("REVISION FEEDBACK\n", style=f"bold {theme.accent_bright}")
+            content.append(
+                "Type the requested plan changes below, then press Enter",
+                style="#6f7a87",
+            )
+        self.update(content)
+
+    def _append_option(
+        self,
+        content: Text,
+        *,
+        index: int,
+        label: str,
+        description: str,
+        tone: str,
+    ) -> None:
+        active = index == self._cursor
+        theme = theme_for(self)
+        content.append("› " if active else "  ", style=theme.accent if active else "")
+        content.append(
+            f"{index + 1}. {label}",
+            style=f"bold {tone}" if active else "bold #d6d9df",
+        )
+        if description:
+            content.append(
+                f"  {description}",
+                style="#d6d9df" if active else "#6f7a87",
+            )
+        content.append("\n")
 
 
 class CommandPopup(VerticalScroll):
@@ -1247,6 +1489,7 @@ class Composer(TextArea):
     ACTIVE_RUN_PLACEHOLDER = "Enter queues a follow-up · Ctrl+Enter guides the active run…"
     QUESTION_PLACEHOLDER = "Choose an option above…"
     FREEFORM_PLACEHOLDER = "Type another answer…"
+    PLAN_FEEDBACK_PLACEHOLDER = "Describe the requested plan changes…"
 
     BINDINGS = [
         *TextArea.BINDINGS,

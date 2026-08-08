@@ -53,6 +53,7 @@ from ouro.tui.controller import (
     TuiSystemStatus,
     project_mcp_system_status,
 )
+from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
@@ -65,6 +66,7 @@ from ouro.tui.widgets import (
     Composer,
     ConversationView,
     InteractionBar,
+    PlanConfirmationPanel,
     QueuedInputPanel,
     StatusLine,
 )
@@ -353,6 +355,30 @@ _OURO_TUI_CSS = """
     }
 
     #ask-user-panel:focus {
+        border-left: solid $ouro-theme;
+        border-right: solid $ouro-border-focus;
+    }
+
+    #plan-confirmation-panel {
+        height: auto;
+        max-height: 24;
+        margin: 0 2;
+        padding: 1 2;
+        color: #d6d9df;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-border-left;
+        overflow-y: auto;
+        scrollbar-background: transparent;
+        scrollbar-color: #505967;
+        scrollbar-color-hover: #6a7482;
+        scrollbar-size-vertical: 1;
+        scrollbar-gutter: stable;
+    }
+
+    #plan-confirmation-panel:focus {
         border-left: solid $ouro-theme;
         border-right: solid $ouro-border-focus;
     }
@@ -755,6 +781,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield ConversationView()
             yield CommandPopup()
             yield AskUserPanel()
+            yield PlanConfirmationPanel()
             yield InteractionBar()
             yield Composer()
             yield QueuedInputPanel()
@@ -1049,6 +1076,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(InteractionBar).focus()
             return
         if interaction is not None and interaction.kind == "question":
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            if plan_panel.display and plan_panel.awaiting_feedback:
+                plan_panel.accept_feedback(message.text)
+                return
             panel = self.query_one(AskUserPanel)
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
@@ -1152,7 +1183,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         message.text_area.suggestion = ""
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
-        if ask_user.display and ask_user.awaiting_freeform:
+        plan_panel = self.query_one(PlanConfirmationPanel)
+        if (
+            (ask_user.display and ask_user.awaiting_freeform)
+            or (plan_panel.display and plan_panel.awaiting_feedback)
+        ):
             popup.hide()
             return
         if value == self._dismissed_command_text:
@@ -1183,6 +1218,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = self.query_one(Composer)
         interaction = self._interaction
         ask_user = self.query_one(AskUserPanel)
+        plan_panel = self.query_one(PlanConfirmationPanel)
+        if (
+            interaction is not None
+            and interaction.kind == "question"
+            and plan_panel.display
+            and plan_panel.awaiting_feedback
+        ):
+            composer.clear()
+            popup.hide()
+            self._dismissed_command_text = None
+            plan_panel.accept_feedback(message.text)
+            return
         if (
             interaction is not None
             and interaction.kind == "question"
@@ -1265,7 +1312,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.query_one(InteractionBar).resume()
 
     @work(exclusive=True, group="interaction")
-    async def _answer_question(self, interaction: PendingInteraction, answer: JsonValue) -> None:
+    async def _answer_input(self, interaction: PendingInteraction, answer: JsonValue) -> None:
         self.query_one(Composer).disabled = True
         try:
             result = await self._controller.answer(interaction=interaction, answer=answer)
@@ -1274,17 +1321,27 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            self.query_one(AskUserPanel).resume()
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            if plan_panel.display:
+                plan_panel.resume()
+            else:
+                self.query_one(AskUserPanel).resume()
         finally:
             composer = self.query_one(Composer)
             composer.disabled = False
             current = self._interaction
-            panel = self.query_one(AskUserPanel)
-            if current is not None and current.kind == "question" and panel.display:
-                if panel.awaiting_freeform:
+            ask_user = self.query_one(AskUserPanel)
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            if current is not None and current.kind == "question" and plan_panel.display:
+                if plan_panel.awaiting_feedback:
                     composer.focus()
                 else:
-                    panel.focus()
+                    plan_panel.focus()
+            elif current is not None and current.kind == "question" and ask_user.display:
+                if ask_user.awaiting_freeform:
+                    composer.focus()
+                else:
+                    ask_user.focus()
             else:
                 composer.focus()
 
@@ -1294,11 +1351,27 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def on_ask_user_panel_completed(self, message: AskUserPanel.Completed) -> None:
         interaction = self._interaction
         if interaction is not None and interaction.kind == "question":
-            self._answer_question(interaction, message.answer)
+            self._answer_input(interaction, message.answer)
 
     def on_ask_user_panel_freeform_requested(
         self,
         _message: AskUserPanel.FreeformRequested,
+    ) -> None:
+        composer = self.query_one(Composer)
+        self._sync_composer_placeholder()
+        composer.focus()
+
+    def on_plan_confirmation_panel_completed(
+        self,
+        message: PlanConfirmationPanel.Completed,
+    ) -> None:
+        interaction = self._interaction
+        if interaction is not None and interaction.kind == "question":
+            self._answer_input(interaction, message.answer)
+
+    def on_plan_confirmation_panel_feedback_requested(
+        self,
+        _message: PlanConfirmationPanel.FeedbackRequested,
     ) -> None:
         composer = self.query_one(Composer)
         self._sync_composer_placeholder()
@@ -1335,14 +1408,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _sync_interaction(self, interaction: PendingInteraction | None) -> None:
         interaction_bar = self.query_one(InteractionBar)
         ask_user = self.query_one(AskUserPanel)
+        plan_panel = self.query_one(PlanConfirmationPanel)
         composer = self.query_one(Composer)
         if interaction is not None and interaction.kind == "question":
             interaction_bar.show_interaction(None)
-            ask_user.show_request(project_question_form(interaction.tool_name, interaction.request))
+            plan_request = project_plan_confirmation(interaction)
+            if plan_request is not None:
+                ask_user.hide_panel()
+                plan_panel.show_request(plan_request)
+            else:
+                plan_panel.hide_panel()
+                ask_user.show_request(
+                    project_question_form(interaction.tool_name, interaction.request)
+                )
             composer.disabled = False
             self._sync_composer_placeholder()
             return
         ask_user.hide_panel()
+        plan_panel.hide_panel()
         interaction_bar.show_interaction(interaction)
         self._sync_composer_placeholder()
         if interaction is not None and interaction.kind == "approval":
@@ -1357,11 +1440,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
         interaction = self._interaction
         if interaction is not None and interaction.kind == "question":
-            placeholder = (
-                Composer.FREEFORM_PLACEHOLDER
-                if self.query_one(AskUserPanel).awaiting_freeform
-                else Composer.QUESTION_PLACEHOLDER
-            )
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            if plan_panel.display and plan_panel.awaiting_feedback:
+                placeholder = Composer.PLAN_FEEDBACK_PLACEHOLDER
+            else:
+                placeholder = (
+                    Composer.FREEFORM_PLACEHOLDER
+                    if self.query_one(AskUserPanel).awaiting_freeform
+                    else Composer.QUESTION_PLACEHOLDER
+                )
         elif self._has_active_run():
             placeholder = Composer.ACTIVE_RUN_PLACEHOLDER
         else:

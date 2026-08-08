@@ -54,6 +54,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The TUI now recognizes builtin `ExitPlanMode` input by canonical tool provenance and presents a
+  keyboard-first Plan approval workflow instead of raw request JSON. The panel shows only the Plan
+  body with preserved line breaks in a scrollable view, provides action and implementation-option
+  prompts, and collects structured revision feedback through the Composer.
 - TUI notifications now appear in the upper-right with equal top and right insets, the same
   restrained panel surface, single-cell side rails, and theme-aware accent used by OURO's composer
   and menus; warning and error rails retain muted semantic colors without changing the geometry.

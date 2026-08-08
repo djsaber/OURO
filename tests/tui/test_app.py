@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -76,6 +77,7 @@ from ouro.tui.widgets import (
     Composer,
     ConversationView,
     InteractionBar,
+    PlanConfirmationPanel,
     QueuedInputPanel,
     StatusLine,
     ToolActivityRow,
@@ -335,6 +337,64 @@ class QueuedSubagentApprovalProvider:
             return
         self.queued_input_consumed.set()
         yield ProviderStreamEvent(type="text_delta", text="queued input consumed")
+        yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(
+            provider_id=self.provider_id,
+            ok=True,
+            model_id=model.model_id,
+            message="ok",
+        )
+
+
+class TuiPlanConfirmationProvider:
+    provider_id = "tui-plan-confirmation"
+
+    def __init__(self, options: list[dict[str, str]] | None = None) -> None:
+        self.options = options or []
+        self.stream_count = 0
+        self.plan_path: str | None = None
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, tools
+        if self.stream_count == 0:
+            scaffold = next(
+                message.text_content
+                for message in reversed(messages)
+                if message.role == "system_synthetic" and "Plan file:" in message.text_content
+            )
+            match = re.search(r"Plan file: (.+)", scaffold)
+            assert match is not None
+            self.plan_path = match.group(1)
+            call = ToolCallRequest(
+                id="call_write_plan",
+                name="Write",
+                arguments={
+                    "path": self.plan_path,
+                    "content": "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify.",
+                },
+            )
+        elif self.stream_count == 1:
+            call = ToolCallRequest(
+                id="call_exit_plan",
+                name="ExitPlanMode",
+                arguments={"options": self.options} if self.options else {},
+            )
+        else:
+            self.stream_count += 1
+            yield ProviderStreamEvent(type="text_delta", text="Decision received.")
+            yield ProviderStreamEvent(type="done")
+            return
+        self.stream_count += 1
+        yield ProviderStreamEvent.from_tool_call(call)
         yield ProviderStreamEvent(type="done")
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
@@ -619,6 +679,29 @@ def _question_application(
                 ]
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=tools,
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+def _plan_confirmation_application(
+    tmp_path: Path,
+    *,
+    options: list[dict[str, str]] | None = None,
+) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    tools = ToolRegistry()
+    for tool in builtin_tools():
+        tools.register(tool)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            TuiPlanConfirmationProvider(options),
+            ModelMetadata(model_id="faux", provider_id="tui-plan-confirmation"),
         ),
         tools=tools,
         default_workspace=tmp_path,
@@ -2756,6 +2839,124 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
         ).events
         resolved = next(event for event in events if event.event_type == "ask_user_resolved")
         assert resolved.payload["answer"] == "Safely"
+
+
+@pytest.mark.asyncio
+async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedback(
+    tmp_path: Path,
+) -> None:
+    application = _plan_confirmation_application(tmp_path)
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    app = OuroTuiApp(application=application, approval_mode="auto")
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"plan", "space", "o", "n", "enter")
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press("p", "l", "a", "n", "enter")
+
+        panel = app.query_one(PlanConfirmationPanel)
+        for _ in range(30):
+            if panel.display:
+                break
+            await pilot.pause(0.1)
+        ask_user = app.query_one(AskUserPanel)
+        rendered = panel.render().plain
+
+        assert panel.display is True
+        assert panel.has_focus is True
+        assert ask_user.display is False
+        assert "# Release plan\n\n1. Inspect.\n2. Ship safely.\n3. Verify." in rendered
+        assert "C:/private/session/plan.md" not in rendered
+        assert "plan_digest" not in rendered
+        assert '"actions"' not in rendered
+        assert "Accept" in rendered
+        assert "Revise" in rendered
+        assert "Reject" in rendered
+        assert "↑/↓ or ←/→ move · Enter choose · 1-3 direct" in rendered
+        assert panel.selected_action == "accept"
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        assert panel.awaiting_feedback is True
+        assert composer.has_focus is True
+        assert composer.placeholder == Composer.PLAN_FEEDBACK_PLACEHOLDER
+
+        await pilot.press(*"Add rollback checks.", "enter")
+        await pilot.pause(0.8)
+
+        assert app._projection is not None
+        assert app._projection.pending_interaction is None
+        assert panel.display is False
+        events = application.runtime.sessions.event_page(
+            app._projection.session_id,
+            cursor=0,
+            limit=200,
+        ).events
+        requested = next(event for event in events if event.event_type == "ask_user_requested")
+        resolved = next(event for event in events if event.event_type == "ask_user_resolved")
+        assert requested.payload["canonical_tool_id"] == "dev.ouro.plan_mode/tools/exit"
+        assert resolved.payload["answer"] == {
+            "action": "revise",
+            "feedback": "Add rollback checks.",
+        }
+
+
+@pytest.mark.asyncio
+async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_option(
+    tmp_path: Path,
+) -> None:
+    application = _plan_confirmation_application(
+        tmp_path,
+        options=[
+            {"label": "Safe rollout", "description": "Keep rollback available."},
+            {"label": "Direct rollout", "description": "Complete the change at once."},
+        ],
+    )
+    await application.start()
+    assert application.plugins is not None
+    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
+    app = OuroTuiApp(application=application, approval_mode="auto")
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"plan", "space", "o", "n", "enter")
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press("p", "l", "a", "n", "enter")
+
+        panel = app.query_one(PlanConfirmationPanel)
+        for _ in range(30):
+            if panel.display:
+                break
+            await pilot.pause(0.1)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        rendered = panel.render().plain
+        assert "Choose an implementation approach" in rendered
+        assert "Safe rollout" in rendered
+        assert "Direct rollout" in rendered
+
+        await pilot.press("2")
+        await pilot.pause(0.8)
+
+        assert app._projection is not None
+        events = application.runtime.sessions.event_page(
+            app._projection.session_id,
+            cursor=0,
+            limit=200,
+        ).events
+        resolved = next(event for event in events if event.event_type == "ask_user_resolved")
+        assert resolved.payload["answer"] == {
+            "action": "accept",
+            "option": "Direct rollout",
+        }
 
 
 @pytest.mark.asyncio
