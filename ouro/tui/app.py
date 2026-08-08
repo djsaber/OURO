@@ -348,7 +348,7 @@ _OURO_TUI_CSS = """
         height: auto;
         max-height: 8;
         margin: 0 2;
-        padding: 1 2;
+        padding: 1 2 0 2;
         color: #d6d9df;
         background: $ouro-panel;
         border-top: none;

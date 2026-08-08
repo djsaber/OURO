@@ -1074,6 +1074,9 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert queue_panel.styles.background == composer.styles.background
         assert queue_panel.styles.border_left[0] == "solid"
         assert queue_panel.styles.border_right[0] == "solid"
+        queue_content = queue_panel.query_one("#queued-input-content", Static)
+        assert queue_content.region.y - queue_panel.region.y == 1
+        assert queue_panel.region.bottom - queue_content.region.bottom == 1
         assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["first"]
 
         provider.release.set()
