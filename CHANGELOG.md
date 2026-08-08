@@ -55,6 +55,8 @@ This project records user-visible and framework-contract changes in this file.
   the Composer with matching panel chrome. Ready uses the active theme color, the Session picker
   omits internal route identities and truncates long titles, and `/thinking` completion derives the
   same Endpoint-aware choices as the action menu.
+- Windows terminals now preserve Shift+Enter newlines even when their VT input reports the key as
+  plain Enter; the platform-specific normalization remains isolated in the Textual driver adapter.
 - Auto-start MCP servers now connect under background owner tasks without delaying Host startup;
   live starting/connected/reconnecting/failed state and atomic tool projection share the Manager's
   single source of truth. The TUI now reconciles that live in-process snapshot and updates connection

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +12,7 @@ from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
+from textual.driver import Driver
 from textual.message import Message
 from textual.messages import Prune
 from textual.screen import Screen
@@ -688,6 +690,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield Composer()
             yield QueuedInputPanel()
             yield StatusLine()
+
+    def get_driver_class(self) -> type[Driver]:
+        driver_class = super().get_driver_class()
+        if sys.platform == "win32":
+            from textual.drivers.windows_driver import WindowsDriver
+
+            if driver_class is WindowsDriver:
+                from ouro.tui.windows_driver import OuroWindowsDriver
+
+                return OuroWindowsDriver
+        return driver_class
 
     def get_default_screen(self) -> Screen:
         return _OuroHostScreen(self._begin_host_close)
