@@ -1652,8 +1652,7 @@ class Composer(TextArea):
 class StatusLine(Horizontal):
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
-        yield Static("—", id="context-detail")
-        yield Static("", id="status-detail")
+        yield Static("", id="context-detail")
 
     def set_activity(self, activity: str) -> None:
         self.query_one(ActivityIndicator).set_activity(activity)
@@ -1664,15 +1663,12 @@ class StatusLine(Horizontal):
     def set_reasoning(self, value: str | None, *, peak: bool = False) -> None:
         self.query_one(ActivityIndicator).set_reasoning(value, peak=peak)
 
-    def set_detail(self, detail: str) -> None:
-        self.query_one("#status-detail", Static).update(detail)
-
     def set_approval_mode(self, mode: TuiApprovalPreset) -> None:
         self.query_one(ActivityIndicator).set_approval_mode(mode)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
         if status is None:
-            content = Text("—")
+            content = Text()
         else:
             metrics = status.metrics
             used = metrics.estimated_input_tokens

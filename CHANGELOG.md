@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The TUI status line right edge now exclusively presents prepared context usage and remains empty
+  until that context data exists; transient details and tool counts stay out of this slot.
 - TUI context usage now renders as a compact theme-colored progress bar without redundant labels
   or approximation marks, and highlights utilization above 80% with the warning tone.
 - Simplified the TUI composer surface by removing its focused-line fill and hiding scrollbar chrome

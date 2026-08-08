@@ -839,6 +839,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         status_line = app.query_one(StatusLine)
         assert status_line.region.y == composer.region.bottom
         assert status_line.region.bottom == app.query_one("#main").region.bottom
+        assert status_line.query_one("#context-detail", Static).render().plain == ""
+        assert len(status_line.query("#status-detail")) == 0
         ready = status_line.query_one(ActivityIndicator).render()
         assert "Ready • inherit • faux" in ready.plain
         assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
@@ -950,6 +952,9 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         assert warning.get_style_at_offset(warning.plain.index("81%")).foreground == Color.parse(
             "#968264"
         )
+
+        status_line.set_context(None)
+        assert context_detail.render().plain == ""
 
 
 @pytest.mark.asyncio

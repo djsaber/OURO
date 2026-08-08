@@ -502,7 +502,6 @@ _OURO_TUI_CSS = """
 
     #activity-indicator { width: 1fr; }
     #context-detail { width: auto; text-align: right; }
-    #status-detail { width: auto; margin-left: 2; text-align: right; }
 
     ChoiceScreen, ModelConfigurationScreen, ToolExecutionConfigurationScreen,
     CompactionConfigurationScreen,
@@ -887,7 +886,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
             self.query_one(StatusLine).set_activity("failed")
             await conversation.add_notice(f"OURO could not start: {exc}", error=True)
-            self.query_one(StatusLine).set_detail("startup failed")
             return
         self._apply_bootstrap(bootstrap)
         await self._refresh_reasoning_indicator()
@@ -918,11 +916,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
-        diagnostics = bootstrap.startup_report.diagnostics
-        if diagnostics:
-            self.query_one(StatusLine).set_detail(f"{len(diagnostics)} startup diagnostic(s)")
-        else:
-            self.query_one(StatusLine).set_detail("")
 
     def _apply_reasoning_state(self, state: ModelReasoningState) -> None:
         """Project the effective thinking level onto the status line."""
@@ -973,7 +966,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def on_lifecycle_status_received(self, message: LifecycleStatusReceived) -> None:
         self.query_one(StatusLine).set_activity(message.status.activity)
-        self.query_one(StatusLine).set_detail(message.status.detail)
 
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
         self._system_status = bootstrap.system_status
@@ -1147,10 +1139,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         active_run = self._has_active_run()
         if not active_run:
             self.query_one(StatusLine).set_activity("queued")
-        mode_label = "guide" if queue_mode == "steer" else "follow-up"
-        self.query_one(StatusLine).set_detail(
-            "Submitting…" if self._projection is None else f"Queueing {mode_label}…"
-        )
         if self._projection is None:
             self.query_one(Composer).disabled = True
             self._waiting_for_session_event = True
@@ -1174,7 +1162,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             self.query_one(StatusLine).set_activity("failed")
-            self.query_one(StatusLine).set_detail("Run failed")
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
         finally:
             self._waiting_for_session_event = False
@@ -1430,10 +1417,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         self.query_one(StatusLine).set_activity(activity.activity)
-        detail = f"{len(activity.tool_calls)} tool(s)" if activity.tool_calls else ""
         status_line = self.query_one(StatusLine)
         status_line.set_context(activity.context_status)
-        status_line.set_detail(detail)
         self._sync_composer_placeholder()
 
     async def _refresh_interaction(
@@ -1731,7 +1716,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer = self.query_one(Composer)
         composer.disabled = True
         self.query_one(StatusLine).set_activity("compacting")
-        self.query_one(StatusLine).set_detail("Compacting context…")
         try:
             result = await self._controller.compact()
             await self._flush_pending_runtime_events()

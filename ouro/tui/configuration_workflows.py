@@ -20,7 +20,7 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.screens import Choice, ChoiceScreen
-from ouro.tui.widgets import ConversationView, StatusLine
+from ouro.tui.widgets import ConversationView
 
 _CONFIGURE_TOOL_EXECUTION = "__ouro_tool_execution__"
 _ADD_MCP_SERVER = "__ouro_add_mcp_server__"
@@ -309,14 +309,11 @@ class ConfigurationWorkflowsApp(App[int]):
         self.notify(f"MCP configuration saved: {saved.server_id} (next restart)")
 
     async def _check_mcp(self, server_id: str) -> None:
-        self.query_one(StatusLine).set_detail(f"Checking MCP {server_id}…")
         try:
             result = await self._controller.check_mcp_server(server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        finally:
-            self.query_one(StatusLine).set_detail("")
         if result.ok:
             self.notify(f"MCP check passed: {server_id} · {len(result.tool_names)} tool(s)")
         else:
