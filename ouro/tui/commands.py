@@ -61,9 +61,9 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     ),
     TuiCommand(
         "/model",
-        "Select or configure model",
-        "Select a model or configure a new endpoint",
-        "[selector|new]",
+        "Select model",
+        "Select the model used by this conversation",
+        "<model>",
     ),
     TuiCommand(
         "/approval",
@@ -104,28 +104,10 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         aliases=("/compaction",),
     ),
     TuiCommand(
-        "/config",
-        "Configuration",
-        "Open tool, compaction, MCP, and skill configuration",
-        "[section]",
-    ),
-    TuiCommand(
-        "/tools",
-        "Tool configuration",
-        "Manage tool permissions and read/write path scope",
-        "[tool]",
-    ),
-    TuiCommand(
-        "/mcp",
-        "MCP management",
-        "Configure and manage MCP servers",
-        "[server]",
-    ),
-    TuiCommand(
-        "/skills",
-        "Skill management",
-        "Install, enable, update, validate, or remove skills",
-        "[skill]",
+        "/skill",
+        "Use skill",
+        "Run a follow-up with one explicitly selected skill",
+        "<skill> [task]",
     ),
     TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
     TuiCommand(

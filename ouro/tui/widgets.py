@@ -587,7 +587,7 @@ class ConversationView(VerticalScroll):
 
         for message in materialized:
             if message.role == "user":
-                text = message.text_content
+                text = _user_message_text(message)
                 if not text:
                     continue
                 transcript.append(_user_turn(text))
@@ -636,6 +636,11 @@ class ConversationView(VerticalScroll):
         await self._dismiss_welcome()
         self._assistant = None
         await self._transcript.mount(_user_turn(text))
+
+    async def add_user_message(self, message: MessageRecord) -> None:
+        text = _user_message_text(message)
+        if text:
+            await self.add_user(text)
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
@@ -1217,6 +1222,8 @@ class QueuedInputPanel(VerticalScroll):
             label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
             tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
             prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
+            if item.skill_name is not None:
+                prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
             content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
             content.append(prompt, style="#d6d9df")
             if index < len(inputs):
@@ -1391,3 +1398,11 @@ class StatusLine(Horizontal):
                     f"Context ~{_compact_count(used)}/{_compact_count(budget)} · {ratio:.0%}"
                 )
         self.query_one("#context-detail", Static).update(label)
+
+
+def _user_message_text(message: MessageRecord) -> str:
+    activations = message.skill_activations
+    if not activations:
+        return message.text_content
+    task = message.text_content.strip()
+    return f"/skill {activations[0].name}{f' {task}' if task else ''}"

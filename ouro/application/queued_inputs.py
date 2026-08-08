@@ -28,6 +28,7 @@ class QueuedUserInputView(ApplicationDTO):
     prompt: str
     mode: QueuedInputMode
     queued_at: datetime
+    skill_name: str | None = None
 
 
 class QueuedInput(OuroModel):

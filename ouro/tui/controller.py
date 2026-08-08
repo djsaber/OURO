@@ -36,6 +36,7 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionDetail,
 )
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageTotals
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult
@@ -186,6 +187,13 @@ class TuiSkillInstallConfiguration:
     install_all: bool = False
     force: bool = False
     ref: str | None = None
+
+
+@dataclass(frozen=True)
+class TuiSkillInvocationOption:
+    name: str
+    description: str
+    argument_hint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -349,6 +357,7 @@ class TuiController:
         prompt: str,
         *,
         queue_mode: QueuedInputMode = "follow_up",
+        skill_invocation: SkillInvocationRequest | None = None,
     ) -> RunResult:
         runtime = self._runtime()
         is_new_session = self._session_id is None
@@ -357,6 +366,7 @@ class TuiController:
         try:
             result = await runtime.run(
                 prompt,
+                skill_invocation=skill_invocation,
                 session_id=self._session_id,
                 queue_mode=queue_mode,
                 initial_model=self._initial_model if is_new_session else None,
@@ -370,6 +380,19 @@ class TuiController:
         finally:
             if is_new_session:
                 self._creating_session = False
+
+    def skill_invocation_options(self) -> tuple[TuiSkillInvocationOption, ...]:
+        """Project currently invocable Runtime skills for the inline command menu."""
+
+        return tuple(
+            TuiSkillInvocationOption(
+                name=skill.name,
+                description=skill.description,
+                argument_hint=skill.argument_hint,
+            )
+            for skill in self._runtime().available_skills()
+            if skill.enabled and skill.user_invocable
+        )
 
     async def abort(self) -> RunResult | None:
         if self._session_id is None:

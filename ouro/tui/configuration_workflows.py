@@ -91,7 +91,7 @@ class ConfigurationWorkflowsApp(App[int]):
         else:
             available = "|".join(_CONFIGURATION_SECTIONS)
             await self.query_one(ConversationView).add_notice(
-                f"Usage: /config [{available}]",
+                f"Unknown configuration section: {selected}. Available: {available}",
                 error=True,
             )
 

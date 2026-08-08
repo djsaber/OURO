@@ -42,6 +42,7 @@ from ouro.mcp import (
 )
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
+from ouro.skills import SkillLoader, SkillMetadata
 from ouro.tools import (
     Tool,
     ToolDefinition,
@@ -55,8 +56,6 @@ from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
-    SkillInstallScreen,
-    ToolExecutionConfigurationScreen,
 )
 from ouro.tui.controller import (
     TuiController,
@@ -347,7 +346,12 @@ class QueuedSubagentApprovalProvider:
         )
 
 
-def _application(tmp_path: Path, text: str = "**Hello** from OURO") -> LocalApplication:
+def _application(
+    tmp_path: Path,
+    text: str = "**Hello** from OURO",
+    *,
+    skills: tuple[SkillMetadata, ...] = (),
+) -> LocalApplication:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
@@ -364,6 +368,7 @@ def _application(tmp_path: Path, text: str = "**Hello** from OURO") -> LocalAppl
             ModelMetadata(model_id="faux", provider_id="faux"),
         ),
         tools=ToolRegistry(),
+        skills=skills,
         default_workspace=tmp_path,
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
@@ -1977,7 +1982,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
+async def test_actions_owns_the_configuration_hub(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -1985,36 +1990,23 @@ async def test_configuration_hubs_open_their_primary_forms_with_keyboard_only(
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
 
-        await pilot.press("slash", *"tools", "enter", "enter")
-        await pilot.pause()
+        await pilot.press("ctrl+p", "down", "enter")
+        await pilot.pause(0.2)
         assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ToolExecutionConfigurationScreen)
-        await pilot.press("escape")
+        assert app.screen.query_one("#choice-title", Static).render().plain == "CONFIGURATION"
+        choices = app.screen.query_one(OptionList)
+        rendered = "\n".join(
+            str(choices.get_option_at_index(index).prompt)
+            for index in range(choices.option_count)
+        )
+        assert "Compaction" in rendered
+        assert "Tools & path access" in rendered
+        assert "MCP servers" in rendered
+        assert "Skills" in rendered
 
-        await pilot.press("slash", *"config", "enter", "enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, CompactionConfigurationScreen)
-        await pilot.press("escape")
-
-        await pilot.press("slash", *"mcp", "enter", "enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, MCPConfigurationScreen)
-        await pilot.press("escape")
-
-        await pilot.press("slash", *"skills", "enter", "enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, SkillInstallScreen)
         await pilot.press("escape")
 
 
@@ -2211,8 +2203,10 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         assert popup_content.content_region.width == popup.scrollable_content_region.width
         assert "abort" in app.export_screenshot()
         popup_text = popup_content.render().plain
-        assert "[selector|new]" not in popup_text
-        assert "[tool]" not in popup_text
+        assert "/config" not in popup_text
+        assert "/tools" not in popup_text
+        assert "/mcp" not in popup_text
+        assert "/skills" not in popup_text
         assert popup.selected_command is not None
         assert popup.selected_command.name == "/abort"
 
@@ -2223,13 +2217,12 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         assert popup.scroll_y == 0
 
         for _ in range(20):
-            if popup.selected_command is not None and popup.selected_command.name == "/tools":
+            if popup.selected_command is not None and popup.selected_command.name == "/skill":
                 break
             await pilot.press("down")
         await pilot.pause()
         assert popup.selected_command is not None
-        assert popup.selected_command.name == "/tools"
-        assert popup.scroll_y > 0
+        assert popup.selected_command.name == "/skill"
 
         await pilot.press("escape")
         assert popup.display is False
@@ -2245,6 +2238,84 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, HelpScreen)
+
+
+@pytest.mark.asyncio
+async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"model", "enter")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert composer.text == "/model "
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/model"
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "faux/faux"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == "/model faux/faux"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == ""
+        assert app._active_model == "faux"
+
+
+@pytest.mark.asyncio
+async def test_skill_command_uses_inline_catalog_and_durable_activation(tmp_path: Path) -> None:
+    skill_root = tmp_path / "skills" / "reviewer"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        """---
+name: reviewer
+description: Review source code.
+argument-hint: <task>
+---
+Review the requested code carefully.
+""",
+        encoding="utf-8",
+    )
+    skill = SkillLoader(skill_root.parent).load_metadata()[0]
+    application = _application(tmp_path, skills=(skill,))
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"skill", "enter")
+        await pilot.pause()
+
+        popup = app.query_one(CommandPopup)
+        assert app.query_one(Composer).text == "/skill "
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/skill"
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "reviewer"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        composer = app.query_one(Composer)
+        assert composer.text == "/skill reviewer "
+        assert composer.suggestion == "<task>"
+
+        await pilot.press(*"inspect", "space", *"app.py", "enter")
+        await pilot.pause(0.8)
+
+        turns = list(app.query_one(ConversationView).query(".user-turn"))
+        assert [turn.render().plain for turn in turns] == [
+            "/skill reviewer inspect app.py"
+        ]
+        assert app._controller.session_id is not None
+        snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
+        message = next(item for item in snapshot.messages if item.skill_activations)
+        assert message.skill_activations[0].name == "reviewer"
+        assert message.text_content == "inspect app.py"
 
 
 @pytest.mark.asyncio

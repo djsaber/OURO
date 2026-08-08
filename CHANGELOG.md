@@ -54,6 +54,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI slash commands now focus on conversation actions: model and explicit Skill selection use the
+  inline argument menu, `/skill` creates canonical durable Skill activations, and persistent tool,
+  MCP, Skill-management, and general configuration workflows live exclusively under Actions.
 - The TUI welcome page now presents System information before its reduced command, action, and
   Session tips; removes the generic prompt and Health row; and uses regular-weight detail labels.
   During an active Run, the Composer placeholder moves follow-up and guidance key hints to the

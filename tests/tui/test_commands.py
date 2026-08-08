@@ -11,8 +11,13 @@ from ouro.tui.commands import (
 
 
 def test_matching_commands_filters_prefixes_and_aliases() -> None:
-    assert [command.name for command in matching_commands("/m")] == ["/model", "/mcp"]
+    assert [command.name for command in matching_commands("/m")] == ["/model"]
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
+    assert [command.name for command in matching_commands("/ski")] == ["/skill"]
+    assert matching_commands("/config") == ()
+    assert matching_commands("/tools") == ()
+    assert matching_commands("/mcp") == ()
+    assert matching_commands("/skills") == ()
     assert matching_commands("plain text") == ()
     assert matching_commands("/model selector") == ()
 
@@ -22,7 +27,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     approval, approval_argument = resolve_command("/approval-mode deny")
     thinking, thinking_argument = resolve_command("/reasoning high")
     compact, compact_argument = resolve_command("/compaction")
-    config, config_argument = resolve_command("/config compaction")
+    skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
     fork, fork_argument = resolve_command("/branch msg_123")
     alias, alias_argument = resolve_command("/exit")
     typo_alias, _ = resolve_command("/quite")
@@ -36,8 +41,8 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert thinking_argument == "high"
     assert compact is not None and compact.name == "/compact"
     assert compact_argument == ""
-    assert config is not None and config.name == "/config"
-    assert config_argument == "compaction"
+    assert skill is not None and skill.name == "/skill"
+    assert skill_argument == "reviewer inspect app.py"
     assert fork is not None and fork.name == "/fork"
     assert fork_argument == "msg_123"
     assert alias is not None and alias.name == "/quit"

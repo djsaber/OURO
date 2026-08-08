@@ -22,6 +22,7 @@ from textual.widgets import TextArea
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.session_models import SessionCatalogEntry
+from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
@@ -98,6 +99,7 @@ _AGENT_INTERACTION_EVENTS = {
 }
 _CONFIGURE_MODEL = "__ouro_configure_model__"
 _THEME_ACTION = "__ouro_theme__"
+_CONFIGURATION_ACTION = "__ouro_configuration__"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
     "auto": "Allow host-controlled tools; keep user input interactive",
@@ -949,8 +951,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
                     user_message = await self._controller.message(event.session_id, message_id)
-                    if user_message.role == "user" and user_message.text_content:
-                        await conversation.add_user(user_message.text_content)
+                    if user_message.role == "user":
+                        await conversation.add_user_message(user_message)
                         assistant_visible = False
             if event.event_type in {
                 "follow_up_input_queued",
@@ -1007,22 +1009,41 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if panel.display and panel.awaiting_freeform:
                 panel.accept_freeform(message.text)
             return
+        self._submit_run(message.text, message.mode)
+
+    def _submit_run(
+        self,
+        prompt: str,
+        queue_mode: QueuedInputMode,
+        *,
+        skill_invocation: SkillInvocationRequest | None = None,
+    ) -> None:
         active_run = self._has_active_run()
         if not active_run:
             self.query_one(StatusLine).set_activity("queued")
-        mode_label = "guide" if message.mode == "steer" else "follow-up"
+        mode_label = "guide" if queue_mode == "steer" else "follow-up"
         self.query_one(StatusLine).set_detail(
             "Submitting…" if self._projection is None else f"Queueing {mode_label}…"
         )
         if self._projection is None:
             self.query_one(Composer).disabled = True
             self._waiting_for_session_event = True
-        self._run_prompt(message.text, message.mode)
+        self._run_prompt(prompt, queue_mode, skill_invocation=skill_invocation)
 
     @work(group="run")
-    async def _run_prompt(self, prompt: str, queue_mode: QueuedInputMode) -> None:
+    async def _run_prompt(
+        self,
+        prompt: str,
+        queue_mode: QueuedInputMode,
+        *,
+        skill_invocation: SkillInvocationRequest | None = None,
+    ) -> None:
         try:
-            result = await self._controller.submit(prompt, queue_mode=queue_mode)
+            result = await self._controller.submit(
+                prompt,
+                queue_mode=queue_mode,
+                skill_invocation=skill_invocation,
+            )
             await self._apply_run_result(result)
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
@@ -1323,12 +1344,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/fork":
             self._fork_session(argument or None)
         elif command.name == "/model":
-            if argument.casefold() in {"add", "configure", "new"}:
-                await self._configure_model()
-            elif argument:
+            if argument:
                 await self._select_model(argument)
             else:
-                self.action_models()
+                await self._command_usage(command)
         elif command.name == "/approval":
             if argument:
                 await self._set_approval_mode(argument.casefold())
@@ -1347,14 +1366,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
             else:
                 self._compact_session()
-        elif command.name == "/config":
-            self._choose_configuration(argument or None)
-        elif command.name == "/tools":
-            self._choose_tools(argument or None)
-        elif command.name == "/mcp":
-            self._choose_mcp(argument or None)
-        elif command.name == "/skills":
-            self._choose_skills(argument or None)
+        elif command.name == "/skill":
+            await self._submit_skill(argument)
         elif command.name == "/clear":
             await self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
@@ -1378,7 +1391,60 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     argument_hint="[" + "|".join(option.value for option in options) + "]",
                     argument_options=options,
                 )
+            elif command.name == "/model":
+                options = tuple(
+                    TuiCommandArgument(
+                        model.key,
+                        model.display_name
+                        or f"{model.provider_id}/{model.endpoint_id} · {model.model_id}",
+                    )
+                    for model in self._models
+                )
+                catalog[index] = replace(command, argument_options=options)
+            elif command.name == "/skill":
+                options = self._skill_arguments()
+                catalog[index] = replace(command, argument_options=options)
         return (*catalog, *self._plugin_commands())
+
+    def _skill_arguments(self) -> tuple[TuiCommandArgument, ...]:
+        try:
+            skills = self._controller.skill_invocation_options()
+        except Exception:  # noqa: BLE001 - startup may not have completed yet.
+            return ()
+        return tuple(
+            TuiCommandArgument(skill.name, skill.description, skill.argument_hint)
+            for skill in skills
+        )
+
+    async def _submit_skill(self, argument: str) -> None:
+        name, separator, task = argument.lstrip().partition(" ")
+        if not name:
+            command = resolve_command("/skill")[0]
+            if command is not None:
+                await self._command_usage(command)
+            return
+        try:
+            invocation = SkillInvocationRequest(
+                name=name,
+                arguments=task.lstrip() if separator else "",
+            )
+        except ValueError:
+            await self.query_one(ConversationView).add_notice(
+                "Skill names must use lowercase letters, digits, and single hyphens.",
+                error=True,
+            )
+            return
+        self._submit_run(
+            invocation.arguments,
+            "follow_up",
+            skill_invocation=invocation,
+        )
+
+    async def _command_usage(self, command: TuiCommand) -> None:
+        await self.query_one(ConversationView).add_notice(
+            f"Usage: {command.usage}",
+            error=True,
+        )
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
@@ -1822,7 +1888,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "/approval",
                 "/thinking",
                 "/compact",
-                "/config",
                 "/abort",
                 "/help",
             )
@@ -1835,6 +1900,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 f"Current · {self._tui_theme.label}",
                 accent=self._tui_theme.accent,
             ),
+            Choice(
+                _CONFIGURATION_ACTION,
+                "Configuration",
+                "Compaction, tools, MCP servers, and installed skills",
+            ),
             *tuple(
                 Choice(command.name, command.title, command.description)
                 for command in action_commands
@@ -1845,6 +1915,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         if selected == _THEME_ACTION:
             await self._choose_theme()
+        elif selected == _CONFIGURATION_ACTION:
+            self._choose_configuration()
+        elif selected == "/model":
+            self.action_models()
         elif selected is not None:
             await self._dispatch_command(selected)
 

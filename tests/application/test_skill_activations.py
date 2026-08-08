@@ -197,6 +197,9 @@ async def test_queued_skill_activation_uses_the_instructions_frozen_at_acceptanc
         session_id=session.session_id,
         skill_invocation=SkillInvocationRequest(name="reviewer"),
     )
+    pending = runtime.pending_user_inputs(session.session_id)
+    assert len(pending) == 1
+    assert pending[0].skill_name == "reviewer"
     _write_skill(root, body="Changed after queue acceptance.")
     provider.release.set()
     await active

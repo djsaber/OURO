@@ -645,6 +645,9 @@ class RuntimeService:
                 prompt=item.prompt,
                 mode=item.mode,
                 queued_at=item.queued_at,
+                skill_name=(
+                    item.skill_activation.name if item.skill_activation is not None else None
+                ),
             )
             for item in self.queued_inputs.eligible_session(session)
             if item.source == "user"
