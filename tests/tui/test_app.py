@@ -3167,6 +3167,28 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
+        status_line = app.query_one(StatusLine)
+        status_line.set_context(
+            SessionContextStatus(
+                context_id="ctx_theme",
+                session_id="session_theme",
+                run_id="run_theme",
+                turn_id="turn_theme",
+                model_round=1,
+                provider_id="deepseek",
+                model_id="deepseek-chat",
+                prepared_at=datetime.now(UTC),
+                metrics=ContextMetrics(
+                    estimated_input_tokens=24_000,
+                    estimated_fixed_tokens=1_000,
+                    context_window_tokens=128_000,
+                    reserved_output_tokens=8_000,
+                    input_budget_tokens=120_000,
+                    estimated_remaining_tokens=96_000,
+                    estimated_utilization_ratio=0.2,
+                ),
+            )
+        )
         await pilot.press("ctrl+p")
         await pilot.pause()
 
@@ -3191,6 +3213,10 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
             sage.accent
         )
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(sage.accent)
+        context = status_line.query_one("#context-detail", Static).render()
+        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
+            sage.accent
+        )
 
         await pilot.press("down", "enter")
         await pilot.pause(0.2)
@@ -3202,6 +3228,10 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
             iris.accent
         )
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(iris.accent)
+        context = status_line.query_one("#context-detail", Static).render()
+        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
+            iris.accent
+        )
 
     stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
     assert '"theme": "iris"' in stored

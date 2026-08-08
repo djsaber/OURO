@@ -1650,6 +1650,10 @@ class Composer(TextArea):
 
 
 class StatusLine(Horizontal):
+    def __init__(self) -> None:
+        super().__init__()
+        self._context_status: SessionContextStatus | None = None
+
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
         yield Static("", id="context-detail")
@@ -1667,6 +1671,14 @@ class StatusLine(Horizontal):
         self.query_one(ActivityIndicator).set_approval_mode(mode)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
+        self._context_status = status
+        self._render_context()
+
+    def refresh_theme(self) -> None:
+        self._render_context()
+
+    def _render_context(self) -> None:
+        status = self._context_status
         if status is None:
             content = Text()
         else:
