@@ -13,7 +13,7 @@ from textual.widgets.option_list import Option
 
 from ouro.tui.commands import slash_command_help
 from ouro.tui.controller import TuiModelConfiguration
-from ouro.tui.theme import THEME_ACCENT
+from ouro.tui.theme import theme_for
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,7 @@ class Choice:
     value: str
     label: str
     description: str = ""
+    accent: str | None = None
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -95,7 +96,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             # not inherit the label's bold: Rich applies a Text's base style to
             # every appended segment, so bold must live on the label segment.
             label = Text()
-            label.append(choice.label, style="bold")
+            label.append(choice.label, style=f"bold {choice.accent}" if choice.accent else "bold")
             if choice.description:
                 label.append(f"\n{choice.description}", style="#7d8794")
             options.append(Option(label, id=choice.value))
@@ -232,7 +233,8 @@ class HelpScreen(ModalScreen[None]):
         # Build the panel from a Text so padding tracks visible width, not
         # markup length — keeping the shortcut columns aligned in the flat panel.
         text = Text()
-        text.append("OURO shortcuts\n\n", style=f"bold {THEME_ACCENT}")
+        accent = theme_for(self).accent
+        text.append("OURO shortcuts\n\n", style=f"bold {accent}")
         pairs = (
             ("Enter", "send", "Shift+Enter", "new line"),
             ("Ctrl+N", "new session", "Ctrl+S", "session picker"),
@@ -247,7 +249,7 @@ class HelpScreen(ModalScreen[None]):
             text.append(f" {right_desc}\n")
         text.append("?", style="bold")
         text.append(" help\n\n")
-        text.append("Slash commands\n\n", style=f"bold {THEME_ACCENT}")
+        text.append("Slash commands\n\n", style=f"bold {accent}")
         text.append(slash_command_help(), style="#aeb5bf")
         text.append(
             "\n\nPlugin commands also appear in slash completion; unique names "

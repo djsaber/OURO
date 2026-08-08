@@ -1,18 +1,73 @@
-"""Theme color tokens for the OURO TUI.
-
-This module is the single source of truth for the accent color so the whole
-interface recolors by changing one value. ``THEME_ACCENT`` is injected into the
-``$ouro-theme`` CSS variable in ``app.py`` and referenced directly by Rich-text
-styling in ``widgets.py`` / ``screens.py`` — borders, titles, the logo, active
-highlights and selected markers all derive from it.
-
-``THEME_ACCENT_BRIGHT`` lifts the accent for emphasized Rich-text headings and
-selected labels, matching how a focused title reads above body text.
-"""
+"""Accent palettes and runtime theme lookup for the OURO TUI."""
 
 from __future__ import annotations
 
-# Primary accent: borders, titles, the logo, active highlights, selected markers.
-THEME_ACCENT = "#5b8fd9"
-# Bright variant: emphasized headings and selected labels in Rich text.
-THEME_ACCENT_BRIGHT = "#659ff2"
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, cast
+
+
+@dataclass(frozen=True, slots=True)
+class TuiTheme:
+    """One restrained accent palette used by both CSS and Rich content."""
+
+    theme_id: str
+    label: str
+    description: str
+    accent: str
+    accent_bright: str
+
+
+_THEMES = (
+    TuiTheme(
+        theme_id="harbor",
+        label="Harbor",
+        description="Muted ocean blue",
+        accent="#6083ae",
+        accent_bright="#7194bf",
+    ),
+    TuiTheme(
+        theme_id="sage",
+        label="Sage",
+        description="Quiet eucalyptus green",
+        accent="#6f9284",
+        accent_bright="#80a395",
+    ),
+    TuiTheme(
+        theme_id="iris",
+        label="Iris",
+        description="Soft smoked violet",
+        accent="#867da5",
+        accent_bright="#978eb6",
+    ),
+    TuiTheme(
+        theme_id="rosewood",
+        label="Rosewood",
+        description="Understated dusty rose",
+        accent="#9b747b",
+        accent_bright="#ac858c",
+    ),
+    TuiTheme(
+        theme_id="sandstone",
+        label="Sandstone",
+        description="Warm muted bronze",
+        accent="#968264",
+        accent_bright="#a79375",
+    ),
+)
+
+TUI_THEMES: Mapping[str, TuiTheme] = {theme.theme_id: theme for theme in _THEMES}
+DEFAULT_TUI_THEME = TUI_THEMES["harbor"]
+
+
+def theme_for(node: object) -> TuiTheme:
+    """Resolve the owning app's palette, with a safe pre-mount default."""
+
+    try:
+        theme = getattr(cast(Any, node).app, "tui_theme", None)
+    except (AttributeError, RuntimeError):
+        return DEFAULT_TUI_THEME
+    return theme if isinstance(theme, TuiTheme) else DEFAULT_TUI_THEME
+
+
+__all__ = ["DEFAULT_TUI_THEME", "TUI_THEMES", "TuiTheme", "theme_for"]

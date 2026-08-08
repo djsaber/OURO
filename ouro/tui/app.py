@@ -24,6 +24,7 @@ from ouro.application.queued_inputs import QueuedInputMode
 from ouro.application.session_models import SessionCatalogEntry
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.approvals import SessionApprovalMode
+from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
@@ -51,10 +52,11 @@ from ouro.tui.controller import (
     TuiSystemStatus,
     project_mcp_system_status,
 )
+from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
-from ouro.tui.theme import THEME_ACCENT
+from ouro.tui.theme import TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     AskUserPanel,
     BrandHeader,
@@ -95,6 +97,7 @@ _AGENT_INTERACTION_EVENTS = {
     "agent_closed",
 }
 _CONFIGURE_MODEL = "__ouro_configure_model__"
+_THEME_ACTION = "__ouro_theme__"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
     "auto": "Allow host-controlled tools; keep user input interactive",
@@ -132,11 +135,10 @@ _OURO_TUI_CSS = """
     /* Design tokens — one source of truth for the flat OURO chrome.
        $ouro-theme is the single accent color: borders, titles, the logo, and
        active highlights all derive from it, so the whole TUI recolors by
-       changing one value. The value is injected from THEME_ACCENT so the CSS
-       and Rich-text styling share one source of truth (see theme.py). */
+       changing one value. The owning app injects the persisted TUI palette so
+       CSS and Rich-text styling share one source of truth (see theme.py). */
     $ouro-background: #0c0c0c;
     $ouro-panel: #171717;
-    $ouro-theme: __THEME_ACCENT__;
     $ouro-border-left: #4d5560;
     $ouro-border-right: #34373d;
     $ouro-border-focus: #3f4650;
@@ -634,7 +636,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     TITLE = "OURO"
     SUB_TITLE = "Agent"
     ENABLE_COMMAND_PALETTE = False
-    CSS = _OURO_TUI_CSS.replace("__THEME_ACCENT__", THEME_ACCENT)
+    CSS = _OURO_TUI_CSS
 
     BINDINGS = [
         Binding("ctrl+n", "new_session", "New session", show=False),
@@ -658,6 +660,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         application: LocalApplication | None = None,
         close_application: bool = True,
     ) -> None:
+        self._preferences_store = TuiPreferencesStore(home)
+        self._preferences_error: str | None = None
+        try:
+            preferences = self._preferences_store.load()
+        except OuroError as exc:
+            preferences = TuiPreferences()
+            self._preferences_error = str(exc)
+        self._tui_theme = TUI_THEMES[preferences.theme]
         super().__init__()
         self._controller = TuiController(
             self._publish_runtime_event,
@@ -686,6 +696,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._runtime_events_ready_posted = False
         self._runtime_events_timer: Timer | None = None
         self._mcp_status_timer: Timer | None = None
+
+    @property
+    def tui_theme(self) -> TuiTheme:
+        return self._tui_theme
+
+    def get_css_variables(self) -> dict[str, str]:
+        return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
 
     def compose(self) -> ComposeResult:
         yield BrandHeader()
@@ -721,6 +738,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             pause=True,
         )
         self.run_worker(self._start(), name="tui-start", exclusive=True)
+        if self._preferences_error is not None:
+            self.notify(self._preferences_error, severity="warning")
 
     async def on_unmount(self) -> None:
         self._begin_host_close()
@@ -1792,14 +1811,69 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             if (command := resolve_command(name)[0]) is not None
         )
-        choices = tuple(
-            Choice(command.name, command.title, command.description) for command in action_commands
+        choices = (
+            Choice(
+                _THEME_ACTION,
+                "Theme color",
+                f"Current · {self._tui_theme.label}",
+                accent=self._tui_theme.accent,
+            ),
+            *tuple(
+                Choice(command.name, command.title, command.description)
+                for command in action_commands
+            ),
         )
         selected = await self.push_screen_wait(
             ChoiceScreen(title="ACTIONS", placeholder="Type an action…", choices=choices)
         )
-        if selected is not None:
+        if selected == _THEME_ACTION:
+            await self._choose_theme()
+        elif selected is not None:
             await self._dispatch_command(selected)
+
+    async def _choose_theme(self) -> None:
+        choices = tuple(
+            Choice(
+                theme.theme_id,
+                ("● " if theme == self._tui_theme else "  ") + theme.label,
+                theme.description,
+                accent=theme.accent,
+            )
+            for theme in TUI_THEMES.values()
+        )
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title="THEME COLOR",
+                placeholder="Filter theme colors…",
+                choices=choices,
+            )
+        )
+        if selected is None or selected == self._tui_theme.theme_id:
+            return
+        await self._set_tui_theme(selected)
+
+    async def _set_tui_theme(self, theme_id: str) -> None:
+        theme = TUI_THEMES.get(theme_id)
+        if theme is None:
+            await self.query_one(ConversationView).add_notice(
+                f"Unknown TUI theme: {theme_id}", error=True
+            )
+            return
+        try:
+            self._preferences_store.save(TuiPreferences(theme=theme_id))
+        except OuroError as exc:
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._tui_theme = theme
+        self.refresh_css(animate=False)
+        self._refresh_theme_content()
+        self.notify(f"Theme color: {theme.label}")
+
+    def _refresh_theme_content(self) -> None:
+        for widget in self.screen.walk_children():
+            refresh_theme = getattr(widget, "refresh_theme", None)
+            if callable(refresh_theme):
+                refresh_theme()
 
     def action_help(self) -> None:
         self.push_screen(HelpScreen())

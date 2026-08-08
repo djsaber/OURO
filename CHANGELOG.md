@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- Five restrained, persistent TUI accent palettes selectable from the Actions menu, with live
+  synchronization across CSS chrome and Rich-text status content in a frontend-owned preference
+  file.
 - Textual 8.2 / Rich 15 full-screen TUI foundation behind `ouro tui`, with terminal-native styling,
   coalesced streaming Markdown, canonical Runtime activity/tool projection, session and model
   pickers, queued running input, approvals, AskUser answers, MCP startup status, abort, command
