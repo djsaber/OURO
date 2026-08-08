@@ -6,6 +6,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from pydantic import JsonValue
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -76,6 +77,7 @@ class LifecycleStatusReceived(Message):
 
 _RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
+_SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_completed",
     "run_aborted",
@@ -343,15 +345,19 @@ _OURO_TUI_CSS = """
     #queued-input-panel {
         height: auto;
         max-height: 8;
-        margin: 0 1;
-        padding: 0 0 1 1;
+        margin: 0 2;
+        padding: 1 2;
         color: #d6d9df;
-        background: $ouro-background;
+        background: $ouro-panel;
+        border-top: none;
+        border-right: solid $ouro-border-right;
+        border-bottom: none;
+        border-left: solid $ouro-border-left;
     }
 
     #queued-input-content {
         height: auto;
-        background: $ouro-background;
+        background: transparent;
     }
 
     StatusLine {
@@ -662,6 +668,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
         self._active_title = "New session"
+        self._reasoning_state: ModelReasoningState | None = None
         self._system_status = TuiSystemStatus()
         self._host_closing = False
         self._waiting_for_session_event = False
@@ -679,8 +686,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             yield AskUserPanel()
             yield InteractionBar()
             yield Composer()
-            yield StatusLine()
             yield QueuedInputPanel()
+            yield StatusLine()
 
     def get_default_screen(self) -> Screen:
         return _OuroHostScreen(self._begin_host_close)
@@ -756,6 +763,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _apply_reasoning_state(self, state: ModelReasoningState) -> None:
         """Project the effective thinking level onto the status line."""
+        self._reasoning_state = state
         if state.capability.activation == "unsupported":
             value, peak = None, False
         else:
@@ -765,9 +773,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _refresh_reasoning_indicator(self) -> None:
         """Refresh the status line thinking level after a model or session change."""
+        self._reasoning_state = None
         try:
             state = await self._controller.session_reasoning()
         except Exception:  # noqa: BLE001 - reasoning is optional status, not a blocker.
+            self.query_one(StatusLine).set_reasoning(None)
             return
         self._apply_reasoning_state(state)
 
@@ -1304,15 +1314,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         navigate_options = self._navigate_options()
         for index, command in enumerate(catalog):
             if command.name == "/navigate":
-                catalog[index] = TuiCommand(
-                    name=command.name,
-                    title=command.title,
-                    description=command.description,
-                    argument_hint=command.argument_hint,
-                    aliases=command.aliases,
-                    argument_options=navigate_options,
+                catalog[index] = replace(command, argument_options=navigate_options)
+            elif command.name == "/thinking" and self._reasoning_state is not None:
+                options = _reasoning_arguments(self._reasoning_state)
+                catalog[index] = replace(
+                    command,
+                    argument_hint="[" + "|".join(option.value for option in options) + "]",
+                    argument_options=options,
                 )
-                break
         return (*catalog, *self._plugin_commands())
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
@@ -1483,10 +1492,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = tuple(
             Choice(
                 value=item.session_id,
-                label=("★ " if item.pinned else "") + item.title,
-                description=(
-                    f"{item.status} · {item.current_model or 'default model'} · {item.session_id}"
-                ),
+                label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
+                description=item.status,
             )
             for item in self._sessions
         )
@@ -1708,13 +1715,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         current = _reasoning_value(state.requested)
+        arguments = _reasoning_arguments(state)
         choices = tuple(
             Choice(
-                value=value,
-                label=("● " if value == current else "  ") + value,
-                description=_reasoning_description(value, state),
+                value=argument.value,
+                label=("● " if argument.value == current else "  ") + argument.value,
+                description=argument.description,
             )
-            for value in _available_reasoning_values(state)
+            for argument in arguments
         )
         selected = await self.push_screen_wait(
             ChoiceScreen(
@@ -1830,6 +1838,13 @@ def _available_reasoning_values(state: ModelReasoningState) -> tuple[str, ...]:
     return (*activation, *capability.supported_efforts)
 
 
+def _reasoning_arguments(state: ModelReasoningState) -> tuple[TuiCommandArgument, ...]:
+    return tuple(
+        TuiCommandArgument(value, _reasoning_description(value, state))
+        for value in _available_reasoning_values(state)
+    )
+
+
 def _reasoning_description(value: str, state: ModelReasoningState) -> str:
     if value == "default":
         return f"Use endpoint default (effective: {_reasoning_value(state.effective)})"
@@ -1844,6 +1859,12 @@ def _format_reasoning_state(state: ModelReasoningState) -> str:
     requested = _reasoning_value(state.requested)
     effective = _reasoning_value(state.effective)
     return f"Thinking: {requested} (effective: {effective})"
+
+
+def _truncate_session_title(title: str) -> str:
+    rendered = Text(title)
+    rendered.truncate(_SESSION_TITLE_MAX_CELLS, overflow="ellipsis")
+    return rendered.plain
 
 
 def _branch_point_label(message: MessageRecord) -> str:

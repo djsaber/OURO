@@ -176,11 +176,15 @@ class ActivityIndicator(Static):
 
     def _render_indicator(self) -> None:
         busy = self._activity in _BUSY_ACTIVITIES
+        ready = self._activity in {"idle", "completed"}
         mark = _SPINNER[self._frame] if busy else "▣"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         content = Text()
-        content.append(f" {mark} ", style=f"bold {THEME_ACCENT}" if busy else "#8f9aa8")
-        content.append(label, style="#8f9aa8")
+        content.append(
+            f" {mark} ",
+            style=f"bold {THEME_ACCENT}" if busy or ready else "#8f9aa8",
+        )
+        content.append(label, style=THEME_ACCENT if ready else "#8f9aa8")
         content.append(f"  {self._model}", style="#647180")
         if self._reasoning:
             style = f"bold {THEME_ACCENT}" if self._reasoning_peak else "#647180"

@@ -695,6 +695,10 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             assert panel.styles.border_bottom[0] == ""
 
         status_line = app.query_one(StatusLine)
+        ready = status_line.query_one(ActivityIndicator).render()
+        assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
+            THEME_ACCENT
+        )
         status_line.set_context(
             SessionContextStatus(
                 context_id="ctx_1",
@@ -1060,7 +1064,16 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert queue_panel.display is True
         assert "FOLLOW" in queue_panel.query_one("#queued-input-content").render().plain
         assert "follow next" in queue_panel.query_one("#queued-input-content").render().plain
-        assert queue_panel.region.y >= app.query_one(Composer).region.bottom
+        composer = app.query_one(Composer)
+        status_line = app.query_one(StatusLine)
+        assert queue_panel.region.y >= composer.region.bottom
+        assert status_line.region.y >= queue_panel.region.bottom
+        assert status_line.region.bottom == app.query_one("#main").region.bottom
+        assert queue_panel.region.x == composer.region.x
+        assert queue_panel.region.right == composer.region.right
+        assert queue_panel.styles.background == composer.styles.background
+        assert queue_panel.styles.border_left[0] == "solid"
+        assert queue_panel.styles.border_right[0] == "solid"
         assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["first"]
 
         provider.release.set()
@@ -1602,6 +1615,37 @@ async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_session_picker_hides_route_identity_and_truncates_long_titles(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    long_title = "这是一个非常长的会话标题，用于验证选择菜单只保留可识别标题并在超出宽度时省略显示"
+    application.runtime.sessions.create(
+        session_id="ses_private_identity",
+        title=long_title,
+        title_source="user",
+        current_model="private-provider/private-endpoint",
+    )
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        rendered = "\n".join(
+            str(options.get_option_at_index(index).prompt)
+            for index in range(options.option_count)
+        )
+        assert "ses_private_identity" not in rendered
+        assert "private-provider/private-endpoint" not in rendered
+        assert long_title not in rendered
+        assert "…" in rendered
+        assert "idle" in rendered
+
+
+@pytest.mark.asyncio
 async def test_model_configuration_screen_validates_and_returns_typed_draft(
     tmp_path: Path,
 ) -> None:
@@ -1675,6 +1719,39 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
         reasoning = await app._controller.session_reasoning()
         assert reasoning.requested.effort == "high"
         assert reasoning.effective.effort == "high"
+
+
+@pytest.mark.asyncio
+async def test_thinking_completion_and_action_menu_share_endpoint_choices(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"thinking", "space")
+        await pilot.pause()
+
+        inline = app.query_one(CommandPopup).query_one(
+            "#command-popup-content", Static
+        ).render().plain
+        for value in ("default", "enabled", "disabled", "low", "high"):
+            assert value in inline
+        for value in ("minimal", "medium", "xhigh", "max"):
+            assert value not in inline
+
+        app.query_one(Composer).clear()
+        app.action_thinking_settings()
+        await pilot.pause()
+        options = app.screen.query_one(OptionList)
+        modal = "\n".join(
+            str(options.get_option_at_index(index).prompt)
+            for index in range(options.option_count)
+        )
+        for value in ("default", "enabled", "disabled", "low", "high"):
+            assert value in modal
+        for value in ("minimal", "medium", "xhigh", "max"):
+            assert value not in modal
 
 
 @pytest.mark.asyncio
