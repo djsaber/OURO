@@ -186,6 +186,13 @@ _OURO_TUI_CSS = """
         scrollbar-gutter: auto;
     }
 
+    #conversation-transcript {
+        width: 100%;
+        height: auto;
+        min-height: 100%;
+        background: transparent;
+    }
+
     .welcome {
         width: 86;
         max-width: 100%;

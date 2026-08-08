@@ -51,6 +51,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI conversations now render through a viewport-sized transcript surface, so short dialogue
+  starts at the top while overflowing dialogue retains tail-following and manual scroll behavior.
 - New Run extension Catalogs now rebase on the current Host tool-registry revision, so MCP tools
   discovered by background connections reach subsequent model requests while existing Run leases
   keep their original immutable execution contract.

@@ -935,6 +935,25 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
 
 
 @pytest.mark.asyncio
+async def test_short_conversation_starts_at_top_while_following_latest_message(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("First question")
+        await conversation.append_assistant("First answer")
+        await pilot.pause()
+
+        first_turn = conversation.query_one(".user-turn")
+        assert conversation.scroll_y == 0
+        assert first_turn.region.y <= conversation.content_region.y + 2
+        assert conversation.is_vertical_scroll_end is True
+
+
+@pytest.mark.asyncio
 async def test_runtime_event_burst_is_coalesced_before_markdown_rendering(
     tmp_path: Path,
 ) -> None:
@@ -1181,7 +1200,7 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
             "first",
             "follow next",
         ]
-        children = list(conversation.children)
+        children = list(conversation.query(".turn, .tool-row"))
         assert children.index(assistant_turns[0]) < children.index(user_turns[1])
         assert children.index(user_turns[1]) < children.index(assistant_turns[1])
 
@@ -1473,11 +1492,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         assert "config.json" in rendered
 
         # Dialogue order: user text, tool row, assistant text — interleaved.
-        children = [
-            child
-            for child in conversation.children
-            if isinstance(child, (AssistantTurn, ToolActivityRow)) or "user-turn" in child.classes
-        ]
+        children = list(conversation.query(".turn, .tool-row"))
         kinds = [
             "tool"
             if isinstance(child, ToolActivityRow)
@@ -2388,7 +2403,7 @@ async def test_tool_row_stays_between_model_rounds_in_event_order(tmp_path: Path
         await pilot.pause(0.8)
 
         conversation = app.query_one(ConversationView)
-        children = list(conversation.children)
+        children = list(conversation.query(".turn, .tool-row"))
         turns = [child for child in children if isinstance(child, AssistantTurn)]
         tool_row = next(child for child in children if isinstance(child, ToolActivityRow))
 

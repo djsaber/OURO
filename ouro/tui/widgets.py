@@ -544,16 +544,20 @@ def _tool_activities_from_messages(
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
+        self._transcript = Vertical(id="conversation-transcript")
         self._system_status = TuiSystemStatus()
         self._welcome: WelcomePanel | None = None
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
 
+    def compose(self) -> ComposeResult:
+        yield self._transcript
+
     def on_mount(self) -> None:
         self.anchor()
 
     async def show_welcome(self) -> None:
-        await self.remove_children()
+        await self._transcript.remove_children()
         self._welcome = None
         self._assistant = None
         self._tools.clear()
@@ -567,10 +571,10 @@ class ConversationView(VerticalScroll):
 
     async def _mount_welcome(self) -> None:
         self._welcome = WelcomePanel(self._system_status)
-        await self.mount(self._welcome)
+        await self._transcript.mount(self._welcome)
 
     async def load_messages(self, messages: Iterable[MessageRecord]) -> None:
-        await self.remove_children()
+        await self._transcript.remove_children()
         self._assistant = None
         self._tools.clear()
         self._welcome = None
@@ -608,7 +612,7 @@ class ConversationView(VerticalScroll):
             self.anchor()
             return
 
-        await self.mount_all(transcript)
+        await self._transcript.mount_all(transcript)
         self.anchor()
 
     async def _dismiss_welcome(self) -> None:
@@ -629,20 +633,20 @@ class ConversationView(VerticalScroll):
     async def add_user(self, text: str) -> None:
         await self._dismiss_welcome()
         self._assistant = None
-        await self.mount(_user_turn(text))
+        await self._transcript.mount(_user_turn(text))
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
             self._assistant = AssistantTurn()
-            await self.mount(self._assistant)
+            await self._transcript.mount(self._assistant)
         await self._assistant.append(text)
 
     async def append_reasoning(self, text: str) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
             self._assistant = AssistantTurn()
-            await self.mount(self._assistant)
+            await self._transcript.mount(self._assistant)
         await self._assistant.append_reasoning(text)
 
     def finish_reasoning(self) -> None:
@@ -661,7 +665,7 @@ class ConversationView(VerticalScroll):
             if row is None:
                 row = ToolActivityRow(tool)
                 self._tools[tool.tool_call_id] = row
-                await self.mount(row)
+                await self._transcript.mount(row)
                 mounted = True
             else:
                 row.apply_tool(tool)
@@ -675,7 +679,7 @@ class ConversationView(VerticalScroll):
     async def add_notice(self, message: str, *, error: bool = False) -> None:
         await self._dismiss_welcome()
         classes = "notice error-notice" if error else "notice"
-        await self.mount(Static(message, classes=classes))
+        await self._transcript.mount(Static(message, classes=classes))
 
 
 class InteractionBar(Static):
