@@ -120,9 +120,25 @@ class MCPManager:
         return builtins.list(self._diagnostics.get(server_id, ()))
 
     async def start(self, server_id: str) -> MCPServerRecord:
+        record, started = await self._ensure_started(server_id)
+        if started is None:
+            return record
+        await asyncio.shield(started)
+        return self.get(server_id)
+
+    async def start_background(self, server_id: str) -> MCPServerRecord:
+        """Ensure one connection task exists without waiting for network I/O."""
+
+        record, _ = await self._ensure_started(server_id)
+        return record
+
+    async def _ensure_started(
+        self,
+        server_id: str,
+    ) -> tuple[MCPServerRecord, asyncio.Future[MCPServerRecord] | None]:
         record = self.get(server_id)
         if not record.config.enabled:
-            return self._update(server_id, status="disabled", error=None)
+            return self._update(server_id, status="disabled", error=None), None
 
         lock = self._locks.setdefault(server_id, asyncio.Lock())
         async with lock:
@@ -148,7 +164,7 @@ class MCPManager:
                 )
                 started = runtime.started
         assert started is not None
-        return await asyncio.shield(started)
+        return self.get(server_id), started
 
     async def start_auto(self) -> builtins.list[MCPServerRecord]:
         server_ids = [
@@ -160,6 +176,20 @@ class MCPManager:
             return []
         return builtins.list(
             await asyncio.gather(*(self.start(server_id) for server_id in server_ids))
+        )
+
+    async def start_auto_background(self) -> builtins.list[MCPServerRecord]:
+        """Schedule configured auto-start servers and return their live states."""
+
+        server_ids = [
+            record.config.server_id
+            for record in self.list()
+            if record.config.enabled and record.config.auto_start
+        ]
+        if not server_ids:
+            return []
+        return builtins.list(
+            await asyncio.gather(*(self.start_background(server_id) for server_id in server_ids))
         )
 
     async def stop(self, server_id: str) -> MCPServerRecord:
@@ -241,10 +271,9 @@ class MCPManager:
     async def _run_server(self, server_id: str, runtime: _ServerRuntime) -> None:
         config = self.get(server_id).config
         reconnect_attempt = 0
-        connected_once = False
         try:
             while not runtime.stop.is_set():
-                status: MCPServerStatus = "reconnecting" if connected_once else "starting"
+                status: MCPServerStatus = "reconnecting" if reconnect_attempt else "starting"
                 self._update(server_id, status=status, error=None)
                 try:
                     async with self._client_factory.open(
@@ -264,7 +293,6 @@ class MCPManager:
                             self._discover_tools(session), timeout=config.timeout_seconds
                         )
                         tool_names = self._replace_discovered_tools(server_id, runtime, tools)
-                        connected_once = True
                         reconnect_attempt = 0
                         record = self._update(
                             server_id,

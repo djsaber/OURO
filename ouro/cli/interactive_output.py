@@ -138,10 +138,13 @@ class InteractiveOutput:
         await self.status_line.clear()
         connected = [record for record in records if record.status == "connected"]
         failed = [record for record in records if record.status == "failed"]
+        connecting = [record for record in records if record.status in {"starting", "reconnecting"}]
         tool_count = sum(len(record.tool_names) for record in connected)
         summary = f"MCP · {len(connected)} connected"
         if failed:
             summary += f" · {len(failed)} failed"
+        if connecting:
+            summary += f" · {len(connecting)} connecting in background"
         summary += f" · {tool_count} tool(s)"
         rendered_summary = f"{_DIM}{summary}{_RESET}" if self.status_line.animated else summary
         self._write(f"{rendered_summary}\n")
@@ -149,9 +152,12 @@ class InteractiveOutput:
             if record.status == "connected":
                 symbol = self._status_symbol("success")
                 details = f"{record.config.transport} · {len(record.tool_names)} tool(s)"
-            else:
+            elif record.status == "failed":
                 symbol = self._status_symbol("error")
                 details = f"failed · {record.error or 'unknown error'}"
+            else:
+                symbol = self._status_symbol("neutral")
+                details = f"{record.status} in background · {record.config.transport}"
             identity = _truncate(
                 _single_line(f"{record.config.name} [{record.config.server_id}]"),
                 80,

@@ -412,7 +412,7 @@ async def test_run_print_reports_failed_runtime_result(
     assert captured.err.strip() == "Run failed: provider returned an empty assistant message"
 
 
-async def test_run_print_composes_configured_mcp_tool_and_closes_it(
+async def test_run_print_does_not_wait_for_configured_mcp_tool(
     tmp_path,
     monkeypatch,
     capsys,
@@ -422,7 +422,7 @@ async def test_run_print_composes_configured_mcp_tool_and_closes_it(
             server_id="echo",
             name="Echo",
             command=sys.executable,
-            args=[str(MCP_ECHO_SERVER), "--transport", "stdio"],
+            args=["-c", "raise SystemExit(2)"],
             auto_start=True,
             permission_mode="auto",
             timeout_seconds=5,
@@ -461,8 +461,8 @@ async def test_run_print_composes_configured_mcp_tool_and_closes_it(
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.tool_name == "echo__echo"
-    assert tool_message.tool_result.is_error is False
-    assert "assembled" in tool_message.text_content
+    assert tool_message.tool_result.is_error is True
+    assert "unknown tool: echo__echo" in tool_message.text_content
 
 
 async def test_run_json_composes_mcp_without_corrupting_machine_output(
@@ -545,7 +545,7 @@ async def test_run_print_isolates_mcp_start_failure(
     captured = capsys.readouterr()
     assert code == 0
     assert captured.out.strip() == "still running"
-    assert "Warning: MCP server broken failed to start" in captured.err
+    assert captured.err == ""
 
 
 def test_run_mode_can_continue_existing_session(tmp_path, capsys) -> None:
@@ -658,8 +658,8 @@ async def test_interactive_composes_mcp_for_process_lifetime(
     assert "Interactive MCP done." in outputs
     rendered = "".join(outputs)
     assert "Connecting MCP · 1 server(s) · Echo" in rendered
-    assert "MCP · 1 connected · 1 tool(s)" in rendered
-    assert "● Echo [echo] · stdio · 1 tool(s)" in rendered
+    assert "MCP · 0 connected · 1 connecting in background · 0 tool(s)" in rendered
+    assert "Echo [echo] · starting in background · stdio" in rendered
     assert runtime.tools.names() == _expected_builtin_tool_names()
 
 

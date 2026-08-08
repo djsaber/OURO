@@ -14,7 +14,7 @@ class MCPRuntimeResource:
 
     def __init__(self, manager: MCPManager) -> None:
         self.manager = manager
-        self.startup_records: tuple[MCPServerRecord, ...] = ()
+        self._startup_server_ids: tuple[str, ...] = ()
 
     @classmethod
     def from_config(
@@ -35,7 +35,8 @@ class MCPRuntimeResource:
 
     async def start(self) -> None:
         try:
-            self.startup_records = tuple(await self.manager.start_auto())
+            records = await self.manager.start_auto_background()
+            self._startup_server_ids = tuple(record.config.server_id for record in records)
         except asyncio.CancelledError:
             await asyncio.shield(self.manager.close())
             raise
@@ -51,6 +52,12 @@ class MCPRuntimeResource:
         """Return the current process-owned server lifecycle records."""
 
         return tuple(self.manager.list())
+
+    @property
+    def startup_records(self) -> tuple[MCPServerRecord, ...]:
+        """Return current states for servers scheduled during process startup."""
+
+        return tuple(self.manager.get(server_id) for server_id in self._startup_server_ids)
 
     async def start_server(self, server_id: str) -> MCPServerRecord:
         return await self.manager.start(server_id)

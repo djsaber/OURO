@@ -222,21 +222,6 @@ class LocalApplication:
         diagnostics = list(self.plugins.startup_diagnostics() if self.plugins is not None else ())
         diagnostics.extend(self._runtime_startup_diagnostics)
         diagnostics.extend(self._agent_startup_diagnostics)
-        diagnostics.extend(
-            Diagnostic(
-                code="mcp_startup_failed",
-                severity="error",
-                component="mcp",
-                message=(
-                    f"MCP server {record.config.server_id} failed to start: "
-                    f"{record.error or 'unknown error'}"
-                ),
-                server_id=record.config.server_id,
-                recoverable=True,
-                suggested_action="Check the MCP server configuration and retry.",
-            )
-            for record in self.mcp.startup_failures
-        )
         return ApplicationStartupReport(diagnostics=tuple(diagnostics))
 
     def mcp_runtime_servers(self) -> tuple[MCPRuntimeServerView, ...]:

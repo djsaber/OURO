@@ -87,7 +87,7 @@ async def test_approve_command_continues_run(monkeypatch, tmp_path, capsys) -> N
 
 
 @pytest.mark.asyncio
-async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
+async def test_approve_command_continues_while_mcp_reconnects_in_background(
     monkeypatch,
     tmp_path,
     capsys,
@@ -117,7 +117,11 @@ async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
             ]
         ],
     )
-    async with MCPRuntimeResource.from_config(initial_runtime.store.root, initial_runtime.tools):
+    async with MCPRuntimeResource.from_config(
+        initial_runtime.store.root,
+        initial_runtime.tools,
+    ) as mcp:
+        await mcp.manager.start("echo")
         waiting = await initial_runtime.run("use approved MCP")
     assert waiting.run.status == "waiting_approval"
 
@@ -144,7 +148,8 @@ async def test_approve_command_reconnects_mcp_tool_for_durable_resume(
     tool_message = next(message for message in snapshot.messages if message.role == "tool_result")
     assert tool_message.tool_result is not None
     assert tool_message.tool_result.tool_name == "echo__echo"
-    assert tool_message.tool_result.is_error is False
+    assert tool_message.tool_result.is_error is True
+    assert "unknown tool: echo__echo" in tool_message.text_content
     assert resumed_runtime.tools.names() == _expected_builtin_tool_names()
 
 

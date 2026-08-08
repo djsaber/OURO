@@ -12,6 +12,7 @@ from ouro.mcp import (
     MCPManager,
     MCPRemoteTool,
     MCPRemoteToolResult,
+    MCPRuntimeResource,
     MCPServerCapabilities,
     MCPServerConfig,
     MCPServerInfo,
@@ -38,8 +39,11 @@ class FakeSession:
     call_delay: float = 0
     calls: list[tuple[str, dict[str, object]]] = field(default_factory=list)
     ping_count: int = 0
+    initialize_gate: asyncio.Event | None = None
 
     async def initialize(self) -> MCPServerInfo:
+        if self.initialize_gate is not None:
+            await self.initialize_gate.wait()
         if self.initialize_error is not None:
             raise self.initialize_error
         return MCPServerInfo(
@@ -178,6 +182,56 @@ async def test_manager_start_is_idempotent_and_configure_rejects_active_server()
     with pytest.raises(MCPStateError, match="stop it first"):
         manager.configure(_config(name="Changed"))
     await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_manager_background_start_returns_before_connection_and_projects_tools_later() -> (
+    None
+):
+    initialize_gate = asyncio.Event()
+    registry = ToolRegistry()
+    manager = MCPManager(
+        registry=registry,
+        client_factory=FakeFactory(
+            FakeSession(tools=[_remote_tool()], initialize_gate=initialize_gate)
+        ),
+    )
+    manager.configure(_config(auto_start=True))
+
+    starting = await asyncio.wait_for(manager.start_background("fs"), timeout=0.1)
+
+    assert starting.status == "starting"
+    assert registry.names() == []
+
+    initialize_gate.set()
+    connected = await asyncio.wait_for(manager.start("fs"), timeout=1)
+
+    assert connected.status == "connected"
+    assert registry.names() == ["fs__read"]
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_resource_auto_start_is_background_and_reports_live_state() -> None:
+    initialize_gate = asyncio.Event()
+    registry = ToolRegistry()
+    manager = MCPManager(
+        registry=registry,
+        client_factory=FakeFactory(
+            FakeSession(tools=[_remote_tool()], initialize_gate=initialize_gate)
+        ),
+    )
+    manager.configure(_config(auto_start=True))
+    resource = MCPRuntimeResource(manager)
+
+    await asyncio.wait_for(resource.start(), timeout=0.1)
+
+    assert resource.startup_records[0].status == "starting"
+    initialize_gate.set()
+    await asyncio.wait_for(manager.start("fs"), timeout=1)
+    assert resource.startup_records[0].status == "connected"
+    assert resource.startup_records[0].tool_names == ("fs__read",)
+    await resource.close()
 
 
 @pytest.mark.asyncio

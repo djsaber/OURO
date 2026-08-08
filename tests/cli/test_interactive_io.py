@@ -784,6 +784,24 @@ async def test_interactive_output_summarizes_mcp_connection_records() -> None:
     assert "● Broken [broken] · failed · process exited" in rendered
 
 
+async def test_interactive_output_reports_background_mcp_state_without_false_failure() -> None:
+    outputs: list[str] = []
+    output = InteractiveOutput(outputs.append)
+    config = MCPServerConfig(
+        server_id="docs",
+        name="Docs",
+        command="mcp-docs",
+        auto_start=True,
+    )
+
+    await output.finish_mcp_connection((MCPServerRecord(config=config, status="starting"),))
+
+    rendered = "".join(outputs)
+    assert "MCP · 0 connected · 1 connecting in background · 0 tool(s)" in rendered
+    assert "Docs [docs] · starting in background · stdio" in rendered
+    assert "failed" not in rendered
+
+
 async def test_interactive_output_surfaces_application_startup_diagnostics() -> None:
     outputs: list[str] = []
     output = InteractiveOutput(outputs.append)
