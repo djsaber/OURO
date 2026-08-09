@@ -78,6 +78,7 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
     required = {
         "model_text_delta": ("text",),
         "model_reasoning_delta": ("reasoning_content",),
+        "model_message_completed": ("finish_reason",),
         "tool_call_requested": ("tool_call_id",),
         "tool_policy_evaluated": ("tool_call_id",),
         "tool_call_started": ("tool_call_id",),
@@ -104,10 +105,37 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
         ),
         "agent_result_delivered": ("delegation_id", "delivery_id", "policy"),
         "agent_closed": ("delegation_id",),
+        "compaction_model_output": (
+            "compaction_id",
+            "request_id",
+            "route",
+            "status",
+            "finish_reason",
+            "raw_text",
+            "raw_reasoning",
+        ),
     }
     for field in required.get(event_type, ()):
         if not isinstance(payload.get(field), str):
             raise ValueError(f"runtime event {event_type} requires string payload field {field}")
+    if event_type == "compaction_model_output":
+        for field in (
+            "chunk_index",
+            "attempt_index",
+            "requested_output_tokens",
+            "estimated_input_tokens",
+            "input_message_count",
+            "input_frame_count",
+        ):
+            if not isinstance(payload.get(field), int) or isinstance(payload.get(field), bool):
+                raise ValueError(
+                    f"runtime event {event_type} requires integer payload field {field}"
+                )
+        for field in ("summary_opened", "summary_closed"):
+            if not isinstance(payload.get(field), bool):
+                raise ValueError(
+                    f"runtime event {event_type} requires boolean payload field {field}"
+                )
 
 
 def _event_category(event_type: str) -> RuntimeEventCategory:

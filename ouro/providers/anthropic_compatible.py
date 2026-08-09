@@ -7,6 +7,8 @@ from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
+    ProviderCompletion,
+    ProviderFinishReason,
     ProviderRetryPolicy,
     ProviderStreamEvent,
     ToolCallDelta,
@@ -278,7 +280,11 @@ class AnthropicCompatibleProvider:
                     blocks=continuation_blocks,
                 ),
             )
-        yield ProviderStreamEvent(type="done", usage=usage_from_anthropic(response.get("usage")))
+        yield ProviderStreamEvent(
+            type="done",
+            usage=usage_from_anthropic(response.get("usage")),
+            completion=_anthropic_completion(response.get("stop_reason")),
+        )
 
     async def _events_from_stream(
         self,
@@ -292,6 +298,7 @@ class AnthropicCompatibleProvider:
         saw_tool_call = False
         continuation_blocks: dict[int, dict[str, Any]] = {}
         tool_call_indices: dict[int, int] = {}
+        provider_finish_reason: str | None = None
         async for chunk in chunks:
             response_error = error_from_anthropic(chunk)
             if response_error:
@@ -389,6 +396,11 @@ class AnthropicCompatibleProvider:
                     )
             elif event_type == "message_delta":
                 usage = merge_usage(usage, chunk.get("usage"))
+                delta = chunk.get("delta")
+                if isinstance(delta, Mapping):
+                    stop_reason = delta.get("stop_reason")
+                    if isinstance(stop_reason, str) and stop_reason:
+                        provider_finish_reason = stop_reason
             elif event_type == "message_stop":
                 if not saw_content:
                     yield ProviderStreamEvent(
@@ -408,7 +420,11 @@ class AnthropicCompatibleProvider:
                             ),
                         ),
                     )
-                yield ProviderStreamEvent(type="done", usage=usage)
+                yield ProviderStreamEvent(
+                    type="done",
+                    usage=usage,
+                    completion=_anthropic_completion(provider_finish_reason),
+                )
                 return
 
         if not saw_content:
@@ -421,3 +437,21 @@ class AnthropicCompatibleProvider:
                 type="error",
                 error="provider stream ended without message_stop",
             )
+
+
+def _anthropic_completion(value: object) -> ProviderCompletion:
+    provider_reason = value if isinstance(value, str) and value else None
+    mapping: dict[str, ProviderFinishReason] = {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "max_tokens": "length",
+        "tool_use": "tool_call",
+        "refusal": "content_filter",
+    }
+    finish_reason = (
+        mapping.get(provider_reason, "other") if provider_reason is not None else "unknown"
+    )
+    return ProviderCompletion(
+        finish_reason=finish_reason,
+        provider_finish_reason=provider_reason,
+    )

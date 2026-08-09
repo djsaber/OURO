@@ -3,7 +3,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Iterable, Sequence
 
 from ouro.core.messages import ModelMessage
-from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent, Usage
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCheckResult,
+    ProviderCompletion,
+    ProviderStreamEvent,
+    Usage,
+)
 
 
 class FauxProvider:
@@ -24,7 +30,11 @@ class FauxProvider:
             if events is not None
             else [
                 ProviderStreamEvent(type="text_delta", text="Hello from OURO."),
-                ProviderStreamEvent(type="done", usage=Usage(input_tokens=1, output_tokens=4)),
+                ProviderStreamEvent(
+                    type="done",
+                    usage=Usage(input_tokens=1, output_tokens=4),
+                    completion=ProviderCompletion(finish_reason="stop"),
+                ),
             ]
         )
 

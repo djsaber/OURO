@@ -48,6 +48,7 @@ EventType = Literal[
     "run_retry_scheduled",
     "compaction_started",
     "compaction_progress",
+    "compaction_model_output",
     "compaction_completed",
     "compaction_failed",
     "compaction_skipped",

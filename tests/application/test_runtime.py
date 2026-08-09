@@ -48,7 +48,12 @@ from ouro.core.turn_policies import (
     TurnPolicyRegistration,
     TurnPolicyRegistry,
 )
-from ouro.prompts import DEFAULT_SYSTEM_PROMPT, SUMMARIZATION_PROMPT, render_agent_skills_prompt
+from ouro.prompts import (
+    DEFAULT_SYSTEM_PROMPT,
+    SUMMARIZATION_PROMPT,
+    render_agent_skills_prompt,
+    render_summarization_prompt,
+)
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
 from ouro.sessions import LocalSessionStore
@@ -2997,7 +3002,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
         async def stream(self, *, model, system_prompt="", messages, tools=None):
             del model, tools
             self.calls += 1
-            if system_prompt == SUMMARIZATION_PROMPT:
+            if system_prompt == render_summarization_prompt(SUMMARIZATION_PROMPT, 4_000):
                 self.summary_calls += 1
                 yield ProviderStreamEvent(
                     type="text_delta",

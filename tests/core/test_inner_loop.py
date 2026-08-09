@@ -15,7 +15,12 @@ from ouro.core.inner_loop import (
     InnerLoopTurnBoundaries,
 )
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCompletion,
+    ProviderStreamEvent,
+    ToolCallDelta,
+)
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.state import RunRecord, SessionRecord
@@ -175,7 +180,13 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
                             arguments_delta='"out.txt"}',
                         ),
                     ),
-                    ProviderStreamEvent(type="done"),
+                    ProviderStreamEvent(
+                        type="done",
+                        completion=ProviderCompletion(
+                            finish_reason="tool_call",
+                            provider_finish_reason="tool_calls",
+                        ),
+                    ),
                 ]
             ),
             ModelMetadata(model_id="faux", provider_id="faux"),
@@ -225,6 +236,8 @@ async def test_inner_loop_pauses_for_approval_through_outer_port() -> None:
         '{"path":',
         '"out.txt"}',
     ]
+    assert result.events[-1].payload["finish_reason"] == "tool_call"
+    assert result.events[-1].payload["provider_finish_reason"] == "tool_calls"
 
 
 @pytest.mark.asyncio

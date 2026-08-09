@@ -15,9 +15,10 @@ from ouro.core.context import (
     estimate_message_tokens,
     estimate_text_tokens,
 )
-from ouro.core.errors import CompactionStateError
+from ouro.core.errors import CompactionError, CompactionStateError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
+from ouro.core.provider import ProviderFinishReason
 from ouro.core.state import RunRecord, SessionRecord
 
 CompactionTrigger = Literal["auto", "manual"]
@@ -27,7 +28,7 @@ class CompactionPolicy(OuroModel):
     auto_enabled: bool = True
     trigger_ratio: float = Field(default=0.8, gt=0.0, le=1.0)
     target_ratio: float = Field(default=0.2, gt=0.0, lt=1.0)
-    summary_output_tokens: int = Field(default=8192, ge=256)
+    summary_output_tokens: int = Field(default=16_384, ge=256)
 
     @model_validator(mode="after")
     def _validate_ratios(self) -> CompactionPolicy:
@@ -47,10 +48,64 @@ class CompactionRequest(OuroModel):
     summary_output_tokens: int = Field(ge=1)
 
 
+class CompactionModelOutput(OuroModel):
+    """Provider-neutral evidence captured for one compaction model request."""
+
+    request_id: str = Field(min_length=1)
+    route: str = Field(min_length=1)
+    chunk_index: int = Field(ge=1)
+    attempt_index: int = Field(ge=1)
+    status: Literal["completed", "failed"]
+    requested_output_tokens: int = Field(ge=1)
+    estimated_input_tokens: int = Field(ge=0)
+    input_message_count: int = Field(ge=0)
+    input_frame_count: int = Field(ge=1)
+    finish_reason: ProviderFinishReason
+    provider_finish_reason: str | None = None
+    summary_opened: bool
+    summary_closed: bool
+    raw_text: str = ""
+    raw_reasoning: str = ""
+    model_provider: str = Field(min_length=1)
+    model_endpoint_id: str | None = None
+    model_id: str = Field(min_length=1)
+    usage: dict[str, int | float] = Field(default_factory=dict)
+    error_type: str | None = None
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_status(self) -> CompactionModelOutput:
+        if self.summary_closed and not self.summary_opened:
+            raise ValueError("closed compaction summary requires an opening tag")
+        if self.status == "failed" and (not self.error_type or self.error is None):
+            raise ValueError("failed compaction model output requires error details")
+        if self.status == "completed" and (self.error_type is not None or self.error is not None):
+            raise ValueError("completed compaction model output cannot contain an error")
+        if self.status == "completed" and not self.summary_closed:
+            raise ValueError("completed compaction model output requires a closed summary")
+        return self
+
+
 class CompactionArtifact(OuroModel):
     summary: str
     usage: dict[str, int | float] = Field(default_factory=dict)
+    model_outputs: list[CompactionModelOutput] = Field(default_factory=list)
     metadata: Metadata = MetadataField
+
+
+class CompactionStrategyError(CompactionError):
+    """A strategy failure carrying model outputs that must remain diagnosable."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model_outputs: Sequence[CompactionModelOutput] = (),
+        terminal: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.model_outputs = tuple(model_outputs)
+        self.terminal = terminal
 
 
 class CompactionRecord(VersionedOuroModel):

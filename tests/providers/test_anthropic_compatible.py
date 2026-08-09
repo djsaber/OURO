@@ -93,6 +93,7 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
                 "output_tokens": 7,
                 "cache_read_input_tokens": 3,
             },
+            "stop_reason": "tool_use",
         }
     )
     reasoning = get_provider_template("anthropic").endpoint().reasoning
@@ -183,6 +184,9 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
     assert events[3].continuation.blocks[0]["signature"] == "sig_1"
     assert events[-1].usage is not None
     assert events[-1].usage.cache_read_tokens == 3
+    assert events[-1].completion is not None
+    assert events[-1].completion.finish_reason == "tool_call"
+    assert events[-1].completion.provider_finish_reason == "tool_use"
     request = transport.requests[0]
     assert request["url"] == "https://api.example.test/v1/messages"
     assert request["headers"] == {
@@ -265,7 +269,11 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
                     "partial_json": '{"command":"pwd"}',
                 },
             },
-            {"type": "message_delta", "usage": {"output_tokens": 4}},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "max_tokens"},
+                "usage": {"output_tokens": 4},
+            },
             {"type": "message_stop"},
         ]
     )
@@ -299,6 +307,8 @@ async def test_anthropic_provider_streams_text_tool_deltas_and_usage() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 5
     assert events[-1].usage.output_tokens == 4
+    assert events[-1].completion is not None
+    assert events[-1].completion.finish_reason == "length"
 
 
 @pytest.mark.asyncio

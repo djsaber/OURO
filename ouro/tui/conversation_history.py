@@ -42,6 +42,52 @@ class TranscriptEntry:
 
 
 @dataclass(frozen=True)
+class _UserMessageContent:
+    """Render the original user-turn frame without adding a Textual widget."""
+
+    text: str
+    accent: str
+
+    def __rich_console__(
+        self,
+        console: Console,
+        options: ConsoleOptions,
+    ) -> RenderResult:
+        top, right, bottom, left = (1, 2, 1, 2)
+        frame_width = max(1, options.max_width)
+        interior_width = frame_width - 1
+        left_width = min(left, interior_width)
+        right_width = min(right, interior_width - left_width)
+        content_width = interior_width - left_width - right_width
+        content_options = options.update_width(max(1, content_width))
+        panel_style = Style(bgcolor="#171717")
+        content = Text(self.text, style="#e5e7eb")
+        lines = console.render_lines(content, content_options, pad=False)
+        border = Segment("│", Style(color=self.accent))
+
+        def framed_line(line: list[Segment]) -> RenderResult:
+            yield border
+            yield Segment(" " * left_width, panel_style)
+            if content_width:
+                styled_line = list(Segment.apply_style(line, style=panel_style))
+                yield from Segment.adjust_line_length(
+                    styled_line,
+                    content_width,
+                    style=panel_style,
+                )
+            yield Segment(" " * right_width, panel_style)
+            yield Segment.line()
+
+        empty_line: list[Segment] = []
+        for _ in range(top):
+            yield from framed_line(empty_line)
+        for line in lines:
+            yield from framed_line(line)
+        for _ in range(bottom):
+            yield from framed_line(empty_line)
+
+
+@dataclass(frozen=True)
 class _ReasoningContent:
     """Render completed reasoning with the same structure as its live view.
 
@@ -262,10 +308,10 @@ class ConversationHistory(RichLog, can_focus=False):
     def _render_entry(self, entry: TranscriptEntry) -> RenderableType:
         theme = theme_for(self)
         if entry.kind == "user":
-            content = Text()
-            content.append("▌ ", style=f"bold {theme.accent}")
-            content.append(entry.text, style="#e5e7eb")
-            return Padding(content, (1, 2), style="on #171717")
+            return Padding(
+                _UserMessageContent(entry.text, theme.accent),
+                (1, 1, 2, 1),
+            )
         if entry.kind == "tool":
             assert entry.tool is not None
             return Padding(

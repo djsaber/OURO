@@ -7,6 +7,8 @@ from ouro.core.messages import ModelMessage, ProviderContinuationArtifact
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
+    ProviderCompletion,
+    ProviderFinishReason,
     ProviderRetryPolicy,
     ProviderStreamEvent,
     Usage,
@@ -299,7 +301,11 @@ class OpenAICompatibleProvider:
                     blocks=({"reasoning_content": raw_reasoning},),
                 ),
             )
-        yield ProviderStreamEvent(type="done", usage=usage)
+        yield ProviderStreamEvent(
+            type="done",
+            usage=usage,
+            completion=_openai_completion(choice.get("finish_reason")),
+        )
 
     async def _events_from_streaming_chunks(
         self,
@@ -313,6 +319,7 @@ class OpenAICompatibleProvider:
         saw_reasoning = False
         saw_tool_call = False
         continuation_reasoning: list[str] = []
+        provider_finish_reason: str | None = None
 
         async for chunk in chunks:
             response_error = _error_from_response(chunk)
@@ -327,6 +334,9 @@ class OpenAICompatibleProvider:
             choice = _first_choice(chunk)
             if choice is None:
                 continue
+            chunk_finish_reason = choice.get("finish_reason")
+            if isinstance(chunk_finish_reason, str) and chunk_finish_reason:
+                provider_finish_reason = chunk_finish_reason
             delta = choice.get("delta") or {}
             if not isinstance(delta, Mapping):
                 continue
@@ -373,4 +383,26 @@ class OpenAICompatibleProvider:
                     blocks=({"reasoning_content": "".join(continuation_reasoning)},),
                 ),
             )
-        yield ProviderStreamEvent(type="done", usage=usage)
+        yield ProviderStreamEvent(
+            type="done",
+            usage=usage,
+            completion=_openai_completion(provider_finish_reason),
+        )
+
+
+def _openai_completion(value: object) -> ProviderCompletion:
+    provider_reason = value if isinstance(value, str) and value else None
+    mapping: dict[str, ProviderFinishReason] = {
+        "stop": "stop",
+        "length": "length",
+        "tool_calls": "tool_call",
+        "function_call": "tool_call",
+        "content_filter": "content_filter",
+    }
+    finish_reason = (
+        mapping.get(provider_reason, "other") if provider_reason is not None else "unknown"
+    )
+    return ProviderCompletion(
+        finish_reason=finish_reason,
+        provider_finish_reason=provider_reason,
+    )

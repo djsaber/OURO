@@ -1,6 +1,7 @@
 import pytest
 
 from ouro.core.provider import (
+    ProviderCompletion,
     ProviderRetryNotice,
     ProviderRetryPolicy,
     ProviderStreamEvent,
@@ -21,13 +22,21 @@ def test_provider_done_event_is_only_a_completion_boundary() -> None:
     )
 
     assert event.usage == Usage(input_tokens=1, output_tokens=2)
-    with pytest.raises(ValueError, match="may only contain usage"):
+    assert event.completion == ProviderCompletion(finish_reason="unknown")
+    with pytest.raises(ValueError, match="may only contain usage and completion"):
         ProviderStreamEvent(type="done", text="unexpected")
 
 
 def test_provider_usage_is_only_valid_on_done_events() -> None:
     with pytest.raises(ValueError, match="usage may only be emitted"):
         ProviderStreamEvent(type="text_delta", text="hello", usage=Usage(input_tokens=1))
+
+    with pytest.raises(ValueError, match="completion may only be emitted"):
+        ProviderStreamEvent(
+            type="text_delta",
+            text="hello",
+            completion=ProviderCompletion(finish_reason="stop"),
+        )
 
 
 def test_provider_retry_policy_is_bounded_and_retry_event_requires_payload() -> None:

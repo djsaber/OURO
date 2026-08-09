@@ -12,7 +12,7 @@ from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
-from ouro.core.provider import ToolCallDelta
+from ouro.core.provider import ProviderCompletion, ToolCallDelta
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
 from ouro.core.run_transitions import plan_run_transition
@@ -510,6 +510,7 @@ class InnerAgentLoop:
                         provider_continuation=round_state.continuation,
                     )
                 elif provider_event.type == "done":
+                    completion = provider_event.completion or ProviderCompletion()
                     if round_state.tool_call_parts:
                         round_state.tool_calls = _complete_streamed_tool_calls(
                             round_state.tool_call_parts
@@ -527,6 +528,8 @@ class InnerAgentLoop:
                             "turn_id": round_state.turn_id,
                             "context_id": context.context_id,
                             "tool_call_count": len(round_state.tool_calls),
+                            "finish_reason": completion.finish_reason,
+                            "provider_finish_reason": completion.provider_finish_reason,
                             "usage": provider_event.usage.model_dump(mode="json")
                             if provider_event.usage is not None
                             else {},

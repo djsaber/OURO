@@ -203,7 +203,12 @@ async def test_httpx_transport_reports_http_errors() -> None:
 async def test_openai_compatible_provider_streams_text_response() -> None:
     transport = FakeTransport(
         {
-            "choices": [{"message": {"role": "assistant", "content": "hello"}}],
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "hello"},
+                    "finish_reason": "length",
+                }
+            ],
             "usage": {"prompt_tokens": 3, "completion_tokens": 2},
         }
     )
@@ -228,6 +233,9 @@ async def test_openai_compatible_provider_streams_text_response() -> None:
     assert events[-1].usage is not None
     assert events[-1].usage.input_tokens == 3
     assert events[-1].usage.output_tokens == 2
+    assert events[-1].completion is not None
+    assert events[-1].completion.finish_reason == "length"
+    assert events[-1].completion.provider_finish_reason == "length"
     assert transport.requests[0]["url"] == "https://example.test/v1/chat/completions"
     assert transport.requests[0]["headers"]["authorization"] == "Bearer secret"
     assert transport.requests[0]["payload"]["messages"] == [
@@ -845,7 +853,7 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chun
         [
             {"choices": [{"delta": {"reasoning_content": "Thinking"}}]},
             {"choices": [{"delta": {"reasoning_content": "..."}}]},
-            {"choices": [{"delta": {"content": "Done"}}]},
+            {"choices": [{"delta": {"content": "Done"}, "finish_reason": "length"}]},
             {"usage": {"prompt_tokens": 3, "completion_tokens": 3}, "choices": []},
         ]
     )
@@ -875,6 +883,8 @@ async def test_openai_compatible_provider_emits_reasoning_delta_from_stream_chun
     ]
     assert [event.reasoning_content for event in events[:2]] == ["Thinking", "..."]
     assert events[2].text == "Done"
+    assert events[-1].completion is not None
+    assert events[-1].completion.finish_reason == "length"
 
 
 @pytest.mark.asyncio

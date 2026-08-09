@@ -16,6 +16,15 @@ from ouro.core.reasoning import (
 )
 from ouro.core.tools import ToolCallRequest
 
+ProviderFinishReason = Literal[
+    "stop",
+    "length",
+    "tool_call",
+    "content_filter",
+    "other",
+    "unknown",
+]
+
 
 class ModelCost(OuroModel):
     input: float = 0.0
@@ -103,6 +112,13 @@ class ProviderCheckResult(OuroModel):
     metadata: Metadata = MetadataField
 
 
+class ProviderCompletion(OuroModel):
+    """Provider-neutral reason for a successfully terminated model response."""
+
+    finish_reason: ProviderFinishReason = "unknown"
+    provider_finish_reason: str | None = None
+
+
 class ToolCallDelta(OuroModel):
     """Provider-neutral fragment of one streamed tool call.
 
@@ -138,6 +154,7 @@ class ProviderStreamEvent(OuroModel):
     continuation: ProviderContinuationArtifact | None = None
     tool_call_delta: ToolCallDelta | None = None
     usage: Usage | None = None
+    completion: ProviderCompletion | None = None
     retry: ProviderRetryNotice | None = None
     error: str | None = None
 
@@ -188,9 +205,13 @@ class ProviderStreamEvent(OuroModel):
                 self.error,
             )
         ):
-            raise ValueError("provider stream done event may only contain usage")
+            raise ValueError("provider stream done event may only contain usage and completion")
         if self.type != "done" and self.usage is not None:
             raise ValueError("provider usage may only be emitted on a done event")
+        if self.type != "done" and self.completion is not None:
+            raise ValueError("provider completion may only be emitted on a done event")
+        if self.type == "done" and self.completion is None:
+            self.completion = ProviderCompletion()
         return self
 
 

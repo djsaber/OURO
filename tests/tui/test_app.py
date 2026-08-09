@@ -827,7 +827,9 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
         history = conversation.query_one(ConversationHistory)
         assert history.styles.border_left[0] == ""
-        assert "▌ Hello" in history.rendered_text
+        user_lines = history.rendered_text.splitlines()[:4]
+        assert [line.index("│") for line in user_lines[1:4]] == [1, 1, 1]
+        assert user_lines[2].index("Hello") == 4
         assert "Status changed" in history.rendered_text
         assert not conversation.query(AssistantTurn)
 
@@ -1215,6 +1217,24 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
         assert history.user_lines == (0,)
         assert history.region.y <= conversation.content_region.y + 2
         assert conversation.is_vertical_scroll_end is True
+
+
+@pytest.mark.asyncio
+async def test_user_message_frame_spans_every_content_line(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(40, 20)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("First line\nSecond line")
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        framed_lines = [line.text for line in history.lines if "│" in line.text]
+        assert len(framed_lines) == 4
+        assert all(line.index("│") == 1 for line in framed_lines)
+        assert framed_lines[1].index("First line") == 4
+        assert framed_lines[2].index("Second line") == 4
 
 
 @pytest.mark.asyncio

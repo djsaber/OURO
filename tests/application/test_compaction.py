@@ -12,11 +12,18 @@ from ouro.core.compaction import (
     CompactionArtifact,
     CompactionPolicy,
     CompactionRequest,
+    CompactionStrategyError,
     CompactionStrategyRegistry,
 )
 from ouro.core.errors import CompactionError
 from ouro.core.messages import MessageRecord
-from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
+from ouro.core.provider import (
+    ModelMetadata,
+    ProviderCheckResult,
+    ProviderCompletion,
+    ProviderStreamEvent,
+    Usage,
+)
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import SessionRecord
 from ouro.sessions import LocalSessionStore
@@ -68,18 +75,35 @@ class FailingStrategy:
 class SummaryRouteProvider:
     provider_id = "summary-route"
 
-    def __init__(self, *, error: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: str | None = None,
+        response: str = "<summary>routed summary</summary>",
+        reasoning: str = "",
+    ) -> None:
         self.error = error
+        self.response = response
+        self.reasoning = reasoning
         self.models: list[ModelMetadata] = []
+        self.system_prompts: list[str] = []
+        self.messages: list[list[MessageRecord]] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
-        del system_prompt, messages, tools
+        del tools
         self.models.append(model)
+        self.system_prompts.append(system_prompt)
+        self.messages.append(list(messages))
         if self.error is not None:
             yield ProviderStreamEvent(type="error", error=self.error)
             return
-        yield ProviderStreamEvent(type="text_delta", text="<summary>routed summary</summary>")
-        yield ProviderStreamEvent(type="done")
+        if self.reasoning:
+            yield ProviderStreamEvent(type="reasoning_delta", reasoning_content=self.reasoning)
+        yield ProviderStreamEvent(type="text_delta", text=self.response)
+        yield ProviderStreamEvent(
+            type="done",
+            completion=ProviderCompletion(finish_reason="stop"),
+        )
 
     async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
@@ -232,6 +256,218 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
     )
     assert artifact.metadata["model_route"] == "configured"
     assert artifact.metadata["model_endpoint_id"] == "compact"
+    assert len(artifact.model_outputs) == 1
+    assert artifact.model_outputs[0].raw_text == "<summary>routed summary</summary>"
+    assert artifact.model_outputs[0].status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_invalid_compaction_response_retains_raw_model_output() -> None:
+    provider = SummaryRouteProvider(
+        response="summary without the required wrapper",
+        reasoning="I should summarize the conversation.",
+    )
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
+    )
+
+    with pytest.raises(CompactionStrategyError) as raised:
+        await strategy.compact(_summary_request())
+
+    assert len(raised.value.model_outputs) == 1
+    output = raised.value.model_outputs[0]
+    assert output.status == "failed"
+    assert output.raw_text == "summary without the required wrapper"
+    assert output.raw_reasoning == "I should summarize the conversation."
+    assert output.error_type == "CompactionError"
+    assert "non-empty <summary> block" in str(output.error)
+
+
+@pytest.mark.asyncio
+async def test_compaction_reasoning_defaults_off_independently_from_session() -> None:
+    provider = SummaryRouteProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
+    )
+
+    artifact = await strategy.compact(_summary_request())
+
+    assert provider.models[0].reasoning_request == ReasoningRequest(mode="disabled")
+    assert artifact.metadata["model_reasoning"] == {
+        "mode": "disabled",
+        "effort": None,
+    }
+    assert "1,024 output tokens" in provider.system_prompts[0]
+    assert "<example>" not in provider.system_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_compaction_reasoning_rejects_explicit_enable_on_unsupported_endpoint() -> None:
+    provider = SummaryRouteProvider()
+    adapter = RuntimeAdapter(
+        provider,
+        ModelMetadata(
+            model_id="plain-model",
+            provider_id="plain",
+            endpoint_id="chat",
+            context_window=20_000,
+            max_output_tokens=2048,
+        ),
+    )
+    strategy = LLMSummaryCompactionStrategy(
+        adapter,
+        model_config=CompactionModelConfig(
+            reasoning=ReasoningRequest(mode="enabled"),
+        ),
+    )
+
+    with pytest.raises(CompactionError, match="does not support reasoning controls"):
+        await strategy.compact(_summary_request())
+
+    assert provider.models == []
+
+
+@pytest.mark.asyncio
+async def test_compaction_requires_explicit_enable_for_always_on_endpoint() -> None:
+    provider = SummaryRouteProvider()
+    adapter = RuntimeAdapter(
+        provider,
+        ModelMetadata(
+            model_id="reasoning-model",
+            provider_id="reasoning",
+            endpoint_id="chat",
+            context_window=20_000,
+            max_output_tokens=2048,
+            reasoning=ReasoningCapability(
+                activation="always_on",
+                default=ReasoningRequest(mode="enabled"),
+                output="text",
+            ),
+            reasoning_request=ReasoningRequest(mode="enabled"),
+        ),
+    )
+    strategy = LLMSummaryCompactionStrategy(adapter)
+
+    with pytest.raises(CompactionError, match="must be explicitly enabled"):
+        await strategy.compact(_summary_request())
+
+    assert provider.models == []
+
+
+@pytest.mark.asyncio
+async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> None:
+    class BinaryBackoffProvider(SummaryRouteProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.responses = [
+                ("<analysis>long</analysis><summary>truncated", "length", 1024),
+                ("<summary>first frame</summary>", "stop", 10),
+                ("<summary>complete rolling summary</summary>", "stop", 10),
+            ]
+
+        async def stream(self, *, model, system_prompt="", messages, tools=None):
+            del tools
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.messages.append(list(messages))
+            text, finish_reason, output_tokens = self.responses[len(self.models) - 1]
+            yield ProviderStreamEvent(type="text_delta", text=text)
+            yield ProviderStreamEvent(
+                type="done",
+                usage=Usage(input_tokens=10, output_tokens=output_tokens),
+                completion=ProviderCompletion(finish_reason=finish_reason),
+            )
+
+    provider = BinaryBackoffProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
+    )
+    request = _summary_request().model_copy(
+        update={
+            "messages": [
+                MessageRecord.text(session_id="ses_route", role="user", text="question 1"),
+                MessageRecord.text(session_id="ses_route", role="assistant", text="answer 1"),
+                MessageRecord.text(session_id="ses_route", role="user", text="question 2"),
+                MessageRecord.text(session_id="ses_route", role="assistant", text="answer 2"),
+            ]
+        }
+    )
+
+    artifact = await strategy.compact(request)
+
+    assert artifact.summary == "complete rolling summary"
+    assert len(provider.models) == 3
+    assert [output.status for output in artifact.model_outputs] == [
+        "failed",
+        "completed",
+        "completed",
+    ]
+    assert [output.chunk_index for output in artifact.model_outputs] == [1, 1, 2]
+    assert [output.attempt_index for output in artifact.model_outputs] == [1, 2, 1]
+    assert [output.input_frame_count for output in artifact.model_outputs] == [2, 1, 1]
+    assert [output.input_message_count for output in artifact.model_outputs] == [4, 2, 2]
+    first = artifact.model_outputs[0]
+    assert first.finish_reason == "length"
+    assert first.summary_opened is True
+    assert first.summary_closed is False
+    assert first.requested_output_tokens == 1024
+    assert first.estimated_input_tokens > 0
+    assert artifact.usage["input_tokens"] == 30
+    assert artifact.usage["output_tokens"] == 1044
+    assert artifact.metadata["model_request_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_unclosed_length_summary_stops_after_one_binary_retry() -> None:
+    class RepeatedTruncationProvider(SummaryRouteProvider):
+        async def stream(self, *, model, system_prompt="", messages, tools=None):
+            del tools
+            self.models.append(model)
+            self.system_prompts.append(system_prompt)
+            self.messages.append(list(messages))
+            yield ProviderStreamEvent(type="text_delta", text="<summary>still truncated")
+            yield ProviderStreamEvent(
+                type="done",
+                completion=ProviderCompletion(finish_reason="length"),
+            )
+
+    provider = RepeatedTruncationProvider()
+    runtime_provider = SummaryRouteProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(runtime_provider, provider_id="runtime", endpoint_id="chat"),
+        configured_adapter=_summary_adapter(
+            provider,
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+        model_config=CompactionModelConfig(
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+    )
+    request = _summary_request().model_copy(
+        update={
+            "messages": [
+                MessageRecord.text(session_id="ses_route", role="user", text="question 1"),
+                MessageRecord.text(session_id="ses_route", role="assistant", text="answer 1"),
+                MessageRecord.text(session_id="ses_route", role="user", text="question 2"),
+                MessageRecord.text(session_id="ses_route", role="assistant", text="answer 2"),
+            ]
+        }
+    )
+
+    with pytest.raises(CompactionStrategyError) as raised:
+        await strategy.compact(request)
+
+    assert len(provider.models) == 2
+    assert runtime_provider.models == []
+    assert raised.value.terminal is True
+    assert [output.attempt_index for output in raised.value.model_outputs] == [1, 2]
+    assert [output.input_frame_count for output in raised.value.model_outputs] == [2, 1]
+
+
+def test_compaction_policy_defaults_to_sixteen_thousand_output_tokens() -> None:
+    assert CompactionPolicy().summary_output_tokens == 16_384
 
 
 @pytest.mark.asyncio
@@ -271,6 +507,11 @@ async def test_compaction_provider_error_retries_runtime_route_with_same_paramet
     assert runtime_adapter.model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_route"] == "runtime_fallback"
     assert "dedicated unavailable" in str(artifact.metadata["model_fallback_reason"])
+    assert [output.status for output in artifact.model_outputs] == ["failed", "completed"]
+    assert [output.route for output in artifact.model_outputs] == [
+        "configured",
+        "runtime_fallback",
+    ]
 
 
 @pytest.mark.asyncio
@@ -342,7 +583,8 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path)
     )
 
     result = await runtime.compact(session_id=session.session_id)
-    restored = store.load_session(session.session_id).active_compaction
+    snapshot = store.load_session(session.session_id)
+    restored = snapshot.active_compaction
 
     assert result.compaction is not None
     assert restored is not None
@@ -350,6 +592,57 @@ async def test_runtime_persists_compaction_endpoint_and_route_metadata(tmp_path)
     assert restored.model_endpoint_id == "compact"
     assert restored.model_id == "summary-model"
     assert restored.metadata["model_route"] == "configured"
+    output_events = [
+        event
+        for event in snapshot.events
+        if event.event_type == "compaction_model_output"
+    ]
+    assert len(output_events) == 1
+    assert output_events[0].payload["compaction_id"] == restored.compaction_id
+    assert output_events[0].payload["status"] == "completed"
+    assert output_events[0].payload["raw_text"] == "<summary>routed summary</summary>"
+    assert output_events[0].payload["attempt_index"] == 1
+    assert output_events[0].payload["requested_output_tokens"] == 512
+    assert output_events[0].payload["finish_reason"] == "stop"
+    assert output_events[0].payload["summary_closed"] is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_raw_compaction_output_when_validation_fails(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Invalid summary output")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+    raw_output = "A summary emitted without the required XML block."
+    runtime = RuntimeService(
+        store=store,
+        adapter=_summary_adapter(
+            SummaryRouteProvider(response=raw_output),
+            provider_id="runtime",
+            endpoint_id="chat",
+        ),
+        tools=ToolRegistry(),
+        system_prompt="",
+    )
+
+    with pytest.raises(CompactionError, match="non-empty <summary> block"):
+        await runtime.compact(session_id=session.session_id)
+
+    snapshot = store.load_session(session.session_id)
+    output_events = [
+        event
+        for event in snapshot.events
+        if event.event_type == "compaction_model_output"
+    ]
+    failure = next(event for event in snapshot.events if event.event_type == "compaction_failed")
+    assert len(output_events) == 1
+    output = output_events[0]
+    assert output.sequence < failure.sequence
+    assert output.payload["status"] == "failed"
+    assert output.payload["raw_text"] == raw_output
+    assert output.payload["error_type"] == "CompactionError"
+    assert snapshot.compactions == []
 
 
 @pytest.mark.asyncio
