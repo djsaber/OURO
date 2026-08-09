@@ -1227,9 +1227,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
         plan_panel = self.query_one(PlanConfirmationPanel)
-        if (
-            (ask_user.display and ask_user.awaiting_freeform)
-            or (plan_panel.display and plan_panel.awaiting_feedback)
+        if (ask_user.display and ask_user.awaiting_freeform) or (
+            plan_panel.display and plan_panel.awaiting_feedback
         ):
             popup.hide()
             return
@@ -1505,9 +1504,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _edit_draft(self, value: str) -> None:
         composer = self.query_one(Composer)
         composer.load_text(value)
-        composer.move_cursor(
-            (composer.document.line_count - 1, len(composer.document.lines[-1]))
-        )
+        composer.move_cursor((composer.document.line_count - 1, len(composer.document.lines[-1])))
         composer.focus()
 
     async def _dispatch_command(self, value: str) -> None:
@@ -1797,7 +1794,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=item.session_id,
                 label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
-                description=item.status,
+                trailing=item.status,
             )
             for item in self._sessions
         )
@@ -1904,13 +1901,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 value=_CONFIGURE_MODEL,
                 label="＋ Configure a new model",
-                description="Add an endpoint to an existing provider",
             ),
             *tuple(
                 Choice(
                     value=model.key,
                     label=model.display_name or model.model_id,
-                    description=f"{model.provider_id} · {model.endpoint_id} · {model.key}",
+                    trailing=model.provider_id,
                 )
                 for model in self._models
             ),
@@ -2092,8 +2088,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "/fork",
                 "/model",
                 "/approval",
-                "/thinking",
-                "/compact",
                 "/abort",
                 "/help",
             )
@@ -2134,7 +2128,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 theme.theme_id,
                 ("● " if theme == self._tui_theme else "  ") + theme.label,
-                theme.description,
                 accent=theme.accent,
             )
             for theme in TUI_THEMES.values()
@@ -2161,9 +2154,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if theme is not None:
             self._apply_tui_theme(theme)
 
-    async def _set_tui_theme(
-        self, theme_id: str, *, restore_theme: TuiTheme | None = None
-    ) -> None:
+    async def _set_tui_theme(self, theme_id: str, *, restore_theme: TuiTheme | None = None) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
             await self.query_one(ConversationView).add_notice(

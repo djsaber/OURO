@@ -89,17 +89,18 @@ from ouro.tui.widgets import (
 
 
 def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
-    option = ChoiceScreen._options(
-        (Choice("msg", "A user request", trailing="18:00"),)
-    )[0]
+    option = ChoiceScreen._options((Choice("msg", "A user request " * 8, trailing="18:00"),))[0]
     console = Console(width=40, record=True, force_terminal=False, color_system=None)
 
     console.print(option.prompt)
 
     rendered = console.export_text().splitlines()[0]
     assert rendered.startswith("A user request")
-    assert rendered.endswith("18:00")
+    assert rendered.endswith("  18:00")
     assert len(rendered) == 40
+    time_start = rendered.rindex("18:00")
+    rendered_message = rendered[:time_start].rstrip()
+    assert len(rendered_message) <= 40 * 2 // 3
 
 
 class BlockingStreamProvider:
@@ -1142,16 +1143,12 @@ async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
 
         await controller.submit("inspect tools")
 
-        assert "live__search" in {
-            str(tool["name"]) for tool in provider.tool_batches[-1]
-        }
+        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
 
         await manager.stop("live")
         await controller.submit("inspect tools again")
 
-        assert "live__search" not in {
-            str(tool["name"]) for tool in provider.tool_batches[-1]
-        }
+        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
     finally:
         await controller.close()
 
@@ -1923,9 +1920,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
             ("user", "Second question"),
         ]
 
-        invalid = compactions[0].model_copy(
-            update={"history_boundary_message_id": "msg_missing"}
-        )
+        invalid = compactions[0].model_copy(update={"history_boundary_message_id": "msg_missing"})
         with pytest.raises(ValueError, match="references missing history boundary"):
             await conversation.load_messages(messages, (invalid,))
 
@@ -2361,16 +2356,15 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
         await pilot.press("ctrl+s")
         await pilot.pause()
 
-        options = app.screen.query_one(OptionList)
-        rendered = "\n".join(
-            str(options.get_option_at_index(index).prompt)
-            for index in range(options.option_count)
+        session_choice = next(
+            choice for choice in app.screen._choices if choice.value == "ses_private_identity"
         )
-        assert "ses_private_identity" not in rendered
-        assert "private-provider/private-endpoint" not in rendered
-        assert long_title not in rendered
-        assert "…" in rendered
-        assert "idle" in rendered
+        assert "ses_private_identity" not in session_choice.label
+        assert "private-provider/private-endpoint" not in session_choice.label
+        assert session_choice.label != long_title
+        assert "…" in session_choice.label
+        assert session_choice.description == ""
+        assert session_choice.trailing == "idle"
 
 
 @pytest.mark.asyncio
@@ -2424,6 +2418,10 @@ async def test_model_picker_can_be_completed_with_keyboard_only(tmp_path: Path) 
 
         options = app.screen.query_one(OptionList)
         assert options.highlighted == 0
+        assert app.screen._choices[0].description == ""
+        model_choice = app.screen._choices[1]
+        assert model_choice.description == ""
+        assert model_choice.trailing == "faux"
 
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -2460,9 +2458,9 @@ async def test_thinking_completion_and_action_menu_share_endpoint_choices(
         await pilot.press("slash", *"thinking", "space")
         await pilot.pause()
 
-        inline = app.query_one(CommandPopup).query_one(
-            "#command-popup-content", Static
-        ).render().plain
+        inline = (
+            app.query_one(CommandPopup).query_one("#command-popup-content", Static).render().plain
+        )
         for value in ("default", "enabled", "disabled", "low", "high"):
             assert value in inline
         for value in ("minimal", "medium", "xhigh", "max"):
@@ -2473,8 +2471,7 @@ async def test_thinking_completion_and_action_menu_share_endpoint_choices(
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         modal = "\n".join(
-            str(options.get_option_at_index(index).prompt)
-            for index in range(options.option_count)
+            str(options.get_option_at_index(index).prompt) for index in range(options.option_count)
         )
         for value in ("default", "enabled", "disabled", "low", "high"):
             assert value in modal
@@ -2526,14 +2523,19 @@ async def test_actions_owns_the_configuration_hub(
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
 
-        await pilot.press("ctrl+p", "down", "enter")
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        action_values = {choice.value for choice in app.screen._choices}
+        assert "/thinking" not in action_values
+        assert "/compact" not in action_values
+
+        await pilot.press("down", "enter")
         await pilot.pause(0.2)
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "CONFIGURATION"
         choices = app.screen.query_one(OptionList)
         rendered = "\n".join(
-            str(choices.get_option_at_index(index).prompt)
-            for index in range(choices.option_count)
+            str(choices.get_option_at_index(index).prompt) for index in range(choices.option_count)
         )
         assert "Compaction" in rendered
         assert "Tools & path access" in rendered
@@ -3571,6 +3573,10 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         assert app.screen.query_one("#choice-title", Static).render().plain == "THEME COLOR"
         theme_options = app.screen.query_one(OptionList)
         assert theme_options.option_count == len(TUI_THEMES)
+        assert all(choice.description == "" for choice in app.screen._choices)
+        assert "original" in {choice.value for choice in app.screen._choices}
+        assert TUI_THEMES["original"].accent == "#e8e8e8"
+        assert TUI_THEMES["original"].accent_bright == "#ffffff"
 
         await pilot.press("down")
         await pilot.pause()

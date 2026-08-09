@@ -89,6 +89,13 @@ _THEMES = (
         accent="#858765",
         accent_bright="#969876",
     ),
+    TuiTheme(
+        theme_id="original",
+        label="Original",
+        description="Neutral original white",
+        accent="#e8e8e8",
+        accent_bright="#ffffff",
+    ),
 )
 
 TUI_THEMES: Mapping[str, TuiTheme] = {theme.theme_id: theme for theme in _THEMES}

@@ -127,9 +127,11 @@ class ChoiceScreen(ModalScreen[str | None]):
             )
             if choice.trailing:
                 row = Table.grid(expand=True, padding=0)
-                row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+                row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
+                row.add_column(ratio=1)
+                row.add_column(width=2)
                 row.add_column(justify="right", no_wrap=True)
-                row.add_row(label, Text(choice.trailing, style="#7d8794"))
+                row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
                 options.append(Option(row, id=choice.value))
                 continue
             if choice.description:
