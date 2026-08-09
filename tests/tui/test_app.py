@@ -4,7 +4,7 @@ import asyncio
 import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -55,7 +55,7 @@ from ouro.tools import (
     ToolResult,
     builtin_tools,
 )
-from ouro.tui.app import OuroTuiApp
+from ouro.tui.app import OuroTuiApp, _session_choices
 from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
@@ -101,6 +101,121 @@ def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
     time_start = rendered.rindex("18:00")
     rendered_message = rendered[:time_start].rstrip()
     assert len(rendered_message) <= 40 * 2 // 3
+
+
+def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    application.runtime.sessions.create(session_id="ses_template", title="Template")
+    template = application.runtime.sessions.catalog().entries[0]
+    today = date(2026, 8, 9)
+    local_noon = datetime(2026, 8, 9, 12, tzinfo=UTC)
+    ages = (0, 1, 2, 6, 7, 29, 30, 45)
+    sessions = tuple(
+        template.model_copy(
+            update={
+                "session_id": f"ses_{age}",
+                "title": f"Session {age}",
+                "last_activity_at": local_noon - timedelta(days=age),
+            }
+        )
+        for age in ages
+    )
+
+    choices = _session_choices(sessions, today=today)
+
+    assert [choice.group for choice in choices] == [
+        "Today",
+        "Yesterday",
+        "Previous 7 days",
+        "Previous 7 days",
+        "Previous 30 days",
+        "Previous 30 days",
+        "July 2026",
+        "June 2026",
+    ]
+
+
+def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
+    options = ChoiceScreen._options(
+        (
+            Choice("today-1", "First", group="Today"),
+            Choice("today-2", "Second", group="Today"),
+            Choice("yesterday", "Third", group="Yesterday"),
+        ),
+        group_accent="#ffffff",
+    )
+
+    assert [option.id for option in options] == [None, "today-1", "today-2", None, "yesterday"]
+    assert options[0].disabled is True
+    assert options[0].prompt.plain == "Today"
+    assert options[3].disabled is True
+    assert options[3].prompt.plain == "Yesterday"
+
+
+@pytest.mark.asyncio
+async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results: list[str | None] = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=(
+                    Choice("today", "Today session", group="Today"),
+                    Choice("yesterday", "Yesterday session", group="Yesterday"),
+                ),
+            ),
+            callback=results.append,
+        )
+        await pilot.pause()
+
+        app.screen.query_one("#choice-filter", Input).value = "Yesterday"
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.option_count == 2
+        assert options.get_option_at_index(0).prompt.plain == "Yesterday"
+        assert options.highlighted == 1
+
+        await pilot.press("enter", "enter")
+        await pilot.pause()
+        assert results == ["yesterday"]
+
+
+@pytest.mark.asyncio
+async def test_group_header_remains_visible_after_wrapping_to_first_choice(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 16)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=tuple(
+                    Choice(f"session-{index}", f"Session {index}", group="Today")
+                    for index in range(20)
+                ),
+            )
+        )
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.highlighted == 1
+        await pilot.press("up")
+        await pilot.pause()
+        assert options.highlighted == 20
+        assert options.scroll_y > 0
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert options.highlighted == 1
+        assert options.scroll_y == 0
 
 
 class BlockingStreamProvider:
@@ -2356,6 +2471,11 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
         await pilot.press("ctrl+s")
         await pilot.pause()
 
+        options = app.screen.query_one(OptionList)
+        group_header = options.get_option_at_index(0)
+        assert group_header.disabled is True
+        assert group_header.prompt.plain == "Today"
+        assert options.highlighted == 1
         session_choice = next(
             choice for choice in app.screen._choices if choice.value == "ses_private_identity"
         )

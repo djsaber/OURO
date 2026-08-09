@@ -25,6 +25,7 @@ class Choice:
     description: str = ""
     accent: str | None = None
     trailing: str = ""
+    group: str = ""
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -56,20 +57,19 @@ class ChoiceScreen(ModalScreen[str | None]):
         with Vertical(id="choice-panel"):
             yield Static(self._title, id="choice-title")
             yield Input(placeholder=self._placeholder, id="choice-filter")
-            yield OptionList(*self._options(self._choices), id="choice-list")
+            yield OptionList(
+                *self._options(self._choices, group_accent=theme_for(self).accent),
+                id="choice-list",
+            )
             yield Static("↑/↓ move · Enter select · Esc cancel", id="choice-hint")
 
     def on_mount(self) -> None:
         self.query_one("#choice-filter", Input).focus()
         options = self.query_one("#choice-list", OptionList)
         if options.option_count:
-            options.highlighted = next(
-                (
-                    index
-                    for index, choice in enumerate(self._choices)
-                    if choice.value == self._initial_value
-                ),
-                0,
+            options.highlighted = self._highlight_index(
+                options,
+                preferred_value=self._initial_value,
             )
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -83,13 +83,13 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         options = self.query_one("#choice-list", OptionList)
         options.clear_options()
-        options.add_options(self._options(choices))
-        options.highlighted = 0 if choices else None
+        options.add_options(self._options(choices, group_accent=theme_for(self).accent))
+        options.highlighted = self._highlight_index(options) if choices else None
 
     def on_input_submitted(self, _event: Input.Submitted) -> None:
         options = self.query_one("#choice-list", OptionList)
         if options.option_count and options.highlighted is None:
-            options.highlighted = 0
+            options.highlighted = self._highlight_index(options)
         options.focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
@@ -97,6 +97,19 @@ class ChoiceScreen(ModalScreen[str | None]):
             self.dismiss(str(event.option.id))
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        if (
+            event.option_index > 0
+            and event.option_list.get_option_at_index(event.option_index - 1).disabled
+        ):
+            # OptionList scrolls only the selected row into view. When that row
+            # is the first choice in a group, keep its one-line header visible
+            # as part of the same navigation unit.
+            event.option_list.scroll_relative(
+                y=-1,
+                animate=False,
+                force=True,
+                immediate=True,
+            )
         if self._on_highlight is not None and event.option.id is not None:
             self._on_highlight(str(event.option.id))
 
@@ -113,9 +126,28 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.query_one("#choice-list", OptionList).action_select()
 
     @staticmethod
-    def _options(choices: tuple[Choice, ...]) -> list[Option]:
+    def _options(
+        choices: tuple[Choice, ...],
+        *,
+        group_accent: str = "#7d8794",
+    ) -> list[Option]:
         options: list[Option] = []
+        previous_group: object = object()
         for choice in choices:
+            if choice.group != previous_group:
+                if choice.group:
+                    options.append(
+                        Option(
+                            Text(
+                                choice.group,
+                                style=f"bold {group_accent}",
+                                overflow="ellipsis",
+                                no_wrap=True,
+                            ),
+                            disabled=True,
+                        )
+                    )
+                previous_group = choice.group
             # Build the label from per-segment styles so the description does
             # not inherit the label's bold: Rich applies a Text's base style to
             # every appended segment, so bold must live on the label segment.
@@ -138,6 +170,23 @@ class ChoiceScreen(ModalScreen[str | None]):
                 label.append(f"\n{choice.description}", style="#7d8794")
             options.append(Option(label, id=choice.value))
         return options
+
+    @staticmethod
+    def _highlight_index(
+        options: OptionList,
+        *,
+        preferred_value: str | None = None,
+    ) -> int | None:
+        first_enabled: int | None = None
+        for index in range(options.option_count):
+            option = options.get_option_at_index(index)
+            if option.disabled:
+                continue
+            if first_enabled is None:
+                first_enabled = index
+            if preferred_value is not None and option.id == preferred_value:
+                return index
+        return first_enabled
 
 
 class ModelConfigurationScreen(ModalScreen[TuiModelConfiguration | None]):

@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from calendar import month_name
 from collections.abc import Callable, Sequence
 from dataclasses import replace
+from datetime import date, datetime
 from pathlib import Path
 
 from pydantic import JsonValue
@@ -1790,14 +1792,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not self._sessions:
             self.notify("No saved sessions yet")
             return
-        choices = tuple(
-            Choice(
-                value=item.session_id,
-                label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
-                trailing=item.status,
-            )
-            for item in self._sessions
-        )
+        choices = _session_choices(self._sessions)
         selected = await self.push_screen_wait(
             ChoiceScreen(title="SESSIONS", placeholder="Filter sessions…", choices=choices)
         )
@@ -2267,6 +2262,37 @@ def _truncate_session_title(title: str) -> str:
     rendered = Text(title)
     rendered.truncate(_SESSION_TITLE_MAX_CELLS, overflow="ellipsis")
     return rendered.plain
+
+
+def _session_choices(
+    sessions: tuple[SessionCatalogEntry, ...],
+    *,
+    today: date | None = None,
+) -> tuple[Choice, ...]:
+    local_today = today or datetime.now().astimezone().date()
+    return tuple(
+        Choice(
+            value=item.session_id,
+            label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
+            trailing=item.status,
+            group=_session_date_group(item.last_activity_at, today=local_today),
+        )
+        for item in sessions
+    )
+
+
+def _session_date_group(activity_at: datetime, *, today: date) -> str:
+    activity_date = activity_at.astimezone().date()
+    age = (today - activity_date).days
+    if age <= 0:
+        return "Today"
+    if age == 1:
+        return "Yesterday"
+    if age < 7:
+        return "Previous 7 days"
+    if age < 30:
+        return "Previous 30 days"
+    return f"{month_name[activity_date.month]} {activity_date.year}"
 
 
 def _branch_point_label(message: MessageRecord) -> str:
