@@ -77,3 +77,24 @@ def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
     assert argument_suggestion(command, "replace ", command.argument_options[2]) == (
         "[--token-budget N] <request>"
     )
+
+
+def test_argument_display_metadata_filters_without_changing_completion_value() -> None:
+    argument = TuiCommandArgument(
+        value="supplier/model-endpoint",
+        description="",
+        label="model-endpoint",
+        trailing="supplier",
+    )
+    command = TuiCommand(
+        "/model",
+        "Select model",
+        "Select a model",
+        "<model>",
+        argument_options=(argument,),
+    )
+
+    assert matching_arguments(command, "model") == (argument,)
+    assert matching_arguments(command, "supplier") == (argument,)
+    assert argument_suggestion(command, "model", argument) == ""
+    assert argument_suggestion(command, "supplier/model", argument) == "-endpoint"

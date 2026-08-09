@@ -1573,9 +1573,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             elif command.name == "/model":
                 options = tuple(
                     TuiCommandArgument(
-                        model.key,
-                        model.display_name
-                        or f"{model.provider_id}/{model.endpoint_id} · {model.model_id}",
+                        value=model.key,
+                        description="",
+                        label=model.endpoint_id,
+                        trailing=model.provider_id,
                     )
                     for model in self._models
                 )

@@ -8,6 +8,12 @@ class TuiCommandArgument:
     value: str
     description: str
     argument_hint: str | None = None
+    label: str | None = None
+    trailing: str = ""
+
+    @property
+    def display_label(self) -> str:
+        return self.label or self.value
 
     @property
     def usage(self) -> str:
@@ -18,7 +24,12 @@ class TuiCommandArgument:
         return self.argument_hint is not None and "<" in self.argument_hint
 
     def matches(self, query: str) -> bool:
-        return self.value.casefold().startswith(query.casefold().strip())
+        needle = query.casefold().strip()
+        return any(
+            candidate.casefold().startswith(needle)
+            for candidate in (self.value, self.display_label, self.trailing)
+            if candidate
+        )
 
 
 @dataclass(frozen=True)
@@ -169,7 +180,11 @@ def argument_suggestion(
     if not normalized and command.argument_hint:
         return command.argument_hint
     query, separator, remainder = normalized.partition(" ")
-    if selected is not None and not separator and selected.matches(query):
+    if (
+        selected is not None
+        and not separator
+        and selected.value.casefold().startswith(query.casefold())
+    ):
         completion = selected.value[len(query) :]
         suffix = f" {selected.argument_hint}" if selected.argument_hint else ""
         return completion + suffix

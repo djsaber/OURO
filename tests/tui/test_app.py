@@ -13,6 +13,7 @@ from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
 
+from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
     PluginCommandExecutionView,
@@ -2945,6 +2946,45 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
         await pilot.pause()
         assert composer.text == ""
         assert app._active_model == "faux"
+
+
+@pytest.mark.asyncio
+async def test_model_command_aligns_endpoint_and_provider_without_changing_route_value(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        app._models = (
+            AvailableModel(
+                key="supplier/model-endpoint",
+                provider_id="supplier",
+                endpoint_id="model-endpoint",
+                model_id="provider-model-id",
+            ),
+        )
+        await pilot.press("slash", *"model", "space", *"model")
+        await pilot.pause()
+
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        argument = popup.selected_argument
+        assert argument is not None
+        assert argument.value == "supplier/model-endpoint"
+        assert argument.display_label == "model-endpoint"
+        assert argument.trailing == "supplier"
+        assert composer.suggestion == ""
+
+        content = popup.query_one("#command-popup-content", Static)
+        rendered = content.render().plain.splitlines()[0]
+        assert rendered.startswith("› model-endpoint")
+        assert rendered.rstrip().endswith("supplier")
+        assert rendered.rindex("supplier") == content.content_region.width - len("supplier")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert composer.text == "/model supplier/model-endpoint"
 
 
 @pytest.mark.asyncio
