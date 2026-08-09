@@ -1653,6 +1653,7 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
         answer = next(entry for entry in reversed(history.entries) if entry.kind == "assistant")
         assert answer.reasoning == "Inspecting the event path."
         assert answer.text == "Done."
+        assert "│ Inspecting the event path." in history.rendered_text
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
 
@@ -1660,7 +1661,10 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
 @pytest.mark.asyncio
 async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
-    reasoning_text = 'Prior reasoning with [data-theme="'
+    reasoning_text = (
+        'Prior reasoning with [data-theme=" remains plain text across wrapping. '
+        + "wrapped reasoning " * 8
+    )
     message = MessageRecord(
         session_id="ses_history",
         role="assistant",
@@ -1679,9 +1683,20 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         assert entry.kind == "assistant"
         assert entry.reasoning == reasoning_text
         assert entry.text == "Final answer"
-        assert "THOUGHT" in history.rendered_text
-        assert reasoning_text in history.rendered_text
-        assert "Final answer" in history.rendered_text
+        rendered_lines = history.rendered_text.splitlines()
+        thought_line = next(
+            index for index, line in enumerate(rendered_lines) if line.strip() == "THOUGHT"
+        )
+        answer_line = next(
+            index for index, line in enumerate(rendered_lines) if line.strip() == "Final answer"
+        )
+        reasoning_lines = [
+            line for line in rendered_lines[thought_line + 1 : answer_line] if line.strip()
+        ]
+        assert len(reasoning_lines) > 1
+        assert all(
+            line.lstrip().startswith("\N{BOX DRAWINGS LIGHT VERTICAL} ") for line in reasoning_lines
+        )
         assert not app.query(AssistantTurn)
 
 
@@ -1837,6 +1852,7 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
             session_id="ses_large_history",
             role="user" if index % 2 == 0 else "assistant",
             content=[TextContent(text=f"Message {index}")],
+            reasoning_content=(f"Reasoning {index}" if index % 2 else ""),
         )
         for index in range(400)
     )

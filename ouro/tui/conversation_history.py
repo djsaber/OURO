@@ -4,9 +4,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
-from rich.console import Group, RenderableType
+from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
+from rich.segment import Segment
+from rich.style import Style
 from rich.text import Text
 from textual import events
 from textual.events import Resize
@@ -36,6 +38,35 @@ class TranscriptEntry:
     reasoning: str = ""
     tool: RuntimeToolCallActivity | None = None
     error: bool = False
+
+
+@dataclass(frozen=True)
+class _ReasoningContent:
+    """Render completed reasoning with the same structure as its live view.
+
+    RichLog stores completed transcript entries as renderables rather than child
+    widgets. Prefixing after Rich has wrapped the content preserves the border on
+    every visual line without adding a widget per historical reasoning block.
+    """
+
+    text: str
+
+    def __rich_console__(
+        self,
+        console: Console,
+        options: ConsoleOptions,
+    ) -> RenderResult:
+        prefix_width = 2
+        content_options = options.update_width(max(1, options.max_width - prefix_width))
+        content = Text(self.text, style="dim italic #8f9aa8")
+        lines = console.render_lines(content, content_options, pad=False)
+        border = Segment("│", Style(color="#505967"))
+        gap = Segment(" ")
+        for line in lines:
+            yield border
+            yield gap
+            yield from line
+            yield Segment.line()
 
 
 class ConversationHistory(RichLog, can_focus=False):
@@ -188,9 +219,14 @@ class ConversationHistory(RichLog, can_focus=False):
 
         blocks: list[RenderableType] = []
         if entry.reasoning:
-            thought = Text("THOUGHT\n", style="bold #788492")
-            thought.append(entry.reasoning, style="dim italic #8f9aa8")
-            blocks.append(Padding(thought, (0, 1, 1, 1)))
+            thought = Group(
+                Text("THOUGHT", style="bold #788492"),
+                Padding(
+                    _ReasoningContent(entry.reasoning),
+                    (0, 0, 1, 1),
+                ),
+            )
+            blocks.append(thought)
         if entry.text:
             blocks.append(RichMarkdown(entry.text))
         return Padding(Group(*blocks), (0, 2, 1, 2))
