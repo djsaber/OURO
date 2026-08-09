@@ -4,10 +4,14 @@ from collections.abc import Callable
 
 import pyperclip
 import pytest
+from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.geometry import Offset
 from textual.screen import Screen
+from textual.selection import Selection
 from textual.widgets import Static
 
+from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.app import _OuroHostScreen
 from ouro.tui.clipboard import (
     ClipboardReadError,
@@ -15,7 +19,19 @@ from ouro.tui.clipboard import (
     read_system_clipboard,
     write_system_clipboard,
 )
+from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.theme import TuiTheme
 from ouro.tui.widgets import Composer
+
+
+def _unused_tool_renderer(
+    _tool: RuntimeToolCallActivity,
+    *,
+    frame: int,
+    theme: TuiTheme,
+) -> Text:
+    del frame, theme
+    return Text()
 
 
 class ComposerApp(App[None]):
@@ -43,6 +59,13 @@ class PageSelectionApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield Static("copy this page text", id="page-content")
+
+
+class HistorySelectionApp(PageSelectionApp):
+    CSS = "ConversationHistory { width: 100%; height: 4; }"
+
+    def compose(self) -> ComposeResult:
+        yield ConversationHistory(_unused_tool_renderer)
 
 
 @pytest.mark.asyncio
@@ -114,6 +137,44 @@ async def test_page_selection_remains_highlighted_when_copy_fails() -> None:
         await pilot.pause()
 
         assert app.screen.get_selected_text() == selected_text
+
+
+@pytest.mark.asyncio
+async def test_history_right_click_copies_only_the_dragged_text() -> None:
+    copied: list[str] = []
+    app = HistorySelectionApp(copied.append)
+
+    async with app.run_test(size=(40, 8)) as pilot:
+        history = app.query_one(ConversationHistory)
+        history.replace((TranscriptEntry(kind="assistant", text="copy only this text"),))
+        await history.wait_until_rendered()
+        await pilot.pause()
+
+        await pilot.click(history, offset=(2, 0), button=3)
+        await pilot.pause()
+        assert copied == []
+
+        await pilot.mouse_down(history, offset=(7, 0))
+        await pilot.hover(history, offset=(10, 0))
+        await pilot.mouse_up(history, offset=(10, 0))
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() == "only"
+        assert history.text_selection == Selection(Offset(7, 0), Offset(11, 0))
+        selection_background = app.screen.get_component_rich_style(
+            "screen--selection", partial=True
+        ).bgcolor
+        selected_segment = next(
+            segment for segment in history.render_line(0) if segment.text == "only"
+        )
+        assert selected_segment.style is not None
+        assert selected_segment.style.bgcolor == selection_background
+        assert selected_segment.style.color != selection_background
+
+        await pilot.mouse_down(history, offset=(7, 0), button=3)
+        await pilot.pause()
+        assert copied == ["only"]
+        assert app.screen.get_selected_text() is None
 
 
 def test_system_clipboard_errors_are_translated(monkeypatch: pytest.MonkeyPatch) -> None:

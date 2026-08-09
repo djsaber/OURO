@@ -13,6 +13,7 @@ from rich.text import Text
 from textual import events
 from textual.events import Resize
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
@@ -69,6 +70,46 @@ class _ReasoningContent:
             yield Segment.line()
 
 
+def _apply_selection_style(
+    strip: Strip,
+    start: int,
+    end: int,
+    style: Style,
+) -> Strip:
+    """Apply a character-indexed selection style without losing Rich segments."""
+
+    text_length = len(strip.text)
+    start = min(max(0, start), text_length)
+    end = text_length if end < 0 else min(max(0, end), text_length)
+    if end <= start:
+        return strip
+
+    segments: list[Segment] = []
+    position = 0
+    for segment in strip:
+        if segment.control:
+            segments.append(segment)
+            continue
+
+        text = segment.text
+        segment_end = position + len(text)
+        selected_start = max(start, position)
+        selected_end = min(end, segment_end)
+        if selected_start >= selected_end:
+            segments.append(segment)
+        else:
+            local_start = selected_start - position
+            local_end = selected_end - position
+            if local_start:
+                segments.append(Segment(text[:local_start], segment.style))
+            selected_style = style if segment.style is None else segment.style + style
+            segments.append(Segment(text[local_start:local_end], selected_style))
+            if local_end < len(text):
+                segments.append(Segment(text[local_end:], segment.style))
+        position = segment_end
+    return Strip(segments, strip.cell_length)
+
+
 class ConversationHistory(RichLog, can_focus=False):
     """Line-buffered rendering for immutable persisted conversation history.
 
@@ -109,6 +150,24 @@ class ConversationHistory(RichLog, can_focus=False):
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         return selection.extract(self.rendered_text), "\n"
+
+    def render_line(self, y: int) -> Strip:
+        """Render one line with source offsets and any active selection.
+
+        RichLog emits styled line segments without Textual's source-offset metadata,
+        so the Screen cannot otherwise translate a drag gesture into text offsets.
+        """
+
+        line = super().render_line(y)
+        source_y = self.scroll_offset.y + y
+        selection = self.text_selection
+        if selection is not None and (span := selection.get_span(source_y)) is not None:
+            line = _apply_selection_style(
+                line,
+                *span,
+                self.screen.get_component_rich_style("screen--selection", partial=True),
+            )
+        return line.apply_offsets(0, source_y)
 
     def on_click(self, event: events.Click) -> None:
         if event.button == 1 and event.style is not None and event.style.link:
