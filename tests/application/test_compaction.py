@@ -284,7 +284,7 @@ async def test_invalid_compaction_response_retains_raw_model_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compaction_reasoning_defaults_off_independently_from_session() -> None:
+async def test_runtime_compaction_inherits_session_reasoning() -> None:
     provider = SummaryRouteProvider()
     strategy = LLMSummaryCompactionStrategy(
         _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
@@ -292,10 +292,10 @@ async def test_compaction_reasoning_defaults_off_independently_from_session() ->
 
     artifact = await strategy.compact(_summary_request())
 
-    assert provider.models[0].reasoning_request == ReasoningRequest(mode="disabled")
+    assert provider.models[0].reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_reasoning"] == {
-        "mode": "disabled",
-        "effort": None,
+        "mode": "enabled",
+        "effort": "low",
     }
     assert "1,024 output tokens" in provider.system_prompts[0]
     assert "<example>" not in provider.system_prompts[0]
@@ -303,9 +303,10 @@ async def test_compaction_reasoning_defaults_off_independently_from_session() ->
 
 @pytest.mark.asyncio
 async def test_compaction_reasoning_rejects_explicit_enable_on_unsupported_endpoint() -> None:
-    provider = SummaryRouteProvider()
-    adapter = RuntimeAdapter(
-        provider,
+    configured_provider = SummaryRouteProvider()
+    runtime_provider = SummaryRouteProvider(error="runtime unavailable")
+    configured_adapter = RuntimeAdapter(
+        configured_provider,
         ModelMetadata(
             model_id="plain-model",
             provider_id="plain",
@@ -315,8 +316,11 @@ async def test_compaction_reasoning_rejects_explicit_enable_on_unsupported_endpo
         ),
     )
     strategy = LLMSummaryCompactionStrategy(
-        adapter,
+        _summary_adapter(runtime_provider, provider_id="runtime", endpoint_id="chat"),
+        configured_adapter=configured_adapter,
         model_config=CompactionModelConfig(
+            provider_id="plain",
+            endpoint_id="chat",
             reasoning=ReasoningRequest(mode="enabled"),
         ),
     )
@@ -324,11 +328,12 @@ async def test_compaction_reasoning_rejects_explicit_enable_on_unsupported_endpo
     with pytest.raises(CompactionError, match="does not support reasoning controls"):
         await strategy.compact(_summary_request())
 
-    assert provider.models == []
+    assert configured_provider.models == []
+    assert len(runtime_provider.models) == 1
 
 
 @pytest.mark.asyncio
-async def test_compaction_requires_explicit_enable_for_always_on_endpoint() -> None:
+async def test_runtime_compaction_inherits_always_on_session_reasoning() -> None:
     provider = SummaryRouteProvider()
     adapter = RuntimeAdapter(
         provider,
@@ -348,10 +353,34 @@ async def test_compaction_requires_explicit_enable_for_always_on_endpoint() -> N
     )
     strategy = LLMSummaryCompactionStrategy(adapter)
 
-    with pytest.raises(CompactionError, match="must be explicitly enabled"):
-        await strategy.compact(_summary_request())
+    artifact = await strategy.compact(_summary_request())
 
-    assert provider.models == []
+    assert provider.models[0].reasoning_request == ReasoningRequest(mode="enabled")
+    assert artifact.metadata["model_reasoning"] == {"mode": "enabled", "effort": None}
+
+
+@pytest.mark.asyncio
+async def test_dedicated_compaction_reasoning_defaults_off() -> None:
+    runtime_provider = SummaryRouteProvider()
+    configured_provider = SummaryRouteProvider()
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(runtime_provider, provider_id="runtime", endpoint_id="chat"),
+        configured_adapter=_summary_adapter(
+            configured_provider,
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+        model_config=CompactionModelConfig(
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+    )
+
+    artifact = await strategy.compact(_summary_request())
+
+    assert runtime_provider.models == []
+    assert configured_provider.models[0].reasoning_request == ReasoningRequest(mode="disabled")
+    assert artifact.metadata["model_reasoning"] == {"mode": "disabled", "effort": None}
 
 
 @pytest.mark.asyncio
@@ -502,7 +531,7 @@ async def test_compaction_provider_error_retries_runtime_route_with_same_paramet
     fallback_model = runtime_provider.models[0]
     assert fallback_model.temperature == 0.2
     assert fallback_model.max_output_tokens == 700
-    assert fallback_model.reasoning_request == ReasoningRequest(mode="disabled")
+    assert fallback_model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert runtime_adapter.model.temperature == 0.8
     assert runtime_adapter.model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_route"] == "runtime_fallback"

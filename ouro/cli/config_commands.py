@@ -208,6 +208,18 @@ def show_compaction_config(
         if model.has_dedicated_endpoint
         else "session runtime endpoint"
     )
+    thinking_mode: str
+    thinking_effort: str
+    if model.has_dedicated_endpoint:
+        thinking_mode = model.reasoning.mode if model.reasoning is not None else "-"
+        thinking_effort = (
+            model.reasoning.effort
+            if model.reasoning is not None and model.reasoning.effort is not None
+            else "-"
+        )
+    else:
+        thinking_mode = "inherited from Session"
+        thinking_effort = "inherited from Session"
     print(
         "\n".join(
             [
@@ -215,9 +227,8 @@ def show_compaction_config(
                 f"Temperature: {model.temperature if model.temperature is not None else '-'}",
                 "Max output tokens: "
                 f"{model.max_output_tokens if model.max_output_tokens is not None else '-'}",
-                f"Thinking mode: {model.reasoning.mode if model.reasoning is not None else '-'}",
-                "Thinking effort: "
-                f"{model.reasoning.effort if model.reasoning is not None else '-'}",
+                f"Thinking mode: {thinking_mode}",
+                f"Thinking effort: {thinking_effort}",
                 f"Config: {config.config_path}",
             ]
         )

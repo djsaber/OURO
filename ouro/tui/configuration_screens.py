@@ -232,13 +232,19 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
             yield Input(
                 value=_optional_text(config.model.max_output_tokens), id="compaction-max-output"
             )
-            yield Label("Thinking", classes="configuration-label")
+            yield Label("Thinking (dedicated model only)", classes="configuration-label")
             yield Select[str](
                 tuple((item, item) for item in _REASONING_VALUES),
                 value=reasoning,
                 allow_blank=False,
                 compact=True,
+                disabled=configured_model == _RUNTIME_MODEL,
                 id="compaction-reasoning",
+            )
+            yield Static(
+                _compaction_reasoning_note(configured_model),
+                classes="configuration-note",
+                id="compaction-reasoning-note",
             )
             yield Static(
                 "Saved options apply to the next Runtime; /compact uses the current Runtime.",
@@ -254,6 +260,17 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
 
     def on_mount(self) -> None:
         self.query_one("#compaction-strategy", Select).focus()
+
+    @on(Select.Changed, "#compaction-model")
+    def update_reasoning_route(self, event: Select.Changed) -> None:
+        model = event.value if isinstance(event.value, str) else _RUNTIME_MODEL
+        reasoning = self.query_one("#compaction-reasoning", Select)
+        reasoning.disabled = model == _RUNTIME_MODEL
+        if reasoning.disabled:
+            reasoning.value = "default"
+        self.query_one("#compaction-reasoning-note", Static).update(
+            _compaction_reasoning_note(model)
+        )
 
     @on(Button.Pressed, "#compaction-cancel")
     def cancel_from_button(self) -> None:
@@ -274,7 +291,13 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
             strategy = _selected(self, "#compaction-strategy", "Select a strategy")
             fallback = _selected(self, "#compaction-fallback", "Select a fallback")
             model = _selected(self, "#compaction-model", "Select a model route")
-            reasoning = _selected(self, "#compaction-reasoning", "Select thinking")
+            reasoning = (
+                None
+                if model == _RUNTIME_MODEL
+                else _reasoning_request(
+                    _selected(self, "#compaction-reasoning", "Select thinking")
+                )
+            )
             trigger = _ratio(self.query_one("#compaction-trigger", Input).value, "Trigger ratio")
             target = _ratio(self.query_one("#compaction-target", Input).value, "Target ratio")
             if target >= trigger:
@@ -303,7 +326,7 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
                     self.query_one("#compaction-max-output", Input).value,
                     "Max output tokens",
                 ),
-                reasoning=_reasoning_request(reasoning),
+                reasoning=reasoning,
             )
         except ValueError as exc:
             self.query_one(".configuration-error", Static).update(str(exc))
@@ -811,3 +834,9 @@ def _reasoning_request(value: str) -> ReasoningRequest | None:
         return _REASONING_REQUESTS[value]
     except KeyError as exc:
         raise ValueError(f"Unsupported thinking option: {value}") from exc
+
+
+def _compaction_reasoning_note(model: str) -> str:
+    if model == _RUNTIME_MODEL:
+        return "Thinking follows the selected Session model and cannot be overridden here."
+    return "Thinking is request-scoped to this dedicated compaction model."

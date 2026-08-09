@@ -58,6 +58,8 @@ def test_config_compaction_runtime_endpoint_preserves_parameter_overrides(
                 "summary",
                 "--temperature",
                 "0.2",
+                "--thinking-mode",
+                "enabled",
             ]
         )
         == 0
@@ -81,7 +83,9 @@ def test_config_compaction_runtime_endpoint_preserves_parameter_overrides(
     assert model.provider_id is None
     assert model.endpoint_id is None
     assert model.temperature == 0.2
+    assert model.reasoning is None
     assert "provider_id" not in payload["compaction"]["model"]
+    assert "reasoning" not in payload["compaction"]["model"]
 
 
 def test_config_compaction_rejects_partial_endpoint(tmp_path, capsys) -> None:
@@ -99,3 +103,29 @@ def test_config_compaction_rejects_partial_endpoint(tmp_path, capsys) -> None:
 
     assert code != 0
     assert "configured together" in captured.err
+
+
+def test_config_compaction_rejects_reasoning_for_runtime_route(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "config",
+            "compaction",
+            "--home",
+            str(tmp_path),
+            "--thinking-mode",
+            "enabled",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "dedicated model endpoint" in captured.err
+
+
+def test_config_compaction_displays_inherited_session_reasoning(tmp_path, capsys) -> None:
+    code = main(["config", "compaction", "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Thinking mode: inherited from Session" in captured.out
+    assert "Thinking effort: inherited from Session" in captured.out

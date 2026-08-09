@@ -58,5 +58,6 @@ def test_compaction_help_distinguishes_route_reset_from_full_clear(capsys) -> No
     help_text = _subcommand_help(["config", "compaction"], capsys)
 
     assert "Omitted options retain their current values" in help_text
-    assert "--runtime-endpoint only clears the dedicated model route" in help_text
-    assert "--clear also removes temperature" in help_text
+    assert "session runtime route inherits each Session's model reasoning" in help_text
+    assert "clears the dedicated route and its reasoning override" in help_text
+    assert "--clear also removes temperature and token overrides" in help_text

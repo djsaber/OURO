@@ -43,6 +43,7 @@ def test_compaction_model_config_persists_without_replacing_other_sections(tmp_p
     ("kwargs", "message"),
     [
         ({"provider_id": "glm"}, "configured together"),
+        ({"reasoning": {"mode": "disabled"}}, "dedicated model endpoint"),
         ({"reasoning": {"mode": "disabled", "effort": "high"}}, "cannot specify"),
         ({"reasoning": {"effort": "extreme"}}, "Input should be"),
     ],
@@ -73,3 +74,24 @@ def test_compaction_manager_rejects_invalid_persisted_shape(tmp_path) -> None:
 
     with pytest.raises(ConfigError, match="configured together"):
         CompactionConfigManager(tmp_path).snapshot()
+
+
+def test_runtime_endpoint_clears_dedicated_reasoning_only(tmp_path) -> None:
+    manager = CompactionConfigManager(tmp_path)
+    manager.set_model(
+        CompactionModelConfig(
+            provider_id="glm",
+            endpoint_id="summary",
+            temperature=0.1,
+            max_output_tokens=4096,
+            reasoning=ReasoningRequest(mode="enabled", effort="high"),
+        )
+    )
+
+    saved = manager.update_model(use_runtime_endpoint=True)
+
+    assert saved.model.provider_id is None
+    assert saved.model.endpoint_id is None
+    assert saved.model.reasoning is None
+    assert saved.model.temperature == 0.1
+    assert saved.model.max_output_tokens == 4096

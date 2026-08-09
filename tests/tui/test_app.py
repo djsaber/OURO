@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from textual.color import Color
 from textual.containers import VerticalScroll
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, Select, Static
 
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
@@ -2485,13 +2485,29 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
 
     async with app.run_test(size=(100, 42)) as pilot:
         await pilot.pause(0.5)
+        models = await app._controller.models()
         screen = CompactionConfigurationScreen(
             await app._controller.compaction_configuration(),
-            models=await app._controller.models(),
+            models=models,
             strategy_ids=app._controller.compaction_strategies(),
         )
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
+        model_route = screen.query_one("#compaction-model", Select)
+        reasoning = screen.query_one("#compaction-reasoning", Select)
+        reasoning_note = screen.query_one("#compaction-reasoning-note", Static)
+        runtime_route = model_route.value
+        assert reasoning.disabled is True
+        assert "follows the selected Session model" in reasoning_note.render().plain
+
+        model_route.value = models[0].key
+        await pilot.pause()
+        assert reasoning.disabled is False
+        assert "dedicated compaction model" in reasoning_note.render().plain
+
+        model_route.value = runtime_route
+        await pilot.pause()
+        assert reasoning.disabled is True
         screen.query_one("#compaction-trigger", Input).value = "0.4"
         screen.query_one("#compaction-target", Input).value = "0.5"
 
@@ -2506,6 +2522,7 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
         assert len(results) == 1
         assert results[0].trigger_ratio == 0.4
         assert results[0].target_ratio == 0.2
+        assert results[0].reasoning is None
 
 
 @pytest.mark.asyncio

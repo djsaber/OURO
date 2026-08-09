@@ -12,7 +12,11 @@ from ouro.core.reasoning import ReasoningRequest
 
 
 class CompactionModelConfig(OuroModel):
-    """Endpoint selection and request-scoped model overrides for compaction only."""
+    """Dedicated route and request overrides owned by the compaction policy.
+
+    A Session runtime route owns its own reasoning request, so only a dedicated
+    compaction endpoint may persist a compaction-specific reasoning override.
+    """
 
     provider_id: str | None = None
     endpoint_id: str | None = None
@@ -33,6 +37,10 @@ class CompactionModelConfig(OuroModel):
         if (self.provider_id is None) != (self.endpoint_id is None):
             raise ValueError(
                 "compaction model provider_id and endpoint_id must be configured together"
+            )
+        if self.reasoning is not None and not self.has_dedicated_endpoint:
+            raise ValueError(
+                "compaction reasoning can only be configured for a dedicated model endpoint"
             )
         return self
 
@@ -100,9 +108,11 @@ class CompactionConfigManager:
     ) -> CompactionConfig:
         """Merge one validated CLI/application update into persisted model settings."""
 
-        if use_runtime_endpoint and (provider_id is not None or endpoint_id is not None):
+        if use_runtime_endpoint and (
+            provider_id is not None or endpoint_id is not None or reasoning is not None
+        ):
             raise ConfigError(
-                "use_runtime_endpoint cannot be combined with provider_id or endpoint_id"
+                "use_runtime_endpoint cannot be combined with a model route or reasoning override"
             )
         if clear and any(
             (
@@ -120,7 +130,7 @@ class CompactionConfigManager:
         model = CompactionModelConfig() if clear else current.model
         updates: dict[str, object] = {}
         if use_runtime_endpoint:
-            updates.update({"provider_id": None, "endpoint_id": None})
+            updates.update({"provider_id": None, "endpoint_id": None, "reasoning": None})
         elif provider_id is not None or endpoint_id is not None:
             updates.update(
                 {

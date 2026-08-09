@@ -159,7 +159,11 @@ class LLMSummaryCompactionStrategy:
         routes = self._adapter_routes(request.session_id)
         for route in routes:
             try:
-                adapter = _apply_compaction_model_config(route.adapter, self.model_config)
+                adapter = _apply_compaction_model_config(
+                    route.adapter,
+                    self.model_config,
+                    inherit_reasoning=route.route != "configured",
+                )
                 artifact = await self._compact_with_adapter(
                     request,
                     adapter=adapter,
@@ -1221,6 +1225,8 @@ class ContextPreparationService:
 def _apply_compaction_model_config(
     adapter: RuntimeAdapter,
     config: CompactionModelConfig,
+    *,
+    inherit_reasoning: bool,
 ) -> RuntimeAdapter:
     """Create a request-local model view without mutating the session runtime adapter."""
 
@@ -1234,7 +1240,11 @@ def _apply_compaction_model_config(
             )
         updates["max_output_tokens"] = config.max_output_tokens
 
-    updates["reasoning_request"] = _compaction_reasoning_request(adapter, config.reasoning)
+    if not inherit_reasoning:
+        updates["reasoning_request"] = _dedicated_compaction_reasoning_request(
+            adapter,
+            config.reasoning,
+        )
 
     try:
         model = type(adapter.model).model_validate(
@@ -1245,11 +1255,11 @@ def _apply_compaction_model_config(
     return RuntimeAdapter(provider=adapter.provider, model=model)
 
 
-def _compaction_reasoning_request(
+def _dedicated_compaction_reasoning_request(
     adapter: RuntimeAdapter,
     configured: ReasoningRequest | None,
 ) -> ReasoningRequest:
-    """Resolve compaction reasoning independently from the Session model request."""
+    """Resolve reasoning owned by a dedicated compaction model route."""
 
     explicitly_enabled = configured is not None and (
         configured.mode == "enabled" or configured.effort is not None
