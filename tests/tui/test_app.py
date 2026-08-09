@@ -2949,7 +2949,7 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_model_command_aligns_endpoint_and_provider_without_changing_route_value(
+async def test_model_command_shows_endpoint_and_provider_without_changing_route_value(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -2973,14 +2973,13 @@ async def test_model_command_aligns_endpoint_and_provider_without_changing_route
         assert argument is not None
         assert argument.value == "supplier/model-endpoint"
         assert argument.display_label == "model-endpoint"
-        assert argument.trailing == "supplier"
+        assert argument.description == "supplier"
         assert composer.suggestion == ""
 
         content = popup.query_one("#command-popup-content", Static)
         rendered = content.render().plain.splitlines()[0]
-        assert rendered.startswith("› model-endpoint")
-        assert rendered.rstrip().endswith("supplier")
-        assert rendered.rindex("supplier") == content.content_region.width - len("supplier")
+        assert rendered.startswith("› model-endpoint  supplier")
+        assert rendered.rindex("supplier") < content.content_region.width - len("supplier")
 
         await pilot.press("enter")
         await pilot.pause()

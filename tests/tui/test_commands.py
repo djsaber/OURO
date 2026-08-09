@@ -82,9 +82,8 @@ def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
 def test_argument_display_metadata_filters_without_changing_completion_value() -> None:
     argument = TuiCommandArgument(
         value="supplier/model-endpoint",
-        description="",
+        description="supplier",
         label="model-endpoint",
-        trailing="supplier",
     )
     command = TuiCommand(
         "/model",

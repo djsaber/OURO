@@ -9,7 +9,6 @@ class TuiCommandArgument:
     description: str
     argument_hint: str | None = None
     label: str | None = None
-    trailing: str = ""
 
     @property
     def display_label(self) -> str:
@@ -27,7 +26,7 @@ class TuiCommandArgument:
         needle = query.casefold().strip()
         return any(
             candidate.casefold().startswith(needle)
-            for candidate in (self.value, self.display_label, self.trailing)
+            for candidate in (self.value, self.display_label)
             if candidate
         )
 

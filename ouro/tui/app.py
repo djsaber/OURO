@@ -1574,9 +1574,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 options = tuple(
                     TuiCommandArgument(
                         value=model.key,
-                        description="",
+                        description=model.provider_id,
                         label=model.endpoint_id,
-                        trailing=model.provider_id,
                     )
                     for model in self._models
                 )

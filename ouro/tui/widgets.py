@@ -1435,10 +1435,6 @@ class CommandPopup(VerticalScroll):
         width = self.scrollable_content_region.width
         if width > 0 and self._content.content_region.width != width:
             self._content.styles.width = width
-            if self._argument_command is not None:
-                self._render_arguments()
-            elif self._commands:
-                self._render_commands()
 
     @property
     def selected_command(self) -> TuiCommand | None:
@@ -1553,19 +1549,9 @@ class CommandPopup(VerticalScroll):
             self._content.update(content)
             return
         value_width = max(len(argument.display_label) for argument in self._arguments)
-        width = self.scrollable_content_region.width
         rows: list[Text] = []
         for index, argument in enumerate(self._arguments):
             selected = index == self._selected
-            if argument.trailing:
-                rows.append(
-                    self._render_trailing_argument(
-                        argument,
-                        selected=selected,
-                        width=width,
-                    )
-                )
-                continue
             row = Text(style="on #242424" if selected else "")
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
@@ -1578,42 +1564,6 @@ class CommandPopup(VerticalScroll):
             )
             rows.append(row)
         self._render_rows(tuple(rows))
-
-    def _render_trailing_argument(
-        self,
-        argument: TuiCommandArgument,
-        *,
-        selected: bool,
-        width: int,
-    ) -> Text:
-        theme = theme_for(self)
-        row = Text(style="on #242424" if selected else "")
-        row.append("› " if selected else "  ", style=theme.accent if selected else "")
-        label = Text(
-            argument.display_label,
-            style=f"bold {theme.accent_bright}" if selected else "bold #d6d9df",
-        )
-        trailing = Text(
-            argument.trailing,
-            style="#aeb5bf" if selected else "#6f7a87",
-        )
-        if width <= 0:
-            row.append_text(label)
-            row.append("  ")
-            row.append_text(trailing)
-            return row
-
-        content_width = max(0, width - 2)
-        trailing.truncate(content_width // 3, overflow="ellipsis")
-        label.truncate(
-            max(0, min(content_width * 2 // 3, content_width - trailing.cell_len - 2)),
-            overflow="ellipsis",
-        )
-        gap = content_width - label.cell_len - trailing.cell_len
-        row.append_text(label)
-        row.append(" " * gap)
-        row.append_text(trailing)
-        return row
 
     def _render_rows(self, rows: tuple[Text, ...]) -> None:
         width = self.scrollable_content_region.width
