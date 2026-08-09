@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from rich.console import Console
 from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
@@ -22,7 +23,7 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.compaction import CompactionRecord
+from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent, ToolResultReference
@@ -85,6 +86,20 @@ from ouro.tui.widgets import (
     StatusLine,
     WelcomePanel,
 )
+
+
+def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
+    option = ChoiceScreen._options(
+        (Choice("msg", "A user request", trailing="18:00"),)
+    )[0]
+    console = Console(width=40, record=True, force_terminal=False, color_system=None)
+
+    console.print(option.prompt)
+
+    rendered = console.export_text().splitlines()[0]
+    assert rendered.startswith("A user request")
+    assert rendered.endswith("18:00")
+    assert len(rendered) == 40
 
 
 class BlockingStreamProvider:
@@ -1375,8 +1390,100 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
         assert branch_session_id != source_session_id
         branch = application.runtime.store.load_session(branch_session_id)
         assert branch.session.parent_session_id == source_session_id
-        assert branch.session.forked_from_message_id is not None
-        assert len(branch.messages) == 2
+        assert branch.session.forked_from_message_id is None
+        assert branch.messages == []
+        assert app.query_one(Composer).text == "fork"
+        assert app.query_one(Composer).has_focus is True
+
+
+@pytest.mark.asyncio
+async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    source = application.runtime.sessions.create(title="Compacted fork source").session
+    messages = [
+        MessageRecord.text(
+            session_id=source.session_id,
+            role=role,
+            text=text,
+            sequence=index,
+        ).model_copy(update={"created_at": created_at})
+        for index, (role, text, created_at) in enumerate(
+            (
+                ("user", "First request", datetime(2026, 1, 1, 10, 0, tzinfo=UTC)),
+                ("assistant", "First answer", datetime(2026, 1, 1, 10, 1, tzinfo=UTC)),
+                ("user", "Second request", datetime(2026, 1, 1, 10, 2, tzinfo=UTC)),
+                ("assistant", "Second answer", datetime(2026, 1, 1, 10, 3, tzinfo=UTC)),
+            ),
+            start=1,
+        )
+    ]
+    for message in messages:
+        application.runtime.store.append_message(message)
+    application.runtime.store.save_session(
+        application.runtime.store.load_session_record(source.session_id).model_copy(
+            update={
+                "message_count": len(messages),
+                "last_message_id": messages[-1].message_id,
+            }
+        )
+    )
+    metrics = ContextMetrics(
+        estimated_input_tokens=120,
+        estimated_fixed_tokens=20,
+    )
+    compaction = CompactionRecord(
+        session_id=source.session_id,
+        strategy_id="test",
+        trigger="manual",
+        summary="summary",
+        covered_message_ids=[messages[0].message_id],
+        history_boundary_message_id=messages[1].message_id,
+        source_digest=compaction_source_digest(messages[:1]),
+        context_metrics_after=metrics,
+    )
+    application.runtime.store.append_compaction(compaction)
+    application.runtime.store.activate_compaction(source.session_id, compaction.compaction_id)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await app._open_session(source.session_id)
+        app._fork_session()
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        choices = app.screen._choices
+        assert [choice.label for choice in choices] == ["First request", "Second request"]
+        assert [choice.trailing for choice in choices] == [
+            messages[0].created_at.astimezone().strftime("%H:%M"),
+            messages[2].created_at.astimezone().strftime("%H:%M"),
+        ]
+        assert all(choice.description == "" for choice in choices)
+        assert all("msg_" not in choice.label for choice in choices)
+
+        await pilot.press("down", "enter")
+        await pilot.pause(0.5)
+
+        branch_session_id = app._controller.session_id
+        assert branch_session_id is not None and branch_session_id != source.session_id
+        branch = application.runtime.store.load_session(branch_session_id)
+        assert [message.text_content for message in branch.messages] == [
+            "First request",
+            "First answer",
+        ]
+        assert branch.session.forked_from_message_id == messages[1].message_id
+        assert len(branch.compactions) == 1
+        assert branch.session.active_compaction_id == branch.compactions[0].compaction_id
+        assert app.query_one(Composer).text == "Second request"
+        assert app.query_one(StatusLine)._context_metrics == metrics
+        history = app.query_one(ConversationHistory)
+        assert [(entry.kind, entry.text) for entry in history.entries] == [
+            ("user", "First request"),
+            ("assistant", "First answer"),
+            ("notice", "Context compacted · 1 message summarized"),
+        ]
 
 
 @pytest.mark.asyncio

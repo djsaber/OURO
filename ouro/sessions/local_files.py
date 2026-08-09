@@ -189,6 +189,7 @@ class LocalSessionStore:
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
         extension_states: list[SessionExtensionStateRecord] | None = None,
+        compactions: list[CompactionRecord] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             self._create_session_snapshot(
@@ -196,6 +197,7 @@ class LocalSessionStore:
                 messages,
                 resource_references,
                 extension_states,
+                compactions,
             )
 
     def _create_session_snapshot(
@@ -204,6 +206,7 @@ class LocalSessionStore:
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None,
         extension_states: list[SessionExtensionStateRecord] | None,
+        compactions: list[CompactionRecord] | None,
     ) -> None:
         session_dir = self._session_dir(session.session_id)
         if session_dir.exists():
@@ -224,6 +227,21 @@ class LocalSessionStore:
                         f"session {session.session_id}"
                     )
                 self._append_jsonl(staging_dir / "messages.jsonl", message)
+            compaction_records = compactions or []
+            if any(item.session_id != session.session_id for item in compaction_records):
+                raise PersistenceError(
+                    f"compaction does not belong to session {session.session_id}"
+                )
+            if session.active_compaction_id is not None and not any(
+                item.compaction_id == session.active_compaction_id
+                for item in compaction_records
+            ):
+                raise PersistenceError(
+                    f"active compaction {session.active_compaction_id} is missing from "
+                    f"session snapshot {session.session_id}"
+                )
+            for compaction in compaction_records:
+                self._append_jsonl(staging_dir / "compactions.jsonl", compaction)
             self._write_json_atomic(
                 staging_dir / "resources" / "index.json",
                 SessionResourceReferences(resources=resource_references or []).model_dump(

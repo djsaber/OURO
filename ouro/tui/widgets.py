@@ -654,7 +654,7 @@ class ConversationView(VerticalScroll):
 
         for message_index, message in enumerate(materialized):
             if message.role == "user":
-                text = _user_message_text(message)
+                text = user_message_text(message)
                 if not text:
                     continue
                 append_entry(message_index, TranscriptEntry(kind="user", text=text))
@@ -744,7 +744,7 @@ class ConversationView(VerticalScroll):
         await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
-        text = _user_message_text(message)
+        text = user_message_text(message)
         if text:
             await self.add_user(text)
 
@@ -1827,7 +1827,7 @@ class StatusLine(Horizontal):
         self.query_one("#context-detail", Static).update(content)
 
 
-def _user_message_text(message: MessageRecord) -> str:
+def user_message_text(message: MessageRecord) -> str:
     activations = message.skill_activations
     if not activations:
         return message.text_content

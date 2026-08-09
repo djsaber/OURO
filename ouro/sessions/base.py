@@ -85,6 +85,7 @@ class SessionRepository(Protocol):
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
         extension_states: list[SessionExtensionStateRecord] | None = None,
+        compactions: list[CompactionRecord] | None = None,
     ) -> None: ...
 
     def save_session(self, session: SessionRecord) -> None: ...

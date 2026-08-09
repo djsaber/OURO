@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from rich.table import Table
 from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
@@ -23,6 +24,7 @@ class Choice:
     label: str
     description: str = ""
     accent: str | None = None
+    trailing: str = ""
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -117,8 +119,19 @@ class ChoiceScreen(ModalScreen[str | None]):
             # Build the label from per-segment styles so the description does
             # not inherit the label's bold: Rich applies a Text's base style to
             # every appended segment, so bold must live on the label segment.
-            label = Text()
-            label.append(choice.label, style=f"bold {choice.accent}" if choice.accent else "bold")
+            label = Text(
+                choice.label,
+                style=f"bold {choice.accent}" if choice.accent else "bold",
+                overflow="ellipsis",
+                no_wrap=True,
+            )
+            if choice.trailing:
+                row = Table.grid(expand=True, padding=0)
+                row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+                row.add_column(justify="right", no_wrap=True)
+                row.add_row(label, Text(choice.trailing, style="#7d8794"))
+                options.append(Option(row, id=choice.value))
+                continue
             if choice.description:
                 label.append(f"\n{choice.description}", style="#7d8794")
             options.append(Option(label, id=choice.value))

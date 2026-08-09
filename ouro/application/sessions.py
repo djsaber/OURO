@@ -10,6 +10,7 @@ from ouro.application.dto import Diagnostic
 from ouro.application.runs import abort_run_state, find_run
 from ouro.application.session_history import (
     apply_extension_branch_policies,
+    copy_branch_compactions,
     copy_branch_messages,
     project_replay_frames,
     select_branch_messages,
@@ -659,7 +660,13 @@ class SessionService:
                 active.append(relation)
         return active
 
-    def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
+    def branch(
+        self,
+        source_session_id: str,
+        message_id: str | None,
+    ) -> SessionBranchResult:
+        """Fork through any canonical message, or from an empty history boundary."""
+
         self._load_session_record(source_session_id)
         lock = self._store.acquire_session_lock(source_session_id, new_id("branch"))
         if lock is None:
@@ -668,14 +675,22 @@ class SessionService:
             )
         try:
             with self._store.session_mutation(source_session_id):
-                return self._branch_locked(source_session_id, message_id)
+                return self._branch_locked(
+                    source_session_id,
+                    message_id,
+                )
         finally:
             lock.release()
 
-    def _branch_locked(self, source_session_id: str, message_id: str) -> SessionBranchResult:
+    def _branch_locked(
+        self,
+        source_session_id: str,
+        message_id: str | None,
+    ) -> SessionBranchResult:
         source = self._load_session_record(source_session_id)
         messages = self._load_messages(source_session_id)
         runs = self._store.load_runs(source_session_id)
+        compactions = self._store.load_compactions(source_session_id)
         extension_states = self._store.load_session_extension_states(source_session_id)
         if (
             source.active_run_id is not None
@@ -685,29 +700,14 @@ class SessionService:
             raise SessionBusyError(
                 f"cannot branch Session while it has an active Run: {source_session_id}"
             )
-        selected_messages, source_message = select_branch_messages(
-            messages,
-            message_id,
-        )
-        resource_ids = list(
-            dict.fromkeys(
-                resource_id
-                for message in selected_messages
-                for resource_id in message.resource_refs
-            )
-        )
-        if resource_ids and self._resources is None:
-            raise SessionBranchError(
-                "branch contains resource references; ResourceService must copy their records "
-                "before this branch can be published"
-            )
+        selected_messages, source_message = select_branch_messages(messages, message_id)
 
         now = utc_now()
         branch = SessionRecord(
             root_session_id=source.root_session_id or source.session_id,
             parent_session_id=source.session_id,
-            forked_from_message_id=source_message.message_id,
-            forked_from_run_id=source_message.run_id,
+            forked_from_message_id=(source_message.message_id if source_message else None),
+            forked_from_run_id=(source_message.run_id if source_message else None),
             title=_branch_title(source.title),
             title_source="fallback",
             title_locked=False,
@@ -724,18 +724,41 @@ class SessionService:
         )
         selected_messages, extension_states = apply_extension_branch_policies(
             selected_messages,
-            source_message.message_id,
+            source_message.message_id if source_message else None,
             extension_states,
             branch.session_id,
         )
+        resource_ids = list(
+            dict.fromkeys(
+                resource_id
+                for message in selected_messages
+                for resource_id in message.resource_refs
+            )
+        )
+        if resource_ids and self._resources is None:
+            raise SessionBranchError(
+                "branch contains resource references; ResourceService must copy their records "
+                "before this branch can be published"
+            )
         copied_messages, message_id_map = copy_branch_messages(
             branch.session_id,
             selected_messages,
+        )
+        copied_compactions = copy_branch_compactions(
+            branch.session_id,
+            selected_messages,
+            copied_messages,
+            compactions,
+            source.active_compaction_id,
+            message_id_map,
         )
         branch = branch.model_copy(
             update={
                 "last_message_id": copied_messages[-1].message_id if copied_messages else None,
                 "message_count": len(copied_messages),
+                "active_compaction_id": (
+                    copied_compactions[-1].compaction_id if copied_compactions else None
+                ),
             }
         )
         resource_references = (
@@ -750,13 +773,14 @@ class SessionService:
         self._store.create_session_snapshot(
             branch,
             copied_messages,
-            resource_references,
-            extension_states,
+            resource_references=resource_references,
+            extension_states=extension_states,
+            compactions=copied_compactions,
         )
         return SessionBranchResult(
             session=SessionView.from_record(branch),
             source_session_id=source_session_id,
-            source_message_id=source_message.message_id,
+            source_message_id=(source_message.message_id if source_message else None),
             message_id_map=message_id_map,
             diagnostics=self._refresh_index_diagnostics(branch.session_id),
         )

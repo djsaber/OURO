@@ -332,7 +332,7 @@ async def test_controller_resolves_plugin_commands_and_creates_required_session(
 
 
 @pytest.mark.asyncio
-async def test_controller_forks_at_canonical_message_without_mutating_source(
+async def test_controller_forks_before_user_draft_without_mutating_source(
     tmp_path: Path,
 ) -> None:
     application = _reasoning_application(tmp_path)
@@ -347,20 +347,18 @@ async def test_controller_forks_at_canonical_message_without_mutating_source(
         source_result = await controller.submit("fork this conversation")
         source_session_id = source_result.session.session_id
         points = await controller.branch_points()
-        assert [message.role for message in points] == ["user", "assistant"]
+        assert [message.role for message in points] == ["user"]
+        source_before = application.runtime.store.load_session(source_session_id)
 
-        branch = await controller.branch_session(points[-1].message_id)
+        branch = await controller.branch_session(points[0].message_id)
         source_after = application.runtime.store.load_session(source_session_id)
         loaded = await controller.load_session(branch.session.session_id)
 
         assert branch.session.parent_session_id == source_session_id
-        assert branch.session.forked_from_message_id == points[-1].message_id
-        assert len(loaded.messages) == len(points)
-        assert all(message.session_id == branch.session.session_id for message in loaded.messages)
-        assert all(message.run_id is None for message in loaded.messages)
-        assert [message.message_id for message in source_after.messages] == [
-            message.message_id for message in points
-        ]
+        assert loaded.messages == ()
+        assert source_after == source_before
+        assert branch.source_message_id is None
+        assert branch.session.forked_from_message_id is None
     finally:
         await controller.close()
 

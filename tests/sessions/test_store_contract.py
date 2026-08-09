@@ -54,11 +54,16 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
         source_digest="sha256:" + "0" * 64,
         context_metrics_after=ContextBuilder().build(messages=[message], tools=[]).metrics,
     )
+    session = session.model_copy(update={"active_compaction_id": compaction.compaction_id})
     reference = SessionResourceReference(resource_id="res_" + "a" * 64)
 
-    session_store.create_session_snapshot(session, [message], [reference])
+    session_store.create_session_snapshot(
+        session,
+        [message],
+        [reference],
+        compactions=[compaction],
+    )
     session_store.save_run(run)
-    session_store.append_compaction(compaction)
     first = session_store.append_ordered_event(
         EventRecord(session_id=session.session_id, run_id=run.run_id, event_type="run_started")
     )

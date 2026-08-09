@@ -97,13 +97,12 @@ def _copy_snapshot(
     target.create_session_snapshot(
         snapshot.session,
         snapshot.messages,
-        references,
-        snapshot.extension_states,
+        resource_references=references,
+        extension_states=snapshot.extension_states,
+        compactions=snapshot.compactions,
     )
     for run in snapshot.runs:
         target.save_run(run)
-    for compaction in snapshot.compactions:
-        target.append_compaction(compaction)
     for event in snapshot.events:
         target.append_event(event)
 

@@ -71,6 +71,7 @@ from ouro.tui.widgets import (
     PlanConfirmationPanel,
     QueuedInputPanel,
     StatusLine,
+    user_message_text,
 )
 
 
@@ -1501,6 +1502,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.move_cursor((0, len(value)))
         composer.focus()
 
+    def _edit_draft(self, value: str) -> None:
+        composer = self.query_one(Composer)
+        composer.load_text(value)
+        composer.move_cursor(
+            (composer.document.line_count - 1, len(composer.document.lines[-1]))
+        )
+        composer.focus()
+
     async def _dispatch_command(self, value: str) -> None:
         command, argument = resolve_command(value)
         if command is None:
@@ -1822,34 +1831,39 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._controller.session_id is None:
             self.notify("No active session to fork")
             return
+        try:
+            points = await self._controller.branch_points()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        if not points:
+            self.notify("No user messages are available as fork points")
+            return
+        points_by_id = {point.message_id: point for point in points}
         selected = message_id
         if selected is None:
-            try:
-                points = await self._controller.branch_points()
-            except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-                await self.query_one(ConversationView).add_notice(str(exc), error=True)
-                return
-            if not points:
-                self.notify("No dialogue messages are available as fork points")
-                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(
                     title="FORK SESSION",
-                    placeholder="Filter canonical messages…",
+                    placeholder="Filter user messages…",
                     choices=tuple(
                         Choice(
                             message.message_id,
                             _branch_point_label(message),
-                            (
-                                f"message {message.sequence} · {message.message_id} · "
-                                "history through this boundary"
-                            ),
+                            trailing=message.created_at.astimezone().strftime("%H:%M"),
                         )
-                        for message in reversed(points)
+                        for message in points
                     ),
                 )
             )
         if selected is None:
+            return
+        selected_message = points_by_id.get(selected)
+        if selected_message is None:
+            await self.query_one(ConversationView).add_notice(
+                f"user message is not a fork point in this session: {selected}",
+                error=True,
+            )
             return
         source_session_id = self._controller.session_id
         try:
@@ -1858,6 +1872,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
+        self._edit_draft(user_message_text(selected_message))
         self.notify(f"Session forked: {source_session_id} → {result.session.session_id}")
 
     async def _restore_projection(self, loaded: LoadedSession) -> None:
@@ -2264,15 +2279,12 @@ def _truncate_session_title(title: str) -> str:
 
 
 def _branch_point_label(message: MessageRecord) -> str:
-    speaker = "YOU" if message.role == "user" else "OURO"
     preview = " ".join(message.text_content.split())
-    if not preview and message.tool_calls:
-        preview = "tool request · " + ", ".join(call.name for call in message.tool_calls)
     if not preview:
         preview = "empty message"
     if len(preview) > 72:
         preview = preview[:69].rstrip() + "…"
-    return f"{speaker} · {preview}"
+    return preview
 
 
 def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:

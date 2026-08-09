@@ -469,6 +469,15 @@ SessionRepository 拥有，文件实现保存 Session 子记录，SQLite 实现�
 避免先出现带悬空 resource id 的分支。分支读取、资源引用校验和目标发布持有源 Session mutation lock，
 因此源会话删除或资源移除必须在线性化点之后执行，垃圾回收不会删除正在复制的最后一份可达内容。
 
+Session 的通用 `branch` 只表达 canonical history 边界：传入任意 message id 时包含该边界，传入空边界时
+创建空历史分支，不限制 Host 可选择的消息角色。TUI 的“只列 user message、复制所选请求之前的历史并把请求
+回填为草稿”完全属于 TUI 交互规则，由 TUI 把所选 user message 映射为其前一个 canonical message 边界。
+分支只继承 active compaction lineage 中对新历史仍然可用的前缀：`covered_message_ids` 必须精确匹配新分支
+canonical prefix，且 `history_boundary_message_id` 也必须位于分支内。复制时统一重建 message/compaction identity、
+previous 指针和 source digest，并与 Session、资源引用、扩展状态在同一个新 Session 快照中原子发布；最新
+Provider 请求快照不是新分支实际发生过的请求，因而不复制，TUI 的初始上下文占用由继承的 active compaction
+metrics 加上压缩关联边界之后的分支消息增量提供，下一次真实模型请求会生成该分支自己的 context snapshot。
+
 ## 配置契约
 
 配置集中保存在 `config/config.json`，由 `ouro.config` 的类型化 manager 读写。各分区只接受当前权威字段：

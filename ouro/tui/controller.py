@@ -486,21 +486,45 @@ class TuiController:
         return await asyncio.to_thread(lambda: runtime.sessions.catalog().entries)
 
     async def branch_points(self) -> tuple[MessageRecord, ...]:
-        """Return canonical dialogue messages that can name a branch boundary."""
+        """Return user requests that can become an editable branch draft."""
 
         session_id = self._require_session()
         return await asyncio.to_thread(
             lambda: tuple(
                 message
                 for message in self._session_messages(session_id)
-                if message.role in {"user", "assistant"}
+                if message.role == "user"
             )
         )
 
     async def branch_session(self, message_id: str) -> SessionBranchResult:
-        sessions = self._runtime().sessions
         session_id = self._require_session()
-        return await asyncio.to_thread(sessions.branch, session_id, message_id)
+        return await asyncio.to_thread(
+            self._branch_at_user_message,
+            session_id,
+            message_id,
+        )
+
+    def _branch_at_user_message(
+        self,
+        session_id: str,
+        message_id: str,
+    ) -> SessionBranchResult:
+        messages = self._session_messages(session_id)
+        selected_index = next(
+            (
+                index
+                for index, message in enumerate(messages)
+                if message.message_id == message_id and message.role == "user"
+            ),
+            None,
+        )
+        if selected_index is None:
+            raise ValueError(f"user message is not a fork point in this session: {message_id}")
+        boundary_message_id = (
+            messages[selected_index - 1].message_id if selected_index > 0 else None
+        )
+        return self._runtime().sessions.branch(session_id, boundary_message_id)
 
     async def queued_user_inputs(
         self,

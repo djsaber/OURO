@@ -350,6 +350,7 @@ class SQLiteSessionStore:
         messages: list[MessageRecord],
         resource_references: list[SessionResourceReference] | None = None,
         extension_states: list[SessionExtensionStateRecord] | None = None,
+        compactions: list[CompactionRecord] | None = None,
     ) -> None:
         with self.session_mutation(session.session_id):
             connection = self._transaction_connection()
@@ -364,6 +365,29 @@ class SQLiteSessionStore:
                             f"message {message.message_id} does not belong to {session.session_id}"
                         )
                     self._insert_message(connection, message)
+                compaction_records = compactions or []
+                if any(item.session_id != session.session_id for item in compaction_records):
+                    raise PersistenceError(
+                        f"compaction does not belong to session {session.session_id}"
+                    )
+                if session.active_compaction_id is not None and not any(
+                    item.compaction_id == session.active_compaction_id
+                    for item in compaction_records
+                ):
+                    raise PersistenceError(
+                        f"active compaction {session.active_compaction_id} is missing from "
+                        f"session snapshot {session.session_id}"
+                    )
+                for compaction in compaction_records:
+                    connection.execute(
+                        "INSERT INTO compactions(session_id, compaction_id, payload) "
+                        "VALUES(?, ?, ?)",
+                        (
+                            session.session_id,
+                            compaction.compaction_id,
+                            compaction.model_dump_json(),
+                        ),
+                    )
                 for reference in resource_references or ():
                     self._insert_resource_reference(connection, session.session_id, reference)
                 for state in extension_states or ():

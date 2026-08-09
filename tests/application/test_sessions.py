@@ -16,7 +16,12 @@ from ouro.core.agents import (
     DelegationResult,
     ResultDelivery,
 )
-from ouro.core.context import ContextBuilder
+from ouro.core.compaction import (
+    CompactionRecord,
+    compaction_source_digest,
+    validate_compaction_lineage,
+)
+from ouro.core.context import ContextBuilder, estimate_message_tokens
 from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
@@ -813,6 +818,112 @@ def test_repeated_branch_requests_create_distinct_lineage_preserving_sessions(tm
     assert store.load_session(first.session.session_id).messages[0].message_id != (
         store.load_session(second.session.session_id).messages[0].message_id
     )
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_branch_inherits_only_compaction_lineage_available_at_boundary(
+    tmp_path,
+    backend: str,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(title="Compacted source").session
+    messages = [
+        MessageRecord.text(
+            session_id=source.session_id,
+            role=role,
+            text=text,
+            sequence=index,
+        )
+        for index, (role, text) in enumerate(
+            (
+                ("user", "first request"),
+                ("assistant", "first answer"),
+                ("user", "retained request"),
+                ("assistant", "retained answer"),
+                ("user", "rewrite this request"),
+                ("assistant", "later answer"),
+            ),
+            start=1,
+        )
+    ]
+    for message in messages:
+        store.append_message(message)
+
+    first = CompactionRecord(
+        session_id=source.session_id,
+        strategy_id="test",
+        trigger="manual",
+        summary="first summary",
+        covered_message_ids=[messages[0].message_id],
+        history_boundary_message_id=messages[1].message_id,
+        source_digest=compaction_source_digest(messages[:1]),
+        context_metrics_after=ContextBuilder().build(messages=messages[:2], tools=[]).metrics,
+    )
+    later = CompactionRecord(
+        session_id=source.session_id,
+        previous_compaction_id=first.compaction_id,
+        strategy_id="test",
+        trigger="manual",
+        summary="later summary",
+        covered_message_ids=[message.message_id for message in messages[:4]],
+        # Its summary range fits the branch prefix, but this compaction did not
+        # become durable history until after the selected user request.
+        history_boundary_message_id=messages[5].message_id,
+        source_digest=compaction_source_digest(messages[:4]),
+    )
+    store.append_compaction(first)
+    store.activate_compaction(source.session_id, first.compaction_id)
+    store.append_compaction(later)
+    store.activate_compaction(source.session_id, later.compaction_id)
+
+    result = sessions.branch(
+        source.session_id,
+        messages[3].message_id,
+    )
+    branch = store.load_session(result.session.session_id)
+
+    assert [message.text_content for message in branch.messages] == [
+        "first request",
+        "first answer",
+        "retained request",
+        "retained answer",
+    ]
+    assert result.source_message_id == messages[3].message_id
+    assert len(branch.compactions) == 1
+    inherited = branch.compactions[0]
+    assert inherited.compaction_id != first.compaction_id
+    assert inherited.metadata["source_compaction_id"] == first.compaction_id
+    assert inherited.covered_message_ids == [result.message_id_map[messages[0].message_id]]
+    assert inherited.history_boundary_message_id == result.message_id_map[
+        messages[1].message_id
+    ]
+    assert branch.session.active_compaction_id == inherited.compaction_id
+    assert inherited.context_metrics_after is not None
+    assert first.context_metrics_after is not None
+    expected_input_tokens = first.context_metrics_after.estimated_input_tokens + sum(
+        estimate_message_tokens(message) for message in messages[2:4]
+    )
+    assert inherited.context_metrics_after.estimated_input_tokens == expected_input_tokens
+    assert inherited.estimated_tokens_after == expected_input_tokens
+    assert inherited.metadata["branch_context_extended_through_message_id"] == (
+        result.message_id_map[messages[3].message_id]
+    )
+    assert validate_compaction_lineage(branch.messages, inherited) == 1
+
+    first_boundary = sessions.branch(source.session_id, None)
+    empty_branch = store.load_session(first_boundary.session.session_id)
+    assert empty_branch.messages == []
+    assert empty_branch.compactions == []
+    assert empty_branch.session.active_compaction_id is None
+    assert empty_branch.session.last_message_id is None
+    assert empty_branch.session.message_count == 0
+    assert first_boundary.source_message_id is None
 
 
 def test_replay_is_a_sorted_read_only_event_projection(tmp_path) -> None:

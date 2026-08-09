@@ -229,7 +229,7 @@ class SessionMutationResult(ApplicationDTO):
 class SessionBranchResult(ApplicationDTO):
     session: SessionView
     source_session_id: str
-    source_message_id: str
+    source_message_id: str | None = None
     message_id_map: dict[str, str] = Field(default_factory=dict)
     diagnostics: tuple[Diagnostic, ...] = ()
 
