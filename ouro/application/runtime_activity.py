@@ -56,7 +56,11 @@ def project_runtime_activity(
     run_id: str | None = None,
     status_override: SupervisorRunStatus | None = None,
     context_status: SessionContextStatus | None = None,
+    effective_context_metrics: ContextMetrics | None = None,
 ) -> RuntimeActivitySnapshot:
+    effective_metrics = effective_context_metrics or (
+        context_status.metrics if context_status is not None else None
+    )
     run = _selected_run(snapshot, run_id=run_id)
     if run is None:
         status = status_override or "idle"
@@ -65,6 +69,7 @@ def project_runtime_activity(
             status=status,
             activity=runtime_activity_for_status(status),
             context_status=context_status,
+            effective_context_metrics=effective_metrics,
             sequence=_latest_sequence(snapshot.events),
         )
 
@@ -74,6 +79,7 @@ def project_runtime_activity(
         status="queued",
         activity="queued",
         context_status=context_status,
+        effective_context_metrics=effective_metrics,
         sequence=0,
         updated_at=run.started_at,
     )
@@ -98,9 +104,13 @@ def project_runtime_activity_state(
     sequence: int,
     status_override: SupervisorRunStatus | None = None,
     context_status: SessionContextStatus | None = None,
+    effective_context_metrics: ContextMetrics | None = None,
 ) -> RuntimeActivitySnapshot:
     """Project bounded current activity without replaying historical events."""
 
+    effective_metrics = effective_context_metrics or (
+        context_status.metrics if context_status is not None else None
+    )
     if run is None:
         status = status_override or "idle"
         return RuntimeActivitySnapshot(
@@ -108,6 +118,7 @@ def project_runtime_activity_state(
             status=status,
             activity=runtime_activity_for_status(status),
             context_status=context_status,
+            effective_context_metrics=effective_metrics,
             sequence=sequence,
         )
     activity = RuntimeActivitySnapshot(
@@ -116,6 +127,7 @@ def project_runtime_activity_state(
         status=run.status,
         activity=runtime_activity_for_status(run.status),
         context_status=context_status,
+        effective_context_metrics=effective_metrics,
         sequence=sequence,
         updated_at=run.ended_at or run.started_at,
     )
@@ -162,6 +174,7 @@ def reduce_runtime_activity(
         context_status = _context_status_from_request(event)
         if context_status is not None:
             updates["context_status"] = context_status
+            updates["effective_context_metrics"] = context_status.metrics
     elif event_type == "run_retry_scheduled":
         updates.update(activity="waiting_model", status="running")
     elif event_type == "model_reasoning_delta":
@@ -310,6 +323,9 @@ def reduce_runtime_activity(
         )
     elif event_type in {"compaction_completed", "compaction_skipped"}:
         updates.update(activity="preparing_model", compaction_id=None)
+        metrics = _context_metrics_from_compaction(event)
+        if metrics is not None:
+            updates["effective_context_metrics"] = metrics
     elif event_type == "compaction_failed":
         updates["compaction_id"] = None
     elif event_type in {
@@ -635,3 +651,13 @@ def _context_status_from_request(event: EventRecord) -> SessionContextStatus | N
         metrics=metrics,
         active_compaction_id=_string_or_none(payload.get("active_compaction_id")),
     )
+
+
+def _context_metrics_from_compaction(event: EventRecord) -> ContextMetrics | None:
+    payload = event.payload.get("context_metrics_after")
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return ContextMetrics.model_validate(payload)
+    except ValueError:
+        return None

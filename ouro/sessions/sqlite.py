@@ -621,6 +621,16 @@ class SQLiteSessionStore:
                 f"compaction {session.active_compaction_id}",
             )
 
+    def load_compactions(self, session_id: str) -> list[CompactionRecord]:
+        with self._read_connection() as connection:
+            self._require_session(connection, session_id)
+            return self._load_models(
+                connection,
+                "SELECT payload FROM compactions WHERE session_id = ? ORDER BY row_id",
+                (session_id,),
+                CompactionRecord,
+            )
+
     def latest_event_sequence(self, session_id: str) -> int:
         with self._read_connection() as connection:
             self._require_session(connection, session_id)

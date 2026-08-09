@@ -34,7 +34,8 @@ from ouro.application.session_recovery import SessionRecoveryService
 from ouro.core.agents import DelegationRecord
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
-from ouro.core.context import ContextView
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextMetrics, ContextView
 from ouro.core.context_snapshots import context_view_digest
 from ouro.core.errors import (
     PersistenceError,
@@ -151,6 +152,29 @@ class SessionService:
         self._require_session(session_id)
         record = self._store.load_latest_context(session_id)
         return SessionContextStatus.from_record(record) if record is not None else None
+
+    def effective_context_metrics(self, session_id: str) -> ContextMetrics | None:
+        """Return the newest effective context estimate, including manual compaction.
+
+        A context snapshot records an actual provider request. Manual compaction
+        does not issue one, so its durable post-compaction projection is a
+        separate fact and supersedes an older request estimate until the next
+        model request is prepared.
+        """
+
+        self._require_session(session_id)
+        latest = self._store.load_latest_context(session_id)
+        active = self._store.load_active_compaction(session_id)
+        if active is not None and active.context_metrics_after is not None:
+            if latest is None or active.created_at > latest.prepared_at:
+                return active.context_metrics_after
+        return latest.metrics if latest is not None else None
+
+    def compactions(self, session_id: str) -> tuple[CompactionRecord, ...]:
+        """Read durable compaction boundaries without loading message or event history."""
+
+        self._require_session(session_id)
+        return tuple(self._store.load_compactions(session_id))
 
     def context(self, session_id: str) -> SessionContextSnapshot | None:
         self._require_session(session_id)

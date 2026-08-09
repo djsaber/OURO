@@ -22,6 +22,7 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ModelMessage, TextContent, ToolResultReference
@@ -1716,6 +1717,116 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
             ("assistant", "Second answer"),
         ]
         assert not conversation.query(AssistantTurn)
+
+
+@pytest.mark.asyncio
+async def test_history_restores_compaction_boundaries_in_chronological_order(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    session_id = "ses_compacted_history"
+    messages = (
+        MessageRecord.text(
+            session_id=session_id,
+            role="user",
+            text="First question",
+        ).model_copy(update={"created_at": datetime(2026, 1, 1, 10, 0, tzinfo=UTC)}),
+        MessageRecord.text(
+            session_id=session_id,
+            role="assistant",
+            text="First answer",
+        ).model_copy(update={"created_at": datetime(2026, 1, 1, 10, 2, tzinfo=UTC)}),
+        MessageRecord.text(
+            session_id=session_id,
+            role="user",
+            text="Second question",
+        ).model_copy(update={"created_at": datetime(2026, 1, 1, 10, 4, tzinfo=UTC)}),
+    )
+    compactions = (
+        CompactionRecord(
+            session_id=session_id,
+            strategy_id="test",
+            trigger="auto",
+            summary="first summary",
+            covered_message_ids=[messages[0].message_id],
+            history_boundary_message_id=messages[0].message_id,
+            source_digest="sha256:" + "1" * 64,
+            # The durable boundary, not wall-clock ordering, owns placement.
+            created_at=datetime(2026, 1, 1, 11, 0, tzinfo=UTC),
+        ),
+        CompactionRecord(
+            session_id=session_id,
+            strategy_id="test",
+            trigger="manual",
+            summary="second summary",
+            covered_message_ids=[messages[0].message_id, messages[1].message_id],
+            history_boundary_message_id=messages[1].message_id,
+            source_digest="sha256:" + "2" * 64,
+            created_at=datetime(2026, 1, 1, 9, 0, tzinfo=UTC),
+        ),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages, compactions)
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        assert [(entry.kind, entry.text) for entry in history.entries] == [
+            ("user", "First question"),
+            ("notice", "Context compacted · 1 message summarized"),
+            ("assistant", "First answer"),
+            ("notice", "Context compacted · 2 messages summarized"),
+            ("user", "Second question"),
+        ]
+
+        invalid = compactions[0].model_copy(
+            update={"history_boundary_message_id": "msg_missing"}
+        )
+        with pytest.raises(ValueError, match="references missing history boundary"):
+            await conversation.load_messages(messages, (invalid,))
+
+
+@pytest.mark.asyncio
+async def test_compaction_completion_updates_context_and_transcript_without_next_request(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    metrics = ContextMetrics(
+        estimated_input_tokens=250,
+        estimated_fixed_tokens=100,
+        context_window_tokens=1_000,
+        reserved_output_tokens=100,
+        input_budget_tokens=900,
+        estimated_remaining_tokens=650,
+        estimated_utilization_ratio=250 / 900,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        session_id = "ses_live_compaction"
+        app._projection = TuiSessionProjection(session_id)
+        await app._apply_runtime_events(
+            (
+                EventRecord(
+                    session_id=session_id,
+                    run_id="run_compaction",
+                    event_type="compaction_completed",
+                    sequence=1,
+                    payload={
+                        "compaction_id": "cmp_live",
+                        "covered_message_count": 4,
+                        "context_metrics_after": metrics.model_dump(mode="json"),
+                    },
+                ),
+            )
+        )
+        await pilot.pause()
+
+        history = app.query_one(ConversationHistory)
+        assert history.entries[-1].text == "Context compacted · 4 messages summarized"
+        assert app.query_one("#context-detail", Static).render().plain.startswith("250 ")
 
 
 @pytest.mark.asyncio

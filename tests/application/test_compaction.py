@@ -440,6 +440,7 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert result.run.kind == "compaction"
     assert result.run.status == "completed"
     assert result.compaction is not None
+    assert result.compaction.context_metrics_after is not None
     assert result.compaction.trigger == "manual"
     assert before.messages == after.messages
     assert after.active_compaction == result.compaction
@@ -450,6 +451,12 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
         "compaction_completed",
         "run_completed",
     ]
+    completed = next(
+        event for event in result.events if event.event_type == "compaction_completed"
+    )
+    assert completed.payload["context_metrics_after"] == (
+        result.compaction.context_metrics_after.model_dump(mode="json")
+    )
 
 
 @pytest.mark.asyncio
@@ -473,6 +480,10 @@ async def test_manual_compaction_does_not_rewrite_latest_provider_context(
     assert last_request_before is not None
     assert last_request_after is not None
     assert last_request_after == last_request_before
+    assert result.compaction.context_metrics_after is not None
+    assert runtime.sessions.effective_context_metrics(session.session_id) == (
+        result.compaction.context_metrics_after
+    )
     assert store.load_session_record(session.session_id).active_compaction_id == (
         result.compaction.compaction_id
     )

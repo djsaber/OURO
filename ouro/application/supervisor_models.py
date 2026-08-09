@@ -9,6 +9,7 @@ from ouro.application.dto import ApplicationDTO, Diagnostic
 from ouro.application.event_models import RuntimeEventView
 from ouro.application.session_models import SessionContextStatus
 from ouro.core.base import new_id, utc_now
+from ouro.core.context import ContextMetrics
 from ouro.core.state import RunPhase
 from ouro.core.tool_batches import ToolBatchPhase, ToolCallStatus
 
@@ -97,6 +98,7 @@ class RuntimeActivitySnapshot(ApplicationDTO):
     tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
     compaction_id: str | None = None
     context_status: SessionContextStatus | None = None
+    effective_context_metrics: ContextMetrics | None = None
     sequence: int = Field(default=0, ge=0)
     updated_at: datetime = Field(default_factory=utc_now)
 

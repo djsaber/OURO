@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from ouro.core.compaction import (
     CompactionArtifact,
@@ -149,6 +150,7 @@ def test_compaction_projection_replaces_covered_prefix_without_mutating_history(
         trigger="auto",
         covered_message_ids=[message.message_id for message in messages[:2]],
         source_digest=compaction_source_digest(messages[:2]),
+        history_boundary_message_id=messages[-1].message_id,
     )
 
     projected = project_compacted_messages(messages, record)
@@ -157,6 +159,17 @@ def test_compaction_projection_replaces_covered_prefix_without_mutating_history(
     assert [message.text_content for message in projected] == ["summary", "latest"]
     assert projected[0].role == "system_synthetic"
     assert projected[0].metadata["compaction_id"] == record.compaction_id
+
+
+def test_compaction_record_requires_an_explicit_history_boundary() -> None:
+    with pytest.raises(ValidationError, match="history_boundary_message_id"):
+        CompactionRecord(
+            session_id="ses_1",
+            strategy_id="test.summary",
+            summary="summary",
+            trigger="manual",
+            source_digest="sha256:" + "0" * 64,
+        )
 
 
 def test_compaction_projection_rejects_history_lineage_mismatch() -> None:
@@ -168,6 +181,7 @@ def test_compaction_projection_rejects_history_lineage_mismatch() -> None:
         trigger="auto",
         covered_message_ids=["msg_missing"],
         source_digest="invalid",
+        history_boundary_message_id=messages[-1].message_id,
     )
 
     with pytest.raises(CompactionStateError, match="canonical message history"):

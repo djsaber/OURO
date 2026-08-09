@@ -784,6 +784,7 @@ class ContextPreparationService:
                 trigger=trigger,
                 summary=summary,
                 covered_message_ids=plan.covered_message_ids,
+                history_boundary_message_id=messages[-1].message_id,
                 source_digest=compaction_source_digest(source_prefix),
                 model_provider=str(artifact.metadata.get("model_provider") or "") or None,
                 model_endpoint_id=(str(artifact.metadata.get("model_endpoint_id") or "") or None),
@@ -808,7 +809,12 @@ class ContextPreparationService:
                 raise ContextOverflowError(
                     "generated summary and protected recent turn exceed the model input budget"
                 )
-            record = record.model_copy(update={"estimated_tokens_after": after_tokens})
+            record = record.model_copy(
+                update={
+                    "estimated_tokens_after": after_tokens,
+                    "context_metrics_after": final_view.metrics,
+                }
+            )
             self.store.append_compaction(record)
             self.store.activate_compaction(session.session_id, record.compaction_id)
         except Exception as exc:
@@ -843,6 +849,7 @@ class ContextPreparationService:
                 "covered_message_count": len(record.covered_message_ids),
                 "tokens_before": before_tokens,
                 "tokens_after": record.estimated_tokens_after,
+                "context_metrics_after": final_view.metrics.model_dump(mode="json"),
                 "model_provider": record.model_provider,
                 "model_endpoint_id": record.model_endpoint_id,
                 "model_id": record.model_id,

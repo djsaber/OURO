@@ -9,7 +9,12 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.context import TokenEstimator, estimate_message_tokens, estimate_text_tokens
+from ouro.core.context import (
+    ContextMetrics,
+    TokenEstimator,
+    estimate_message_tokens,
+    estimate_text_tokens,
+)
 from ouro.core.errors import CompactionStateError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord
@@ -58,6 +63,7 @@ class CompactionRecord(VersionedOuroModel):
     summary: str
     covered_message_ids: list[str] = Field(default_factory=list)
     source_digest: str
+    history_boundary_message_id: str = Field(min_length=1)
     created_at: datetime = Field(default_factory=utc_now)
     model_provider: str | None = None
     model_endpoint_id: str | None = None
@@ -67,6 +73,7 @@ class CompactionRecord(VersionedOuroModel):
     estimated_tokens_before: int = 0
     estimated_summary_tokens: int = 0
     estimated_tokens_after: int = 0
+    context_metrics_after: ContextMetrics | None = None
     usage: dict[str, int | float] = Field(default_factory=dict)
     metadata: Metadata = MetadataField
 

@@ -88,6 +88,7 @@ _RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
+    "compaction_completed",
     "run_completed",
     "run_aborted",
     "run_failed",
@@ -1066,6 +1067,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     if user_message.role == "user":
                         await conversation.add_user_message(user_message)
                         assistant_visible = False
+            if event.event_type == "compaction_completed":
+                await flush_stream()
+                covered = event.payload.get("covered_message_count")
+                if isinstance(covered, int) and covered >= 0:
+                    await conversation.add_compaction(covered_message_count=covered)
             if event.event_type in {
                 "follow_up_input_queued",
                 "steering_input_queued",
@@ -1416,7 +1422,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
         self.query_one(StatusLine).set_activity(activity.activity)
         status_line = self.query_one(StatusLine)
-        status_line.set_context(activity.context_status)
+        status_line.set_context_metrics(activity.effective_context_metrics)
         self._sync_composer_placeholder()
 
     async def _refresh_interaction(
@@ -1794,7 +1800,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _open_session(self, session_id: str) -> None:
         loaded = await self._controller.load_session(session_id)
-        await self.query_one(ConversationView).load_messages(loaded.messages)
+        await self.query_one(ConversationView).load_messages(
+            loaded.messages,
+            loaded.compactions,
+        )
         self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
         await self._restore_projection(loaded)
         session = loaded.detail.session
@@ -1855,7 +1864,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         projection = TuiSessionProjection(loaded.detail.session.session_id)
         projection.restore(loaded.events)
         projection.activity = projection.activity.model_copy(
-            update={"context_status": loaded.context_status}
+            update={
+                "context_status": loaded.context_status,
+                "effective_context_metrics": loaded.effective_context_metrics,
+            }
         )
         self._projection = projection
         self._sync_activity(projection.activity)

@@ -29,6 +29,8 @@ from ouro.builtin_plugins.plan_mode.interaction import (
     PlanConfirmationAnswer,
     PlanConfirmationRequest,
 )
+from ouro.core.compaction import CompactionRecord
+from ouro.core.context import ContextMetrics
 from ouro.core.messages import MessageRecord
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
@@ -583,6 +585,16 @@ def _tool_activities_from_messages(
     return activities
 
 
+def _compaction_notice(compaction: CompactionRecord | int) -> str:
+    covered = (
+        len(compaction.covered_message_ids)
+        if isinstance(compaction, CompactionRecord)
+        else compaction
+    )
+    noun = "message" if covered == 1 else "messages"
+    return f"Context compacted · {covered} {noun} summarized"
+
+
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
@@ -617,7 +629,11 @@ class ConversationView(VerticalScroll):
         self._welcome = WelcomePanel(self._system_status)
         await self._transcript.mount(self._welcome)
 
-    async def load_messages(self, messages: Iterable[MessageRecord]) -> None:
+    async def load_messages(
+        self,
+        messages: Iterable[MessageRecord],
+        compactions: Iterable[CompactionRecord] = (),
+    ) -> None:
         await self._clear_live_transcript()
         self._assistant = None
         self._tools.clear()
@@ -625,18 +641,28 @@ class ConversationView(VerticalScroll):
 
         materialized = list(messages)
         tool_activities = _tool_activities_from_messages(materialized)
-        transcript: list[TranscriptEntry] = []
+        chronological: list[tuple[int, int, TranscriptEntry]] = []
+        message_positions = {
+            message.message_id: index for index, message in enumerate(materialized)
+        }
 
-        for message in materialized:
+        def append_entry(
+            message_index: int,
+            entry: TranscriptEntry,
+        ) -> None:
+            chronological.append((message_index * 2, len(chronological), entry))
+
+        for message_index, message in enumerate(materialized):
             if message.role == "user":
                 text = _user_message_text(message)
                 if not text:
                     continue
-                transcript.append(TranscriptEntry(kind="user", text=text))
+                append_entry(message_index, TranscriptEntry(kind="user", text=text))
             elif message.role == "assistant":
                 text = message.text_content
                 if text or message.reasoning_content:
-                    transcript.append(
+                    append_entry(
+                        message_index,
                         TranscriptEntry(
                             kind="assistant",
                             text=text,
@@ -647,7 +673,26 @@ class ConversationView(VerticalScroll):
                     activity = tool_activities.get(call.id)
                     if activity is None:
                         continue
-                    transcript.append(TranscriptEntry(kind="tool", tool=activity))
+                    append_entry(
+                        message_index,
+                        TranscriptEntry(kind="tool", tool=activity),
+                    )
+
+        for compaction in compactions:
+            boundary_index = message_positions.get(compaction.history_boundary_message_id)
+            if boundary_index is None:
+                raise ValueError(
+                    f"compaction {compaction.compaction_id} references missing history "
+                    f"boundary {compaction.history_boundary_message_id}"
+                )
+            chronological.append(
+                (
+                    boundary_index * 2 + 1,
+                    len(chronological),
+                    TranscriptEntry(kind="notice", text=_compaction_notice(compaction)),
+                )
+            )
+        transcript = [entry for *_ordering, entry in sorted(chronological)]
 
         if not transcript:
             # A loaded session with no visible dialogue is still an empty state.
@@ -772,6 +817,9 @@ class ConversationView(VerticalScroll):
         await self.finish_assistant()
         self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
         await self._history.wait_until_rendered()
+
+    async def add_compaction(self, *, covered_message_count: int) -> None:
+        await self.add_notice(_compaction_notice(covered_message_count))
 
 
 class InteractionBar(Static):
@@ -1727,7 +1775,7 @@ class Composer(TextArea):
 class StatusLine(Horizontal):
     def __init__(self) -> None:
         super().__init__()
-        self._context_status: SessionContextStatus | None = None
+        self._context_metrics: ContextMetrics | None = None
 
     def compose(self) -> ComposeResult:
         yield ActivityIndicator()
@@ -1746,18 +1794,20 @@ class StatusLine(Horizontal):
         self.query_one(ActivityIndicator).set_approval_mode(mode)
 
     def set_context(self, status: SessionContextStatus | None) -> None:
-        self._context_status = status
+        self.set_context_metrics(status.metrics if status is not None else None)
+
+    def set_context_metrics(self, metrics: ContextMetrics | None) -> None:
+        self._context_metrics = metrics
         self._render_context()
 
     def refresh_theme(self) -> None:
         self._render_context()
 
     def _render_context(self) -> None:
-        status = self._context_status
-        if status is None:
+        metrics = self._context_metrics
+        if metrics is None:
             content = Text()
         else:
-            metrics = status.metrics
             used = metrics.estimated_input_tokens
             budget = metrics.input_budget_tokens
             if budget is None:

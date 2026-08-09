@@ -510,6 +510,11 @@ class LocalSessionStore:
                 )
             return active
 
+    def load_compactions(self, session_id: str) -> list[CompactionRecord]:
+        with self.session_mutation(session_id):
+            session_dir = self._require_session_dir(session_id)
+            return self._load_compactions(session_dir)
+
     def latest_event_sequence(self, session_id: str) -> int:
         with self.session_mutation(session_id):
             path = self._require_session_dir(session_id) / "events.jsonl"

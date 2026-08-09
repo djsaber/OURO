@@ -50,7 +50,9 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
         trigger="manual",
         summary="summary",
         covered_message_ids=[message.message_id],
+        history_boundary_message_id=message.message_id,
         source_digest="sha256:" + "0" * 64,
+        context_metrics_after=ContextBuilder().build(messages=[message], tools=[]).metrics,
     )
     reference = SessionResourceReference(resource_id="res_" + "a" * 64)
 
@@ -73,6 +75,7 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     assert snapshot.messages == [message]
     assert snapshot.runs == [run]
     assert snapshot.compactions == [compaction]
+    assert session_store.load_compactions(session.session_id) == [compaction]
     assert [event.sequence for event in snapshot.events] == [1, 2]
     assert (first.sequence, second.sequence) == (1, 2)
     assert session_store.latest_event_sequence(session.session_id) == 2

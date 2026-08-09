@@ -40,7 +40,8 @@ from ouro.application.session_models import (
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageTotals
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
-from ouro.core.compaction import CompactionCommandResult
+from ouro.core.compaction import CompactionCommandResult, CompactionRecord
+from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
@@ -233,6 +234,8 @@ class LoadedSession:
     messages: tuple[MessageRecord, ...]
     events: tuple[EventRecord, ...]
     context_status: SessionContextStatus | None = None
+    effective_context_metrics: ContextMetrics | None = None
+    compactions: tuple[CompactionRecord, ...] = ()
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
 
 
@@ -1034,6 +1037,8 @@ class TuiController:
             messages=tuple(messages),
             events=tuple(events),
             context_status=sessions.context_status(session_id),
+            effective_context_metrics=sessions.effective_context_metrics(session_id),
+            compactions=sessions.compactions(session_id),
             queued_inputs=self._queued_user_inputs(session_id),
         )
 

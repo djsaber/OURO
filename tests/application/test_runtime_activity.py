@@ -4,6 +4,7 @@ from ouro.application.runtime_activity import (
     reduce_runtime_activity,
     runtime_activity_changed,
 )
+from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
@@ -278,6 +279,42 @@ def test_runtime_activity_tracks_compaction_and_response_finalization() -> None:
     activity = reduce_runtime_activity(activity, _event(7, "run_completed"))
     assert activity.activity == "completed"
     assert activity.status == "completed"
+
+
+def test_runtime_activity_publishes_post_compaction_context_immediately() -> None:
+    before = ContextMetrics(
+        estimated_input_tokens=800,
+        estimated_fixed_tokens=100,
+        context_window_tokens=1_000,
+        reserved_output_tokens=100,
+        input_budget_tokens=900,
+        estimated_remaining_tokens=100,
+        estimated_utilization_ratio=800 / 900,
+    )
+    after = before.model_copy(
+        update={
+            "estimated_input_tokens": 250,
+            "estimated_remaining_tokens": 650,
+            "estimated_utilization_ratio": 250 / 900,
+        }
+    )
+    activity = queued_runtime_activity("ses_1").model_copy(
+        update={"effective_context_metrics": before}
+    )
+
+    activity = reduce_runtime_activity(
+        activity,
+        _event(
+            1,
+            "compaction_completed",
+            {
+                "compaction_id": "cmp_1",
+                "context_metrics_after": after.model_dump(mode="json"),
+            },
+        ),
+    )
+
+    assert activity.effective_context_metrics == after
 
 
 def test_repeated_stream_deltas_advance_cursor_without_republishing_activity() -> None:

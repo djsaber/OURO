@@ -11,6 +11,7 @@ from ouro.application.plugin_models import PluginCommandExecutionView, PluginCom
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
@@ -439,6 +440,64 @@ async def test_controller_does_not_replay_events_for_completed_session(
         assert loaded.events == ()
         assert loaded.messages
         assert loaded.context_status is not None
+        assert loaded.effective_context_metrics == loaded.context_status.metrics
+        assert loaded.compactions == ()
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_restores_compaction_boundaries_and_effective_metrics(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        result = await controller.submit("conversation to compact")
+        session_id = result.session.session_id
+        messages = application.runtime.store.load_runtime_session(session_id).messages
+        before = application.runtime.sessions.context_status(session_id)
+        assert before is not None
+        used = before.metrics.estimated_input_tokens
+        budget = before.metrics.input_budget_tokens
+        compacted_tokens = max(before.metrics.estimated_fixed_tokens, used // 2)
+        compacted_metrics = before.metrics.model_copy(
+            update={
+                "estimated_input_tokens": compacted_tokens,
+                "estimated_remaining_tokens": (
+                    budget - compacted_tokens if budget is not None else None
+                ),
+                "estimated_utilization_ratio": (
+                    compacted_tokens / budget if budget is not None else None
+                ),
+                "over_budget": budget is not None and compacted_tokens > budget,
+            }
+        )
+        compaction = CompactionRecord(
+            session_id=session_id,
+            strategy_id="test",
+            trigger="manual",
+            summary="summary",
+            covered_message_ids=[messages[0].message_id],
+            history_boundary_message_id=messages[-1].message_id,
+            source_digest=compaction_source_digest(messages[:1]),
+            estimated_tokens_after=compacted_tokens,
+            context_metrics_after=compacted_metrics,
+        )
+        application.runtime.store.append_compaction(compaction)
+        application.runtime.store.activate_compaction(session_id, compaction.compaction_id)
+
+        loaded = await controller.load_session(session_id)
+
+        assert loaded.compactions == (compaction,)
+        assert loaded.context_status == before
+        assert loaded.effective_context_metrics == compacted_metrics
     finally:
         await controller.close()
 
