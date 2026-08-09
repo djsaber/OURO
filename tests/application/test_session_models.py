@@ -195,6 +195,28 @@ def test_session_model_switch_rejects_busy_and_unknown_models(tmp_path) -> None:
         lock.release()
 
 
+def test_model_and_reasoning_updates_do_not_load_message_history(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    session = runtime.sessions.create(current_model="alpha/default").session
+
+    def reject_runtime_aggregate(*_args, **_kwargs):
+        raise AssertionError("model settings must inspect only Session and Run state")
+
+    monkeypatch.setattr(runtime.store, "load_runtime_session", reject_runtime_aggregate)
+
+    switched = runtime.switch_session_model(session.session_id, "beta/fast")
+    updated = runtime.set_session_reasoning(
+        session.session_id,
+        ReasoningRequest(mode="enabled", effort="low"),
+    )
+
+    assert switched.current_model == "beta/fast"
+    assert updated.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
+
+
 @pytest.mark.asyncio
 async def test_interactive_lists_switches_and_reports_session_model(tmp_path) -> None:
     runtime, _, providers = _runtime(tmp_path)

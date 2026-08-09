@@ -1000,6 +1000,14 @@ class LocalSessionStore:
         limit: int,
         run_id: str | None = None,
     ) -> tuple[list[_JournalRecord], int | None]:
+        run_id_pattern = (
+            re.compile(
+                rb'"run_id"\s*:\s*'
+                + re.escape(json.dumps(run_id, ensure_ascii=False).encode("utf-8"))
+            )
+            if run_id is not None
+            else None
+        )
         try:
             size = path.stat().st_size
             if cursor > size:
@@ -1016,6 +1024,11 @@ class LocalSessionStore:
                     if not raw:
                         break
                     if not raw.strip():
+                        continue
+                    # Filtering belongs to the persistence query boundary. Avoid
+                    # decoding unrelated records, then validate candidate matches
+                    # through the canonical versioned-record decoder below.
+                    if run_id_pattern is not None and run_id_pattern.search(raw) is None:
                         continue
                     record = decode_versioned_record_json(
                         model_type,

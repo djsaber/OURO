@@ -16,7 +16,6 @@ from textual.events import Resize
 from textual.geometry import Region
 from textual.message import Message
 from textual.timer import Timer
-from textual.widget import Widget
 from textual.widgets import Label, Markdown, Static, TextArea
 
 from ouro.application.queued_inputs import (
@@ -34,9 +33,10 @@ from ouro.core.messages import MessageRecord
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
+from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
-from ouro.tui.theme import theme_for
+from ouro.tui.theme import TuiTheme, theme_for
 from ouro.tui.tool_presentations import ToolLineState, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -319,6 +319,10 @@ class ToolActivityRow(Static):
         self._sync_timer()
         self._render_tool()
 
+    @property
+    def tool(self) -> RuntimeToolCallActivity:
+        return self._tool
+
     def _sync_timer(self) -> None:
         if not self.is_attached:
             return
@@ -346,65 +350,90 @@ class ToolActivityRow(Static):
         self._render_tool()
 
     def _render_tool(self) -> None:
-        theme = theme_for(self)
-        tool = self._tool
-        active = self._is_active
-        marks = {
-            "awaiting_approval": "?",
-            "waiting_user": "?",
-            "completed": "✓",
-            "failed": "×",
-            "rejected": "×",
-            "aborted": "×",
-            "unknown_outcome": "!",
-        }
-        mark = _SPINNER[self._frame] if active else marks.get(tool.status, "·")
-        state_styles = {
-            "completed": "#77b083",
-            "failed": "#d87575",
-            "rejected": "#d87575",
-            "aborted": "#d87575",
-            "unknown_outcome": theme.accent,
-            "awaiting_approval": theme.accent,
-            "waiting_user": theme.accent,
-        }
-        status_labels = {
-            "planned": "queued",
-            "ready": "ready",
-            "awaiting_approval": "approval required",
-            "waiting_user": "waiting for input",
-            "resolving_input": "resolving input",
-            "running": "running",
-            "completed": "completed",
-            "failed": "failed",
-            "rejected": "rejected",
-            "aborted": "aborted",
-            "unknown_outcome": "outcome unknown",
-            "waiting_child": "waiting for subagent",
-        }
-        accent = state_styles.get(tool.status, theme.accent if active else "#8f9aa8")
-        presentation = present_tool(tool)
-        text = Text()
-        text.append(f"  {mark} ", style=f"bold {accent}")
-        text.append(tool.tool_name, style="bold #d6d9df")
-        if presentation.subject:
-            text.append(f"  {presentation.subject}", style="#8f9aa8")
-        if presentation.summary:
-            text.append(f"  ·  {presentation.summary}", style="#788492")
-        text.append(f"  {status_labels[tool.status]}", style=accent)
-        elapsed = _tool_elapsed_seconds(tool)
-        if elapsed is not None:
-            text.append(f" · {elapsed}s", style="#647180")
-        line_styles: dict[ToolLineState, str] = {
-            "pending": "#788492",
-            "active": theme.accent,
-            "done": "#77b083",
-            "muted": "#647180",
-        }
-        for line in presentation.lines:
-            text.append(f"\n    {line.marker} ", style=line_styles[line.state])
-            text.append(line.text, style="#8f9aa8" if line.state != "done" else "#788492")
-        self.update(text)
+        self.update(_tool_activity_text(self._tool, frame=self._frame, theme=theme_for(self)))
+
+
+def _tool_activity_text(
+    tool: RuntimeToolCallActivity,
+    *,
+    frame: int,
+    theme: TuiTheme,
+) -> Text:
+    """Render one tool state without coupling it to a mounted widget."""
+
+    active = tool.status in {
+        "planned",
+        "ready",
+        "resolving_input",
+        "running",
+        "waiting_child",
+    }
+    marks = {
+        "awaiting_approval": "?",
+        "waiting_user": "?",
+        "completed": "✓",
+        "failed": "×",
+        "rejected": "×",
+        "aborted": "×",
+        "unknown_outcome": "!",
+    }
+    mark = _SPINNER[frame] if active else marks.get(tool.status, "·")
+    state_styles = {
+        "completed": "#77b083",
+        "failed": "#d87575",
+        "rejected": "#d87575",
+        "aborted": "#d87575",
+        "unknown_outcome": theme.accent,
+        "awaiting_approval": theme.accent,
+        "waiting_user": theme.accent,
+    }
+    status_labels = {
+        "planned": "queued",
+        "ready": "ready",
+        "awaiting_approval": "approval required",
+        "waiting_user": "waiting for input",
+        "resolving_input": "resolving input",
+        "running": "running",
+        "completed": "completed",
+        "failed": "failed",
+        "rejected": "rejected",
+        "aborted": "aborted",
+        "unknown_outcome": "outcome unknown",
+        "waiting_child": "waiting for subagent",
+    }
+    accent = state_styles.get(tool.status, theme.accent if active else "#8f9aa8")
+    presentation = present_tool(tool)
+    text = Text()
+    text.append(f"  {mark} ", style=f"bold {accent}")
+    text.append(tool.tool_name, style="bold #d6d9df")
+    if presentation.subject:
+        text.append(f"  {presentation.subject}", style="#8f9aa8")
+    if presentation.summary:
+        text.append(f"  ·  {presentation.summary}", style="#788492")
+    text.append(f"  {status_labels[tool.status]}", style=accent)
+    elapsed = _tool_elapsed_seconds(tool)
+    if elapsed is not None:
+        text.append(f" · {elapsed}s", style="#647180")
+    line_styles: dict[ToolLineState, str] = {
+        "pending": "#788492",
+        "active": theme.accent,
+        "done": "#77b083",
+        "muted": "#647180",
+    }
+    for line in presentation.lines:
+        text.append(f"\n    {line.marker} ", style=line_styles[line.state])
+        text.append(line.text, style="#8f9aa8" if line.state != "done" else "#788492")
+    return text
+
+
+def _is_terminal_tool(tool: RuntimeToolCallActivity) -> bool:
+    return tool.status in {
+        "completed",
+        "failed",
+        "rejected",
+        "aborted",
+        "unknown_outcome",
+    }
 
 
 def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
@@ -514,14 +543,6 @@ class WelcomePanel(Static):
         self.update(content)
 
 
-def _user_turn(text: str) -> Static:
-    return Static(
-        text,
-        classes="turn user-turn",
-        markup=False,
-    )
-
-
 def _tool_activities_from_messages(
     messages: Iterable[MessageRecord],
 ) -> dict[str, RuntimeToolCallActivity]:
@@ -565,7 +586,8 @@ def _tool_activities_from_messages(
 class ConversationView(VerticalScroll):
     def __init__(self) -> None:
         super().__init__(id="conversation")
-        self._transcript = Vertical(id="conversation-transcript")
+        self._history = ConversationHistory(_tool_activity_text)
+        self._transcript = Vertical(self._history, id="conversation-transcript")
         self._system_status = TuiSystemStatus()
         self._welcome: WelcomePanel | None = None
         self._assistant: AssistantTurn | None = None
@@ -578,7 +600,8 @@ class ConversationView(VerticalScroll):
         self.anchor()
 
     async def show_welcome(self) -> None:
-        await self._transcript.remove_children()
+        await self._clear_live_transcript()
+        self._history.replace(())
         self._welcome = None
         self._assistant = None
         self._tools.clear()
@@ -595,27 +618,28 @@ class ConversationView(VerticalScroll):
         await self._transcript.mount(self._welcome)
 
     async def load_messages(self, messages: Iterable[MessageRecord]) -> None:
-        await self._transcript.remove_children()
+        await self._clear_live_transcript()
         self._assistant = None
         self._tools.clear()
         self._welcome = None
 
         materialized = list(messages)
         tool_activities = _tool_activities_from_messages(materialized)
-        transcript: list[Widget] = []
+        transcript: list[TranscriptEntry] = []
 
         for message in materialized:
             if message.role == "user":
                 text = _user_message_text(message)
                 if not text:
                     continue
-                transcript.append(_user_turn(text))
+                transcript.append(TranscriptEntry(kind="user", text=text))
             elif message.role == "assistant":
                 text = message.text_content
                 if text or message.reasoning_content:
                     transcript.append(
-                        AssistantTurn(
-                            initial=text,
+                        TranscriptEntry(
+                            kind="assistant",
+                            text=text,
                             reasoning=message.reasoning_content,
                         )
                     )
@@ -623,18 +647,33 @@ class ConversationView(VerticalScroll):
                     activity = tool_activities.get(call.id)
                     if activity is None:
                         continue
-                    row = ToolActivityRow(activity)
-                    self._tools[call.id] = row
-                    transcript.append(row)
+                    transcript.append(TranscriptEntry(kind="tool", tool=activity))
 
         if not transcript:
             # A loaded session with no visible dialogue is still an empty state.
+            self._history.replace(())
             await self._mount_welcome()
             self.anchor()
             return
 
-        await self._transcript.mount_all(transcript)
+        self._history.replace(transcript)
+        await self._history.wait_until_rendered()
         self.anchor()
+
+    async def _clear_live_transcript(self) -> None:
+        live_children = tuple(
+            child for child in self._transcript.children if child is not self._history
+        )
+        if live_children:
+            await self._transcript.remove_children(live_children)
+
+    def user_turn_summaries(self) -> tuple[str, ...]:
+        return self._history.user_turns
+
+    def scroll_to_user_turn(self, index: int) -> None:
+        historical_lines = self._history.user_lines
+        if 0 <= index < len(historical_lines):
+            self.scroll_to(y=historical_lines[index], animate=False)
 
     async def _dismiss_welcome(self) -> None:
         """Transition from the empty welcome state to the conversation state.
@@ -653,8 +692,11 @@ class ConversationView(VerticalScroll):
 
     async def add_user(self, text: str) -> None:
         await self._dismiss_welcome()
-        self._assistant = None
-        await self._transcript.mount(_user_turn(text))
+        # A new user turn closes the preceding model round. Persist the live
+        # assistant before appending the next chronological history boundary.
+        await self.finish_assistant()
+        self._history.append(TranscriptEntry(kind="user", text=text))
+        await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
         text = _user_message_text(message)
@@ -680,32 +722,56 @@ class ConversationView(VerticalScroll):
             self._assistant.finish_reasoning()
 
     async def finish_assistant(self) -> None:
-        if self._assistant is not None:
-            await self._assistant.finish()
+        assistant = self._assistant
+        if assistant is None:
+            return
+        await assistant.finish()
+        text = assistant.markdown.source
+        reasoning = assistant.reasoning.text
+        if text or reasoning:
+            self._history.append(TranscriptEntry(kind="assistant", text=text, reasoning=reasoning))
+        self._assistant = None
+        await assistant.remove()
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         await self._dismiss_welcome()
-        mounted = False
+        historical_tool_ids = self._history.update_tools(tools)
+        has_new_tool = any(
+            tool.tool_call_id not in historical_tool_ids and tool.tool_call_id not in self._tools
+            for tool in tools
+        )
+        if has_new_tool:
+            # A tool call is a chronological boundary between model rounds.
+            # Freeze the preceding assistant segment before rendering the tool.
+            await self.finish_assistant()
         for tool in tools:
+            if tool.tool_call_id in historical_tool_ids:
+                continue
             row = self._tools.get(tool.tool_call_id)
             if row is None:
                 row = ToolActivityRow(tool)
                 self._tools[tool.tool_call_id] = row
                 await self._transcript.mount(row)
-                mounted = True
             else:
                 row.apply_tool(tool)
-        if mounted:
-            # A tool call is a chronological boundary between model rounds.
-            # Later model output must mount after the tool rows, not mutate the
-            # assistant segment that preceded them.
-            await self.finish_assistant()
-            self._assistant = None
+
+        # Keep a tool batch live until every row is terminal. Archiving rows one
+        # by one would move a later-completing row ahead of an earlier active row
+        # because the immutable history always precedes the live widget region.
+        if self._tools and all(_is_terminal_tool(row.tool) for row in self._tools.values()):
+            terminal_rows = tuple(self._tools.values())
+            self._tools.clear()
+            for row in terminal_rows:
+                self._history.append(TranscriptEntry(kind="tool", tool=row.tool))
+                await row.remove()
 
     async def add_notice(self, message: str, *, error: bool = False) -> None:
         await self._dismiss_welcome()
-        classes = "notice error-notice" if error else "notice"
-        await self._transcript.mount(Static(message, classes=classes))
+        # Notices are immutable transcript boundaries as well. Freezing any
+        # partial answer keeps presentation order identical to event order.
+        await self.finish_assistant()
+        self._history.append(TranscriptEntry(kind="notice", text=message, error=error))
+        await self._history.wait_until_rendered()
 
 
 class InteractionBar(Static):
@@ -1371,6 +1437,15 @@ class CommandPopup(VerticalScroll):
         self._render_arguments()
 
     def hide(self) -> None:
+        if (
+            not self.display
+            and not self._commands
+            and self._argument_command is None
+            and not self._arguments
+            and self._selected == 0
+            and self._content.content == ""
+        ):
+            return
         self.display = False
         self._commands = ()
         self._argument_command = None

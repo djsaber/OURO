@@ -789,10 +789,11 @@ def abort_run_state(
     """Persist the canonical terminal state used by every Run abort initiator."""
 
     with store.session_mutation(session_id):
-        snapshot = store.load_runtime_session(session_id)
-        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
+        session = store.load_session_record(session_id)
+        runs = store.load_runs(session_id)
+        run = find_run(runs, run_id) if run_id else find_active_run(runs)
         if run.status not in ACTIVE_RUN_STATUSES:
-            return snapshot.session, run, False
+            return session, run, False
         now = utc_now()
         metadata = dict(run.metadata)
         metadata["abort_reason"] = reason
@@ -807,7 +808,7 @@ def abort_run_state(
             }
         )
         transition = plan_run_transition(
-            snapshot.session,
+            session,
             current_run=run,
             next_run=aborted_run,
             now=now,

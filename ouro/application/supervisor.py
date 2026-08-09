@@ -268,8 +268,7 @@ class RuntimeSupervisor:
                 raise SessionNotFoundError(f"session not found: {session_id}") from exc
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        durable = self.store.load_runtime_session(session_id)
-        if maybe_active_run(durable.runs) is not None:
+        if maybe_active_run(self.store.load_runs(session_id)) is not None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
 
         handle = RunHandle(session_id=session_id)
@@ -306,8 +305,7 @@ class RuntimeSupervisor:
         session_id = run.session_id
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
-        durable = self.store.load_runtime_session(session_id)
-        active = maybe_active_run(durable.runs)
+        active = maybe_active_run(self.store.load_runs(session_id))
         if active is None or active.run_id != run.run_id or active.status != "queued":
             raise SessionBusyError(
                 f"prepared run is not the Session's queued active run: {run.run_id}"
@@ -380,8 +378,10 @@ class RuntimeSupervisor:
 
         await self.start()
         receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)
-        durable = self.store.load_runtime_session(session_id)
-        if maybe_active_run(durable.runs) is not None or session_id in self._jobs_by_session:
+        if (
+            maybe_active_run(self.store.load_runs(session_id)) is not None
+            or session_id in self._jobs_by_session
+        ):
             return receipt
         handle = RunHandle(session_id=session_id)
         self._enqueue_job(
@@ -565,16 +565,17 @@ class RuntimeSupervisor:
         if active is not None:
             return self._snapshots[active.handle.handle_id]
         try:
-            durable_snapshot = self.store.load_runtime_session(handle_or_session)
+            session = self.store.load_session_record(handle_or_session)
+            runs = self.store.load_runs(handle_or_session)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {handle_or_session}") from exc
-        run = maybe_active_run(durable_snapshot.runs)
-        if run is None and durable_snapshot.session.last_run_id is not None:
+        run = maybe_active_run(runs)
+        if run is None and session.last_run_id is not None:
             run = next(
                 (
                     item
-                    for item in durable_snapshot.runs
-                    if item.run_id == durable_snapshot.session.last_run_id
+                    for item in runs
+                    if item.run_id == session.last_run_id
                 ),
                 None,
             )
@@ -979,8 +980,7 @@ class RuntimeSupervisor:
 
     def _finish_interrupted_job(self, job: _RunJob) -> None:
         try:
-            durable = self.store.load_runtime_session(job.handle.session_id)
-            active = maybe_active_run(durable.runs)
+            active = maybe_active_run(self.store.load_runs(job.handle.session_id))
         except Exception:  # noqa: BLE001 - shutdown must still release process state.
             active = None
         self._finish_job(

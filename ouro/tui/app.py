@@ -261,6 +261,24 @@ _OURO_TUI_CSS = """
         height: auto;
         min-height: 100%;
         background: transparent;
+        /* Conversation rows are full-width, auto-height chronological blocks,
+           exactly the contract of Textual's incremental stream layout. It
+           reuses placements before the visible window instead of measuring the
+           complete transcript whenever adjacent composer chrome changes. */
+        layout: stream;
+    }
+
+    #conversation-history {
+        width: 100%;
+        height: auto;
+        min-height: 0;
+        background: transparent;
+        overflow: hidden;
+        scrollbar-background: transparent;
+        scrollbar-color: transparent;
+        scrollbar-color-hover: transparent;
+        scrollbar-size: 0 0;
+        scrollbar-gutter: auto;
     }
 
     .welcome {
@@ -277,14 +295,6 @@ _OURO_TUI_CSS = """
         height: auto;
         margin-bottom: 1;
         background: transparent;
-    }
-
-    .user-turn {
-        margin: 1 1 2 1;
-        padding: 1 2;
-        color: #e5e7eb;
-        background: $ouro-panel;
-        border-left: solid $ouro-theme;
     }
 
     .assistant-turn {
@@ -330,18 +340,6 @@ _OURO_TUI_CSS = """
         margin: 0 0 1 2;
         color: #aeb5bf;
         background: transparent;
-    }
-
-    .notice {
-        height: auto;
-        margin: 0 1 1 1;
-        padding: 0 1;
-        color: $ouro-theme;
-        background: transparent;
-    }
-
-    .error-notice {
-        color: #e08a8a;
     }
 
     #interaction-bar {
@@ -1627,8 +1625,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             conversation = self.query_one(ConversationView)
         except Exception:  # noqa: BLE001 — app may not have mounted the view yet.
             return tuple(options)
-        for index, widget in enumerate(conversation.query(".user-turn"), start=1):
-            options.append(TuiCommandArgument(f"#{index}", _summarize(str(widget.render()))))
+        for index, text in enumerate(conversation.user_turn_summaries(), start=1):
+            options.append(TuiCommandArgument(f"#{index}", _summarize(text)))
         return tuple(options)
 
     def _plugin_commands(self) -> tuple[TuiCommand, ...]:
@@ -1767,10 +1765,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif target == "bottom":
             conversation.anchor()
         elif target.startswith("#") and target[1:].isdigit():
-            user_turns = list(conversation.query(".user-turn"))
             index = int(target[1:]) - 1
-            if 0 <= index < len(user_turns):
-                conversation.scroll_to_widget(user_turns[index], top=True, animate=False)
+            conversation.scroll_to_user_turn(index)
 
     @work(exclusive=True, group="navigation")
     async def _choose_session(self) -> None:
@@ -1858,6 +1854,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
         projection.restore(loaded.events)
+        projection.activity = projection.activity.model_copy(
+            update={"context_status": loaded.context_status}
+        )
         self._projection = projection
         self._sync_activity(projection.activity)
         self._interaction = None

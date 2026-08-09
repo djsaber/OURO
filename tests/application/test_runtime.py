@@ -4,6 +4,7 @@ import sys
 import pytest
 
 from ouro.application.resources import ResourceService
+from ouro.application.runs import abort_run_state
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.sessions import SessionService
@@ -68,6 +69,35 @@ def _tools() -> ToolRegistry:
     for tool in builtin_tools():
         registry.register(tool)
     return registry
+
+
+def test_abort_state_does_not_load_message_history(tmp_path, monkeypatch) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    run = RunRecord(session_id="ses_abort", status="running")
+    session = SessionRecord(
+        session_id=run.session_id,
+        status="running",
+        active_run_id=run.run_id,
+    )
+    store.create_session(session)
+    store.save_run(run)
+
+    def reject_runtime_aggregate(*_args, **_kwargs):
+        raise AssertionError("abort must inspect only Session and Run state")
+
+    monkeypatch.setattr(store, "load_runtime_session", reject_runtime_aggregate)
+
+    idle, aborted, changed = abort_run_state(
+        store,
+        session_id=session.session_id,
+        run_id=run.run_id,
+        reason="stop",
+    )
+
+    assert changed is True
+    assert idle.status == "idle"
+    assert aborted.status == "aborted"
 
 
 @pytest.mark.asyncio

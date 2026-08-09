@@ -107,6 +107,48 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     assert has_more is True
 
 
+def test_event_pages_filter_by_run_before_materializing_records(
+    session_store: SessionStore,
+) -> None:
+    session = SessionRecord(title="Filtered events")
+    session_store.create_session(session)
+    selected = [
+        EventRecord(
+            session_id=session.session_id,
+            run_id="run_selected",
+            event_type="model_text_delta",
+            payload={"text": str(index)},
+        )
+        for index in range(2)
+    ]
+    unrelated = EventRecord(
+        session_id=session.session_id,
+        run_id="run_unrelated",
+        event_type="run_started",
+        payload={"run_id": "run_selected"},
+    )
+    session_store.append_ordered_event(selected[0])
+    session_store.append_ordered_event(unrelated)
+    session_store.append_ordered_event(selected[1])
+
+    first, cursor = session_store.load_events_page(
+        session.session_id,
+        run_id="run_selected",
+        limit=1,
+    )
+    assert [event.event_id for event in first] == [selected[0].event_id]
+    assert cursor is not None
+
+    second, final_cursor = session_store.load_events_page(
+        session.session_id,
+        cursor=cursor,
+        run_id="run_selected",
+        limit=1,
+    )
+    assert [event.event_id for event in second] == [selected[1].event_id]
+    assert final_cursor is None
+
+
 def test_session_store_rejects_record_without_explicit_schema_version(
     session_store: SessionStore,
 ) -> None:

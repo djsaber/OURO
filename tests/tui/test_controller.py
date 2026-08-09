@@ -413,6 +413,37 @@ async def test_controller_load_session_does_not_block_the_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_controller_does_not_replay_events_for_completed_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        result = await controller.submit("open completed conversation")
+
+        def unexpected_event_page(*_args, **_kwargs):
+            raise AssertionError("completed Sessions must not replay the event journal")
+
+        monkeypatch.setattr(application.runtime.sessions, "event_page", unexpected_event_page)
+
+        loaded = await controller.load_session(result.session.session_id)
+
+        assert loaded.detail.session.active_run_id is None
+        assert loaded.events == ()
+        assert loaded.messages
+        assert loaded.context_status is not None
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_configuration_reads_do_not_block_the_event_loop(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

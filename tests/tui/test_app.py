@@ -20,6 +20,7 @@ from ouro.application.plugin_models import (
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
+from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
@@ -75,12 +76,12 @@ from ouro.tui.widgets import (
     BrandHeader,
     CommandPopup,
     Composer,
+    ConversationHistory,
     ConversationView,
     InteractionBar,
     PlanConfirmationPanel,
     QueuedInputPanel,
     StatusLine,
-    ToolActivityRow,
     WelcomePanel,
 )
 
@@ -724,6 +725,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         conversation = app.query_one(ConversationView)
+        transcript = conversation.query_one("#conversation-transcript")
         header = app.query_one(BrandHeader)
 
         # Startup enters the empty state: the LOGO welcome frame is the sole
@@ -789,6 +791,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert main.region.right == app.screen.region.right
         assert main.region.bottom == app.screen.region.bottom
         assert conversation.styles.scrollbar_size_vertical == 0
+        assert transcript.layout.name == "stream"
         # Hidden scrollbar must not collapse the layout: virtual width should
         # follow the content area, and the welcome panel keeps its CSS width.
         assert conversation.virtual_size.width >= conversation.content_region.width
@@ -821,9 +824,11 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.region.height == 3
         assert composer.content_region.height == 1
         assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
-        assert conversation.query_one(".user-turn").styles.border_left[0] == "solid"
-        assert conversation.query_one(AssistantTurn).styles.border_left[0] == ""
-        assert all(notice.styles.border_left[0] == "" for notice in conversation.query(".notice"))
+        history = conversation.query_one(ConversationHistory)
+        assert history.styles.border_left[0] == ""
+        assert "▌ Hello" in history.rendered_text
+        assert "Status changed" in history.rendered_text
+        assert not conversation.query(AssistantTurn)
 
         assert composer.styles.border_left[0] == "solid"
         assert composer.styles.border_right[0] == "solid"
@@ -955,6 +960,29 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
 
         status_line.set_context(None)
         assert context_detail.render().plain == ""
+
+
+@pytest.mark.asyncio
+async def test_completed_session_restores_context_status_without_event_replay(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    await application.start()
+    result = await application.runtime.run("remember this context")
+    expected = application.runtime.sessions.context_status(result.session.session_id)
+    assert expected is not None
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=result.session.session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.7)
+
+        assert app._projection is not None
+        assert app._projection.activity.context_status == expected
+        context = app.query_one("#context-detail", Static).render().plain
+        assert context
 
 
 @pytest.mark.asyncio
@@ -1181,9 +1209,10 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
         await conversation.append_assistant("First answer")
         await pilot.pause()
 
-        first_turn = conversation.query_one(".user-turn")
+        history = conversation.query_one(ConversationHistory)
         assert conversation.scroll_y == 0
-        assert first_turn.region.y <= conversation.content_region.y + 2
+        assert history.user_lines == (0,)
+        assert history.region.y <= conversation.content_region.y + 2
         assert conversation.is_vertical_scroll_end is True
 
 
@@ -1451,21 +1480,25 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         queue_content = queue_panel.query_one("#queued-input-content", Static)
         assert queue_content.region.y - queue_panel.region.y == 1
         assert queue_panel.region.bottom - queue_content.region.bottom == 1
-        assert [turn.render().plain for turn in conversation.query(".user-turn")] == ["first"]
+        history = conversation.query_one(ConversationHistory)
+        assert history.user_turns == ("first",)
 
         provider.release.set()
         await pilot.pause(1)
 
         assert queue_panel.display is False
-        user_turns = list(conversation.query(".user-turn"))
-        assistant_turns = list(conversation.query(AssistantTurn))
-        assert [turn.render().plain for turn in user_turns] == [
+        assert history.user_turns == (
             "first",
             "follow next",
+        )
+        user_indexes = [
+            index for index, entry in enumerate(history.entries) if entry.kind == "user"
         ]
-        children = list(conversation.query(".turn, .tool-row"))
-        assert children.index(assistant_turns[0]) < children.index(user_turns[1])
-        assert children.index(user_turns[1]) < children.index(assistant_turns[1])
+        assistant_indexes = [
+            index for index, entry in enumerate(history.entries) if entry.kind == "assistant"
+        ]
+        assert len(user_indexes) == len(assistant_indexes) == 2
+        assert user_indexes[0] < assistant_indexes[0] < user_indexes[1] < assistant_indexes[1]
 
         snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
         queued_message = next(
@@ -1512,9 +1545,8 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
         assert app.query_one(QueuedInputPanel).display is False
-        rendered = "\n".join(
-            turn.markdown.source for turn in app.query_one(ConversationView).query(AssistantTurn)
-        )
+        history = app.query_one(ConversationHistory)
+        rendered = "\n".join(entry.text for entry in history.entries if entry.kind == "assistant")
         assert "parent resumed" in rendered
         assert "queued input consumed" in rendered
 
@@ -1550,10 +1582,7 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
             assert queue_panel.display is True
             assert "GUIDE" in queue_text
             assert "guide now" in queue_text
-            assert all(
-                "guide now" not in turn.render().plain
-                for turn in app.query_one(ConversationView).query(".user-turn")
-            )
+            assert "guide now" not in app.query_one(ConversationHistory).user_turns
         finally:
             provider.release.set()
         await pilot.pause(1)
@@ -1592,10 +1621,7 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
         assert queue_panel.display is True
         assert "FOLLOW" in queue_text
         assert "Continue after approval" in queue_text
-        assert all(
-            "Continue after approval" not in turn.render().plain
-            for turn in app.query_one(ConversationView).query(".user-turn")
-        )
+        assert "Continue after approval" not in app.query_one(ConversationHistory).user_turns
 
 
 @pytest.mark.asyncio
@@ -1622,9 +1648,10 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
             provider.release.set()
         await pilot.pause(0.5)
 
-        turn = app.query_one(AssistantTurn)
-        assert turn.reasoning.text == "Inspecting the event path."
-        assert turn.markdown.source == "Done."
+        history = app.query_one(ConversationHistory)
+        answer = next(entry for entry in reversed(history.entries) if entry.kind == "assistant")
+        assert answer.reasoning == "Inspecting the event path."
+        assert answer.text == "Done."
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
 
@@ -1645,14 +1672,16 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         await app.query_one(ConversationView).load_messages((message,))
         await pilot.pause()
 
-        turn = app.query_one(AssistantTurn)
-        assert turn.reasoning.display is True
-        assert turn.reasoning.text == reasoning_text
-        assert turn.reasoning._content.render().plain == reasoning_text
-        assert turn.reasoning.label.render().plain == "THOUGHT"
-        assert turn.markdown.source == "Final answer"
-        assert turn._stream is None
-        assert not turn.query(".assistant-label")
+        history = app.query_one(ConversationHistory)
+        assert len(history.entries) == 1
+        entry = history.entries[0]
+        assert entry.kind == "assistant"
+        assert entry.reasoning == reasoning_text
+        assert entry.text == "Final answer"
+        assert "THOUGHT" in history.rendered_text
+        assert reasoning_text in history.rendered_text
+        assert "Final answer" in history.rendered_text
+        assert not app.query(AssistantTurn)
 
 
 @pytest.mark.asyncio
@@ -1678,20 +1707,97 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
         await conversation.load_messages(messages)
         await pilot.pause()
 
-        turns = list(conversation.query(".turn"))
-        transcript = [
-            ("assistant", turn.markdown.source)
-            if isinstance(turn, AssistantTurn)
-            else ("user", turn.render().plain)
-            for turn in turns
-        ]
+        history = conversation.query_one(ConversationHistory)
+        transcript = [(entry.kind, entry.text) for entry in history.entries]
         assert transcript == [
             ("user", "First question"),
             ("assistant", "First answer"),
             ("user", "Second question"),
             ("assistant", "Second answer"),
         ]
-        assert all(turn._stream is None for turn in conversation.query(AssistantTurn))
+        assert not conversation.query(AssistantTurn)
+
+
+@pytest.mark.asyncio
+async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    messages = tuple(
+        MessageRecord(
+            session_id="ses_large_history",
+            role="user" if index % 2 == 0 else "assistant",
+            content=[TextContent(text=f"Message {index}")],
+        )
+        for index in range(400)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages)
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        assert len(history.entries) == len(messages)
+        assert len(list(conversation.query("*"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_live_turns_keep_the_widget_tree_bounded(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        for index in range(100):
+            await conversation.add_user(f"Question {index}")
+            await conversation.append_assistant(f"Answer {index}")
+            await conversation.finish_assistant()
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        assert len(history.entries) == 200
+        assert len(list(conversation.query("*"))) == 2
+
+
+@pytest.mark.asyncio
+async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    first = RuntimeToolCallActivity(
+        tool_call_id="call_first",
+        tool_name="First",
+        status="running",
+        source_index=0,
+    )
+    second = RuntimeToolCallActivity(
+        tool_call_id="call_second",
+        tool_name="Second",
+        status="running",
+        source_index=1,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.sync_tools((first, second))
+        await conversation.sync_tools((first.model_copy(update={"status": "completed"}), second))
+
+        history = conversation.query_one(ConversationHistory)
+        assert not [entry for entry in history.entries if entry.kind == "tool"]
+        assert len(conversation.query(".tool-row")) == 2
+
+        await conversation.sync_tools(
+            (
+                first.model_copy(update={"status": "completed"}),
+                second.model_copy(update={"status": "completed"}),
+            )
+        )
+        tool_ids = [
+            entry.tool.tool_call_id
+            for entry in history.entries
+            if entry.kind == "tool" and entry.tool is not None
+        ]
+        assert tool_ids == ["call_first", "call_second"]
+        assert not conversation.query(".tool-row")
 
 
 @pytest.mark.asyncio
@@ -1745,23 +1851,18 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
         await conversation.load_messages(messages)
         await pilot.pause()
 
-        tool_rows = list(conversation.query(ToolActivityRow))
-        assert len(tool_rows) == 1
-        assert tool_rows[0].tool_call_id == tool_call_id
-        assert tool_rows[0]._tool.status == "completed"
+        history = conversation.query_one(ConversationHistory)
+        tools = [entry.tool for entry in history.entries if entry.tool is not None]
+        assert len(tools) == 1
+        assert tools[0].tool_call_id == tool_call_id
+        assert tools[0].status == "completed"
 
-        rendered = tool_rows[0].render().plain
+        rendered = history.rendered_text
         assert "read" in rendered
         assert "config.json" in rendered
 
         # Dialogue order: user text, tool row, assistant text — interleaved.
-        children = list(conversation.query(".turn, .tool-row"))
-        kinds = [
-            "tool"
-            if isinstance(child, ToolActivityRow)
-            else ("user" if "user-turn" in child.classes else "assistant")
-            for child in children
-        ]
+        kinds = [entry.kind for entry in history.entries]
         assert kinds == ["user", "tool", "assistant"]
 
 
@@ -1800,9 +1901,11 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
         await conversation.load_messages(messages)
         await pilot.pause()
 
-        tool_rows = list(conversation.query(ToolActivityRow))
-        assert len(tool_rows) == 1
-        assert tool_rows[0]._tool.status == "failed"
+        history = conversation.query_one(ConversationHistory)
+        tools = [entry.tool for entry in history.entries if entry.tool is not None]
+        assert len(tools) == 1
+        assert tools[0].status == "failed"
+        assert "failed" in history.rendered_text
 
 
 @pytest.mark.asyncio
@@ -1879,11 +1982,9 @@ async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> Non
         await app._dispatch_command("/navigate #1")
         await pilot.pause()
 
-        # scroll_to_widget(top=True) aligns the first user message to the
-        # top of the conversation content area, so it must be visible there.
-        first_user = list(conversation.query(".user-turn"))[0]
-        content_top = conversation.content_region.y
-        assert abs(first_user.region.y - content_top) <= 1
+        history = conversation.query_one(ConversationHistory)
+        assert history.user_lines[0] == 0
+        assert conversation.scroll_y == history.user_lines[0]
 
 
 @pytest.mark.asyncio
@@ -2301,7 +2402,11 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         await pilot.pause()
 
         assert executed == [("hello", "world")]
-        notices = "\n".join(item.render().plain for item in app.query(".notice"))
+        notices = "\n".join(
+            entry.text
+            for entry in app.query_one(ConversationHistory).entries
+            if entry.kind == "notice"
+        )
         assert "hello" in notices
 
 
@@ -2488,10 +2593,7 @@ Review the requested code carefully.
         await pilot.press(*"inspect", "space", *"app.py", "enter")
         await pilot.pause(0.8)
 
-        turns = list(app.query_one(ConversationView).query(".user-turn"))
-        assert [turn.render().plain for turn in turns] == [
-            "/skill reviewer inspect app.py"
-        ]
+        assert app.query_one(ConversationHistory).user_turns == ("/skill reviewer inspect app.py",)
         assert app._controller.session_id is not None
         snapshot = application.runtime.store.load_runtime_session(app._controller.session_id)
         message = next(item for item in snapshot.messages if item.skill_activations)
@@ -2763,20 +2865,17 @@ async def test_tool_row_stays_between_model_rounds_in_event_order(tmp_path: Path
         await pilot.press("enter")
         await pilot.pause(0.8)
 
-        conversation = app.query_one(ConversationView)
-        children = list(conversation.query(".turn, .tool-row"))
-        turns = [child for child in children if isinstance(child, AssistantTurn)]
-        tool_row = next(child for child in children if isinstance(child, ToolActivityRow))
-
-        assert len(turns) == 2
-        assert turns[0].markdown.source.strip() == "Preparing."
-        assert turns[1].markdown.source == "Done."
-        tool_text = tool_row.render().plain
+        history = app.query_one(ConversationHistory)
+        ordered = [entry for entry in history.entries if entry.kind in {"assistant", "tool"}]
+        assert [entry.kind for entry in ordered] == ["assistant", "tool", "assistant"]
+        assert ordered[0].text.strip() == "Preparing."
+        assert ordered[1].tool is not None
+        assert ordered[2].text == "Done."
+        tool_text = history.rendered_text
         assert "Write  " in tool_text
         assert target.name in tool_text
         assert "1 line · overwrite  completed" in tool_text
         assert "s" in tool_text
-        assert children.index(turns[0]) < children.index(tool_row) < children.index(turns[1])
 
 
 @pytest.mark.asyncio

@@ -42,6 +42,7 @@ from ouro.core.errors import (
     SessionBusyError,
     SessionNotFoundError,
 )
+from ouro.core.events import EventRecord
 from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteractionMode
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
@@ -271,7 +272,7 @@ class SessionService:
 
     def set_archived(self, session_id: str, archived: bool) -> SessionMutationResult:
         if archived:
-            session = self._load_snapshot(session_id, recover=False).session
+            session = self._load_session_record(session_id)
             if session.session_kind == "primary":
                 active = self._active_or_unresolved_agent_descendants(
                     self._store.list_delegations(session.root_session_id or session.session_id)
@@ -354,18 +355,19 @@ class SessionService:
         session_id: str,
         generator: SessionTitleGenerator,
     ) -> SessionMutationResult:
-        snapshot = self._load_snapshot(session_id, recover=False)
-        if snapshot.session.title_locked or snapshot.session.title_source == "user":
-            return SessionMutationResult(session=SessionView.from_record(snapshot.session))
+        session = self._load_session_record(session_id)
+        if session.title_locked or session.title_source == "user":
+            return SessionMutationResult(session=SessionView.from_record(session))
+        messages = self._load_messages(session_id)
         try:
             generated = await generator(
-                SessionView.from_record(snapshot.session),
-                tuple(snapshot.messages),
+                SessionView.from_record(session),
+                tuple(messages),
             )
             title = _normalize_title(generated)
         except Exception as exc:  # noqa: BLE001 - optional title provider isolation boundary
             return SessionMutationResult(
-                session=SessionView.from_record(snapshot.session),
+                session=SessionView.from_record(session),
                 diagnostics=(
                     Diagnostic(
                         code="session_title_generation_failed",
@@ -380,7 +382,7 @@ class SessionService:
             )
 
         try:
-            latest = self._load_snapshot(session_id, recover=False).session
+            latest = self._load_session_record(session_id)
             if latest.title_locked or latest.title_source == "user":
                 return SessionMutationResult(session=SessionView.from_record(latest))
             return self._update_session(
@@ -390,7 +392,7 @@ class SessionService:
                 title_locked=False,
             )
         except SessionBusyError as exc:
-            latest = self._load_snapshot(session_id, recover=False).session
+            latest = self._load_session_record(session_id)
             return SessionMutationResult(
                 session=SessionView.from_record(latest),
                 diagnostics=(
@@ -634,7 +636,7 @@ class SessionService:
         return active
 
     def branch(self, source_session_id: str, message_id: str) -> SessionBranchResult:
-        self._load_snapshot(source_session_id, recover=False)
+        self._load_session_record(source_session_id)
         lock = self._store.acquire_session_lock(source_session_id, new_id("branch"))
         if lock is None:
             raise SessionBusyError(
@@ -647,17 +649,20 @@ class SessionService:
             lock.release()
 
     def _branch_locked(self, source_session_id: str, message_id: str) -> SessionBranchResult:
-        source = self._load_snapshot(source_session_id, recover=False)
+        source = self._load_session_record(source_session_id)
+        messages = self._load_messages(source_session_id)
+        runs = self._store.load_runs(source_session_id)
+        extension_states = self._store.load_session_extension_states(source_session_id)
         if (
-            source.session.active_run_id is not None
-            or source.session.status in {"running", "waiting_approval", "waiting_user"}
-            or any(run.status in ACTIVE_RUN_STATUSES for run in source.runs)
+            source.active_run_id is not None
+            or source.status in {"running", "waiting_approval", "waiting_user"}
+            or any(run.status in ACTIVE_RUN_STATUSES for run in runs)
         ):
             raise SessionBusyError(
                 f"cannot branch Session while it has an active Run: {source_session_id}"
             )
         selected_messages, source_message = select_branch_messages(
-            source.messages,
+            messages,
             message_id,
         )
         resource_ids = list(
@@ -675,28 +680,28 @@ class SessionService:
 
         now = utc_now()
         branch = SessionRecord(
-            root_session_id=source.session.root_session_id or source.session.session_id,
-            parent_session_id=source.session.session_id,
+            root_session_id=source.root_session_id or source.session_id,
+            parent_session_id=source.session_id,
             forked_from_message_id=source_message.message_id,
             forked_from_run_id=source_message.run_id,
-            title=_branch_title(source.session.title),
+            title=_branch_title(source.title),
             title_source="fallback",
             title_locked=False,
             created_at=now,
             updated_at=now,
             last_activity_at=now,
-            workspace=source.session.workspace,
-            workspace_trusted=source.session.workspace_trusted,
-            current_model=source.session.current_model,
-            reasoning_request=source.session.reasoning_request,
-            approval_mode=source.session.approval_mode,
-            interaction_mode=source.session.interaction_mode,
-            tags=list(source.session.tags),
+            workspace=source.workspace,
+            workspace_trusted=source.workspace_trusted,
+            current_model=source.current_model,
+            reasoning_request=source.reasoning_request,
+            approval_mode=source.approval_mode,
+            interaction_mode=source.interaction_mode,
+            tags=list(source.tags),
         )
         selected_messages, extension_states = apply_extension_branch_policies(
             selected_messages,
             source_message.message_id,
-            source.extension_states,
+            extension_states,
             branch.session_id,
         )
         copied_messages, message_id_map = copy_branch_messages(
@@ -733,10 +738,7 @@ class SessionService:
         )
 
     def replay(self, session_id: str, *, run_id: str | None = None) -> SessionReplay:
-        snapshot = self._load_snapshot(session_id, recover=False)
-        events = snapshot.events
-        if run_id is not None:
-            events = [event for event in events if event.run_id == run_id]
+        events = self._load_events(session_id, run_id=run_id)
         return SessionReplay(
             session_id=session_id,
             run_id=run_id,
@@ -744,13 +746,16 @@ class SessionService:
         )
 
     def _update_session(self, session_id: str, **changes: object) -> SessionMutationResult:
-        self._load_snapshot(session_id, recover=False)
+        # Metadata mutations are independent of the append-only message and event
+        # journals. Loading the complete aggregate here makes a constant-size
+        # policy change scale with the lifetime of the conversation.
+        self._load_session_record(session_id)
         lock = self._store.acquire_session_lock(session_id, new_id("session"))
         if lock is None:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
             with self._store.session_mutation(session_id):
-                current = self._load_snapshot(session_id, recover=False).session
+                current = self._load_session_record(session_id)
                 now = utc_now()
                 updated = current.model_copy(
                     update={
@@ -788,6 +793,52 @@ class SessionService:
             if recover:
                 return self._recovery.recover(session_id)
             return self._store.load_session(session_id)
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+
+    def _load_messages(self, session_id: str) -> list[MessageRecord]:
+        messages: list[MessageRecord] = []
+        cursor = 0
+        try:
+            while True:
+                page, next_cursor = self._store.load_messages_page(
+                    session_id,
+                    cursor=cursor,
+                    limit=1000,
+                )
+                messages.extend(page)
+                if next_cursor is None:
+                    return messages
+                cursor = next_cursor
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+
+    def _load_events(
+        self,
+        session_id: str,
+        *,
+        run_id: str | None,
+    ) -> list[EventRecord]:
+        events: list[EventRecord] = []
+        cursor = 0
+        try:
+            while True:
+                page, next_cursor = self._store.load_events_page(
+                    session_id,
+                    cursor=cursor,
+                    limit=1000,
+                    run_id=run_id,
+                )
+                events.extend(page)
+                if next_cursor is None:
+                    return events
+                cursor = next_cursor
+        except FileNotFoundError as exc:
+            raise SessionNotFoundError(f"session not found: {session_id}") from exc
+
+    def _load_session_record(self, session_id: str) -> SessionRecord:
+        try:
+            return self._store.load_session_record(session_id)
         except FileNotFoundError as exc:
             raise SessionNotFoundError(f"session not found: {session_id}") from exc
 

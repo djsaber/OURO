@@ -237,6 +237,36 @@ async def test_title_generation_failure_keeps_fallback_and_returns_diagnostic(tm
     assert result.diagnostics[0].code == "session_title_generation_failed"
 
 
+@pytest.mark.asyncio
+async def test_title_generation_loads_messages_without_complete_history(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Fallback").session
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="title source",
+        sequence=1,
+    )
+    store.append_message(message)
+
+    def reject_aggregate(*_args, **_kwargs):
+        raise AssertionError("title generation must not load events or Run state")
+
+    monkeypatch.setattr(store, "load_session", reject_aggregate)
+    monkeypatch.setattr(store, "load_runtime_session", reject_aggregate)
+
+    async def generator(_session, messages) -> str:
+        assert [item.message_id for item in messages] == [message.message_id]
+        return "Generated"
+
+    result = await sessions.generate_title(session.session_id, generator)
+
+    assert result.session.title == "Generated"
+
+
 def test_session_mutation_succeeds_with_visible_diagnostic_when_index_refresh_fails(
     monkeypatch,
     tmp_path,
@@ -306,6 +336,20 @@ def test_catalog_filters_rebuildable_typed_entries(tmp_path) -> None:
     assert result.entries[0].root_session_id == first.session_id
     assert result.entries[0].health == "ok"
     assert store.read_catalog().data_layout_version == DATA_LAYOUT_VERSION
+
+
+def test_archive_does_not_load_complete_session_history(tmp_path, monkeypatch) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Archive").session
+
+    def reject_full_history(*_args, **_kwargs):
+        raise AssertionError("archive must inspect only Session and delegation state")
+
+    monkeypatch.setattr(store, "load_session", reject_full_history)
+
+    archived = sessions.set_archived(session.session_id, True)
+
+    assert archived.session.archived is True
 
 
 def test_catalog_searches_only_bounded_fields_and_latest_preview(tmp_path) -> None:
@@ -422,6 +466,31 @@ def test_branch_remaps_messages_and_expands_complete_tool_exchange(tmp_path) -> 
         assistant.message_id,
         result.message_id,
     ]
+
+
+def test_branch_does_not_load_event_history_or_runtime_aggregate(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store, sessions = _service(tmp_path)
+    source = sessions.create(title="Source").session
+    message = MessageRecord.text(
+        session_id=source.session_id,
+        role="user",
+        text="branch here",
+        sequence=1,
+    )
+    store.append_message(message)
+
+    def reject_aggregate(*_args, **_kwargs):
+        raise AssertionError("branch must load only its required source collections")
+
+    monkeypatch.setattr(store, "load_session", reject_aggregate)
+    monkeypatch.setattr(store, "load_runtime_session", reject_aggregate)
+
+    result = sessions.branch(source.session_id, message.message_id)
+
+    assert result.source_message_id == message.message_id
 
 
 def test_branch_rejects_incomplete_tool_exchange_and_reports_previous_boundary(tmp_path) -> None:
@@ -771,6 +840,37 @@ def test_replay_is_a_sorted_read_only_event_projection(tmp_path) -> None:
         second.event_id,
         first.event_id,
     ]
+
+
+def test_run_replay_reads_filtered_event_pages_without_complete_session(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Replay").session
+    selected = EventRecord(
+        session_id=session.session_id,
+        run_id="run_selected",
+        event_type="run_started",
+        sequence=1,
+    )
+    unrelated = EventRecord(
+        session_id=session.session_id,
+        run_id="run_other",
+        event_type="run_started",
+        sequence=2,
+    )
+    store.append_event(selected)
+    store.append_event(unrelated)
+
+    def reject_full_history(*_args, **_kwargs):
+        raise AssertionError("replay must read the event journal directly")
+
+    monkeypatch.setattr(store, "load_session", reject_full_history)
+
+    replay = sessions.replay(session.session_id, run_id="run_selected")
+
+    assert [frame.event.event_id for frame in replay.frames] == [selected.event_id]
 
 
 def test_trash_discards_unfinished_durable_run_and_moves_session_tree_atomically(

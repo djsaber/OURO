@@ -205,6 +205,25 @@ async def test_supervisor_reports_idle_for_session_without_runs(tmp_path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_supervisor_status_does_not_load_message_history(tmp_path, monkeypatch) -> None:
+    supervisor = RuntimeSupervisor(_runtime(tmp_path, FauxProvider()))
+    created = supervisor.runtime.sessions.create(title="History independent")
+
+    def fail_complete_runtime_load(session_id: str):
+        raise AssertionError(f"unexpected complete runtime load for {session_id}")
+
+    monkeypatch.setattr(
+        supervisor.store,
+        "load_runtime_session",
+        fail_complete_runtime_load,
+    )
+
+    assert supervisor.status(created.session.session_id).status == "idle"
+
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_supervisor_accepts_configured_mcp_runtime_resource(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     MCPConfigStore(tmp_path).upsert(

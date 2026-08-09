@@ -34,6 +34,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import (
     SessionBranchResult,
     SessionCatalogEntry,
+    SessionContextStatus,
     SessionDetail,
 )
 from ouro.application.skill_activations import SkillInvocationRequest
@@ -231,6 +232,7 @@ class LoadedSession:
     detail: SessionDetail
     messages: tuple[MessageRecord, ...]
     events: tuple[EventRecord, ...]
+    context_status: SessionContextStatus | None = None
     queued_inputs: tuple[QueuedUserInputView, ...] = ()
 
 
@@ -1008,7 +1010,12 @@ class TuiController:
         messages = self._session_messages(session_id)
 
         events: list[EventRecord] = []
-        run_id = detail.recent_run.run_id if detail.recent_run is not None else None
+        # Messages are the canonical presentation history for terminal Runs.
+        # Event replay exists only to reconstruct mutable state for the active
+        # Run (pending interaction, live tools, and activity). Replaying the
+        # latest completed Run makes an idle Session open scale with an
+        # unrelated historical event journal.
+        run_id = detail.session.active_run_id
         if run_id is not None:
             cursor = 0
             while True:
@@ -1026,6 +1033,7 @@ class TuiController:
             detail=detail,
             messages=tuple(messages),
             events=tuple(events),
+            context_status=sessions.context_status(session_id),
             queued_inputs=self._queued_user_inputs(session_id),
         )
 

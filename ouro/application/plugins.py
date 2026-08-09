@@ -361,15 +361,15 @@ class PluginService:
     ) -> ExtensionCatalogLease:
         if session_id is None or self.session_store is None:
             return runtime.snapshot()
-        session_snapshot = self.session_store.load_runtime_session(session_id)
-        active_run_id = session_snapshot.session.active_run_id
+        session = self.session_store.load_session_record(session_id)
+        active_run_id = session.active_run_id
         if active_run_id is None:
             return runtime.snapshot()
-        active_run = next(
-            (run for run in session_snapshot.runs if run.run_id == active_run_id),
-            None,
-        )
-        if active_run is None or active_run.status not in {
+        try:
+            active_run = self.session_store.load_run(session_id, active_run_id)
+        except FileNotFoundError:
+            return runtime.snapshot()
+        if active_run.status not in {
             "queued",
             "running",
             "waiting_user",

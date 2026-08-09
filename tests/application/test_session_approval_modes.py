@@ -236,6 +236,22 @@ def test_branch_inherits_session_approval_mode(tmp_path) -> None:
     assert persisted.approval_mode == "auto"
 
 
+def test_session_policy_update_does_not_load_unrelated_history(tmp_path, monkeypatch) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    sessions = SessionService(store)
+    source = sessions.create(title="Metadata only").session
+
+    def fail_on_snapshot_load(_session_id: str):
+        raise AssertionError("session policy updates must not load messages or events")
+
+    monkeypatch.setattr(store, "load_session", fail_on_snapshot_load)
+
+    updated = sessions.set_approval_mode(source.session_id, "auto")
+
+    assert updated.session.approval_mode == "auto"
+
+
 def test_afk_preset_updates_both_session_policies_atomically(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

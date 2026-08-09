@@ -490,8 +490,7 @@ class RuntimeService:
 
         settled_run_ids: list[str] = []
         for entry in self.store.list_sessions():
-            snapshot = self.store.load_runtime_session(entry.session_id)
-            for run in snapshot.runs:
+            for run in self.store.load_runs(entry.session_id):
                 checkpoint = run.continuation
                 if (
                     run.kind != "agent"
@@ -748,12 +747,12 @@ class RuntimeService:
             raise SessionBusyError(f"session already has an active run: {session_id}")
         try:
             with self.store.session_mutation(session_id):
-                snapshot = self.store.load_runtime_session(session_id)
-                if maybe_active_run(snapshot.runs) is not None:
+                session = self.store.load_session_record(session_id)
+                if maybe_active_run(self.store.load_runs(session_id)) is not None:
                     raise SessionBusyError(f"session already has an active run: {session_id}")
                 if selector is None:
                     model = self.models.resolve(
-                        snapshot.session.current_model or self.models.default_model().key
+                        session.current_model or self.models.default_model().key
                     )
                 else:
                     normalized = selector.strip()
@@ -764,9 +763,9 @@ class RuntimeService:
                     if selected_model is None:
                         raise ConfigError(f"model not found: {selector}")
                     model = selected_model
-                selected_reasoning = reasoning_request or snapshot.session.reasoning_request
+                selected_reasoning = reasoning_request or session.reasoning_request
                 self._model_reasoning_state(model, selected_reasoning)
-                session = snapshot.session.model_copy(
+                session = session.model_copy(
                     update={
                         "current_model": model.key,
                         "reasoning_request": selected_reasoning,
@@ -1569,10 +1568,11 @@ class RuntimeService:
         run_id: str | None = None,
         reason: str = "User aborted",
     ) -> RunResult:
-        snapshot = self.store.load_runtime_session(session_id)
-        run = find_run(snapshot.runs, run_id) if run_id else find_active_run(snapshot.runs)
+        session = self.store.load_session_record(session_id)
+        runs = self.store.load_runs(session_id)
+        run = find_run(runs, run_id) if run_id else find_active_run(runs)
         if run.status not in ACTIVE_RUN_STATUSES:
-            return RunResult(session=snapshot.session, run=run)
+            return RunResult(session=session, run=run)
 
         emitted: list[EventRecord] = []
         signal = self.run_ownership.signal_for(run.run_id)
