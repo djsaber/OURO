@@ -26,6 +26,7 @@ class Choice:
     accent: str | None = None
     trailing: str = ""
     group: str = ""
+    bold_label: bool = False
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -148,12 +149,14 @@ class ChoiceScreen(ModalScreen[str | None]):
                         )
                     )
                 previous_group = choice.group
-            # Build the label from per-segment styles so the description does
-            # not inherit the label's bold: Rich applies a Text's base style to
-            # every appended segment, so bold must live on the label segment.
+            label_style = (
+                f"bold {choice.accent}" if choice.accent else "bold"
+            ) if choice.bold_label else (
+                choice.accent or ""
+            )
             label = Text(
                 choice.label,
-                style=f"bold {choice.accent}" if choice.accent else "bold",
+                style=label_style,
                 overflow="ellipsis",
                 no_wrap=True,
             )
