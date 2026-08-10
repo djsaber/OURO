@@ -33,6 +33,8 @@ class ChoiceScreen(ModalScreen[str | None]):
     BINDINGS = [
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
+        Binding("left", "previous_group", "Previous group", show=False, priority=True),
+        Binding("right", "next_group", "Next group", show=False, priority=True),
         Binding("enter", "accept_choice", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False),
         Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
@@ -62,7 +64,10 @@ class ChoiceScreen(ModalScreen[str | None]):
                 *self._options(self._choices, group_accent=theme_for(self).accent),
                 id="choice-list",
             )
-            yield Static("↑/↓ move · Enter select · Esc cancel", id="choice-hint")
+            yield Static(
+                "↑/↓ move · ←/→ group · Enter select · Esc cancel",
+                id="choice-hint",
+            )
 
     def on_mount(self) -> None:
         self.query_one("#choice-filter", Input).focus()
@@ -123,6 +128,45 @@ class ChoiceScreen(ModalScreen[str | None]):
     def action_next_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_cursor_down()
 
+    def action_previous_group(self) -> None:
+        self._move_group(-1)
+
+    def action_next_group(self) -> None:
+        self._move_group(1)
+
+    def _move_group(self, direction: int) -> None:
+        options = self.query_one("#choice-list", OptionList)
+        starts = tuple(
+            index + 1
+            for index in range(options.option_count - 1)
+            if self._is_group_header(options.get_option_at_index(index))
+            and not options.get_option_at_index(index + 1).disabled
+        )
+        if not starts:
+            return
+        highlighted = options.highlighted
+        if highlighted is None:
+            options.highlighted = starts[0]
+            return
+        current_group = max(
+            (index for index, start in enumerate(starts) if start <= highlighted),
+            default=0,
+        )
+        options.highlighted = starts[(current_group + direction) % len(starts)]
+
+    @staticmethod
+    def _is_group_header(option: Option) -> bool:
+        return (
+            option.disabled
+            and isinstance(option.prompt, Text)
+            and bool(option.prompt.plain.strip())
+        )
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action in {"previous_group", "next_group"}:
+            return any(choice.group for choice in self._choices)
+        return super().check_action(action, parameters)
+
     def action_accept_choice(self) -> None:
         self.query_one("#choice-list", OptionList).action_select()
 
@@ -137,6 +181,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         for choice in choices:
             if choice.group != previous_group:
                 if choice.group:
+                    if isinstance(previous_group, str) and previous_group:
+                        options.append(Option(Text(" "), disabled=True))
                     options.append(
                         Option(
                             Text(

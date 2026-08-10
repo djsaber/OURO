@@ -30,11 +30,14 @@ class ToolActivityRenderer(Protocol):
     ) -> Text: ...
 
 
+TranscriptEntryKind = Literal["user", "assistant", "tool", "notice"]
+
+
 @dataclass(frozen=True)
 class TranscriptEntry:
     """Immutable presentation input for one persisted transcript boundary."""
 
-    kind: Literal["user", "assistant", "tool", "notice"]
+    kind: TranscriptEntryKind
     text: str = ""
     reasoning: str = ""
     tool: RuntimeToolCallActivity | None = None
@@ -236,8 +239,9 @@ class ConversationHistory(RichLog, can_focus=False):
         if self._size_known and self.scrollable_content_region.width > 0:
             if entry.kind == "user":
                 self._user_lines = (*self._user_lines, len(self.lines))
+            previous_kind = self._entries[-2].kind if len(self._entries) > 1 else None
             super().write(
-                self._render_entry(entry),
+                self._render_entry(entry, previous_kind=previous_kind),
                 expand=True,
                 shrink=True,
                 scroll_end=False,
@@ -293,19 +297,26 @@ class ConversationHistory(RichLog, can_focus=False):
             return
         super().clear()
         user_lines: list[int] = []
+        previous_kind: TranscriptEntryKind | None = None
         for entry in self._entries:
             if entry.kind == "user":
                 user_lines.append(len(self.lines))
             super().write(
-                self._render_entry(entry),
+                self._render_entry(entry, previous_kind=previous_kind),
                 expand=True,
                 shrink=True,
                 scroll_end=False,
             )
+            previous_kind = entry.kind
         self._user_lines = tuple(user_lines)
         self._render_width = width
 
-    def _render_entry(self, entry: TranscriptEntry) -> RenderableType:
+    def _render_entry(
+        self,
+        entry: TranscriptEntry,
+        *,
+        previous_kind: TranscriptEntryKind | None = None,
+    ) -> RenderableType:
         theme = theme_for(self)
         if entry.kind == "user":
             return Padding(
@@ -316,16 +327,17 @@ class ConversationHistory(RichLog, can_focus=False):
             assert entry.tool is not None
             return Padding(
                 self._render_tool(entry.tool, frame=0, theme=theme),
-                (0, 0, 1, 2),
+                (0, 0, 0, 2),
             )
         if entry.kind == "notice":
             tone = "#e08a8a" if entry.error else theme.accent
-            return Padding(Text(entry.text, style=tone), (0, 1, 1, 1))
+            top = 1 if previous_kind == "tool" else 0
+            return Padding(Text(entry.text, style=tone), (top, 1, 1, 1))
 
         blocks: list[RenderableType] = []
         if entry.reasoning:
             thought = Group(
-                Text("THOUGHT", style="bold #788492"),
+                Text("THOUGHT", style="bold #aeb5bf"),
                 Padding(
                     _ReasoningContent(entry.reasoning),
                     (0, 0, 1, 1),
@@ -334,4 +346,5 @@ class ConversationHistory(RichLog, can_focus=False):
             blocks.append(thought)
         if entry.text:
             blocks.append(RichMarkdown(entry.text))
-        return Padding(Group(*blocks), (0, 2, 1, 2))
+        top = 1 if previous_kind == "tool" else 0
+        return Padding(Group(*blocks), (top, 2, 1, 2))

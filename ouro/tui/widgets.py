@@ -39,7 +39,7 @@ from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction
 from ouro.tui.theme import TuiTheme, theme_for
-from ouro.tui.tool_presentations import ToolLineState, present_tool
+from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -265,8 +265,15 @@ class ReasoningView(Vertical):
 
 
 class AssistantTurn(Vertical):
-    def __init__(self, *, initial: str = "", reasoning: str = "") -> None:
-        super().__init__(classes="turn assistant-turn")
+    def __init__(
+        self,
+        *,
+        initial: str = "",
+        reasoning: str = "",
+        after_tool: bool = False,
+    ) -> None:
+        classes = "turn assistant-turn after-tool" if after_tool else "turn assistant-turn"
+        super().__init__(classes=classes)
         self.reasoning = ReasoningView(initial=reasoning)
         self.markdown = Markdown(initial, classes="assistant-markdown")
         self._stream: _MarkdownWriter | None = None
@@ -422,9 +429,19 @@ def _tool_activity_text(
         "done": "#77b083",
         "muted": "#647180",
     }
+    part_styles: dict[ToolTextTone, str] = {
+        "default": "#8f9aa8",
+        "muted": "#647180",
+        "added": "#77b083",
+        "removed": "#d87575",
+    }
     for line in presentation.lines:
         text.append(f"\n    {line.marker} ", style=line_styles[line.state])
-        text.append(line.text, style="#8f9aa8" if line.state != "done" else "#788492")
+        for part in line.parts:
+            style = part_styles[part.tone]
+            if line.state == "done" and part.tone == "default":
+                style = "#788492"
+            text.append(part.text, style=style)
     return text
 
 
@@ -751,16 +768,21 @@ class ConversationView(VerticalScroll):
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
-            self._assistant = AssistantTurn()
+            self._assistant = AssistantTurn(after_tool=self._history_ends_with_tool)
             await self._transcript.mount(self._assistant)
         await self._assistant.append(text)
 
     async def append_reasoning(self, text: str) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
-            self._assistant = AssistantTurn()
+            self._assistant = AssistantTurn(after_tool=self._history_ends_with_tool)
             await self._transcript.mount(self._assistant)
         await self._assistant.append_reasoning(text)
+
+    @property
+    def _history_ends_with_tool(self) -> bool:
+        entries = self._history.entries
+        return bool(entries and entries[-1].kind == "tool")
 
     def finish_reasoning(self) -> None:
         if self._assistant is not None:

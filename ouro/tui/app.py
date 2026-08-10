@@ -305,6 +305,10 @@ _OURO_TUI_CSS = """
         padding: 0 2;
     }
 
+    .assistant-turn.after-tool {
+        padding-top: 1;
+    }
+
     .assistant-markdown {
         height: auto;
         background: transparent;
@@ -321,7 +325,7 @@ _OURO_TUI_CSS = """
 
     .reasoning-label {
         height: 1;
-        color: #788492;
+        color: #aeb5bf;
         text-style: bold;
     }
 
@@ -341,7 +345,7 @@ _OURO_TUI_CSS = """
 
     .tool-row {
         height: auto;
-        margin: 0 0 1 2;
+        margin: 0 0 0 2;
         color: #aeb5bf;
         background: transparent;
     }
@@ -1795,6 +1799,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _open_session(self, session_id: str) -> None:
         loaded = await self._controller.load_session(session_id)
+        # The selected Session now owns the surface. Clear every interaction
+        # projected by the previous Session before yielding while its history
+        # is mounted; the new projection will restore its own pending request.
+        self._projection = None
+        self._interaction = None
+        self._sync_interaction(None)
         await self.query_one(ConversationView).load_messages(
             loaded.messages,
             loaded.compactions,
@@ -1866,7 +1876,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         self._projection = projection
         self._sync_activity(projection.activity)
-        self._interaction = None
         await self._refresh_interaction(refresh_agents=True)
         self.run_worker(
             self.query_one(ConversationView).sync_tools(projection.activity.tool_calls),

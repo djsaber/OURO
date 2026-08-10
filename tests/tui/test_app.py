@@ -70,7 +70,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
-from ouro.tui.state import TuiSessionProjection
+from ouro.tui.state import PendingInteraction, TuiSessionProjection
 from ouro.tui.theme import TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
@@ -146,11 +146,31 @@ def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
         group_accent="#ffffff",
     )
 
-    assert [option.id for option in options] == [None, "today-1", "today-2", None, "yesterday"]
+    assert [option.id for option in options] == [
+        None,
+        "today-1",
+        "today-2",
+        None,
+        None,
+        "yesterday",
+    ]
     assert options[0].disabled is True
     assert options[0].prompt.plain == "Today"
     assert options[3].disabled is True
-    assert options[3].prompt.plain == "Yesterday"
+    assert options[3].prompt.plain == " "
+    assert options[4].disabled is True
+    assert options[4].prompt.plain == "Yesterday"
+
+
+def test_group_shortcuts_are_disabled_for_ungrouped_choice_screens() -> None:
+    screen = ChoiceScreen(
+        title="MODELS",
+        placeholder="Filter models…",
+        choices=(Choice("model", "Model"),),
+    )
+
+    assert screen.check_action("previous_group", ()) is False
+    assert screen.check_action("next_group", ()) is False
 
 
 @pytest.mark.asyncio
@@ -175,10 +195,25 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
         )
         await pilot.pause()
 
+        options = app.screen.query_one(OptionList)
+        assert options.option_count == 5
+        assert options.highlighted == 1
+        await pilot.press("right")
+        assert options.highlighted == 4
+        await pilot.press("left")
+        assert options.highlighted == 1
+        await pilot.press("left")
+        assert options.highlighted == 4
+        await pilot.press("right")
+        assert options.highlighted == 1
+        await pilot.press("down")
+        assert options.highlighted == 4
+        await pilot.press("up")
+        assert options.highlighted == 1
+
         app.screen.query_one("#choice-filter", Input).value = "Yesterday"
         await pilot.pause()
 
-        options = app.screen.query_one(OptionList)
         assert options.option_count == 2
         assert options.get_option_at_index(0).prompt.plain == "Yesterday"
         assert options.highlighted == 1
@@ -1864,6 +1899,9 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
         assert "FOLLOW" in queue_text
         assert "Continue after approval" in queue_text
         assert "Continue after approval" not in app.query_one(ConversationHistory).user_turns
+        assert app._interaction is not None
+        assert app._interaction.kind == "approval"
+        assert app.query_one(InteractionBar).display is True
 
 
 @pytest.mark.asyncio
@@ -2487,6 +2525,38 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
         assert "…" in session_choice.label
         assert session_choice.description == ""
         assert session_choice.trailing == "idle"
+
+
+@pytest.mark.asyncio
+async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    destination = application.runtime.sessions.create(
+        session_id="ses_destination",
+        title="Destination",
+    ).session
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        stale = PendingInteraction(
+            kind="approval",
+            run_id="run_previous",
+            tool_call_id="call_previous",
+            tool_name="Write",
+            request_id="approval_previous",
+            session_id="ses_previous",
+        )
+        app._interaction = stale
+        app._sync_interaction(stale)
+        assert app.query_one(InteractionBar).display is True
+
+        await app._open_session(destination.session_id)
+        await pilot.pause()
+
+        assert app._projection is not None
+        assert app._projection.session_id == destination.session_id
+        assert app._interaction is None
+        assert app.query_one(InteractionBar).display is False
 
 
 @pytest.mark.asyncio
@@ -3307,7 +3377,9 @@ async def test_tool_row_stays_between_model_rounds_in_event_order(tmp_path: Path
         tool_text = history.rendered_text
         assert "Write  " in tool_text
         assert target.name in tool_text
-        assert "1 line · overwrite  completed" in tool_text
+        assert "Write  completed" in tool_text
+        assert "└ " in tool_text
+        assert "+1 line · overwrite" in tool_text
         assert "s" in tool_text
 
 

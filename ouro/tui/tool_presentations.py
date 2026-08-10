@@ -8,18 +8,29 @@ from pydantic import JsonValue
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 
 ToolLineState = Literal["pending", "active", "done", "muted"]
+ToolTextTone = Literal["default", "muted", "added", "removed"]
 
 _COMMAND_TOOLS = frozenset({"bash", "commandprompt", "powershell", "sh"})
 _MAX_COMMAND_LENGTH = 120
-_MAX_PATH_LENGTH = 80
+_MAX_PATH_LENGTH = 64
 _MAX_TODO_LINES = 12
+
+
+@dataclass(frozen=True)
+class ToolPresentationPart:
+    text: str
+    tone: ToolTextTone = "default"
 
 
 @dataclass(frozen=True)
 class ToolPresentationLine:
     marker: str
-    text: str
+    parts: tuple[ToolPresentationPart, ...]
     state: ToolLineState = "muted"
+
+    @property
+    def text(self) -> str:
+        return "".join(part.text for part in self.parts)
 
 
 @dataclass(frozen=True)
@@ -58,7 +69,7 @@ def _present_read(
     else:
         limit = _positive_int(arguments.get("limit"))
         summary = f"up to {_plural(limit, 'line')}" if limit is not None else None
-    return ToolPresentation(subject=path, summary=summary)
+    return ToolPresentation(lines=_file_detail_line(path, summary))
 
 
 def _present_write(arguments: dict[str, JsonValue]) -> ToolPresentation:
@@ -66,12 +77,19 @@ def _present_write(arguments: dict[str, JsonValue]) -> ToolPresentation:
     content = arguments.get("content")
     line_count = _text_line_count(content) if isinstance(content, str) else None
     mode = arguments.get("mode", "overwrite")
-    parts = []
+    detail = list(_path_parts(path))
+    if detail and (line_count is not None or mode in {"overwrite", "append"}):
+        detail.append(ToolPresentationPart(" · ", "muted"))
     if line_count is not None:
-        parts.append(_plural(line_count, "line"))
+        detail.append(ToolPresentationPart(f"+{line_count}", "added"))
+        detail.append(ToolPresentationPart(f" {_plural_noun(line_count, 'line')}", "muted"))
     if mode in {"overwrite", "append"}:
-        parts.append(str(mode))
-    return ToolPresentation(subject=path, summary=" · ".join(parts) or None)
+        if line_count is not None:
+            detail.append(ToolPresentationPart(" · ", "muted"))
+        detail.append(ToolPresentationPart(str(mode), "muted"))
+    return ToolPresentation(
+        lines=(ToolPresentationLine("└", tuple(detail)),) if detail else (),
+    )
 
 
 def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
@@ -79,11 +97,21 @@ def _present_edit(arguments: dict[str, JsonValue]) -> ToolPresentation:
     old = arguments.get("old")
     new = arguments.get("new")
     if not isinstance(old, str) or not isinstance(new, str):
-        return ToolPresentation(subject=path)
-    summary = f"+{_text_line_count(new)} −{_text_line_count(old)} lines"
+        return ToolPresentation(lines=_file_detail_line(path))
+    detail = list(_path_parts(path))
+    if detail:
+        detail.append(ToolPresentationPart(" · ", "muted"))
+    detail.extend(
+        (
+            ToolPresentationPart(f"+{_text_line_count(new)}", "added"),
+            ToolPresentationPart(" ", "muted"),
+            ToolPresentationPart(f"−{_text_line_count(old)}", "removed"),
+            ToolPresentationPart(" lines", "muted"),
+        )
+    )
     if arguments.get("replace_all") is True:
-        summary += " · replace all"
-    return ToolPresentation(subject=path, summary=summary)
+        detail.append(ToolPresentationPart(" · replace all", "muted"))
+    return ToolPresentation(lines=(ToolPresentationLine("└", tuple(detail)),))
 
 
 def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:
@@ -92,7 +120,12 @@ def _present_command(arguments: dict[str, JsonValue]) -> ToolPresentation:
         return ToolPresentation()
     flattened = " ↵ ".join(part.strip() for part in command.splitlines() if part.strip())
     return ToolPresentation(
-        lines=(ToolPresentationLine("└", _truncate_end(flattened, _MAX_COMMAND_LENGTH)),)
+        lines=(
+            ToolPresentationLine(
+                "└",
+                (ToolPresentationPart(_truncate_end(flattened, _MAX_COMMAND_LENGTH)),),
+            ),
+        )
     )
 
 
@@ -121,17 +154,22 @@ def _present_todos(
         state: ToolLineState
         if status == "done":
             done_count += 1
-            marker, state = "✓", "done"
+            marker, state = "●", "done"
         elif status == "in_progress":
             marker, state = "◉", "active"
         else:
             marker, state = "○", "pending"
         if len(lines) < _MAX_TODO_LINES:
-            lines.append(ToolPresentationLine(marker, title, state))
+            lines.append(ToolPresentationLine(marker, (ToolPresentationPart(title),), state))
 
     hidden_count = valid_count - len(lines)
     if hidden_count:
-        lines.append(ToolPresentationLine("…", f"{hidden_count} more item(s)"))
+        lines.append(
+            ToolPresentationLine(
+                "…",
+                (ToolPresentationPart(f"{hidden_count} more item(s)"),),
+            )
+        )
     summary = f"{done_count}/{valid_count} done" if valid_count else "empty"
     return ToolPresentation(summary=summary, lines=tuple(lines))
 
@@ -140,6 +178,22 @@ def _path(value: JsonValue | None) -> str | None:
     if not isinstance(value, str) or not value:
         return None
     return _truncate_middle(value, _MAX_PATH_LENGTH)
+
+
+def _path_parts(path: str | None) -> tuple[ToolPresentationPart, ...]:
+    return (ToolPresentationPart(path),) if path else ()
+
+
+def _file_detail_line(
+    path: str | None,
+    summary: str | None = None,
+) -> tuple[ToolPresentationLine, ...]:
+    parts = list(_path_parts(path))
+    if summary:
+        if parts:
+            parts.append(ToolPresentationPart(" · ", "muted"))
+        parts.append(ToolPresentationPart(summary, "muted"))
+    return (ToolPresentationLine("└", tuple(parts)),) if parts else ()
 
 
 def _text_line_count(value: str) -> int:
@@ -155,7 +209,11 @@ def _positive_int(value: JsonValue | None) -> int | None:
 
 
 def _plural(count: int, noun: str) -> str:
-    return f"{count} {noun if count == 1 else noun + 's'}"
+    return f"{count} {_plural_noun(count, noun)}"
+
+
+def _plural_noun(count: int, noun: str) -> str:
+    return noun if count == 1 else noun + "s"
 
 
 def _truncate_end(value: str, limit: int) -> str:
@@ -172,4 +230,10 @@ def _truncate_middle(value: str, limit: int) -> str:
     return value[:left] + "…" + value[-right:]
 
 
-__all__ = ["ToolPresentation", "ToolPresentationLine", "present_tool"]
+__all__ = [
+    "ToolPresentation",
+    "ToolPresentationLine",
+    "ToolPresentationPart",
+    "ToolTextTone",
+    "present_tool",
+]

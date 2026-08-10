@@ -3,11 +3,14 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from rich.console import Console
 from textual.app import App, ComposeResult
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.tool_presentations import present_tool
-from ouro.tui.widgets import ToolActivityRow
+from ouro.tui.widgets import ToolActivityRow, _tool_activity_text
 
 
 def _tool(
@@ -47,9 +50,31 @@ def test_file_tool_presentations_expose_target_and_line_semantics() -> None:
         )
     )
 
-    assert (read.subject, read.summary) == ("src/app.py", "42 lines")
-    assert (write.subject, write.summary) == ("src/new.py", "2 lines · append")
-    assert (edit.subject, edit.summary) == ("src/edit.py", "+3 −2 lines")
+    assert [(line.marker, line.text) for line in read.lines] == [
+        ("└", "src/app.py · 42 lines")
+    ]
+    assert [(line.marker, line.text) for line in write.lines] == [
+        ("└", "src/new.py · +2 lines · append")
+    ]
+    assert [(part.text, part.tone) for part in write.lines[0].parts] == [
+        ("src/new.py", "default"),
+        (" · ", "muted"),
+        ("+2", "added"),
+        (" lines", "muted"),
+        (" · ", "muted"),
+        ("append", "muted"),
+    ]
+    assert [(line.marker, line.text) for line in edit.lines] == [
+        ("└", "src/edit.py · +3 −2 lines")
+    ]
+    assert [(part.text, part.tone) for part in edit.lines[0].parts] == [
+        ("src/edit.py", "default"),
+        (" · ", "muted"),
+        ("+3", "added"),
+        (" ", "muted"),
+        ("−2", "removed"),
+        (" lines", "muted"),
+    ]
 
 
 def test_command_presentation_flattens_and_truncates_long_commands() -> None:
@@ -79,10 +104,30 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
 
     assert presentation.summary == "1/3 done"
     assert [(line.marker, line.state) for line in presentation.lines] == [
-        ("✓", "done"),
+        ("●", "done"),
         ("◉", "active"),
         ("○", "pending"),
     ]
+
+
+def test_edit_line_counts_use_added_and_removed_semantic_colors() -> None:
+    rendered = _tool_activity_text(
+        _tool(
+            "Edit",
+            arguments={"path": "src/app.py", "old": "old\ntext", "new": "new\ntext\nhere"},
+        ),
+        frame=0,
+        theme=DEFAULT_TUI_THEME,
+    )
+    console = Console()
+
+    added = rendered.get_style_at_offset(console, rendered.plain.index("+3"))
+    removed = rendered.get_style_at_offset(console, rendered.plain.index("−2"))
+
+    assert added.color is not None
+    assert removed.color is not None
+    assert tuple(added.color.get_truecolor()) == (119, 176, 131)
+    assert tuple(removed.color.get_truecolor()) == (216, 117, 117)
 
 
 class _ToolRowApp(App[None]):
@@ -92,6 +137,47 @@ class _ToolRowApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield ToolActivityRow(self.tool)
+
+
+class _HistoryApp(App[None]):
+    def __init__(self) -> None:
+        super().__init__()
+        self.history = ConversationHistory(_tool_activity_text)
+
+    def compose(self) -> ComposeResult:
+        yield self.history
+
+
+@pytest.mark.asyncio
+async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
+    first = _tool("Read", arguments={"path": "first.py"}, result={"line_count": 1})
+    second = _tool("Read", arguments={"path": "second.py"}, result={"line_count": 2}).model_copy(
+        update={"tool_call_id": "call_2"}
+    )
+    app = _HistoryApp()
+
+    async with app.run_test(size=(100, 30)):
+        app.history.append(TranscriptEntry(kind="assistant", text="Before."))
+        app.history.append(TranscriptEntry(kind="tool", tool=first))
+        app.history.append(TranscriptEntry(kind="tool", tool=second))
+        app.history.append(TranscriptEntry(kind="assistant", text="After."))
+        await app.history.wait_until_rendered()
+
+        lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        before = lines.index("Before.")
+        first_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
+        first_detail = lines.index("└ first.py · 1 line")
+        second_header = next(
+            index
+            for index, line in enumerate(lines[first_header + 1 :], first_header + 1)
+            if "✓ Read" in line
+        )
+        second_detail = lines.index("└ second.py · 2 lines")
+        after = lines.index("After.")
+
+        assert lines[before + 1 : first_header] == [""]
+        assert lines[first_detail + 1 : second_header] == []
+        assert lines[second_detail + 1 : after] == [""]
 
 
 @pytest.mark.asyncio
@@ -114,7 +200,8 @@ async def test_tool_row_animates_active_state_and_freezes_completed_elapsed_seco
         second = row.render().plain
 
         assert first != second
-        assert "Read  README.md" in second
+        assert "Read" in second
+        assert "└ README.md" in second
         assert "running" in second
         assert "s" in second
 
@@ -129,4 +216,4 @@ async def test_tool_row_animates_active_state_and_freezes_completed_elapsed_seco
         )
 
         completed = row.render().plain
-        assert "✓ Read  README.md  ·  7 lines  completed · 3s" in completed
+        assert "✓ Read  completed · 3s\n    └ README.md · 7 lines" in completed
