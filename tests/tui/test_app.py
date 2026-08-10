@@ -3740,11 +3740,26 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.press("down")
         await pilot.pause()
 
-        sage = TUI_THEMES["sage"]
-        assert app.tui_theme == sage
+        harbor = TUI_THEMES["harbor"]
+        assert app.tui_theme == harbor
         assert not (tmp_path / "config" / "tui.json").exists()
         preview = app.query_one(BrandHeader).render()
         assert preview.get_style_at_offset(preview.plain.index("OURO")).foreground == Color.parse(
+            harbor.accent
+        )
+        assert app.query_one(Composer).styles.border_left[1] == Color.parse(harbor.accent)
+        context = status_line.query_one("#context-detail", Static).render()
+        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
+            harbor.accent
+        )
+
+        await pilot.press("down", "enter")
+        await pilot.pause(0.2)
+
+        sage = TUI_THEMES["sage"]
+        assert app.tui_theme == sage
+        header = app.query_one(BrandHeader).render()
+        assert header.get_style_at_offset(header.plain.index("OURO")).foreground == Color.parse(
             sage.accent
         )
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(sage.accent)
@@ -3753,26 +3768,11 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
             sage.accent
         )
 
-        await pilot.press("down", "enter")
-        await pilot.pause(0.2)
-
-        iris = TUI_THEMES["iris"]
-        assert app.tui_theme == iris
-        header = app.query_one(BrandHeader).render()
-        assert header.get_style_at_offset(header.plain.index("OURO")).foreground == Color.parse(
-            iris.accent
-        )
-        assert app.query_one(Composer).styles.border_left[1] == Color.parse(iris.accent)
-        context = status_line.query_one("#context-detail", Static).render()
-        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
-            iris.accent
-        )
-
     stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
-    assert '"theme": "iris"' in stored
+    assert '"theme": "sage"' in stored
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-    assert restarted.tui_theme == TUI_THEMES["iris"]
+    assert restarted.tui_theme == TUI_THEMES["sage"]
 
 
 @pytest.mark.asyncio
@@ -3785,7 +3785,7 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
         await pilot.pause(0.5)
         await pilot.press("ctrl+p", "enter")
         await pilot.pause()
-        assert app.screen.query_one(OptionList).highlighted == 2
+        assert app.screen.query_one(OptionList).highlighted == 3
 
         await pilot.press("down")
         await pilot.pause()

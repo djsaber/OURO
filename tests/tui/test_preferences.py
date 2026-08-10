@@ -12,6 +12,7 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 
 def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
     assert tuple(TUI_THEMES) == (
+        "original",
         "harbor",
         "sage",
         "iris",
