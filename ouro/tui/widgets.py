@@ -1765,10 +1765,6 @@ class Composer(TextArea):
         if self.text.startswith("/"):
             self.post_message(self.CommandDismissed())
 
-    def on_blur(self) -> None:
-        if self.text.startswith("/"):
-            self.post_message(self.CommandDismissed())
-
 
 class StatusLine(Horizontal):
     def __init__(self) -> None:
