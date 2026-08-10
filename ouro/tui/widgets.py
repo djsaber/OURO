@@ -1528,7 +1528,7 @@ class CommandPopup(VerticalScroll):
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
                 command.name.ljust(name_width),
-                style=f"bold {theme.accent_bright}" if selected else "bold #d6d9df",
+                style=theme.accent_bright if selected else "#d6d9df",
             )
             row.append(
                 f"  {command.title}",
@@ -1545,7 +1545,7 @@ class CommandPopup(VerticalScroll):
         if not self._arguments:
             content = Text()
             content.append("› ", style=theme.accent)
-            content.append(command.title, style="bold #d6d9df")
+            content.append(command.title, style="#d6d9df")
             self._content.update(content)
             return
         value_width = max(len(argument.display_label) for argument in self._arguments)
@@ -1556,7 +1556,7 @@ class CommandPopup(VerticalScroll):
             row.append("› " if selected else "  ", style=theme.accent if selected else "")
             row.append(
                 argument.display_label.ljust(value_width),
-                style=f"bold {theme.accent_bright}" if selected else "bold #d6d9df",
+                style=theme.accent_bright if selected else "#d6d9df",
             )
             row.append(
                 f"  {argument.description}",
