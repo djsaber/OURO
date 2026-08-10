@@ -219,7 +219,7 @@ _OURO_TUI_CSS = """
     }
 
     Toast.-warning {
-        border-left: solid #968264;
+        border-left: solid #facc15;
     }
 
     Toast.-error {
