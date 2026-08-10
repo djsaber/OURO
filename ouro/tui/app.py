@@ -1838,14 +1838,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 ChoiceScreen(
                     title="FORK SESSION",
                     placeholder="Filter user messages…",
-                    choices=tuple(
-                        Choice(
-                            message.message_id,
-                            _branch_point_label(message),
-                            trailing=message.created_at.astimezone().strftime("%H:%M"),
-                        )
-                        for message in points
-                    ),
+                    choices=_branch_point_choices(points),
                 )
             )
         if selected is None:
@@ -2299,9 +2292,24 @@ def _branch_point_label(message: MessageRecord) -> str:
     preview = " ".join(message.text_content.split())
     if not preview:
         preview = "empty message"
-    if len(preview) > 72:
-        preview = preview[:69].rstrip() + "…"
-    return preview
+    return _truncate_session_title(preview)
+
+
+def _branch_point_choices(
+    points: tuple[MessageRecord, ...],
+    *,
+    today: date | None = None,
+) -> tuple[Choice, ...]:
+    local_today = today or datetime.now().astimezone().date()
+    return tuple(
+        Choice(
+            value=message.message_id,
+            label=_branch_point_label(message),
+            trailing=message.created_at.astimezone().strftime("%H:%M"),
+            group=_session_date_group(message.created_at, today=local_today),
+        )
+        for message in points
+    )
 
 
 def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:
