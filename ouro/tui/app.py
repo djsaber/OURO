@@ -2297,16 +2297,12 @@ def _branch_point_label(message: MessageRecord) -> str:
 
 def _branch_point_choices(
     points: tuple[MessageRecord, ...],
-    *,
-    today: date | None = None,
 ) -> tuple[Choice, ...]:
-    local_today = today or datetime.now().astimezone().date()
     return tuple(
         Choice(
             value=message.message_id,
             label=_branch_point_label(message),
             trailing=message.created_at.astimezone().strftime("%H:%M"),
-            group=_session_date_group(message.created_at, today=local_today),
         )
         for message in points
     )

@@ -1573,8 +1573,8 @@ async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
             messages[0].created_at.astimezone().strftime("%H:%M"),
             messages[2].created_at.astimezone().strftime("%H:%M"),
         ]
-        assert [choice.group for choice in choices] == ["January 2026", "January 2026"]
         assert all(choice.description == "" for choice in choices)
+        assert all(choice.group == "" for choice in choices)
         assert all("msg_" not in choice.label for choice in choices)
 
         await pilot.press("down", "enter")
