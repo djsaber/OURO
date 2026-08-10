@@ -887,7 +887,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             bootstrap = await self._controller.start()
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
             self.query_one(StatusLine).set_activity("failed")
-            await conversation.add_notice(f"OURO could not start: {exc}", error=True)
+            self.notify(f"OURO could not start: {exc}", severity="error", markup=False)
             return
         self._apply_bootstrap(bootstrap)
         await self._refresh_reasoning_indicator()
@@ -895,7 +895,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             try:
                 await self._open_session(self._resume_session_id)
             except Exception as exc:  # noqa: BLE001 - invalid persisted selection is recoverable.
-                await conversation.add_notice(f"Could not open session: {exc}", error=True)
+                self.notify(f"Could not open session: {exc}", severity="error", markup=False)
                 await conversation.show_welcome()
         else:
             await conversation.show_welcome()
@@ -1118,7 +1118,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sync_activity(latest_update.activity)
         await self._refresh_interaction(refresh_agents=refresh_agent_interactions)
         for diagnostic in diagnostics:
-            await conversation.add_notice(diagnostic, error=True)
+            self.notify(diagnostic, severity="error", markup=False)
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
         interaction = self._interaction
@@ -1169,7 +1169,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._sync_queued_inputs(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - providers and tools fail across this boundary.
             self.query_one(StatusLine).set_activity("failed")
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
         finally:
             self._waiting_for_session_event = False
             if not self._host_closing and self.query(Composer):
@@ -1337,10 +1337,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     ) -> None:
         approval_id = interaction.request_id
         if approval_id is None:
-            await self.query_one(ConversationView).add_notice(
-                "Approval request has no identifier",
-                error=True,
-            )
+            self.notify("Approval request has no identifier", severity="error", markup=False)
             self.query_one(InteractionBar).resume()
             return
         try:
@@ -1352,7 +1349,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._apply_run_result(result)
             await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             self.query_one(InteractionBar).resume()
 
     @work(exclusive=True, group="interaction")
@@ -1364,7 +1361,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._apply_run_result(result)
             await self._refresh_interaction()
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             plan_panel = self.query_one(PlanConfirmationPanel)
             if plan_panel.display:
                 plan_panel.resume()
@@ -1539,10 +1536,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self.action_thinking_settings()
         elif command.name == "/compact":
             if argument:
-                await self.query_one(ConversationView).add_notice(
-                    "Usage: /compact",
-                    error=True,
-                )
+                self.notify("Usage: /compact", severity="warning", markup=False)
             else:
                 self._compact_session()
         elif command.name == "/skill":
@@ -1612,9 +1606,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 arguments=task.lstrip() if separator else "",
             )
         except ValueError:
-            await self.query_one(ConversationView).add_notice(
+            self.notify(
                 "Skill names must use lowercase letters, digits, and single hyphens.",
-                error=True,
+                severity="warning",
+                markup=False,
             )
             return
         self._submit_run(
@@ -1624,10 +1619,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
 
     async def _command_usage(self, command: TuiCommand) -> None:
-        await self.query_one(ConversationView).add_notice(
-            f"Usage: {command.usage}",
-            error=True,
-        )
+        self.notify(f"Usage: {command.usage}", severity="warning", markup=False)
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
@@ -1688,8 +1680,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             result = await self._controller.execute_plugin_command(selector, argument.strip())
             if result is None:
-                await self.query_one(ConversationView).add_notice(
-                    f"Unknown command: {command_text}. Use /help to see available commands."
+                self.notify(
+                    f"Unknown command: {command_text}. Use /help to see available commands.",
+                    severity="warning",
+                    markup=False,
                 )
                 return
             execution = result.execution
@@ -1709,7 +1703,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ):
                 await self._open_session(self._controller.session_id)
         except Exception as exc:  # noqa: BLE001 - plugin failures are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
         finally:
             if creating_projection:
                 self._waiting_for_session_event = False
@@ -1741,7 +1735,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
         finally:
             composer.disabled = False
             composer.focus()
@@ -1787,7 +1781,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             self._sessions = await self._controller.sessions()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         if not self._sessions:
             self.notify("No saved sessions yet")
@@ -1826,7 +1820,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             points = await self._controller.branch_points()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         if not points:
             self.notify("No user messages are available as fork points")
@@ -1845,9 +1839,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         selected_message = points_by_id.get(selected)
         if selected_message is None:
-            await self.query_one(ConversationView).add_notice(
+            self.notify(
                 f"user message is not a fork point in this session: {selected}",
-                error=True,
+                severity="error",
+                markup=False,
             )
             return
         source_session_id = self._controller.session_id
@@ -1855,7 +1850,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             result = await self._controller.branch_session(selected)
             await self._open_session(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self._edit_draft(user_message_text(selected_message))
         self.notify(f"Session forked: {source_session_id} → {result.session.session_id}")
@@ -1914,12 +1909,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             providers = await self._controller.model_providers()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         if not providers:
-            await self.query_one(ConversationView).add_notice(
+            self.notify(
                 "No enabled provider is configured. Configure a provider before adding models.",
-                error=True,
+                severity="error",
+                markup=False,
             )
             return
         provider_choices = tuple(
@@ -1936,7 +1932,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             model = await self._controller.configure_model(configured)
         except Exception as exc:  # noqa: BLE001 - configuration validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self._models = await self._controller.models()
         await self._select_model(model.key)
@@ -1945,7 +1941,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             model = await self._controller.select_model(selector)
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self._active_model = model.display_name or model.model_id
         self.query_one(StatusLine).set_model(self._active_model)
@@ -1967,7 +1963,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         choices = tuple(
             Choice(
@@ -1990,15 +1986,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _set_approval_mode(self, value: str) -> None:
         if value not in TUI_APPROVAL_PRESETS:
             available = "|".join(TUI_APPROVAL_PRESETS)
-            await self.query_one(ConversationView).add_notice(
-                f"Usage: /approval <{available}>",
-                error=True,
-            )
+            self.notify(f"Usage: /approval <{available}>", severity="warning", markup=False)
             return
         try:
             mode = await self._controller.set_session_approval_preset(value)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self.query_one(StatusLine).set_approval_mode(mode)
         self.notify(f"Approval: {mode}")
@@ -2024,7 +2017,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         current = _reasoning_value(state.requested)
         arguments = _reasoning_arguments(state)
@@ -2050,15 +2043,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         request = _REASONING_REQUESTS.get(value)
         if request is None:
             available = "|".join(_REASONING_REQUESTS)
-            await self.query_one(ConversationView).add_notice(
-                f"Usage: /thinking <{available}>",
-                error=True,
-            )
+            self.notify(f"Usage: /thinking <{available}>", severity="warning", markup=False)
             return
         try:
             state = await self._controller.set_session_reasoning(request)
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self.notify(_format_reasoning_state(state))
         self._apply_reasoning_state(state)
@@ -2145,16 +2135,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _set_tui_theme(self, theme_id: str, *, restore_theme: TuiTheme | None = None) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
-            await self.query_one(ConversationView).add_notice(
-                f"Unknown TUI theme: {theme_id}", error=True
-            )
+            self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
             return
         try:
             self._preferences_store.save(TuiPreferences(theme=theme_id))
         except OuroError as exc:
             if restore_theme is not None:
                 self._apply_tui_theme(restore_theme)
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self._apply_tui_theme(theme)
         self.notify(f"Theme color: {theme.label}")
@@ -2197,7 +2185,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             await self._controller.abort()
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
 
 
 def _reasoning_value(request: ReasoningRequest) -> str:
