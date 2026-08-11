@@ -61,7 +61,13 @@ from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
-from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_agent_interaction
+from ouro.tui.state import (
+    PendingInteraction,
+    TuiSessionProjection,
+    project_agent_interaction,
+    project_run_presentation,
+    project_run_presentations,
+)
 from ouro.tui.theme import TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     AskUserPanel,
@@ -1036,34 +1042,47 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         conversation = self.query_one(ConversationView)
         stream_kind: str | None = None
         stream_parts: list[str] = []
+        stream_started_at: datetime | None = None
 
         async def flush_stream() -> None:
-            nonlocal stream_kind
+            nonlocal stream_kind, stream_started_at
             if not stream_parts:
                 return
             text = "".join(stream_parts)
             stream_parts.clear()
             if stream_kind == "reasoning":
-                await conversation.append_reasoning(text)
+                await conversation.append_reasoning(text, started_at=stream_started_at)
             else:
                 await conversation.append_assistant(text)
             stream_kind = None
+            stream_started_at = None
 
-        async def append_stream(kind: str, text: str) -> None:
-            nonlocal stream_kind
+        async def append_stream(
+            kind: str,
+            text: str,
+            *,
+            started_at: datetime | None = None,
+        ) -> None:
+            nonlocal stream_kind, stream_started_at
             if stream_kind is not None and stream_kind != kind:
                 await flush_stream()
             stream_kind = kind
+            if started_at is not None and stream_started_at is None:
+                stream_started_at = started_at
             stream_parts.append(text)
 
         for event in events:
-            if event.event_type == "run_started":
-                assistant_visible = False
             previous_tools = projection.activity.tool_calls
             update = projection.apply(event)
             if update is None:
                 continue
             latest_update = update
+            if event.event_type == "run_started":
+                assistant_visible = False
+            if event.event_type == "model_request_started":
+                await flush_stream()
+                await conversation.finish_assistant()
+                conversation.begin_model_request(run_id=event.run_id)
             if event.event_type in {"user_message_added", "queued_input_consumed"}:
                 await flush_stream()
                 message_id = event.payload.get("message_id")
@@ -1085,7 +1104,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             }:
                 queue_changed = True
             if update.reasoning_delta:
-                await append_stream("reasoning", update.reasoning_delta)
+                await append_stream(
+                    "reasoning",
+                    update.reasoning_delta,
+                    started_at=update.reasoning_started_at,
+                )
+            if update.reasoning_duration_seconds is not None:
+                await flush_stream()
+                conversation.finish_reasoning(update.reasoning_duration_seconds)
             if update.assistant_delta:
                 await append_stream("assistant", update.assistant_delta)
                 assistant_visible = True
@@ -1199,6 +1225,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             conversation = self.query_one(ConversationView)
             await conversation.append_assistant(result.final_text)
             await conversation.finish_assistant()
+        if result.run.kind == "agent":
+            presentation = project_run_presentation(result.run)
+            if self._projection.model is not None:
+                presentation = replace(presentation, model=self._projection.model)
+            await self.query_one(ConversationView).add_run_summary(presentation)
         self._active_title = result.session.title
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         await self._refresh_usage_status()
@@ -1806,6 +1837,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self.query_one(ConversationView).load_messages(
             loaded.messages,
             loaded.compactions,
+            project_run_presentations(
+                (run for run in loaded.runs if run.kind == "agent"),
+                loaded.messages,
+            ),
         )
         self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
         await self._restore_projection(loaded)

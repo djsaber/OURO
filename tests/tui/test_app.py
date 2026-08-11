@@ -27,13 +27,20 @@ from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.context import ContextMetrics
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ModelMessage, TextContent, ToolResultReference
+from ouro.core.messages import (
+    MessageRecord,
+    ModelMessage,
+    ModelResponseRecord,
+    TextContent,
+    ToolResultReference,
+)
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.state import RunRecord
 from ouro.core.tools import ToolCallRequest
 from ouro.local_application import LocalApplication
 from ouro.mcp import (
@@ -70,7 +77,7 @@ from ouro.tui.controller import (
 )
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
-from ouro.tui.state import PendingInteraction, TuiSessionProjection
+from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_run_presentation
 from ouro.tui.theme import TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
@@ -1563,7 +1570,8 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         reasoning = turn.reasoning
         assert reasoning.text == expected
         assert reasoning._content.render().plain == expected
-        assert reasoning.label.render().plain == "THINKING"
+        assert reasoning.label.render().plain.startswith("THINKING · ")
+        assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
         assert reasoning._content.region.x > reasoning.label.region.x
         assert not turn.query(".assistant-label")
@@ -1985,7 +1993,8 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
 @pytest.mark.asyncio
 async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path) -> None:
     provider = BlockingReasoningProvider()
-    app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
+    application = _blocking_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
@@ -2001,6 +2010,8 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
             assert app._projection.activity.activity == "streaming_reasoning"
             turn = app.query_one(AssistantTurn)
             assert turn.reasoning.text == "Inspecting "
+            assert turn.reasoning.label.render().plain.startswith("THINKING · ")
+            assert turn.reasoning.label.render().plain.endswith("s")
             assert turn.markdown.source == ""
         finally:
             provider.release.set()
@@ -2011,8 +2022,39 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
         assert answer.reasoning == "Inspecting the event path."
         assert answer.text == "Done."
         assert "│ Inspecting the event path." in history.rendered_text
+        assert answer.reasoning_seconds is not None and answer.reasoning_seconds > 0
+        summary = next(entry for entry in reversed(history.entries) if entry.kind == "run")
+        assert summary.run is not None
+        assert summary.run.model == "blocking"
+        assert summary.run.duration_seconds is not None
+        assert summary.run.duration_seconds >= answer.reasoning_seconds
+        assert "THOUGHT · " in history.rendered_text
+        assert "blocking" in history.rendered_text
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
+
+        session_id = app._controller.session_id
+        assert session_id is not None
+        await app._open_session(session_id)
+        await pilot.pause()
+
+        restored = app.query_one(ConversationHistory)
+        restored_answer = next(
+            entry for entry in reversed(restored.entries) if entry.kind == "assistant"
+        )
+        restored_summary = next(
+            entry for entry in reversed(restored.entries) if entry.kind == "run"
+        )
+        assert restored_answer.reasoning_seconds == pytest.approx(
+            answer.reasoning_seconds,
+            abs=0.02,
+        )
+        assert restored_summary.run is not None
+        assert restored_summary.run.run_id == summary.run.run_id
+        assert restored_summary.run.model == summary.run.model
+        assert restored_summary.run.duration_seconds == summary.run.duration_seconds
+        assert "THOUGHT · " in restored.rendered_text
+        assert not app.query(AssistantTurn)
 
 
 @pytest.mark.asyncio
@@ -2055,6 +2097,59 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
             line.lstrip().startswith("\N{BOX DRAWINGS LIGHT VERTICAL} ") for line in reasoning_lines
         )
         assert not app.query(AssistantTurn)
+
+
+@pytest.mark.asyncio
+async def test_history_restores_each_model_call_timing_with_one_run_summary(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    started_at = datetime(2026, 8, 11, tzinfo=UTC)
+    run = RunRecord(
+        session_id="ses_multi_model",
+        run_id="run_multi_model",
+        status="completed",
+        started_at=started_at,
+        ended_at=started_at + timedelta(seconds=3),
+        model="provider-model",
+    )
+    messages = tuple(
+        MessageRecord(
+            session_id=run.session_id,
+            run_id=run.run_id,
+            role="assistant",
+            content=[TextContent(text=f"Answer {index}")],
+            reasoning_content=f"Thought {index}",
+            model_response=ModelResponseRecord(
+                provider_id="supplier",
+                endpoint_id="chat-endpoint",
+                model_id="provider-model",
+                started_at=started_at + timedelta(seconds=index),
+                reasoning_ended_at=started_at + timedelta(seconds=index, milliseconds=500),
+                ended_at=started_at + timedelta(seconds=index, milliseconds=700),
+            ),
+        )
+        for index in (0, 1)
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        presentation = project_run_presentation(run, messages)
+        await conversation.load_messages(messages, runs=(presentation,))
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        thoughts = [entry for entry in history.entries if entry.kind == "assistant"]
+        summaries = [entry for entry in history.entries if entry.kind == "run"]
+        assert [entry.reasoning_seconds for entry in thoughts] == [0.5, 0.5]
+        assert len(summaries) == 1
+        assert summaries[0].run == presentation
+        assert presentation.model == "chat-endpoint"
+        assert presentation.duration_seconds == 3
+        assert history.rendered_text.count("THOUGHT · 500ms") == 2
+        assert "chat-endpoint" in history.rendered_text
+        assert "3.0s" in history.rendered_text
 
 
 @pytest.mark.asyncio

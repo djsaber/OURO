@@ -1,7 +1,7 @@
 import pytest
 
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, TextContent
+from ouro.core.messages import MessageRecord, ModelResponseRecord, TextContent
 from ouro.core.state import RunRecord, SessionRecord
 
 
@@ -44,6 +44,33 @@ def test_message_rejects_reasoning_state_in_metadata() -> None:
                 "role": "assistant",
                 "metadata": {"reasoning_content": "private reasoning"},
             }
+        )
+
+
+def test_model_response_state_belongs_only_to_assistant_messages() -> None:
+    now = EventRecord(session_id="ses_time", event_type="diagnostic").created_at
+    response = ModelResponseRecord(
+        provider_id="provider",
+        endpoint_id="chat",
+        model_id="model",
+        started_at=now,
+        ended_at=now,
+        reasoning_ended_at=now,
+    )
+
+    assistant = MessageRecord.text(
+        session_id="ses_1",
+        run_id="run_1",
+        role="assistant",
+        text="done",
+    ).model_copy(update={"model_response": response})
+
+    assert MessageRecord.model_validate_json(assistant.model_dump_json()).model_response == response
+    with pytest.raises(ValueError, match="only assistant messages"):
+        MessageRecord(
+            session_id="ses_1",
+            role="user",
+            model_response=response,
         )
 
 

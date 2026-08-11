@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from math import ceil
+from time import monotonic
 from typing import Literal, Protocol
 
 from pydantic import JsonValue
@@ -37,7 +38,7 @@ from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.question_forms import QuestionField, QuestionForm
-from ouro.tui.state import PendingInteraction
+from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.theme import TuiTheme, theme_for
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
 
@@ -228,12 +229,19 @@ class ReasoningView(Vertical):
     markup inside reasoning are never reformatted into blocks or syntax highlighting.
     """
 
-    def __init__(self, *, initial: str = "") -> None:
+    def __init__(self, *, initial: str = "", duration_seconds: float | None = None) -> None:
         super().__init__(classes="reasoning-view")
         self.display = bool(initial)
-        self.label = Label("THOUGHT", classes="reasoning-label")
+        self.label = Label(
+            _completed_reasoning_label(duration_seconds),
+            classes="reasoning-label",
+        )
         self._text_parts = [initial] if initial else []
         self._text_cache: str | None = initial
+        self._timer: Timer | None = None
+        self._elapsed_at_start = 0.0
+        self._clock_started_at: float | None = None
+        self._completed_seconds = duration_seconds
         self._content = Static(
             initial,
             classes="reasoning-content",
@@ -244,24 +252,63 @@ class ReasoningView(Vertical):
         yield self.label
         yield self._content
 
+    def on_unmount(self) -> None:
+        self._stop_timer()
+
     @property
     def text(self) -> str:
         if self._text_cache is None:
             self._text_cache = "".join(self._text_parts)
         return self._text_cache
 
-    async def append(self, text: str) -> None:
+    @property
+    def duration_seconds(self) -> float | None:
+        return self._completed_seconds
+
+    async def append(self, text: str, *, started_at: datetime | None = None) -> None:
         if not text:
             return
         self.display = True
-        self.label.update("THINKING")
+        if self._clock_started_at is None:
+            now = datetime.now(UTC)
+            self._elapsed_at_start = (
+                max(0.0, (now - started_at).total_seconds()) if started_at is not None else 0.0
+            )
+            self._clock_started_at = monotonic()
+            self._timer = self.set_interval(0.1, self._tick)
+        self._render_live_label()
         self._text_parts.append(text)
         self._text_cache = None
         self._content.update(self.text)
 
-    def finish(self) -> None:
+    def finish(self, duration_seconds: float | None = None) -> None:
         if self.display:
-            self.label.update("THOUGHT")
+            if duration_seconds is not None:
+                elapsed = duration_seconds
+            elif self._clock_started_at is None and self._completed_seconds is not None:
+                elapsed = self._completed_seconds
+            else:
+                elapsed = self._elapsed_seconds()
+            self._completed_seconds = elapsed
+            self.label.update(_completed_reasoning_label(elapsed))
+        self._stop_timer()
+
+    def _tick(self) -> None:
+        self._render_live_label()
+
+    def _render_live_label(self) -> None:
+        self.label.update(f"THINKING · {self._elapsed_seconds():.1f}s")
+
+    def _elapsed_seconds(self) -> float:
+        if self._clock_started_at is None:
+            return self._elapsed_at_start
+        return self._elapsed_at_start + monotonic() - self._clock_started_at
+
+    def _stop_timer(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+        self._clock_started_at = None
 
 
 class AssistantTurn(Vertical):
@@ -270,11 +317,17 @@ class AssistantTurn(Vertical):
         *,
         initial: str = "",
         reasoning: str = "",
+        reasoning_seconds: float | None = None,
+        run_id: str | None = None,
         after_tool: bool = False,
     ) -> None:
         classes = "turn assistant-turn after-tool" if after_tool else "turn assistant-turn"
         super().__init__(classes=classes)
-        self.reasoning = ReasoningView(initial=reasoning)
+        self.run_id = run_id
+        self.reasoning = ReasoningView(
+            initial=reasoning,
+            duration_seconds=reasoning_seconds,
+        )
         self.markdown = Markdown(initial, classes="assistant-markdown")
         self._stream: _MarkdownWriter | None = None
 
@@ -298,11 +351,17 @@ class AssistantTurn(Vertical):
             await self._stream.stop()
             self._stream = None
 
-    async def append_reasoning(self, text: str) -> None:
-        await self.reasoning.append(text)
+    async def append_reasoning(self, text: str, *, started_at: datetime | None = None) -> None:
+        await self.reasoning.append(text, started_at=started_at)
 
-    def finish_reasoning(self) -> None:
-        self.reasoning.finish()
+    def finish_reasoning(self, duration_seconds: float | None = None) -> None:
+        self.reasoning.finish(duration_seconds)
+
+
+def _completed_reasoning_label(duration_seconds: float | None) -> str:
+    if duration_seconds is None:
+        return "THOUGHT"
+    return f"THOUGHT · {format_duration(duration_seconds)}"
 
 
 class ToolActivityRow(Static):
@@ -621,6 +680,8 @@ class ConversationView(VerticalScroll):
         self._welcome: WelcomePanel | None = None
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
+        self._current_run_id: str | None = None
+        self._presented_run_ids: set[str] = set()
 
     def compose(self) -> ComposeResult:
         yield self._transcript
@@ -634,6 +695,8 @@ class ConversationView(VerticalScroll):
         self._welcome = None
         self._assistant = None
         self._tools.clear()
+        self._current_run_id = None
+        self._presented_run_ids.clear()
         await self._mount_welcome()
         self.anchor()
 
@@ -650,13 +713,22 @@ class ConversationView(VerticalScroll):
         self,
         messages: Iterable[MessageRecord],
         compactions: Iterable[CompactionRecord] = (),
+        runs: Iterable[RunPresentation] = (),
     ) -> None:
         await self._clear_live_transcript()
         self._assistant = None
         self._tools.clear()
         self._welcome = None
+        self._current_run_id = None
+        self._presented_run_ids.clear()
 
         materialized = list(messages)
+        run_presentations = tuple(runs)
+        requests = {
+            request.message_id: request
+            for run in run_presentations
+            for request in run.requests
+        }
         tool_activities = _tool_activities_from_messages(materialized)
         chronological: list[tuple[int, int, TranscriptEntry]] = []
         message_positions = {
@@ -667,7 +739,7 @@ class ConversationView(VerticalScroll):
             message_index: int,
             entry: TranscriptEntry,
         ) -> None:
-            chronological.append((message_index * 2, len(chronological), entry))
+            chronological.append((message_index * 3, len(chronological), entry))
 
         for message_index, message in enumerate(materialized):
             if message.role == "user":
@@ -677,6 +749,7 @@ class ConversationView(VerticalScroll):
                 append_entry(message_index, TranscriptEntry(kind="user", text=text))
             elif message.role == "assistant":
                 text = message.text_content
+                request = requests.get(message.message_id)
                 if text or message.reasoning_content:
                     append_entry(
                         message_index,
@@ -684,6 +757,10 @@ class ConversationView(VerticalScroll):
                             kind="assistant",
                             text=text,
                             reasoning=message.reasoning_content,
+                            run_id=message.run_id,
+                            reasoning_seconds=(
+                                request.reasoning_seconds if request is not None else None
+                            ),
                         ),
                     )
                 for call in message.tool_calls:
@@ -695,6 +772,23 @@ class ConversationView(VerticalScroll):
                         TranscriptEntry(kind="tool", tool=activity),
                     )
 
+        last_message_by_run: dict[str, int] = {}
+        for message_index, message in enumerate(materialized):
+            if message.run_id is not None:
+                last_message_by_run[message.run_id] = message_index
+        for run in run_presentations:
+            boundary_index = last_message_by_run.get(run.run_id)
+            if boundary_index is None or run.duration_seconds is None:
+                continue
+            chronological.append(
+                (
+                    boundary_index * 3 + 1,
+                    len(chronological),
+                    TranscriptEntry(kind="run", run_id=run.run_id, run=run),
+                )
+            )
+            self._presented_run_ids.add(run.run_id)
+
         for compaction in compactions:
             boundary_index = message_positions.get(compaction.history_boundary_message_id)
             if boundary_index is None:
@@ -704,7 +798,7 @@ class ConversationView(VerticalScroll):
                 )
             chronological.append(
                 (
-                    boundary_index * 2 + 1,
+                    boundary_index * 3 + 2,
                     len(chronological),
                     TranscriptEntry(kind="notice", text=_compaction_notice(compaction)),
                 )
@@ -768,25 +862,39 @@ class ConversationView(VerticalScroll):
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
-            self._assistant = AssistantTurn(after_tool=self._history_ends_with_tool)
+            self._assistant = AssistantTurn(
+                run_id=self._current_run_id,
+                after_tool=self._history_ends_with_tool,
+            )
             await self._transcript.mount(self._assistant)
         await self._assistant.append(text)
 
-    async def append_reasoning(self, text: str) -> None:
+    def begin_model_request(self, *, run_id: str | None) -> None:
+        self._current_run_id = run_id
+
+    async def append_reasoning(
+        self,
+        text: str,
+        *,
+        started_at: datetime | None = None,
+    ) -> None:
         await self._dismiss_welcome()
         if self._assistant is None:
-            self._assistant = AssistantTurn(after_tool=self._history_ends_with_tool)
+            self._assistant = AssistantTurn(
+                run_id=self._current_run_id,
+                after_tool=self._history_ends_with_tool,
+            )
             await self._transcript.mount(self._assistant)
-        await self._assistant.append_reasoning(text)
+        await self._assistant.append_reasoning(text, started_at=started_at)
 
     @property
     def _history_ends_with_tool(self) -> bool:
         entries = self._history.entries
         return bool(entries and entries[-1].kind == "tool")
 
-    def finish_reasoning(self) -> None:
+    def finish_reasoning(self, duration_seconds: float | None = None) -> None:
         if self._assistant is not None:
-            self._assistant.finish_reasoning()
+            self._assistant.finish_reasoning(duration_seconds)
 
     async def finish_assistant(self) -> None:
         assistant = self._assistant
@@ -796,9 +904,27 @@ class ConversationView(VerticalScroll):
         text = assistant.markdown.source
         reasoning = assistant.reasoning.text
         if text or reasoning:
-            self._history.append(TranscriptEntry(kind="assistant", text=text, reasoning=reasoning))
+            self._history.append(
+                TranscriptEntry(
+                    kind="assistant",
+                    text=text,
+                    reasoning=reasoning,
+                    run_id=assistant.run_id,
+                    reasoning_seconds=assistant.reasoning.duration_seconds,
+                )
+            )
         self._assistant = None
         await assistant.remove()
+
+    async def add_run_summary(self, run: RunPresentation) -> None:
+        if run.duration_seconds is None or run.run_id in self._presented_run_ids:
+            return
+        await self._dismiss_welcome()
+        if self._assistant is not None and self._assistant.run_id == run.run_id:
+            await self.finish_assistant()
+        self._history.append(TranscriptEntry(kind="run", run_id=run.run_id, run=run))
+        self._presented_run_ids.add(run.run_id)
+        await self._history.wait_until_rendered()
 
     async def sync_tools(self, tools: tuple[RuntimeToolCallActivity, ...]) -> None:
         await self._dismiss_welcome()

@@ -86,6 +86,29 @@ class ProviderContinuationArtifact(OuroModel):
         )
 
 
+class ModelResponseRecord(OuroModel):
+    """Route and timing facts committed atomically with one assistant message."""
+
+    provider_id: str = Field(min_length=1)
+    endpoint_id: str | None = None
+    model_id: str = Field(min_length=1)
+    started_at: datetime
+    ended_at: datetime
+    reasoning_ended_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_timing(self) -> ModelResponseRecord:
+        if self.endpoint_id is not None and not self.endpoint_id.strip():
+            raise ValueError("model response endpoint_id must not be blank")
+        if self.ended_at < self.started_at:
+            raise ValueError("model response ended_at cannot precede started_at")
+        if self.reasoning_ended_at is not None and not (
+            self.started_at <= self.reasoning_ended_at <= self.ended_at
+        ):
+            raise ValueError("model response reasoning_ended_at must be within the request")
+        return self
+
+
 class ModelMessage(OuroModel):
     """Provider-neutral message containing only model-visible semantics.
 
@@ -160,6 +183,7 @@ class MessageRecord(VersionedOuroModel):
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
     tool_result: ToolResultReference | None = None
     reasoning_content: str = ""
+    model_response: ModelResponseRecord | None = None
     provider_continuation: ProviderContinuationArtifact | None = None
     metadata: Metadata = MetadataField
 
@@ -171,6 +195,7 @@ class MessageRecord(VersionedOuroModel):
             "tool_name",
             "is_error",
             "reasoning_content",
+            "model_response",
             "provider_continuation",
             "semantic_tag",
         }
@@ -195,6 +220,8 @@ class MessageRecord(VersionedOuroModel):
             self.role != "assistant"
         ):
             raise ValueError("only assistant messages may contain reasoning state")
+        if self.model_response is not None and self.role != "assistant":
+            raise ValueError("only assistant messages may contain model response state")
         _validate_skill_activation_blocks(self.role, self.content)
         return self
 

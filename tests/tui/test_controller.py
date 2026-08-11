@@ -436,7 +436,11 @@ async def test_controller_does_not_replay_events_for_completed_session(
 
         assert loaded.detail.session.active_run_id is None
         assert loaded.events == ()
+        assert loaded.runs == (result.run,)
         assert loaded.messages
+        assistant = next(message for message in loaded.messages if message.role == "assistant")
+        assert assistant.model_response is not None
+        assert assistant.model_response.ended_at >= assistant.model_response.started_at
         assert loaded.context_status is not None
         assert loaded.effective_context_metrics == loaded.context_status.metrics
         assert loaded.compactions == ()

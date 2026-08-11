@@ -4,6 +4,7 @@ import itertools
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
@@ -11,7 +12,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.context import ContextView
 from ouro.core.errors import ContextBlockedError
 from ouro.core.events import EventRecord
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.provider import ProviderCompletion, ToolCallDelta
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy, RunBudgetReason
@@ -116,6 +117,9 @@ class _RoundState:
     tool_call_parts: dict[int, _ToolCallParts] = field(default_factory=dict)
     saw_model_done: bool = False
     completed_tool: bool = False
+    model_started_at: datetime | None = None
+    model_response: ModelResponseRecord | None = None
+    reasoning_ended_at: datetime | None = None
 
 
 @dataclass
@@ -223,6 +227,7 @@ class InnerAgentLoop:
                 )
             except Exception as exc:  # noqa: BLE001 - context preparation is a runtime boundary.
                 return await self._fail(state, f"context preparation failed: {exc}")
+            round_state.model_started_at = utc_now()
             if self.ports.turns.commit_model_request is not None:
                 state.run = self.ports.turns.commit_model_request(
                     session=state.session,
@@ -240,14 +245,17 @@ class InnerAgentLoop:
             if terminal_result is not None:
                 return terminal_result
             if aborted := self._aborted_result(state, round_state.parts):
+                self._finish_model_response(round_state)
                 return aborted
             if not round_state.saw_model_done:
+                self._finish_model_response(round_state)
                 return await self._fail(
                     state,
                     "provider stream ended without a completion event",
                     round_state.parts,
                     round_state.reasoning_parts,
                     round_state.turn_id,
+                    model_response=round_state.model_response,
                     provider_continuation=round_state.continuation,
                 )
             if round_state.tool_calls:
@@ -263,6 +271,7 @@ class InnerAgentLoop:
                     return await self._fail(
                         state,
                         f"tool batch handling failed: {exc}",
+                        model_response=round_state.model_response,
                     )
                 if batch_result is not None:
                     return batch_result
@@ -281,6 +290,7 @@ class InnerAgentLoop:
                     round_parts=None,
                     round_reasoning_parts=round_state.reasoning_parts,
                     turn_id=round_state.turn_id,
+                    model_response=round_state.model_response,
                     provider_continuation=round_state.continuation,
                 )
 
@@ -302,6 +312,7 @@ class InnerAgentLoop:
                         messages=state.messages,
                         assistant_text="".join(round_state.parts),
                         assistant_reasoning="".join(round_state.reasoning_parts),
+                        assistant_model_response=round_state.model_response,
                         assistant_continuation=round_state.continuation,
                         turn_id=round_state.turn_id,
                     )
@@ -309,6 +320,7 @@ class InnerAgentLoop:
                     return await self._fail(
                         state,
                         f"turn policy evaluation failed: {exc}",
+                        model_response=round_state.model_response,
                     )
                 state.sequence = completion.sequence
                 if completion.blocked_reason is not None:
@@ -334,6 +346,7 @@ class InnerAgentLoop:
                 messages=state.messages,
                 final_text=state.final_text(),
                 reasoning_content="".join(round_state.reasoning_parts),
+                model_response=round_state.model_response,
                 provider_continuation=round_state.continuation,
                 turn_id=round_state.turn_id,
                 tool_results=state.tool_results,
@@ -400,6 +413,9 @@ class InnerAgentLoop:
             assistant_reasoning=""
             if assistant_already_committed
             else "".join(round_state.reasoning_parts),
+            assistant_model_response=None
+            if assistant_already_committed
+            else round_state.model_response,
             assistant_continuation=None
             if assistant_already_committed
             else round_state.continuation,
@@ -470,9 +486,11 @@ class InnerAgentLoop:
                         purpose="agent",
                     )
                 if aborted := self._aborted_result(state, round_state.parts):
+                    self._finish_model_response(round_state)
                     return aborted
 
                 if provider_event.type == "text_delta" and provider_event.text:
+                    self._mark_reasoning_ended(round_state)
                     await self._record_text_delta(
                         state,
                         round_state,
@@ -495,6 +513,7 @@ class InnerAgentLoop:
                 elif provider_event.type == "tool_call_delta":
                     if provider_event.tool_call_delta is None:
                         raise ValueError("provider tool call delta is missing its payload")
+                    self._mark_reasoning_ended(round_state)
                     await self._record_tool_call_delta(
                         state,
                         round_state,
@@ -517,12 +536,14 @@ class InnerAgentLoop:
                         },
                     )
                 elif provider_event.type == "error":
+                    self._finish_model_response(round_state)
                     return await self._fail(
                         state,
                         provider_event.error or "provider error",
                         round_state.parts,
                         round_state.reasoning_parts,
                         round_state.turn_id,
+                        model_response=round_state.model_response,
                         provider_continuation=round_state.continuation,
                     )
                 elif provider_event.type == "done":
@@ -533,6 +554,7 @@ class InnerAgentLoop:
                         )
                     _validate_tool_calls(round_state.tool_calls)
                     round_state.saw_model_done = True
+                    self._finish_model_response(round_state)
                     state.sequence = await self.ports.emit(
                         state.emitted,
                         state.sequence,
@@ -552,15 +574,39 @@ class InnerAgentLoop:
                         },
                     )
         except Exception as exc:
+            self._finish_model_response(round_state)
             return await self._fail(
                 state,
                 str(exc) or exc.__class__.__name__,
                 round_state.parts,
                 round_state.reasoning_parts,
                 round_state.turn_id,
+                model_response=round_state.model_response,
                 provider_continuation=round_state.continuation,
             )
         return None
+
+    @staticmethod
+    def _mark_reasoning_ended(round_state: _RoundState) -> None:
+        if round_state.reasoning_parts and round_state.reasoning_ended_at is None:
+            round_state.reasoning_ended_at = utc_now()
+
+    def _finish_model_response(self, round_state: _RoundState) -> None:
+        started_at = round_state.model_started_at
+        if started_at is None or round_state.model_response is not None:
+            return
+        ended_at = utc_now()
+        reasoning_ended_at = round_state.reasoning_ended_at
+        if round_state.reasoning_parts and reasoning_ended_at is None:
+            reasoning_ended_at = ended_at
+        round_state.model_response = ModelResponseRecord(
+            provider_id=self.adapter.model.provider_id,
+            endpoint_id=self.adapter.model.endpoint_id,
+            model_id=self.adapter.model.model_id,
+            started_at=started_at,
+            ended_at=ended_at,
+            reasoning_ended_at=reasoning_ended_at,
+        )
 
     async def _record_text_delta(
         self,
@@ -652,6 +698,7 @@ class InnerAgentLoop:
             message_sequence=len(state.messages) + 1,
             assistant_text=assistant_text,
             assistant_reasoning=assistant_reasoning,
+            assistant_model_response=round_state.model_response,
             assistant_continuation=round_state.continuation,
             abort_signal=abort_signal,
         )
@@ -718,6 +765,7 @@ class InnerAgentLoop:
         round_parts: list[str] | None = None,
         round_reasoning_parts: list[str] | None = None,
         turn_id: str | None = None,
+        model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> RunResult:
         return await self.ports.runs.fail(
@@ -728,6 +776,7 @@ class InnerAgentLoop:
             error=error,
             final_text=state.final_text(round_parts),
             reasoning_content="".join(round_reasoning_parts or []),
+            model_response=model_response,
             provider_continuation=provider_continuation,
             turn_id=turn_id,
             tool_results=state.tool_results,

@@ -13,6 +13,7 @@ from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import (
     ContentBlock,
     MessageRecord,
+    ModelResponseRecord,
     ProviderContinuationArtifact,
     SkillActivationContent,
     TextContent,
@@ -173,6 +174,7 @@ class RunLifecycle:
         sequence: int,
         turn_id: str,
         reasoning_content: str = "",
+        model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> MessageRecord:
         existing = self._find_message(
@@ -193,6 +195,7 @@ class RunLifecycle:
             update={
                 "tool_calls": list(tool_calls),
                 "reasoning_content": reasoning_content,
+                "model_response": model_response,
                 "provider_continuation": provider_continuation,
             }
         )
@@ -208,6 +211,7 @@ class RunLifecycle:
         sequence: int,
         turn_id: str,
         reasoning_content: str = "",
+        model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
     ) -> MessageRecord:
         """Durably commit a completed assistant turn without completing its run."""
@@ -229,6 +233,7 @@ class RunLifecycle:
         ).model_copy(
             update={
                 "reasoning_content": reasoning_content,
+                "model_response": model_response,
                 "provider_continuation": provider_continuation,
             }
         )
@@ -431,6 +436,7 @@ class RunLifecycle:
         messages: list[MessageRecord],
         final_text: str,
         reasoning_content: str = "",
+        model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
@@ -457,6 +463,7 @@ class RunLifecycle:
                 assistant_message = assistant_message.model_copy(
                     update={
                         "reasoning_content": reasoning_content,
+                        "model_response": model_response,
                         "provider_continuation": provider_continuation,
                     }
                 )
@@ -520,6 +527,7 @@ class RunLifecycle:
         error: str,
         final_text: str,
         reasoning_content: str = "",
+        model_response: ModelResponseRecord | None = None,
         provider_continuation: ProviderContinuationArtifact | None = None,
         turn_id: str | None = None,
         tool_results: list[ToolResult],
@@ -551,6 +559,7 @@ class RunLifecycle:
                     update={
                         "metadata": metadata,
                         "reasoning_content": reasoning_content,
+                        "model_response": model_response,
                         "provider_continuation": provider_continuation,
                     }
                 )

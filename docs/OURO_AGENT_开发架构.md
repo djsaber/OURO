@@ -568,6 +568,12 @@ follow-up queue，不允许 steer。队列在接受时保存完整激活快照�
 激活说明在同一 Run 尚未结束时被摘要替换。技能激活不解释 `allowed_tools`，也不修改工具目录、Tool Policy、
 审批或权限。
 
+每次完成的 Provider 调用把路由、请求起止时间和可选 reasoning 结束时间固化为类型化
+`ModelResponseRecord`，并与对应 assistant `MessageRecord` 在同一消息提交边界持久化。一次 Run 可以包含多条
+assistant 消息，因此工具续跑、turn policy 续跑及运行时切换 Endpoint 后的每轮模型调用都有独立记录；
+`RunRecord.started_at/ended_at` 仍是运行总耗时的权威事实，不复制每轮思考状态。Host 实时展示消费既有事件，
+重载则只连接消息与轻量 Run 历史，不为展示耗时回放高吞吐 text/reasoning delta journal。
+
 Interactive 的动态终端效果同样只属于 CLI adapter：`TerminalStatusLine` 管理 MCP/压缩等单一状态行，
 `TerminalStatusRegion` 管理按 tool call identity 固定的工具行，`InteractiveOutput` 把既有 Run 事件投影为
 `mcp_connection`、`compaction`、`tool_input`、`tool_execution` 语义。Core/application 不感知 spinner 帧；

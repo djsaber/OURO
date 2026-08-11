@@ -26,7 +26,7 @@ from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import AnswerResolution, UnattendedResolution
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact
+from ouro.core.messages import MessageRecord, ModelResponseRecord, ProviderContinuationArtifact
 from ouro.core.observers import (
     FrozenJson,
     ToolCallFinishedObservation,
@@ -150,6 +150,7 @@ class ToolCallCoordinator:
         message_sequence: int,
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_model_response: ModelResponseRecord | None,
         assistant_continuation: ProviderContinuationArtifact | None,
         abort_signal: AbortSignal,
     ) -> ToolBatchHandlingResult:
@@ -161,6 +162,7 @@ class ToolCallCoordinator:
             sequence=message_sequence,
             turn_id=turn_id,
             reasoning_content=assistant_reasoning,
+            model_response=assistant_model_response,
             provider_continuation=assistant_continuation,
         )
         batch = ToolCallBatchRecord(

@@ -79,6 +79,24 @@ def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_pa
     assert result.final_text == "done"
 
 
+def test_session_run_history_reads_run_facts_without_event_replay(tmp_path, monkeypatch) -> None:
+    store, sessions = _service(tmp_path)
+    session = sessions.create(title="Run history").session
+    runs = (
+        RunRecord(session_id=session.session_id, run_id="run_1", status="completed"),
+        RunRecord(session_id=session.session_id, run_id="run_2", status="completed"),
+    )
+    for run in runs:
+        store.save_run(run)
+
+    def unexpected_events(*_args, **_kwargs):
+        raise AssertionError("run history must not read the event journal")
+
+    monkeypatch.setattr(store, "load_events_page", unexpected_events)
+
+    assert sessions.run_history(session.session_id) == runs
+
+
 def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Context digest").session

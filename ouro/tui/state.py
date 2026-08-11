@@ -1,14 +1,88 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Literal
 
 from ouro.application.agent_models import AgentInteractionView
 from ouro.application.runtime_activity import reduce_runtime_activity
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
 from ouro.core.events import EventRecord
+from ouro.core.messages import MessageRecord
+from ouro.core.state import RunRecord, RunStatus
 
 InteractionKind = Literal["approval", "question"]
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, remaining = divmod(seconds, 60)
+    return f"{int(minutes)}m {remaining:04.1f}s"
+
+
+@dataclass(frozen=True)
+class ModelRequestPresentation:
+    message_id: str
+    model: str
+    reasoning_seconds: float | None = None
+
+
+@dataclass(frozen=True)
+class RunPresentation:
+    run_id: str
+    status: RunStatus
+    model: str
+    duration_seconds: float | None
+    requests: tuple[ModelRequestPresentation, ...] = ()
+
+
+def project_run_presentation(
+    run: RunRecord,
+    messages: Iterable[MessageRecord] = (),
+) -> RunPresentation:
+    requests = tuple(
+        ModelRequestPresentation(
+            message_id=message.message_id,
+            model=response.endpoint_id or response.model_id,
+            reasoning_seconds=(
+                max(0.0, (response.reasoning_ended_at - response.started_at).total_seconds())
+                if response.reasoning_ended_at is not None
+                else None
+            ),
+        )
+        for message in messages
+        if message.run_id == run.run_id
+        and (response := message.model_response) is not None
+    )
+    model = requests[-1].model if requests else run.model or "unknown model"
+    duration = (
+        max(0.0, (run.ended_at - run.started_at).total_seconds())
+        if run.ended_at is not None
+        else None
+    )
+    return RunPresentation(
+        run_id=run.run_id,
+        status=run.status,
+        model=model,
+        duration_seconds=duration,
+        requests=requests,
+    )
+
+
+def project_run_presentations(
+    runs: Iterable[RunRecord],
+    messages: Iterable[MessageRecord] = (),
+) -> tuple[RunPresentation, ...]:
+    messages_by_run: dict[str, list[MessageRecord]] = {}
+    for message in messages:
+        if message.run_id is not None:
+            messages_by_run.setdefault(message.run_id, []).append(message)
+    return tuple(project_run_presentation(run, messages_by_run.get(run.run_id, ())) for run in runs)
 
 
 @dataclass
@@ -60,6 +134,8 @@ class ProjectionUpdate:
     activity: RuntimeActivitySnapshot
     assistant_delta: str = ""
     reasoning_delta: str = ""
+    reasoning_started_at: datetime | None = None
+    reasoning_duration_seconds: float | None = None
     round_break: bool = False
     pending_interaction: PendingInteraction | None = None
     interaction_changed: bool = False
@@ -80,6 +156,10 @@ class TuiSessionProjection:
     )
     _last_sequence: int = field(default=-1, init=False)
     _run_id: str | None = field(default=None, init=False)
+    _model_request_started_at: datetime | None = field(default=None, init=False)
+    _reasoning_seen: bool = field(default=False, init=False)
+    _reasoning_finished: bool = field(default=False, init=False)
+    _model: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.activity = RuntimeActivitySnapshot(
@@ -112,6 +192,10 @@ class TuiSessionProjection:
     def reasoning_text(self, text: str) -> None:
         self._reasoning_text.replace(text)
 
+    @property
+    def model(self) -> str | None:
+        return self._model
+
     def restore(self, events: tuple[EventRecord, ...]) -> None:
         for event in sorted(events, key=lambda item: (item.sequence, item.event_id)):
             self.apply(event)
@@ -125,6 +209,8 @@ class TuiSessionProjection:
         payload = event.payload
         assistant_delta = ""
         reasoning_delta = ""
+        reasoning_started_at = None
+        reasoning_duration_seconds = None
         round_break = False
         interaction_changed = False
         diagnostic = None
@@ -134,13 +220,29 @@ class TuiSessionProjection:
             self._assistant_text.replace("")
             self._reasoning_text.replace("")
             self._pending_interactions.clear()
+            self._model_request_started_at = None
+            self._reasoning_seen = False
+            self._reasoning_finished = False
+            self._model = None
+        elif event.event_type == "model_request_started":
+            self._model_request_started_at = event.created_at
+            self._reasoning_seen = False
+            self._reasoning_finished = False
+            self._model = _string(payload.get("endpoint")) or _string(payload.get("model"))
         elif event.event_type == "model_text_delta":
             assistant_delta = _string(payload.get("text")) or ""
             self._assistant_text.append(assistant_delta)
+            reasoning_duration_seconds = self._finish_reasoning(event.created_at)
         elif event.event_type == "model_reasoning_delta":
             reasoning_delta = _string(payload.get("reasoning_content")) or ""
             self._reasoning_text.append(reasoning_delta)
+            if reasoning_delta and not self._reasoning_seen:
+                self._reasoning_seen = True
+                reasoning_started_at = self._model_request_started_at or event.created_at
+        elif event.event_type == "model_tool_call_delta":
+            reasoning_duration_seconds = self._finish_reasoning(event.created_at)
         elif event.event_type == "model_message_completed":
+            reasoning_duration_seconds = self._finish_reasoning(event.created_at)
             round_break = _positive_int(payload.get("tool_call_count"))
         elif event.event_type == "approval_requested" and event.run_id is not None:
             tool_call_id = _string(payload.get("tool_call_id"))
@@ -186,6 +288,7 @@ class TuiSessionProjection:
             if removed:
                 interaction_changed = True
         elif event.event_type in {"run_completed", "run_aborted", "run_failed"}:
+            reasoning_duration_seconds = self._finish_reasoning(event.created_at)
             if self._pending_interactions:
                 self._pending_interactions.clear()
                 interaction_changed = True
@@ -203,11 +306,23 @@ class TuiSessionProjection:
             activity=self.activity,
             assistant_delta=assistant_delta,
             reasoning_delta=reasoning_delta,
+            reasoning_started_at=reasoning_started_at,
+            reasoning_duration_seconds=reasoning_duration_seconds,
             round_break=round_break,
             pending_interaction=self.pending_interaction,
             interaction_changed=interaction_changed,
             diagnostic=diagnostic,
         )
+
+    def _finish_reasoning(self, ended_at: datetime) -> float | None:
+        if (
+            not self._reasoning_seen
+            or self._reasoning_finished
+            or self._model_request_started_at is None
+        ):
+            return None
+        self._reasoning_finished = True
+        return max(0.0, (ended_at - self._model_request_started_at).total_seconds())
 
 
 def question_text(interaction: PendingInteraction) -> str:

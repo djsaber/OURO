@@ -2001,6 +2001,10 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
             FauxProvider(
                 event_batches=[
                     [
+                        ProviderStreamEvent(
+                            type="reasoning_delta",
+                            reasoning_content="I should read the file.",
+                        ),
                         ProviderStreamEvent.from_tool_call(
                             {
                                 "id": "call_1",
@@ -2011,12 +2015,16 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
                         ProviderStreamEvent(type="done"),
                     ],
                     [
+                        ProviderStreamEvent(
+                            type="reasoning_delta",
+                            reasoning_content="I should summarize the result.",
+                        ),
                         ProviderStreamEvent(type="text_delta", text="I read the notes."),
                         ProviderStreamEvent(type="done"),
                     ],
                 ]
             ),
-            ModelMetadata(model_id="faux", provider_id="faux"),
+            ModelMetadata(model_id="faux", provider_id="faux", endpoint_id="chat"),
         ),
         tools=_tools(),
         default_workspace=tmp_path,
@@ -2037,6 +2045,29 @@ async def test_runtime_continues_after_auto_tool_result(tmp_path) -> None:
     assert snapshot.messages[2].tool_result is not None
     assert snapshot.messages[2].tool_result.tool_call_id == "call_1"
     assert snapshot.messages[2].text_content == "1\timportant notes"
+    assistant_messages = [message for message in snapshot.messages if message.role == "assistant"]
+    assert [message.reasoning_content for message in assistant_messages] == [
+        "I should read the file.",
+        "I should summarize the result.",
+    ]
+    assert all(message.model_response is not None for message in assistant_messages)
+    endpoints = [
+        message.model_response.endpoint_id
+        for message in assistant_messages
+        if message.model_response is not None
+    ]
+    assert endpoints == [
+        "chat",
+        "chat",
+    ]
+    assert all(
+        message.model_response is not None
+        and message.model_response.reasoning_ended_at is not None
+        and message.model_response.started_at
+        <= message.model_response.reasoning_ended_at
+        <= message.model_response.ended_at
+        for message in assistant_messages
+    )
     assert [event.event_type for event in snapshot.events].count("model_request_started") == 2
     assert result.run.model_round_count == 2
 

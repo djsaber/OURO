@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
 from ouro.core.events import EventRecord
 from ouro.tui.state import TuiSessionProjection, question_text
 
@@ -52,6 +56,44 @@ def test_projection_exposes_reasoning_stream_separately_from_answer() -> None:
     assert second is not None and second.reasoning_delta == "the event path."
     assert projection.reasoning_text == "Inspecting the event path."
     assert projection.assistant_text == ""
+
+
+def test_projection_times_reasoning_from_request_start_to_first_answer_delta() -> None:
+    projection = TuiSessionProjection("ses_test")
+    started_at = datetime(2026, 8, 11, tzinfo=UTC)
+
+    projection.apply(
+        EventRecord(
+            session_id="ses_test",
+            run_id="run_test",
+            event_type="model_request_started",
+            sequence=1,
+            created_at=started_at,
+        )
+    )
+    reasoning = projection.apply(
+        EventRecord(
+            session_id="ses_test",
+            run_id="run_test",
+            event_type="model_reasoning_delta",
+            sequence=2,
+            created_at=started_at + timedelta(milliseconds=200),
+            payload={"reasoning_content": "Inspect"},
+        )
+    )
+    answer = projection.apply(
+        EventRecord(
+            session_id="ses_test",
+            run_id="run_test",
+            event_type="model_text_delta",
+            sequence=3,
+            created_at=started_at + timedelta(milliseconds=850),
+            payload={"text": "Done"},
+        )
+    )
+
+    assert reasoning is not None and reasoning.reasoning_started_at == started_at
+    assert answer is not None and answer.reasoning_duration_seconds == pytest.approx(0.85)
 
 
 def test_projection_tracks_tool_lifecycle_and_approval() -> None:

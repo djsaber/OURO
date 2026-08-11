@@ -48,6 +48,7 @@ from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
+from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.deployment import SessionBackend
@@ -233,6 +234,7 @@ class LoadedSession:
     detail: SessionDetail
     messages: tuple[MessageRecord, ...]
     events: tuple[EventRecord, ...]
+    runs: tuple[RunRecord, ...] = ()
     context_status: SessionContextStatus | None = None
     effective_context_metrics: ContextMetrics | None = None
     compactions: tuple[CompactionRecord, ...] = ()
@@ -1060,6 +1062,7 @@ class TuiController:
             detail=detail,
             messages=tuple(messages),
             events=tuple(events),
+            runs=sessions.run_history(session_id),
             context_status=sessions.context_status(session_id),
             effective_context_metrics=sessions.effective_context_metrics(session_id),
             compactions=sessions.compactions(session_id),

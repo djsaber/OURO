@@ -88,7 +88,12 @@ from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
-from ouro.core.messages import MessageRecord, ProviderContinuationArtifact, SkillActivationContent
+from ouro.core.messages import (
+    MessageRecord,
+    ModelResponseRecord,
+    ProviderContinuationArtifact,
+    SkillActivationContent,
+)
 from ouro.core.observers import (
     Observation,
     ObserverRegistry,
@@ -1994,6 +1999,7 @@ class RuntimeService:
         messages: list[MessageRecord],
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_model_response: ModelResponseRecord | None,
         assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
     ) -> TurnBoundaryInputResult:
@@ -2010,6 +2016,7 @@ class RuntimeService:
                 run=run,
                 text=assistant_text,
                 reasoning_content=assistant_reasoning,
+                model_response=assistant_model_response,
                 provider_continuation=assistant_continuation,
                 sequence=len(messages) + 1,
                 turn_id=turn_id,
@@ -2076,6 +2083,7 @@ class RuntimeService:
         messages: list[MessageRecord],
         assistant_text: str,
         assistant_reasoning: str,
+        assistant_model_response: ModelResponseRecord | None,
         assistant_continuation: ProviderContinuationArtifact | None,
         turn_id: str,
         policies: TurnPolicyRegistry,
@@ -2111,6 +2119,7 @@ class RuntimeService:
             run=run,
             text=assistant_text,
             reasoning_content=assistant_reasoning,
+            model_response=assistant_model_response,
             provider_continuation=assistant_continuation,
             sequence=len(messages) + 1,
             turn_id=turn_id,
@@ -2722,6 +2731,7 @@ class RuntimeService:
                 messages=latest.messages,
                 assistant_text="",
                 assistant_reasoning="",
+                assistant_model_response=None,
                 assistant_continuation=None,
                 turn_id=batch.turn_id,
             )

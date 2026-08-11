@@ -54,6 +54,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI reasoning blocks now show a live elapsed counter, retain each model call's completed thinking
+  time after tool continuations, and append the effective Endpoint plus total duration after every
+  Run. Session reload restores these facts from messages and lightweight Run history without
+  replaying high-volume text or reasoning delta events.
 - The TUI status line now identifies the active model by Endpoint name only; Provider identity
   remains available in model selection surfaces without consuming persistent status space.
 - TUI model and approval selectors now remain available during an active Session Run. Model

@@ -17,6 +17,7 @@ from textual.strip import Strip
 from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.tui.state import RunPresentation, format_duration
 from ouro.tui.theme import TuiTheme, theme_for
 
 
@@ -30,7 +31,7 @@ class ToolActivityRenderer(Protocol):
     ) -> Text: ...
 
 
-TranscriptEntryKind = Literal["user", "assistant", "tool", "notice"]
+TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "run"]
 
 
 @dataclass(frozen=True)
@@ -40,7 +41,10 @@ class TranscriptEntry:
     kind: TranscriptEntryKind
     text: str = ""
     reasoning: str = ""
+    run_id: str | None = None
+    reasoning_seconds: float | None = None
     tool: RuntimeToolCallActivity | None = None
+    run: RunPresentation | None = None
     error: bool = False
 
 
@@ -333,11 +337,30 @@ class ConversationHistory(RichLog, can_focus=False):
             tone = "#e08a8a" if entry.error else theme.accent
             top = 1 if previous_kind == "tool" else 0
             return Padding(Text(entry.text, style=tone), (top, 1, 1, 1))
+        if entry.kind == "run":
+            assert entry.run is not None
+            tone = theme.accent if entry.run.status == "completed" else "#8f9aa8"
+            summary = Text()
+            summary.append("▣ ", style=f"bold {tone}")
+            summary.append(entry.run.model, style="bold #aeb5bf")
+            if entry.run.duration_seconds is not None:
+                summary.append(" • ", style="#4d5560")
+                summary.append(
+                    format_duration(entry.run.duration_seconds),
+                    style="#777f8b",
+                )
+            if entry.run.status != "completed":
+                summary.append(" • ", style="#4d5560")
+                summary.append(entry.run.status, style="#777f8b")
+            return Padding(summary, (0, 1, 1, 2))
 
         blocks: list[RenderableType] = []
         if entry.reasoning:
+            label = "THOUGHT"
+            if entry.reasoning_seconds is not None:
+                label += f" · {format_duration(entry.reasoning_seconds)}"
             thought = Group(
-                Text("THOUGHT", style="bold #aeb5bf"),
+                Text(label, style="bold #aeb5bf"),
                 Padding(
                     _ReasoningContent(entry.reasoning),
                     (0, 0, 1, 1),

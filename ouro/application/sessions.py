@@ -49,7 +49,7 @@ from ouro.core.interactions import SESSION_INTERACTION_MODES, SessionInteraction
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
-from ouro.core.state import ACTIVE_RUN_STATUSES, SessionRecord, SessionTitleSource
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord, SessionTitleSource
 from ouro.sessions import SessionIndexEntry, SessionLock, SessionSnapshot, SessionStore
 
 if TYPE_CHECKING:
@@ -148,6 +148,12 @@ class SessionService:
             "",
         )
         return RunResult(session=snapshot.session, run=run, final_text=final_text)
+
+    def run_history(self, session_id: str) -> tuple[RunRecord, ...]:
+        """Read lightweight durable Run facts without replaying the event journal."""
+
+        self._require_session(session_id)
+        return tuple(self._store.load_runs(session_id))
 
     def context_status(self, session_id: str) -> SessionContextStatus | None:
         self._require_session(session_id)
