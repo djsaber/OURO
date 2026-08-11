@@ -39,7 +39,6 @@ class TuiCommand:
     argument_hint: str | None = None
     aliases: tuple[str, ...] = ()
     argument_options: tuple[TuiCommandArgument, ...] = ()
-    argument_selection_submits: bool = False
 
     @property
     def usage(self) -> str:
@@ -62,6 +61,12 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Open session",
         "Browse durable sessions",
         aliases=("/resume",),
+    ),
+    TuiCommand(
+        "/actions",
+        "Open actions",
+        "Open the action menu",
+        aliases=("/menu",),
     ),
     TuiCommand(
         "/fork",
@@ -125,7 +130,6 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Unqueue message",
         "Return a queued message to the composer",
         "<queued-message>",
-        argument_selection_submits=True,
     ),
     TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
     TuiCommand(

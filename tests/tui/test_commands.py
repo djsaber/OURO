@@ -11,7 +11,7 @@ from ouro.tui.commands import (
 
 
 def test_matching_commands_filters_prefixes_and_aliases() -> None:
-    assert [command.name for command in matching_commands("/m")] == ["/model"]
+    assert [command.name for command in matching_commands("/m")] == ["/actions", "/model"]
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
     assert [command.name for command in matching_commands("/ski")] == ["/skill"]
     assert [command.name for command in matching_commands("/unq")] == ["/unqueue"]
@@ -48,7 +48,6 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert fork is not None and fork.name == "/fork"
     assert fork_argument == "msg_123"
     assert unqueue is not None and unqueue.name == "/unqueue"
-    assert unqueue.argument_selection_submits is True
     assert unqueue_argument == "queued_123"
     assert alias is not None and alias.name == "/quit"
     assert typo_alias is not None and typo_alias.name == "/quit"

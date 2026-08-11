@@ -3306,6 +3306,11 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         await pilot.press("down")
         await pilot.pause()
         assert popup.selected_command is not None
+        assert popup.selected_command.name == "/actions"
+
+        await pilot.press("down")
+        await pilot.pause()
+        assert popup.selected_command is not None
         assert popup.selected_command.name == "/approval"
         assert popup.scroll_y == 0
 
@@ -3334,6 +3339,20 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ("actions", "menu"))
+async def test_actions_command_opens_action_menu(tmp_path: Path, command: str) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *command, "enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
+
+
+@pytest.mark.asyncio
 async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
@@ -3353,10 +3372,6 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
 
         await pilot.press("enter")
         await pilot.pause()
-        assert composer.text == "/model faux/faux"
-
-        await pilot.press("enter")
-        await pilot.pause()
         assert composer.text == ""
         assert app._active_model == "faux"
 
@@ -3364,8 +3379,14 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
 @pytest.mark.asyncio
 async def test_model_command_shows_endpoint_and_provider_without_changing_route_value(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
+    selected: list[str] = []
+
+    async def select_model(selector: str) -> AvailableModel:
+        selected.append(selector)
+        return app._models[0]
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
@@ -3377,6 +3398,7 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
                 model_id="provider-model-id",
             ),
         )
+        monkeypatch.setattr(app._controller, "select_model", select_model)
         await pilot.press("slash", *"model", "space", *"model")
         await pilot.pause()
 
@@ -3396,7 +3418,8 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
 
         await pilot.press("enter")
         await pilot.pause()
-        assert composer.text == "/model supplier/model-endpoint"
+        assert composer.text == ""
+        assert selected == ["supplier/model-endpoint"]
 
 
 @pytest.mark.asyncio
@@ -3479,7 +3502,7 @@ Create the requested image.
 
 
 @pytest.mark.asyncio
-async def test_command_selection_enters_parameter_editor_before_execution(
+async def test_command_selection_executes_complete_argument(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3529,20 +3552,23 @@ async def test_command_selection_enters_parameter_editor_before_execution(
 
         await pilot.press("down", "enter")
         await pilot.pause()
-        assert composer.text == "/plan off"
-        assert executed == []
-
-        await pilot.press("enter")
-        await pilot.pause()
+        assert composer.text == ""
         assert executed == [("plan", "off")]
 
 
 @pytest.mark.asyncio
-async def test_space_after_parameterized_command_opens_linked_argument_menu(
+async def test_parameterized_command_opens_argument_menu_and_executes_selection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
+    executed: list[tuple[str, str]] = []
+
+    async def execute(selector: str, argument: str) -> TuiPluginCommandExecution:
+        executed.append((selector, argument))
+        return TuiPluginCommandExecution(
+            execution=PluginCommandExecutionView(command_id="dev.ouro.goal_mode:goal")
+        )
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
@@ -3570,6 +3596,7 @@ async def test_space_after_parameterized_command_opens_linked_argument_menu(
                 ),
             ),
         )
+        monkeypatch.setattr(app._controller, "execute_plugin_command", execute)
 
         await pilot.press("slash", "g", "o", "a", "l", "space")
         await pilot.pause()
@@ -3591,7 +3618,8 @@ async def test_space_after_parameterized_command_opens_linked_argument_menu(
 
         await pilot.press("enter")
         await pilot.pause()
-        assert composer.text == "/goal pause"
+        assert composer.text == ""
+        assert executed == [("goal", "pause")]
 
 
 @pytest.mark.asyncio

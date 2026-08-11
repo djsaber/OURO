@@ -1333,17 +1333,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not option_is_complete or (
                 selected_argument.requires_value and (not head_separator or not remainder.strip())
             ):
-                if (
-                    argument_command.argument_selection_submits
-                    and not selected_argument.requires_value
-                ):
-                    value = f"{argument_command.name} {selected_argument.value}"
-                else:
-                    suffix = " " if selected_argument.requires_value else ""
-                    self._edit_command(
-                        f"{argument_command.name} {selected_argument.value}{suffix}"
-                    )
+                selected_value = f"{argument_command.name} {selected_argument.value}"
+                if selected_argument.requires_value:
+                    self._edit_command(f"{selected_value} ")
                     return
+                value = selected_value
         value = selected.name if selected is not None else value
         composer.clear()
         popup.hide()
@@ -1560,6 +1554,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._new_session()
         elif command.name == "/sessions":
             self.action_sessions()
+        elif command.name == "/actions":
+            self.action_actions()
         elif command.name == "/fork":
             self._fork_session(argument or None)
         elif command.name == "/model":
