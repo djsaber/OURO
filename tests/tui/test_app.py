@@ -3248,6 +3248,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "/compact" not in action_values
         assert [choice.label for choice in action_choices] == [
             "Theme color",
+            "Model thought display",
             "New session",
             "Open session",
             "Fork session",
@@ -3282,7 +3283,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            "Appearance",
+            *("Appearance",) * 2,
             *("Session",) * 5,
             *("Providers",) * 10,
             *("Tools",) * 2,
@@ -4859,6 +4860,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause()
 
         assert isinstance(app.screen, ChoiceScreen)
+        theme_screen = app.screen
         assert app.screen.query_one("#choice-title", Static).render().plain == "THEME COLOR"
         theme_options = app.screen.query_one(OptionList)
         assert theme_options.option_count == len(TUI_THEMES)
@@ -4889,6 +4891,12 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause(0.2)
 
         sage = TUI_THEMES["sage"]
+        assert app.screen is theme_screen
+        assert isinstance(app.screen, ChoiceScreen)
+        assert (
+            next(choice for choice in app.screen._choices if choice.value == "sage").marker
+            == SELECTED_CHOICE_MARKER
+        )
         assert app.tui_theme == sage
         header = app.query_one(BrandHeader).render()
         assert header.get_style_at_offset(header.plain.index("OURO")).foreground == Color.parse(
@@ -4900,11 +4908,58 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
             sage.accent
         )
 
+        await pilot.press("down")
+        await pilot.pause()
+        assert app.tui_theme == TUI_THEMES["iris"]
+        assert TuiPreferencesStore(tmp_path).load().theme == "sage"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.tui_theme == sage
+
     stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
     assert '"theme": "sage"' in stored
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     assert restarted.tui_theme == TUI_THEMES["sage"]
+
+
+@pytest.mark.asyncio
+async def test_action_menu_updates_thought_display_without_closing_picker(
+    tmp_path: Path,
+) -> None:
+    preferences = TuiPreferencesStore(tmp_path)
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Model thought display"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        thought_screen = app.screen
+        assert isinstance(thought_screen, ChoiceScreen)
+        assert thought_screen.query_one("#choice-title", Static).render().plain == (
+            "MODEL THOUGHT DISPLAY"
+        )
+        choices = {choice.value: choice for choice in thought_screen._choices}
+        assert choices["collapse"].marker == SELECTED_CHOICE_MARKER
+        assert choices["expand"].marker == ""
+
+        thought_screen.query_one("#choice-filter", Input).value = "Expand"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is thought_screen
+        choices = {choice.value: choice for choice in thought_screen._choices}
+        assert choices["expand"].marker == SELECTED_CHOICE_MARKER
+        assert choices["collapse"].marker == ""
+        assert preferences.load().reasoning_expanded is True
+
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio

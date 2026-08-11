@@ -115,6 +115,7 @@ _AGENT_INTERACTION_EVENTS = {
     "agent_closed",
 }
 _THEME_ACTION = "__ouro_theme__"
+_THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
 _SESSION_MODEL_SETTINGS_ACTION = "__ouro_session_model_settings__"
 _MODEL_ROUTE_ACTION = "__ouro_model_route__"
 _MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
@@ -140,6 +141,10 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "max": ReasoningRequest(mode="enabled", effort="max"),
 }
 _THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
+_THOUGHT_DISPLAY_LABELS = {
+    "expand": "Expand thoughts",
+    "collapse": "Collapse thoughts",
+}
 
 
 class _OuroHostScreen(Screen):
@@ -2153,6 +2158,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 accent=self._tui_theme.accent,
                 group="Appearance",
             ),
+            Choice(
+                _THOUGHT_DISPLAY_ACTION,
+                "Model thought display",
+                group="Appearance",
+            ),
             self._command_action_choice("/new", "Session", "new_session"),
             self._command_action_choice("/sessions", "Session", "sessions"),
             self._command_action_choice("/fork", "Session"),
@@ -2184,6 +2194,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._remember_action(action_id)
         if action_id == _THEME_ACTION:
             await self._choose_theme()
+        elif action_id == _THOUGHT_DISPLAY_ACTION:
+            await self._choose_thought_display()
         elif action_id == _SESSION_MODEL_SETTINGS_ACTION:
             self.action_models()
         elif action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
@@ -2253,43 +2265,83 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return ""
 
     async def _choose_theme(self) -> None:
-        original_theme = self._tui_theme
-        choices = tuple(
-            Choice(
-                theme.theme_id,
-                theme.label,
-                accent=theme.accent,
-                marker=SELECTED_CHOICE_MARKER if theme == self._tui_theme else "",
+        committed_theme = self._tui_theme
+
+        def theme_choices(selected: TuiTheme) -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    theme.theme_id,
+                    theme.label,
+                    accent=theme.accent,
+                    marker=SELECTED_CHOICE_MARKER if theme == selected else "",
+                )
+                for theme in TUI_THEMES.values()
             )
-            for theme in TUI_THEMES.values()
-        )
-        selected = await self.push_screen_wait(
+
+        async def select_theme(theme_id: str) -> tuple[Choice, ...] | None:
+            nonlocal committed_theme
+            if not await self._set_tui_theme(theme_id, restore_theme=committed_theme):
+                return None
+            committed_theme = self._tui_theme
+            return theme_choices(committed_theme)
+
+        await self.push_screen_wait(
             ChoiceScreen(
                 title="THEME COLOR",
                 placeholder="Filter theme colors…",
-                choices=choices,
-                initial_value=original_theme.theme_id,
+                choices=theme_choices(committed_theme),
+                initial_value=committed_theme.theme_id,
                 on_highlight=self._preview_tui_theme,
+                on_select=select_theme,
             )
         )
-        if selected is None:
-            self._apply_tui_theme(original_theme)
-            return
-        if selected == original_theme.theme_id:
-            self._apply_tui_theme(original_theme)
-            return
-        await self._set_tui_theme(selected, restore_theme=original_theme)
+        self._apply_tui_theme(committed_theme)
+
+    async def _choose_thought_display(self) -> None:
+        def display_choices(expanded: bool) -> tuple[Choice, ...]:
+            return tuple(
+                Choice(
+                    value,
+                    label,
+                    marker=(
+                        SELECTED_CHOICE_MARKER
+                        if _THOUGHT_DISPLAY_OPTIONS[value] == expanded
+                        else ""
+                    ),
+                )
+                for value, label in _THOUGHT_DISPLAY_LABELS.items()
+            )
+
+        async def select_display(value: str) -> tuple[Choice, ...] | None:
+            if not self._set_reasoning_expanded(value):
+                return None
+            return display_choices(self._preferences.reasoning_expanded)
+
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title="MODEL THOUGHT DISPLAY",
+                placeholder="Choose how thoughts are displayed…",
+                choices=display_choices(self._preferences.reasoning_expanded),
+                initial_value=("expand" if self._preferences.reasoning_expanded else "collapse"),
+                on_select=select_display,
+            )
+        )
 
     def _preview_tui_theme(self, theme_id: str) -> None:
         theme = TUI_THEMES.get(theme_id)
         if theme is not None:
             self._apply_tui_theme(theme)
 
-    async def _set_tui_theme(self, theme_id: str, *, restore_theme: TuiTheme | None = None) -> None:
+    async def _set_tui_theme(
+        self,
+        theme_id: str,
+        *,
+        restore_theme: TuiTheme | None = None,
+    ) -> bool:
         theme = TUI_THEMES.get(theme_id)
         if theme is None:
             self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
-            return
+            return False
         preferences = self._preferences.model_copy(update={"theme": theme_id})
         try:
             self._preferences_store.save(preferences)
@@ -2297,12 +2349,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if restore_theme is not None:
                 self._apply_tui_theme(restore_theme)
             self.notify(str(exc), severity="error", markup=False)
-            return
+            return False
         self._preferences = preferences
         self._apply_tui_theme(theme)
         self.notify(f"Theme color: {theme.label}")
+        return True
 
-    def _set_reasoning_expanded(self, value: str) -> None:
+    def _set_reasoning_expanded(self, value: str) -> bool:
         expanded = _THOUGHT_DISPLAY_OPTIONS.get(value)
         if expanded is None:
             self.notify(
@@ -2310,17 +2363,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 severity="warning",
                 markup=False,
             )
-            return
+            return False
         preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
         try:
             self._preferences_store.save(preferences)
         except OuroError as exc:
             self.notify(str(exc), severity="error", markup=False)
-            return
+            return False
         self._preferences = preferences
         self.query_one(ConversationView).set_reasoning_expanded(expanded)
         state = "expanded" if expanded else "collapsed"
         self.notify(f"Model thoughts: {state}", markup=False)
+        return True
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:
         self._tui_theme = theme
