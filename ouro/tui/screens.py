@@ -86,6 +86,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             if not needle
             or needle in choice.label.casefold()
             or needle in choice.description.casefold()
+            or needle in choice.group.casefold()
         )
         options = self.query_one("#choice-list", OptionList)
         options.clear_options()

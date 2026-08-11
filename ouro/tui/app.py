@@ -46,7 +46,7 @@ from ouro.tui.commands import (
     matching_commands,
     resolve_command,
 )
-from ouro.tui.configuration_workflows import ConfigurationWorkflowsApp
+from ouro.tui.configuration_workflows import CONFIGURATION_SECTIONS, ConfigurationWorkflowsApp
 from ouro.tui.controller import (
     TUI_APPROVAL_PRESETS,
     LoadedSession,
@@ -113,7 +113,7 @@ _AGENT_INTERACTION_EVENTS = {
 }
 _CONFIGURE_MODEL = "__ouro_configure_model__"
 _THEME_ACTION = "__ouro_theme__"
-_CONFIGURATION_ACTION = "__ouro_configuration__"
+_CONFIGURATION_ACTION_PREFIX = "__ouro_configuration__:"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
     "auto": "Allow host-controlled tools; keep user input interactive",
@@ -563,7 +563,7 @@ _OURO_TUI_CSS = """
 
     #choice-list {
         width: 100%;
-        max-height: 16;
+        max-height: 20;
         padding: 0 1 1 1;
         background: transparent;
         border: none;
@@ -773,10 +773,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     CSS = _OURO_TUI_CSS
 
     BINDINGS = [
-        Binding("ctrl+n", "new_session", "New session", show=False),
-        Binding("ctrl+s", "sessions", "Sessions", show=False),
-        Binding("alt+m", "models", "Model", show=False),
-        Binding("ctrl+p", "actions", "Actions", show=False),
+        Binding(
+            "ctrl+n", "new_session", "New session", show=False, key_display="Ctrl+N"
+        ),
+        Binding("ctrl+s", "sessions", "Sessions", show=False, key_display="Ctrl+S"),
+        Binding("alt+m", "models", "Model", show=False, key_display="Alt+M"),
+        Binding("ctrl+p", "actions", "Actions", show=False, key_display="Ctrl+P"),
         Binding(
             "ctrl+up",
             "conversation_top",
@@ -805,9 +807,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             show=False,
             priority=True,
         ),
-        Binding("ctrl+c", "abort", "Abort", show=False, priority=True),
+        Binding(
+            "ctrl+c",
+            "abort",
+            "Abort",
+            show=False,
+            key_display="Ctrl+C",
+            priority=True,
+        ),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
-        Binding("question_mark", "help", "Help", show=False),
+        Binding("question_mark", "help", "Help", show=False, key_display="?"),
     ]
 
     def __init__(
@@ -2193,15 +2202,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _choose_action(self) -> None:
         action_commands = tuple(
-            command
-            for name in (
-                "/new",
-                "/sessions",
-                "/fork",
-                "/model",
-                "/approval",
-                "/abort",
-                "/help",
+            (group, command, shortcut_action)
+            for group, name, shortcut_action in (
+                ("Session", "/new", "new_session"),
+                ("Session", "/sessions", "sessions"),
+                ("Session", "/fork", None),
+                ("Runtime", "/model", "models"),
+                ("Runtime", "/approval", None),
+                ("Runtime", "/abort", "abort"),
+                ("Support", "/help", "help"),
             )
             if (command := resolve_command(name)[0]) is not None
         )
@@ -2209,17 +2218,29 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(
                 _THEME_ACTION,
                 "Theme color",
-                f"Current · {self._tui_theme.label}",
                 accent=self._tui_theme.accent,
-            ),
-            Choice(
-                _CONFIGURATION_ACTION,
-                "Configuration",
-                "Compaction, tools, MCP servers, and installed skills",
+                group="Configuration",
             ),
             *tuple(
-                Choice(command.name, command.title, command.description)
-                for command in action_commands
+                Choice(
+                    f"{_CONFIGURATION_ACTION_PREFIX}{selector}",
+                    label,
+                    group="Configuration",
+                )
+                for selector, label in CONFIGURATION_SECTIONS
+            ),
+            *tuple(
+                Choice(
+                    command.name,
+                    command.title,
+                    trailing=(
+                        self._shortcut_for_action(shortcut_action)
+                        if shortcut_action is not None
+                        else ""
+                    ),
+                    group=group,
+                )
+                for group, command, shortcut_action in action_commands
             ),
         )
         selected = await self.push_screen_wait(
@@ -2227,12 +2248,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         if selected == _THEME_ACTION:
             await self._choose_theme()
-        elif selected == _CONFIGURATION_ACTION:
-            self._choose_configuration()
+        elif selected is not None and selected.startswith(_CONFIGURATION_ACTION_PREFIX):
+            self._configure_section(selected.removeprefix(_CONFIGURATION_ACTION_PREFIX))
         elif selected == "/model":
             self.action_models()
         elif selected is not None:
             await self._dispatch_command(selected)
+
+    def _shortcut_for_action(self, action: str) -> str:
+        for binding in Binding.make_bindings(self.BINDINGS):
+            if binding.action == action:
+                return self.get_key_display(binding)
+        return ""
 
     async def _choose_theme(self) -> None:
         original_theme = self._tui_theme

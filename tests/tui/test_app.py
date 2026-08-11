@@ -195,7 +195,7 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
                 placeholder="Filter sessions…",
                 choices=(
                     Choice("today", "Today session", group="Today"),
-                    Choice("yesterday", "Yesterday session", group="Yesterday"),
+                    Choice("yesterday", "Yesterday session", group="Archive"),
                 ),
             ),
             callback=results.append,
@@ -218,11 +218,11 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
         await pilot.press("up")
         assert options.highlighted == 1
 
-        app.screen.query_one("#choice-filter", Input).value = "Yesterday"
+        app.screen.query_one("#choice-filter", Input).value = "Archive"
         await pilot.pause()
 
         assert options.option_count == 2
-        assert options.get_option_at_index(0).prompt.plain == "Yesterday"
+        assert options.get_option_at_index(0).prompt.plain == "Archive"
         assert options.highlighted == 1
 
         await pilot.press("enter", "enter")
@@ -3172,7 +3172,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_actions_owns_the_configuration_hub(
+async def test_actions_flattens_grouped_configuration_without_descriptions(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -3182,25 +3182,43 @@ async def test_actions_owns_the_configuration_hub(
 
         await pilot.press("ctrl+p")
         await pilot.pause()
-        action_values = {choice.value for choice in app.screen._choices}
+        action_choices = app.screen._choices
+        action_values = {choice.value for choice in action_choices}
         assert "/thinking" not in action_values
         assert "/compact" not in action_values
+        assert [choice.label for choice in action_choices] == [
+            "Theme color",
+            "Compaction",
+            "Tools & path access",
+            "MCP servers",
+            "Skills",
+            "New session",
+            "Open session",
+            "Fork session",
+            "Select model",
+            "Session approval",
+            "Abort run",
+            "Keyboard help",
+        ]
+        assert [choice.group for choice in action_choices] == [
+            *("Configuration",) * 5,
+            *("Session",) * 3,
+            *("Runtime",) * 3,
+            "Support",
+        ]
+        assert all(choice.description == "" for choice in action_choices)
+        assert {
+            choice.label: choice.trailing for choice in action_choices if choice.trailing
+        } == {
+            "New session": "Ctrl+N",
+            "Open session": "Ctrl+S",
+            "Select model": "Alt+M",
+            "Abort run": "Ctrl+C",
+            "Keyboard help": "?",
+        }
 
         await pilot.press("down", "enter")
         await pilot.pause(0.2)
-        assert isinstance(app.screen, ChoiceScreen)
-        assert app.screen.query_one("#choice-title", Static).render().plain == "CONFIGURATION"
-        choices = app.screen.query_one(OptionList)
-        rendered = "\n".join(
-            str(choices.get_option_at_index(index).prompt) for index in range(choices.option_count)
-        )
-        assert "Compaction" in rendered
-        assert "Tools & path access" in rendered
-        assert "MCP servers" in rendered
-        assert "Skills" in rendered
-
-        await pilot.press("enter")
-        await pilot.pause()
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
 
@@ -4334,7 +4352,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.pause()
 
         actions = app.screen.query_one(OptionList)
-        assert "Theme color" in str(actions.get_option_at_index(0).prompt)
+        assert "Theme color" in str(actions.get_option_at_index(1).prompt)
         await pilot.press("enter")
         await pilot.pause()
 

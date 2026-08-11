@@ -25,12 +25,12 @@ from ouro.tui.widgets import ConversationView
 _CONFIGURE_TOOL_EXECUTION = "__ouro_tool_execution__"
 _ADD_MCP_SERVER = "__ouro_add_mcp_server__"
 _INSTALL_SKILL = "__ouro_install_skill__"
-_CONFIGURATION_SECTIONS = {
-    "compaction": "Compaction options",
-    "tools": "Tools & path access",
-    "mcp": "MCP servers",
-    "skills": "Skills",
-}
+CONFIGURATION_SECTIONS = (
+    ("compaction", "Compaction"),
+    ("tools", "Tools & path access"),
+    ("mcp", "MCP servers"),
+    ("skills", "Skills"),
+)
 
 _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
     "inherit": None,
@@ -47,39 +47,8 @@ class ConfigurationWorkflowsApp(App[int]):
     _system_status: TuiSystemStatus
 
     @work(exclusive=True, group="configuration-navigation")
-    async def _choose_configuration(self, selector: str | None = None) -> None:
-        selected = selector.casefold() if selector is not None else None
-        if selected is None:
-            selected = await self.push_screen_wait(
-                ChoiceScreen(
-                    title="CONFIGURATION",
-                    placeholder="Choose a configuration section…",
-                    choices=(
-                        Choice(
-                            "compaction",
-                            "Compaction",
-                            "Automatic policy, strategies, summary budget, and model route",
-                        ),
-                        Choice(
-                            "tools",
-                            "Tools & path access",
-                            "Permissions, execution, and workspace read/write scope",
-                        ),
-                        Choice(
-                            "mcp",
-                            "MCP servers",
-                            "Connections, permissions, lifecycle, and tool effects",
-                        ),
-                        Choice(
-                            "skills",
-                            "Skills",
-                            "Install, enable, update, validate, or remove skills",
-                        ),
-                    ),
-                )
-            )
-        if selected is None:
-            return
+    async def _configure_section(self, selector: str) -> None:
+        selected = selector.casefold()
         if selected == "compaction":
             self._configure_compaction()
         elif selected == "tools":
@@ -89,7 +58,7 @@ class ConfigurationWorkflowsApp(App[int]):
         elif selected == "skills":
             self._choose_skills()
         else:
-            available = "|".join(_CONFIGURATION_SECTIONS)
+            available = "|".join(selector for selector, _label in CONFIGURATION_SECTIONS)
             await self.query_one(ConversationView).add_notice(
                 f"Unknown configuration section: {selected}. Available: {available}",
                 error=True,
