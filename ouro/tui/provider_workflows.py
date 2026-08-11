@@ -242,7 +242,6 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return None
-        self.notify(f"Provider {'enabled' if saved.enabled else 'disabled'}: {saved.provider_id}")
         return saved
 
     async def _remove_provider(self, provider_id: str) -> None:
@@ -454,7 +453,6 @@ class ProviderConfigurationWorkflows(App[int]):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self.notify(f"Default provider route: {provider_id}/{endpoint_id} (next request)")
         return True
 
     async def _remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:

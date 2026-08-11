@@ -420,10 +420,11 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_mcp_system_status()
-        self.notify(
-            f"MCP {server_id}: {status.status} · {status.tool_count} tool(s)",
-            severity="error" if status.status == "failed" else "information",
-        )
+        if status.status == "failed":
+            self.notify(
+                f"MCP {server_id}: {status.status} · {status.tool_count} tool(s)",
+                severity="error",
+            )
 
     async def _remove_mcp(self, server_id: str) -> None:
         confirmed = await self.push_screen_wait(
@@ -618,7 +619,6 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
-        self.notify(f"Skill {'enabled' if enabled else 'disabled'}: {name} (next restart)")
         return True
 
     async def _validate_skill(self, name: str) -> None:

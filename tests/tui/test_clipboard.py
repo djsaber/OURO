@@ -94,7 +94,7 @@ async def test_composer_right_click_pastes_system_clipboard_at_cursor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_page_selection_right_click_copies_and_clears_highlight() -> None:
+async def test_page_selection_right_click_copies_and_confirms_external_result() -> None:
     copied: list[str] = []
     app = PageSelectionApp(copied.append)
 

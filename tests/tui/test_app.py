@@ -1419,7 +1419,7 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
         await pilot.pause(0.5)
         indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
 
@@ -1446,6 +1446,7 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
 
         await app._new_session()
         assert "Ready • inherit • faux" in indicator.render().plain
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
@@ -1816,7 +1817,7 @@ async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("h", "e", "l", "l", "o", "enter")
         await pilot.pause(0.8)
@@ -1829,6 +1830,8 @@ async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
         assert recent_run is not None
         assert recent_run.kind == "compaction"
         assert recent_run.status == "completed"
+        toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
+        assert "No complete older turn is eligible" in toast.render().plain
 
 
 @pytest.mark.asyncio
@@ -1838,7 +1841,7 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("f", "o", "r", "k", "enter")
         await pilot.pause(0.8)
@@ -1860,6 +1863,7 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
         assert branch.messages == []
         assert app.query_one(Composer).text == "fork"
         assert app.query_one(Composer).has_focus is True
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
@@ -3145,7 +3149,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
     application.runtime.sessions.set_archived(archived.session_id, True)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+s")
         await pilot.pause()
@@ -3181,6 +3185,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         catalog = {item.session_id: item for item in application.runtime.sessions.catalog().entries}
         assert catalog[active.session_id].archived is True
         assert catalog[archived.session_id].archived is False
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
 
@@ -3200,7 +3205,7 @@ async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
         application.runtime.sessions.set_archived(session.session_id, True)
     app = OuroTuiApp(application=application)
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -3255,6 +3260,7 @@ async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
         assert {item.session_id for item in application.runtime.sessions.catalog().entries} == {
             sessions[2].session_id
         }
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
 
@@ -3666,7 +3672,7 @@ async def test_toggle_provider_keeps_default_visible_but_disabled(tmp_path: Path
     configuration.use_provider("primary")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -3714,6 +3720,7 @@ async def test_toggle_provider_keeps_default_visible_but_disabled(tmp_path: Path
         choices = {choice.value: choice for choice in app.screen._choices}
         assert choices["secondary"].trailing.endswith("· enabled")
         assert ConfigurationFacade(tmp_path).provider("secondary").enabled is True
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
 
@@ -3812,7 +3819,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
     configuration.use_provider("primary")
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -3840,6 +3847,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
         assert ConfigurationFacade(tmp_path).provider("secondary").default_endpoint == (
             "secondary-chat"
         )
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
 
@@ -4010,7 +4018,7 @@ async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34)) as pilot:
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -4030,6 +4038,7 @@ async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -
         await pilot.pause()
         assert app.screen is toggle_screen
         assert app.screen._choices[0].description.startswith("enabled ·")
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
 
@@ -4334,7 +4343,7 @@ async def test_actions_command_opens_action_menu(tmp_path: Path, command: str) -
 async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("slash", *"model", "enter")
         await pilot.pause()
@@ -4352,6 +4361,7 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
         await pilot.pause()
         assert composer.text == ""
         assert app._active_model == "faux"
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
@@ -5129,12 +5139,25 @@ async def test_notifications_use_themed_chrome_at_top_right(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_noop_abort_does_not_notify_when_ready_status_is_visible(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+        assert "Ready" in app.query_one(ActivityIndicator).render().plain
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+
+
+@pytest.mark.asyncio
 async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
         await pilot.pause(0.5)
         status_line = app.query_one(StatusLine)
         status_line.set_context(
@@ -5223,6 +5246,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.press("escape")
         await pilot.pause()
         assert app.tui_theme == sage
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
     stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
     assert '"theme": "sage"' in stored
@@ -5238,7 +5262,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
     preferences = TuiPreferencesStore(tmp_path)
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 32)) as pilot:
+    async with app.run_test(size=(100, 32), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -5265,6 +5289,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
         assert choices["expand"].marker == SELECTED_CHOICE_MARKER
         assert choices["collapse"].marker == ""
         assert preferences.load().reasoning_expanded is True
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
         await pilot.press("escape")
 

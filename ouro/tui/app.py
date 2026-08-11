@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from calendar import month_name
 from collections.abc import Callable, Sequence
@@ -90,6 +91,8 @@ from ouro.tui.widgets import (
     StatusLine,
     user_message_text,
 )
+
+_LOG = logging.getLogger(__name__)
 
 
 class RuntimeEventsReady(Message):
@@ -1700,7 +1703,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         self._edit_draft(_queued_input_draft(cancelled))
-        self.notify("Queued message returned to the composer", markup=False)
 
     async def _command_usage(self, command: TuiCommand) -> None:
         self.notify(f"Usage: {command.usage}", severity="warning", markup=False)
@@ -1813,10 +1815,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._refresh_usage_status()
             if result.skipped or result.compaction is None:
                 self.notify("No complete older turn is eligible for compaction")
-            else:
-                self.notify(
-                    f"Context compacted: {len(result.compaction.covered_message_ids)} message(s)"
-                )
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
@@ -1909,10 +1907,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             sessions.clear()
             sessions.update({session.session_id: session for session in self._sessions})
-            self.notify(
-                f"Session {'archived' if archived else 'restored'}: {session.title}",
-                markup=False,
-            )
             return _session_choices(self._sessions)
 
         await self.push_screen_wait(
@@ -1948,7 +1942,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not await self._refresh_sessions():
                 return None
             active_sessions = tuple(session for session in self._sessions if not session.archived)
-            self.notify(f"Session renamed: {renamed.title}", markup=False)
             return _rename_session_choices(active_sessions)
 
         await self.push_screen_wait(
@@ -1981,7 +1974,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not await self._refresh_sessions():
                 return None
             archived_sessions = tuple(session for session in self._sessions if session.archived)
-            self.notify(f"Deleted {len(removed)} session(s)", markup=False)
             return _session_choices(archived_sessions)
 
         delete_screen = MultiChoiceScreen(
@@ -2065,7 +2057,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 markup=False,
             )
             return
-        source_session_id = self._controller.session_id
         try:
             result = await self._controller.branch_session(selected)
             await self._open_session(result.session.session_id)
@@ -2073,7 +2064,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._edit_draft(user_message_text(selected_message))
-        self.notify(f"Session forked: {source_session_id} → {result.session.session_id}")
 
     async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
@@ -2155,13 +2145,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_model(self._active_model)
         await self._refresh_reasoning_indicator()
         self.query_one(StatusLine).set_context(None)
-        suffix = " (next request)" if applies_to_next_request else ""
-        reasoning = (
-            f" · {_format_reasoning_state(self._reasoning_state)}"
-            if self._reasoning_state is not None
-            else ""
-        )
-        self.notify(f"Model: {self._active_model}{reasoning}{suffix}")
+        if applies_to_next_request:
+            reasoning = (
+                f" · {_format_reasoning_state(self._reasoning_state)}"
+                if self._reasoning_state is not None
+                else ""
+            )
+            self.notify(f"Model: {self._active_model}{reasoning} (next request)")
 
     def action_approval_settings(self) -> None:
         self._choose_approval_mode()
@@ -2204,8 +2194,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self.query_one(StatusLine).set_approval_mode(mode)
-        suffix = " (next approval)" if applies_to_next_approval else ""
-        self.notify(f"Approval: {mode}{suffix}")
+        if applies_to_next_approval:
+            self.notify(f"Approval: {mode} (next approval)")
 
     async def _refresh_approval_indicator(self) -> None:
         try:
@@ -2265,7 +2255,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001 - Runtime owns capability validation.
             self.notify(str(exc), severity="error", markup=False)
             return
-        self.notify(_format_reasoning_state(state))
         self._apply_reasoning_state(state)
 
     def action_actions(self) -> None:
@@ -2385,8 +2374,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         try:
             self._preferences_store.save(preferences)
         except OuroError as exc:
-            self.notify(str(exc), severity="error", markup=False)
-            return
+            _LOG.warning("Could not persist recent TUI actions: %s", exc)
         self._preferences = preferences
 
     def _shortcut_for_action(self, action: str) -> str:
@@ -2483,7 +2471,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return False
         self._preferences = preferences
         self._apply_tui_theme(theme)
-        self.notify(f"Theme color: {theme.label}")
         return True
 
     def _set_reasoning_expanded(self, value: str) -> bool:
@@ -2503,8 +2490,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return False
         self._preferences = preferences
         self.query_one(ConversationView).set_reasoning_expanded(expanded)
-        state = "expanded" if expanded else "collapsed"
-        self.notify(f"Model thoughts: {state}", markup=False)
         return True
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:
@@ -2524,7 +2509,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def action_abort(self) -> None:
         if not self._has_active_run():
-            self.notify("No active run to abort")
             return
         self._abort_run()
 
