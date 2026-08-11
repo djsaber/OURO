@@ -54,6 +54,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The TUI status line now identifies the active model by Endpoint name only; Provider identity
+  remains available in model selection surfaces without consuming persistent status space.
 - TUI model and approval selectors now remain available during an active Session Run. Model
   changes bind at the next provider request, while approval/AFK policy changes bind at the next
   tool preflight without rewriting an in-flight request or an already-created approval.

@@ -914,9 +914,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
         self._sessions = bootstrap.sessions
-        self._active_model = (
-            bootstrap.current_model.display_name or bootstrap.current_model.model_id
-        )
+        self._active_model = bootstrap.current_model.endpoint_id
         header = self.query_one(BrandHeader)
         header.set_context(session_title=self._active_title)
         status_line = self.query_one(StatusLine)
@@ -1813,7 +1811,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._restore_projection(loaded)
         session = loaded.detail.session
         self._active_title = session.title
-        self._active_model = session.current_model or self._active_model
+        if session.current_model is not None:
+            self._active_model = _model_endpoint_name(session.current_model)
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(StatusLine).set_model(self._active_model)
         await self._refresh_approval_indicator()
@@ -1953,7 +1952,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
             return
-        self._active_model = model.display_name or model.model_id
+        self._active_model = model.endpoint_id
         self.query_one(StatusLine).set_model(self._active_model)
         await self._refresh_reasoning_indicator()
         self.query_one(StatusLine).set_context(None)
@@ -2193,6 +2192,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._controller.abort()
         except Exception as exc:  # noqa: BLE001
             self.notify(str(exc), severity="error", markup=False)
+
+
+def _model_endpoint_name(route: str) -> str:
+    _provider_id, separator, endpoint_id = route.partition("/")
+    return endpoint_id if separator else route
 
 
 def _reasoning_value(request: ReasoningRequest) -> str:

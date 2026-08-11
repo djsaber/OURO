@@ -610,6 +610,27 @@ def _application(
     return LocalApplication.from_runtime(runtime)
 
 
+def _endpoint_named_application(tmp_path: Path) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(
+                model_id="provider-model-id",
+                provider_id="supplier",
+                endpoint_id="chat-endpoint",
+                display_name="Friendly model",
+            ),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
 def _thinking_application(tmp_path: Path) -> LocalApplication:
     store = LocalSessionStore(tmp_path)
     store.initialize()
@@ -1188,6 +1209,29 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
 
         await app._new_session()
         assert "Ready • inherit • faux" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) -> None:
+    application = _endpoint_named_application(tmp_path)
+    session = application.runtime.create_session(title="Endpoint status")
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=session.session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
+
+        assert "Ready • inherit • chat-endpoint" in indicator.render().plain
+        assert "supplier/" not in indicator.render().plain
+        assert "provider-model-id" not in indicator.render().plain
+        assert "Friendly model" not in indicator.render().plain
+
+        await app._select_model("supplier/chat-endpoint")
+
+        assert "Ready • inherit • chat-endpoint" in indicator.render().plain
 
 
 @pytest.mark.asyncio
