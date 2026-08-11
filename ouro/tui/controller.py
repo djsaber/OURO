@@ -927,21 +927,39 @@ class TuiController:
         return usage.summarize().totals if usage is not None else UsageTotals()
 
     async def select_model(self, selector: str) -> AvailableModel:
+        """Select a Session model and reset reasoning only when the route changes.
+
+        Model capabilities define the valid reasoning controls, so a route change
+        replaces the old route-bound intent with ``default`` in the same Runtime
+        mutation. Re-selecting the current route preserves the user's intent.
+        """
+
         runtime = self._runtime()
         session_id = self._session_id
         reasoning_request = self._reasoning_request
+        initial_model = self._initial_model
 
-        def select() -> AvailableModel:
+        def select() -> tuple[AvailableModel, bool]:
             model = runtime.resolve_model(selector)
             if session_id is None:
-                runtime.model_reasoning(model.key, reasoning_request)
+                current_model = initial_model or runtime.current_model().key
+                route_changed = model.key != current_model
+                selected_reasoning = ReasoningRequest() if route_changed else reasoning_request
+                runtime.model_reasoning(model.key, selected_reasoning)
             else:
-                runtime.switch_session_model(session_id, model.key)
-            return model
+                route_changed = model.key != runtime.current_model(session_id).key
+                runtime.switch_session_model(
+                    session_id,
+                    model.key,
+                    reasoning_request=ReasoningRequest() if route_changed else None,
+                )
+            return model, route_changed
 
-        model = await asyncio.to_thread(select)
+        model, route_changed = await asyncio.to_thread(select)
         if session_id is None:
             self._initial_model = model.key
+            if route_changed:
+                self._reasoning_request = ReasoningRequest()
         return model
 
     async def session_approval_mode(self) -> SessionApprovalMode:

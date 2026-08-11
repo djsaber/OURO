@@ -409,6 +409,24 @@ def test_model_and_reasoning_changes_reject_incompatible_or_busy_sessions(tmp_pa
         lock.release()
 
 
+def test_session_model_switch_atomically_replaces_incompatible_reasoning(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    high = ReasoningRequest(mode="enabled", effort="high")
+    session = runtime.create_session(title="Strict", reasoning_request=high)
+
+    switched = runtime.switch_session_model(
+        session.session_id,
+        "beta/fast",
+        reasoning_request=ReasoningRequest(),
+    )
+
+    assert switched.current_model == "beta/fast"
+    assert switched.reasoning_request == ReasoningRequest()
+    state = runtime.session_reasoning(session.session_id)
+    assert state.model.key == "beta/fast"
+    assert state.effective == ReasoningRequest(mode="enabled", effort="low")
+
+
 @pytest.mark.asyncio
 async def test_interactive_thinking_command_keeps_new_sessions_independent(tmp_path) -> None:
     runtime, _, providers = _runtime(tmp_path)

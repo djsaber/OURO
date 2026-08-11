@@ -34,10 +34,20 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     store = TuiPreferencesStore(tmp_path)
 
     assert TuiPreferences().reasoning_expanded is False
-    store.save(TuiPreferences(theme="iris", reasoning_expanded=False))
+    store.save(
+        TuiPreferences(
+            theme="iris",
+            reasoning_expanded=False,
+            recent_actions=("/new", "__ouro_theme__"),
+        )
+    )
 
     assert store.path == tmp_path / "config" / "tui.json"
-    assert store.load() == TuiPreferences(theme="iris", reasoning_expanded=False)
+    assert store.load() == TuiPreferences(
+        theme="iris",
+        reasoning_expanded=False,
+        recent_actions=("/new", "__ouro_theme__"),
+    )
 
 
 @pytest.mark.parametrize(
@@ -46,6 +56,8 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         {"theme": "neon"},
         {"theme": "harbor", "framework_option": True},
         {"theme": "harbor", "reasoning_expanded": "sometimes"},
+        {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
+        {"theme": "harbor", "recent_actions": ["same", "same"]},
     ),
 )
 def test_tui_preferences_reject_unknown_values_and_fields(

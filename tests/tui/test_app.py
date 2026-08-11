@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -13,6 +14,7 @@ from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
 
+from ouro.application.configuration import ConfigurationFacade
 from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
@@ -50,6 +52,7 @@ from ouro.mcp import (
     MCPRuntimeResource,
     MCPServerCapabilities,
     MCPServerConfig,
+    MCPServerConfigUpdate,
     MCPServerInfo,
 )
 from ouro.providers import FauxProvider
@@ -3065,7 +3068,7 @@ async def test_model_configuration_screen_validates_and_returns_typed_draft(
 
 
 @pytest.mark.asyncio
-async def test_model_picker_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
+async def test_session_model_settings_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
@@ -3073,14 +3076,25 @@ async def test_model_picker_can_be_completed_with_keyboard_only(tmp_path: Path) 
         await pilot.press("alt+m")
         await pilot.pause()
 
+        assert app.screen.query_one("#choice-title", Static).render().plain == (
+            "SESSION MODEL SETTINGS"
+        )
+        assert [choice.label for choice in app.screen._choices] == [
+            "Model",
+            "Thinking",
+        ]
+        assert app.screen._choices[0].trailing == "faux"
+        assert app.screen._choices[1].trailing == "default"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
         options = app.screen.query_one(OptionList)
         assert options.highlighted == 0
         assert app.screen._choices[0].description == ""
-        model_choice = app.screen._choices[1]
-        assert model_choice.description == ""
-        assert model_choice.trailing == "faux"
+        assert app.screen._choices[0].trailing == "faux"
 
-        await pilot.press("down", "enter")
+        await pilot.press("enter")
         await pilot.pause()
 
         assert not isinstance(app.screen, ChoiceScreen)
@@ -3124,7 +3138,9 @@ async def test_thinking_completion_and_action_menu_share_endpoint_choices(
             assert value not in inline
 
         app.query_one(Composer).clear()
-        app.action_thinking_settings()
+        app.action_models()
+        await pilot.pause()
+        await pilot.press("down", "enter")
         await pilot.pause()
         options = app.screen.query_one(OptionList)
         modal = "\n".join(
@@ -3172,7 +3188,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_actions_flattens_grouped_configuration_without_descriptions(
+async def test_actions_groups_granular_settings_by_function_without_descriptions(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -3188,39 +3204,195 @@ async def test_actions_flattens_grouped_configuration_without_descriptions(
         assert "/compact" not in action_values
         assert [choice.label for choice in action_choices] == [
             "Theme color",
-            "Compaction",
-            "Tools & path access",
-            "MCP servers",
-            "Skills",
             "New session",
             "Open session",
             "Fork session",
-            "Select model",
             "Session approval",
+            "Session model settings",
+            "Add model",
+            "Tool permissions",
+            "Execution & path access",
+            "List MCP servers",
+            "Add MCP server",
+            "Connect MCP server",
+            "Disconnect MCP server",
+            "Edit MCP server",
+            "Remove MCP server",
+            "List skills",
+            "Install skill",
+            "Enable or disable skill",
+            "Validate skill",
+            "Update skill",
+            "Remove skill",
+            "Compaction policy",
             "Abort run",
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
-            *("Configuration",) * 5,
-            *("Session",) * 3,
-            *("Runtime",) * 3,
+            "Appearance",
+            *("Session",) * 4,
+            *("Models",) * 2,
+            *("Tools",) * 2,
+            *("MCP",) * 6,
+            *("Skills",) * 6,
+            "Compaction",
+            "Runtime",
             "Support",
         ]
+        assert "Configuration" not in {choice.group for choice in action_choices}
+        assert "Recent" not in {choice.group for choice in action_choices}
         assert all(choice.description == "" for choice in action_choices)
         assert {
             choice.label: choice.trailing for choice in action_choices if choice.trailing
         } == {
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
-            "Select model": "Alt+M",
+            "Session model settings": "Alt+M",
             "Abort run": "Ctrl+C",
             "Keyboard help": "?",
         }
 
-        await pilot.press("down", "enter")
+        app.screen.query_one("#choice-filter", Input).value = "Compaction policy"
+        await pilot.pause()
+        await pilot.press("enter", "enter")
         await pilot.pause(0.2)
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_actions_opens_add_model_directly_from_models_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+
+        async def model_providers() -> tuple[SimpleNamespace, ...]:
+            return (
+                SimpleNamespace(
+                    provider_id="faux",
+                    provider_type="openai",
+                    endpoint_count=1,
+                ),
+            )
+
+        monkeypatch.setattr(app._controller, "model_providers", model_providers)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+
+        app.screen.query_one("#choice-filter", Input).value = "Add model"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ModelConfigurationScreen)
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_actions_persists_three_distinct_recent_choices_across_restart(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        for label, screen_type in (
+            ("Theme color", ChoiceScreen),
+            ("Compaction policy", CompactionConfigurationScreen),
+            ("Add MCP server", MCPConfigurationScreen),
+        ):
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            assert "Recent" not in {choice.group for choice in app.screen._choices}
+            app.screen.query_one("#choice-filter", Input).value = label
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, screen_type)
+            await pilot.press("escape")
+            await pilot.pause()
+
+        preferences = TuiPreferencesStore(tmp_path).load()
+        assert len(preferences.recent_actions) == 3
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        assert [choice.label for choice in app.screen._choices[:3]] == [
+            "Add MCP server",
+            "Compaction policy",
+            "Theme color",
+        ]
+        assert all(choice.group == "Recent" for choice in app.screen._choices[:3])
+
+    restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    async with restarted.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        assert [choice.label for choice in restarted.screen._choices[:3]] == [
+            "Add MCP server",
+            "Compaction policy",
+            "Theme color",
+        ]
+        assert all(choice.group == "Recent" for choice in restarted.screen._choices[:3])
+
+
+@pytest.mark.asyncio
+async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Path) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="python", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        for action_label, chooser_title in (
+            ("Connect MCP server", "CONNECT MCP SERVER"),
+            ("Edit MCP server", "EDIT MCP SERVER"),
+            ("Remove MCP server", "REMOVE MCP SERVER"),
+        ):
+            await pilot.press("ctrl+p")
+            await pilot.pause()
+            app.screen.query_one("#choice-filter", Input).value = action_label
+            await pilot.pause()
+            await pilot.press("enter")
+            await pilot.pause(0.2)
+
+            assert isinstance(app.screen, ChoiceScreen)
+            assert app.screen.query_one("#choice-title", Static).render().plain == chooser_title
+            assert [choice.value for choice in app.screen._choices] == ["local"]
+
+            await pilot.press("escape")
+            await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
+        encoding="utf-8",
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Validate skill"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause(0.2)
+
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
+        assert [choice.value for choice in app.screen._choices] == ["demo"]
 
 
 @pytest.mark.asyncio
@@ -4370,7 +4542,9 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
 
         harbor = TUI_THEMES["harbor"]
         assert app.tui_theme == harbor
-        assert not (tmp_path / "config" / "tui.json").exists()
+        preview_preferences = TuiPreferencesStore(tmp_path).load()
+        assert preview_preferences.theme == "original"
+        assert len(preview_preferences.recent_actions) == 1
         preview = app.query_one(BrandHeader).render()
         assert preview.get_style_at_offset(preview.plain.index("OURO")).foreground == Color.parse(
             harbor.accent
@@ -4427,4 +4601,7 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(
             TUI_THEMES["iris"].accent
         )
-        assert preferences.load() == TuiPreferences(theme="iris")
+        assert preferences.load() == TuiPreferences(
+            theme="iris",
+            recent_actions=("__ouro_theme__",),
+        )

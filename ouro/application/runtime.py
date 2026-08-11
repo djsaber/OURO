@@ -753,17 +753,36 @@ class RuntimeService:
         )
         return self.store.load_session_record(created.session.session_id)
 
-    def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
-        """Persist the model route used by the Session's next provider request."""
+    def switch_session_model(
+        self,
+        session_id: str,
+        selector: str,
+        *,
+        reasoning_request: ReasoningRequest | None = None,
+    ) -> SessionRecord:
+        """Atomically persist an executable model route and reasoning pair.
+
+        Omitting ``reasoning_request`` preserves the Session intent and therefore
+        rejects an incompatible route. Passing an explicit request replaces both
+        settings in one mutation, which lets interfaces reset or stage reasoning
+        when the user deliberately changes model capabilities.
+        """
 
         model = self.resolve_model(selector)
 
         def validate(session: SessionRecord) -> None:
-            self._model_reasoning_state(model, session.reasoning_request)
+            selected_reasoning = (
+                session.reasoning_request if reasoning_request is None else reasoning_request
+            )
+            self._model_reasoning_state(model, selected_reasoning)
+
+        updates: dict[str, object] = {"current_model": model.key}
+        if reasoning_request is not None:
+            updates["reasoning_request"] = reasoning_request
 
         return self._update_live_session_settings(
             session_id,
-            {"current_model": model.key},
+            updates,
             validate=validate,
         )
 

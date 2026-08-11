@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from textual import work
 from textual.app import App
 
@@ -22,14 +24,32 @@ from ouro.tui.controller import (
 from ouro.tui.screens import Choice, ChoiceScreen
 from ouro.tui.widgets import ConversationView
 
-_CONFIGURE_TOOL_EXECUTION = "__ouro_tool_execution__"
-_ADD_MCP_SERVER = "__ouro_add_mcp_server__"
-_INSTALL_SKILL = "__ouro_install_skill__"
-CONFIGURATION_SECTIONS = (
-    ("compaction", "Compaction"),
-    ("tools", "Tools & path access"),
-    ("mcp", "MCP servers"),
-    ("skills", "Skills"),
+
+@dataclass(frozen=True)
+class SystemSettingAction:
+    """Stable menu-to-workflow contract; action IDs also back persisted recents."""
+
+    action_id: str
+    label: str
+    group: str
+
+
+SYSTEM_SETTING_ACTIONS = (
+    SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
+    SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
+    SystemSettingAction("mcp.list", "List MCP servers", "MCP"),
+    SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
+    SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
+    SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
+    SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
+    SystemSettingAction("mcp.remove", "Remove MCP server", "MCP"),
+    SystemSettingAction("skills.list", "List skills", "Skills"),
+    SystemSettingAction("skills.install", "Install skill", "Skills"),
+    SystemSettingAction("skills.toggle", "Enable or disable skill", "Skills"),
+    SystemSettingAction("skills.validate", "Validate skill", "Skills"),
+    SystemSettingAction("skills.update", "Update skill", "Skills"),
+    SystemSettingAction("skills.remove", "Remove skill", "Skills"),
+    SystemSettingAction("compaction.policy", "Compaction policy", "Compaction"),
 )
 
 _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
@@ -47,20 +67,29 @@ class ConfigurationWorkflowsApp(App[int]):
     _system_status: TuiSystemStatus
 
     @work(exclusive=True, group="configuration-navigation")
-    async def _configure_section(self, selector: str) -> None:
-        selected = selector.casefold()
-        if selected == "compaction":
-            self._configure_compaction()
-        elif selected == "tools":
+    async def _run_system_setting(self, action_id: str) -> None:
+        if action_id == "tools.permissions":
             self._choose_tools()
-        elif selected == "mcp":
+        elif action_id == "tools.execution":
+            await self._configure_tool_execution()
+        elif action_id == "mcp.list":
             self._choose_mcp()
-        elif selected == "skills":
+        elif action_id == "mcp.add":
+            await self._edit_mcp(None)
+        elif action_id.startswith("mcp."):
+            await self._choose_mcp_action(action_id.removeprefix("mcp."))
+        elif action_id == "skills.list":
             self._choose_skills()
+        elif action_id == "skills.install":
+            await self._install_skill()
+        elif action_id.startswith("skills."):
+            await self._choose_skill_action(action_id.removeprefix("skills."))
+        elif action_id == "compaction.policy":
+            self._configure_compaction()
         else:
-            available = "|".join(selector for selector, _label in CONFIGURATION_SECTIONS)
+            available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
             await self.query_one(ConversationView).add_notice(
-                f"Unknown configuration section: {selected}. Available: {available}",
+                f"Unknown system setting action: {action_id}. Available: {available}",
                 error=True,
             )
 
@@ -103,27 +132,20 @@ class ConfigurationWorkflowsApp(App[int]):
             return
         selected = selector
         if selected is None:
-            choices = (
-                Choice(
-                    _CONFIGURE_TOOL_EXECUTION,
-                    "Execution & path access",
-                    "Scheduling, output limit, and workspace-only read/write scope",
-                ),
-                *tuple(
-                    Choice(item.name, item.display_name, _tool_description(item)) for item in tools
-                ),
+            choices = tuple(
+                Choice(item.name, item.display_name, _tool_description(item)) for item in tools
             )
+            if not choices:
+                self.notify("No configurable tools are available", severity="warning")
+                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(
-                    title="TOOLS",
+                    title="TOOL PERMISSIONS",
                     placeholder="Filter tools…",
                     choices=choices,
                 )
             )
         if selected is None:
-            return
-        if selected == _CONFIGURE_TOOL_EXECUTION:
-            await self._configure_tool_execution()
             return
         tool = next((item for item in tools if item.name == selected), None)
         if tool is None:
@@ -192,28 +214,21 @@ class ConfigurationWorkflowsApp(App[int]):
             return
         selected = selector
         if selected is None:
-            choices = (
+            choices = tuple(
                 Choice(
-                    _ADD_MCP_SERVER,
-                    "＋ Add MCP server",
-                    "Configure a stdio, Streamable HTTP, or SSE server",
-                ),
-                *tuple(
-                    Choice(
-                        config.server_id,
-                        config.name,
-                        _mcp_description(config, runtime.get(config.server_id)),
-                    )
-                    for config in configs
-                ),
+                    config.server_id,
+                    config.name,
+                    _mcp_description(config, runtime.get(config.server_id)),
+                )
+                for config in configs
             )
+            if not choices:
+                self.notify("No MCP servers are configured", severity="warning")
+                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(title="MCP SERVERS", placeholder="Filter servers…", choices=choices)
             )
         if selected is None:
-            return
-        if selected == _ADD_MCP_SERVER:
-            await self._edit_mcp(None)
             return
         if not any(item.server_id == selected for item in configs):
             await self.query_one(ConversationView).add_notice(
@@ -222,6 +237,76 @@ class ConfigurationWorkflowsApp(App[int]):
             )
             return
         await self._manage_mcp(selected)
+
+    async def _choose_mcp_action(self, action: str) -> None:
+        if action not in {"connect", "disconnect", "edit", "remove"}:
+            await self.query_one(ConversationView).add_notice(
+                f"Unknown MCP action: {action}",
+                error=True,
+            )
+            return
+        try:
+            configs = await self._controller.mcp_configurations()
+            runtime = {item.server_id: item for item in self._controller.mcp_servers()}
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+        if action == "connect":
+            candidates = tuple(
+                config
+                for config in configs
+                if config.enabled
+                and (
+                    (status := runtime.get(config.server_id)) is not None
+                    and status.status not in {"connected", "starting", "reconnecting"}
+                )
+            )
+        elif action == "disconnect":
+            candidates = tuple(
+                config
+                for config in configs
+                if (status := runtime.get(config.server_id)) is not None
+                and status.status in {"connected", "starting", "reconnecting"}
+            )
+        else:
+            candidates = configs
+
+        action_label = {
+            "connect": "CONNECT",
+            "disconnect": "DISCONNECT",
+            "edit": "EDIT",
+            "remove": "REMOVE",
+        }[action]
+        if not candidates:
+            self.notify(f"No MCP servers are available to {action}", severity="warning")
+            return
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title=f"{action_label} MCP SERVER",
+                placeholder="Filter servers…",
+                choices=tuple(
+                    Choice(
+                        config.server_id,
+                        config.name,
+                        _mcp_description(config, runtime.get(config.server_id)),
+                    )
+                    for config in candidates
+                ),
+            )
+        )
+        if selected is None:
+            return
+        config = next(item for item in candidates if item.server_id == selected)
+        if action == "edit":
+            await self._edit_mcp(config)
+        elif action == "remove":
+            await self._remove_mcp(selected)
+        else:
+            await self._run_mcp_action(
+                selected,
+                "start" if action == "connect" else "stop",
+            )
 
     async def _manage_mcp(self, server_id: str) -> None:
         try:
@@ -339,24 +424,17 @@ class ConfigurationWorkflowsApp(App[int]):
             return
         selected = selector
         if selected is None:
-            choices = (
-                Choice(
-                    _INSTALL_SKILL,
-                    "＋ Install skill",
-                    "Install from a local directory or Git source",
-                ),
-                *tuple(
-                    Choice(skill.name, skill.name, _skill_description(skill))
-                    for skill in catalog.skills
-                ),
+            choices = tuple(
+                Choice(skill.name, skill.name, _skill_description(skill))
+                for skill in catalog.skills
             )
+            if not choices:
+                self.notify("No skills are installed or discovered", severity="warning")
+                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(title="SKILLS", placeholder="Filter skills…", choices=choices)
             )
         if selected is None:
-            return
-        if selected == _INSTALL_SKILL:
-            await self._install_skill()
             return
         if not any(item.name == selected for item in catalog.skills):
             await self.query_one(ConversationView).add_notice(
@@ -365,6 +443,55 @@ class ConfigurationWorkflowsApp(App[int]):
             )
             return
         await self._manage_skill(selected)
+
+    async def _choose_skill_action(self, action: str) -> None:
+        if action not in {"toggle", "validate", "update", "remove"}:
+            await self.query_one(ConversationView).add_notice(
+                f"Unknown skill action: {action}",
+                error=True,
+            )
+            return
+        try:
+            catalog = await self._controller.skill_catalog()
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        candidates = (
+            tuple(skill for skill in catalog.skills if skill.managed)
+            if action in {"update", "remove"}
+            else catalog.skills
+        )
+        if not candidates:
+            qualifier = "managed " if action in {"update", "remove"} else ""
+            self.notify(f"No {qualifier}skills are available to {action}", severity="warning")
+            return
+        action_label = {
+            "toggle": "ENABLE OR DISABLE",
+            "validate": "VALIDATE",
+            "update": "UPDATE",
+            "remove": "REMOVE",
+        }[action]
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title=f"{action_label} SKILL",
+                placeholder="Filter skills…",
+                choices=tuple(
+                    Choice(skill.name, skill.name, _skill_description(skill))
+                    for skill in candidates
+                ),
+            )
+        )
+        if selected is None:
+            return
+        skill = next(item for item in candidates if item.name == selected)
+        if action == "toggle":
+            await self._set_skill_enabled(skill.name, enabled=not skill.enabled)
+        elif action == "validate":
+            await self._validate_skill(skill.name)
+        elif action == "update":
+            await self._update_skill(skill.name)
+        else:
+            await self._remove_skill(skill.name)
 
     async def _manage_skill(self, name: str) -> None:
         try:

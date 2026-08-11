@@ -46,7 +46,10 @@ from ouro.tui.commands import (
     matching_commands,
     resolve_command,
 )
-from ouro.tui.configuration_workflows import CONFIGURATION_SECTIONS, ConfigurationWorkflowsApp
+from ouro.tui.configuration_workflows import (
+    SYSTEM_SETTING_ACTIONS,
+    ConfigurationWorkflowsApp,
+)
 from ouro.tui.controller import (
     TUI_APPROVAL_PRESETS,
     LoadedSession,
@@ -111,9 +114,13 @@ _AGENT_INTERACTION_EVENTS = {
     "agent_result_delivered",
     "agent_closed",
 }
-_CONFIGURE_MODEL = "__ouro_configure_model__"
 _THEME_ACTION = "__ouro_theme__"
-_CONFIGURATION_ACTION_PREFIX = "__ouro_configuration__:"
+_ADD_MODEL_ACTION = "__ouro_add_model__"
+_SESSION_MODEL_SETTINGS_ACTION = "__ouro_session_model_settings__"
+_MODEL_ROUTE_ACTION = "__ouro_model_route__"
+_MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
+_SYSTEM_SETTING_ACTION_PREFIX = "__ouro_system_setting__:"
+_RECENT_ACTION_PREFIX = "__ouro_recent_action__:"
 _APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
     "inherit": "Use each tool's configured permission policy",
     "auto": "Allow host-controlled tools; keep user input interactive",
@@ -831,7 +838,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         application: LocalApplication | None = None,
         close_application: bool = True,
     ) -> None:
-        self._preferences_store = TuiPreferencesStore(home)
+        preference_home = (
+            application.runtime.environment.home
+            if home is None and application is not None
+            else home
+        )
+        self._preferences_store = TuiPreferencesStore(preference_home)
         self._preferences_error: str | None = None
         try:
             preferences = self._preferences_store.load()
@@ -2020,31 +2032,54 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
 
     def action_models(self) -> None:
-        self._choose_model()
+        self._choose_model_settings()
 
     @work(exclusive=True, group="navigation")
+    async def _choose_model_settings(self) -> None:
+        try:
+            state = await self._controller.session_reasoning()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title="SESSION MODEL SETTINGS",
+                placeholder="Choose a model setting…",
+                choices=(
+                    Choice(_MODEL_ROUTE_ACTION, "Model", trailing=state.model.endpoint_id),
+                    Choice(
+                        _MODEL_REASONING_ACTION,
+                        "Thinking",
+                        trailing=_reasoning_value(state.requested),
+                    ),
+                ),
+            )
+        )
+        if selected == _MODEL_ROUTE_ACTION:
+            await self._choose_model()
+        elif selected == _MODEL_REASONING_ACTION:
+            await self._edit_reasoning()
+
     async def _choose_model(self) -> None:
         self._models = await self._controller.models()
-        choices = (
+        state = await self._controller.session_reasoning()
+        choices = tuple(
             Choice(
-                value=_CONFIGURE_MODEL,
-                label="＋ Configure a new model",
-            ),
-            *tuple(
-                Choice(
-                    value=model.key,
-                    label=model.display_name or model.model_id,
-                    trailing=model.provider_id,
-                )
-                for model in self._models
-            ),
+                value=model.key,
+                label=model.display_name or model.model_id,
+                trailing=model.provider_id,
+            )
+            for model in self._models
         )
         selected = await self.push_screen_wait(
-            ChoiceScreen(title="MODELS", placeholder="Filter models…", choices=choices)
+            ChoiceScreen(
+                title="MODELS",
+                placeholder="Filter models…",
+                choices=choices,
+                initial_value=state.model.key,
+            )
         )
-        if selected == _CONFIGURE_MODEL:
-            await self._configure_model()
-        elif selected is not None:
+        if selected is not None:
             await self._select_model(selected)
 
     async def _configure_model(self) -> None:
@@ -2094,7 +2129,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._refresh_reasoning_indicator()
         self.query_one(StatusLine).set_context(None)
         suffix = " (next request)" if applies_to_next_request else ""
-        self.notify(f"Model: {self._active_model}{suffix}")
+        reasoning = (
+            f" · {_format_reasoning_state(self._reasoning_state)}"
+            if self._reasoning_state is not None
+            else ""
+        )
+        self.notify(f"Model: {self._active_model}{reasoning}{suffix}")
 
     def action_approval_settings(self) -> None:
         self._choose_approval_mode()
@@ -2151,6 +2191,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     @work(exclusive=True, group="navigation")
     async def _choose_reasoning(self) -> None:
+        await self._edit_reasoning()
+
+    async def _edit_reasoning(self) -> None:
         if self._has_active_run():
             self.notify(
                 "Abort the active run before changing thinking settings",
@@ -2201,59 +2244,110 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     @work(exclusive=True, group="navigation")
     async def _choose_action(self) -> None:
-        action_commands = tuple(
-            (group, command, shortcut_action)
-            for group, name, shortcut_action in (
-                ("Session", "/new", "new_session"),
-                ("Session", "/sessions", "sessions"),
-                ("Session", "/fork", None),
-                ("Runtime", "/model", "models"),
-                ("Runtime", "/approval", None),
-                ("Runtime", "/abort", "abort"),
-                ("Support", "/help", "help"),
-            )
-            if (command := resolve_command(name)[0]) is not None
-        )
-        choices = (
+        actions = (
             Choice(
                 _THEME_ACTION,
                 "Theme color",
                 accent=self._tui_theme.accent,
-                group="Configuration",
+                group="Appearance",
             ),
-            *tuple(
+            self._command_action_choice("/new", "Session", "new_session"),
+            self._command_action_choice("/sessions", "Session", "sessions"),
+            self._command_action_choice("/fork", "Session"),
+            self._command_action_choice("/approval", "Session"),
+            Choice(
+                _SESSION_MODEL_SETTINGS_ACTION,
+                "Session model settings",
+                trailing=self._shortcut_for_action("models"),
+                group="Models",
+            ),
+            Choice(_ADD_MODEL_ACTION, "Add model", group="Models"),
+            *(
                 Choice(
-                    f"{_CONFIGURATION_ACTION_PREFIX}{selector}",
-                    label,
-                    group="Configuration",
+                    f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
+                    action.label,
+                    group=action.group,
                 )
-                for selector, label in CONFIGURATION_SECTIONS
+                for action in SYSTEM_SETTING_ACTIONS
             ),
-            *tuple(
-                Choice(
-                    command.name,
-                    command.title,
-                    trailing=(
-                        self._shortcut_for_action(shortcut_action)
-                        if shortcut_action is not None
-                        else ""
-                    ),
-                    group=group,
-                )
-                for group, command, shortcut_action in action_commands
-            ),
+            self._command_action_choice("/abort", "Runtime", "abort"),
+            self._command_action_choice("/help", "Support", "help"),
         )
+        choices = (*self._recent_action_choices(actions), *actions)
         selected = await self.push_screen_wait(
             ChoiceScreen(title="ACTIONS", placeholder="Type an action…", choices=choices)
         )
-        if selected == _THEME_ACTION:
+        if selected is None:
+            return
+        action_id = selected.removeprefix(_RECENT_ACTION_PREFIX)
+        self._remember_action(action_id)
+        if action_id == _THEME_ACTION:
             await self._choose_theme()
-        elif selected is not None and selected.startswith(_CONFIGURATION_ACTION_PREFIX):
-            self._configure_section(selected.removeprefix(_CONFIGURATION_ACTION_PREFIX))
-        elif selected == "/model":
+        elif action_id == _SESSION_MODEL_SETTINGS_ACTION:
             self.action_models()
-        elif selected is not None:
-            await self._dispatch_command(selected)
+        elif action_id == _ADD_MODEL_ACTION:
+            await self._configure_model()
+        elif action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
+            self._run_system_setting(action_id.removeprefix(_SYSTEM_SETTING_ACTION_PREFIX))
+        elif action_id == "/model":
+            self.action_models()
+        else:
+            await self._dispatch_command(action_id)
+
+    def _command_action_choice(
+        self,
+        command_name: str,
+        group: str,
+        shortcut_action: str | None = None,
+    ) -> Choice:
+        command = resolve_command(command_name)[0]
+        if command is None:
+            raise RuntimeError(f"missing builtin TUI command: {command_name}")
+        return Choice(
+            command.name,
+            command.title,
+            trailing=(
+                self._shortcut_for_action(shortcut_action)
+                if shortcut_action is not None
+                else ""
+            ),
+            group=group,
+        )
+
+    def _recent_action_choices(self, actions: tuple[Choice, ...]) -> tuple[Choice, ...]:
+        actions_by_id = {action.value: action for action in actions}
+        recent = tuple(
+            actions_by_id[action_id]
+            for action_id in self._preferences.recent_actions
+            if action_id in actions_by_id
+        )
+        if len(recent) < 3:
+            return ()
+        return tuple(
+            replace(
+                action,
+                value=f"{_RECENT_ACTION_PREFIX}{action.value}",
+                group="Recent",
+            )
+            for action in recent
+        )
+
+    def _remember_action(self, action_id: str) -> None:
+        """Persist a distinct three-entry MRU using canonical action IDs."""
+
+        recent_actions = (
+            action_id,
+            *(item for item in self._preferences.recent_actions if item != action_id),
+        )[:3]
+        if recent_actions == self._preferences.recent_actions:
+            return
+        preferences = self._preferences.model_copy(update={"recent_actions": recent_actions})
+        try:
+            self._preferences_store.save(preferences)
+        except OuroError as exc:
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        self._preferences = preferences
 
     def _shortcut_for_action(self, action: str) -> str:
         for binding in Binding.make_bindings(self.BINDINGS):

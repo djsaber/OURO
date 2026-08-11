@@ -17,6 +17,7 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
     reasoning_expanded: bool = False
+    recent_actions: tuple[str, ...] = ()
 
     @field_validator("theme")
     @classmethod
@@ -24,6 +25,17 @@ class TuiPreferences(OuroModel):
         if value not in TUI_THEMES:
             available = ", ".join(TUI_THEMES)
             raise ValueError(f"unknown TUI theme {value!r}; expected one of: {available}")
+        return value
+
+    @field_validator("recent_actions")
+    @classmethod
+    def validate_recent_actions(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > 3:
+            raise ValueError("recent_actions must contain at most three entries")
+        if any(not action.strip() for action in value):
+            raise ValueError("recent_actions entries must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("recent_actions entries must be unique")
         return value
 
 

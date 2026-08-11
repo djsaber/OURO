@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
@@ -588,5 +589,51 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
         controller.new_session()
         assert await controller.session_approval_preset() == "inherit"
         assert (await controller.session_reasoning()).requested == ReasoningRequest()
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_resets_reasoning_only_when_model_route_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        await controller.set_session_reasoning(
+            ReasoningRequest(mode="enabled", effort="high")
+        )
+        result = await controller.submit("create configured session")
+        runtime = application.runtime
+        selected = AvailableModel(
+            key="other/limited",
+            provider_id="other",
+            endpoint_id="limited",
+            model_id="limited-model",
+        )
+        calls: list[ReasoningRequest | None] = []
+
+        monkeypatch.setattr(runtime, "resolve_model", lambda _selector: selected)
+        monkeypatch.setattr(
+            runtime,
+            "switch_session_model",
+            lambda _session_id, _selector, *, reasoning_request=None: calls.append(
+                reasoning_request
+            ),
+        )
+
+        await controller.select_model(selected.key)
+        monkeypatch.setattr(runtime, "current_model", lambda _session_id=None: selected)
+        await controller.select_model(selected.key)
+
+        assert result.session.reasoning_request.effort == "high"
+        assert calls == [ReasoningRequest(), None]
     finally:
         await controller.close()
