@@ -774,8 +774,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     BINDINGS = [
         Binding("ctrl+n", "new_session", "New session", show=False),
         Binding("ctrl+s", "sessions", "Sessions", show=False),
-        Binding("ctrl+m", "models", "Model", show=False),
+        Binding("alt+m", "models", "Model", show=False),
         Binding("ctrl+p", "actions", "Actions", show=False),
+        Binding(
+            "ctrl+up",
+            "conversation_top",
+            "Conversation top",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+down",
+            "conversation_bottom",
+            "Conversation bottom",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+c", "abort", "Abort", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("question_mark", "help", "Help", show=False),
@@ -1843,6 +1857,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify("Abort the active run before switching sessions", severity="warning")
             return
         self._choose_session()
+
+    def action_conversation_top(self) -> None:
+        self._navigate_to("top")
+
+    def action_conversation_bottom(self) -> None:
+        self._navigate_to("bottom")
 
     def _navigate_to(self, target: str) -> None:
         """Scroll the conversation to the target identified by the /navigate argument."""

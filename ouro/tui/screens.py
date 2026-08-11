@@ -393,24 +393,25 @@ class HelpScreen(ModalScreen[None]):
         accent = theme_for(self).accent
         text.append("OURO shortcuts\n\n", style=f"bold {accent}")
         pairs = (
-            ("Enter", "send", "Shift+Enter", "new line"),
-            ("Ctrl+N", "new session", "Ctrl+S", "session picker"),
-            ("Ctrl+M", "model picker", "Ctrl+P", "action palette"),
+            ("Enter", "send / queue", "Shift+Enter", "new line"),
+            ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
+            ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
+            ("Alt+M", "model", "Ctrl+P", "actions"),
+            ("Ctrl+↑", "conversation top", "Ctrl+↓", "conversation bottom"),
             ("Ctrl+C", "abort run", "Ctrl+Q", "quit"),
+            ("Esc", "close menu", "?", "help"),
         )
         for left_key, left_desc, right_key, right_desc in pairs:
             text.append(left_key, style="bold")
             text.append(f" {left_desc}")
-            text.append(" " * max(0, 24 - len(left_key) - len(left_desc) - 1))
+            text.append(" " * max(0, 40 - len(left_key) - len(left_desc) - 1))
             text.append(right_key, style="bold")
             text.append(f" {right_desc}\n")
-        text.append("?", style="bold")
-        text.append(" help\n\n")
-        text.append("Slash commands\n\n", style=f"bold {accent}")
+        text.append("\nBuilt-in slash commands\n\n", style=f"bold {accent}")
         text.append(slash_command_help(), style="#aeb5bf")
         text.append(
-            "\n\nPlugin commands also appear in slash completion; unique names "
-            "use the short form, ambiguous ones use /plugin.id:command.",
+            "\n\nType / to search built-in and active plugin commands. Unique plugin "
+            "commands use the short form; ambiguous names use /plugin.id:command.",
             style="#8f9aa8",
         )
         yield Static(text, id="help-panel")

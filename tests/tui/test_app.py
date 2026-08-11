@@ -2687,6 +2687,32 @@ async def test_navigate_to_bottom_scrolls_to_latest(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_conversation_shortcuts_navigate_while_composer_is_focused(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        composer = app.query_one(Composer)
+        composer.load_text("draft")
+        composer.focus()
+        await pilot.pause()
+        assert conversation.scroll_y == conversation.max_scroll_y
+
+        await pilot.press("ctrl+up")
+        await pilot.pause()
+        assert conversation.scroll_y == 0
+
+        await pilot.press("ctrl+down")
+        await pilot.pause()
+        assert conversation.scroll_y == conversation.max_scroll_y
+        assert composer.text == "draft"
+
+
+@pytest.mark.asyncio
 async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> None:
     """Picking the first user message scrolls it to the top of the viewport."""
     app = OuroTuiApp(application=_application(tmp_path))
@@ -2920,7 +2946,7 @@ async def test_model_picker_can_be_completed_with_keyboard_only(tmp_path: Path) 
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
-        await pilot.press("ctrl+m")
+        await pilot.press("alt+m")
         await pilot.pause()
 
         options = app.screen.query_one(OptionList)
@@ -4101,8 +4127,22 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         # The help text still surfaces the shortcuts and slash commands.
         rendered = help_panel.render().plain
         assert "OURO shortcuts" in rendered
+        assert "Ctrl+Enter / Ctrl+J" in rendered
+        assert "↑ / ↓" in rendered
+        assert "Alt+M" in rendered
+        assert "Ctrl+M" not in rendered
         assert "Ctrl+P" in rendered
+        assert "Ctrl+↑" in rendered
+        assert "Ctrl+↓" in rendered
+        assert "Built-in slash commands" in rendered
+        assert "/actions" in rendered
+        assert "/skill <skill> [task]" in rendered
+        assert "/unqueue <queued-message>" in rendered
         assert "/help" in rendered
+        assert "/config" not in rendered
+        assert "/tools" not in rendered
+        assert "/mcp" not in rendered
+        assert "/skills" not in rendered
 
 
 @pytest.mark.asyncio
