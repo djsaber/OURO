@@ -1,20 +1,18 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from rich.table import Table
 from rich.text import Text
-from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Vertical
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
+from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ouro.tui.commands import slash_command_help
-from ouro.tui.controller import TuiModelConfiguration
 from ouro.tui.theme import theme_for
 
 
@@ -26,7 +24,21 @@ class Choice:
     accent: str | None = None
     trailing: str = ""
     group: str = ""
+    group_trailing: str = ""
     bold_label: bool = False
+    disabled: bool = False
+    marker: str = ""
+
+
+ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
+
+
+class _ChoiceGroupHeader(Table):
+    """Marks a table-backed group heading without conflating it with disabled rows."""
+
+
+class _ChoiceGroupHeaderText(Text):
+    """Marks a text-backed group heading without conflating it with disabled rows."""
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -48,6 +60,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         choices: tuple[Choice, ...],
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
+        on_select: ChoiceSelectionHandler | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -55,6 +68,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._choices = choices
         self._initial_value = initial_value
         self._on_highlight = on_highlight
+        self._on_select = on_select
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -79,19 +93,29 @@ class ChoiceScreen(ModalScreen[str | None]):
             )
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        needle = event.value.casefold().strip()
+        self._refresh_options(needle=event.value, preferred_value=None)
+
+    def _refresh_options(
+        self,
+        *,
+        needle: str,
+        preferred_value: str | None,
+    ) -> None:
+        normalized_needle = needle.casefold().strip()
         choices = tuple(
             choice
             for choice in self._choices
-            if not needle
-            or needle in choice.label.casefold()
-            or needle in choice.description.casefold()
-            or needle in choice.group.casefold()
+            if not normalized_needle
+            or normalized_needle in choice.label.casefold()
+            or normalized_needle in choice.description.casefold()
+            or normalized_needle in choice.group.casefold()
         )
         options = self.query_one("#choice-list", OptionList)
         options.clear_options()
         options.add_options(self._options(choices, group_accent=theme_for(self).accent))
-        options.highlighted = self._highlight_index(options) if choices else None
+        options.highlighted = (
+            self._highlight_index(options, preferred_value=preferred_value) if choices else None
+        )
 
     def on_input_submitted(self, _event: Input.Submitted) -> None:
         options = self.query_one("#choice-list", OptionList)
@@ -99,9 +123,24 @@ class ChoiceScreen(ModalScreen[str | None]):
             options.highlighted = self._highlight_index(options)
         options.focus()
 
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
-        if event.option.id is not None:
-            self.dismiss(str(event.option.id))
+    async def on_option_list_option_selected(
+        self,
+        event: OptionList.OptionSelected,
+    ) -> None:
+        if event.option.id is None:
+            return
+        selected = str(event.option.id)
+        if self._on_select is None:
+            self.dismiss(selected)
+            return
+        choices = await self._on_select(selected)
+        if choices is None:
+            return
+        self._choices = choices
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+        )
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
         if self._on_highlight is not None and event.option.id is not None:
@@ -179,10 +218,9 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     @staticmethod
     def _is_group_header(option: Option) -> bool:
-        return (
-            option.disabled
-            and isinstance(option.prompt, Text)
-            and bool(option.prompt.plain.strip())
+        return option.disabled and isinstance(
+            option.prompt,
+            (_ChoiceGroupHeader, _ChoiceGroupHeaderText),
         )
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
@@ -206,29 +244,39 @@ class ChoiceScreen(ModalScreen[str | None]):
                 if choice.group:
                     if isinstance(previous_group, str) and previous_group:
                         options.append(Option(Text(" "), disabled=True))
+                    group_header: Text | Table
+                    if choice.group_trailing:
+                        row = _ChoiceGroupHeader.grid(expand=True, padding=0)
+                        row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+                        row.add_column(justify="right", no_wrap=True)
+                        row.add_row(
+                            Text(choice.group, style=f"bold {group_accent}"),
+                            Text(choice.group_trailing, style="#7d8794"),
+                        )
+                        group_header = row
+                    else:
+                        group_header = _ChoiceGroupHeaderText(
+                            choice.group,
+                            style=f"bold {group_accent}",
+                            overflow="ellipsis",
+                            no_wrap=True,
+                        )
                     options.append(
                         Option(
-                            Text(
-                                choice.group,
-                                style=f"bold {group_accent}",
-                                overflow="ellipsis",
-                                no_wrap=True,
-                            ),
+                            group_header,
                             disabled=True,
                         )
                     )
                 previous_group = choice.group
             label_style = (
-                f"bold {choice.accent}" if choice.accent else "bold"
-            ) if choice.bold_label else (
-                choice.accent or ""
+                (f"bold {choice.accent}" if choice.accent else "bold")
+                if choice.bold_label
+                else (choice.accent or "")
             )
-            label = Text(
-                choice.label,
-                style=label_style,
-                overflow="ellipsis",
-                no_wrap=True,
-            )
+            label = Text(overflow="ellipsis", no_wrap=True)
+            if choice.marker:
+                label.append(f"{choice.marker} ", style=f"bold {group_accent}")
+            label.append(choice.label, style=label_style)
             if choice.trailing:
                 row = Table.grid(expand=True, padding=0)
                 row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
@@ -236,11 +284,11 @@ class ChoiceScreen(ModalScreen[str | None]):
                 row.add_column(width=2)
                 row.add_column(justify="right", no_wrap=True)
                 row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
-                options.append(Option(row, id=choice.value))
+                options.append(Option(row, id=choice.value, disabled=choice.disabled))
                 continue
             if choice.description:
                 label.append(f"\n{choice.description}", style="#7d8794")
-            options.append(Option(label, id=choice.value))
+            options.append(Option(label, id=choice.value, disabled=choice.disabled))
         return options
 
     @staticmethod
@@ -259,121 +307,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             if preferred_value is not None and option.id == preferred_value:
                 return index
         return first_enabled
-
-
-class ModelConfigurationScreen(ModalScreen[TuiModelConfiguration | None]):
-    """Collect a new endpoint configuration without owning persistence rules."""
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
-        Binding("ctrl+s", "save", "Save", show=False, priority=True),
-    ]
-
-    def __init__(self, providers: tuple[Choice, ...]) -> None:
-        super().__init__()
-        self._providers = providers
-
-    def compose(self) -> ComposeResult:
-        options = tuple((provider.label, provider.value) for provider in self._providers)
-        initial = self._providers[0].value if self._providers else Select.NULL
-        with VerticalScroll(id="model-config-panel"):
-            yield Static("CONFIGURE MODEL", id="model-config-title")
-            yield Label("Provider", classes="model-config-label")
-            yield Select[str](
-                options,
-                value=initial,
-                allow_blank=False,
-                compact=True,
-                id="model-provider",
-            )
-            yield Label("Endpoint ID", classes="model-config-label")
-            yield Input(placeholder="e.g. gpt-5.6-mini", id="model-endpoint")
-            yield Label("Provider model ID", classes="model-config-label")
-            yield Input(placeholder="Model name sent to the provider", id="model-id")
-            with Horizontal(classes="model-config-fields"):
-                with Vertical(classes="model-config-number-field"):
-                    yield Label("Context window", classes="model-config-number-label")
-                    yield Input(value="128000", id="context-window")
-                with Vertical(classes="model-config-number-field"):
-                    yield Label("Max output tokens", classes="model-config-number-label")
-                    yield Input(value="8192", id="max-output-tokens")
-            with Horizontal(classes="model-config-capabilities"):
-                yield Checkbox("Tools", value=True, id="supports-tools")
-                yield Checkbox("Vision", id="supports-vision")
-            yield Static("", id="model-config-error")
-            yield Static(
-                "Tab move · Space toggle · Ctrl+S save · Esc cancel",
-                id="model-config-hint",
-            )
-            with Horizontal(classes="model-config-actions"):
-                yield Button("Cancel", id="model-config-cancel")
-                yield Button("Save & select", variant="primary", id="model-config-save")
-
-    def on_mount(self) -> None:
-        if self._providers:
-            self.query_one("#model-provider", Select).focus()
-
-    @on(Button.Pressed, "#model-config-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
-
-    @on(Button.Pressed, "#model-config-save")
-    def save_from_button(self) -> None:
-        self._submit()
-
-    @on(Input.Submitted)
-    def submit_from_input(self, event: Input.Submitted) -> None:
-        if event.input.id == "max-output-tokens":
-            self._submit()
-        else:
-            self.focus_next()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_save(self) -> None:
-        self._submit()
-
-    def _submit(self) -> None:
-        provider = self.query_one("#model-provider", Select).value
-        endpoint_id = self.query_one("#model-endpoint", Input).value.strip()
-        model_id = self.query_one("#model-id", Input).value.strip()
-        try:
-            if not isinstance(provider, str) or not provider:
-                raise ValueError("Select a provider")
-            if not endpoint_id:
-                raise ValueError("Endpoint ID is required")
-            if not model_id:
-                raise ValueError("Provider model ID is required")
-            context_window = self._positive_int("#context-window", "Context window")
-            max_output_tokens = self._positive_int("#max-output-tokens", "Max output tokens")
-            if max_output_tokens > context_window:
-                raise ValueError("Max output tokens cannot exceed the context window")
-        except ValueError as exc:
-            self.query_one("#model-config-error", Static).update(str(exc))
-            return
-        self.dismiss(
-            TuiModelConfiguration(
-                provider_id=provider,
-                endpoint_id=endpoint_id,
-                model_id=model_id,
-                context_window=context_window,
-                max_output_tokens=max_output_tokens,
-                supports_tools=self.query_one("#supports-tools", Checkbox).value,
-                supports_vision=self.query_one("#supports-vision", Checkbox).value,
-            )
-        )
-
-    def _positive_int(self, selector: str, label: str) -> int:
-        raw = self.query_one(selector, Input).value.strip()
-        try:
-            value = int(raw)
-        except ValueError as exc:
-            raise ValueError(f"{label} must be an integer") from exc
-        if value < 1:
-            raise ValueError(f"{label} must be positive")
-        return value
 
 
 class HelpScreen(ModalScreen[None]):

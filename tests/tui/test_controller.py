@@ -24,8 +24,9 @@ from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tui.controller import (
     TuiCompactionConfiguration,
     TuiController,
+    TuiEndpointConfiguration,
     TuiMCPServerConfiguration,
-    TuiModelConfiguration,
+    TuiProviderConfiguration,
     TuiToolExecutionConfiguration,
 )
 
@@ -66,7 +67,7 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
 
 
 @pytest.mark.asyncio
-async def test_controller_configures_new_model_through_application_facade(
+async def test_controller_configures_provider_endpoint_through_application_facade(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -92,7 +93,7 @@ async def test_controller_configures_new_model_through_application_facade(
         configuration=configuration,
     )
     await controller.start()
-    draft = TuiModelConfiguration(
+    draft = TuiEndpointConfiguration(
         provider_id="custom",
         endpoint_id="new",
         model_id="new-model",
@@ -103,17 +104,90 @@ async def test_controller_configures_new_model_through_application_facade(
     )
 
     try:
-        model = await controller.configure_model(draft)
+        endpoint = await controller.add_endpoint(draft)
         saved = configuration.endpoint("custom", "new")
 
-        assert model.key == "custom/new"
+        assert endpoint.endpoint_id == "new"
         assert saved.model_id == "new-model"
         assert saved.context_window == 200_000
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
         assert saved.supports_vision is True
         with pytest.raises(ConfigError, match="already exists"):
-            await controller.configure_model(draft)
+            await controller.add_endpoint(draft)
+
+        changed = await controller.update_endpoint(
+            TuiEndpointConfiguration(
+                **{
+                    **draft.__dict__,
+                    "model_id": "new-model-v2",
+                    "supports_structured_output": True,
+                }
+            )
+        )
+        assert changed.model_id == "new-model-v2"
+        assert changed.supports_structured_output is True
+        assert (await controller.use_endpoint("custom", "new")).default is True
+        await controller.remove_endpoint("custom", "new")
+        endpoints = (await controller.provider_endpoints("custom")).endpoints
+        assert {item.endpoint_id for item in endpoints} == {"base"}
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_configures_preset_and_compatible_providers(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=LocalApplication.build(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        templates = await controller.provider_templates()
+        assert {item.template_id for item in templates} >= {"openai", "anthropic", "kimi"}
+
+        preset = await controller.add_provider(
+            TuiProviderConfiguration(
+                provider_id="primary",
+                provider_type="openai",
+                base_url=None,
+                api_path=None,
+                api_key=None,
+                api_key_env="PRIVATE_OPENAI_KEY",
+                timeout=45.0,
+                make_default=True,
+            )
+        )
+        assert preset.default is True
+        assert preset.endpoint_count == 3
+        assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
+
+        compatible = await controller.add_provider(
+            TuiProviderConfiguration(
+                provider_id="gateway",
+                provider_type="anthropic-compatible",
+                base_url="https://gateway.example.invalid",
+                api_path="/v1/messages",
+                api_key=None,
+                api_key_env="GATEWAY_KEY",
+                timeout=30.0,
+            )
+        )
+        assert compatible.endpoint_count == 0
+        assert compatible.protocol == "anthropic-messages"
+
+        disabled = await controller.set_provider_enabled("gateway", enabled=False)
+        assert disabled.enabled is False
+        await controller.remove_provider("gateway")
+        assert {item.provider_id for item in (await controller.provider_catalog()).providers} == {
+            "primary"
+        }
     finally:
         await controller.close()
 

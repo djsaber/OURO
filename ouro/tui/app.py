@@ -63,7 +63,7 @@ from ouro.tui.controller import (
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
-from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
+from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
@@ -71,7 +71,7 @@ from ouro.tui.state import (
     project_run_presentation,
     project_run_presentations,
 )
-from ouro.tui.theme import TUI_THEMES, TuiTheme
+from ouro.tui.theme import SELECTED_CHOICE_MARKER, TUI_THEMES, TuiTheme
 from ouro.tui.widgets import (
     AskUserPanel,
     BrandHeader,
@@ -115,7 +115,6 @@ _AGENT_INTERACTION_EVENTS = {
     "agent_closed",
 }
 _THEME_ACTION = "__ouro_theme__"
-_ADD_MODEL_ACTION = "__ouro_add_model__"
 _SESSION_MODEL_SETTINGS_ACTION = "__ouro_session_model_settings__"
 _MODEL_ROUTE_ACTION = "__ouro_model_route__"
 _MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
@@ -523,7 +522,8 @@ _OURO_TUI_CSS = """
     #activity-indicator { width: 1fr; }
     #context-detail { width: auto; text-align: right; }
 
-    ChoiceScreen, ModelConfigurationScreen, ToolExecutionConfigurationScreen,
+    ChoiceScreen, ProviderConfigurationScreen, EndpointConfigurationScreen,
+    ToolExecutionConfigurationScreen,
     CompactionConfigurationScreen,
     MCPConfigurationScreen, SkillInstallScreen, ConfirmScreen, HelpScreen {
         align: center middle;
@@ -604,83 +604,6 @@ _OURO_TUI_CSS = """
         border-left: solid $ouro-border-left;
     }
 
-    #model-config-panel {
-        width: 72;
-        max-width: 90%;
-        height: auto;
-        max-height: 95%;
-        padding: 1 2;
-        color: #d6d9df;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-border-right;
-        border-bottom: none;
-        border-left: solid $ouro-border-left;
-    }
-
-    #model-config-title {
-        height: 2;
-        color: $ouro-theme;
-        text-style: bold;
-    }
-
-    .model-config-label {
-        height: 1;
-        margin-top: 1;
-        color: #8f9aa8;
-    }
-
-    #model-config-panel Input, #model-config-panel Select {
-        background: $ouro-highlight;
-        border: none;
-    }
-
-    .model-config-fields {
-        height: 4;
-        margin-top: 1;
-    }
-
-    .model-config-number-field {
-        width: 1fr;
-        height: 4;
-        margin-right: 1;
-    }
-
-    .model-config-number-label {
-        height: 1;
-        color: #8f9aa8;
-    }
-
-    .model-config-capabilities {
-        height: 3;
-    }
-
-    .model-config-capabilities Checkbox {
-        width: 1fr;
-    }
-
-    #model-config-error {
-        height: auto;
-        min-height: 1;
-        color: #e08a8a;
-    }
-
-    #model-config-hint {
-        height: 1;
-        color: #6f7a87;
-    }
-
-    .model-config-actions {
-        height: 3;
-        align-horizontal: right;
-    }
-
-    .model-config-actions Button {
-        width: auto;
-        min-width: 12;
-        margin-left: 1;
-    }
-
     .configuration-panel {
         width: 76;
         max-width: 92%;
@@ -700,6 +623,19 @@ _OURO_TUI_CSS = """
     .configuration-title {
         height: 2;
         color: $ouro-theme;
+        text-style: bold;
+    }
+
+    .configuration-summary {
+        height: auto;
+        margin-bottom: 1;
+        color: #6f7a87;
+    }
+
+    .configuration-section {
+        height: 1;
+        margin-top: 1;
+        color: #8f9aa8;
         text-style: bold;
     }
 
@@ -744,6 +680,7 @@ _OURO_TUI_CSS = """
 
     .configuration-checks { height: 3; margin-top: 1; }
     .configuration-checks Checkbox { width: 1fr; }
+    .endpoint-capabilities Checkbox { width: 1fr; }
     .configuration-number-row { height: 4; margin-top: 1; }
     .configuration-number-field { width: 1fr; height: 4; margin-right: 1; }
 
@@ -780,9 +717,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     CSS = _OURO_TUI_CSS
 
     BINDINGS = [
-        Binding(
-            "ctrl+n", "new_session", "New session", show=False, key_display="Ctrl+N"
-        ),
+        Binding("ctrl+n", "new_session", "New session", show=False, key_display="Ctrl+N"),
         Binding("ctrl+s", "sessions", "Sessions", show=False, key_display="Ctrl+S"),
         Binding("alt+m", "models", "Model", show=False, key_display="Alt+M"),
         Binding("ctrl+p", "actions", "Actions", show=False, key_display="Ctrl+P"),
@@ -2082,41 +2017,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if selected is not None:
             await self._select_model(selected)
 
-    async def _configure_model(self) -> None:
-        if self._has_active_run():
-            self.notify("Abort the active run before configuring models", severity="warning")
-            return
-        try:
-            providers = await self._controller.model_providers()
-        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        if not providers:
-            self.notify(
-                "No enabled provider is configured. Configure a provider before adding models.",
-                severity="error",
-                markup=False,
-            )
-            return
-        provider_choices = tuple(
-            Choice(
-                value=provider.provider_id,
-                label=provider.provider_id,
-                description=f"{provider.provider_type} · {provider.endpoint_count} endpoint(s)",
-            )
-            for provider in providers
-        )
-        configured = await self.push_screen_wait(ModelConfigurationScreen(provider_choices))
-        if configured is None:
-            return
-        try:
-            model = await self._controller.configure_model(configured)
-        except Exception as exc:  # noqa: BLE001 - configuration validation is user-visible.
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        self._models = await self._controller.models()
-        await self._select_model(model.key)
-
     async def _select_model(self, selector: str) -> None:
         applies_to_next_request = self._has_active_run()
         try:
@@ -2149,7 +2049,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = tuple(
             Choice(
                 value=mode,
-                label=("● " if mode == current else "  ") + mode,
+                label=mode,
+                marker=SELECTED_CHOICE_MARKER if mode == current else "",
                 description=_APPROVAL_DESCRIPTIONS[mode],
             )
             for mode in TUI_APPROVAL_PRESETS
@@ -2210,7 +2111,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = tuple(
             Choice(
                 value=argument.value,
-                label=("● " if argument.value == current else "  ") + argument.value,
+                label=argument.value,
+                marker=(SELECTED_CHOICE_MARKER if argument.value == current else ""),
                 description=argument.description,
             )
             for argument in arguments
@@ -2259,9 +2161,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 _SESSION_MODEL_SETTINGS_ACTION,
                 "Session model settings",
                 trailing=self._shortcut_for_action("models"),
-                group="Models",
+                group="Session",
             ),
-            Choice(_ADD_MODEL_ACTION, "Add model", group="Models"),
             *(
                 Choice(
                     f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
@@ -2285,8 +2186,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._choose_theme()
         elif action_id == _SESSION_MODEL_SETTINGS_ACTION:
             self.action_models()
-        elif action_id == _ADD_MODEL_ACTION:
-            await self._configure_model()
         elif action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
             self._run_system_setting(action_id.removeprefix(_SYSTEM_SETTING_ACTION_PREFIX))
         elif action_id == "/model":
@@ -2307,9 +2206,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             command.name,
             command.title,
             trailing=(
-                self._shortcut_for_action(shortcut_action)
-                if shortcut_action is not None
-                else ""
+                self._shortcut_for_action(shortcut_action) if shortcut_action is not None else ""
             ),
             group=group,
         )
@@ -2360,8 +2257,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         choices = tuple(
             Choice(
                 theme.theme_id,
-                ("● " if theme == self._tui_theme else "  ") + theme.label,
+                theme.label,
                 accent=theme.accent,
+                marker=SELECTED_CHOICE_MARKER if theme == self._tui_theme else "",
             )
             for theme in TUI_THEMES.values()
         )

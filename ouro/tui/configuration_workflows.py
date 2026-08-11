@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from textual import work
-from textual.app import App
 
-from ouro.application.configuration_models import MCPServerConfigView, SkillView
+from ouro.application.configuration_models import (
+    MCPServerConfigView,
+    SkillView,
+)
 from ouro.core.tools import PermissionMode
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
@@ -21,7 +23,9 @@ from ouro.tui.controller import (
     TuiToolConfiguration,
     project_mcp_system_status,
 )
+from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen
+from ouro.tui.theme import SELECTED_CHOICE_MARKER
 from ouro.tui.widgets import ConversationView
 
 
@@ -35,6 +39,24 @@ class SystemSettingAction:
 
 
 SYSTEM_SETTING_ACTIONS = (
+    SystemSettingAction("providers.list", "List providers", "Providers"),
+    SystemSettingAction("providers.add", "Add provider", "Providers"),
+    SystemSettingAction("providers.edit", "Edit provider", "Providers"),
+    SystemSettingAction(
+        "providers.toggle",
+        "Enable or disable provider",
+        "Providers",
+    ),
+    SystemSettingAction("providers.remove", "Remove provider", "Providers"),
+    SystemSettingAction("providers.endpoints.list", "List endpoints", "Providers"),
+    SystemSettingAction("providers.endpoints.add", "Add endpoint", "Providers"),
+    SystemSettingAction("providers.endpoints.edit", "Edit endpoint", "Providers"),
+    SystemSettingAction(
+        "providers.endpoints.use",
+        "Set default endpoint",
+        "Providers",
+    ),
+    SystemSettingAction("providers.endpoints.remove", "Remove endpoint", "Providers"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
     SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
     SystemSettingAction("mcp.list", "List MCP servers", "MCP"),
@@ -60,7 +82,7 @@ _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
 }
 
 
-class ConfigurationWorkflowsApp(App[int]):
+class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
     """Own the keyboard-first TUI workflows for durable configuration."""
 
     _controller: TuiController
@@ -72,6 +94,14 @@ class ConfigurationWorkflowsApp(App[int]):
             self._choose_tools()
         elif action_id == "tools.execution":
             await self._configure_tool_execution()
+        elif action_id == "providers.list":
+            await self._choose_providers()
+        elif action_id == "providers.add":
+            await self._add_provider()
+        elif action_id.startswith("providers.endpoints."):
+            await self._choose_endpoint_action(action_id.removeprefix("providers.endpoints."))
+        elif action_id.startswith("providers."):
+            await self._choose_provider_action(action_id.removeprefix("providers."))
         elif action_id == "mcp.list":
             self._choose_mcp()
         elif action_id == "mcp.add":
@@ -168,8 +198,9 @@ class ConfigurationWorkflowsApp(App[int]):
                 choices=tuple(
                     Choice(
                         value,
-                        ("● " if value == current else "  ") + value,
+                        value,
                         _tool_permission_description(value),
+                        marker=SELECTED_CHOICE_MARKER if value == current else "",
                     )
                     for value in _TOOL_PERMISSION_CHOICES
                 ),
@@ -471,22 +502,51 @@ class ConfigurationWorkflowsApp(App[int]):
             "update": "UPDATE",
             "remove": "REMOVE",
         }[action]
+        choices = tuple(
+            Choice(skill.name, skill.name, _skill_description(skill)) for skill in candidates
+        )
+        if action == "toggle":
+            skills = {skill.name: skill for skill in candidates}
+
+            async def toggle_skill(name: str) -> tuple[Choice, ...] | None:
+                skill = skills[name]
+                if not await self._set_skill_enabled(name, enabled=not skill.enabled):
+                    return None
+                try:
+                    refreshed = await self._controller.skill_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(
+                        str(exc),
+                        error=True,
+                    )
+                    return None
+                skills.clear()
+                skills.update({skill.name: skill for skill in refreshed.skills})
+                return tuple(
+                    Choice(skill.name, skill.name, _skill_description(skill))
+                    for skill in skills.values()
+                )
+
+            await self.push_screen_wait(
+                ChoiceScreen(
+                    title=f"{action_label} SKILL",
+                    placeholder="Filter skills…",
+                    choices=choices,
+                    on_select=toggle_skill,
+                )
+            )
+            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"{action_label} SKILL",
                 placeholder="Filter skills…",
-                choices=tuple(
-                    Choice(skill.name, skill.name, _skill_description(skill))
-                    for skill in candidates
-                ),
+                choices=choices,
             )
         )
         if selected is None:
             return
         skill = next(item for item in candidates if item.name == selected)
-        if action == "toggle":
-            await self._set_skill_enabled(skill.name, enabled=not skill.enabled)
-        elif action == "validate":
+        if action == "validate":
             await self._validate_skill(skill.name)
         elif action == "update":
             await self._update_skill(skill.name)
@@ -552,13 +612,14 @@ class ConfigurationWorkflowsApp(App[int]):
         names = ", ".join(item.name for item in result.skills) or "none"
         self.notify(f"Skills installed: {names} (next restart)")
 
-    async def _set_skill_enabled(self, name: str, *, enabled: bool) -> None:
+    async def _set_skill_enabled(self, name: str, *, enabled: bool) -> bool:
         try:
             await self._controller.set_skill_enabled(name, enabled=enabled)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return False
         self.notify(f"Skill {'enabled' if enabled else 'disabled'}: {name} (next restart)")
+        return True
 
     async def _validate_skill(self, name: str) -> None:
         try:

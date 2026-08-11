@@ -19,6 +19,10 @@ from ouro.application.configuration_models import (
     MCPServerConfigInput,
     MCPServerConfigView,
     MCPTransportInput,
+    ProviderCatalogView,
+    ProviderEndpointCatalogView,
+    ProviderEndpointView,
+    ProviderTemplateView,
     ProviderView,
     SkillCatalogView,
     SkillInstallScopeInput,
@@ -39,6 +43,7 @@ from ouro.application.session_models import (
 )
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageTotals
+from ouro.config import ProviderType
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
@@ -121,8 +126,23 @@ def project_mcp_system_status(
 
 
 @dataclass(frozen=True)
-class TuiModelConfiguration:
-    """Validated model-endpoint intent collected by the TUI."""
+class TuiProviderConfiguration:
+    """Supplier-level configuration intent collected by the TUI."""
+
+    provider_id: str
+    provider_type: ProviderType
+    base_url: str | None
+    api_path: str | None
+    api_key: str | None
+    api_key_env: str | None
+    timeout: float
+    enabled: bool = True
+    make_default: bool = False
+
+
+@dataclass(frozen=True)
+class TuiEndpointConfiguration:
+    """One provider-owned callable endpoint collected by the TUI."""
 
     provider_id: str
     endpoint_id: str
@@ -131,6 +151,8 @@ class TuiModelConfiguration:
     max_output_tokens: int
     supports_tools: bool = True
     supports_vision: bool = False
+    supports_streaming: bool = True
+    supports_structured_output: bool = False
 
 
 @dataclass(frozen=True)
@@ -553,38 +575,147 @@ class TuiController:
         runtime = self._runtime()
         return await asyncio.to_thread(lambda: tuple(runtime.available_models()))
 
-    async def model_providers(self) -> tuple[ProviderView, ...]:
+    async def provider_catalog(self) -> ProviderCatalogView:
         configuration = self._require_configuration()
-        return await asyncio.to_thread(
-            lambda: tuple(
-                provider
-                for provider in configuration.provider_catalog().providers
-                if provider.enabled
-            )
+        return await asyncio.to_thread(configuration.provider_catalog)
+
+    async def provider_templates(self) -> tuple[ProviderTemplateView, ...]:
+        configuration = self._require_configuration()
+        catalog = await asyncio.to_thread(configuration.provider_template_catalog)
+        return tuple(catalog.templates)
+
+    async def add_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
+        return await asyncio.to_thread(self._add_provider, draft)
+
+    def _add_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
+        configuration = self._require_configuration()
+        catalog = configuration.add_provider(
+            draft.provider_id,
+            provider_type=draft.provider_type,
+            base_url=draft.base_url,
+            api_path=draft.api_path,
+            api_key=draft.api_key,
+            api_key_env=draft.api_key_env,
+            timeout=draft.timeout,
+            enabled=draft.enabled,
+            make_default=draft.make_default,
+        )
+        return next(
+            provider
+            for provider in catalog.providers
+            if provider.provider_id == draft.provider_id
         )
 
-    async def configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
-        """Create one endpoint through the canonical configuration application service."""
+    async def update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
+        return await asyncio.to_thread(self._update_provider, draft)
 
-        return await asyncio.to_thread(self._configure_model, model)
-
-    def _configure_model(self, model: TuiModelConfiguration) -> AvailableModel:
+    def _update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
         configuration = self._require_configuration()
-        endpoints = configuration.endpoint_catalog(model.provider_id).endpoints
-        if any(endpoint.endpoint_id == model.endpoint_id for endpoint in endpoints):
+        current = configuration.provider(draft.provider_id)
+        if current.provider_type != draft.provider_type:
             raise ConfigError(
-                f"model endpoint already exists: {model.provider_id}/{model.endpoint_id}"
+                "provider type cannot be changed by editing settings: "
+                f"{current.provider_type} != {draft.provider_type}"
             )
-        configuration.save_endpoint(
-            model.provider_id,
-            model.endpoint_id,
-            model=model.model_id,
-            context_window=model.context_window,
-            max_output_tokens=model.max_output_tokens,
-            supports_tools=model.supports_tools,
-            supports_vision=model.supports_vision,
+        catalog = configuration.update_provider_settings(
+            draft.provider_id,
+            base_url=draft.base_url,
+            api_path=draft.api_path,
+            api_key=draft.api_key,
+            api_key_env=draft.api_key_env,
+            timeout=draft.timeout,
+            enabled=draft.enabled,
+            make_default=draft.make_default,
         )
-        return self._runtime().resolve_model(f"{model.provider_id}/{model.endpoint_id}")
+        return next(
+            provider
+            for provider in catalog.providers
+            if provider.provider_id == draft.provider_id
+        )
+
+    async def set_provider_enabled(self, provider_id: str, *, enabled: bool) -> ProviderView:
+        configuration = self._require_configuration()
+
+        def update() -> ProviderView:
+            catalog = configuration.update_provider_settings(provider_id, enabled=enabled)
+            return next(item for item in catalog.providers if item.provider_id == provider_id)
+
+        return await asyncio.to_thread(update)
+
+    async def use_provider(self, provider_id: str) -> ProviderView:
+        configuration = self._require_configuration()
+
+        def use() -> ProviderView:
+            catalog = configuration.use_provider(provider_id)
+            return next(item for item in catalog.providers if item.provider_id == provider_id)
+
+        return await asyncio.to_thread(use)
+
+    async def remove_provider(self, provider_id: str) -> None:
+        configuration = self._require_configuration()
+        await asyncio.to_thread(configuration.remove_provider, provider_id)
+
+    async def provider_endpoints(self, provider_id: str) -> ProviderEndpointCatalogView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.endpoint_catalog, provider_id)
+
+    async def add_endpoint(
+        self,
+        draft: TuiEndpointConfiguration,
+    ) -> ProviderEndpointView:
+        return await asyncio.to_thread(self._save_endpoint, draft, True)
+
+    async def update_endpoint(
+        self,
+        draft: TuiEndpointConfiguration,
+    ) -> ProviderEndpointView:
+        return await asyncio.to_thread(self._save_endpoint, draft, False)
+
+    def _save_endpoint(
+        self,
+        draft: TuiEndpointConfiguration,
+        create: bool,
+    ) -> ProviderEndpointView:
+        configuration = self._require_configuration()
+        endpoints = configuration.endpoint_catalog(draft.provider_id).endpoints
+        exists = any(endpoint.endpoint_id == draft.endpoint_id for endpoint in endpoints)
+        if create and exists:
+            raise ConfigError(
+                f"provider endpoint already exists: {draft.provider_id}/{draft.endpoint_id}"
+            )
+        if not create and not exists:
+            raise ConfigError(
+                f"provider endpoint not found: {draft.provider_id}/{draft.endpoint_id}"
+            )
+        catalog = configuration.save_endpoint(
+            draft.provider_id,
+            draft.endpoint_id,
+            model=draft.model_id,
+            context_window=draft.context_window,
+            max_output_tokens=draft.max_output_tokens,
+            supports_tools=draft.supports_tools,
+            supports_vision=draft.supports_vision,
+            supports_streaming=draft.supports_streaming,
+            supports_structured_output=draft.supports_structured_output,
+        )
+        return next(
+            endpoint
+            for endpoint in catalog.endpoints
+            if endpoint.endpoint_id == draft.endpoint_id
+        )
+
+    async def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointView:
+        configuration = self._require_configuration()
+
+        def use() -> ProviderEndpointView:
+            catalog = configuration.use_endpoint(provider_id, endpoint_id)
+            return next(item for item in catalog.endpoints if item.endpoint_id == endpoint_id)
+
+        return await asyncio.to_thread(use)
+
+    async def remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:
+        configuration = self._require_configuration()
+        await asyncio.to_thread(configuration.remove_endpoint, provider_id, endpoint_id)
 
     async def tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
         """Combine live tool contracts with durable permission overrides."""

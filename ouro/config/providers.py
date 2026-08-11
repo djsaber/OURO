@@ -625,16 +625,20 @@ class ProviderConfigManager:
         return provider
 
     @atomic_config_update
-    def set_default_endpoint(
+    def set_default_route(
         self,
         provider_id: str,
         endpoint_id: str,
     ) -> ProviderEndpointConfig:
+        """Atomically select the global provider/endpoint route."""
+
         raw = self.load_raw()
         configured = self._configured_providers(raw)
         provider = configured.get(provider_id)
         if provider is None:
             raise ConfigError(f"provider not found: {provider_id}")
+        if not provider.enabled:
+            raise ConfigError(f"provider is disabled: {provider_id}")
         endpoint = provider.endpoint(endpoint_id)
         if endpoint is None:
             raise ConfigError(f"endpoint not found: {provider_id}/{endpoint_id}")
@@ -642,7 +646,7 @@ class ProviderConfigManager:
         self._save_configured_providers(
             raw,
             configured=configured,
-            default_provider_id=self._default_provider_id(raw, configured),
+            default_provider_id=provider_id,
         )
         return endpoint
 

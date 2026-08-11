@@ -379,6 +379,47 @@ class ConfigurationFacade:
             change=configuration_change("providers", "updated", "next_request")
         )
 
+    def update_provider_settings(
+        self,
+        provider_id: str,
+        *,
+        base_url: str | None = None,
+        api_path: str | None = None,
+        api_key: str | None = None,
+        api_key_env: str | None = None,
+        timeout: float | None = None,
+        retry_policy: ProviderRetryPolicy | None = None,
+        enabled: bool | None = None,
+        make_default: bool = False,
+    ) -> ProviderCatalogView:
+        """Update supplier-level settings without reapplying endpoint templates.
+
+        Template synchronization intentionally refreshes integrated endpoints.
+        Hosts editing connection details need a narrower contract so credentials,
+        routing, and availability cannot silently rewrite model endpoints.
+        """
+
+        current = self.provider(provider_id)
+        if enabled is False and current.default:
+            raise ConfigError(
+                f"cannot disable the default provider: {provider_id}; "
+                "select another default provider first"
+            )
+        self.providers.update_provider(
+            provider_id,
+            base_url=base_url,
+            api_path=api_path,
+            api_key=api_key,
+            api_key_env=api_key_env,
+            timeout_seconds=timeout,
+            retry_policy=retry_policy,
+            enabled=enabled,
+            make_default=make_default,
+        )
+        return self.provider_catalog(
+            change=configuration_change("providers", "settings_updated", "next_request")
+        )
+
     def replace_provider(
         self,
         provider_id: str,
@@ -567,10 +608,10 @@ class ConfigurationFacade:
         )
 
     def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointCatalogView:
-        self.providers.set_default_endpoint(provider_id, endpoint_id)
+        self.providers.set_default_route(provider_id, endpoint_id)
         return endpoint_catalog_view(
             self._require_provider(provider_id),
-            change=configuration_change("providers", "default_endpoint_changed", "next_request"),
+            change=configuration_change("providers", "default_route_changed", "next_request"),
         )
 
     def remove_endpoint(

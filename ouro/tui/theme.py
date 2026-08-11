@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+SELECTED_CHOICE_MARKER = "●"
+
 
 @dataclass(frozen=True, slots=True)
 class TuiTheme:
@@ -112,4 +114,10 @@ def theme_for(node: object) -> TuiTheme:
     return theme if isinstance(theme, TuiTheme) else DEFAULT_TUI_THEME
 
 
-__all__ = ["DEFAULT_TUI_THEME", "TUI_THEMES", "TuiTheme", "theme_for"]
+__all__ = [
+    "DEFAULT_TUI_THEME",
+    "SELECTED_CHOICE_MARKER",
+    "TUI_THEMES",
+    "TuiTheme",
+    "theme_for",
+]

@@ -6,7 +6,6 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from rich.console import Console
@@ -74,14 +73,18 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.controller import (
     TuiController,
-    TuiModelConfiguration,
+    TuiEndpointConfiguration,
     TuiPluginCommandExecution,
     TuiSystemStatus,
 )
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
-from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen, ModelConfigurationScreen
+from ouro.tui.provider_screens import (
+    EndpointConfigurationScreen,
+    ProviderConfigurationScreen,
+)
+from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_run_presentation
-from ouro.tui.theme import TUI_THEMES
+from ouro.tui.theme import SELECTED_CHOICE_MARKER, TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -112,6 +115,16 @@ def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
     time_start = rendered.rindex("18:00")
     rendered_message = rendered[:time_start].rstrip()
     assert len(rendered_message) <= 40 * 2 // 3
+
+
+def test_choice_screen_renders_marker_with_theme_accent() -> None:
+    option = ChoiceScreen._options(
+        (Choice("selected", "Selected", marker=SELECTED_CHOICE_MARKER),),
+        group_accent="#123456",
+    )[0]
+
+    assert option.prompt.plain == f"{SELECTED_CHOICE_MARKER} Selected"
+    assert option.prompt.spans[0].style == "bold #123456"
 
 
 def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> None:
@@ -170,6 +183,29 @@ def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
     assert options[3].prompt.plain == " "
     assert options[4].disabled is True
     assert options[4].prompt.plain == "Yesterday"
+
+
+def test_choice_screen_projects_group_status_on_the_group_header() -> None:
+    options = ChoiceScreen._options(
+        (
+            Choice(
+                "endpoint",
+                "Endpoint",
+                group="Disabled provider",
+                group_trailing="unavailable",
+                disabled=True,
+            ),
+        ),
+        group_accent="#ffffff",
+    )
+
+    console = Console(width=40, record=True)
+    console.print(options[0].prompt)
+    rendered = console.export_text().splitlines()[0]
+    assert rendered.startswith("Disabled provider")
+    assert rendered.endswith("unavailable")
+    assert ChoiceScreen._is_group_header(options[0]) is True
+    assert ChoiceScreen._is_group_header(options[1]) is False
 
 
 def test_group_shortcuts_are_disabled_for_ungrouped_choice_screens() -> None:
@@ -3028,21 +3064,28 @@ async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_model_configuration_screen_validates_and_returns_typed_draft(
+async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_draft(
     tmp_path: Path,
 ) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://example.invalid/v1",
+    )
+    provider = configuration.provider("custom")
     app = OuroTuiApp(application=_application(tmp_path))
-    results: list[TuiModelConfiguration | None] = []
+    results: list[TuiEndpointConfiguration | None] = []
 
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause(0.5)
-        screen = ModelConfigurationScreen((Choice("custom", "custom"),))
+        screen = EndpointConfigurationScreen(provider)
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
 
-        assert screen.query_one("#model-config-panel", VerticalScroll).max_scroll_y > 0
+        assert screen.query_one(".configuration-panel", VerticalScroll).max_scroll_y > 0
+        assert not list(screen.query("#model-provider"))
 
-        await pilot.press("tab")
         await pilot.press(*"new-endpoint", "enter")
         await pilot.press(*"provider-model", "enter")
         await pilot.press("ctrl+u", *"100", "enter")
@@ -3050,7 +3093,7 @@ async def test_model_configuration_screen_validates_and_returns_typed_draft(
         await pilot.pause()
 
         assert results == []
-        assert "cannot exceed" in screen.query_one("#model-config-error", Static).render().plain
+        assert "cannot exceed" in screen.query_one(".configuration-error", Static).render().plain
         assert all(item.styles.scrollbar_size_vertical == 1 for item in screen.query(OptionList))
 
         await pilot.press("ctrl+u", *"50", "tab", "tab", "space", "ctrl+s")
@@ -3065,6 +3108,7 @@ async def test_model_configuration_screen_validates_and_returns_typed_draft(
         assert draft.context_window == 100
         assert draft.max_output_tokens == 50
         assert draft.supports_vision is True
+        assert draft.supports_streaming is True
 
 
 @pytest.mark.asyncio
@@ -3209,7 +3253,16 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Fork session",
             "Session approval",
             "Session model settings",
-            "Add model",
+            "List providers",
+            "Add provider",
+            "Edit provider",
+            "Enable or disable provider",
+            "Remove provider",
+            "List endpoints",
+            "Add endpoint",
+            "Edit endpoint",
+            "Set default endpoint",
+            "Remove endpoint",
             "Tool permissions",
             "Execution & path access",
             "List MCP servers",
@@ -3230,8 +3283,8 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         ]
         assert [choice.group for choice in action_choices] == [
             "Appearance",
-            *("Session",) * 4,
-            *("Models",) * 2,
+            *("Session",) * 5,
+            *("Providers",) * 10,
             *("Tools",) * 2,
             *("MCP",) * 6,
             *("Skills",) * 6,
@@ -3242,9 +3295,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert "Configuration" not in {choice.group for choice in action_choices}
         assert "Recent" not in {choice.group for choice in action_choices}
         assert all(choice.description == "" for choice in action_choices)
-        assert {
-            choice.label: choice.trailing for choice in action_choices if choice.trailing
-        } == {
+        assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
             "Session model settings": "Alt+M",
@@ -3261,34 +3312,280 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
 
 
 @pytest.mark.asyncio
-async def test_actions_opens_add_model_directly_from_models_group(
+async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://example.invalid/v1",
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+
+        app.screen.query_one("#choice-filter", Input).value = "Add endpoint"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen.query_one("#choice-title", Static).render().plain == (
+            "ADD ENDPOINT · PROVIDER"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, EndpointConfigurationScreen)
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_toggle_provider_keeps_default_visible_but_disabled(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    for provider_id in ("primary", "secondary"):
+        configuration.add_provider(
+            provider_id,
+            provider_type="openai-compatible",
+            base_url=f"https://{provider_id}.example.invalid/v1",
+        )
+        configuration.save_endpoint(
+            provider_id,
+            f"{provider_id}-chat",
+            model=f"{provider_id}-model",
+        )
+    configuration.use_provider("primary")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Enable or disable provider"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        toggle_screen = app.screen
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert set(choices) == {"primary", "secondary"}
+        assert choices["primary"].label == "primary"
+        assert choices["primary"].marker == SELECTED_CHOICE_MARKER
+        assert "default" not in choices["primary"].trailing
+        assert choices["primary"].disabled is True
+        assert choices["secondary"].disabled is False
+
+        options = app.screen.query_one(OptionList)
+        provider_options = {
+            str(option.id): option
+            for index in range(options.option_count)
+            if (option := options.get_option_at_index(index)).id is not None
+        }
+        assert provider_options["primary"].disabled is True
+        assert provider_options["secondary"].disabled is False
+        app.screen.query_one("#choice-filter", Input).value = "primary"
+        await pilot.pause()
+        assert options.highlighted is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+
+        app.screen.query_one("#choice-filter", Input).value = "secondary"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices["secondary"].trailing.endswith("· disabled")
+        assert ConfigurationFacade(tmp_path).provider("secondary").enabled is False
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices["secondary"].trailing.endswith("· enabled")
+        assert ConfigurationFacade(tmp_path).provider("secondary").enabled is True
+        await pilot.press("escape")
+
+
+@pytest.mark.parametrize(
+    ("action_label", "title"),
+    (
+        ("List endpoints", "ENDPOINTS"),
+        ("Edit endpoint", "EDIT ENDPOINT"),
+        ("Set default endpoint", "SET DEFAULT ENDPOINT"),
+        ("Remove endpoint", "REMOVE ENDPOINT"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    action_label: str,
+    title: str,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    for provider_id in ("primary", "secondary"):
+        configuration.add_provider(
+            provider_id,
+            provider_type="openai-compatible",
+            base_url=f"https://{provider_id}.example.invalid/v1",
+            enabled=provider_id == "primary",
+        )
+        configuration.save_endpoint(
+            provider_id,
+            "shared",
+            model=f"{provider_id}-model",
+        )
+    configuration.use_provider("primary")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = action_label
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen.query_one("#choice-title", Static).render().plain == title
+        assert [choice.value for choice in app.screen._choices] == [
+            "primary/shared",
+            "secondary/shared",
+        ]
+        assert [choice.label for choice in app.screen._choices] == ["shared", "shared"]
+        assert [choice.marker for choice in app.screen._choices] == [
+            SELECTED_CHOICE_MARKER,
+            "",
+        ]
+        assert [choice.group for choice in app.screen._choices] == [
+            "primary",
+            "secondary",
+        ]
+        assert all(choice.description == "" for choice in app.screen._choices)
+        assert all(choice.trailing == "" for choice in app.screen._choices)
+        assert [choice.group_trailing for choice in app.screen._choices] == [
+            "",
+            "unavailable",
+        ]
+        assert [choice.disabled for choice in app.screen._choices] == [False, True]
+        options = app.screen.query_one(OptionList)
+        endpoint_options = {
+            str(option.id): option
+            for index in range(options.option_count)
+            if (option := options.get_option_at_index(index)).id is not None
+        }
+        assert endpoint_options["primary/shared"].disabled is False
+        assert endpoint_options["secondary/shared"].disabled is True
+        app.screen.query_one("#choice-filter", Input).value = "secondary"
+        await pilot.pause()
+        assert app.screen.query_one(OptionList).highlighted is None
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ChoiceScreen)
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_setting_default_endpoint_also_switches_default_provider(tmp_path: Path) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    for provider_id in ("primary", "secondary"):
+        configuration.add_provider(
+            provider_id,
+            provider_type="openai-compatible",
+            base_url=f"https://{provider_id}.example.invalid/v1",
+        )
+        configuration.save_endpoint(
+            provider_id,
+            f"{provider_id}-chat",
+            model=f"{provider_id}-model",
+        )
+    configuration.use_provider("primary")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Set default endpoint"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "secondary-chat"
+        await pilot.pause()
+        default_endpoint_screen = app.screen
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen is default_endpoint_screen
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen.query_one("#choice-filter", Input).value == "secondary-chat"
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices["primary/primary-chat"].label == "primary-chat"
+        assert choices["primary/primary-chat"].marker == ""
+        assert choices["secondary/secondary-chat"].label == "secondary-chat"
+        assert choices["secondary/secondary-chat"].marker == SELECTED_CHOICE_MARKER
+        assert all(choice.trailing == "" for choice in choices.values())
+        catalog = ConfigurationFacade(tmp_path).provider_catalog()
+        assert catalog.default_provider_id == "secondary"
+        assert ConfigurationFacade(tmp_path).provider("secondary").default_endpoint == (
+            "secondary-chat"
+        )
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
+    tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
-
-        async def model_providers() -> tuple[SimpleNamespace, ...]:
-            return (
-                SimpleNamespace(
-                    provider_id="faux",
-                    provider_type="openai",
-                    endpoint_count=1,
-                ),
-            )
-
-        monkeypatch.setattr(app._controller, "model_providers", model_providers)
         await pilot.press("ctrl+p")
         await pilot.pause()
-
-        app.screen.query_one("#choice-filter", Input).value = "Add model"
+        app.screen.query_one("#choice-filter", Input).value = "Add provider"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
 
-        assert isinstance(app.screen, ModelConfigurationScreen)
+        assert {"OURO presets", "Compatible"} == {choice.group for choice in app.screen._choices}
+        assert {"Google Gemini", "OpenAI-compatible", "Anthropic-compatible"} <= {
+            choice.label for choice in app.screen._choices
+        }
+
+        app.screen.query_one("#choice-filter", Input).value = "Google Gemini"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert isinstance(app.screen, ProviderConfigurationScreen)
+        assert (
+            "OURO preset · 3 endpoint(s)"
+            in app.screen.query_one(".configuration-summary", Static).render().plain
+        )
+        assert not list(app.screen.query("#provider-default"))
+
+        await pilot.press("ctrl+u", *"gemini-work", "ctrl+s")
+        await pilot.pause()
+        provider = ConfigurationFacade(tmp_path).provider("gemini-work")
+        assert provider.provider_type == "gemini"
+        assert provider.endpoint_count == 3
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Add provider"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Anthropic-compatible"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ProviderConfigurationScreen)
+        assert app.screen.query_one("#provider-base-url", Input).value == ""
+        assert app.screen.query_one("#provider-api-path", Input).value == "/v1/messages"
         await pilot.press("escape")
 
 
@@ -3393,6 +3690,39 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
+
+
+@pytest.mark.asyncio
+async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
+        encoding="utf-8",
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Enable or disable skill"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        toggle_screen = app.screen
+        assert app.screen._choices[0].description.startswith("enabled ·")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        assert app.screen._choices[0].description.startswith("disabled ·")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        assert app.screen._choices[0].description.startswith("enabled ·")
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio

@@ -341,6 +341,86 @@ def test_provider_template_reapply_preserves_other_endpoints_and_credential(tmp_
     assert facade.endpoint("primary", "gpt-5.6").model_id == "gpt-custom"
 
 
+def test_provider_settings_update_preserves_integrated_endpoint_registry(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="openai")
+    facade.save_endpoint("primary", "private", model="private-model")
+    before = facade.provider("primary").endpoints
+
+    updated = facade.update_provider_settings(
+        "primary",
+        base_url="https://gateway.example.invalid/v1",
+        api_key_env="PRIVATE_OPENAI_KEY",
+        timeout=45.0,
+        enabled=False,
+    )
+    provider = next(item for item in updated.providers if item.provider_id == "primary")
+
+    assert provider.base_url == "https://gateway.example.invalid/v1"
+    assert provider.credential.reference == "env:PRIVATE_OPENAI_KEY"
+    assert provider.timeout == 45.0
+    assert provider.enabled is False
+    assert provider.endpoints == before
+    assert updated.change is not None
+    assert updated.change.action == "settings_updated"
+
+
+def test_provider_settings_reject_disabling_the_default_provider(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="openai", make_default=True)
+
+    with pytest.raises(ConfigError, match="select another default provider first"):
+        facade.update_provider_settings("primary", enabled=False)
+
+    assert facade.provider("primary").enabled is True
+
+
+def test_using_endpoint_atomically_updates_the_default_provider_route(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    for provider_id in ("primary", "secondary"):
+        facade.add_provider(
+            provider_id,
+            provider_type="openai-compatible",
+            base_url=f"https://{provider_id}.example.invalid/v1",
+        )
+        facade.save_endpoint(
+            provider_id,
+            "chat",
+            model=f"{provider_id}-model",
+        )
+    facade.use_provider("primary")
+
+    endpoints = facade.use_endpoint("secondary", "chat")
+    providers = facade.provider_catalog()
+
+    assert endpoints.default_endpoint == "chat"
+    assert endpoints.change is not None
+    assert endpoints.change.action == "default_route_changed"
+    assert providers.default_provider_id == "secondary"
+    assert facade.provider("secondary").default is True
+
+
+def test_using_endpoint_rejects_disabled_provider_without_partial_update(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider("primary", provider_type="openai", make_default=True)
+    facade.add_provider(
+        "disabled",
+        provider_type="openai-compatible",
+        base_url="https://disabled.example.invalid/v1",
+        enabled=False,
+    )
+    facade.save_endpoint("disabled", "base", model="disabled-base")
+    facade.save_endpoint("disabled", "chat", model="disabled-model")
+    before = facade.provider_catalog()
+
+    with pytest.raises(ConfigError, match="provider is disabled"):
+        facade.use_endpoint("disabled", "chat")
+
+    after = facade.provider_catalog()
+    assert after.default_provider_id == before.default_provider_id == "primary"
+    assert facade.provider("disabled").default_endpoint == "base"
+
+
 def test_provider_template_default_endpoint_override_keeps_other_template_endpoints(
     tmp_path,
 ) -> None:
