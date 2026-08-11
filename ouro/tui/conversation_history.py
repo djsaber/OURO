@@ -381,7 +381,9 @@ class ConversationHistory(RichLog, can_focus=False):
                         (1, 0, 0, 1),
                     ),
                 )
-            blocks.append(Padding(thought_content, (0, 0, 1, 0)))
+            # This gap belongs between reasoning and its answer, not after the
+            # assistant message. The outer padding below owns message spacing.
+            blocks.append(Padding(thought_content, (0, 0, 1 if entry.text else 0, 0)))
         if entry.text:
             blocks.append(RichMarkdown(entry.text))
         top = 1 if previous_kind == "tool" else 0

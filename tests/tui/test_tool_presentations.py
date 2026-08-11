@@ -181,6 +181,24 @@ async def test_tool_groups_only_add_spacing_at_non_tool_boundaries() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> None:
+    tool = _tool("Read", arguments={"path": "after-thought.py"})
+    app = _HistoryApp()
+
+    async with app.run_test(size=(100, 30)):
+        app.history.set_reasoning_expanded(False)
+        app.history.append(TranscriptEntry(kind="assistant", reasoning="Inspect the target first."))
+        app.history.append(TranscriptEntry(kind="tool", tool=tool))
+        await app.history.wait_until_rendered()
+
+        lines = [line.strip() for line in app.history.rendered_text.splitlines()]
+        reasoning = lines.index("THOUGHT")
+        tool_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
+
+        assert lines[reasoning + 1 : tool_header] == [""]
+
+
+@pytest.mark.asyncio
 async def test_tool_row_animates_active_state_and_freezes_completed_elapsed_seconds() -> None:
     started_at = datetime.now(UTC) - timedelta(seconds=2)
     running = RuntimeToolCallActivity(
