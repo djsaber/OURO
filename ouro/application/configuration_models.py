@@ -205,7 +205,6 @@ class CompactionConfigInput(ApplicationDTO):
     auto_enabled: bool = True
     trigger_ratio: float
     target_ratio: float
-    summary_output_tokens: int
     provider_id: str | None = None
     endpoint_id: str | None = None
     temperature: float | None = None

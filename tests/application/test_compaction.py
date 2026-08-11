@@ -137,7 +137,6 @@ def _runtime(
             policy=CompactionPolicy(
                 trigger_ratio=0.3,
                 target_ratio=0.2,
-                summary_output_tokens=256,
             ),
         ),
     )
@@ -262,6 +261,33 @@ async def test_dedicated_compaction_endpoint_uses_isolated_model_parameters() ->
 
 
 @pytest.mark.asyncio
+async def test_dedicated_compaction_endpoint_inherits_unspecified_model_parameters() -> None:
+    runtime_provider = SummaryRouteProvider()
+    configured_provider = SummaryRouteProvider()
+    configured_adapter = _summary_adapter(
+        configured_provider,
+        provider_id="summary",
+        endpoint_id="compact",
+    )
+    strategy = LLMSummaryCompactionStrategy(
+        _summary_adapter(runtime_provider, provider_id="runtime", endpoint_id="chat"),
+        configured_adapter=configured_adapter,
+        model_config=CompactionModelConfig(
+            provider_id="summary",
+            endpoint_id="compact",
+        ),
+    )
+
+    await strategy.compact(_summary_request())
+
+    assert runtime_provider.models == []
+    assert configured_provider.models[0] == configured_adapter.model
+    assert configured_provider.models[0].reasoning_request == ReasoningRequest(
+        mode="enabled", effort="low"
+    )
+
+
+@pytest.mark.asyncio
 async def test_invalid_compaction_response_retains_raw_model_output() -> None:
     provider = SummaryRouteProvider(
         response="summary without the required wrapper",
@@ -284,7 +310,7 @@ async def test_invalid_compaction_response_retains_raw_model_output() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_compaction_inherits_session_reasoning() -> None:
+async def test_runtime_compaction_inherits_complete_session_model_configuration() -> None:
     provider = SummaryRouteProvider()
     strategy = LLMSummaryCompactionStrategy(
         _summary_adapter(provider, provider_id="runtime", endpoint_id="chat")
@@ -292,12 +318,14 @@ async def test_runtime_compaction_inherits_session_reasoning() -> None:
 
     artifact = await strategy.compact(_summary_request())
 
+    assert provider.models[0].temperature == 0.8
+    assert provider.models[0].max_output_tokens == 2048
     assert provider.models[0].reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert artifact.metadata["model_reasoning"] == {
         "mode": "enabled",
         "effort": "low",
     }
-    assert "1,024 output tokens" in provider.system_prompts[0]
+    assert "2,048 output tokens" in provider.system_prompts[0]
     assert "<example>" not in provider.system_prompts[0]
 
 
@@ -360,30 +388,6 @@ async def test_runtime_compaction_inherits_always_on_session_reasoning() -> None
 
 
 @pytest.mark.asyncio
-async def test_dedicated_compaction_reasoning_defaults_off() -> None:
-    runtime_provider = SummaryRouteProvider()
-    configured_provider = SummaryRouteProvider()
-    strategy = LLMSummaryCompactionStrategy(
-        _summary_adapter(runtime_provider, provider_id="runtime", endpoint_id="chat"),
-        configured_adapter=_summary_adapter(
-            configured_provider,
-            provider_id="summary",
-            endpoint_id="compact",
-        ),
-        model_config=CompactionModelConfig(
-            provider_id="summary",
-            endpoint_id="compact",
-        ),
-    )
-
-    artifact = await strategy.compact(_summary_request())
-
-    assert runtime_provider.models == []
-    assert configured_provider.models[0].reasoning_request == ReasoningRequest(mode="disabled")
-    assert artifact.metadata["model_reasoning"] == {"mode": "disabled", "effort": None}
-
-
-@pytest.mark.asyncio
 async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> None:
     class BinaryBackoffProvider(SummaryRouteProvider):
         def __init__(self) -> None:
@@ -439,7 +443,7 @@ async def test_unclosed_length_summary_retries_once_with_half_the_frames() -> No
     assert first.finish_reason == "length"
     assert first.summary_opened is True
     assert first.summary_closed is False
-    assert first.requested_output_tokens == 1024
+    assert first.requested_output_tokens == 2048
     assert first.estimated_input_tokens > 0
     assert artifact.usage["input_tokens"] == 30
     assert artifact.usage["output_tokens"] == 1044
@@ -495,12 +499,8 @@ async def test_unclosed_length_summary_stops_after_one_binary_retry() -> None:
     assert [output.input_frame_count for output in raised.value.model_outputs] == [2, 1]
 
 
-def test_compaction_policy_defaults_to_sixteen_thousand_output_tokens() -> None:
-    assert CompactionPolicy().summary_output_tokens == 16_384
-
-
 @pytest.mark.asyncio
-async def test_compaction_provider_error_retries_runtime_route_with_same_parameters() -> None:
+async def test_compaction_provider_error_retries_with_session_model_parameters() -> None:
     configured_provider = SummaryRouteProvider(error="dedicated unavailable")
     runtime_provider = SummaryRouteProvider()
     runtime_adapter = _summary_adapter(
@@ -529,8 +529,8 @@ async def test_compaction_provider_error_retries_runtime_route_with_same_paramet
     assert len(configured_provider.models) == 1
     assert len(runtime_provider.models) == 1
     fallback_model = runtime_provider.models[0]
-    assert fallback_model.temperature == 0.2
-    assert fallback_model.max_output_tokens == 700
+    assert fallback_model.temperature == 0.8
+    assert fallback_model.max_output_tokens == 2048
     assert fallback_model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")
     assert runtime_adapter.model.temperature == 0.8
     assert runtime_adapter.model.reasoning_request == ReasoningRequest(mode="enabled", effort="low")

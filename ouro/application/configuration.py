@@ -75,7 +75,7 @@ from ouro.config.skills import SkillInstallScope
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
-from ouro.core.reasoning import ReasoningRequest
+from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.redaction import redact_text
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode
@@ -788,6 +788,7 @@ class ConfigurationFacade:
             max_output_tokens=max_output_tokens,
             reasoning=reasoning,
             clear=clear,
+            validate=self._validate_compaction_model_capabilities,
         )
         return compaction_view(
             config,
@@ -806,7 +807,6 @@ class ConfigurationFacade:
                     auto_enabled=draft.auto_enabled,
                     trigger_ratio=draft.trigger_ratio,
                     target_ratio=draft.target_ratio,
-                    summary_output_tokens=draft.summary_output_tokens,
                 ),
                 model=CompactionModelConfig(
                     provider_id=draft.provider_id,
@@ -816,6 +816,7 @@ class ConfigurationFacade:
                     reasoning=draft.reasoning,
                 ),
             )
+            self._validate_compaction_model_capabilities(config.model)
         except ValueError as exc:
             raise ConfigError(f"invalid compaction config: {exc}") from exc
         saved = self.compaction.save(config)
@@ -824,6 +825,28 @@ class ConfigurationFacade:
             config_path=self.compaction.file.path,
             change=configuration_change("compaction", "updated", "next_runtime"),
         )
+
+    def _validate_compaction_model_capabilities(self, model: CompactionModelConfig) -> None:
+        if not model.has_dedicated_endpoint:
+            return
+        assert model.provider_id is not None
+        assert model.endpoint_id is not None
+        endpoint = self.providers.get_endpoint(model.provider_id, model.endpoint_id)
+        if endpoint is None:
+            return
+        if (
+            model.max_output_tokens is not None
+            and model.max_output_tokens > endpoint.max_output_tokens
+        ):
+            raise ConfigError(
+                "compaction max_output_tokens exceed the selected endpoint output limit"
+            )
+        if model.reasoning is None:
+            return
+        try:
+            resolve_reasoning(endpoint.reasoning.capability, model.reasoning)
+        except ValueError as exc:
+            raise ConfigError(f"invalid compaction reasoning override: {exc}") from exc
 
     def skill_policy(
         self,

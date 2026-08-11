@@ -412,7 +412,6 @@ def _compaction_runtime(tmp_path: Path) -> RuntimeService:
             policy=CompactionPolicy(
                 trigger_ratio=0.3,
                 target_ratio=0.2,
-                summary_output_tokens=256,
             ),
         ),
     )

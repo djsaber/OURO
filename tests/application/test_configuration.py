@@ -8,6 +8,7 @@ from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import CompactionConfigInput
 from ouro.config import openai_effort_reasoning
 from ouro.core.errors import ConfigError
+from ouro.core.reasoning import ReasoningRequest
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 
@@ -123,6 +124,8 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
         allowed_agent_id_patterns=("general", "review-*"),
     )
     compaction = facade.update_compaction_model(
+        provider_id="faux",
+        endpoint_id="summary",
         temperature=0.1,
         max_output_tokens=2048,
     )
@@ -156,7 +159,6 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
             auto_enabled=False,
             trigger_ratio=0.75,
             target_ratio=0.25,
-            summary_output_tokens=4096,
             provider_id="faux",
             endpoint_id="summary",
             temperature=0.2,
@@ -168,7 +170,6 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
         "auto_enabled": False,
         "trigger_ratio": 0.75,
         "target_ratio": 0.25,
-        "summary_output_tokens": 4096,
     }
     assert saved.model.provider_id == "faux"
     assert saved.model.max_output_tokens == 2048
@@ -180,8 +181,43 @@ def test_complete_compaction_configuration_is_saved_atomically(tmp_path) -> None
                 strategy_id="builtin.llm_summary",
                 trigger_ratio=0.4,
                 target_ratio=0.5,
-                summary_output_tokens=4096,
             )
+        )
+    assert facade.compaction_config() == saved.model_copy(update={"change": None})
+
+
+def test_compaction_overrides_are_validated_against_fixed_endpoint_capabilities(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    facade.add_provider(
+        "glm",
+        provider_type="openai-compatible",
+        base_url="https://example.test/v1",
+    )
+    facade.save_endpoint(
+        "glm",
+        "summary",
+        model="summary-model",
+        context_window=32_000,
+        max_output_tokens=2048,
+        reasoning=openai_effort_reasoning(
+            supported_efforts=("low", "high"),
+            default_effort="low",
+        ),
+    )
+
+    saved = facade.update_compaction_model(
+        provider_id="glm",
+        endpoint_id="summary",
+        max_output_tokens=1024,
+        reasoning=ReasoningRequest(mode="enabled", effort="high"),
+    )
+
+    assert saved.model.max_output_tokens == 1024
+    with pytest.raises(ConfigError, match="output limit"):
+        facade.update_compaction_model(max_output_tokens=4096)
+    with pytest.raises(ConfigError, match="is not supported"):
+        facade.update_compaction_model(
+            reasoning=ReasoningRequest(mode="enabled", effort="medium")
         )
     assert facade.compaction_config() == saved.model_copy(update={"change": None})
 

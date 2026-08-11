@@ -266,7 +266,6 @@ async def test_controller_persists_complete_compaction_options_and_requires_sess
                 auto_enabled=False,
                 trigger_ratio=0.7,
                 target_ratio=0.2,
-                summary_output_tokens=2048,
                 model_key=model.key,
                 temperature=0.1,
                 max_output_tokens=1024,

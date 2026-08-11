@@ -46,7 +46,7 @@ from ouro.core.errors import ConfigError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
-from ouro.core.reasoning import ReasoningRequest
+from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolExecutionMode
@@ -206,7 +206,6 @@ class TuiCompactionConfiguration:
     auto_enabled: bool
     trigger_ratio: float
     target_ratio: float
-    summary_output_tokens: int
     model_key: str | None
     temperature: float | None
     max_output_tokens: int | None
@@ -814,6 +813,26 @@ class TuiController:
             provider_id, separator, endpoint_id = draft.model_key.partition("/")
             if not separator or not provider_id or not endpoint_id:
                 raise ConfigError(f"invalid compaction model route: {draft.model_key}")
+            model = self._runtime().resolve_model(draft.model_key)
+            if (
+                draft.max_output_tokens is not None
+                and draft.max_output_tokens > model.max_output_tokens
+            ):
+                raise ConfigError(
+                    "compaction max_output_tokens exceed the selected endpoint output limit"
+                )
+            if draft.reasoning is not None:
+                try:
+                    resolve_reasoning(model.reasoning, draft.reasoning)
+                except ValueError as exc:
+                    raise ConfigError(f"invalid compaction reasoning override: {exc}") from exc
+        elif any(
+            value is not None
+            for value in (draft.temperature, draft.max_output_tokens, draft.reasoning)
+        ):
+            raise ConfigError(
+                "compaction model request overrides require a dedicated model endpoint"
+            )
         return self._require_configuration().save_compaction(
             CompactionConfigInput(
                 strategy_id=draft.strategy_id,
@@ -821,7 +840,6 @@ class TuiController:
                 auto_enabled=draft.auto_enabled,
                 trigger_ratio=draft.trigger_ratio,
                 target_ratio=draft.target_ratio,
-                summary_output_tokens=draft.summary_output_tokens,
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 temperature=draft.temperature,

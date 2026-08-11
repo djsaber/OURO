@@ -5,6 +5,8 @@ import inspect
 from collections.abc import Callable
 from typing import Protocol
 
+from pydantic import Field
+
 from ouro.config.provider_models import ProviderRuntimeOptions
 from ouro.config.providers import ProviderConfigManager
 from ouro.core.adapter import RuntimeAdapter
@@ -17,13 +19,17 @@ AdapterBuilder = Callable[[ProviderRuntimeOptions], RuntimeAdapter]
 
 
 class AvailableModel(OuroModel):
-    """Stable session-selectable route to one configured model endpoint."""
+    """Stable model route plus the capabilities needed by interface controls."""
 
     key: str
     provider_id: str
     endpoint_id: str
     model_id: str
     display_name: str | None = None
+    temperature: float | None = None
+    context_window: int = Field(default=128_000, ge=1)
+    max_output_tokens: int = Field(default=8192, ge=1)
+    reasoning: ReasoningCapability = Field(default_factory=ReasoningCapability)
 
 
 class ModelReasoningState(OuroModel):
@@ -105,6 +111,10 @@ class ConfiguredModelCatalog:
                         endpoint_id=endpoint.endpoint_id,
                         model_id=endpoint.model_id,
                         display_name=str(endpoint.metadata.get("display_name") or "") or None,
+                        temperature=endpoint.temperature,
+                        context_window=endpoint.context_window,
+                        max_output_tokens=endpoint.max_output_tokens,
+                        reasoning=endpoint.reasoning.capability,
                     )
                 )
         return sorted(models, key=lambda item: item.key)
@@ -184,6 +194,10 @@ def _available_model(model: ModelMetadata) -> AvailableModel:
         endpoint_id=model.endpoint_id or model.model_id,
         model_id=model.model_id,
         display_name=model.display_name,
+        temperature=model.temperature,
+        context_window=model.context_window,
+        max_output_tokens=model.max_output_tokens,
+        reasoning=model.reasoning,
     )
 
 

@@ -862,10 +862,9 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
   ouro config compaction --runtime-endpoint
   ouro config compaction --clear
 
-The session runtime route inherits each Session's model reasoning.
-Thinking options are only valid for a dedicated model route.
---runtime-endpoint clears the dedicated route and its reasoning override;
---clear also removes temperature and token overrides.""",
+The session runtime route inherits each Session's complete model request configuration.
+Temperature, output-token, and thinking overrides require a dedicated model route.
+--runtime-endpoint clears the dedicated route and all of its request overrides.""",
     )
     compaction_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     compaction_parser.add_argument("--provider", dest="provider_id", help="Provider id")
@@ -874,8 +873,8 @@ Thinking options are only valid for a dedicated model route.
         "--runtime-endpoint",
         action="store_true",
         help=(
-            "Use each Session's runtime endpoint and reasoning; clear the dedicated route "
-            "and its reasoning override"
+            "Use each Session's runtime model configuration; clear the dedicated route "
+            "and all request overrides"
         ),
     )
     compaction_parser.add_argument(
@@ -883,14 +882,14 @@ Thinking options are only valid for a dedicated model route.
         type=float,
         default=None,
         metavar="FLOAT",
-        help="Sampling temperature override",
+        help="Dedicated-model sampling temperature override",
     )
     compaction_parser.add_argument(
         "--max-output-tokens",
         type=int,
         default=None,
         metavar="INT",
-        help="Maximum output token override",
+        help="Dedicated-model maximum output token override",
     )
     compaction_parser.add_argument(
         "--thinking-mode",

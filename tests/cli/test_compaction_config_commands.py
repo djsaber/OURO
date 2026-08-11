@@ -41,7 +41,7 @@ def test_config_compaction_command_persists_and_displays_model_options(
     assert restored.model.reasoning.mode == "disabled"
 
 
-def test_config_compaction_runtime_endpoint_preserves_parameter_overrides(
+def test_config_compaction_runtime_endpoint_clears_parameter_overrides(
     tmp_path,
     capsys,
 ) -> None:
@@ -82,10 +82,30 @@ def test_config_compaction_runtime_endpoint_preserves_parameter_overrides(
     assert code == 0
     assert model.provider_id is None
     assert model.endpoint_id is None
-    assert model.temperature == 0.2
+    assert model.temperature is None
     assert model.reasoning is None
     assert "provider_id" not in payload["compaction"]["model"]
     assert "reasoning" not in payload["compaction"]["model"]
+
+
+def test_config_compaction_rejects_request_overrides_for_runtime_route(
+    tmp_path,
+    capsys,
+) -> None:
+    code = main(
+        [
+            "config",
+            "compaction",
+            "--home",
+            str(tmp_path),
+            "--max-output-tokens",
+            "4096",
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert code != 0
+    assert "dedicated model endpoint" in captured.err
 
 
 def test_config_compaction_rejects_partial_endpoint(tmp_path, capsys) -> None:

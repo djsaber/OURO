@@ -55,7 +55,6 @@ from ouro.core.provider import (
     ProviderStreamEvent,
     Usage,
 )
-from ouro.core.reasoning import ReasoningRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tools import ToolDefinition
 from ouro.prompts import AFK_CONTEXT_PROMPT, SUMMARIZATION_PROMPT, render_summarization_prompt
@@ -159,10 +158,10 @@ class LLMSummaryCompactionStrategy:
         routes = self._adapter_routes(request.session_id)
         for route in routes:
             try:
-                adapter = _apply_compaction_model_config(
-                    route.adapter,
-                    self.model_config,
-                    inherit_reasoning=route.route != "configured",
+                adapter = (
+                    _apply_dedicated_compaction_model_config(route.adapter, self.model_config)
+                    if route.route == "configured"
+                    else route.adapter
                 )
                 artifact = await self._compact_with_adapter(
                     request,
@@ -248,10 +247,7 @@ class LLMSummaryCompactionStrategy:
         if not remaining_frames:
             raise CompactionError("summary compaction received no canonical messages")
 
-        summary_output_tokens = min(
-            request.summary_output_tokens,
-            adapter.model.max_output_tokens,
-        )
+        summary_output_tokens = adapter.model.max_output_tokens
         rendered_prompt = render_summarization_prompt(self.prompt, summary_output_tokens)
         chunk_count = 0
         try:
@@ -914,7 +910,7 @@ class ContextPreparationService:
         )
         target_tokens = int(budget * self.config.policy.target_ratio)
         fixed_tokens = initial_view.metrics.estimated_fixed_tokens
-        summary_output_tokens = self.config.policy.summary_output_tokens
+        summary_output_tokens = active_adapter.model.max_output_tokens
         tail_budget = max(
             1,
             target_tokens - fixed_tokens - summary_output_tokens,
@@ -1222,60 +1218,35 @@ class ContextPreparationService:
         return max(1, adapter.model.context_window - adapter.model.max_output_tokens)
 
 
-def _apply_compaction_model_config(
+def _apply_dedicated_compaction_model_config(
     adapter: RuntimeAdapter,
     config: CompactionModelConfig,
-    *,
-    inherit_reasoning: bool,
 ) -> RuntimeAdapter:
-    """Create a request-local model view without mutating the session runtime adapter."""
+    """Apply explicit dedicated-route overrides without replacing endpoint defaults."""
 
     updates: dict[str, object] = {}
     if config.temperature is not None:
         updates["temperature"] = config.temperature
     if config.max_output_tokens is not None:
-        if config.max_output_tokens > adapter.model.context_window:
-            raise ContextOverflowError(
-                "compaction max_output_tokens exceed the selected endpoint context window"
+        if config.max_output_tokens > adapter.model.max_output_tokens:
+            raise CompactionError(
+                "compaction max_output_tokens exceed the selected endpoint output limit"
             )
         updates["max_output_tokens"] = config.max_output_tokens
 
-    if not inherit_reasoning:
-        updates["reasoning_request"] = _dedicated_compaction_reasoning_request(
-            adapter,
-            config.reasoning,
-        )
+    if config.reasoning is not None:
+        updates["reasoning_request"] = config.reasoning
+
+    if not updates:
+        return adapter
 
     try:
         model = type(adapter.model).model_validate(
             adapter.model.model_copy(update=updates).model_dump()
         )
     except ValueError as exc:
-        raise CompactionError(f"invalid compaction reasoning request: {exc}") from exc
+        raise CompactionError(f"invalid compaction model override: {exc}") from exc
     return RuntimeAdapter(provider=adapter.provider, model=model)
-
-
-def _dedicated_compaction_reasoning_request(
-    adapter: RuntimeAdapter,
-    configured: ReasoningRequest | None,
-) -> ReasoningRequest:
-    """Resolve reasoning owned by a dedicated compaction model route."""
-
-    explicitly_enabled = configured is not None and (
-        configured.mode == "enabled" or configured.effort is not None
-    )
-    if explicitly_enabled:
-        assert configured is not None
-        return configured
-
-    activation = adapter.model.reasoning.activation
-    if activation == "always_on":
-        raise CompactionError(
-            "compaction reasoning must be explicitly enabled for an always-on endpoint"
-        )
-    if activation == "toggle":
-        return ReasoningRequest(mode="disabled")
-    return ReasoningRequest()
 
 
 def _consume_summary_event(

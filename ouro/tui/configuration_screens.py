@@ -31,17 +31,6 @@ from ouro.tui.controller import (
 
 _RUNTIME_MODEL = "__ouro_runtime_model__"
 _NO_FALLBACK = "__ouro_no_fallback__"
-_REASONING_VALUES = (
-    "default",
-    "enabled",
-    "disabled",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-    "max",
-)
 _REASONING_REQUESTS: dict[str, ReasoningRequest | None] = {
     "default": None,
     "enabled": ReasoningRequest(mode="enabled"),
@@ -187,6 +176,12 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
         fallback_options = [("None", _NO_FALLBACK)]
         fallback_options.extend((item, item) for item in self._strategy_ids)
         reasoning = _reasoning_value(config.model.reasoning)
+        configured_capability = self._model(configured_model)
+        reasoning_options = _compaction_reasoning_options(configured_capability)
+        if reasoning not in reasoning_options:
+            reasoning = "default"
+        uses_runtime_model = configured_model == _RUNTIME_MODEL
+        request_options_disabled = uses_runtime_model or configured_capability is None
         with VerticalScroll(classes="configuration-panel compaction-configuration-panel"):
             yield Static("CONTEXT COMPACTION", classes="configuration-title")
             yield Label("Primary strategy", classes="configuration-label")
@@ -214,8 +209,6 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
             yield Input(value=str(policy["trigger_ratio"]), id="compaction-trigger")
             yield Label("Target ratio (must be below trigger)", classes="configuration-label")
             yield Input(value=str(policy["target_ratio"]), id="compaction-target")
-            yield Label("Summary token budget", classes="configuration-label")
-            yield Input(value=str(policy["summary_output_tokens"]), id="compaction-summary-tokens")
             yield Label("Compaction model route", classes="configuration-label")
             yield Select[str](
                 tuple(model_options),
@@ -225,26 +218,36 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
                 id="compaction-model",
             )
             yield Label("Temperature (blank = endpoint default)", classes="configuration-label")
-            yield Input(value=_optional_text(config.model.temperature), id="compaction-temperature")
+            yield Input(
+                value=_optional_text(config.model.temperature),
+                disabled=request_options_disabled,
+                id="compaction-temperature",
+            )
             yield Label(
                 "Max output tokens (blank = endpoint default)", classes="configuration-label"
             )
             yield Input(
-                value=_optional_text(config.model.max_output_tokens), id="compaction-max-output"
+                value=_optional_text(config.model.max_output_tokens),
+                disabled=request_options_disabled,
+                id="compaction-max-output",
             )
             yield Label("Thinking (dedicated model only)", classes="configuration-label")
             yield Select[str](
-                tuple((item, item) for item in _REASONING_VALUES),
+                tuple((item, item) for item in reasoning_options),
                 value=reasoning,
                 allow_blank=False,
                 compact=True,
-                disabled=configured_model == _RUNTIME_MODEL,
+                disabled=(
+                    uses_runtime_model
+                    or configured_capability is None
+                    or configured_capability.reasoning.activation == "unsupported"
+                ),
                 id="compaction-reasoning",
             )
             yield Static(
-                _compaction_reasoning_note(configured_model),
+                _compaction_model_options_note(configured_model, configured_capability),
                 classes="configuration-note",
-                id="compaction-reasoning-note",
+                id="compaction-model-options-note",
             )
             yield Static(
                 "Saved options apply to the next Runtime; /compact uses the current Runtime.",
@@ -262,14 +265,34 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
         self.query_one("#compaction-strategy", Select).focus()
 
     @on(Select.Changed, "#compaction-model")
-    def update_reasoning_route(self, event: Select.Changed) -> None:
+    def update_model_options(self, event: Select.Changed) -> None:
         model = event.value if isinstance(event.value, str) else _RUNTIME_MODEL
+        configured = self._model(model)
+        uses_runtime_model = model == _RUNTIME_MODEL
+        temperature = self.query_one("#compaction-temperature", Input)
+        max_output = self.query_one("#compaction-max-output", Input)
         reasoning = self.query_one("#compaction-reasoning", Select)
-        reasoning.disabled = model == _RUNTIME_MODEL
-        if reasoning.disabled:
+
+        temperature.disabled = uses_runtime_model or configured is None
+        max_output.disabled = uses_runtime_model or configured is None
+        if uses_runtime_model:
+            temperature.value = ""
+            max_output.value = ""
+
+        previous_reasoning = reasoning.value if isinstance(reasoning.value, str) else "default"
+        reasoning_options = _compaction_reasoning_options(configured)
+        reasoning.set_options(tuple((item, item) for item in reasoning_options))
+        reasoning.disabled = (
+            uses_runtime_model
+            or configured is None
+            or configured.reasoning.activation == "unsupported"
+        )
+        if previous_reasoning in reasoning_options and not reasoning.disabled:
+            reasoning.value = previous_reasoning
+        else:
             reasoning.value = "default"
-        self.query_one("#compaction-reasoning-note", Static).update(
-            _compaction_reasoning_note(model)
+        self.query_one("#compaction-model-options-note", Static).update(
+            _compaction_model_options_note(model, configured)
         )
 
     @on(Button.Pressed, "#compaction-cancel")
@@ -304,34 +327,51 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
                 raise ValueError("Target ratio must be lower than trigger ratio")
             if fallback == strategy:
                 raise ValueError("Fallback strategy must differ from the primary strategy")
+            configured = self._model(model)
+            max_output_tokens = (
+                None
+                if model == _RUNTIME_MODEL
+                else _optional_positive_int(
+                    self.query_one("#compaction-max-output", Input).value,
+                    "Max output tokens",
+                )
+            )
+            if (
+                configured is not None
+                and max_output_tokens is not None
+                and max_output_tokens > configured.max_output_tokens
+            ):
+                raise ValueError(
+                    "Max output tokens must not exceed the selected endpoint output limit "
+                    f"({configured.max_output_tokens:,})"
+                )
             draft = TuiCompactionConfiguration(
                 strategy_id=strategy,
                 fallback_strategy_id=None if fallback == _NO_FALLBACK else fallback,
                 auto_enabled=self.query_one("#compaction-auto", Checkbox).value,
                 trigger_ratio=trigger,
                 target_ratio=target,
-                summary_output_tokens=_minimum_int(
-                    self.query_one("#compaction-summary-tokens", Input).value,
-                    "Summary token budget",
-                    minimum=256,
-                ),
                 model_key=None if model == _RUNTIME_MODEL else model,
-                temperature=_optional_bounded_float(
-                    self.query_one("#compaction-temperature", Input).value,
-                    "Temperature",
-                    minimum=0.0,
-                    maximum=2.0,
+                temperature=(
+                    None
+                    if model == _RUNTIME_MODEL
+                    else _optional_bounded_float(
+                        self.query_one("#compaction-temperature", Input).value,
+                        "Temperature",
+                        minimum=0.0,
+                        maximum=2.0,
+                    )
                 ),
-                max_output_tokens=_optional_positive_int(
-                    self.query_one("#compaction-max-output", Input).value,
-                    "Max output tokens",
-                ),
+                max_output_tokens=max_output_tokens,
                 reasoning=reasoning,
             )
         except ValueError as exc:
             self.query_one(".configuration-error", Static).update(str(exc))
             return
         self.dismiss(draft)
+
+    def _model(self, key: str) -> AvailableModel | None:
+        return next((model for model in self._models if model.key == key), None)
 
 
 class MCPConfigurationScreen(ModalScreen[TuiMCPServerConfiguration | None]):
@@ -752,13 +792,6 @@ def _positive_int(raw: str, label: str) -> int:
     return value
 
 
-def _minimum_int(raw: str, label: str, *, minimum: int) -> int:
-    value = _integer(raw, label)
-    if value < minimum:
-        raise ValueError(f"{label} must be at least {minimum}")
-    return value
-
-
 def _optional_positive_int(raw: str, label: str) -> int | None:
     return _positive_int(raw, label) if raw.strip() else None
 
@@ -836,7 +869,34 @@ def _reasoning_request(value: str) -> ReasoningRequest | None:
         raise ValueError(f"Unsupported thinking option: {value}") from exc
 
 
-def _compaction_reasoning_note(model: str) -> str:
-    if model == _RUNTIME_MODEL:
-        return "Thinking follows the selected Session model and cannot be overridden here."
-    return "Thinking is request-scoped to this dedicated compaction model."
+def _compaction_reasoning_options(model: AvailableModel | None) -> tuple[str, ...]:
+    if model is None or model.reasoning.activation == "unsupported":
+        return ("default",)
+    values = ["default", "enabled"]
+    if model.reasoning.activation == "toggle":
+        values.append("disabled")
+    values.extend(model.reasoning.supported_efforts)
+    return tuple(values)
+
+
+def _compaction_model_options_note(model_key: str, model: AvailableModel | None) -> str:
+    if model_key == _RUNTIME_MODEL:
+        return (
+            "Temperature, output-token limit, and thinking follow the active Session model "
+            "and cannot be overridden here."
+        )
+    if model is None:
+        return "The configured endpoint is unavailable; its request capabilities cannot be edited."
+
+    temperature = "provider default" if model.temperature is None else str(model.temperature)
+    request_defaults = (
+        f"Blank values inherit endpoint defaults (temperature: {temperature}; "
+        f"max output: {model.max_output_tokens:,})."
+    )
+    if model.reasoning.activation == "unsupported":
+        return f"{request_defaults} This endpoint does not expose thinking controls."
+    efforts = ", ".join(model.reasoning.supported_efforts)
+    thinking = (
+        f" Available thinking efforts: {efforts}." if efforts else " Thinking supports mode only."
+    )
+    return request_defaults + thinking

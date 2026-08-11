@@ -2959,7 +2959,21 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
 
     async with app.run_test(size=(100, 42)) as pilot:
         await pilot.pause(0.5)
-        models = await app._controller.models()
+        runtime_models = await app._controller.models()
+        unsupported_model = runtime_models[0]
+        capable_model = unsupported_model.model_copy(
+            update={
+                "key": "faux/thinking",
+                "endpoint_id": "thinking",
+                "reasoning": ReasoningCapability(
+                    activation="toggle",
+                    supported_efforts=("low", "high"),
+                    default=ReasoningRequest(mode="enabled", effort="low"),
+                    output="summary",
+                ),
+            }
+        )
+        models = (unsupported_model, capable_model)
         screen = CompactionConfigurationScreen(
             await app._controller.compaction_configuration(),
             models=models,
@@ -2969,19 +2983,32 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
         await pilot.pause()
         model_route = screen.query_one("#compaction-model", Select)
         reasoning = screen.query_one("#compaction-reasoning", Select)
-        reasoning_note = screen.query_one("#compaction-reasoning-note", Static)
+        reasoning_note = screen.query_one("#compaction-model-options-note", Static)
+        temperature = screen.query_one("#compaction-temperature", Input)
+        max_output = screen.query_one("#compaction-max-output", Input)
         runtime_route = model_route.value
         assert reasoning.disabled is True
-        assert "follows the selected Session model" in reasoning_note.render().plain
+        assert temperature.disabled is True
+        assert max_output.disabled is True
+        assert "follow the active Session model" in reasoning_note.render().plain
 
-        model_route.value = models[0].key
+        model_route.value = capable_model.key
         await pilot.pause()
         assert reasoning.disabled is False
-        assert "dedicated compaction model" in reasoning_note.render().plain
+        assert temperature.disabled is False
+        assert max_output.disabled is False
+        assert "inherit endpoint defaults" in reasoning_note.render().plain
+
+        model_route.value = unsupported_model.key
+        await pilot.pause()
+        assert reasoning.disabled is True
+        assert "does not expose thinking controls" in reasoning_note.render().plain
 
         model_route.value = runtime_route
         await pilot.pause()
         assert reasoning.disabled is True
+        assert temperature.disabled is True
+        assert max_output.disabled is True
         screen.query_one("#compaction-trigger", Input).value = "0.4"
         screen.query_one("#compaction-target", Input).value = "0.5"
 
