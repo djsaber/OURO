@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
@@ -82,7 +83,13 @@ from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
     ProviderConfigurationScreen,
 )
-from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
+from ouro.tui.screens import (
+    Choice,
+    ChoiceScreen,
+    EditableChoiceScreen,
+    HelpScreen,
+    MultiChoiceScreen,
+)
 from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_run_presentation
 from ouro.tui.theme import SELECTED_CHOICE_MARKER, TUI_THEMES
 from ouro.tui.widgets import (
@@ -140,6 +147,7 @@ def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> No
                 "session_id": f"ses_{age}",
                 "title": f"Session {age}",
                 "last_activity_at": local_noon - timedelta(days=age),
+                "archived": age in {2, 30},
             }
         )
         for age in ages
@@ -151,12 +159,13 @@ def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> No
         "Today",
         "Yesterday",
         "Previous 7 days",
-        "Previous 7 days",
         "Previous 30 days",
         "Previous 30 days",
-        "July 2026",
         "June 2026",
+        "Archived",
+        "Archived",
     ]
+    assert [choice.value for choice in choices[-2:]] == ["ses_2", "ses_30"]
 
 
 def test_choice_screen_projects_group_headers_as_disabled_options() -> None:
@@ -219,6 +228,23 @@ def test_group_shortcuts_are_disabled_for_ungrouped_choice_screens() -> None:
     assert screen.check_action("next_group", ()) is False
 
 
+def test_choice_focus_position_clamps_to_last_enabled_option() -> None:
+    options = OptionList(
+        *ChoiceScreen._options(
+            (
+                Choice("first", "First", group="Current"),
+                Choice("disabled", "Disabled", group="Current", disabled=True),
+                Choice("last", "Last", group="Archived"),
+            )
+        )
+    )
+
+    highlighted = ChoiceScreen._highlight_index(options, preferred_position=99)
+
+    assert highlighted is not None
+    assert options.get_option_at_index(highlighted).id == "last"
+
+
 @pytest.mark.asyncio
 async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice(
     tmp_path: Path,
@@ -267,6 +293,78 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
         await pilot.press("enter", "enter")
         await pilot.pause()
         assert results == ["yesterday"]
+
+
+@pytest.mark.asyncio
+async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async def move_selected(_selected: str) -> tuple[Choice, ...]:
+        return (
+            Choice("first", "First", group="Current"),
+            Choice("third", "Third", group="Current"),
+            Choice("second", "Second", group="Archived"),
+        )
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=(
+                    Choice("first", "First", group="Current"),
+                    Choice("second", "Second", group="Current"),
+                    Choice("third", "Third", group="Archived"),
+                ),
+                initial_value="second",
+                on_select=move_selected,
+                retain_focus_position_on_select=True,
+            )
+        )
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen.query_one(OptionList) is options
+        assert options.highlighted is not None
+        assert options.get_option_at_index(options.highlighted).id == "third"
+
+
+@pytest.mark.asyncio
+async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async def archive_selected(_selected: str) -> tuple[Choice, ...]:
+        return (Choice("only", "Only", group="Archived"),)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=(Choice("only", "Only", group="Current"),),
+                on_select=archive_selected,
+                retain_focus_position_on_select=True,
+            )
+        )
+        await pilot.pause()
+
+        app.screen.query_one(Input).value = "Current"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        assert options.option_count == 0
+        assert options.highlighted is None
 
 
 @pytest.mark.asyncio
@@ -3032,6 +3130,212 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
 
 
 @pytest.mark.asyncio
+async def test_session_picker_and_archive_menu_project_and_toggle_archived_group(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    active = application.runtime.sessions.create(
+        session_id="ses_active",
+        title="Active session",
+    ).session
+    archived = application.runtime.sessions.create(
+        session_id="ses_archived",
+        title="Archived session",
+    ).session
+    application.runtime.sessions.set_archived(archived.session_id, True)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        groups = {choice.value: choice.group for choice in app.screen._choices}
+        assert groups[active.session_id] == "Today"
+        assert groups[archived.session_id] == "Archived"
+        await pilot.press("escape")
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Archive session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        archive_screen = app.screen
+
+        archive_screen.query_one("#choice-filter", Input).value = "Active session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is archive_screen
+        choices = {choice.value: choice for choice in archive_screen._choices}
+        assert choices[active.session_id].group == "Archived"
+        assert choices[archived.session_id].group == "Archived"
+
+        archive_screen.query_one("#choice-filter", Input).value = "Archived session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is archive_screen
+        choices = {choice.value: choice for choice in archive_screen._choices}
+        assert choices[archived.session_id].group == "Today"
+        catalog = {item.session_id: item for item in application.runtime.sessions.catalog().entries}
+        assert catalog[active.session_id].archived is True
+        assert catalog[archived.session_id].archived is False
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    sessions = tuple(
+        application.runtime.sessions.create(
+            session_id=f"ses_delete_{index}",
+            title=f"Delete {index}",
+        ).session
+        for index in range(3)
+    )
+    for session in sessions:
+        application.runtime.sessions.set_archived(session.session_id, True)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Delete session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        delete_screen = app.screen
+        assert isinstance(delete_screen, MultiChoiceScreen)
+        assert {choice.group for choice in delete_screen._choices} == {"Archived"}
+
+        for title in ("Delete 0", "Delete 1"):
+            delete_screen.query_one("#choice-filter", Input).value = title
+            await pilot.pause()
+            await pilot.press("space")
+            await pilot.pause()
+        choices = {choice.label: choice for choice in delete_screen._choices}
+        assert choices["Delete 0"].marker == SELECTED_CHOICE_MARKER
+        assert choices["Delete 1"].marker == SELECTED_CHOICE_MARKER
+        assert choices["Delete 2"].marker == ""
+
+        delete_screen.query_one("#choice-filter", Input).value = ""
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is delete_screen
+        assert delete_screen.query_one("#choice-title", Static).render().plain == (
+            "CONFIRM DELETE SESSIONS"
+        )
+        assert [choice.label for choice in delete_screen._choices] == [
+            "Cancel",
+            "Delete 2 selected",
+        ]
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is delete_screen
+        assert len(delete_screen._choices) == 3
+        assert delete_screen.query_one("#choice-title", Static).render().plain == (
+            "DELETE SESSIONS"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is delete_screen
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app.screen is delete_screen
+        assert [choice.label for choice in delete_screen._choices] == ["Delete 2"]
+        assert delete_screen._choices[0].group == "Archived"
+        assert delete_screen._choices[0].marker == ""
+        assert {item.session_id for item in application.runtime.sessions.catalog().entries} == {
+            sessions[2].session_id
+        }
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    active = application.runtime.sessions.create(
+        session_id="ses_rename_active",
+        title="Original title",
+    ).session
+    archived = application.runtime.sessions.create(
+        session_id="ses_rename_archived",
+        title="Archived title",
+    ).session
+    application.runtime.sessions.set_archived(archived.session_id, True)
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=active.session_id,
+    )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.7)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Rename session"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        rename_screen = app.screen
+        assert isinstance(rename_screen, EditableChoiceScreen)
+        assert [choice.value for choice in rename_screen._choices] == [active.session_id]
+        assert {choice.group for choice in rename_screen._choices} == {"Today"}
+
+        rename_screen.query_one("#choice-filter", Input).value = "Original title"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is rename_screen
+        assert rename_screen._editing_value == active.session_id
+        assert rename_screen.query_one("#choice-filter", Input).disabled is True
+        options = rename_screen.query_one(OptionList)
+        assert options.highlighted is not None
+        assert isinstance(options.get_option_at_index(options.highlighted).prompt, Text)
+
+        await pilot.press(*(("backspace",) * len(active.title)), "enter")
+        await pilot.pause()
+        assert app.screen is rename_screen
+        assert rename_screen._editing_value == active.session_id
+        assert application.runtime.sessions.open(active.session_id).session.title == active.title
+
+        await pilot.press(
+            *tuple("Renamed"),
+            "space",
+            *tuple("title"),
+            "enter",
+        )
+        await pilot.pause()
+        assert app.screen is rename_screen
+        assert rename_screen._editing_value is None
+        assert rename_screen.query_one("#choice-filter", Input).disabled is False
+        assert rename_screen.query_one("#choice-filter", Input).value == ""
+        assert rename_screen._choices[0].edit_value == "Renamed title"
+        assert application.runtime.sessions.open(active.session_id).session.title == (
+            "Renamed title"
+        )
+        assert app._active_title == "Renamed title"
+
+        await pilot.press("enter", "home", "x", "escape")
+        await pilot.pause()
+        assert app.screen is rename_screen
+        assert rename_screen._editing_value is None
+        assert application.runtime.sessions.open(active.session_id).session.title == (
+            "Renamed title"
+        )
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
 async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: Path) -> None:
     application = _application(tmp_path)
     destination = application.runtime.sessions.create(
@@ -3251,6 +3555,9 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Model thought display",
             "New session",
             "Open session",
+            "Rename session",
+            "Archive session",
+            "Delete session",
             "Fork session",
             "Session approval",
             "Session model settings",
@@ -3284,7 +3591,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         ]
         assert [choice.group for choice in action_choices] == [
             *("Appearance",) * 2,
-            *("Session",) * 5,
+            *("Session",) * 8,
             *("Providers",) * 10,
             *("Tools",) * 2,
             *("MCP",) * 6,

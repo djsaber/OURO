@@ -63,7 +63,13 @@ from ouro.tui.controller import (
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
-from ouro.tui.screens import Choice, ChoiceScreen, HelpScreen
+from ouro.tui.screens import (
+    Choice,
+    ChoiceScreen,
+    EditableChoiceScreen,
+    HelpScreen,
+    MultiChoiceScreen,
+)
 from ouro.tui.state import (
     PendingInteraction,
     TuiSessionProjection,
@@ -116,6 +122,9 @@ _AGENT_INTERACTION_EVENTS = {
 }
 _THEME_ACTION = "__ouro_theme__"
 _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
+_RENAME_SESSION_ACTION = "__ouro_rename_session__"
+_ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
+_DELETE_SESSION_ACTION = "__ouro_delete_session__"
 _SESSION_MODEL_SETTINGS_ACTION = "__ouro_session_model_settings__"
 _MODEL_ROUTE_ACTION = "__ouro_model_route__"
 _MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
@@ -1865,10 +1874,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     @work(exclusive=True, group="navigation")
     async def _choose_session(self) -> None:
-        try:
-            self._sessions = await self._controller.sessions()
-        except Exception as exc:  # noqa: BLE001
-            self.notify(str(exc), severity="error", markup=False)
+        if not await self._refresh_sessions():
             return
         if not self._sessions:
             self.notify("No saved sessions yet")
@@ -1879,6 +1885,122 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         if selected is not None:
             await self._open_session(selected)
+
+    async def _choose_session_archive(self) -> None:
+        if not await self._refresh_sessions():
+            return
+        if not self._sessions:
+            self.notify("No saved sessions yet")
+            return
+        sessions = {session.session_id: session for session in self._sessions}
+
+        async def toggle_archive(session_id: str) -> tuple[Choice, ...] | None:
+            session = sessions[session_id]
+            archived = not session.archived
+            try:
+                await self._controller.set_session_archived(
+                    session_id,
+                    archived=archived,
+                )
+            except Exception as exc:  # noqa: BLE001
+                self.notify(str(exc), severity="error", markup=False)
+                return None
+            if not await self._refresh_sessions():
+                return None
+            sessions.clear()
+            sessions.update({session.session_id: session for session in self._sessions})
+            self.notify(
+                f"Session {'archived' if archived else 'restored'}: {session.title}",
+                markup=False,
+            )
+            return _session_choices(self._sessions)
+
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title="ARCHIVE SESSIONS",
+                placeholder="Filter sessions…",
+                choices=_session_choices(self._sessions),
+                on_select=toggle_archive,
+                retain_focus_position_on_select=True,
+            )
+        )
+
+    async def _choose_session_rename(self) -> None:
+        if not await self._refresh_sessions():
+            return
+        active = tuple(session for session in self._sessions if not session.archived)
+        if not active:
+            self.notify("No active sessions are available to rename")
+            return
+
+        async def rename_session(
+            session_id: str,
+            title: str,
+        ) -> tuple[Choice, ...] | None:
+            try:
+                renamed = await self._controller.rename_session(session_id, title)
+            except Exception as exc:  # noqa: BLE001
+                self.notify(str(exc), severity="error", markup=False)
+                return None
+            if session_id == self._controller.session_id:
+                self._active_title = renamed.title
+                self.query_one(BrandHeader).set_context(session_title=renamed.title)
+            if not await self._refresh_sessions():
+                return None
+            active_sessions = tuple(session for session in self._sessions if not session.archived)
+            self.notify(f"Session renamed: {renamed.title}", markup=False)
+            return _rename_session_choices(active_sessions)
+
+        await self.push_screen_wait(
+            EditableChoiceScreen(
+                title="RENAME SESSION",
+                placeholder="Filter sessions…",
+                choices=_rename_session_choices(active),
+                on_save=rename_session,
+            )
+        )
+
+    async def _choose_session_delete(self) -> None:
+        if not await self._refresh_sessions():
+            return
+        archived = tuple(session for session in self._sessions if session.archived)
+        if not archived:
+            self.notify("No archived sessions are available to delete")
+            return
+
+        async def delete_selected(
+            session_ids: tuple[str, ...],
+        ) -> tuple[Choice, ...] | None:
+            try:
+                removed = await self._controller.delete_archived_sessions(session_ids)
+            except Exception as exc:  # noqa: BLE001
+                self.notify(str(exc), severity="error", markup=False)
+                return None
+            if self._controller.session_id in removed:
+                await self._new_session()
+            if not await self._refresh_sessions():
+                return None
+            archived_sessions = tuple(session for session in self._sessions if session.archived)
+            self.notify(f"Deleted {len(removed)} session(s)", markup=False)
+            return _session_choices(archived_sessions)
+
+        delete_screen = MultiChoiceScreen(
+            title="DELETE SESSIONS",
+            placeholder="Filter archived sessions…",
+            choices=_session_choices(archived),
+            on_confirm=delete_selected,
+            selected_marker=SELECTED_CHOICE_MARKER,
+            confirm_label="Delete",
+        )
+        await self.push_screen_wait(delete_screen)
+
+    async def _refresh_sessions(self) -> bool:
+        try:
+            self._sessions = await self._controller.sessions()
+        except Exception as exc:  # noqa: BLE001
+            self.notify(str(exc), severity="error", markup=False)
+            return False
+        return True
 
     async def _open_session(self, session_id: str) -> None:
         loaded = await self._controller.load_session(session_id)
@@ -2165,6 +2287,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ),
             self._command_action_choice("/new", "Session", "new_session"),
             self._command_action_choice("/sessions", "Session", "sessions"),
+            Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
+            Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
+            Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
             self._command_action_choice("/fork", "Session"),
             self._command_action_choice("/approval", "Session"),
             Choice(
@@ -2196,6 +2321,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._choose_theme()
         elif action_id == _THOUGHT_DISPLAY_ACTION:
             await self._choose_thought_display()
+        elif action_id == _RENAME_SESSION_ACTION:
+            await self._choose_session_rename()
+        elif action_id == _ARCHIVE_SESSION_ACTION:
+            await self._choose_session_archive()
+        elif action_id == _DELETE_SESSION_ACTION:
+            await self._choose_session_delete()
         elif action_id == _SESSION_MODEL_SETTINGS_ACTION:
             self.action_models()
         elif action_id.startswith(_SYSTEM_SETTING_ACTION_PREFIX):
@@ -2485,14 +2616,31 @@ def _session_choices(
     today: date | None = None,
 ) -> tuple[Choice, ...]:
     local_today = today or datetime.now().astimezone().date()
+    ordered = (
+        *(item for item in sessions if not item.archived),
+        *(item for item in sessions if item.archived),
+    )
     return tuple(
         Choice(
             value=item.session_id,
             label=_truncate_session_title(("★ " if item.pinned else "") + item.title),
             trailing=item.status,
-            group=_session_date_group(item.last_activity_at, today=local_today),
+            group=(
+                "Archived"
+                if item.archived
+                else _session_date_group(item.last_activity_at, today=local_today)
+            ),
         )
-        for item in sessions
+        for item in ordered
+    )
+
+
+def _rename_session_choices(
+    sessions: tuple[SessionCatalogEntry, ...],
+) -> tuple[Choice, ...]:
+    titles = {session.session_id: session.title for session in sessions}
+    return tuple(
+        replace(choice, edit_value=titles[choice.value]) for choice in _session_choices(sessions)
     )
 
 

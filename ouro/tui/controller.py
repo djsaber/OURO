@@ -40,6 +40,7 @@ from ouro.application.session_models import (
     SessionCatalogEntry,
     SessionContextStatus,
     SessionDetail,
+    SessionView,
 )
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageTotals
@@ -294,6 +295,7 @@ class TuiController:
         self._close_application = close_application
         self._started = False
         self._session_id: str | None = None
+        self._session_archived = False
         self._initial_model: str | None = None
         self._creating_session = False
 
@@ -404,6 +406,7 @@ class TuiController:
             )
             self._session_id = result.session.session_id
             self._initial_model = None
+            await self._unarchive_current_session_after_update()
             return result
         finally:
             if is_new_session:
@@ -499,6 +502,7 @@ class TuiController:
 
     def new_session(self) -> None:
         self._session_id = None
+        self._session_archived = False
         self._initial_model = None
         self._approval_mode = self._default_approval_mode
         self._interaction_mode = self._default_interaction_mode
@@ -508,15 +512,51 @@ class TuiController:
         runtime = self._runtime()
         return await asyncio.to_thread(lambda: runtime.sessions.catalog().entries)
 
+    async def set_session_archived(self, session_id: str, *, archived: bool) -> None:
+        sessions = self._runtime().sessions
+        await asyncio.to_thread(sessions.set_archived, session_id, archived)
+        if session_id == self._session_id:
+            self._session_archived = archived
+
+    async def rename_session(self, session_id: str, title: str) -> SessionView:
+        sessions = self._runtime().sessions
+        result = await asyncio.to_thread(sessions.rename, session_id, title)
+        return result.session
+
+    async def delete_archived_sessions(
+        self,
+        session_ids: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        return await asyncio.to_thread(self._delete_archived_sessions, session_ids)
+
+    def _delete_archived_sessions(self, session_ids: tuple[str, ...]) -> tuple[str, ...]:
+        sessions = self._runtime().sessions
+        catalog = {entry.session_id: entry for entry in sessions.catalog().entries}
+        selected = tuple(dict.fromkeys(session_ids))
+        not_archived = tuple(
+            session_id
+            for session_id in selected
+            if (entry := catalog.get(session_id)) is not None and not entry.archived
+        )
+        if not_archived:
+            raise ValueError("only archived sessions can be deleted: " + ", ".join(not_archived))
+        remaining = set(catalog)
+        removed: list[str] = []
+        for session_id in selected:
+            if session_id not in remaining:
+                continue
+            result = sessions.trash(session_id)
+            removed.extend(result.session_ids)
+            remaining.difference_update(result.session_ids)
+        return tuple(dict.fromkeys(removed))
+
     async def branch_points(self) -> tuple[MessageRecord, ...]:
         """Return user requests that can become an editable branch draft."""
 
         session_id = self._require_session()
         return await asyncio.to_thread(
             lambda: tuple(
-                message
-                for message in self._session_messages(session_id)
-                if message.role == "user"
+                message for message in self._session_messages(session_id) if message.role == "user"
             )
         )
 
@@ -601,9 +641,7 @@ class TuiController:
             make_default=draft.make_default,
         )
         return next(
-            provider
-            for provider in catalog.providers
-            if provider.provider_id == draft.provider_id
+            provider for provider in catalog.providers if provider.provider_id == draft.provider_id
         )
 
     async def update_provider(self, draft: TuiProviderConfiguration) -> ProviderView:
@@ -628,9 +666,7 @@ class TuiController:
             make_default=draft.make_default,
         )
         return next(
-            provider
-            for provider in catalog.providers
-            if provider.provider_id == draft.provider_id
+            provider for provider in catalog.providers if provider.provider_id == draft.provider_id
         )
 
     async def set_provider_enabled(self, provider_id: str, *, enabled: bool) -> ProviderView:
@@ -699,9 +735,7 @@ class TuiController:
             supports_structured_output=draft.supports_structured_output,
         )
         return next(
-            endpoint
-            for endpoint in catalog.endpoints
-            if endpoint.endpoint_id == draft.endpoint_id
+            endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == draft.endpoint_id
         )
 
     async def use_endpoint(self, provider_id: str, endpoint_id: str) -> ProviderEndpointView:
@@ -1091,6 +1125,8 @@ class TuiController:
             self._initial_model = model.key
             if route_changed:
                 self._reasoning_request = ReasoningRequest()
+        else:
+            await self._unarchive_current_session_after_update()
         return model
 
     async def session_approval_mode(self) -> SessionApprovalMode:
@@ -1118,6 +1154,7 @@ class TuiController:
         else:
             runtime = self._runtime()
             await asyncio.to_thread(runtime.set_session_approval_mode, session_id, approval_mode)
+            await self._unarchive_current_session_after_update()
         return approval_mode
 
     async def session_approval_preset(self) -> TuiApprovalPreset:
@@ -1162,6 +1199,7 @@ class TuiController:
                 approval_mode=approval_mode,
                 interaction_mode=interaction_mode,
             )
+            await self._unarchive_current_session_after_update()
         return preset
 
     async def session_reasoning(self) -> ModelReasoningState:
@@ -1199,13 +1237,23 @@ class TuiController:
             self._reasoning_request = state.requested
             return state
         await asyncio.to_thread(runtime.set_session_reasoning, session_id, reasoning_request)
+        await self._unarchive_current_session_after_update()
         return await asyncio.to_thread(runtime.session_reasoning, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
         loaded = await asyncio.to_thread(self._read_session, session_id)
         self._session_id = session_id
+        self._session_archived = loaded.detail.session.archived
         self._initial_model = None
         return loaded
+
+    async def _unarchive_current_session_after_update(self) -> None:
+        session_id = self._session_id
+        if session_id is None or not self._session_archived:
+            return
+        sessions = self._runtime().sessions
+        await asyncio.to_thread(sessions.set_archived, session_id, False)
+        self._session_archived = False
 
     def _read_session(self, session_id: str) -> LoadedSession:
         sessions = self._runtime().sessions

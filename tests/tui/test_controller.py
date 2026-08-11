@@ -486,6 +486,72 @@ async def test_controller_load_session_does_not_block_the_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_controller_keeps_archive_policy_in_tui_and_unarchives_after_update(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        session = application.runtime.sessions.create(
+            session_id="ses_archived_tui",
+            title="Archived TUI session",
+        ).session
+        await controller.set_session_archived(session.session_id, archived=True)
+        await controller.load_session(session.session_id)
+        assert (
+            next(
+                item
+                for item in await controller.sessions()
+                if item.session_id == session.session_id
+            ).archived
+            is True
+        )
+
+        await controller.set_session_approval_preset("deny")
+        assert (
+            next(
+                item
+                for item in await controller.sessions()
+                if item.session_id == session.session_id
+            ).archived
+            is False
+        )
+
+        await controller.set_session_archived(session.session_id, archived=True)
+        await controller.submit("update archived session")
+        assert (
+            next(
+                item
+                for item in await controller.sessions()
+                if item.session_id == session.session_id
+            ).archived
+            is False
+        )
+
+        first = application.runtime.sessions.create(
+            session_id="ses_delete_first",
+            title="Delete first",
+        ).session
+        second = application.runtime.sessions.create(
+            session_id="ses_delete_second",
+            title="Delete second",
+        ).session
+        await controller.set_session_archived(first.session_id, archived=True)
+        await controller.set_session_archived(second.session_id, archived=True)
+        removed = await controller.delete_archived_sessions((first.session_id, second.session_id))
+        assert set(removed) == {first.session_id, second.session_id}
+        assert {item.session_id for item in await controller.sessions()} == {session.session_id}
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_does_not_replay_events_for_completed_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -681,9 +747,7 @@ async def test_controller_resets_reasoning_only_when_model_route_changes(
     await controller.start()
 
     try:
-        await controller.set_session_reasoning(
-            ReasoningRequest(mode="enabled", effort="high")
-        )
+        await controller.set_session_reasoning(ReasoningRequest(mode="enabled", effort="high"))
         result = await controller.submit("create configured session")
         runtime = application.runtime
         selected = AvailableModel(
