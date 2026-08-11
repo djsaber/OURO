@@ -14,6 +14,7 @@ def test_matching_commands_filters_prefixes_and_aliases() -> None:
     assert [command.name for command in matching_commands("/m")] == ["/model"]
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
     assert [command.name for command in matching_commands("/ski")] == ["/skill"]
+    assert [command.name for command in matching_commands("/unq")] == ["/unqueue"]
     assert matching_commands("/config") == ()
     assert matching_commands("/tools") == ()
     assert matching_commands("/mcp") == ()
@@ -29,6 +30,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     compact, compact_argument = resolve_command("/compaction")
     skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
     fork, fork_argument = resolve_command("/branch msg_123")
+    unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
     alias, alias_argument = resolve_command("/exit")
     typo_alias, _ = resolve_command("/quite")
     unknown, _ = resolve_command("/missing")
@@ -45,6 +47,9 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert skill_argument == "reviewer inspect app.py"
     assert fork is not None and fork.name == "/fork"
     assert fork_argument == "msg_123"
+    assert unqueue is not None and unqueue.name == "/unqueue"
+    assert unqueue.argument_selection_submits is True
+    assert unqueue_argument == "queued_123"
     assert alias is not None and alias.name == "/quit"
     assert typo_alias is not None and typo_alias.name == "/quit"
     assert alias_argument == ""

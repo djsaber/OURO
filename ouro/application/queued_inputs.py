@@ -270,6 +270,30 @@ class QueuedInputQueue:
         items = self.eligible(snapshot, limit=1)
         return items[0] if items else None
 
+    def find_session(self, session: SessionRecord, queue_id: str) -> QueuedInput | None:
+        """Return one valid queued item by its stable delivery identity."""
+
+        return next(
+            (item for item in self.eligible_session(session) if item.queue_id == queue_id),
+            None,
+        )
+
+    def cancel_user_input(self, *, session_id: str, queue_id: str) -> QueuedInput | None:
+        """Atomically remove a direct user input that is still queued."""
+
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            for index, raw_item in enumerate(queue):
+                item = self._parse_item(raw_item)
+                if item is None or item.queue_id != queue_id or item.source != "user":
+                    continue
+                queue.pop(index)
+                self._save_queue(latest, metadata, queue)
+                return item
+        return None
+
     def acknowledge(self, snapshot: RuntimeSessionSnapshot, queue_id: str) -> None:
         """Remove an item only after its canonical message is durably appended."""
 

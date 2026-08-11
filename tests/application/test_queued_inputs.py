@@ -6,7 +6,7 @@ from pydantic import ValidationError
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
 from ouro.core.messages import SkillActivationContent
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
 
 def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) -> None:
@@ -103,6 +103,54 @@ def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
     assert repeated.queue_id == first.queue_id
     queue.acknowledge(snapshot, first.queue_id)
     assert queue.peek(store.load_session(session.session_id)) is None
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: str) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "sessions")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    session = SessionRecord(title="Cancelable queue")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    _, user_input, _ = queue.enqueue(
+        snapshot=store.load_session(session.session_id),
+        prompt="Return this draft",
+        title=None,
+    )
+    _, host_input, _ = queue.enqueue(
+        snapshot=store.load_session(session.session_id),
+        prompt="Framework continuation",
+        title=None,
+        source="host",
+        host_source_id="ouro.runtime/test",
+    )
+
+    cancelled = queue.cancel_user_input(
+        session_id=session.session_id,
+        queue_id=user_input.queue_id,
+    )
+
+    remaining = queue.eligible_session(store.load_session_record(session.session_id))
+    assert cancelled == user_input
+    assert (
+        queue.cancel_user_input(
+            session_id=session.session_id,
+            queue_id=user_input.queue_id,
+        )
+        is None
+    )
+    assert (
+        queue.cancel_user_input(
+            session_id=session.session_id,
+            queue_id=host_input.queue_id,
+        )
+        is None
+    )
+    assert remaining == [host_input]
 
 
 def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(tmp_path) -> None:

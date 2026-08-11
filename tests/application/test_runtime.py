@@ -56,7 +56,7 @@ from ouro.prompts import (
 )
 from ouro.providers import FauxProvider
 from ouro.resources import LocalResourceStore
-from ouro.sessions import LocalSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 from ouro.skills import SkillMetadata
 from ouro.tools import (
     Tool,
@@ -1941,6 +1941,54 @@ async def test_runtime_drains_queued_follow_up_after_active_run_completes(tmp_pa
     ]
     assert queued_snapshot.session.metadata["follow_up_queue"][0]["prompt"] == "Second prompt"
     assert runtime.pending_user_inputs(session.session_id) == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+async def test_runtime_cancels_pending_user_input_before_follow_up_consumption(
+    tmp_path,
+    backend: str,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "sessions")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "ouro.db")
+    )
+    store.initialize()
+    provider = GateProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="gate", provider_id="gate"),
+        ),
+        tools=_tools(),
+    )
+
+    first_task = asyncio.create_task(runtime.run("First prompt"))
+    session = await _wait_for_active_session(store)
+    await asyncio.wait_for(provider.first_started.wait(), timeout=1)
+    await runtime.run("Return this draft", session_id=session.session_id)
+    queued = runtime.pending_user_inputs(session.session_id)[0]
+
+    cancelled = await runtime.cancel_pending_user_input(session.session_id, queued.queue_id)
+    provider.release_first.set()
+    first = await asyncio.wait_for(first_task, timeout=2)
+    snapshot = store.load_session(session.session_id)
+
+    assert cancelled == queued
+    assert first.run.status == "completed"
+    assert provider.calls == 1
+    assert runtime.pending_user_inputs(session.session_id) == ()
+    assert [message.text_content for message in snapshot.messages] == ["First prompt", "first"]
+    cancelled_event = next(
+        event for event in snapshot.events if event.event_type == "queued_input_cancelled"
+    )
+    assert cancelled_event.payload == {
+        "queue_id": queued.queue_id,
+        "mode": "follow_up",
+        "source": "user",
+    }
 
 
 @pytest.mark.asyncio

@@ -23,7 +23,7 @@ from textual.timer import Timer
 from textual.widgets import TextArea
 
 from ouro.application.models import AvailableModel, ModelReasoningState
-from ouro.application.queued_inputs import QueuedInputMode
+from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.session_models import SessionCatalogEntry
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.supervisor_models import RuntimeActivitySnapshot
@@ -1099,6 +1099,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if event.event_type in {
                 "follow_up_input_queued",
                 "steering_input_queued",
+                "queued_input_cancelled",
                 "user_message_added",
                 "queued_input_consumed",
             }:
@@ -1318,6 +1319,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._dismissed_command_text = None
             ask_user.accept_freeform(message.text)
             return
+        value = message.text
         selected = popup.selected_command
         if selected is not None and selected.takes_arguments:
             self._edit_command(f"{selected.name} ")
@@ -1331,10 +1333,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if not option_is_complete or (
                 selected_argument.requires_value and (not head_separator or not remainder.strip())
             ):
-                suffix = " " if selected_argument.requires_value else ""
-                self._edit_command(f"{argument_command.name} {selected_argument.value}{suffix}")
-                return
-        value = selected.name if selected is not None else message.text
+                if (
+                    argument_command.argument_selection_submits
+                    and not selected_argument.requires_value
+                ):
+                    value = f"{argument_command.name} {selected_argument.value}"
+                else:
+                    suffix = " " if selected_argument.requires_value else ""
+                    self._edit_command(
+                        f"{argument_command.name} {selected_argument.value}{suffix}"
+                    )
+                    return
+        value = selected.name if selected is not None else value
         composer.clear()
         popup.hide()
         self._dismissed_command_text = None
@@ -1574,6 +1584,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 self._compact_session()
         elif command.name == "/skill":
             await self._submit_skill(argument)
+        elif command.name == "/unqueue":
+            if argument:
+                await self._unqueue_message(argument)
+            else:
+                await self._command_usage(command)
         elif command.name == "/clear":
             await self._refresh_usage_status()
             await self.query_one(ConversationView).show_welcome()
@@ -1610,7 +1625,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             elif command.name == "/skill":
                 options = self._skill_arguments()
                 catalog[index] = replace(command, argument_options=options)
+            elif command.name == "/unqueue":
+                catalog[index] = replace(
+                    command,
+                    argument_options=self._queued_input_arguments(),
+                )
         return (*catalog, *self._plugin_commands())
+
+    def _queued_input_arguments(self) -> tuple[TuiCommandArgument, ...]:
+        inputs = self.query_one(QueuedInputPanel).inputs
+        return tuple(
+            TuiCommandArgument(
+                value=item.queue_id,
+                description=(
+                    "Follow-up message" if item.mode == "follow_up" else "Active-run guidance"
+                ),
+                label=f"{index}. {_queued_input_preview(item)}",
+            )
+            for index, item in enumerate(inputs, start=1)
+        )
 
     def _skill_arguments(self) -> tuple[TuiCommandArgument, ...]:
         try:
@@ -1650,6 +1683,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             "follow_up",
             skill_invocation=invocation,
         )
+
+    async def _unqueue_message(self, queue_id: str) -> None:
+        try:
+            cancelled = await self._controller.cancel_queued_user_input(queue_id)
+            await self._sync_queued_inputs()
+        except Exception as exc:  # noqa: BLE001 - surface application boundary failures.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        if cancelled is None:
+            self.notify(
+                "That message is no longer queued",
+                severity="warning",
+                markup=False,
+            )
+            return
+        self._edit_draft(_queued_input_draft(cancelled))
+        self.notify("Queued message returned to the composer", markup=False)
 
     async def _command_usage(self, command: TuiCommand) -> None:
         self.notify(f"Usage: {command.usage}", severity="warning", markup=False)
@@ -2340,6 +2390,17 @@ def _branch_point_choices(
         )
         for message in points
     )
+
+
+def _queued_input_draft(item: QueuedUserInputView) -> str:
+    if item.skill_name is None:
+        return item.prompt
+    task = f" {item.prompt}" if item.prompt else ""
+    return f"/skill {item.skill_name}{task}"
+
+
+def _queued_input_preview(item: QueuedUserInputView) -> str:
+    return _summarize(_queued_input_draft(item), limit=64) or "(empty message)"
 
 
 def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:

@@ -144,6 +144,10 @@ if TYPE_CHECKING:
     from ouro.plugins.runtime import PluginRuntimeResource
 
 
+class _QueuedInputSelectionChanged(RuntimeError):
+    """A queued-input snapshot changed before its durable consumption boundary."""
+
+
 def _append_system_prompt(system_prompt: str, fragment: str) -> str:
     if not fragment:
         return system_prompt
@@ -644,18 +648,46 @@ class RuntimeService:
 
         session = self.store.load_session_record(session_id)
         return tuple(
-            QueuedUserInputView(
-                queue_id=item.queue_id,
-                prompt=item.prompt,
-                mode=item.mode,
-                queued_at=item.queued_at,
-                skill_name=(
-                    item.skill_activation.name if item.skill_activation is not None else None
-                ),
-            )
+            _queued_user_input_view(item)
             for item in self.queued_inputs.eligible_session(session)
             if item.source == "user"
         )
+
+    async def cancel_pending_user_input(
+        self,
+        session_id: str,
+        queue_id: str,
+    ) -> QueuedUserInputView | None:
+        """Cancel one direct user input if it has not crossed a durable boundary."""
+
+        cancelled: QueuedInput | None = None
+        with self.store.session_mutation(session_id):
+            snapshot = self.store.load_runtime_session(session_id)
+            pending = self.queued_inputs.find_session(snapshot.session, queue_id)
+            if pending is None or pending.source != "user":
+                return None
+            if self._queued_input_is_durable(snapshot.messages, queue_id):
+                self.queued_inputs.acknowledge(snapshot, queue_id)
+            else:
+                cancelled = self.queued_inputs.cancel_user_input(
+                    session_id=session_id,
+                    queue_id=queue_id,
+                )
+        self._release_queued_extension_snapshot(queue_id)
+        if cancelled is None:
+            return None
+        session = self.store.load_session_record(session_id)
+        await self.event_recorder.publish(
+            session_id=session_id,
+            run_id=session.active_run_id,
+            event_type="queued_input_cancelled",
+            payload={
+                "queue_id": cancelled.queue_id,
+                "mode": cancelled.mode,
+                "source": cancelled.source,
+            },
+        )
+        return _queued_user_input_view(cancelled)
 
     def current_model(self, session_id: str | None = None) -> AvailableModel:
         if session_id is None:
@@ -1321,11 +1353,22 @@ class RuntimeService:
                     run=run,
                     inputs=pending_inputs,
                 )
-            session, run = self.run_lifecycle.start(
-                session=session,
-                run=run,
-                snapshot=locked_snapshot,
-            )
+            is_queued_run = _queued_inputs is not None
+            if is_queued_run:
+                session, run, input_messages = self._start_queued_run(
+                    session=session,
+                    run=run,
+                    snapshot=locked_snapshot,
+                    inputs=pending_inputs,
+                    existing_message_count=len(existing_messages),
+                )
+            else:
+                session, run = self.run_lifecycle.start(
+                    session=session,
+                    run=run,
+                    snapshot=locked_snapshot,
+                )
+                input_messages = []
 
             sequence = self.store.latest_event_sequence(session.session_id)
             sequence = await self.event_recorder.emit(
@@ -1337,20 +1380,18 @@ class RuntimeService:
                 payload={"trigger": run.trigger, "origin": run.origin},
             )
 
-            input_messages: list[MessageRecord] = []
-            for queued_input in pending_inputs:
-                is_queued = _queued_inputs is not None
-                input_message = self._append_session_input(
-                    session=session,
-                    run=run,
-                    item=queued_input,
-                    sequence=len(existing_messages) + len(input_messages) + 1,
-                    is_queued=is_queued,
-                )
-                input_messages.append(input_message)
-                if is_queued:
-                    latest = self.store.load_runtime_session(session.session_id)
-                    self.queued_inputs.acknowledge(latest, queued_input.queue_id)
+            for index, queued_input in enumerate(pending_inputs):
+                if is_queued_run:
+                    input_message = input_messages[index]
+                else:
+                    input_message = self._append_session_input(
+                        session=session,
+                        run=run,
+                        item=queued_input,
+                        sequence=len(existing_messages) + len(input_messages) + 1,
+                        is_queued=False,
+                    )
+                    input_messages.append(input_message)
                 sequence = await self.event_recorder.emit(
                     emitted,
                     sequence,
@@ -1359,7 +1400,7 @@ class RuntimeService:
                     event_type=_session_input_event_type(queued_input.source),
                     payload={
                         "message_id": input_message.message_id,
-                        "queued_input_id": queued_input.queue_id if is_queued else None,
+                        "queued_input_id": (queued_input.queue_id if is_queued_run else None),
                         "source": queued_input.source,
                         "message_role": queued_input.message_role,
                         "host_source_id": queued_input.host_source_id,
@@ -1704,21 +1745,26 @@ class RuntimeService:
     async def consume_host_input(self, receipt: HostInputReceipt) -> RunResult:
         """Consume a previously accepted Host input through the ordinary Run path."""
 
-        snapshot = self._load_runtime_snapshot(
-            receipt.session_id,
-            recover=not self.run_ownership.is_locked(receipt.session_id),
-        )
-        active = maybe_active_run(snapshot.runs)
-        if active is not None:
-            return RunResult(session=snapshot.session, run=active)
-        pending = self._pending_queued_inputs(snapshot)
-        if pending:
-            return await self.run(
-                pending[0].prompt,
-                session_id=receipt.session_id,
-                title=pending[0].title,
-                _queued_inputs=pending,
+        while True:
+            snapshot = self._load_runtime_snapshot(
+                receipt.session_id,
+                recover=not self.run_ownership.is_locked(receipt.session_id),
             )
+            active = maybe_active_run(snapshot.runs)
+            if active is not None:
+                return RunResult(session=snapshot.session, run=active)
+            pending = self._pending_queued_inputs(snapshot)
+            if not pending:
+                break
+            try:
+                return await self.run(
+                    pending[0].prompt,
+                    session_id=receipt.session_id,
+                    title=pending[0].title,
+                    _queued_inputs=pending,
+                )
+            except _QueuedInputSelectionChanged:
+                continue
         for message in snapshot.messages:
             if (
                 message.metadata.get("queued_input_id") == receipt.queue_id
@@ -1945,13 +1991,16 @@ class RuntimeService:
             pending = self._pending_queued_inputs(snapshot)
             if not pending:
                 return
-            result = await self.run(
-                pending[0].prompt,
-                session_id=session_id,
-                title=pending[0].title,
-                _drain_queued_inputs=False,
-                _queued_inputs=pending,
-            )
+            try:
+                result = await self.run(
+                    pending[0].prompt,
+                    session_id=session_id,
+                    title=pending[0].title,
+                    _drain_queued_inputs=False,
+                    _queued_inputs=pending,
+                )
+            except _QueuedInputSelectionChanged:
+                continue
             if result.run.status != "completed":
                 return
 
@@ -2025,35 +2074,21 @@ class RuntimeService:
                 appended.append(assistant_message)
 
         for item in eligible:
-            latest = self.store.load_runtime_session(session.session_id)
-            if self._queued_input_is_durable(latest.messages, item.queue_id):
-                self.queued_inputs.acknowledge(latest, item.queue_id)
-                self._release_queued_extension_snapshot(item.queue_id)
-                durable = next(
-                    (
-                        message
-                        for message in latest.messages
-                        if message.metadata.get("queued_input_id") == item.queue_id
-                        or message.metadata.get("queued_follow_up_id") == item.queue_id
-                    ),
-                    None,
-                )
-                if durable is not None and not any(
-                    message.message_id == durable.message_id for message in messages
-                ):
-                    appended.append(durable)
-                continue
-            input_message = self._append_session_input(
+            input_message, newly_consumed = self._consume_queued_turn_input(
                 session=session,
                 run=run,
                 item=item,
                 sequence=len(messages) + len(appended) + 1,
-                is_queued=True,
             )
-            appended.append(input_message)
-            latest = self.store.load_runtime_session(session.session_id)
-            self.queued_inputs.acknowledge(latest, item.queue_id)
+            if input_message is None:
+                continue
             self._release_queued_extension_snapshot(item.queue_id)
+            if not any(
+                message.message_id == input_message.message_id for message in (*messages, *appended)
+            ):
+                appended.append(input_message)
+            if not newly_consumed:
+                continue
             sequence = await self.event_recorder.emit(
                 emitted,
                 sequence,
@@ -2223,6 +2258,80 @@ class RuntimeService:
             resource_refs=item.resource_refs,
             metadata=metadata,
         )
+
+    def _start_queued_run(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        snapshot: RuntimeSessionSnapshot,
+        inputs: list[QueuedInput],
+        existing_message_count: int,
+    ) -> tuple[SessionRecord, RunRecord, list[MessageRecord]]:
+        """Atomically cross queued inputs from cancellable state into canonical history."""
+
+        with self.store.session_mutation(session.session_id):
+            latest_session = self.store.load_session_record(session.session_id)
+            current = {
+                item.queue_id: item for item in self.queued_inputs.eligible_session(latest_session)
+            }
+            if any(current.get(item.queue_id) != item for item in inputs):
+                raise _QueuedInputSelectionChanged
+            started_session, started_run = self.run_lifecycle.start(
+                session=session,
+                run=run,
+                snapshot=snapshot,
+            )
+            messages: list[MessageRecord] = []
+            for item in inputs:
+                message = self._append_session_input(
+                    session=started_session,
+                    run=started_run,
+                    item=item,
+                    sequence=existing_message_count + len(messages) + 1,
+                    is_queued=True,
+                )
+                messages.append(message)
+                latest = self.store.load_runtime_session(session.session_id)
+                self.queued_inputs.acknowledge(latest, item.queue_id)
+        return started_session, started_run, messages
+
+    def _consume_queued_turn_input(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        item: QueuedInput,
+        sequence: int,
+    ) -> tuple[MessageRecord | None, bool]:
+        """Atomically choose cancellation or durable turn-boundary consumption."""
+
+        with self.store.session_mutation(session.session_id):
+            latest = self.store.load_runtime_session(session.session_id)
+            if self.queued_inputs.find_session(latest.session, item.queue_id) != item:
+                return None, False
+            durable = next(
+                (
+                    message
+                    for message in latest.messages
+                    if message.metadata.get("queued_input_id") == item.queue_id
+                    or message.metadata.get("queued_follow_up_id") == item.queue_id
+                ),
+                None,
+            )
+            if durable is not None:
+                self.queued_inputs.acknowledge(latest, item.queue_id)
+                return durable, False
+            message = self._append_session_input(
+                session=session,
+                run=run,
+                item=item,
+                sequence=sequence,
+                is_queued=True,
+            )
+            latest = self.store.load_runtime_session(session.session_id)
+            self.queued_inputs.acknowledge(latest, item.queue_id)
+            return message, True
 
     def _validate_model_resource_refs(
         self,
@@ -3185,6 +3294,16 @@ class RuntimeService:
             catalog_id=catalog_id,
         )
         self._restore_session_control_snapshot(run)
+
+
+def _queued_user_input_view(item: QueuedInput) -> QueuedUserInputView:
+    return QueuedUserInputView(
+        queue_id=item.queue_id,
+        prompt=item.prompt,
+        mode=item.mode,
+        queued_at=item.queued_at,
+        skill_name=(item.skill_activation.name if item.skill_activation is not None else None),
+    )
 
 
 def _attributed_input_source(

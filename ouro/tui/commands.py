@@ -39,6 +39,7 @@ class TuiCommand:
     argument_hint: str | None = None
     aliases: tuple[str, ...] = ()
     argument_options: tuple[TuiCommandArgument, ...] = ()
+    argument_selection_submits: bool = False
 
     @property
     def usage(self) -> str:
@@ -118,6 +119,13 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Use skill",
         "Run a follow-up with one explicitly selected skill",
         "<skill> [task]",
+    ),
+    TuiCommand(
+        "/unqueue",
+        "Unqueue message",
+        "Return a queued message to the composer",
+        "<queued-message>",
+        argument_selection_submits=True,
     ),
     TuiCommand("/clear", "Clear view", "Clear the visible timeline only"),
     TuiCommand(

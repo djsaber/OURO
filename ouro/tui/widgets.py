@@ -1759,6 +1759,10 @@ class QueuedInputPanel(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield self._content
 
+    @property
+    def inputs(self) -> tuple[QueuedUserInputView, ...]:
+        return self._inputs
+
     def refresh_theme(self) -> None:
         self.set_inputs(self._inputs)
 

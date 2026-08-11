@@ -534,6 +534,13 @@ class TuiController:
         target_session_id = session_id or self._require_session()
         return await asyncio.to_thread(self._queued_user_inputs, target_session_id)
 
+    async def cancel_queued_user_input(
+        self,
+        queue_id: str,
+    ) -> QueuedUserInputView | None:
+        session_id = self._require_session()
+        return await self._runtime().cancel_pending_user_input(session_id, queue_id)
+
     def _queued_user_inputs(self, session_id: str) -> tuple[QueuedUserInputView, ...]:
         target_session_id = session_id
         return self._runtime().pending_user_inputs(target_session_id)

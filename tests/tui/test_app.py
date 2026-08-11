@@ -1872,6 +1872,55 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
 
 
 @pytest.mark.asyncio
+async def test_unqueue_command_selects_message_and_returns_it_to_composer(
+    tmp_path: Path,
+) -> None:
+    provider = BlockingStreamProvider()
+    application = _blocking_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 36)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press(*"first", "enter")
+        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+        await pilot.pause(0.2)
+
+        composer = app.query_one(Composer)
+        composer.load_text("keep queued")
+        await pilot.press("enter")
+        composer.load_text("return to composer")
+        await pilot.press("enter")
+        await pilot.pause(0.3)
+
+        await pilot.press("slash", *"unqueue", "enter")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        choices = popup.query_one("#command-popup-content", Static).render().plain
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/unqueue"
+        assert "1. keep queued" in choices
+        assert "2. return to composer" in choices
+
+        await pilot.press("down", "enter")
+        await pilot.pause(0.3)
+
+        assert composer.text == "return to composer"
+        queue_panel = app.query_one(QueuedInputPanel)
+        queued_text = queue_panel.query_one("#queued-input-content", Static).render().plain
+        assert queue_panel.display is True
+        assert "keep queued" in queued_text
+        assert "return to composer" not in queued_text
+
+        provider.release.set()
+        await pilot.pause(1)
+
+        snapshot = application.runtime.store.load_session(app._controller.session_id or "")
+        assert "return to composer" not in [message.text_content for message in snapshot.messages]
+        assert any(event.event_type == "queued_input_cancelled" for event in snapshot.events)
+
+
+@pytest.mark.asyncio
 async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: Path) -> None:
     provider = QueuedSubagentApprovalProvider()
     application = _queued_subagent_approval_application(tmp_path, provider)

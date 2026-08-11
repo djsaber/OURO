@@ -201,6 +201,9 @@ steer 不会插入二者之间。消费批量由 `queued_inputs.consumption_mode
 后续 Run；run lock 保持非重入，不能用重入掩盖事务边界错误。
 
 Host 通过 `RuntimeService.pending_user_inputs` 读取类型化的直接用户待消费视图，不解释 Session metadata。
+`RuntimeService.cancel_pending_user_input` 只允许按稳定 queue identity 撤回仍未形成 canonical message 的直接用户
+输入；撤回与运行时的“仍在队列校验—canonical message 持久化—出队”共用同一 Session mutation 边界，成功撤回
+的输入不能再被先前读取的陈旧队列快照消费。Host/plugin/delegation 输入不属于用户可撤回范围。
 入队事件只携带 queue identity 与状态，不复制 prompt；canonical user message 持久化后，`user_message_added`
 或 `queued_input_consumed` 携带稳定 `message_id`，Host 再通过 `SessionService.message` 读取唯一消息。TUI 因此
 不得在提交时乐观插入对话：未消费输入只显示在队列视图，收到 canonical message identity 后才按事件顺序进入

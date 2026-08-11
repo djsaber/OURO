@@ -86,6 +86,7 @@ def validate_runtime_event_payload(event_type: str, payload: dict[str, Any]) -> 
         "run_status_changed": ("to_status",),
         "follow_up_input_queued": ("queue_id",),
         "steering_input_queued": ("queue_id",),
+        "queued_input_cancelled": ("queue_id",),
         "queued_input_consumed": ("queue_id",),
         "turn_policy_continued": ("turn_id",),
         "run_continuation_resolved": ("decision_id",),
