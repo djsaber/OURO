@@ -172,7 +172,12 @@ class ConversationHistory(RichLog, can_focus=False):
     regular widgets below this buffer because it is still mutable.
     """
 
-    def __init__(self, render_tool: ToolActivityRenderer) -> None:
+    def __init__(
+        self,
+        render_tool: ToolActivityRenderer,
+        *,
+        reasoning_expanded: bool = True,
+    ) -> None:
         super().__init__(
             id="conversation-history",
             wrap=True,
@@ -184,6 +189,7 @@ class ConversationHistory(RichLog, can_focus=False):
         self._entries: list[TranscriptEntry] = []
         self._user_lines: tuple[int, ...] = ()
         self._render_width = 0
+        self._reasoning_expanded = reasoning_expanded
 
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
@@ -288,6 +294,13 @@ class ConversationHistory(RichLog, can_focus=False):
         if self._entries:
             self._render_entries()
 
+    def set_reasoning_expanded(self, expanded: bool) -> None:
+        if self._reasoning_expanded == expanded:
+            return
+        self._reasoning_expanded = expanded
+        if self._entries:
+            self._render_entries()
+
     def on_resize(self, event: Resize) -> None:
         size_was_known = self._size_known
         super().on_resize(event)
@@ -359,14 +372,16 @@ class ConversationHistory(RichLog, can_focus=False):
             label = "THOUGHT"
             if entry.reasoning_seconds is not None:
                 label += f" · {format_duration(entry.reasoning_seconds)}"
-            thought = Group(
-                Text(label, style="bold #aeb5bf"),
-                Padding(
-                    _ReasoningContent(entry.reasoning),
-                    (0, 0, 1, 1),
-                ),
-            )
-            blocks.append(thought)
+            thought_content: RenderableType = Text(label, style="bold #aeb5bf")
+            if self._reasoning_expanded:
+                thought_content = Group(
+                    thought_content,
+                    Padding(
+                        _ReasoningContent(entry.reasoning),
+                        (1, 0, 0, 1),
+                    ),
+                )
+            blocks.append(Padding(thought_content, (0, 0, 1, 0)))
         if entry.text:
             blocks.append(RichMarkdown(entry.text))
         top = 1 if previous_kind == "tool" else 0

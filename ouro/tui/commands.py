@@ -114,6 +114,16 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         ),
     ),
     TuiCommand(
+        "/thoughts",
+        "Thought display",
+        "Expand or collapse model thoughts in the conversation",
+        "[expand|collapse]",
+        argument_options=(
+            TuiCommandArgument("expand", "Show model thought content"),
+            TuiCommandArgument("collapse", "Hide model thought content"),
+        ),
+    ),
+    TuiCommand(
         "/compact",
         "Compact context",
         "Compact eligible older turns in the current session",

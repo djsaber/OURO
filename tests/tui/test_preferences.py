@@ -33,10 +33,11 @@ def test_tui_theme_catalog_uses_distinct_restrained_palettes() -> None:
 def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> None:
     store = TuiPreferencesStore(tmp_path)
 
-    store.save(TuiPreferences(theme="iris"))
+    assert TuiPreferences().reasoning_expanded is False
+    store.save(TuiPreferences(theme="iris", reasoning_expanded=False))
 
     assert store.path == tmp_path / "config" / "tui.json"
-    assert store.load() == TuiPreferences(theme="iris")
+    assert store.load() == TuiPreferences(theme="iris", reasoning_expanded=False)
 
 
 @pytest.mark.parametrize(
@@ -44,6 +45,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     (
         {"theme": "neon"},
         {"theme": "harbor", "framework_option": True},
+        {"theme": "harbor", "reasoning_expanded": "sometimes"},
     ),
 )
 def test_tui_preferences_reject_unknown_values_and_fields(

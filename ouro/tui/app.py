@@ -133,6 +133,7 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "xhigh": ReasoningRequest(mode="enabled", effort="xhigh"),
     "max": ReasoningRequest(mode="enabled", effort="max"),
 }
+_THOUGHT_DISPLAY_OPTIONS: dict[str, bool] = {"expand": True, "collapse": False}
 
 
 class _OuroHostScreen(Screen):
@@ -323,7 +324,7 @@ _OURO_TUI_CSS = """
 
     .reasoning-view {
         height: auto;
-        margin: 0;
+        margin: 0 0 1 0;
         padding: 0;
         color: #8f9aa8;
         background: transparent;
@@ -337,7 +338,7 @@ _OURO_TUI_CSS = """
 
     .reasoning-content {
         height: auto;
-        margin: 0 0 1 1;
+        margin: 1 0 0 1;
         padding: 0 1;
         color: #8f9aa8;
         text-style: dim italic;
@@ -790,6 +791,20 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             show=False,
             priority=True,
         ),
+        Binding(
+            "ctrl+left",
+            "previous_user_message",
+            "Previous user message",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "ctrl+right",
+            "next_user_message",
+            "Next user message",
+            show=False,
+            priority=True,
+        ),
         Binding("ctrl+c", "abort", "Abort", show=False, priority=True),
         Binding("ctrl+q", "quit", "Quit", show=False, priority=True),
         Binding("question_mark", "help", "Help", show=False),
@@ -814,6 +829,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         except OuroError as exc:
             preferences = TuiPreferences()
             self._preferences_error = str(exc)
+        self._preferences = preferences
         self._tui_theme = TUI_THEMES[preferences.theme]
         super().__init__()
         self._controller = TuiController(
@@ -854,7 +870,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def compose(self) -> ComposeResult:
         yield BrandHeader()
         with Vertical(id="main"):
-            yield ConversationView()
+            yield ConversationView(reasoning_expanded=self._preferences.reasoning_expanded)
             yield CommandPopup()
             yield AskUserPanel()
             yield PlanConfirmationPanel()
@@ -1587,6 +1603,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._set_reasoning(argument.casefold())
             else:
                 self.action_thinking_settings()
+        elif command.name == "/thoughts":
+            if argument:
+                self._set_reasoning_expanded(argument.casefold())
+            else:
+                await self._command_usage(command)
         elif command.name == "/compact":
             if argument:
                 self.notify("Usage: /compact", severity="warning", markup=False)
@@ -1863,6 +1884,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def action_conversation_bottom(self) -> None:
         self._navigate_to("bottom")
+
+    def action_previous_user_message(self) -> None:
+        self.query_one(ConversationView).scroll_to_previous_user_turn()
+
+    def action_next_user_message(self) -> None:
+        self.query_one(ConversationView).scroll_to_next_user_turn()
 
     def _navigate_to(self, target: str) -> None:
         """Scroll the conversation to the target identified by the /navigate argument."""
@@ -2244,15 +2271,37 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if theme is None:
             self.notify(f"Unknown TUI theme: {theme_id}", severity="error", markup=False)
             return
+        preferences = self._preferences.model_copy(update={"theme": theme_id})
         try:
-            self._preferences_store.save(TuiPreferences(theme=theme_id))
+            self._preferences_store.save(preferences)
         except OuroError as exc:
             if restore_theme is not None:
                 self._apply_tui_theme(restore_theme)
             self.notify(str(exc), severity="error", markup=False)
             return
+        self._preferences = preferences
         self._apply_tui_theme(theme)
         self.notify(f"Theme color: {theme.label}")
+
+    def _set_reasoning_expanded(self, value: str) -> None:
+        expanded = _THOUGHT_DISPLAY_OPTIONS.get(value)
+        if expanded is None:
+            self.notify(
+                "Usage: /thoughts <expand|collapse>",
+                severity="warning",
+                markup=False,
+            )
+            return
+        preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
+        try:
+            self._preferences_store.save(preferences)
+        except OuroError as exc:
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        self._preferences = preferences
+        self.query_one(ConversationView).set_reasoning_expanded(expanded)
+        state = "expanded" if expanded else "collapsed"
+        self.notify(f"Model thoughts: {state}", markup=False)
 
     def _apply_tui_theme(self, theme: TuiTheme) -> None:
         self._tui_theme = theme

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from bisect import bisect_left, bisect_right
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from math import ceil
@@ -229,7 +230,13 @@ class ReasoningView(Vertical):
     markup inside reasoning are never reformatted into blocks or syntax highlighting.
     """
 
-    def __init__(self, *, initial: str = "", duration_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        initial: str = "",
+        duration_seconds: float | None = None,
+        expanded: bool = True,
+    ) -> None:
         super().__init__(classes="reasoning-view")
         self.display = bool(initial)
         self.label = Label(
@@ -247,6 +254,7 @@ class ReasoningView(Vertical):
             classes="reasoning-content",
             markup=False,
         )
+        self._content.display = expanded
 
     def compose(self) -> ComposeResult:
         yield self.label
@@ -264,6 +272,9 @@ class ReasoningView(Vertical):
     @property
     def duration_seconds(self) -> float | None:
         return self._completed_seconds
+
+    def set_expanded(self, expanded: bool) -> None:
+        self._content.display = expanded
 
     async def append(self, text: str, *, started_at: datetime | None = None) -> None:
         if not text:
@@ -320,6 +331,7 @@ class AssistantTurn(Vertical):
         reasoning_seconds: float | None = None,
         run_id: str | None = None,
         after_tool: bool = False,
+        reasoning_expanded: bool = True,
     ) -> None:
         classes = "turn assistant-turn after-tool" if after_tool else "turn assistant-turn"
         super().__init__(classes=classes)
@@ -327,6 +339,7 @@ class AssistantTurn(Vertical):
         self.reasoning = ReasoningView(
             initial=reasoning,
             duration_seconds=reasoning_seconds,
+            expanded=reasoning_expanded,
         )
         self.markdown = Markdown(initial, classes="assistant-markdown")
         self._stream: _MarkdownWriter | None = None
@@ -356,6 +369,9 @@ class AssistantTurn(Vertical):
 
     def finish_reasoning(self, duration_seconds: float | None = None) -> None:
         self.reasoning.finish(duration_seconds)
+
+    def set_reasoning_expanded(self, expanded: bool) -> None:
+        self.reasoning.set_expanded(expanded)
 
 
 def _completed_reasoning_label(duration_seconds: float | None) -> str:
@@ -672,9 +688,13 @@ def _compaction_notice(compaction: CompactionRecord | int) -> str:
 
 
 class ConversationView(VerticalScroll):
-    def __init__(self) -> None:
+    def __init__(self, *, reasoning_expanded: bool = True) -> None:
         super().__init__(id="conversation")
-        self._history = ConversationHistory(_tool_activity_text)
+        self._reasoning_expanded = reasoning_expanded
+        self._history = ConversationHistory(
+            _tool_activity_text,
+            reasoning_expanded=reasoning_expanded,
+        )
         self._transcript = Vertical(self._history, id="conversation-transcript")
         self._system_status = TuiSystemStatus()
         self._welcome: WelcomePanel | None = None
@@ -704,6 +724,14 @@ class ConversationView(VerticalScroll):
         self._system_status = status
         if self._welcome is not None:
             self._welcome.set_system_status(status)
+
+    def set_reasoning_expanded(self, expanded: bool) -> None:
+        if self._reasoning_expanded == expanded:
+            return
+        self._reasoning_expanded = expanded
+        self._history.set_reasoning_expanded(expanded)
+        if self._assistant is not None:
+            self._assistant.set_reasoning_expanded(expanded)
 
     async def _mount_welcome(self) -> None:
         self._welcome = WelcomePanel(self._system_status)
@@ -831,6 +859,16 @@ class ConversationView(VerticalScroll):
         if 0 <= index < len(historical_lines):
             self.scroll_to(y=historical_lines[index], animate=False)
 
+    def scroll_to_previous_user_turn(self) -> None:
+        historical_lines = self._history.user_lines
+        index = bisect_left(historical_lines, self.scroll_y) - 1
+        self.scroll_to_user_turn(index)
+
+    def scroll_to_next_user_turn(self) -> None:
+        historical_lines = self._history.user_lines
+        index = bisect_right(historical_lines, self.scroll_y)
+        self.scroll_to_user_turn(index)
+
     async def _dismiss_welcome(self) -> None:
         """Transition from the empty welcome state to the conversation state.
 
@@ -865,6 +903,7 @@ class ConversationView(VerticalScroll):
             self._assistant = AssistantTurn(
                 run_id=self._current_run_id,
                 after_tool=self._history_ends_with_tool,
+                reasoning_expanded=self._reasoning_expanded,
             )
             await self._transcript.mount(self._assistant)
         await self._assistant.append(text)
@@ -883,6 +922,7 @@ class ConversationView(VerticalScroll):
             self._assistant = AssistantTurn(
                 run_id=self._current_run_id,
                 after_tool=self._history_ends_with_tool,
+                reasoning_expanded=self._reasoning_expanded,
             )
             await self._transcript.mount(self._assistant)
         await self._assistant.append_reasoning(text, started_at=started_at)

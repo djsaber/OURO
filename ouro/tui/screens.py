@@ -398,6 +398,7 @@ class HelpScreen(ModalScreen[None]):
             ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
             ("Alt+M", "model", "Ctrl+P", "actions"),
             ("Ctrl+↑", "conversation top", "Ctrl+↓", "conversation bottom"),
+            ("Ctrl+←", "previous user message", "Ctrl+→", "next user message"),
             ("Ctrl+C", "abort run", "Ctrl+Q", "quit"),
             ("Esc", "close menu", "?", "help"),
         )

@@ -16,6 +16,7 @@ from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
+    reasoning_expanded: bool = False
 
     @field_validator("theme")
     @classmethod

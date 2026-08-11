@@ -1632,6 +1632,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
+        app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_markup"
         app._projection = TuiSessionProjection(session_id)
         fragments = (" [", "data", '-theme="')
@@ -1667,6 +1668,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
         assert reasoning._content.region.x > reasoning.label.region.x
+        assert reasoning._content.region.y == reasoning.label.region.bottom + 1
         assert not turn.query(".assistant-label")
 
 
@@ -2140,6 +2142,7 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
+        app.query_one(ConversationView).set_reasoning_expanded(True)
         await pilot.click("#composer")
         await pilot.press("t", "h", "i", "n", "k", "enter")
         try:
@@ -2215,7 +2218,9 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
-        await app.query_one(ConversationView).load_messages((message,))
+        conversation = app.query_one(ConversationView)
+        conversation.set_reasoning_expanded(True)
+        await conversation.load_messages((message,))
         await pilot.pause()
 
         history = app.query_one(ConversationHistory)
@@ -2231,6 +2236,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         answer_line = next(
             index for index, line in enumerate(rendered_lines) if line.strip() == "Final answer"
         )
+        assert rendered_lines[thought_line + 1] == ""
         reasoning_lines = [
             line for line in rendered_lines[thought_line + 1 : answer_line] if line.strip()
         ]
@@ -2239,6 +2245,85 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
             line.lstrip().startswith("\N{BOX DRAWINGS LIGHT VERTICAL} ") for line in reasoning_lines
         )
         assert not app.query(AssistantTurn)
+
+
+@pytest.mark.asyncio
+async def test_thought_display_command_applies_to_history_and_live_output_and_persists(
+    tmp_path: Path,
+) -> None:
+    message = MessageRecord(
+        session_id="ses_thought_display",
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="Historical private thought",
+    )
+    preferences = TuiPreferencesStore(tmp_path)
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages((message,))
+        history = conversation.query_one(ConversationHistory)
+        assert "THOUGHT" in history.rendered_text
+        assert "Historical private thought" not in history.rendered_text
+        collapsed_lines = history.rendered_text.splitlines()
+        collapsed_thought = next(
+            index for index, line in enumerate(collapsed_lines) if line.strip() == "THOUGHT"
+        )
+        collapsed_answer = next(
+            index for index, line in enumerate(collapsed_lines) if line.strip() == "Final answer"
+        )
+        assert collapsed_lines[collapsed_thought + 1] == ""
+        assert collapsed_answer == collapsed_thought + 2
+
+        await pilot.press("slash", *"thoughts", "enter")
+        await pilot.pause()
+        popup = app.query_one(CommandPopup)
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/thoughts"
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "expand"
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one(Composer).text == ""
+        assert "Historical private thought" in history.rendered_text
+        assert preferences.load().reasoning_expanded is True
+
+        await conversation.append_reasoning("Live private thought")
+        live_reasoning = app.query_one(AssistantTurn).reasoning
+        assert live_reasoning.text == "Live private thought"
+        assert live_reasoning._content.display is True
+
+        await app._dispatch_command("/thoughts collapse")
+        await pilot.pause()
+        assert "Historical private thought" not in history.rendered_text
+        assert live_reasoning._content.display is False
+
+        await conversation.append_assistant("Live final answer")
+        await pilot.pause()
+        live_turn = app.query_one(AssistantTurn)
+        assert live_turn.markdown.region.y == live_reasoning.label.region.bottom + 1
+
+        await app._set_tui_theme("harbor")
+        assert preferences.load() == TuiPreferences(
+            theme="harbor",
+            reasoning_expanded=False,
+        )
+
+    restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    async with restarted.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = restarted.query_one(ConversationView)
+        await conversation.load_messages((message,))
+        history = conversation.query_one(ConversationHistory)
+        assert "Historical private thought" not in history.rendered_text
+
+        await restarted._dispatch_command("/thoughts expand")
+        await pilot.pause()
+        assert "Historical private thought" in history.rendered_text
+        assert preferences.load().reasoning_expanded is True
 
 
 @pytest.mark.asyncio
@@ -2710,6 +2795,45 @@ async def test_conversation_shortcuts_navigate_while_composer_is_focused(
         await pilot.pause()
         assert conversation.scroll_y == conversation.max_scroll_y
         assert composer.text == "draft"
+
+
+@pytest.mark.asyncio
+async def test_conversation_shortcuts_navigate_adjacent_user_messages(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 12)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        history = conversation.query_one(ConversationHistory)
+        composer = app.query_one(Composer)
+        composer.load_text("draft")
+        composer.focus()
+
+        conversation.scroll_home(animate=False, immediate=True)
+        await pilot.pause()
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert conversation.scroll_y == history.user_lines[0]
+
+        await pilot.press("ctrl+right")
+        await pilot.pause()
+        assert conversation.scroll_y == history.user_lines[1]
+
+        await pilot.press("ctrl+right")
+        await pilot.pause()
+        assert conversation.scroll_y == history.user_lines[2]
+
+        await pilot.press("ctrl+left")
+        await pilot.pause()
+        assert conversation.scroll_y == history.user_lines[1]
+        assert composer.text == "draft"
+
+        await pilot.press("ctrl+down", "ctrl+right")
+        await pilot.pause()
+        assert conversation.scroll_y == conversation.max_scroll_y
 
 
 @pytest.mark.asyncio
@@ -4134,9 +4258,12 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "Ctrl+P" in rendered
         assert "Ctrl+↑" in rendered
         assert "Ctrl+↓" in rendered
+        assert "Ctrl+←" in rendered
+        assert "Ctrl+→" in rendered
         assert "Built-in slash commands" in rendered
         assert "/actions" in rendered
         assert "/skill <skill> [task]" in rendered
+        assert "/thoughts [expand|collapse]" in rendered
         assert "/unqueue <queued-message>" in rendered
         assert "/help" in rendered
         assert "/config" not in rendered
