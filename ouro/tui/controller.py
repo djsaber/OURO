@@ -932,7 +932,7 @@ class TuiController:
         self,
         approval_mode: SessionApprovalMode,
     ) -> SessionApprovalMode:
-        """Set the next-Session draft or persist an idle Session's approval policy."""
+        """Set the next-Session draft or the visible Session's next approval policy."""
 
         if approval_mode not in SESSION_APPROVAL_MODES:
             raise ValueError(f"invalid session approval mode: {approval_mode}")

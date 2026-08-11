@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ouro.application.models import AvailableModel
@@ -10,7 +12,7 @@ from ouro.core.errors import ConfigError, SessionBusyError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.sessions import LocalSessionStore
-from ouro.tools import ToolRegistry
+from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
 
 class _RespondingProvider:
@@ -25,6 +27,25 @@ class _RespondingProvider:
         self.models.append(model.model_id)
         self.reasoning_requests.append(model.reasoning_request)
         yield ProviderStreamEvent(type="text_delta", text=self.text)
+        yield ProviderStreamEvent(type="done")
+
+
+class _BlockingToolProvider:
+    provider_id = "alpha"
+
+    def __init__(self) -> None:
+        self.request_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.models: list[str] = []
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del system_prompt, messages, tools
+        self.models.append(model.model_id)
+        self.request_started.set()
+        await self.release.wait()
+        yield ProviderStreamEvent.from_tool_call(
+            {"id": "call_1", "name": "Continue", "arguments": {}},
+        )
         yield ProviderStreamEvent(type="done")
 
 
@@ -135,6 +156,58 @@ async def test_session_model_switch_persists_and_is_used_after_runtime_restart(t
 
 
 @pytest.mark.asyncio
+async def test_active_session_model_switch_applies_to_the_next_model_request(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    alpha = _BlockingToolProvider()
+    beta = _RespondingProvider("beta", "beta-response")
+    adapters = {
+        "alpha/default": RuntimeAdapter(
+            alpha,
+            ModelMetadata(model_id="alpha-model", provider_id="alpha", endpoint_id="default"),
+        ),
+        "beta/fast": RuntimeAdapter(
+            beta,
+            ModelMetadata(model_id="beta-model", provider_id="beta", endpoint_id="fast"),
+        ),
+    }
+    tools = ToolRegistry()
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Continue",
+                description="Continue to the next model round.",
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                content="continued",
+            ),
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=adapters["alpha/default"],
+        model_catalog=_StaticCatalog(adapters, "alpha/default"),
+        tools=tools,
+    )
+
+    running = asyncio.create_task(runtime.run("start"))
+    await asyncio.wait_for(alpha.request_started.wait(), timeout=2)
+    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+
+    switched = runtime.switch_session_model(session_id, "beta/fast")
+    alpha.release.set()
+    result = await asyncio.wait_for(running, timeout=2)
+
+    requests = [event for event in result.events if event.event_type == "model_request_started"]
+    assert switched.current_model == "beta/fast"
+    assert [event.payload["model"] for event in requests] == ["alpha-model", "beta-model"]
+    assert result.final_text == "beta-response"
+    assert result.run.model == "beta-model"
+
+
+@pytest.mark.asyncio
 async def test_initial_model_creates_first_session_on_selected_route(tmp_path) -> None:
     runtime, _, providers = _runtime(tmp_path)
 
@@ -179,7 +252,7 @@ async def test_noncanonical_persisted_model_route_is_rejected(tmp_path) -> None:
         await runtime.run("hello", session_id=session.session_id)
 
 
-def test_session_model_switch_rejects_busy_and_unknown_models(tmp_path) -> None:
+def test_session_model_switch_accepts_busy_sessions_and_rejects_unknown_models(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
     session = runtime.sessions.create(current_model="alpha/default").session
 
@@ -189,10 +262,11 @@ def test_session_model_switch_rejects_busy_and_unknown_models(tmp_path) -> None:
     lock = runtime.store.acquire_session_lock(session.session_id, "run_busy")
     assert lock is not None
     try:
-        with pytest.raises(SessionBusyError, match="active run"):
-            runtime.switch_session_model(session.session_id, "beta/fast")
+        switched = runtime.switch_session_model(session.session_id, "beta/fast")
     finally:
         lock.release()
+
+    assert switched.current_model == "beta/fast"
 
 
 def test_model_and_reasoning_updates_do_not_load_message_history(

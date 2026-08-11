@@ -269,7 +269,8 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
 通过 `/model provider/endpoint` 选择模型；若会话尚未创建，该选择会用于下一条普通消息创建的首个会话，
-否则切换当前空闲会话的模型。`/thinking` 显示当前 Endpoint 的有效思考设置与可选值；
+否则切换当前会话的模型。活动 Run 已发出的请求继续使用原模型，下一次模型请求重新读取会话路由。
+`/thinking` 显示当前 Endpoint 的有效思考设置与可选值；
 `/thinking default|enabled|disabled|minimal|low|medium|high|xhigh|max` 设置当前会话（或下一新会话）的
 供应商中立思考意图。每个会话独立持久化该设置，共享同一 Endpoint 的会话不会相互影响；不受 Endpoint
 支持的模式或等级会在状态变更前被拒绝。切换模型时也会重新校验当前会话设置，不会静默降级或重置。
@@ -335,7 +336,8 @@ Run。
 `config permissions` 的结果，`auto` 自动执行，`approval` 要求审批，`deny` 拒绝调用（`AskUser` 在可执行时
 仍按用户问答流程处理，而不是转成普通工具审批）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
-`/approval-mode <inherit|auto|approval|deny>`。会话分支继承源会话的批准模式。
+`/approval-mode <inherit|auto|approval|deny>`，TUI 也可在活动 Run 中通过命令或审批选择器切换；已经产生的
+审批保持原状态，下一次工具审批边界读取新模式。会话分支继承源会话的批准模式。
 
 AFK 是应用层预设，不是新的权限枚举：`AFK = approval_mode:auto + interaction_mode:unattended`。可用
 `--afk`、Interactive `/afk on|off` 或 `session afk <session_id> on|off` 原子切换。无人值守模式不会让 Run

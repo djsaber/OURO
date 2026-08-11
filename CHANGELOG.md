@@ -54,6 +54,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI model and approval selectors now remain available during an active Session Run. Model
+  changes bind at the next provider request, while approval/AFK policy changes bind at the next
+  tool preflight without rewriting an in-flight request or an already-created approval.
 - The TUI status line right edge now exclusively presents prepared context usage, follows live
   theme previews, and remains empty until that context data exists; transient details and tool
   counts stay out of this slot.

@@ -1947,6 +1947,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._select_model(model.key)
 
     async def _select_model(self, selector: str) -> None:
+        applies_to_next_request = self._has_active_run()
         try:
             model = await self._controller.select_model(selector)
         except Exception as exc:  # noqa: BLE001
@@ -1956,19 +1957,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_model(self._active_model)
         await self._refresh_reasoning_indicator()
         self.query_one(StatusLine).set_context(None)
-        self.notify(f"Model: {self._active_model}")
+        suffix = " (next request)" if applies_to_next_request else ""
+        self.notify(f"Model: {self._active_model}{suffix}")
 
     def action_approval_settings(self) -> None:
         self._choose_approval_mode()
 
     @work(exclusive=True, group="navigation")
     async def _choose_approval_mode(self) -> None:
-        if self._has_active_run():
-            self.notify(
-                "Abort the active run before changing approval settings",
-                severity="warning",
-            )
-            return
         try:
             current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
@@ -1997,13 +1993,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             available = "|".join(TUI_APPROVAL_PRESETS)
             self.notify(f"Usage: /approval <{available}>", severity="warning", markup=False)
             return
+        applies_to_next_approval = self._has_active_run()
         try:
             mode = await self._controller.set_session_approval_preset(value)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             self.notify(str(exc), severity="error", markup=False)
             return
         self.query_one(StatusLine).set_approval_mode(mode)
-        self.notify(f"Approval: {mode}")
+        suffix = " (next approval)" if applies_to_next_approval else ""
+        self.notify(f"Approval: {mode}{suffix}")
 
     async def _refresh_approval_indicator(self) -> None:
         try:

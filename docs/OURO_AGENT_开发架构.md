@@ -73,7 +73,9 @@ CLI / TUI / Desktop Host
 进程内 session run lock 与 abort signal 由 `RunExecutionOwnership` 唯一管理；`RunLifecycle` 集中承载模型循环中的
 durable Run/Session 状态转换。`InnerAgentLoop` 只拥有一个 active run 内的模型轮次状态机；其端口按 context、
 run boundary、turn boundary 三个变化原因分组，事件和工具批次保留为两个直接边界，并在三个协作面之间传递
-成组依赖。
+成组依赖。模型路由与审批模式是请求边界设置，不争用 Run ownership：Host 可在活动 Run 中原子更新 Session，
+InnerAgentLoop 在每次模型请求准备时重新绑定路由，并在工具预检前刷新 Session 策略；已发出的请求和已产生的
+审批不被追溯改写。
 
 LocalApplication 完成 Plugin catalog、Supervisor、AgentDefinitionService 和 AgentService 构造后，用一次性的
 `RuntimeService.bind_extensions` 绑定完整 Host 扩展组合。绑定不可重复，运行前不会暴露“有 definitions 但没有
@@ -283,6 +285,9 @@ application/Host 的命名预设，原子设置 `approval_mode=auto` 与 `intera
 
 模型路由不接受 model id 或 endpoint id 短名。这样持久化值、CLI 输入和运行时解析使用同一契约，
 不会因多个 provider 出现同名模型而产生歧义。
+活动 Run 不冻结整段运行的模型路由。每个模型 round 在上下文准备前从 Session 解析一次路由与 reasoning，
+因此运行时切换只影响下一次尚未开始准备的 Provider 请求；当前流继续由原 adapter 完成。Run 事件和 usage
+仍记录每次请求实际使用的 provider、endpoint 与 model。
 同一份已解析 endpoint 配置复用 adapter 与 HTTP client；配置指纹变化时重建 adapter，Supervisor shutdown
 统一关闭其拥有的连接。调用方注入的 HTTP client 不由框架关闭。
 当前协议类型包括 Faux、OpenAI Chat Completions 和 Anthropic Messages。配置域的协议档案集中声明默认 API

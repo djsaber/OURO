@@ -42,6 +42,8 @@ EventEmitter = Callable[..., Awaitable[int]]
 ToolBatchHandler = Callable[..., Awaitable[ToolBatchHandlingResult]]
 ContextPreparer = Callable[..., Awaitable[tuple[ContextView, int]]]
 ContextCompletionRecorder = Callable[..., None]
+ModelRequestResolver = Callable[..., tuple[SessionRecord, RuntimeAdapter]]
+SessionRefresher = Callable[[str], SessionRecord]
 UsageRecorder = Callable[..., RunRecord]
 AbortResultFactory = Callable[..., RunResult | None]
 WaitingStatePersister = Callable[..., SessionRecord]
@@ -58,6 +60,7 @@ SharedBudgetReasonProvider = Callable[[RunRecord, int], RunBudgetReason | None]
 class InnerLoopContext:
     prepare: ContextPreparer
     record_completion: ContextCompletionRecorder | None = None
+    resolve_model_request: ModelRequestResolver | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +89,7 @@ class InnerLoopPorts:
     turns: InnerLoopTurnBoundaries
     emit: EventEmitter
     handle_tool_batch: ToolBatchHandler
+    refresh_session: SessionRefresher | None = None
 
 
 @dataclass
@@ -191,6 +195,15 @@ class InnerAgentLoop:
                 )
             round_state = _RoundState()
             try:
+                if self.ports.context.resolve_model_request is not None:
+                    state.session, self.adapter = self.ports.context.resolve_model_request(
+                        session=state.session,
+                        run=state.run,
+                        model_round=model_round,
+                    )
+                    state.run = state.run.model_copy(
+                        update={"model": self.adapter.model.model_id}
+                    )
                 context = await self._build_context(
                     state,
                     model_round,
@@ -239,6 +252,8 @@ class InnerAgentLoop:
                 )
             if round_state.tool_calls:
                 try:
+                    if self.ports.refresh_session is not None:
+                        state.session = self.ports.refresh_session(state.session.session_id)
                     batch_result = await self._handle_round_tool_batch(
                         state=state,
                         round_state=round_state,
@@ -359,6 +374,7 @@ class InnerAgentLoop:
             model_round=model_round,
             turn_id=turn_id,
             abort_signal=abort_signal,
+            adapter=self.adapter,
         )
         if context.context_id is None:
             raise ValueError("prepared model context is missing its identity")

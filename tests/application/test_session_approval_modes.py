@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,34 @@ from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry, builtin_tools
+
+
+class _BlockingWriteProvider:
+    provider_id = "blocking-write"
+
+    def __init__(self, target: Path) -> None:
+        self.target = target
+        self.request_started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.request_count = 0
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        self.request_count += 1
+        if self.request_count == 1:
+            self.request_started.set()
+            await self.release.wait()
+            yield ProviderStreamEvent.from_tool_call(
+                {
+                    "id": "call_1",
+                    "name": "Write",
+                    "arguments": {"path": str(self.target), "content": "live"},
+                },
+            )
+            yield ProviderStreamEvent(type="done")
+            return
+        yield ProviderStreamEvent(type="text_delta", text="Done.")
+        yield ProviderStreamEvent(type="done")
 
 
 def _runtime(tmp_path: Path, event_batches: list[list[ProviderStreamEvent]]) -> RuntimeService:
@@ -180,6 +209,38 @@ async def test_existing_idle_session_can_enable_afk_policies_with_next_run(tmp_p
     assert second.session.interaction_mode == "unattended"
     persisted = runtime.store.load_session_record(second.session.session_id)
     assert persisted.interaction_mode == "unattended"
+
+
+@pytest.mark.asyncio
+async def test_active_session_approval_change_applies_to_the_next_tool_preflight(tmp_path) -> None:
+    target = tmp_path / "live.txt"
+    provider = _BlockingWriteProvider(target)
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    registry = ToolRegistry()
+    for tool in builtin_tools():
+        registry.register(tool)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="faux", provider_id=provider.provider_id),
+        ),
+        tools=registry,
+        default_workspace=tmp_path,
+    )
+
+    running = asyncio.create_task(runtime.run("write"))
+    await asyncio.wait_for(provider.request_started.wait(), timeout=2)
+    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+
+    updated = runtime.set_session_approval_mode(session_id, "auto")
+    provider.release.set()
+    result = await asyncio.wait_for(running, timeout=2)
+
+    assert updated.approval_mode == "auto"
+    assert result.run.status == "completed"
+    assert target.read_text(encoding="utf-8") == "live"
 
 
 @pytest.mark.asyncio

@@ -1191,6 +1191,40 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
 
 
 @pytest.mark.asyncio
+async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_path: Path) -> None:
+    provider = BlockingStreamProvider()
+    application = _blocking_application(tmp_path, provider)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.click("#composer")
+        await pilot.press(*"stream", "enter")
+        await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
+        await pilot.pause(0.2)
+
+        try:
+            await app._select_model("blocking/blocking")
+            session_id = app._controller.session_id
+            assert session_id is not None
+            persisted = application.runtime.store.load_session_record(session_id)
+            assert persisted.current_model == "blocking/blocking"
+
+            app.action_approval_settings()
+            await pilot.pause(0.2)
+            assert isinstance(app.screen, ChoiceScreen)
+            await pilot.press("escape")
+
+            await app._set_approval_mode("auto")
+            persisted = application.runtime.store.load_session_record(session_id)
+            assert persisted.approval_mode == "auto"
+            assert "auto" in app.query_one(StatusLine).query_one(ActivityIndicator).render().plain
+        finally:
+            provider.release.set()
+        await pilot.pause(0.5)
+
+
+@pytest.mark.asyncio
 async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path) -> None:
     application = _application(tmp_path)
     session = LiveMcpSession()

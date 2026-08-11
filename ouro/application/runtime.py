@@ -717,9 +717,18 @@ class RuntimeService:
         return self.store.load_session_record(created.session.session_id)
 
     def switch_session_model(self, session_id: str, selector: str) -> SessionRecord:
-        """Persist an idle session's model route without changing other sessions."""
+        """Persist the model route used by the Session's next provider request."""
 
-        return self._update_session_model_settings(session_id, selector=selector)
+        model = self.resolve_model(selector)
+
+        def validate(session: SessionRecord) -> None:
+            self._model_reasoning_state(model, session.reasoning_request)
+
+        return self._update_live_session_settings(
+            session_id,
+            {"current_model": model.key},
+            validate=validate,
+        )
 
     def set_session_reasoning(
         self,
@@ -728,19 +737,14 @@ class RuntimeService:
     ) -> SessionRecord:
         """Validate and persist the reasoning intent used by future Session Runs."""
 
-        return self._update_session_model_settings(
-            session_id,
-            reasoning_request=reasoning_request,
-        )
+        return self._update_session_reasoning(session_id, reasoning_request)
 
-    def _update_session_model_settings(
+    def _update_session_reasoning(
         self,
         session_id: str,
-        *,
-        selector: str | None = None,
-        reasoning_request: ReasoningRequest | None = None,
+        reasoning_request: ReasoningRequest,
     ) -> SessionRecord:
-        """Atomically keep an idle Session's route and reasoning intent executable."""
+        """Atomically keep an idle Session's reasoning intent executable."""
 
         lock = self.run_ownership.acquire(session_id, new_id("model"))
         if lock is None:
@@ -750,27 +754,16 @@ class RuntimeService:
                 session = self.store.load_session_record(session_id)
                 if maybe_active_run(self.store.load_runs(session_id)) is not None:
                     raise SessionBusyError(f"session already has an active run: {session_id}")
-                if selector is None:
-                    model = self.models.resolve(
-                        session.current_model or self.models.default_model().key
-                    )
-                else:
-                    normalized = selector.strip()
-                    selected_model = next(
-                        (item for item in self.models.list_models() if item.key == normalized),
-                        None,
-                    )
-                    if selected_model is None:
-                        raise ConfigError(f"model not found: {selector}")
-                    model = selected_model
-                selected_reasoning = reasoning_request or session.reasoning_request
-                self._model_reasoning_state(model, selected_reasoning)
+                model = self.models.resolve(
+                    session.current_model or self.models.default_model().key
+                )
+                self._model_reasoning_state(model, reasoning_request)
+                now = utc_now()
                 session = session.model_copy(
                     update={
-                        "current_model": model.key,
-                        "reasoning_request": selected_reasoning,
-                        "updated_at": utc_now(),
-                        "last_activity_at": utc_now(),
+                        "reasoning_request": reasoning_request,
+                        "updated_at": now,
+                        "last_activity_at": now,
                     }
                 )
                 self.store.save_session(session)
@@ -814,8 +807,12 @@ class RuntimeService:
     ) -> SessionRecord:
         """Persist the approval policy used by future tool calls in a session."""
 
-        self.sessions.set_approval_mode(session_id, approval_mode)
-        return self.store.load_session_record(session_id)
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        return self._update_live_session_settings(
+            session_id,
+            {"approval_mode": approval_mode},
+        )
 
     def set_session_interaction_mode(
         self,
@@ -824,8 +821,12 @@ class RuntimeService:
     ) -> SessionRecord:
         """Persist how future tool input requests are resolved in a Session."""
 
-        self.sessions.set_interaction_mode(session_id, interaction_mode)
-        return self.store.load_session_record(session_id)
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
+        return self._update_live_session_settings(
+            session_id,
+            {"interaction_mode": interaction_mode},
+        )
 
     def set_session_policies(
         self,
@@ -834,20 +835,53 @@ class RuntimeService:
         approval_mode: SessionApprovalMode,
         interaction_mode: SessionInteractionMode,
     ) -> SessionRecord:
-        """Persist one idle Session's approval and interaction policies atomically."""
+        """Persist policies used by the Session's next tool interaction atomically."""
 
-        self.sessions.set_policies(
+        if approval_mode not in SESSION_APPROVAL_MODES:
+            raise ValueError(f"invalid session approval mode: {approval_mode}")
+        if interaction_mode not in SESSION_INTERACTION_MODES:
+            raise ValueError(f"invalid session interaction mode: {interaction_mode}")
+        return self._update_live_session_settings(
             session_id,
-            approval_mode=approval_mode,
-            interaction_mode=interaction_mode,
+            {
+                "approval_mode": approval_mode,
+                "interaction_mode": interaction_mode,
+            },
         )
-        return self.store.load_session_record(session_id)
 
     def set_session_afk_mode(self, session_id: str, *, enabled: bool) -> SessionRecord:
-        """Apply or clear the AFK policy preset for an idle Session."""
+        """Apply or clear the AFK policy preset for future Session interactions."""
 
-        self.sessions.set_afk_mode(session_id, enabled=enabled)
-        return self.store.load_session_record(session_id)
+        return self.set_session_policies(
+            session_id,
+            approval_mode="auto" if enabled else "inherit",
+            interaction_mode="unattended" if enabled else "interactive",
+        )
+
+    def _update_live_session_settings(
+        self,
+        session_id: str,
+        changes: Mapping[str, object],
+        *,
+        validate: Callable[[SessionRecord], None] | None = None,
+    ) -> SessionRecord:
+        """Update request-bound Session settings without contending for Run ownership."""
+
+        with self.store.session_mutation(session_id):
+            session = self.store.load_session_record(session_id)
+            if validate is not None:
+                validate(session)
+            now = utc_now()
+            updated = session.model_copy(
+                update={
+                    **changes,
+                    "updated_at": now,
+                    "last_activity_at": now,
+                }
+            )
+            self.store.save_session(updated)
+        self.store.refresh_catalog(session_id)
+        return updated
 
     @staticmethod
     def _validate_requested_session_policies(
@@ -1404,12 +1438,12 @@ class RuntimeService:
                 context=InnerLoopContext(
                     prepare=partial(
                         self.context_preparation.prepare,
-                        adapter=adapter,
                         context_providers=context_providers,
                         strategies=compaction,
                         skill_instructions=self._instructions_for_run(run),
                     ),
                     record_completion=self.context_preparation.record_provider_completion,
+                    resolve_model_request=self._resolve_model_request,
                 ),
                 runs=InnerLoopRunBoundaries(
                     record_usage=self.run_lifecycle.record_usage,
@@ -1437,6 +1471,7 @@ class RuntimeService:
                 ),
                 emit=self.event_recorder.emit,
                 handle_tool_batch=tool_calls.handle_batch,
+                refresh_session=self.store.load_session_record,
             ),
         )
         return await loop.run(
@@ -1449,6 +1484,18 @@ class RuntimeService:
             tool_results=tool_results,
             abort_signal=abort_signal,
         )
+
+    def _resolve_model_request(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        model_round: int,
+    ) -> tuple[SessionRecord, RuntimeAdapter]:
+        """Bind the latest Session route immediately before one provider request."""
+
+        del run, model_round
+        return self._resolve_session_adapter(session)
 
     def _run_budget_for_run(self, run: RunRecord) -> RunBudgetPolicy:
         raw = run.metadata.get("run_budget")
