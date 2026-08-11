@@ -103,19 +103,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             self.dismiss(str(event.option.id))
 
     def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
-        if (
-            event.option_index > 0
-            and event.option_list.get_option_at_index(event.option_index - 1).disabled
-        ):
-            # OptionList scrolls only the selected row into view. When that row
-            # is the first choice in a group, keep its one-line header visible
-            # as part of the same navigation unit.
-            event.option_list.scroll_relative(
-                y=-1,
-                animate=False,
-                force=True,
-                immediate=True,
-            )
         if self._on_highlight is not None and event.option.id is not None:
             self._on_highlight(str(event.option.id))
 
@@ -123,10 +110,19 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
     def action_previous_choice(self) -> None:
-        self.query_one("#choice-list", OptionList).action_cursor_up()
+        self._move_choice(-1)
 
     def action_next_choice(self) -> None:
-        self.query_one("#choice-list", OptionList).action_cursor_down()
+        self._move_choice(1)
+
+    def _move_choice(self, direction: int) -> None:
+        options = self.query_one("#choice-list", OptionList)
+        previous = options.highlighted
+        if direction < 0:
+            options.action_cursor_up()
+        else:
+            options.action_cursor_down()
+        self._reveal_group_header_after_upward_move(options, previous)
 
     def action_previous_group(self) -> None:
         self._move_group(-1)
@@ -153,6 +149,32 @@ class ChoiceScreen(ModalScreen[str | None]):
             default=0,
         )
         options.highlighted = starts[(current_group + direction) % len(starts)]
+        self._reveal_group_header_after_upward_move(options, highlighted)
+
+    @classmethod
+    def _reveal_group_header_after_upward_move(
+        cls,
+        options: OptionList,
+        previous: int | None,
+    ) -> None:
+        highlighted = options.highlighted
+        if (
+            previous is None
+            or highlighted is None
+            or highlighted >= previous
+            or highlighted == 0
+            or not cls._is_group_header(options.get_option_at_index(highlighted - 1))
+        ):
+            return
+        # OptionList has already made the selected row visible. Moving upward
+        # can leave its one-line group header just above the viewport; reveal
+        # that context without changing downward navigation's valid scroll.
+        options.scroll_relative(
+            y=-1,
+            animate=False,
+            force=True,
+            immediate=True,
+        )
 
     @staticmethod
     def _is_group_header(option: Option) -> bool:

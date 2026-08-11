@@ -231,6 +231,99 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "navigation",
+    (("down",) * 20, ("right",)),
+    ids=("cross-group-with-down", "jump-group-with-right"),
+)
+async def test_grouped_choice_navigation_keeps_new_highlight_visible_immediately(
+    tmp_path: Path,
+    navigation: tuple[str, ...],
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 16)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=(
+                    *tuple(
+                        Choice(f"current-{index}", f"Current {index}", group="Current")
+                        for index in range(20)
+                    ),
+                    Choice("target", "Target session", group="Next group"),
+                ),
+            )
+        )
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        await pilot.press(*navigation)
+        await pilot.pause()
+
+        visible_text = "\n".join(
+            options.render_line(line).text
+            for line in range(options.scrollable_content_region.height)
+        )
+        assert options.get_option_at_index(options.highlighted or 0).id == "target"
+        assert "Next group" in visible_text
+        assert "Target session" in visible_text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("navigation", "target", "group"),
+    (
+        (("up",) * 19, "later-0", "Later"),
+        (("left",), "current-0", "Current"),
+    ),
+    ids=("move-up-within-group", "jump-to-previous-group"),
+)
+async def test_upward_grouped_navigation_keeps_header_and_highlight_visible(
+    tmp_path: Path,
+    navigation: tuple[str, ...],
+    target: str,
+    group: str,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 16)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="SESSIONS",
+                placeholder="Filter sessions…",
+                choices=(
+                    *tuple(
+                        Choice(f"current-{index}", f"Current {index}", group="Current")
+                        for index in range(20)
+                    ),
+                    *tuple(
+                        Choice(f"later-{index}", f"Later {index}", group="Later")
+                        for index in range(20)
+                    ),
+                ),
+                initial_value="later-19",
+            )
+        )
+        await pilot.pause()
+
+        options = app.screen.query_one(OptionList)
+        await pilot.press(*navigation)
+        await pilot.pause()
+
+        visible_text = "\n".join(
+            options.render_line(line).text
+            for line in range(options.scrollable_content_region.height)
+        )
+        assert options.get_option_at_index(options.highlighted or 0).id == target
+        assert group in visible_text
+        assert target.replace("-", " ").title() in visible_text
+
+
+@pytest.mark.asyncio
 async def test_group_header_remains_visible_after_wrapping_to_first_choice(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
