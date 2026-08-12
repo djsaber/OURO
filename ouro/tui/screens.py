@@ -741,6 +741,37 @@ class MultiChoiceScreen(ChoiceScreen):
         )
 
 
+class ConfirmationScreen(ChoiceScreen):
+    """Present a destructive confirmation with the shared menu chrome."""
+
+    CONFIRM_VALUE = "__confirmation_confirm__"
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        message: str,
+        confirm_label: str = "Confirm",
+    ) -> None:
+        super().__init__(
+            title=f"CONFIRM {title}",
+            placeholder="Choose an action…",
+            choices=(
+                Choice("__confirmation_cancel__", "Cancel"),
+                Choice(self.CONFIRM_VALUE, confirm_label, description=message),
+            ),
+            initial_value="__confirmation_cancel__",
+        )
+
+    def on_mount(self) -> None:
+        super().on_mount()
+        self.call_after_refresh(self.query_one("#choice-list", OptionList).focus)
+
+    @classmethod
+    def confirmed(cls, selected: str | None) -> bool:
+        return selected == cls.CONFIRM_VALUE
+
+
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
         Binding(

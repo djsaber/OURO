@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
 
 from textual import work
 
@@ -11,7 +12,6 @@ from ouro.application.configuration_models import (
 from ouro.core.tools import PermissionMode
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
-    ConfirmScreen,
     MCPConfigurationScreen,
     SkillInstallScreen,
     ToolExecutionConfigurationScreen,
@@ -19,12 +19,14 @@ from ouro.tui.configuration_screens import (
 from ouro.tui.controller import (
     McpServerStatus,
     TuiController,
+    TuiMCPServerConfiguration,
+    TuiSkillInstallConfiguration,
     TuiSystemStatus,
     TuiToolConfiguration,
     project_mcp_system_status,
 )
 from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
-from ouro.tui.screens import Choice, ChoiceScreen
+from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import SELECTED_CHOICE_MARKER
 from ouro.tui.widgets import ConversationView
 
@@ -385,8 +387,9 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         draft = await self.push_screen_wait(MCPConfigurationScreen(existing))
         if draft is None:
             return
+        mcp_draft = cast(TuiMCPServerConfiguration, draft)
         try:
-            saved = await self._controller.save_mcp_configuration(draft)
+            saved = await self._controller.save_mcp_configuration(mcp_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -427,8 +430,8 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             )
 
     async def _remove_mcp(self, server_id: str) -> None:
-        confirmed = await self.push_screen_wait(
-            ConfirmScreen(
+        selected = await self.push_screen_wait(
+            ConfirmationScreen(
                 title="REMOVE MCP SERVER",
                 message=(
                     f"Remove {server_id} from configuration? The current runtime is unchanged "
@@ -437,7 +440,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 confirm_label="Remove",
             )
         )
-        if not confirmed:
+        if not ConfirmationScreen.confirmed(selected):
             return
         try:
             await self._controller.remove_mcp_configuration(server_id)
@@ -605,8 +608,9 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         draft = await self.push_screen_wait(SkillInstallScreen())
         if draft is None:
             return
+        skill_draft = cast(TuiSkillInstallConfiguration, draft)
         try:
-            result = await self._controller.install_skills(draft)
+            result = await self._controller.install_skills(skill_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -645,14 +649,14 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.notify(f"Skill updated: {name} (next restart)")
 
     async def _remove_skill(self, name: str) -> None:
-        confirmed = await self.push_screen_wait(
-            ConfirmScreen(
+        selected = await self.push_screen_wait(
+            ConfirmationScreen(
                 title="REMOVE SKILL",
                 message=f"Remove the managed skill {name}?",
                 confirm_label="Remove",
             )
         )
-        if not confirmed:
+        if not ConfirmationScreen.confirmed(selected):
             return
         try:
             await self._controller.remove_skill(name)

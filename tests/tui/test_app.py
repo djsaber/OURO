@@ -72,6 +72,7 @@ from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
+    SkillInstallScreen,
 )
 from ouro.tui.controller import (
     TuiController,
@@ -89,6 +90,7 @@ from ouro.tui.provider_screens import (
 from ouro.tui.screens import (
     Choice,
     ChoiceScreen,
+    ConfirmationScreen,
     EditableChoiceScreen,
     HelpScreen,
     MultiChoiceScreen,
@@ -3859,6 +3861,67 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
         await pilot.press("escape")
 
 
+@pytest.mark.parametrize(
+    ("action_label", "target_label", "confirm_title", "message"),
+    (
+        (
+            "Remove provider",
+            "custom",
+            "CONFIRM REMOVE PROVIDER",
+            "Remove custom and all of its endpoints from configuration?",
+        ),
+        (
+            "Remove endpoint",
+            "chat",
+            "CONFIRM REMOVE ENDPOINT",
+            "Remove custom/chat from configuration?",
+        ),
+    ),
+)
+@pytest.mark.asyncio
+async def test_provider_deletions_use_shared_menu_confirmation(
+    tmp_path: Path,
+    action_label: str,
+    target_label: str,
+    confirm_title: str,
+    message: str,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://custom.example.invalid/v1",
+    )
+    configuration.save_endpoint("custom", "chat", model="custom-model")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = action_label
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = target_label
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ConfirmationScreen)
+        assert app.screen.query_one("#choice-title", Static).render().plain == confirm_title
+        assert [choice.label for choice in app.screen._choices] == ["Cancel", "Remove"]
+        assert app.screen._choices[1].description == message
+        options = app.screen.query_one(OptionList)
+        assert options.highlighted == 0
+        assert options.has_focus
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmationScreen)
+        assert ConfigurationFacade(tmp_path).provider("custom") is not None
+
+
 @pytest.mark.asyncio
 async def test_setting_default_endpoint_also_switches_default_provider(tmp_path: Path) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -4251,19 +4314,37 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
         screen = MCPConfigurationScreen()
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
-        screen.query_one("#mcp-server-id", Input).value = "local"
-        screen.query_one("#mcp-name", Input).value = "Local server"
-        screen.query_one("#mcp-target", Input).value = "python"
-        screen.query_one("#mcp-args", Input).value = "not-json"
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        assert {choice.group for choice in screen._choices} == {
+            "IDENTITY",
+            "CONNECTION",
+            "PROCESS",
+            "CREDENTIALS",
+            "TOOLS",
+            "RUNTIME",
+            "ACTIONS",
+        }
 
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert results == []
-        assert "valid JSON" in screen.query_one(".configuration-error", Static).render().plain
+        screen._values.update(
+            {
+                "mcp-server-id": "local",
+                "mcp-name": "Local server",
+                "mcp-target": "python",
+                "mcp-args": "not-json",
+            }
+        )
+        screen._refresh("mcp-save")
+        save = next(choice for choice in screen._choices if choice.value == "mcp-save")
+        assert save.disabled is True
+        assert "valid JSON" in save.trailing
 
-        screen.query_one("#mcp-args", Input).value = '["-m", "server"]'
-        screen.query_one("#mcp-tool-effects", Input).value = '{"read":"read_only"}'
-        await pilot.press("ctrl+s")
+        screen._values["mcp-args"] = '["-m", "server"]'
+        screen._values["mcp-tool-effects"] = '{"read":"read_only"}'
+        screen._refresh("mcp-save")
+        await pilot.press("enter")
         await pilot.pause()
 
         assert len(results) == 1
@@ -4274,6 +4355,48 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
         assert draft.target == "python"
         assert draft.args == ["-m", "server"]
         assert draft.tool_effect_overrides == {"read": "read_only"}
+
+
+@pytest.mark.asyncio
+async def test_skill_install_uses_shared_grouped_inline_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        screen = SkillInstallScreen()
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        assert [choice.group for choice in screen._choices] == [
+            "SOURCE",
+            "DESTINATION",
+            "SELECTION",
+            "SELECTION",
+            "VERSION",
+            "OPTIONS",
+            "ACTIONS",
+        ]
+        install = next(choice for choice in screen._choices if choice.value == "skill-install")
+        assert install.disabled is True
+        assert install.trailing == "Source is required"
+
+        screen._values["skill-source"] = "github:openai/example"
+        screen._refresh("skill-scope")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._values["skill-scope"] == "workspace"
+
+        screen._refresh("skill-install")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(results) == 1
+        assert results[0].source == "github:openai/example"
+        assert results[0].scope == "workspace"
 
 
 @pytest.mark.asyncio

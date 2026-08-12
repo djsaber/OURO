@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+from typing import cast
+
 from textual.app import App
 
 from ouro.application.configuration_models import ProviderEndpointView, ProviderView
-from ouro.tui.configuration_screens import ConfirmScreen
-from ouro.tui.controller import TuiController
+from ouro.tui.controller import (
+    TuiController,
+    TuiEndpointConfiguration,
+    TuiProviderConfiguration,
+)
 from ouro.tui.provider_screens import (
     COMPATIBLE_PROVIDER_PROFILES,
     EndpointConfigurationScreen,
@@ -12,7 +17,7 @@ from ouro.tui.provider_screens import (
     ProviderSetupProfile,
     profile_for_provider,
 )
-from ouro.tui.screens import Choice, ChoiceScreen
+from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import SELECTED_CHOICE_MARKER
 from ouro.tui.widgets import ConversationView
 
@@ -91,8 +96,9 @@ class ProviderConfigurationWorkflows(App[int]):
         draft = await self.push_screen_wait(ProviderConfigurationScreen(profile))
         if draft is None:
             return
+        provider_draft = cast(TuiProviderConfiguration, draft)
         try:
-            provider = await self._controller.add_provider(draft)
+            provider = await self._controller.add_provider(provider_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -221,8 +227,9 @@ class ProviderConfigurationWorkflows(App[int]):
         draft = await self.push_screen_wait(ProviderConfigurationScreen(profile, existing=provider))
         if draft is None:
             return
+        provider_draft = cast(TuiProviderConfiguration, draft)
         try:
-            saved = await self._controller.update_provider(draft)
+            saved = await self._controller.update_provider(provider_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -245,14 +252,14 @@ class ProviderConfigurationWorkflows(App[int]):
         return saved
 
     async def _remove_provider(self, provider_id: str) -> None:
-        confirmed = await self.push_screen_wait(
-            ConfirmScreen(
+        selected = await self.push_screen_wait(
+            ConfirmationScreen(
                 title="REMOVE PROVIDER",
                 message=(f"Remove {provider_id} and all of its endpoints from configuration?"),
                 confirm_label="Remove",
             )
         )
-        if not confirmed:
+        if not ConfirmationScreen.confirmed(selected):
             return
         try:
             await self._controller.remove_provider(provider_id)
@@ -435,11 +442,12 @@ class ProviderConfigurationWorkflows(App[int]):
         )
         if draft is None:
             return
+        endpoint_draft = cast(TuiEndpointConfiguration, draft)
         try:
             saved = (
-                await self._controller.add_endpoint(draft)
+                await self._controller.add_endpoint(endpoint_draft)
                 if existing is None
-                else await self._controller.update_endpoint(draft)
+                else await self._controller.update_endpoint(endpoint_draft)
             )
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
@@ -456,14 +464,14 @@ class ProviderConfigurationWorkflows(App[int]):
         return True
 
     async def _remove_endpoint(self, provider_id: str, endpoint_id: str) -> None:
-        confirmed = await self.push_screen_wait(
-            ConfirmScreen(
+        selected = await self.push_screen_wait(
+            ConfirmationScreen(
                 title="REMOVE ENDPOINT",
                 message=f"Remove {provider_id}/{endpoint_id} from configuration?",
                 confirm_label="Remove",
             )
         )
-        if not confirmed:
+        if not ConfirmationScreen.confirmed(selected):
             return
         try:
             await self._controller.remove_endpoint(provider_id, endpoint_id)

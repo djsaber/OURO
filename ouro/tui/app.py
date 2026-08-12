@@ -547,9 +547,10 @@ _OURO_TUI_CSS = """
     #context-detail { width: auto; text-align: right; }
 
     ChoiceScreen, ProviderConfigurationScreen, EndpointConfigurationScreen,
+    MCPConfigurationScreen, SkillInstallScreen,
     ToolExecutionConfigurationScreen,
     CompactionConfigurationScreen,
-    MCPConfigurationScreen, SkillInstallScreen, ConfirmScreen, HelpScreen {
+    ConfirmationScreen, HelpScreen {
         align: center middle;
         background: $ouro-background 45%;
     }
@@ -647,8 +648,6 @@ _OURO_TUI_CSS = """
         border-left: solid $ouro-border-left;
     }
 
-    .mcp-configuration-panel { height: 95%; }
-
     .configuration-title {
         height: 2;
         color: $ouro-theme;
@@ -705,23 +704,6 @@ _OURO_TUI_CSS = """
         width: auto;
         min-width: 12;
         margin-left: 1;
-    }
-
-    .configuration-checks { height: 3; margin-top: 1; }
-    .configuration-checks Checkbox { width: 1fr; }
-    .configuration-number-row { height: 4; margin-top: 1; }
-    .configuration-number-field { width: 1fr; height: 4; margin-right: 1; }
-
-    .confirm-panel {
-        width: 64;
-        max-width: 90%;
-        height: auto;
-        padding: 2 3;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-border-right;
-        border-bottom: none;
-        border-left: solid $ouro-border-left;
     }
 
     #help-panel {

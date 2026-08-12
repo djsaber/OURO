@@ -7,9 +7,9 @@ from typing import cast
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Label, Select, Static
+from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
 
 from ouro.application.configuration_models import (
     CompactionConfigView,
@@ -28,6 +28,7 @@ from ouro.tui.controller import (
     TuiSkillInstallConfiguration,
     TuiToolExecutionConfiguration,
 )
+from ouro.tui.screens import Choice, EditableChoiceScreen
 
 _RUNTIME_MODEL = "__ouro_runtime_model__"
 _NO_FALLBACK = "__ouro_no_fallback__"
@@ -374,385 +375,442 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
         return next((model for model in self._models if model.key == key), None)
 
 
-class MCPConfigurationScreen(ModalScreen[TuiMCPServerConfiguration | None]):
-    """Collect MCP configuration while preserving redacted fields on edits."""
+class MCPConfigurationScreen(EditableChoiceScreen):
+    """Edit MCP settings through the shared grouped inline-edit menu."""
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
-        Binding("ctrl+s", "save", "Save", show=False, priority=True),
-    ]
+    _TRANSPORTS = ("stdio", "http", "sse")
+    _PERMISSIONS = ("auto", "approval", "deny")
+    _TOGGLES = frozenset({"mcp-enabled", "mcp-auto-start", "mcp-auto-reconnect"})
+    _MASKED = frozenset({"mcp-env", "mcp-headers", "mcp-credential-refs"})
 
     def __init__(self, existing: MCPServerConfigView | None = None) -> None:
-        super().__init__()
         self._existing = existing
-
-    def compose(self) -> ComposeResult:
-        existing = self._existing
         transport = existing.transport if existing is not None else "stdio"
-        target = existing.command if existing is not None and transport == "stdio" else ""
-        with VerticalScroll(classes="configuration-panel mcp-configuration-panel"):
-            yield Static(
-                "EDIT MCP SERVER" if existing is not None else "ADD MCP SERVER",
-                classes="configuration-title",
-            )
-            yield Label("Server ID", classes="configuration-label")
-            yield Input(
-                value=existing.server_id if existing is not None else "",
-                placeholder="e.g. filesystem",
-                disabled=existing is not None,
-                id="mcp-server-id",
-            )
-            yield Label("Display name", classes="configuration-label")
-            yield Input(
-                value=existing.name if existing is not None else "",
-                id="mcp-name",
-            )
-            yield Label("Transport", classes="configuration-label")
-            yield Select[str](
-                (("stdio", "stdio"), ("Streamable HTTP", "http"), ("SSE", "sse")),
-                value=transport,
-                allow_blank=False,
-                compact=True,
-                id="mcp-transport",
-            )
-            yield Label("Command / URL", classes="configuration-label")
-            yield Input(
-                value=target or "",
-                placeholder=(
-                    "Leave blank to preserve the configured target"
-                    if existing is not None
-                    else "Command for stdio, URL for HTTP/SSE"
-                ),
-                id="mcp-target",
-            )
-            yield Label("Arguments (JSON string array)", classes="configuration-label")
-            yield Input(
-                placeholder='Blank preserves existing values; e.g. ["-m", "server"]',
-                id="mcp-args",
-            )
-            yield Label("Working directory", classes="configuration-label")
-            yield Input(
-                value=existing.cwd or "" if existing is not None else "",
-                placeholder="Blank preserves existing value",
-                id="mcp-cwd",
-            )
-            yield Label("Environment (JSON object, masked)", classes="configuration-label")
-            yield Input(
-                placeholder="Blank preserves existing values",
-                password=True,
-                id="mcp-env",
-            )
-            yield Label("Inherited env names (JSON string array)", classes="configuration-label")
-            yield Input(
-                placeholder="Blank preserves defaults/existing values",
-                id="mcp-inherit-env",
-            )
-            yield Label("HTTP headers (JSON object, masked)", classes="configuration-label")
-            yield Input(
-                placeholder="Blank preserves existing values",
-                password=True,
-                id="mcp-headers",
-            )
-            yield Label(
-                "Credential references (JSON object, masked)",
-                classes="configuration-label",
-            )
-            yield Input(
-                placeholder='e.g. {"Authorization":"env:OURO_MCP_TOKEN"}',
-                password=True,
-                id="mcp-credential-refs",
-            )
-            yield Label("Default tool permission", classes="configuration-label")
-            yield Select[str](
-                (("Auto", "auto"), ("Approval", "approval"), ("Deny", "deny")),
-                value=existing.permission_mode if existing is not None else "approval",
-                allow_blank=False,
-                compact=True,
-                id="mcp-permission",
-            )
-            yield Label("Tool effect overrides (JSON object)", classes="configuration-label")
-            yield Input(
-                placeholder='e.g. {"read":"read_only","write":"state_changing"}',
-                id="mcp-tool-effects",
-            )
-            with Horizontal(classes="configuration-checks"):
-                yield Checkbox(
-                    "Enabled",
-                    value=existing.enabled if existing is not None else True,
-                    id="mcp-enabled",
-                )
-                yield Checkbox(
-                    "Auto start",
-                    value=existing.auto_start if existing is not None else False,
-                    id="mcp-auto-start",
-                )
-                yield Checkbox(
-                    "Auto reconnect",
-                    value=existing.auto_reconnect if existing is not None else True,
-                    id="mcp-auto-reconnect",
-                )
-            with Horizontal(classes="configuration-number-row"):
-                with Vertical(classes="configuration-number-field"):
-                    yield Label("Reconnect attempts", classes="configuration-label")
-                    yield Input(
-                        value=str(existing.max_reconnect_attempts if existing else 3),
-                        id="mcp-reconnect-attempts",
-                    )
-                with Vertical(classes="configuration-number-field"):
-                    yield Label("Reconnect backoff", classes="configuration-label")
-                    yield Input(
-                        value=str(existing.reconnect_backoff_seconds if existing else 0.5),
-                        id="mcp-reconnect-backoff",
-                    )
-            with Horizontal(classes="configuration-number-row"):
-                with Vertical(classes="configuration-number-field"):
-                    yield Label("Timeout seconds", classes="configuration-label")
-                    yield Input(
-                        value=str(existing.timeout_seconds if existing else 30.0),
-                        id="mcp-timeout",
-                    )
-                with Vertical(classes="configuration-number-field"):
-                    yield Label("Health interval", classes="configuration-label")
-                    yield Input(
-                        value=str(existing.health_check_interval_seconds if existing else 30.0),
-                        id="mcp-health-interval",
-                    )
-            yield Static(
-                "Masked fields are write-only. Blank values preserve existing configuration.",
-                classes="configuration-note",
-            )
-            yield Static("", classes="configuration-error")
-            yield Static(
-                "Tab move · Space toggle · Ctrl+S save · Esc cancel",
-                classes="configuration-hint",
-            )
-            with Horizontal(classes="configuration-actions"):
-                yield Button("Cancel", id="mcp-config-cancel")
-                yield Button("Save", variant="primary", id="mcp-config-save")
+        self._values = {
+            "mcp-server-id": existing.server_id if existing is not None else "",
+            "mcp-name": existing.name if existing is not None else "",
+            "mcp-transport": transport,
+            "mcp-target": (
+                (existing.command if transport == "stdio" else existing.url) or ""
+                if existing is not None
+                else ""
+            ),
+            "mcp-args": "",
+            "mcp-cwd": existing.cwd or "" if existing is not None else "",
+            "mcp-env": "",
+            "mcp-inherit-env": "",
+            "mcp-headers": "",
+            "mcp-credential-refs": "",
+            "mcp-permission": existing.permission_mode if existing is not None else "approval",
+            "mcp-tool-effects": "",
+            "mcp-reconnect-attempts": str(
+                existing.max_reconnect_attempts if existing is not None else 3
+            ),
+            "mcp-reconnect-backoff": str(
+                existing.reconnect_backoff_seconds if existing is not None else 0.5
+            ),
+            "mcp-timeout": str(existing.timeout_seconds if existing is not None else 30.0),
+            "mcp-health-interval": str(
+                existing.health_check_interval_seconds if existing is not None else 30.0
+            ),
+        }
+        self._toggles = {
+            "mcp-enabled": existing.enabled if existing is not None else True,
+            "mcp-auto-start": existing.auto_start if existing is not None else False,
+            "mcp-auto-reconnect": (existing.auto_reconnect if existing is not None else True),
+        }
+        super().__init__(
+            title="EDIT MCP SERVER" if existing is not None else "ADD MCP SERVER",
+            placeholder="Filter MCP settings…",
+            choices=self._mcp_choices(),
+            on_save=self._save_field,
+        )
 
-    def on_mount(self) -> None:
-        selector = "#mcp-name" if self._existing is not None else "#mcp-server-id"
-        self.query_one(selector, Input).focus()
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is None and selected in self._TOGGLES:
+            self._toggles[selected] = not self._toggles[selected]
+            self._refresh(selected)
+            return
+        cycles = {
+            "mcp-transport": self._TRANSPORTS,
+            "mcp-permission": self._PERMISSIONS,
+        }
+        if self._editing_value is None and selected in cycles:
+            values = cycles[selected]
+            current = self._values[selected]
+            self._values[selected] = values[(values.index(current) + 1) % len(values)]
+            self._refresh(selected)
+            return
+        if selected == "mcp-save" and self._editing_value is None:
+            self._submit()
+            return
+        await super()._select_choice(selected)
 
-    @on(Button.Pressed, "#mcp-config-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id] = value.strip()
+        return self._mcp_choices()
 
-    @on(Button.Pressed, "#mcp-config-save")
-    def save_from_button(self) -> None:
-        self._submit()
+    def _editor_display_text(self, value: str) -> str:
+        return "•" * len(value) if self._editing_value in self._MASKED else value
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_save(self) -> None:
-        self._submit()
+    def _refresh(self, selected: str) -> None:
+        self._choices = self._mcp_choices()
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+        )
+        self.query_one("#choice-list", OptionList).focus()
 
     def _submit(self) -> None:
         try:
-            server_id = self.query_one("#mcp-server-id", Input).value.strip()
-            name = self.query_one("#mcp-name", Input).value.strip()
-            transport_value = self.query_one("#mcp-transport", Select).value
-            permission_value = self.query_one("#mcp-permission", Select).value
-            if not server_id:
-                raise ValueError("Server ID is required")
-            if not name:
-                raise ValueError("Display name is required")
-            if transport_value not in {"stdio", "http", "sse"}:
-                raise ValueError("Select an MCP transport")
-            if permission_value not in {"auto", "approval", "deny"}:
-                raise ValueError("Select a tool permission")
-            transport = cast(MCPTransportInput, transport_value)
-            target = self.query_one("#mcp-target", Input).value.strip() or None
-            if (self._existing is None or transport != self._existing.transport) and not target:
-                raise ValueError("Command or URL is required for a new transport")
-            effects = _optional_json_mapping(
-                self.query_one("#mcp-tool-effects", Input).value,
-                "Tool effect overrides",
-            )
-            if effects is not None and any(
-                value not in {"read_only", "state_changing", "unknown"}
-                for value in effects.values()
-            ):
-                raise ValueError("Tool effects must be read_only, state_changing, or unknown")
-            draft = TuiMCPServerConfiguration(
-                server_id=server_id,
-                name=name,
-                transport=transport,
-                target=target,
-                args=_optional_json_string_list(
-                    self.query_one("#mcp-args", Input).value,
-                    "Arguments",
-                ),
-                env=_optional_json_mapping(
-                    self.query_one("#mcp-env", Input).value,
-                    "Environment",
-                ),
-                inherit_env=_optional_json_string_list(
-                    self.query_one("#mcp-inherit-env", Input).value,
-                    "Inherited environment",
-                ),
-                cwd=self.query_one("#mcp-cwd", Input).value.strip() or None,
-                headers=_optional_json_mapping(
-                    self.query_one("#mcp-headers", Input).value,
-                    "Headers",
-                ),
-                credential_refs=_optional_json_mapping(
-                    self.query_one("#mcp-credential-refs", Input).value,
-                    "Credential references",
-                ),
-                enabled=self.query_one("#mcp-enabled", Checkbox).value,
-                auto_start=self.query_one("#mcp-auto-start", Checkbox).value,
-                auto_reconnect=self.query_one("#mcp-auto-reconnect", Checkbox).value,
-                max_reconnect_attempts=_non_negative_int(
-                    self.query_one("#mcp-reconnect-attempts", Input).value,
-                    "Reconnect attempts",
-                ),
-                reconnect_backoff_seconds=_positive_float(
-                    self.query_one("#mcp-reconnect-backoff", Input).value,
-                    "Reconnect backoff",
-                ),
-                timeout_seconds=_positive_float(
-                    self.query_one("#mcp-timeout", Input).value,
-                    "Timeout",
-                ),
-                health_check_interval_seconds=_positive_float(
-                    self.query_one("#mcp-health-interval", Input).value,
-                    "Health interval",
-                ),
-                permission_mode=cast(PermissionMode, permission_value),
-                tool_effect_overrides=(
-                    cast(dict[str, ToolEffect], effects) if effects is not None else None
-                ),
-            )
+            draft = self._draft()
         except ValueError as exc:
-            self.query_one(".configuration-error", Static).update(str(exc))
+            self.notify(str(exc), severity="warning", markup=False)
             return
-        self.dismiss(draft)
+        self.dismiss(draft)  # type: ignore[arg-type]
 
+    def _draft(self) -> TuiMCPServerConfiguration:
+        server_id = self._values["mcp-server-id"]
+        name = self._values["mcp-name"]
+        if not server_id:
+            raise ValueError("Server ID is required")
+        if not name:
+            raise ValueError("Display name is required")
+        transport = cast(MCPTransportInput, self._values["mcp-transport"])
+        target = self._values["mcp-target"] or None
+        if (self._existing is None or transport != self._existing.transport) and not target:
+            raise ValueError("Command or URL is required for a new transport")
+        effects = _optional_json_mapping(self._values["mcp-tool-effects"], "Tool effect overrides")
+        if effects is not None and any(
+            value not in {"read_only", "state_changing", "unknown"} for value in effects.values()
+        ):
+            raise ValueError("Tool effects must be read_only, state_changing, or unknown")
+        return TuiMCPServerConfiguration(
+            server_id=server_id,
+            name=name,
+            transport=transport,
+            target=target,
+            args=_optional_json_string_list(self._values["mcp-args"], "Arguments"),
+            env=_optional_json_mapping(self._values["mcp-env"], "Environment"),
+            inherit_env=_optional_json_string_list(
+                self._values["mcp-inherit-env"], "Inherited environment"
+            ),
+            cwd=self._values["mcp-cwd"] or None,
+            headers=_optional_json_mapping(self._values["mcp-headers"], "Headers"),
+            credential_refs=_optional_json_mapping(
+                self._values["mcp-credential-refs"], "Credential references"
+            ),
+            enabled=self._toggles["mcp-enabled"],
+            auto_start=self._toggles["mcp-auto-start"],
+            auto_reconnect=self._toggles["mcp-auto-reconnect"],
+            max_reconnect_attempts=_non_negative_int(
+                self._values["mcp-reconnect-attempts"], "Reconnect attempts"
+            ),
+            reconnect_backoff_seconds=_positive_float(
+                self._values["mcp-reconnect-backoff"], "Reconnect backoff"
+            ),
+            timeout_seconds=_positive_float(self._values["mcp-timeout"], "Timeout"),
+            health_check_interval_seconds=_positive_float(
+                self._values["mcp-health-interval"], "Health interval"
+            ),
+            permission_mode=cast(PermissionMode, self._values["mcp-permission"]),
+            tool_effect_overrides=(
+                cast(dict[str, ToolEffect], effects) if effects is not None else None
+            ),
+        )
 
-class SkillInstallScreen(ModalScreen[TuiSkillInstallConfiguration | None]):
-    BINDINGS = [
-        Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
-        Binding("ctrl+s", "save", "Install", show=False, priority=True),
-    ]
+    def _validation_error(self) -> str:
+        try:
+            self._draft()
+        except ValueError as exc:
+            return str(exc)
+        return ""
 
-    def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="configuration-panel"):
-            yield Static("INSTALL SKILL", classes="configuration-title")
-            yield Label("Source", classes="configuration-label")
-            yield Input(
-                placeholder="Local path, Git URL, or github:owner/repo",
-                id="skill-source",
-            )
-            yield Label("Scope", classes="configuration-label")
-            yield Select[str](
-                (("User", "user"), ("Workspace", "workspace")),
-                value="user",
-                allow_blank=False,
-                compact=True,
-                id="skill-scope",
-            )
-            yield Label("Skill selector", classes="configuration-label")
-            yield Input(placeholder="Optional name within a collection", id="skill-selector")
-            yield Label("Git ref", classes="configuration-label")
-            yield Input(placeholder="Optional branch or tag", id="skill-ref")
-            with Horizontal(classes="configuration-checks"):
-                yield Checkbox("Install all", id="skill-install-all")
-                yield Checkbox("Replace existing", id="skill-force")
-            yield Static("", classes="configuration-error")
-            yield Static(
-                "Tab move · Space toggle · Ctrl+S install · Esc cancel",
-                classes="configuration-hint",
-            )
-            with Horizontal(classes="configuration-actions"):
-                yield Button("Cancel", id="skill-install-cancel")
-                yield Button("Install", variant="primary", id="skill-install-save")
-
-    def on_mount(self) -> None:
-        self.query_one("#skill-source", Input).focus()
-
-    @on(Button.Pressed, "#skill-install-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
-
-    @on(Button.Pressed, "#skill-install-save")
-    def save_from_button(self) -> None:
-        self._submit()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_save(self) -> None:
-        self._submit()
-
-    def _submit(self) -> None:
-        source = self.query_one("#skill-source", Input).value.strip()
-        scope = self.query_one("#skill-scope", Select).value
-        selector = self.query_one("#skill-selector", Input).value.strip() or None
-        install_all = self.query_one("#skill-install-all", Checkbox).value
-        if not source:
-            self.query_one(".configuration-error", Static).update("Source is required")
-            return
-        if scope not in {"user", "workspace"}:
-            self.query_one(".configuration-error", Static).update("Select an install scope")
-            return
-        if selector is not None and install_all:
-            self.query_one(".configuration-error", Static).update(
-                "Skill selector and Install all are mutually exclusive"
-            )
-            return
-        self.dismiss(
-            TuiSkillInstallConfiguration(
-                source=source,
-                scope=cast(SkillInstallScopeInput, scope),
-                selector=selector,
-                install_all=install_all,
-                force=self.query_one("#skill-force", Checkbox).value,
-                ref=self.query_one("#skill-ref", Input).value.strip() or None,
-            )
+    def _mcp_choices(self) -> tuple[Choice, ...]:
+        error = self._validation_error()
+        existing = self._existing
+        preserved = "Configured · preserved"
+        return (
+            Choice(
+                "mcp-server-id",
+                "Server ID",
+                trailing=self._values["mcp-server-id"] or "Required",
+                group="IDENTITY",
+                disabled=existing is not None,
+                edit_value=self._values["mcp-server-id"],
+            ),
+            Choice(
+                "mcp-name",
+                "Display name",
+                trailing=self._values["mcp-name"] or "Required",
+                group="IDENTITY",
+                edit_value=self._values["mcp-name"],
+            ),
+            Choice(
+                "mcp-transport",
+                "Transport",
+                trailing=self._values["mcp-transport"],
+                group="CONNECTION",
+            ),
+            Choice(
+                "mcp-target",
+                "Command / URL",
+                trailing=self._values["mcp-target"] or "Required",
+                group="CONNECTION",
+                edit_value=self._values["mcp-target"],
+            ),
+            Choice(
+                "mcp-args",
+                "Arguments (JSON)",
+                trailing=preserved
+                if existing is not None and existing.args and not self._values["mcp-args"]
+                else self._values["mcp-args"] or "Default",
+                group="PROCESS",
+                edit_value=self._values["mcp-args"],
+            ),
+            Choice(
+                "mcp-cwd",
+                "Working directory",
+                trailing=self._values["mcp-cwd"] or "Default",
+                group="PROCESS",
+                edit_value=self._values["mcp-cwd"],
+            ),
+            Choice(
+                "mcp-inherit-env",
+                "Inherited env names (JSON)",
+                trailing=preserved
+                if existing is not None
+                and existing.inherit_env
+                and not self._values["mcp-inherit-env"]
+                else self._values["mcp-inherit-env"] or "Default",
+                group="PROCESS",
+                edit_value=self._values["mcp-inherit-env"],
+            ),
+            Choice(
+                "mcp-env",
+                "Environment (JSON)",
+                trailing=(
+                    "Configured"
+                    if self._values["mcp-env"]
+                    else preserved
+                    if existing is not None and existing.env
+                    else "Not set"
+                ),
+                group="CREDENTIALS",
+                edit_value=self._values["mcp-env"],
+            ),
+            Choice(
+                "mcp-headers",
+                "HTTP headers (JSON)",
+                trailing=(
+                    "Configured"
+                    if self._values["mcp-headers"]
+                    else preserved
+                    if existing is not None and existing.headers
+                    else "Not set"
+                ),
+                group="CREDENTIALS",
+                edit_value=self._values["mcp-headers"],
+            ),
+            Choice(
+                "mcp-credential-refs",
+                "Credential references (JSON)",
+                trailing=(
+                    "Configured"
+                    if self._values["mcp-credential-refs"]
+                    else preserved
+                    if existing is not None and existing.credential_refs
+                    else "Not set"
+                ),
+                group="CREDENTIALS",
+                edit_value=self._values["mcp-credential-refs"],
+            ),
+            Choice(
+                "mcp-permission",
+                "Default tool permission",
+                trailing=self._values["mcp-permission"],
+                group="TOOLS",
+            ),
+            Choice(
+                "mcp-tool-effects",
+                "Tool effect overrides (JSON)",
+                trailing=preserved
+                if existing is not None
+                and existing.tool_effect_overrides
+                and not self._values["mcp-tool-effects"]
+                else self._values["mcp-tool-effects"] or "Default",
+                group="TOOLS",
+                edit_value=self._values["mcp-tool-effects"],
+            ),
+            Choice(
+                "mcp-enabled",
+                "Enabled",
+                trailing=_enabled_label(self._toggles["mcp-enabled"]),
+                group="RUNTIME",
+            ),
+            Choice(
+                "mcp-auto-start",
+                "Auto start",
+                trailing=_enabled_label(self._toggles["mcp-auto-start"]),
+                group="RUNTIME",
+            ),
+            Choice(
+                "mcp-auto-reconnect",
+                "Auto reconnect",
+                trailing=_enabled_label(self._toggles["mcp-auto-reconnect"]),
+                group="RUNTIME",
+            ),
+            Choice(
+                "mcp-reconnect-attempts",
+                "Reconnect attempts",
+                trailing=self._values["mcp-reconnect-attempts"],
+                group="RUNTIME",
+                edit_value=self._values["mcp-reconnect-attempts"],
+            ),
+            Choice(
+                "mcp-reconnect-backoff",
+                "Reconnect backoff",
+                trailing=f"{self._values['mcp-reconnect-backoff']} seconds",
+                group="RUNTIME",
+                edit_value=self._values["mcp-reconnect-backoff"],
+            ),
+            Choice(
+                "mcp-timeout",
+                "Timeout",
+                trailing=f"{self._values['mcp-timeout']} seconds",
+                group="RUNTIME",
+                edit_value=self._values["mcp-timeout"],
+            ),
+            Choice(
+                "mcp-health-interval",
+                "Health interval",
+                trailing=f"{self._values['mcp-health-interval']} seconds",
+                group="RUNTIME",
+                edit_value=self._values["mcp-health-interval"],
+            ),
+            Choice("mcp-save", "Save", trailing=error, group="ACTIONS", disabled=bool(error)),
         )
 
 
-class ConfirmScreen(ModalScreen[bool]):
-    BINDINGS = [
-        Binding("y", "confirm", "Confirm", show=False),
-        Binding("n,escape,ctrl+c", "cancel", "Cancel", show=False, priority=True),
-    ]
+class SkillInstallScreen(EditableChoiceScreen):
+    """Collect a skill installation through the shared grouped menu."""
 
-    def __init__(self, *, title: str, message: str, confirm_label: str = "Confirm") -> None:
-        super().__init__()
-        self._title = title
-        self._message = message
-        self._confirm_label = confirm_label
+    def __init__(self) -> None:
+        self._values = {
+            "skill-source": "",
+            "skill-scope": "user",
+            "skill-selector": "",
+            "skill-ref": "",
+        }
+        self._toggles = {"skill-install-all": False, "skill-force": False}
+        super().__init__(
+            title="INSTALL SKILL",
+            placeholder="Filter skill settings…",
+            choices=self._skill_choices(),
+            on_save=self._save_field,
+        )
 
-    def compose(self) -> ComposeResult:
-        with Vertical(classes="confirm-panel"):
-            yield Static(self._title, classes="configuration-title")
-            yield Static(self._message, classes="configuration-note")
-            yield Static("Y confirm · N/Esc cancel", classes="configuration-hint")
-            with Horizontal(classes="configuration-actions"):
-                yield Button("Cancel", id="confirm-cancel")
-                yield Button(self._confirm_label, variant="error", id="confirm-accept")
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is None and selected == "skill-scope":
+            self._values[selected] = "workspace" if self._values[selected] == "user" else "user"
+            self._refresh(selected)
+            return
+        if self._editing_value is None and selected in self._toggles:
+            self._toggles[selected] = not self._toggles[selected]
+            self._refresh(selected)
+            return
+        if selected == "skill-install" and self._editing_value is None:
+            self._submit()
+            return
+        await super()._select_choice(selected)
 
-    def on_mount(self) -> None:
-        self.query_one("#confirm-cancel", Button).focus()
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id] = value.strip()
+        return self._skill_choices()
 
-    @on(Button.Pressed, "#confirm-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
+    def _refresh(self, selected: str) -> None:
+        self._choices = self._skill_choices()
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+        )
+        self.query_one("#choice-list", OptionList).focus()
 
-    @on(Button.Pressed, "#confirm-accept")
-    def confirm_from_button(self) -> None:
-        self.action_confirm()
+    def _submit(self) -> None:
+        try:
+            draft = self._draft()
+        except ValueError as exc:
+            self.notify(str(exc), severity="warning", markup=False)
+            return
+        self.dismiss(draft)  # type: ignore[arg-type]
 
-    def action_cancel(self) -> None:
-        self.dismiss(False)
+    def _draft(self) -> TuiSkillInstallConfiguration:
+        source = self._values["skill-source"]
+        selector = self._values["skill-selector"] or None
+        install_all = self._toggles["skill-install-all"]
+        if not source:
+            raise ValueError("Source is required")
+        if selector is not None and install_all:
+            raise ValueError("Skill selector and Install all are mutually exclusive")
+        return TuiSkillInstallConfiguration(
+            source=source,
+            scope=cast(SkillInstallScopeInput, self._values["skill-scope"]),
+            selector=selector,
+            install_all=install_all,
+            force=self._toggles["skill-force"],
+            ref=self._values["skill-ref"] or None,
+        )
 
-    def action_confirm(self) -> None:
-        self.dismiss(True)
+    def _validation_error(self) -> str:
+        try:
+            self._draft()
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    def _skill_choices(self) -> tuple[Choice, ...]:
+        error = self._validation_error()
+        return (
+            Choice(
+                "skill-source",
+                "Source",
+                trailing=self._values["skill-source"] or "Required",
+                group="SOURCE",
+                edit_value=self._values["skill-source"],
+            ),
+            Choice(
+                "skill-scope", "Scope", trailing=self._values["skill-scope"], group="DESTINATION"
+            ),
+            Choice(
+                "skill-selector",
+                "Skill selector",
+                trailing=self._values["skill-selector"] or "All discovered skills",
+                group="SELECTION",
+                edit_value=self._values["skill-selector"],
+            ),
+            Choice(
+                "skill-install-all",
+                "Install all",
+                trailing=_enabled_label(self._toggles["skill-install-all"]),
+                group="SELECTION",
+            ),
+            Choice(
+                "skill-ref",
+                "Git ref",
+                trailing=self._values["skill-ref"] or "Default",
+                group="VERSION",
+                edit_value=self._values["skill-ref"],
+            ),
+            Choice(
+                "skill-force",
+                "Replace existing",
+                trailing=_enabled_label(self._toggles["skill-force"]),
+                group="OPTIONS",
+            ),
+            Choice(
+                "skill-install", "Install", trailing=error, group="ACTIONS", disabled=bool(error)
+            ),
+        )
 
 
 def _optional_json_string_list(raw: str, label: str) -> list[str] | None:
@@ -762,6 +820,10 @@ def _optional_json_string_list(raw: str, label: str) -> list[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{label} must be a JSON string array")
     return value
+
+
+def _enabled_label(enabled: bool) -> str:
+    return "On" if enabled else "Off"
 
 
 def _optional_json_mapping(raw: str, label: str) -> dict[str, str] | None:
