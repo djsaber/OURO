@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.text import Text
 from textual.color import Color
 from textual.containers import VerticalScroll
-from textual.widgets import Input, OptionList, Select, Static
+from textual.widgets import Input, OptionList, Static
 from textual.widgets.markdown import MarkdownFence
 
 from ouro.application.configuration import ConfigurationFacade
@@ -115,6 +115,23 @@ from ouro.tui.widgets import (
 )
 
 
+async def _wait_for_screen(
+    app: OuroTuiApp,
+    screen_type: type[ChoiceScreen],
+    *,
+    title: str,
+    timeout: float = 2.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        screen = app.screen
+        if isinstance(screen, screen_type) and screen._title == title:
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for {title}")
+        await asyncio.sleep(0.01)
+
+
 def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
     option = ChoiceScreen._options((Choice("msg", "A user request " * 8, trailing="18:00"),))[0]
     console = Console(width=40, record=True, force_terminal=False, color_system=None)
@@ -138,6 +155,21 @@ def test_choice_screen_renders_marker_with_theme_accent() -> None:
 
     assert option.prompt.plain == f"{SELECTED_CHOICE_MARKER} Selected"
     assert option.prompt.spans[0].style == "bold #123456"
+
+
+def test_regular_choice_metadata_keeps_rows_single_line() -> None:
+    options = ChoiceScreen._options(
+        (
+            Choice("auto", "auto", trailing="current"),
+            Choice("approval", "approval", trailing="requires confirmation"),
+        )
+    )
+
+    console = Console(width=60, record=True, force_terminal=False, color_system=None)
+    for option in options:
+        console.print(option.prompt)
+
+    assert len(console.export_text().splitlines()) == len(options)
 
 
 def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> None:
@@ -2007,7 +2039,7 @@ async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
         await pilot.pause(0.5)
         await app._open_session(source.session_id)
         app._fork_session()
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
 
         assert isinstance(app.screen, ChoiceScreen)
         choices = app.screen._choices
@@ -3570,9 +3602,11 @@ async def test_session_model_settings_can_be_completed_with_keyboard_only(tmp_pa
         await pilot.pause()
 
         options = app.screen.query_one(OptionList)
-        assert options.highlighted == 0
+        assert options.get_option_at_index(options.highlighted).id == "faux/faux"
         assert app.screen._choices[0].description == ""
         assert app.screen._choices[0].trailing == "faux"
+        assert app.screen._choices[0].group == "faux"
+        assert app.screen._choices[0].marker == SELECTED_CHOICE_MARKER
 
         await pilot.press("enter")
         await pilot.pause()
@@ -3622,10 +3656,7 @@ async def test_thinking_completion_and_action_menu_share_endpoint_choices(
         await pilot.pause()
         await pilot.press("down", "enter")
         await pilot.pause()
-        options = app.screen.query_one(OptionList)
-        modal = "\n".join(
-            str(options.get_option_at_index(index).prompt) for index in range(options.option_count)
-        )
+        modal = {choice.value for choice in app.screen._choices}
         for value in ("default", "enabled", "disabled", "low", "high"):
             assert value in modal
         for value in ("minimal", "medium", "xhigh", "max"):
@@ -4580,7 +4611,7 @@ async def test_skill_install_uses_shared_grouped_inline_menu(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
+async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draft(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
@@ -4593,7 +4624,9 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
         capable_model = unsupported_model.model_copy(
             update={
                 "key": "faux/thinking",
+                "provider_id": "faux",
                 "endpoint_id": "thinking",
+                "display_name": "Thinking model",
                 "reasoning": ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
@@ -4610,49 +4643,66 @@ async def test_compaction_screen_validates_ratios_and_returns_typed_draft(
         )
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
-        model_route = screen.query_one("#compaction-model", Select)
-        reasoning = screen.query_one("#compaction-reasoning", Select)
-        reasoning_note = screen.query_one("#compaction-model-options-note", Static)
-        temperature = screen.query_one("#compaction-temperature", Input)
-        max_output = screen.query_one("#compaction-max-output", Input)
-        runtime_route = model_route.value
-        assert reasoning.disabled is True
-        assert temperature.disabled is True
-        assert max_output.disabled is True
-        assert "follow the active Session model" in reasoning_note.render().plain
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        assert [choice.group for choice in screen._choices] == [
+            "STRATEGY",
+            "STRATEGY",
+            "STRATEGY",
+            "THRESHOLDS",
+            "THRESHOLDS",
+            "MODEL",
+            "MODEL",
+            "MODEL",
+            "MODEL",
+            "ACTIONS",
+        ]
 
-        model_route.value = capable_model.key
+        choices = {choice.value: choice for choice in screen._choices}
+        assert choices["compaction-temperature"].disabled is True
+        assert choices["compaction-max-output"].disabled is True
+        assert choices["compaction-reasoning"].disabled is True
+
+        screen._refresh("compaction-model")
+        await pilot.press("enter")
         await pilot.pause()
-        assert reasoning.disabled is False
-        assert temperature.disabled is False
-        assert max_output.disabled is False
-        assert "inherit endpoint defaults" in reasoning_note.render().plain
-
-        model_route.value = unsupported_model.key
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen is not screen
+        assert app.screen.query_one("#choice-filter", Input).placeholder == "Filter models…"
+        model_choices = app.screen._choices
+        assert model_choices[0].group == "SESSION"
+        assert {choice.group for choice in model_choices[1:]} == {
+            unsupported_model.provider_id,
+            "faux",
+        }
+        app.screen.query_one("#choice-filter", Input).value = "Thinking model"
         await pilot.pause()
-        assert reasoning.disabled is True
-        assert "does not expose thinking controls" in reasoning_note.render().plain
-
-        model_route.value = runtime_route
+        await pilot.press("enter")
         await pilot.pause()
-        assert reasoning.disabled is True
-        assert temperature.disabled is True
-        assert max_output.disabled is True
-        screen.query_one("#compaction-trigger", Input).value = "0.4"
-        screen.query_one("#compaction-target", Input).value = "0.5"
+        assert app.screen is screen
+        assert screen._values["compaction-model"] == capable_model.key
+        choices = {choice.value: choice for choice in screen._choices}
+        assert choices["compaction-temperature"].disabled is False
+        assert choices["compaction-max-output"].disabled is False
+        assert choices["compaction-reasoning"].disabled is False
 
-        await pilot.press("ctrl+s")
-        await pilot.pause()
-        assert results == []
-        assert "lower than" in screen.query_one(".configuration-error", Static).render().plain
+        screen._values["compaction-trigger"] = "0.4"
+        screen._values["compaction-target"] = "0.5"
+        screen._refresh("compaction-save")
+        save = next(choice for choice in screen._choices if choice.value == "compaction-save")
+        assert save.disabled is True
+        assert "lower than" in save.trailing
 
-        screen.query_one("#compaction-target", Input).value = "0.2"
-        await pilot.press("ctrl+s")
+        screen._values["compaction-target"] = "0.2"
+        screen._refresh("compaction-save")
+        await pilot.press("enter")
         await pilot.pause()
         assert len(results) == 1
         assert results[0].trigger_ratio == 0.4
         assert results[0].target_ratio == 0.2
-        assert results[0].reasoning is None
+        assert results[0].model_key == capable_model.key
 
 
 @pytest.mark.asyncio

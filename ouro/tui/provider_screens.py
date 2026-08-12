@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from textual.widgets import Input, OptionList
-
 from ouro.application.configuration_models import (
     ProviderEndpointView,
     ProviderTemplateView,
@@ -285,12 +283,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
     async def _select_choice(self, selected: str) -> None:
         if self._editing_value is None and selected in self._CAPABILITY_FIELDS:
             self._capabilities[selected] = not self._capabilities[selected]
-            self._choices = self._endpoint_choices()
-            self._refresh_options(
-                needle=self.query_one("#choice-filter", Input).value,
-                preferred_value=selected,
-            )
-            self.query_one("#choice-list", OptionList).focus()
+            self._replace_choices(self._endpoint_choices(), selected=selected)
             return
         if selected == "endpoint-save" and self._editing_value is None:
             self._submit()

@@ -54,13 +54,13 @@ from ouro.tui.configuration_workflows import (
 from ouro.tui.controller import (
     TUI_APPROVAL_PRESETS,
     LoadedSession,
-    TuiApprovalPreset,
     TuiBootstrap,
     TuiController,
     TuiLifecycleStatus,
     TuiSystemStatus,
     project_mcp_system_status,
 )
+from ouro.tui.model_menus import model_choices
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
@@ -133,14 +133,6 @@ _MODEL_ROUTE_ACTION = "__ouro_model_route__"
 _MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
 _SYSTEM_SETTING_ACTION_PREFIX = "__ouro_system_setting__:"
 _RECENT_ACTION_PREFIX = "__ouro_recent_action__:"
-_APPROVAL_DESCRIPTIONS: dict[TuiApprovalPreset, str] = {
-    "inherit": "Use each tool's configured permission policy",
-    "auto": "Allow host-controlled tools; keep user input interactive",
-    "approval": "Ask before every host-controlled tool call",
-    "deny": "Block every host-controlled tool call",
-    "afk": "Auto-approve tools and resolve user input without waiting",
-}
-
 _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
     "default": ReasoningRequest(),
     "enabled": ReasoningRequest(mode="enabled"),
@@ -546,11 +538,7 @@ _OURO_TUI_CSS = """
     #activity-indicator { width: 1fr; }
     #context-detail { width: auto; text-align: right; }
 
-    ChoiceScreen, ProviderConfigurationScreen, EndpointConfigurationScreen,
-    MCPConfigurationScreen, SkillInstallScreen,
-    ToolExecutionConfigurationScreen,
-    CompactionConfigurationScreen,
-    ConfirmationScreen, HelpScreen {
+    ModalScreen {
         align: center middle;
         background: $ouro-background 45%;
     }
@@ -632,78 +620,6 @@ _OURO_TUI_CSS = """
         background: transparent;
         border: none;
         border-left: solid $ouro-border-left;
-    }
-
-    .configuration-panel {
-        width: 76;
-        max-width: 92%;
-        height: auto;
-        max-height: 95%;
-        padding: 1 2;
-        color: #d6d9df;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-border-right;
-        border-bottom: none;
-        border-left: solid $ouro-border-left;
-    }
-
-    .configuration-title {
-        height: 2;
-        color: $ouro-theme;
-        text-style: bold;
-    }
-
-    .configuration-summary {
-        height: auto;
-        margin-bottom: 1;
-        color: #6f7a87;
-    }
-
-    .configuration-section {
-        height: 1;
-        margin-top: 1;
-        color: #8f9aa8;
-        text-style: bold;
-    }
-
-    .configuration-label {
-        height: 1;
-        margin-top: 1;
-        color: #8f9aa8;
-    }
-
-    .configuration-panel Input, .configuration-panel Select {
-        background: $ouro-highlight;
-        border: none;
-    }
-
-    .configuration-note {
-        height: auto;
-        margin-top: 1;
-        color: #8f9aa8;
-    }
-
-    .configuration-error {
-        height: auto;
-        min-height: 1;
-        color: #e08a8a;
-    }
-
-    .configuration-hint {
-        height: 1;
-        color: #6f7a87;
-    }
-
-    .configuration-actions {
-        height: 3;
-        align-horizontal: right;
-    }
-
-    .configuration-actions Button {
-        width: auto;
-        min-width: 12;
-        margin-left: 1;
     }
 
     #help-panel {
@@ -824,6 +740,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_events_ready_posted = False
         self._runtime_events_timer: Timer | None = None
+        self._runtime_event_apply_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
 
     @property
@@ -1009,6 +926,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._apply_runtime_events(events)
 
     async def _apply_runtime_events(
+        self,
+        events: Sequence[EventRecord],
+        *,
+        allow_new_projection: bool = False,
+    ) -> None:
+        async with self._runtime_event_apply_lock:
+            await self._apply_runtime_event_batch(
+                events,
+                allow_new_projection=allow_new_projection,
+            )
+
+    async def _apply_runtime_event_batch(
         self,
         events: Sequence[EventRecord],
         *,
@@ -2137,19 +2066,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _choose_model(self) -> None:
         models = await self._refresh_models()
         state = await self._controller.session_reasoning()
-        choices = tuple(
-            Choice(
-                value=model.key,
-                label=model.display_name or model.model_id,
-                trailing=model.provider_id,
-            )
-            for model in models
-        )
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title="MODELS",
                 placeholder="Filter models…",
-                choices=choices,
+                choices=model_choices(models, selected=state.model.key),
                 initial_value=state.model.key,
             )
         )
@@ -2190,7 +2111,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 value=mode,
                 label=mode,
                 marker=SELECTED_CHOICE_MARKER if mode == current else "",
-                description=_APPROVAL_DESCRIPTIONS[mode],
+                trailing="current" if mode == current else "",
             )
             for mode in TUI_APPROVAL_PRESETS
         )
@@ -2252,7 +2173,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 value=argument.value,
                 label=argument.value,
                 marker=(SELECTED_CHOICE_MARKER if argument.value == current else ""),
-                description=argument.description,
+                trailing="current" if argument.value == current else "",
             )
             for argument in arguments
         )
@@ -2693,16 +2614,6 @@ def _queued_input_draft(item: QueuedUserInputView) -> str:
 
 def _queued_input_preview(item: QueuedUserInputView) -> str:
     return _summarize(_queued_input_draft(item), limit=64) or "(empty message)"
-
-
-def visible_transcript(messages: tuple[MessageRecord, ...]) -> tuple[MessageRecord, ...]:
-    """Expose the transcript rule for focused unit tests."""
-
-    return tuple(
-        message
-        for message in messages
-        if message.role in {"user", "assistant"} and bool(message.text_content)
-    )
 
 
 def _summarize(text: str, limit: int = 60) -> str:

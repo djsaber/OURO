@@ -4,13 +4,6 @@ import json
 from collections.abc import Mapping
 from typing import cast
 
-from textual import on
-from textual.app import ComposeResult
-from textual.binding import Binding
-from textual.containers import Horizontal, VerticalScroll
-from textual.screen import ModalScreen
-from textual.widgets import Button, Checkbox, Input, Label, OptionList, Select, Static
-
 from ouro.application.configuration_models import (
     CompactionConfigView,
     MCPServerConfigView,
@@ -28,7 +21,9 @@ from ouro.tui.controller import (
     TuiSkillInstallConfiguration,
     TuiToolExecutionConfiguration,
 )
-from ouro.tui.screens import Choice, EditableChoiceScreen
+from ouro.tui.model_menus import model_choices
+from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
+from ouro.tui.theme import SELECTED_CHOICE_MARKER
 
 _RUNTIME_MODEL = "__ouro_runtime_model__"
 _NO_FALLBACK = "__ouro_no_fallback__"
@@ -84,12 +79,7 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         return self._tool_execution_choices()
 
     def _refresh(self, selected: str) -> None:
-        self._choices = self._tool_execution_choices()
-        self._refresh_options(
-            needle=self.query_one("#choice-filter", Input).value,
-            preferred_value=selected,
-        )
-        self.query_one("#choice-list", OptionList).focus()
+        self._replace_choices(self._tool_execution_choices(), selected=selected)
 
     def _draft(self) -> TuiToolExecutionConfiguration:
         return TuiToolExecutionConfiguration(
@@ -159,14 +149,8 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
         )
 
 
-class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | None]):
-    """Edit the complete durable compaction policy and model route."""
-
-    BINDINGS = [
-        Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
-        Binding("ctrl+s", "save", "Save", show=False, priority=True),
-    ]
+class CompactionConfigurationScreen(EditableChoiceScreen):
+    """Edit compaction policy through the shared grouped inline menu."""
 
     def __init__(
         self,
@@ -175,8 +159,6 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
         models: tuple[AvailableModel, ...],
         strategy_ids: tuple[str, ...],
     ) -> None:
-        super().__init__()
-        self._config = config
         self._models = models
         self._strategy_ids = tuple(
             dict.fromkeys(
@@ -187,217 +169,292 @@ class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | Non
                 )
             )
         )
-
-    def compose(self) -> ComposeResult:
-        config = self._config
         policy = config.policy
         configured_model = (
             f"{config.model.provider_id}/{config.model.endpoint_id}"
             if config.model.has_dedicated_endpoint
             else _RUNTIME_MODEL
         )
-        model_options = [("Session runtime model", _RUNTIME_MODEL)]
-        model_options.extend((model.display_name or model.key, model.key) for model in self._models)
-        if configured_model != _RUNTIME_MODEL and all(
-            value != configured_model for _, value in model_options
-        ):
-            model_options.append((f"Unavailable · {configured_model}", configured_model))
-        fallback_options = [("None", _NO_FALLBACK)]
-        fallback_options.extend((item, item) for item in self._strategy_ids)
+        self._model_labels = {
+            _RUNTIME_MODEL: "Session runtime model",
+            **{model.key: model.display_name or model.key for model in models},
+        }
+        if configured_model not in self._model_labels:
+            self._model_labels[configured_model] = f"Unavailable · {configured_model}"
         reasoning = _reasoning_value(config.model.reasoning)
         configured_capability = self._model(configured_model)
         reasoning_options = _compaction_reasoning_options(configured_capability)
         if reasoning not in reasoning_options:
             reasoning = "default"
-        uses_runtime_model = configured_model == _RUNTIME_MODEL
-        request_options_disabled = uses_runtime_model or configured_capability is None
-        with VerticalScroll(classes="configuration-panel compaction-configuration-panel"):
-            yield Static("CONTEXT COMPACTION", classes="configuration-title")
-            yield Label("Primary strategy", classes="configuration-label")
-            yield Select[str](
-                tuple((item, item) for item in self._strategy_ids),
-                value=config.strategy_id,
-                allow_blank=False,
-                compact=True,
-                id="compaction-strategy",
-            )
-            yield Label("Fallback strategy", classes="configuration-label")
-            yield Select[str](
-                tuple(fallback_options),
-                value=config.fallback_strategy_id or _NO_FALLBACK,
-                allow_blank=False,
-                compact=True,
-                id="compaction-fallback",
-            )
-            yield Checkbox(
-                "Automatically compact when the context reaches the trigger",
-                value=bool(policy["auto_enabled"]),
-                id="compaction-auto",
-            )
-            yield Label("Trigger ratio (0–1)", classes="configuration-label")
-            yield Input(value=str(policy["trigger_ratio"]), id="compaction-trigger")
-            yield Label("Target ratio (must be below trigger)", classes="configuration-label")
-            yield Input(value=str(policy["target_ratio"]), id="compaction-target")
-            yield Label("Compaction model route", classes="configuration-label")
-            yield Select[str](
-                tuple(model_options),
-                value=configured_model,
-                allow_blank=False,
-                compact=True,
-                id="compaction-model",
-            )
-            yield Label("Temperature (blank = endpoint default)", classes="configuration-label")
-            yield Input(
-                value=_optional_text(config.model.temperature),
-                disabled=request_options_disabled,
-                id="compaction-temperature",
-            )
-            yield Label(
-                "Max output tokens (blank = endpoint default)", classes="configuration-label"
-            )
-            yield Input(
-                value=_optional_text(config.model.max_output_tokens),
-                disabled=request_options_disabled,
-                id="compaction-max-output",
-            )
-            yield Label("Thinking (dedicated model only)", classes="configuration-label")
-            yield Select[str](
-                tuple((item, item) for item in reasoning_options),
-                value=reasoning,
-                allow_blank=False,
-                compact=True,
-                disabled=(
-                    uses_runtime_model
-                    or configured_capability is None
-                    or configured_capability.reasoning.activation == "unsupported"
+        self._values = {
+            "compaction-strategy": config.strategy_id,
+            "compaction-fallback": config.fallback_strategy_id or _NO_FALLBACK,
+            "compaction-trigger": str(policy["trigger_ratio"]),
+            "compaction-target": str(policy["target_ratio"]),
+            "compaction-model": configured_model,
+            "compaction-temperature": _optional_text(config.model.temperature),
+            "compaction-max-output": _optional_text(config.model.max_output_tokens),
+            "compaction-reasoning": reasoning,
+        }
+        self._auto_enabled = bool(policy["auto_enabled"])
+        super().__init__(
+            title="CONTEXT COMPACTION",
+            placeholder="Filter compaction settings…",
+            choices=self._compaction_choices(),
+            on_save=self._save_field,
+        )
+
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is not None:
+            await super()._select_choice(selected)
+            return
+        if selected == "compaction-auto":
+            self._auto_enabled = not self._auto_enabled
+            self._refresh(selected)
+            return
+        if selected == "compaction-model":
+            self.app.push_screen(
+                ChoiceScreen(
+                    title="COMPACTION MODEL",
+                    placeholder="Filter models…",
+                    choices=self._model_choices(),
+                    initial_value=self._values["compaction-model"],
                 ),
-                id="compaction-reasoning",
+                callback=self._apply_model_selection,
             )
-            yield Static(
-                _compaction_model_options_note(configured_model, configured_capability),
-                classes="configuration-note",
-                id="compaction-model-options-note",
+            return
+        cycles = {
+            "compaction-strategy": self._strategy_ids,
+            "compaction-fallback": (_NO_FALLBACK, *self._strategy_ids),
+            "compaction-reasoning": _compaction_reasoning_options(
+                self._model(self._values["compaction-model"])
+            ),
+        }
+        if selected in cycles:
+            values = cycles[selected]
+            current = self._values[selected]
+            self._values[selected] = values[(values.index(current) + 1) % len(values)]
+            self._refresh(selected)
+            return
+        if selected == "compaction-save":
+            self._submit()
+            return
+        await super()._select_choice(selected)
+
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id] = value.strip()
+        return self._compaction_choices()
+
+    def _refresh(self, selected: str) -> None:
+        self._replace_choices(self._compaction_choices(), selected=selected)
+
+    def _normalize_model_options(self) -> None:
+        model_key = self._values["compaction-model"]
+        if model_key == _RUNTIME_MODEL:
+            self._values["compaction-temperature"] = ""
+            self._values["compaction-max-output"] = ""
+        reasoning_options = _compaction_reasoning_options(self._model(model_key))
+        if self._values["compaction-reasoning"] not in reasoning_options:
+            self._values["compaction-reasoning"] = "default"
+
+    def _apply_model_selection(self, selected: str | None) -> None:
+        if selected is None:
+            return
+        self._values["compaction-model"] = selected
+        self._normalize_model_options()
+        self._refresh("compaction-model")
+
+    def _model_choices(self) -> tuple[Choice, ...]:
+        selected = self._values["compaction-model"]
+        choices = [
+            Choice(
+                _RUNTIME_MODEL,
+                "Session runtime model",
+                marker=SELECTED_CHOICE_MARKER if selected == _RUNTIME_MODEL else "",
+                group="SESSION",
             )
-            yield Static(
-                "Saved options apply to the next Runtime; /compact uses the current Runtime.",
-                classes="configuration-note",
+        ]
+        choices.extend(model_choices(self._models, selected=selected))
+        if selected != _RUNTIME_MODEL and self._model(selected) is None:
+            choices.append(
+                Choice(
+                    selected,
+                    self._model_labels[selected],
+                    marker=SELECTED_CHOICE_MARKER,
+                    group="UNAVAILABLE",
+                    disabled=True,
+                )
             )
-            yield Static("", classes="configuration-error")
-            yield Static(
-                "Tab move · Space toggle · Ctrl+S save · Esc cancel", classes="configuration-hint"
-            )
-            with Horizontal(classes="configuration-actions"):
-                yield Button("Cancel", id="compaction-cancel")
-                yield Button("Save", variant="primary", id="compaction-save")
-
-    def on_mount(self) -> None:
-        self.query_one("#compaction-strategy", Select).focus()
-
-    @on(Select.Changed, "#compaction-model")
-    def update_model_options(self, event: Select.Changed) -> None:
-        model = event.value if isinstance(event.value, str) else _RUNTIME_MODEL
-        configured = self._model(model)
-        uses_runtime_model = model == _RUNTIME_MODEL
-        temperature = self.query_one("#compaction-temperature", Input)
-        max_output = self.query_one("#compaction-max-output", Input)
-        reasoning = self.query_one("#compaction-reasoning", Select)
-
-        temperature.disabled = uses_runtime_model or configured is None
-        max_output.disabled = uses_runtime_model or configured is None
-        if uses_runtime_model:
-            temperature.value = ""
-            max_output.value = ""
-
-        previous_reasoning = reasoning.value if isinstance(reasoning.value, str) else "default"
-        reasoning_options = _compaction_reasoning_options(configured)
-        reasoning.set_options(tuple((item, item) for item in reasoning_options))
-        reasoning.disabled = (
-            uses_runtime_model
-            or configured is None
-            or configured.reasoning.activation == "unsupported"
-        )
-        if previous_reasoning in reasoning_options and not reasoning.disabled:
-            reasoning.value = previous_reasoning
-        else:
-            reasoning.value = "default"
-        self.query_one("#compaction-model-options-note", Static).update(
-            _compaction_model_options_note(model, configured)
-        )
-
-    @on(Button.Pressed, "#compaction-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
-
-    @on(Button.Pressed, "#compaction-save")
-    def save_from_button(self) -> None:
-        self._submit()
-
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_save(self) -> None:
-        self._submit()
+        return tuple(choices)
 
     def _submit(self) -> None:
         try:
-            strategy = _selected(self, "#compaction-strategy", "Select a strategy")
-            fallback = _selected(self, "#compaction-fallback", "Select a fallback")
-            model = _selected(self, "#compaction-model", "Select a model route")
-            reasoning = (
-                None
-                if model == _RUNTIME_MODEL
-                else _reasoning_request(
-                    _selected(self, "#compaction-reasoning", "Select thinking")
-                )
-            )
-            trigger = _ratio(self.query_one("#compaction-trigger", Input).value, "Trigger ratio")
-            target = _ratio(self.query_one("#compaction-target", Input).value, "Target ratio")
-            if target >= trigger:
-                raise ValueError("Target ratio must be lower than trigger ratio")
-            if fallback == strategy:
-                raise ValueError("Fallback strategy must differ from the primary strategy")
-            configured = self._model(model)
-            max_output_tokens = (
-                None
-                if model == _RUNTIME_MODEL
-                else _optional_positive_int(
-                    self.query_one("#compaction-max-output", Input).value,
-                    "Max output tokens",
-                )
-            )
-            if (
-                configured is not None
-                and max_output_tokens is not None
-                and max_output_tokens > configured.max_output_tokens
-            ):
-                raise ValueError(
-                    "Max output tokens must not exceed the selected endpoint output limit "
-                    f"({configured.max_output_tokens:,})"
-                )
-            draft = TuiCompactionConfiguration(
-                strategy_id=strategy,
-                fallback_strategy_id=None if fallback == _NO_FALLBACK else fallback,
-                auto_enabled=self.query_one("#compaction-auto", Checkbox).value,
-                trigger_ratio=trigger,
-                target_ratio=target,
-                model_key=None if model == _RUNTIME_MODEL else model,
-                temperature=(
-                    None
-                    if model == _RUNTIME_MODEL
-                    else _optional_bounded_float(
-                        self.query_one("#compaction-temperature", Input).value,
-                        "Temperature",
-                        minimum=0.0,
-                        maximum=2.0,
-                    )
-                ),
-                max_output_tokens=max_output_tokens,
-                reasoning=reasoning,
-            )
+            draft = self._draft()
         except ValueError as exc:
-            self.query_one(".configuration-error", Static).update(str(exc))
+            self.notify(str(exc), severity="warning", markup=False)
             return
-        self.dismiss(draft)
+        self.dismiss(draft)  # type: ignore[arg-type]
+
+    def _draft(self) -> TuiCompactionConfiguration:
+        strategy = self._values["compaction-strategy"]
+        fallback = self._values["compaction-fallback"]
+        model = self._values["compaction-model"]
+        trigger = _ratio(self._values["compaction-trigger"], "Trigger ratio")
+        target = _ratio(self._values["compaction-target"], "Target ratio")
+        if target >= trigger:
+            raise ValueError("Target ratio must be lower than trigger ratio")
+        if fallback == strategy:
+            raise ValueError("Fallback strategy must differ from the primary strategy")
+        configured = self._model(model)
+        max_output_tokens = (
+            None
+            if model == _RUNTIME_MODEL
+            else _optional_positive_int(
+                self._values["compaction-max-output"],
+                "Max output tokens",
+            )
+        )
+        if (
+            configured is not None
+            and max_output_tokens is not None
+            and max_output_tokens > configured.max_output_tokens
+        ):
+            raise ValueError(
+                "Max output tokens must not exceed the selected endpoint output limit "
+                f"({configured.max_output_tokens:,})"
+            )
+        return TuiCompactionConfiguration(
+            strategy_id=strategy,
+            fallback_strategy_id=None if fallback == _NO_FALLBACK else fallback,
+            auto_enabled=self._auto_enabled,
+            trigger_ratio=trigger,
+            target_ratio=target,
+            model_key=None if model == _RUNTIME_MODEL else model,
+            temperature=(
+                None
+                if model == _RUNTIME_MODEL
+                else _optional_bounded_float(
+                    self._values["compaction-temperature"],
+                    "Temperature",
+                    minimum=0.0,
+                    maximum=2.0,
+                )
+            ),
+            max_output_tokens=max_output_tokens,
+            reasoning=(
+                None
+                if model == _RUNTIME_MODEL
+                else _reasoning_request(self._values["compaction-reasoning"])
+            ),
+        )
+
+    def _validation_error(self) -> str:
+        try:
+            self._draft()
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    def _compaction_choices(self) -> tuple[Choice, ...]:
+        model_key = self._values["compaction-model"]
+        configured = self._model(model_key)
+        uses_runtime_model = model_key == _RUNTIME_MODEL
+        request_options_disabled = uses_runtime_model or configured is None
+        reasoning_disabled = (
+            request_options_disabled
+            or configured is not None
+            and configured.reasoning.activation == "unsupported"
+        )
+        error = self._validation_error()
+        fallback = self._values["compaction-fallback"]
+        return (
+            Choice(
+                "compaction-strategy",
+                "Primary strategy",
+                trailing=self._values["compaction-strategy"],
+                group="STRATEGY",
+            ),
+            Choice(
+                "compaction-fallback",
+                "Fallback strategy",
+                trailing="None" if fallback == _NO_FALLBACK else fallback,
+                group="STRATEGY",
+            ),
+            Choice(
+                "compaction-auto",
+                "Automatic compaction",
+                trailing=_enabled_label(self._auto_enabled),
+                group="STRATEGY",
+            ),
+            Choice(
+                "compaction-trigger",
+                "Trigger ratio",
+                trailing=self._values["compaction-trigger"] or "Required",
+                group="THRESHOLDS",
+                edit_value=self._values["compaction-trigger"],
+                edit_placeholder="Enter a ratio from 0 to 1",
+            ),
+            Choice(
+                "compaction-target",
+                "Target ratio",
+                trailing=self._values["compaction-target"] or "Required",
+                group="THRESHOLDS",
+                edit_value=self._values["compaction-target"],
+                edit_placeholder="Enter a ratio below the trigger",
+            ),
+            Choice(
+                "compaction-model",
+                "Model route",
+                trailing=self._model_labels[model_key],
+                group="MODEL",
+            ),
+            Choice(
+                "compaction-temperature",
+                "Temperature",
+                trailing=(
+                    "Session model"
+                    if uses_runtime_model
+                    else self._values["compaction-temperature"] or "Endpoint default"
+                ),
+                group="MODEL",
+                disabled=request_options_disabled,
+                edit_value=self._values["compaction-temperature"],
+                edit_placeholder="Leave blank to use the endpoint default",
+            ),
+            Choice(
+                "compaction-max-output",
+                "Max output tokens",
+                trailing=(
+                    "Session model"
+                    if uses_runtime_model
+                    else self._values["compaction-max-output"] or "Endpoint default"
+                ),
+                group="MODEL",
+                disabled=request_options_disabled,
+                edit_value=self._values["compaction-max-output"],
+                edit_placeholder="Leave blank to use the endpoint default",
+            ),
+            Choice(
+                "compaction-reasoning",
+                "Thinking",
+                trailing=(
+                    "Session model"
+                    if uses_runtime_model
+                    else "Unsupported"
+                    if reasoning_disabled
+                    else self._values["compaction-reasoning"]
+                ),
+                group="MODEL",
+                disabled=reasoning_disabled,
+            ),
+            Choice(
+                "compaction-save",
+                "Save",
+                trailing=error,
+                group="ACTIONS",
+                disabled=bool(error),
+            ),
+        )
 
     def _model(self, key: str) -> AvailableModel | None:
         return next((model for model in self._models if model.key == key), None)
@@ -482,12 +539,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
         return "•" * len(value) if self._editing_value in self._MASKED else value
 
     def _refresh(self, selected: str) -> None:
-        self._choices = self._mcp_choices()
-        self._refresh_options(
-            needle=self.query_one("#choice-filter", Input).value,
-            preferred_value=selected,
-        )
-        self.query_one("#choice-list", OptionList).focus()
+        self._replace_choices(self._mcp_choices(), selected=selected)
 
     def _submit(self) -> None:
         try:
@@ -771,12 +823,7 @@ class SkillInstallScreen(EditableChoiceScreen):
         return self._skill_choices()
 
     def _refresh(self, selected: str) -> None:
-        self._choices = self._skill_choices()
-        self._refresh_options(
-            needle=self.query_one("#choice-filter", Input).value,
-            preferred_value=selected,
-        )
-        self.query_one("#choice-list", OptionList).focus()
+        self._replace_choices(self._skill_choices(), selected=selected)
 
     def _submit(self) -> None:
         try:
@@ -949,13 +996,6 @@ def _optional_bounded_float(
     return value
 
 
-def _selected(screen: CompactionConfigurationScreen, selector: str, error: str) -> str:
-    value = screen.query_one(selector, Select).value
-    if not isinstance(value, str):
-        raise ValueError(error)
-    return value
-
-
 def _optional_text(value: object | None) -> str:
     return "" if value is None else str(value)
 
@@ -981,26 +1021,3 @@ def _compaction_reasoning_options(model: AvailableModel | None) -> tuple[str, ..
         values.append("disabled")
     values.extend(model.reasoning.supported_efforts)
     return tuple(values)
-
-
-def _compaction_model_options_note(model_key: str, model: AvailableModel | None) -> str:
-    if model_key == _RUNTIME_MODEL:
-        return (
-            "Temperature, output-token limit, and thinking follow the active Session model "
-            "and cannot be overridden here."
-        )
-    if model is None:
-        return "The configured endpoint is unavailable; its request capabilities cannot be edited."
-
-    temperature = "provider default" if model.temperature is None else str(model.temperature)
-    request_defaults = (
-        f"Blank values inherit endpoint defaults (temperature: {temperature}; "
-        f"max output: {model.max_output_tokens:,})."
-    )
-    if model.reasoning.activation == "unsupported":
-        return f"{request_defaults} This endpoint does not expose thinking controls."
-    efforts = ", ".join(model.reasoning.supported_efforts)
-    thinking = (
-        f" Available thinking efforts: {efforts}." if efforts else " Thinking supports mode only."
-    )
-    return request_defaults + thinking

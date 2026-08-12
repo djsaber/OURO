@@ -18,6 +18,7 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.controller import (
     McpServerStatus,
+    TuiCompactionConfiguration,
     TuiController,
     TuiMCPServerConfiguration,
     TuiSkillInstallConfiguration,
@@ -145,8 +146,9 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         )
         if draft is None:
             return
+        compaction_draft = cast(TuiCompactionConfiguration, draft)
         try:
-            saved = await self._controller.save_compaction_configuration(draft)
+            saved = await self._controller.save_compaction_configuration(compaction_draft)
         except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -167,7 +169,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         selected = selector
         if selected is None:
             choices = tuple(
-                Choice(item.name, item.display_name, _tool_description(item)) for item in tools
+                Choice(item.name, item.display_name, trailing=_tool_labels(item)) for item in tools
             )
             if not choices:
                 self.notify("No configurable tools are available", severity="warning")
@@ -203,7 +205,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     Choice(
                         value,
                         value,
-                        _tool_permission_description(value),
+                        trailing="current" if value == current else "",
                         marker=SELECTED_CHOICE_MARKER if value == current else "",
                     )
                     for value in _TOOL_PERMISSION_CHOICES
@@ -745,29 +747,10 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.query_one(ConversationView).set_system_status(self._system_status)
 
 
-def _tool_description(tool: TuiToolConfiguration) -> str:
+def _tool_labels(tool: TuiToolConfiguration) -> str:
     permission = tool.effective_permission or "unavailable"
-    override = (
-        f"override: {tool.permission_override}"
-        if tool.permission_override is not None
-        else "definition default"
-    )
-    control = " · contract-controlled" if tool.permission_control == "tool" else ""
-    availability = "" if tool.available else " · not loaded"
-    return (
-        f"{tool.source} · {tool.effect} · permission: {permission} ({override})"
-        f"{control}{availability}"
-    )
-
-
-def _tool_permission_description(value: str) -> str:
-    descriptions = {
-        "inherit": "Clear the override and use the tool definition",
-        "auto": "Execute without approval unless a stricter policy applies",
-        "approval": "Require user or Host-policy approval",
-        "deny": "Reject the tool before its handler starts",
-    }
-    return descriptions[value]
+    availability = "" if tool.available else " · unavailable"
+    return f"{tool.source} · {permission}{availability}"
 
 
 def _mcp_labels(

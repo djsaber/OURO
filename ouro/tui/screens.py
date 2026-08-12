@@ -28,7 +28,6 @@ class Choice:
     trailing: str = ""
     group: str = ""
     group_trailing: str = ""
-    bold_label: bool = False
     disabled: bool = False
     marker: str = ""
     edit_value: str | None = None
@@ -84,15 +83,10 @@ def grouped_choice_options(
                     )
                 options.append(Option(group_header, disabled=True))
             previous_group = choice.group
-        label_style = (
-            (f"bold {choice.accent}" if choice.accent else "bold")
-            if choice.bold_label
-            else (choice.accent or "")
-        )
         label = Text(overflow="ellipsis", no_wrap=True)
         if choice.marker:
             label.append(f"{choice.marker} ", style=f"bold {group_accent}")
-        label.append(choice.label, style=label_style)
+        label.append(choice.label, style=choice.accent or "")
         if choice.trailing:
             row = Table.grid(expand=True, padding=0)
             row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
@@ -562,6 +556,16 @@ class EditableChoiceScreen(ChoiceScreen):
             "↑/↓ move · ←/→ group · Enter edit · Esc cancel"
         )
         self._refresh_options(needle=needle, preferred_value=selected)
+        self.query_one("#choice-list", OptionList).focus()
+
+    def _replace_choices(self, choices: tuple[Choice, ...], *, selected: str) -> None:
+        """Replace the live menu projection while preserving filter and focus."""
+
+        self._choices = choices
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+        )
         self.query_one("#choice-list", OptionList).focus()
 
     def _insert_text(self, value: str) -> None:
