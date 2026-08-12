@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
 from rich.segment import Segment
 from rich.style import Style
+from rich.syntax import Syntax, SyntaxTheme
 from rich.text import Text
 from textual import events
 from textual.events import Resize
@@ -32,6 +33,26 @@ class ToolActivityRenderer(Protocol):
 
 
 TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "run"]
+
+_PANEL_BACKGROUND = "#171717"
+
+
+class _PanelCodeTheme(SyntaxTheme):
+    """Preserve Monokai token colors on OURO's shared panel surface."""
+
+    def __init__(self) -> None:
+        self._base = Syntax.get_theme("monokai")
+
+    def get_style_for_token(self, token_type: Any) -> Style:
+        return self._base.get_style_for_token(token_type) + Style(
+            bgcolor=_PANEL_BACKGROUND
+        )
+
+    def get_background_style(self) -> Style:
+        return Style(bgcolor=_PANEL_BACKGROUND)
+
+
+_PANEL_CODE_THEME = _PanelCodeTheme()
 
 
 @dataclass(frozen=True)
@@ -67,7 +88,7 @@ class _UserMessageContent:
         right_width = min(right, interior_width - left_width)
         content_width = interior_width - left_width - right_width
         content_options = options.update_width(max(1, content_width))
-        panel_style = Style(bgcolor="#171717")
+        panel_style = Style(bgcolor=_PANEL_BACKGROUND)
         content = Text(self.text, style="#e5e7eb")
         lines = console.render_lines(content, content_options, pad=False)
         border = Segment("│", Style(color=self.accent))
@@ -338,7 +359,7 @@ class ConversationHistory(RichLog, can_focus=False):
         if entry.kind == "user":
             return Padding(
                 _UserMessageContent(entry.text, theme.accent),
-                (1, 1, 2, 1),
+                (1, 2, 2, 2),
             )
         if entry.kind == "tool":
             assert entry.tool is not None
@@ -385,6 +406,11 @@ class ConversationHistory(RichLog, can_focus=False):
             # assistant message. The outer padding below owns message spacing.
             blocks.append(Padding(thought_content, (0, 0, 1 if entry.text else 0, 0)))
         if entry.text:
-            blocks.append(RichMarkdown(entry.text))
+            blocks.append(
+                RichMarkdown(
+                    entry.text,
+                    code_theme=_PANEL_CODE_THEME,  # type: ignore[arg-type]
+                )
+            )
         top = 1 if previous_kind == "tool" else 0
         return Padding(Group(*blocks), (top, 2, 1, 2))

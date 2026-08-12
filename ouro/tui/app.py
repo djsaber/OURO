@@ -369,8 +369,15 @@ _OURO_TUI_CSS = """
         border-left: solid #505967;
     }
 
-    Markdown, MarkdownBlock, MarkdownFence, MarkdownTable {
+    Markdown, MarkdownBlock, MarkdownTable {
         background: transparent;
+    }
+
+    /* Keep fenced code on the same quiet surface as user turns and the
+       composer. The fence selector must come after the generic Markdown
+       rules so Textual's built-in translucent black does not leak through. */
+    MarkdownFence {
+        background: $ouro-panel;
     }
 
     .tool-row {

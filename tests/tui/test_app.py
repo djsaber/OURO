@@ -13,6 +13,7 @@ from rich.text import Text
 from textual.color import Color
 from textual.containers import VerticalScroll
 from textual.widgets import Input, OptionList, Select, Static
+from textual.widgets.markdown import MarkdownFence
 
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.models import AvailableModel
@@ -1228,11 +1229,14 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         # conversation — visual layering keeps the LOGO only at startup and
         # when a new session begins, never alongside messages.
         await conversation.add_user("Hello")
-        await conversation.append_assistant("Hi")
+        composer = app.query_one(Composer)
+        await conversation.append_assistant("```python\nprint('Hi')\n```")
+        await pilot.pause()
+        code_fence = conversation.query_one(MarkdownFence)
+        assert code_fence.styles.background == composer.styles.background
         await conversation.add_notice("Status changed")
         assert not conversation.query(WelcomePanel)
 
-        composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.styles.background == popup.styles.background
         assert popup.styles.overflow_y == "hidden"
@@ -1253,8 +1257,19 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         history = conversation.query_one(ConversationHistory)
         assert history.styles.border_left[0] == ""
         user_lines = history.rendered_text.splitlines()[:4]
-        assert [line.index("│") for line in user_lines[1:4]] == [1, 1, 1]
-        assert user_lines[2].index("Hello") == 4
+        assert [line.index("│") for line in user_lines[1:4]] == [2, 2, 2]
+        assert user_lines[2].index("Hello") == 5
+        code_segments = [
+            segment
+            for line in history.lines
+            for segment in line
+            if "print" in segment.text
+        ]
+        assert code_segments
+        assert all(
+            segment.style.bgcolor == Color.parse("#171717").rich_color
+            for segment in code_segments
+        )
         assert "Status changed" in history.rendered_text
         assert not conversation.query(AssistantTurn)
 
@@ -1711,9 +1726,9 @@ async def test_user_message_frame_spans_every_content_line(tmp_path: Path) -> No
         history = conversation.query_one(ConversationHistory)
         framed_lines = [line.text for line in history.lines if "│" in line.text]
         assert len(framed_lines) == 4
-        assert all(line.index("│") == 1 for line in framed_lines)
-        assert framed_lines[1].index("First line") == 4
-        assert framed_lines[2].index("Second line") == 4
+        assert all(line.index("│") == 2 for line in framed_lines)
+        assert framed_lines[1].index("First line") == 5
+        assert framed_lines[2].index("Second line") == 5
 
 
 @pytest.mark.asyncio
