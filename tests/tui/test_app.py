@@ -77,12 +77,14 @@ from ouro.tui.controller import (
     TuiController,
     TuiEndpointConfiguration,
     TuiPluginCommandExecution,
+    TuiProviderConfiguration,
     TuiSystemStatus,
 )
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
     ProviderConfigurationScreen,
+    ProviderSetupProfile,
 )
 from ouro.tui.screens import (
     Choice,
@@ -3408,21 +3410,61 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
 
-        assert screen.query_one(".configuration-panel", VerticalScroll).max_scroll_y > 0
+        assert isinstance(screen, EditableChoiceScreen)
         assert not list(screen.query("#model-provider"))
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert screen.query_one("#choice-filter", Input).placeholder == (
+            "Filter endpoint settings…"
+        )
+        assert [choice.group for choice in screen._choices] == [
+            "IDENTITY",
+            "IDENTITY",
+            "LIMITS",
+            "LIMITS",
+            "CAPABILITIES",
+            "CAPABILITIES",
+            "CAPABILITIES",
+            "CAPABILITIES",
+            "ACTIONS",
+        ]
 
-        await pilot.press(*"new-endpoint", "enter")
-        await pilot.press(*"provider-model", "enter")
-        await pilot.press("ctrl+u", *"100", "enter")
-        await pilot.press("ctrl+u", *"200", "enter")
-        await pilot.pause()
+        options = screen.query_one("#choice-list", OptionList)
+        for field_id, value in (
+            ("endpoint-id", "new-endpoint"),
+            ("endpoint-model-id", "provider-model"),
+            ("endpoint-context-window", "100"),
+            ("endpoint-max-output", "200"),
+        ):
+            options.highlighted = options.get_option_index(field_id)
+            options.focus()
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press("ctrl+u", *value, "enter")
+            await pilot.pause()
 
         assert results == []
-        assert "cannot exceed" in screen.query_one(".configuration-error", Static).render().plain
-        assert all(item.styles.scrollbar_size_vertical == 1 for item in screen.query(OptionList))
+        assert options.get_option("endpoint-save").disabled is True
+        save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
+        assert "cannot exceed" in save_choice.trailing
 
-        await pilot.press("ctrl+u", *"50", "tab", "tab", "space", "ctrl+s")
-        await pilot.pause(0.2)
+        options.highlighted = options.get_option_index("endpoint-max-output")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("ctrl+u", *"50", "enter")
+        await pilot.pause()
+
+        options.highlighted = options.get_option_index("endpoint-vision")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._capabilities["endpoint-vision"] is True
+        assert screen._capabilities["endpoint-streaming"] is True
+
+        options.highlighted = options.get_option_index("endpoint-save")
+        await pilot.press("enter")
+        await pilot.pause()
 
         assert len(results) == 1
         draft = results[0]
@@ -3891,13 +3933,13 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, ProviderConfigurationScreen)
-        assert (
-            "OURO preset · 3 endpoint(s)"
-            in app.screen.query_one(".configuration-summary", Static).render().plain
-        )
         assert not list(app.screen.query("#provider-default"))
 
-        await pilot.press("ctrl+u", *"gemini-work", "ctrl+s")
+        app.screen._values["provider-id"] = "gemini-work"
+        app.screen._choices = app.screen._provider_choices()
+        app.screen._refresh_options(needle="", preferred_value="provider-save")
+        app.screen.query_one("#choice-list", OptionList).focus()
+        await pilot.press("enter")
         await pilot.pause()
         provider = ConfigurationFacade(tmp_path).provider("gemini-work")
         assert provider.provider_type == "gemini"
@@ -3915,9 +3957,149 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
         await pilot.pause()
 
         assert isinstance(app.screen, ProviderConfigurationScreen)
-        assert app.screen.query_one("#provider-base-url", Input).value == ""
-        assert app.screen.query_one("#provider-api-path", Input).value == "/v1/messages"
+        assert app.screen._values["provider-base-url"] == ""
+        assert app.screen._values["provider-api-path"] == "/v1/messages"
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_provider_configuration_uses_shared_grouped_inline_menu(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = ProviderSetupProfile(
+        provider_type="openai-compatible",
+        default_provider_id="gateway",
+        display_name="Gateway",
+        description="Test gateway",
+        base_url="https://gateway.example.invalid/v1",
+        api_path="/chat/completions",
+        credential_env="GATEWAY_API_KEY",
+        endpoint_count=0,
+        preset=False,
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+    results: list[TuiProviderConfiguration | None] = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        screen = ProviderConfigurationScreen(profile)
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert screen.query_one("#choice-filter", Input).placeholder == (
+            "Filter provider settings…"
+        )
+        options = screen.query_one("#choice-list", OptionList)
+        assert options.styles.scrollbar_size_vertical == 0
+        assert [choice.group for choice in screen._choices] == [
+            "CREDENTIALS",
+            "CREDENTIALS",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ADVANCED",
+            "ACTIONS",
+        ]
+        assert screen._values["provider-api-key-env"] == "GATEWAY_API_KEY"
+        assert screen._values["provider-base-url"] == "https://gateway.example.invalid/v1"
+        assert screen._values["provider-api-path"] == "/chat/completions"
+        assert screen._values["provider-timeout"] == "60.0"
+
+        options.highlighted = options.get_option_index("provider-api-key")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press(*"pre", "left")
+        monkeypatch.setattr(
+            "ouro.tui.screens.read_system_clipboard",
+            lambda: "pasted\non two lines",
+        )
+        await pilot.click(options, offset=(8, 1), button=3)
+        await pilot.pause()
+        assert screen._edit_text == "prpasted on two linese"
+        assert "pasted" not in str(options.get_option("provider-api-key").prompt)
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._values["provider-api-key"] == "prpasted on two linese"
+        assert screen._values["provider-api-key-env"] == ""
+
+        screen._values["provider-base-url"] = ""
+        screen._choices = screen._provider_choices()
+        screen._refresh_options(needle="", preferred_value="provider-base-url")
+        assert options.get_option("provider-save").disabled is True
+
+        screen._values["provider-base-url"] = "https://gateway.invalid/v1"
+        screen._choices = screen._provider_choices()
+        screen._refresh_options(needle="", preferred_value="provider-save")
+        assert options.get_option("provider-save").disabled is False
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(results) == 1
+        draft = results[0]
+        assert draft is not None
+        assert draft.api_key == "prpasted on two linese"
+        assert draft.api_key_env is None
+        assert draft.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_provider_configuration_preserves_existing_enabled_state(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "disabled-gateway",
+        provider_type="openai-compatible",
+        base_url="https://gateway.example.invalid/v1",
+        enabled=False,
+    )
+    profile = ProviderSetupProfile(
+        provider_type="openai-compatible",
+        default_provider_id="openai-compatible",
+        display_name="OpenAI-compatible",
+        description="Test gateway",
+        base_url="",
+        api_path="/chat/completions",
+        credential_env=None,
+        endpoint_count=0,
+        preset=False,
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+    results: list[TuiProviderConfiguration | None] = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ProviderConfigurationScreen(
+                profile,
+                existing=configuration.provider("disabled-gateway"),
+            ),
+            callback=results.append,
+        )
+        await pilot.pause()
+
+        actions = app.screen.query_one("#choice-list", OptionList)
+        action_ids = [
+            str(option.id)
+            for index in range(actions.option_count)
+            if (option := actions.get_option_at_index(index)).id is not None
+            and str(option.id).startswith("provider-save")
+        ]
+        assert action_ids == ["provider-save"]
+        actions.highlighted = actions.get_option_index("provider-save")
+        actions.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(results) == 1
+        draft = results[0]
+        assert draft is not None
+        assert draft.enabled is False
 
 
 @pytest.mark.asyncio

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 
 from rich.table import Table
 from rich.text import Text
-from textual import events
+from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -13,6 +14,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
+from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import slash_command_help
 from ouro.tui.theme import theme_for
 
@@ -29,7 +31,7 @@ class Choice:
     bold_label: bool = False
     disabled: bool = False
     marker: str = ""
-    edit_value: str = ""
+    edit_value: str | None = None
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
@@ -46,6 +48,63 @@ class _ChoiceGroupHeader(Table):
 
 class _ChoiceGroupHeaderText(Text):
     """Marks a text-backed group heading without conflating it with disabled rows."""
+
+
+def grouped_choice_options(
+    choices: tuple[Choice, ...],
+    *,
+    group_accent: str = "#7d8794",
+) -> list[Option]:
+    """Render choices with the shared TUI group headers and row treatment."""
+
+    options: list[Option] = []
+    previous_group: object = object()
+    for choice in choices:
+        if choice.group != previous_group:
+            if choice.group:
+                if isinstance(previous_group, str) and previous_group:
+                    options.append(Option(Text(" "), disabled=True))
+                group_header: Text | Table
+                if choice.group_trailing:
+                    row = _ChoiceGroupHeader.grid(expand=True, padding=0)
+                    row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
+                    row.add_column(justify="right", no_wrap=True)
+                    row.add_row(
+                        Text(choice.group, style=f"bold {group_accent}"),
+                        Text(choice.group_trailing, style="#7d8794"),
+                    )
+                    group_header = row
+                else:
+                    group_header = _ChoiceGroupHeaderText(
+                        choice.group,
+                        style=f"bold {group_accent}",
+                        overflow="ellipsis",
+                        no_wrap=True,
+                    )
+                options.append(Option(group_header, disabled=True))
+            previous_group = choice.group
+        label_style = (
+            (f"bold {choice.accent}" if choice.accent else "bold")
+            if choice.bold_label
+            else (choice.accent or "")
+        )
+        label = Text(overflow="ellipsis", no_wrap=True)
+        if choice.marker:
+            label.append(f"{choice.marker} ", style=f"bold {group_accent}")
+        label.append(choice.label, style=label_style)
+        if choice.trailing:
+            row = Table.grid(expand=True, padding=0)
+            row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
+            row.add_column(ratio=1)
+            row.add_column(width=2)
+            row.add_column(justify="right", no_wrap=True)
+            row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
+            options.append(Option(row, id=choice.value, disabled=choice.disabled))
+            continue
+        if choice.description:
+            label.append(f"\n{choice.description}", style="#7d8794")
+        options.append(Option(label, id=choice.value, disabled=choice.disabled))
+    return options
 
 
 class ChoiceScreen(ModalScreen[str | None]):
@@ -86,6 +145,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             yield OptionList(
                 *self._options(self._choices, group_accent=theme_for(self).accent),
                 id="choice-list",
+                classes="grouped-menu-list",
             )
             yield Static(
                 "↑/↓ move · ←/→ group · Enter select · Esc cancel",
@@ -262,59 +322,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         *,
         group_accent: str = "#7d8794",
     ) -> list[Option]:
-        options: list[Option] = []
-        previous_group: object = object()
-        for choice in choices:
-            if choice.group != previous_group:
-                if choice.group:
-                    if isinstance(previous_group, str) and previous_group:
-                        options.append(Option(Text(" "), disabled=True))
-                    group_header: Text | Table
-                    if choice.group_trailing:
-                        row = _ChoiceGroupHeader.grid(expand=True, padding=0)
-                        row.add_column(ratio=1, overflow="ellipsis", no_wrap=True)
-                        row.add_column(justify="right", no_wrap=True)
-                        row.add_row(
-                            Text(choice.group, style=f"bold {group_accent}"),
-                            Text(choice.group_trailing, style="#7d8794"),
-                        )
-                        group_header = row
-                    else:
-                        group_header = _ChoiceGroupHeaderText(
-                            choice.group,
-                            style=f"bold {group_accent}",
-                            overflow="ellipsis",
-                            no_wrap=True,
-                        )
-                    options.append(
-                        Option(
-                            group_header,
-                            disabled=True,
-                        )
-                    )
-                previous_group = choice.group
-            label_style = (
-                (f"bold {choice.accent}" if choice.accent else "bold")
-                if choice.bold_label
-                else (choice.accent or "")
-            )
-            label = Text(overflow="ellipsis", no_wrap=True)
-            if choice.marker:
-                label.append(f"{choice.marker} ", style=f"bold {group_accent}")
-            label.append(choice.label, style=label_style)
-            if choice.trailing:
-                row = Table.grid(expand=True, padding=0)
-                row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
-                row.add_column(ratio=1)
-                row.add_column(width=2)
-                row.add_column(justify="right", no_wrap=True)
-                row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
-                options.append(Option(row, id=choice.value, disabled=choice.disabled))
-                continue
-            if choice.description:
-                label.append(f"\n{choice.description}", style="#7d8794")
-            options.append(Option(label, id=choice.value, disabled=choice.disabled))
-        return options
+        return grouped_choice_options(choices, group_accent=group_accent)
 
     @staticmethod
     def _highlight_index(
@@ -358,6 +366,17 @@ class _MultiChoiceFilterInput(Input):
             screen.action_toggle_choice()
 
 
+class _EditableChoiceList(OptionList):
+    """Keep right-click reserved for the screen's inline-editor paste action."""
+
+    async def _on_click(self, event: events.Click) -> None:
+        if event.button == 3:
+            event.prevent_default()
+            event.stop()
+            return
+        await super()._on_click(event)
+
+
 class EditableChoiceScreen(ChoiceScreen):
     """Edit the selected choice label in place without opening another screen."""
 
@@ -368,6 +387,7 @@ class EditableChoiceScreen(ChoiceScreen):
         Binding("right", "next_group", "Cursor right", show=False, priority=True),
         Binding("home", "edit_home", "Start", show=False, priority=True),
         Binding("end", "edit_end", "End", show=False, priority=True),
+        Binding("ctrl+u", "edit_clear", "Clear", show=False, priority=True),
         Binding("backspace", "edit_backspace", "Erase", show=False, priority=True),
         Binding("delete", "edit_delete", "Delete", show=False, priority=True),
         Binding("enter", "accept_choice", "Edit / save", show=False, priority=True),
@@ -388,6 +408,20 @@ class EditableChoiceScreen(ChoiceScreen):
         self._editing_value: str | None = None
         self._edit_text = ""
         self._edit_cursor = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="choice-panel"):
+            yield Static(self._title, id="choice-title")
+            yield self._filter_input()
+            yield _EditableChoiceList(
+                *self._options(self._choices, group_accent=theme_for(self).accent),
+                id="choice-list",
+                classes="grouped-menu-list",
+            )
+            yield Static(
+                "↑/↓ move · ←/→ group · Enter edit · Esc cancel",
+                id="choice-hint",
+            )
 
     async def _select_choice(self, selected: str) -> None:
         if self._editing_value is None:
@@ -412,6 +446,22 @@ class EditableChoiceScreen(ChoiceScreen):
         event.stop()
         event.prevent_default()
         self._insert_text(" ".join(event.text.splitlines()))
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button != 3 or self._editing_value is None:
+            return
+        event.prevent_default()
+        event.stop()
+        self._paste_system_clipboard()
+
+    @work(group="editable-choice-clipboard")
+    async def _paste_system_clipboard(self) -> None:
+        try:
+            value = await asyncio.to_thread(read_system_clipboard)
+        except ClipboardReadError as exc:
+            self.notify(str(exc), severity="warning", markup=False)
+            return
+        self._insert_text(" ".join(value.splitlines()))
 
     def action_previous_choice(self) -> None:
         if self._editing_value is None:
@@ -445,6 +495,12 @@ class EditableChoiceScreen(ChoiceScreen):
             self._edit_cursor = len(self._edit_text)
             self._render_editor()
 
+    def action_edit_clear(self) -> None:
+        if self._editing_value is not None:
+            self._edit_text = ""
+            self._edit_cursor = 0
+            self._render_editor()
+
     def action_edit_backspace(self) -> None:
         if self._editing_value is None or self._edit_cursor == 0:
             return
@@ -474,7 +530,7 @@ class EditableChoiceScreen(ChoiceScreen):
         if choice is None or choice.disabled:
             return
         self._editing_value = selected
-        self._edit_text = choice.edit_value or choice.label
+        self._edit_text = choice.edit_value if choice.edit_value is not None else choice.label
         self._edit_cursor = len(self._edit_text)
         self.query_one("#choice-filter", Input).disabled = True
         self.query_one("#choice-hint", Static).update(
@@ -531,17 +587,23 @@ class EditableChoiceScreen(ChoiceScreen):
         if option_index is None:
             return
         accent = theme_for(self).accent
+        display_text = self._editor_display_text(self._edit_text)
         prompt = Text(overflow="ellipsis", no_wrap=True)
-        prompt.append(self._edit_text[: self._edit_cursor])
-        if self._edit_cursor < len(self._edit_text):
+        prompt.append(display_text[: self._edit_cursor])
+        if self._edit_cursor < len(display_text):
             prompt.append(
-                self._edit_text[self._edit_cursor],
+                display_text[self._edit_cursor],
                 style=f"bold reverse {accent}",
             )
-            prompt.append(self._edit_text[self._edit_cursor + 1 :])
+            prompt.append(display_text[self._edit_cursor + 1 :])
         else:
             prompt.append(" ", style=f"bold reverse {accent}")
         options.replace_option_prompt_at_index(option_index, prompt)
+
+    def _editor_display_text(self, value: str) -> str:
+        """Return the visible editor text; subclasses may mask sensitive values."""
+
+        return value
 
 
 class MultiChoiceScreen(ChoiceScreen):

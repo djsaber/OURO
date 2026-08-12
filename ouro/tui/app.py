@@ -596,6 +596,11 @@ _OURO_TUI_CSS = """
         width: 100%;
         max-height: 20;
         padding: 0 1 1 1;
+    }
+
+    /* Shared grouped-menu treatment. Choice and inline-edit screens use the
+       same rows, group headers, focus color, and hidden chrome. */
+    .grouped-menu-list {
         background: transparent;
         border: none;
         border-left: solid $ouro-border-left;
@@ -609,12 +614,12 @@ _OURO_TUI_CSS = """
         scrollbar-gutter: auto;
     }
 
-    #choice-list .option-list--option-highlighted {
+    .grouped-menu-list .option-list--option-highlighted {
         color: $ouro-theme;
         background: $ouro-highlight;
     }
 
-    #choice-list:focus .option-list--option-highlighted {
+    .grouped-menu-list:focus .option-list--option-highlighted {
         color: $ouro-theme;
         background: #2a2a2a;
     }
@@ -704,7 +709,6 @@ _OURO_TUI_CSS = """
 
     .configuration-checks { height: 3; margin-top: 1; }
     .configuration-checks Checkbox { width: 1fr; }
-    .endpoint-capabilities Checkbox { width: 1fr; }
     .configuration-number-row { height: 4; margin-top: 1; }
     .configuration-number-field { width: 1fr; height: 4; margin-right: 1; }
 
