@@ -213,15 +213,15 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
             self._refresh(selected)
             return
         if selected == "compaction-model":
-            self.app.push_screen(
+            model = await self.open_child(
                 ChoiceScreen(
                     title="COMPACTION MODEL",
                     placeholder="Filter models…",
                     choices=self._model_choices(),
                     initial_value=self._values["compaction-model"],
-                ),
-                callback=self._apply_model_selection,
+                )
             )
+            self._apply_model_selection(model)
             return
         cycles = {
             "compaction-strategy": self._strategy_ids,

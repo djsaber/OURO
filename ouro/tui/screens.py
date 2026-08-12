@@ -3,12 +3,14 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
+from typing import TypeVar
 
 from rich.table import Table
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.color import Color
 from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
@@ -41,6 +43,20 @@ MultiChoiceConfirmationHandler = Callable[
     Awaitable[tuple[Choice, ...] | None],
 ]
 ChoiceEditHandler = Callable[[str, str], Awaitable[tuple[Choice, ...] | None]]
+ScreenResult = TypeVar("ScreenResult")
+
+
+@dataclass(frozen=True)
+class _ChoicePage:
+    title: str
+    placeholder: str
+    choices: tuple[Choice, ...]
+    initial_value: str | None
+    filter_value: str
+    on_highlight: Callable[[str], None] | None
+    on_select: ChoiceSelectionHandler | None
+    on_cancel: ChoiceCancelHandler | None
+    retain_focus_position_on_select: bool
 
 
 class _ChoiceGroupHeader(Table):
@@ -135,6 +151,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_select = on_select
         self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
+        self._page_stack: list[_ChoicePage] = []
+        self._child_background: Color | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -169,18 +187,128 @@ class ChoiceScreen(ModalScreen[str | None]):
         placeholder: str,
         choices: tuple[Choice, ...],
         initial_value: str | None = None,
+        on_highlight: Callable[[str], None] | None = None,
+        on_select: ChoiceSelectionHandler | None = None,
+        on_cancel: ChoiceCancelHandler | None = None,
+        retain_focus_position_on_select: bool = False,
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
         self._title = title
         self._placeholder = placeholder
         self._choices = choices
+        self._on_highlight = on_highlight
+        self._on_select = on_select
+        self._on_cancel = on_cancel
+        self._retain_focus_position_on_select = retain_focus_position_on_select
         self.query_one("#choice-title", Static).update(title)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
         filter_input.value = ""
         self._refresh_options(needle="", preferred_value=initial_value)
         filter_input.focus()
+
+    def push_page(
+        self,
+        *,
+        title: str,
+        placeholder: str,
+        choices: tuple[Choice, ...],
+        initial_value: str | None = None,
+        on_highlight: Callable[[str], None] | None = None,
+        on_select: ChoiceSelectionHandler | None = None,
+        on_cancel: ChoiceCancelHandler | None = None,
+        retain_focus_position_on_select: bool = False,
+    ) -> None:
+        """Navigate to a grouped submenu while retaining the current page for Esc."""
+
+        self._page_stack.append(self._page())
+        self.replace_page(
+            title=title,
+            placeholder=placeholder,
+            choices=choices,
+            initial_value=initial_value,
+            on_highlight=on_highlight,
+            on_select=on_select,
+            on_cancel=on_cancel,
+            retain_focus_position_on_select=retain_focus_position_on_select,
+        )
+
+    def pop_page(
+        self,
+        *,
+        choices: tuple[Choice, ...] | None = None,
+        initial_value: str | None = None,
+    ) -> bool:
+        """Return to the previous grouped menu page, if one exists."""
+
+        if not self._page_stack:
+            return False
+        page = self._page_stack.pop()
+        self.replace_page(
+            title=page.title,
+            placeholder=page.placeholder,
+            choices=choices if choices is not None else page.choices,
+            initial_value=initial_value if initial_value is not None else page.initial_value,
+            on_highlight=page.on_highlight,
+            on_select=page.on_select,
+            on_cancel=page.on_cancel,
+            retain_focus_position_on_select=page.retain_focus_position_on_select,
+        )
+        if choices is None and initial_value is None and page.filter_value:
+            self.query_one("#choice-filter", Input).value = page.filter_value
+        return True
+
+    async def open_child(self, screen: ModalScreen[ScreenResult]) -> ScreenResult | None:
+        """Replace this menu visually with a child and restore it on return.
+
+        The parent remains on the screen stack so its filter, selection, and page
+        history stay intact, but it must not remain visible behind the child.  A
+        visible parent turns ordinary submenu navigation into nested modal chrome
+        and compounds Textual's backdrop on every level.
+        """
+
+        async def wait_for_child() -> ScreenResult | None:
+            panel = self.query_one("#choice-panel", Vertical)
+            panel.display = False
+            self._child_background = self.styles.background
+            self.styles.background = Color(0, 0, 0, 0)
+            return await self.app.push_screen_wait(screen)
+
+        worker = self.app.run_worker(wait_for_child(), group="choice-child")
+        return await worker.wait()
+
+    def on_screen_resume(self) -> None:
+        """Restore a parent menu only after its child has left the screen stack."""
+
+        background = self._child_background
+        if background is None:
+            return
+        self._child_background = None
+        self.styles.background = background
+        self.query_one("#choice-panel", Vertical).display = True
+        self.call_after_refresh(self.query_one("#choice-filter", Input).focus)
+
+    def _page(self) -> _ChoicePage:
+        return _ChoicePage(
+            title=self._title,
+            placeholder=self._placeholder,
+            choices=self._choices,
+            initial_value=self._selected_value(),
+            filter_value=self.query_one("#choice-filter", Input).value,
+            on_highlight=self._on_highlight,
+            on_select=self._on_select,
+            on_cancel=self._on_cancel,
+            retain_focus_position_on_select=self._retain_focus_position_on_select,
+        )
+
+    def _selected_value(self) -> str | None:
+        options = self.query_one("#choice-list", OptionList)
+        highlighted = options.highlighted
+        if highlighted is None:
+            return None
+        option = options.get_option_at_index(highlighted)
+        return str(option.id) if option.id is not None else None
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._refresh_options(needle=event.value, preferred_value=None)
@@ -251,6 +379,8 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         if self._on_cancel is not None and self._on_cancel():
+            return
+        if self.pop_page():
             return
         self.dismiss(None)
 

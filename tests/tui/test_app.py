@@ -11,7 +11,7 @@ import pytest
 from rich.console import Console
 from rich.text import Text
 from textual.color import Color
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.markdown import MarkdownFence
 
@@ -1722,7 +1722,9 @@ async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
         await manager.stop("live")
         await controller.submit("inspect tools again")
 
-        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
+        assert "live__search" not in {
+            str(tool["name"]) for tool in provider.tool_batches[-1]
+        }
     finally:
         await controller.close()
 
@@ -1781,9 +1783,7 @@ async def test_mcp_toggle_changes_subsequent_dialogue_runs_in_same_controller(
 
         await controller.set_mcp_enabled("live", enabled=False)
         await controller.submit("second turn")
-        assert "live__search" not in {
-            str(tool["name"]) for tool in provider.tool_batches[-1]
-        }
+        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
 
         await controller.set_mcp_enabled("live", enabled=True)
         await manager.start("live")
@@ -3460,6 +3460,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         await pilot.pause(0.7)
         await pilot.press("ctrl+p")
         await pilot.pause()
+        action_screen = app.screen
         app.screen.query_one("#choice-filter", Input).value = "Rename session"
         await pilot.pause()
         await pilot.press("enter")
@@ -3467,6 +3468,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
 
         rename_screen = app.screen
         assert isinstance(rename_screen, EditableChoiceScreen)
+        assert action_screen.query_one("#choice-panel", Vertical).display is False
+        assert action_screen.styles.background.a == 0
+        assert rename_screen.styles.background.a == 0.45
         assert [choice.value for choice in rename_screen._choices] == [active.session_id]
         assert {choice.group for choice in rename_screen._choices} == {"Today"}
 
@@ -3512,6 +3516,10 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
             "Renamed title"
         )
         await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is action_screen
+        assert action_screen.query_one("#choice-panel", Vertical).display is True
+        assert action_screen.styles.background.a == 0.45
 
 
 @pytest.mark.asyncio
@@ -4342,6 +4350,9 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
             assert isinstance(app.screen, screen_type)
             await pilot.press("escape")
             await pilot.pause()
+            if isinstance(app.screen, ChoiceScreen) and app.screen._title == "ACTIONS":
+                await pilot.press("escape")
+                await pilot.pause()
 
         preferences = TuiPreferencesStore(tmp_path).load()
         assert len(preferences.recent_actions) == 3
@@ -4416,20 +4427,20 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
 
         assert list(dict.fromkeys(choice.group for choice in app.screen._choices)) == [
-            "BUILT-IN",
+            "Built-in",
             "MCP",
-            "OFFICIAL PLUGINS",
-            "THIRD-PARTY PLUGINS",
-            "AI-GENERATED PLUGINS",
-            "UNAVAILABLE",
+            "Official plugins",
+            "Third-party plugins",
+            "AI-generated plugins",
+            "Unavailable",
         ]
         choices = {choice.value: choice for choice in app.screen._choices}
-        assert choices["BuiltinTest"].group == "BUILT-IN"
+        assert choices["BuiltinTest"].group == "Built-in"
         assert choices["McpTest"].group == "MCP"
-        assert choices["OfficialPluginTest"].group == "OFFICIAL PLUGINS"
-        assert choices["ThirdPartyPluginTest"].group == "THIRD-PARTY PLUGINS"
-        assert choices["AiGeneratedPluginTest"].group == "AI-GENERATED PLUGINS"
-        assert choices["UnavailableTest"].group == "UNAVAILABLE"
+        assert choices["OfficialPluginTest"].group == "Official plugins"
+        assert choices["ThirdPartyPluginTest"].group == "Third-party plugins"
+        assert choices["AiGeneratedPluginTest"].group == "AI-generated plugins"
+        assert choices["UnavailableTest"].group == "Unavailable"
         assert choices["BuiltinTest"].trailing == "approval"
         assert choices["ContractControlledTest"].trailing == "auto · contract"
         assert choices["UnavailableTest"].trailing == "deny · unavailable"
@@ -4488,6 +4499,148 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
         assert app.screen is tool_screen
+
+
+@pytest.mark.asyncio
+async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
+    tmp_path: Path,
+) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="python", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        action_screen = app.screen
+
+        action_screen.query_one("#choice-filter", Input).value = "List MCP servers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        assert app.screen is action_screen
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        assert app.screen is action_screen
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        assert app.screen is action_screen
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is action_screen
+
+
+@pytest.mark.asyncio
+async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        action_screen = app.screen
+        action_screen.query_one("#choice-filter", Input).value = "Add MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, EditableChoiceScreen, title="ADD MCP SERVER")
+
+        assert action_screen in app.screen_stack
+        assert action_screen.query_one("#choice-panel", Vertical).display is False
+        assert action_screen.styles.background.a == 0
+        assert app.screen is not action_screen
+        assert app.screen.styles.background.a == 0.45
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is action_screen
+        assert action_screen.query_one("#choice-panel", Vertical).display is True
+
+
+@pytest.mark.asyncio
+async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    application.runtime.sessions.create(
+        session_id="ses_navigation",
+        title="Navigation session",
+    )
+    app = OuroTuiApp(home=tmp_path, application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        for action_label, title in (
+            ("Theme color", "THEME COLOR"),
+            ("Open session", "SESSIONS"),
+            ("Archive session", "ARCHIVE SESSIONS"),
+        ):
+            await pilot.press("ctrl+p")
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+            action_screen = app.screen
+            action_screen.query_one("#choice-filter", Input).value = action_label
+            await pilot.pause()
+            await pilot.press("enter")
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+
+            assert app.screen is action_screen
+            assert len(app.screen_stack) == 2
+            assert action_screen.styles.background.a == 0.45
+
+            await pilot.press("escape")
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+            assert app.screen is action_screen
+            await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_configuration_editors_replace_visible_parent_at_every_depth(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        action_screen = app.screen
+        action_screen.query_one("#choice-filter", Input).value = "Compaction policy"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
+
+        compaction_screen = app.screen
+        assert action_screen.query_one("#choice-panel", Vertical).display is False
+        assert action_screen.styles.background.a == 0
+        assert compaction_screen.styles.background.a == 0.45
+
+        compaction_screen.query_one("#choice-list", OptionList).highlighted = (
+            compaction_screen.query_one("#choice-list", OptionList).get_option_index(
+                "compaction-model"
+            )
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
+
+        assert compaction_screen.query_one("#choice-panel", Vertical).display is False
+        assert compaction_screen.styles.background.a == 0
+        assert app.screen.styles.background.a == 0.45
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
+        assert app.screen is compaction_screen
+        assert compaction_screen.query_one("#choice-panel", Vertical).display is True
+        assert compaction_screen.styles.background.a == 0.45
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is action_screen
+        assert action_screen.query_one("#choice-panel", Vertical).display is True
+        assert action_screen.styles.background.a == 0.45
 
 
 @pytest.mark.asyncio

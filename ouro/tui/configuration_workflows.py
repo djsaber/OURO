@@ -87,12 +87,12 @@ _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
 }
 
 _TOOL_SOURCE_GROUPS = {
-    "builtin": "BUILT-IN",
+    "builtin": "Built-in",
     "mcp": "MCP",
-    "official_plugin": "OFFICIAL PLUGINS",
-    "third_party_plugin": "THIRD-PARTY PLUGINS",
-    "ai_generated_plugin": "AI-GENERATED PLUGINS",
-    "unavailable": "UNAVAILABLE",
+    "official_plugin": "Official plugins",
+    "third_party_plugin": "Third-party plugins",
+    "ai_generated_plugin": "AI-generated plugins",
+    "unavailable": "Unavailable",
 }
 _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
@@ -104,33 +104,44 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
     _system_status: TuiSystemStatus
 
     @work(exclusive=True, group="configuration-navigation")
-    async def _run_system_setting(self, action_id: str) -> None:
+    async def _run_system_setting(
+        self,
+        action_id: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         if action_id == "tools.permissions":
-            self._choose_tools()
+            self._choose_tools(menu=menu)
         elif action_id == "tools.execution":
-            await self._configure_tool_execution()
+            await self._configure_tool_execution(menu=menu)
         elif action_id == "providers.list":
-            await self._choose_providers()
+            await self._choose_providers(menu=menu)
         elif action_id == "providers.add":
-            await self._add_provider()
+            await self._add_provider(menu=menu)
         elif action_id.startswith("providers.endpoints."):
-            await self._choose_endpoint_action(action_id.removeprefix("providers.endpoints."))
+            await self._choose_endpoint_action(
+                action_id.removeprefix("providers.endpoints."),
+                menu=menu,
+            )
         elif action_id.startswith("providers."):
-            await self._choose_provider_action(action_id.removeprefix("providers."))
+            await self._choose_provider_action(
+                action_id.removeprefix("providers."),
+                menu=menu,
+            )
         elif action_id == "mcp.list":
-            self._choose_mcp()
+            self._choose_mcp(menu=menu)
         elif action_id == "mcp.add":
-            await self._edit_mcp(None)
+            await self._edit_mcp(None, menu=menu)
         elif action_id.startswith("mcp."):
-            await self._choose_mcp_action(action_id.removeprefix("mcp."))
+            await self._choose_mcp_action(action_id.removeprefix("mcp."), menu=menu)
         elif action_id == "skills.list":
-            self._choose_skills()
+            self._choose_skills(menu=menu)
         elif action_id == "skills.install":
-            await self._install_skill()
+            await self._install_skill(menu=menu)
         elif action_id.startswith("skills."):
-            await self._choose_skill_action(action_id.removeprefix("skills."))
+            await self._choose_skill_action(action_id.removeprefix("skills."), menu=menu)
         elif action_id == "compaction.policy":
-            self._configure_compaction()
+            self._configure_compaction(menu=menu)
         else:
             available = "|".join(action.action_id for action in SYSTEM_SETTING_ACTIONS)
             await self.query_one(ConversationView).add_notice(
@@ -139,7 +150,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             )
 
     @work(exclusive=True, group="configuration")
-    async def _configure_compaction(self) -> None:
+    async def _configure_compaction(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             config = await self._controller.compaction_configuration()
             models = await self._controller.models()
@@ -147,12 +158,13 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        draft = await self.push_screen_wait(
-            CompactionConfigurationScreen(
-                config,
-                models=models,
-                strategy_ids=strategies,
-            )
+        screen = CompactionConfigurationScreen(
+            config,
+            models=models,
+            strategy_ids=strategies,
+        )
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if draft is None:
             return
@@ -170,7 +182,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.notify(f"Compaction options saved: {route} (next restart)")
 
     @work(exclusive=True, group="configuration")
-    async def _choose_tools(self) -> None:
+    async def _choose_tools(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             tools = await self._controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
@@ -188,6 +200,8 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 placeholder="Filter tools…",
                 choices=_tool_choices(tuple(tool_catalog.values())),
                 initial_value=initial_value,
+                on_select=select_tool_or_permission,
+                on_cancel=cancel_submenu,
             )
 
         async def select_tool_or_permission(selected: str) -> tuple[Choice, ...] | None:
@@ -213,6 +227,8 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     placeholder="Filter permission modes…",
                     choices=_tool_permission_choices(current),
                     initial_value=current,
+                    on_select=select_tool_or_permission,
+                    on_cancel=cancel_submenu,
                 )
                 return None
 
@@ -242,6 +258,16 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             show_tool_catalog(initial_value=tool_name)
             return True
 
+        if menu is not None:
+            screen = menu
+            screen.push_page(
+                title="TOOL PERMISSIONS",
+                placeholder="Filter tools…",
+                choices=_tool_choices(tools),
+                on_select=select_tool_or_permission,
+                on_cancel=cancel_submenu,
+            )
+            return
         screen = ChoiceScreen(
             title="TOOL PERMISSIONS",
             placeholder="Filter tools…",
@@ -251,13 +277,16 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         )
         await self.push_screen_wait(screen)
 
-    async def _configure_tool_execution(self) -> None:
+    async def _configure_tool_execution(self, *, menu: ChoiceScreen | None = None) -> None:
         try:
             current = await self._controller.tool_execution_configuration()
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        draft = await self.push_screen_wait(ToolExecutionConfigurationScreen(current))
+        screen = ToolExecutionConfigurationScreen(current)
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
         if draft is None:
             return
         tool_execution_draft = cast(TuiToolExecutionConfiguration, draft)
@@ -270,7 +299,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.notify(f"Tool execution saved: {updated.mode}, {scope} (next restart)")
 
     @work(exclusive=True, group="configuration")
-    async def _choose_mcp(self, selector: str | None = None) -> None:
+    async def _choose_mcp(
+        self,
+        selector: str | None = None,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         try:
             configs = await self._controller.mcp_configurations()
             runtime = {item.server_id: item for item in self._controller.mcp_servers()}
@@ -294,6 +328,22 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             if not choices:
                 self.notify("No MCP servers are configured", severity="warning")
                 return
+            if menu is not None:
+                servers = {config.server_id: config for config in configs}
+
+                async def select_server(server_id: str) -> tuple[Choice, ...] | None:
+                    if server_id not in servers:
+                        return None
+                    await self._manage_mcp(server_id, menu=menu)
+                    return None
+
+                menu.push_page(
+                    title="MCP SERVERS",
+                    placeholder="Filter servers…",
+                    choices=choices,
+                    on_select=select_server,
+                )
+                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(title="MCP SERVERS", placeholder="Filter servers…", choices=choices)
             )
@@ -307,7 +357,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             return
         await self._manage_mcp(selected)
 
-    async def _choose_mcp_action(self, action: str) -> None:
+    async def _choose_mcp_action(
+        self,
+        action: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         if action not in {"connect", "disconnect", "toggle", "edit", "remove"}:
             await self.query_one(ConversationView).add_notice(
                 f"Unknown MCP action: {action}",
@@ -399,13 +454,44 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     )
                 )
 
-            await self.push_screen_wait(
-                ChoiceScreen(
+            if menu is not None:
+                menu.push_page(
                     title="ENABLE OR DISABLE MCP SERVER",
                     placeholder="Filter servers…",
                     choices=choices,
                     on_select=toggle_mcp,
                 )
+            else:
+                await self.push_screen_wait(
+                    ChoiceScreen(
+                        title="ENABLE OR DISABLE MCP SERVER",
+                        placeholder="Filter servers…",
+                        choices=choices,
+                        on_select=toggle_mcp,
+                    )
+                )
+            return
+        if menu is not None:
+            servers = {config.server_id: config for config in candidates}
+
+            async def select_server(server_id: str) -> tuple[Choice, ...] | None:
+                config = servers[server_id]
+                if action == "edit":
+                    await self._edit_mcp(config, menu=menu)
+                elif action == "remove":
+                    await self._remove_mcp(server_id, menu=menu)
+                else:
+                    await self._run_mcp_action(
+                        server_id,
+                        "start" if action == "connect" else "stop",
+                    )
+                return None
+
+            menu.push_page(
+                title=f"{action_label} MCP SERVER",
+                placeholder="Filter servers…",
+                choices=choices,
+                on_select=select_server,
             )
             return
         selected = await self.push_screen_wait(
@@ -428,7 +514,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 "start" if action == "connect" else "stop",
             )
 
-    async def _manage_mcp(self, server_id: str) -> None:
+    async def _manage_mcp(
+        self,
+        server_id: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         try:
             config = await self._controller.mcp_configuration(server_id)
             status = next(
@@ -454,6 +545,26 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             else:
                 actions.append(Choice("start", "Start runtime"))
         actions.append(Choice("remove", "Remove configuration"))
+        if menu is not None:
+
+            async def select_action(selected: str) -> tuple[Choice, ...] | None:
+                if selected == "edit":
+                    await self._edit_mcp(config, menu=menu)
+                elif selected == "check":
+                    await self._check_mcp(server_id)
+                elif selected in {"start", "stop", "restart", "refresh"}:
+                    await self._run_mcp_action(server_id, selected)
+                elif selected == "remove":
+                    await self._remove_mcp(server_id, menu=menu)
+                return None
+
+            menu.push_page(
+                title=f"MCP · {config.name}",
+                placeholder="Choose an action…",
+                choices=tuple(actions),
+                on_select=select_action,
+            )
+            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"MCP · {config.name}",
@@ -470,8 +581,16 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         elif selected == "remove":
             await self._remove_mcp(server_id)
 
-    async def _edit_mcp(self, existing: MCPServerConfigView | None) -> None:
-        draft = await self.push_screen_wait(MCPConfigurationScreen(existing))
+    async def _edit_mcp(
+        self,
+        existing: MCPServerConfigView | None,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        screen = MCPConfigurationScreen(existing)
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
         if draft is None:
             return
         mcp_draft = cast(TuiMCPServerConfiguration, draft)
@@ -519,16 +638,22 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 severity="error",
             )
 
-    async def _remove_mcp(self, server_id: str) -> None:
-        selected = await self.push_screen_wait(
-            ConfirmationScreen(
-                title="REMOVE MCP SERVER",
-                message=(
-                    f"Remove {server_id} from configuration? The current runtime is unchanged "
-                    "until restart."
-                ),
-                confirm_label="Remove",
-            )
+    async def _remove_mcp(
+        self,
+        server_id: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        screen = ConfirmationScreen(
+            title="REMOVE MCP SERVER",
+            message=(
+                f"Remove {server_id} from configuration? The current runtime is unchanged "
+                "until restart."
+            ),
+            confirm_label="Remove",
+        )
+        selected = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if not ConfirmationScreen.confirmed(selected):
             return
@@ -550,7 +675,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         return True
 
     @work(exclusive=True, group="configuration")
-    async def _choose_skills(self, selector: str | None = None) -> None:
+    async def _choose_skills(
+        self,
+        selector: str | None = None,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         try:
             catalog = await self._controller.skill_catalog()
         except Exception as exc:  # noqa: BLE001
@@ -558,12 +688,25 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             return
         selected = selector
         if selected is None:
-            choices = tuple(
-                _skill_choice(skill)
-                for skill in catalog.skills
-            )
+            choices = tuple(_skill_choice(skill) for skill in catalog.skills)
             if not choices:
                 self.notify("No skills are installed or discovered", severity="warning")
+                return
+            if menu is not None:
+                skills = {skill.name: skill for skill in catalog.skills}
+
+                async def select_skill(name: str) -> tuple[Choice, ...] | None:
+                    if name not in skills:
+                        return None
+                    await self._manage_skill(name, menu=menu)
+                    return None
+
+                menu.push_page(
+                    title="SKILLS",
+                    placeholder="Filter skills…",
+                    choices=choices,
+                    on_select=select_skill,
+                )
                 return
             selected = await self.push_screen_wait(
                 ChoiceScreen(title="SKILLS", placeholder="Filter skills…", choices=choices)
@@ -578,7 +721,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             return
         await self._manage_skill(selected)
 
-    async def _choose_skill_action(self, action: str) -> None:
+    async def _choose_skill_action(
+        self,
+        action: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         if action not in {"toggle", "validate", "update", "remove"}:
             await self.query_one(ConversationView).add_notice(
                 f"Unknown skill action: {action}",
@@ -623,18 +771,43 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     return None
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
-                return tuple(
-                    _skill_choice(skill)
-                    for skill in skills.values()
-                )
+                return tuple(_skill_choice(skill) for skill in skills.values())
 
-            await self.push_screen_wait(
-                ChoiceScreen(
+            if menu is not None:
+                menu.push_page(
                     title=f"{action_label} SKILL",
                     placeholder="Filter skills…",
                     choices=choices,
                     on_select=toggle_skill,
                 )
+            else:
+                await self.push_screen_wait(
+                    ChoiceScreen(
+                        title=f"{action_label} SKILL",
+                        placeholder="Filter skills…",
+                        choices=choices,
+                        on_select=toggle_skill,
+                    )
+                )
+            return
+        if menu is not None:
+            skills = {skill.name: skill for skill in candidates}
+
+            async def select_skill(name: str) -> tuple[Choice, ...] | None:
+                skill = skills[name]
+                if action == "validate":
+                    await self._validate_skill(skill.name)
+                elif action == "update":
+                    await self._update_skill(skill.name)
+                else:
+                    await self._remove_skill(skill.name, menu=menu)
+                return None
+
+            menu.push_page(
+                title=f"{action_label} SKILL",
+                placeholder="Filter skills…",
+                choices=choices,
+                on_select=select_skill,
             )
             return
         selected = await self.push_screen_wait(
@@ -654,7 +827,12 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         else:
             await self._remove_skill(skill.name)
 
-    async def _manage_skill(self, name: str) -> None:
+    async def _manage_skill(
+        self,
+        name: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
         try:
             catalog = await self._controller.skill_catalog()
             skill = next(
@@ -684,6 +862,26 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     Choice("remove", "Remove"),
                 )
             )
+        if menu is not None:
+
+            async def select_action(selected: str) -> tuple[Choice, ...] | None:
+                if selected in {"enable", "disable"}:
+                    await self._set_skill_enabled(name, enabled=selected == "enable")
+                elif selected == "validate":
+                    await self._validate_skill(name)
+                elif selected == "update":
+                    await self._update_skill(name)
+                elif selected == "remove":
+                    await self._remove_skill(name, menu=menu)
+                return None
+
+            menu.push_page(
+                title=f"SKILL · {name}",
+                placeholder="Choose an action…",
+                choices=tuple(actions),
+                on_select=select_action,
+            )
+            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"SKILL · {name}",
@@ -700,8 +898,11 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         elif selected == "remove":
             await self._remove_skill(name)
 
-    async def _install_skill(self) -> None:
-        draft = await self.push_screen_wait(SkillInstallScreen())
+    async def _install_skill(self, *, menu: ChoiceScreen | None = None) -> None:
+        screen = SkillInstallScreen()
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
         if draft is None:
             return
         skill_draft = cast(TuiSkillInstallConfiguration, draft)
@@ -751,13 +952,19 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             return
         self.notify(f"Skill updated: {name} (next restart)")
 
-    async def _remove_skill(self, name: str) -> None:
-        selected = await self.push_screen_wait(
-            ConfirmationScreen(
-                title="REMOVE SKILL",
-                message=f"Remove the managed skill {name}?",
-                confirm_label="Remove",
-            )
+    async def _remove_skill(
+        self,
+        name: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        screen = ConfirmationScreen(
+            title="REMOVE SKILL",
+            message=f"Remove the managed skill {name}?",
+            confirm_label="Remove",
+        )
+        selected = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
         )
         if not ConfirmationScreen.confirmed(selected):
             return
