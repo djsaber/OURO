@@ -244,17 +244,6 @@ async def test_write_requires_approval_then_runs(tmp_path) -> None:
     assert target.read_text(encoding="utf-8") == "saved"
 
 
-def test_rejected_result_is_tool_error() -> None:
-    executor = ToolExecutor(_registry())
-    invocation = ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="Bash")
-
-    result = executor.rejected_result(invocation, "nope")
-
-    assert result.is_error is True
-    assert result.structured["rejected"] is True
-    assert result.content == "nope"
-
-
 @pytest.mark.asyncio
 async def test_ask_user_returns_waiting_state() -> None:
     executor = ToolExecutor(_registry())

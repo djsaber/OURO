@@ -20,7 +20,6 @@ from ouro.core.agents import (
     AgentControlResult,
     AgentWaitRequest,
 )
-from ouro.core.approvals import ApprovalResolvedBy
 from ouro.core.base import utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.errors import SessionBusyError
@@ -965,95 +964,6 @@ class ToolCallCoordinator:
                     }
                 )
             }
-        )
-
-    def resolve_approval(
-        self,
-        batch: ToolCallBatchRecord,
-        *,
-        approval_id: str,
-        approved: bool,
-        reason: str,
-        arguments_override: dict[str, object] | None,
-        resolved_by: ApprovalResolvedBy = "user",
-        resolver_id: str | None = None,
-    ) -> ToolCallBatchRecord:
-        resolved_calls: list[ToolBatchCall] = []
-        found = False
-        for call in batch.calls:
-            approval = call.approval
-            if approval is None or approval.approval_id != approval_id:
-                resolved_calls.append(call)
-                continue
-            found = True
-            if call.status != "awaiting_approval" or call.invocation is None:
-                raise ValueError(f"approval is not pending: {approval_id}")
-            if approved:
-                prepared = self.executor.preflight(
-                    call.invocation,
-                    approved=True,
-                    arguments_override=arguments_override,
-                )
-                resolved_approval = approval.model_copy(
-                    update={
-                        "status": "modified" if arguments_override is not None else "approved",
-                        "resolved_at": utc_now(),
-                        "resolved_by": resolved_by,
-                        "resolver_id": resolver_id,
-                        "modified_arguments": arguments_override,
-                    }
-                )
-                if prepared.status == "ready":
-                    resolved_calls.append(
-                        call.model_copy(
-                            update={
-                                "status": "ready",
-                                "invocation": prepared.invocation,
-                                "approval": resolved_approval,
-                            }
-                        )
-                    )
-                else:
-                    resolved_calls.append(
-                        call.model_copy(
-                            update={
-                                "status": "failed",
-                                "invocation": prepared.invocation,
-                                "approval": resolved_approval,
-                                "result": prepared.result,
-                            }
-                        )
-                    )
-            else:
-                result = self.executor.rejected_result(call.invocation, reason)
-                resolved_calls.append(
-                    call.model_copy(
-                        update={
-                            "status": "rejected",
-                            "approval": approval.model_copy(
-                                update={
-                                    "status": "rejected",
-                                    "resolved_at": utc_now(),
-                                    "resolved_by": resolved_by,
-                                    "resolver_id": resolver_id,
-                                    "reason": reason,
-                                }
-                            ),
-                            "result": result,
-                        }
-                    )
-                )
-        if not found:
-            raise ValueError(f"unknown approval: {approval_id}")
-        phase = (
-            "ready"
-            if all(
-                call.status not in {"awaiting_approval", "waiting_user"} for call in resolved_calls
-            )
-            else "awaiting_interaction"
-        )
-        return batch.model_copy(
-            update={"calls": resolved_calls, "phase": phase, "updated_at": utc_now()}
         )
 
     async def resolve_user_answer(

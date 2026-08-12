@@ -1127,7 +1127,11 @@ async def test_waiting_approval_rebuilds_retained_contract_after_plugin_update(
 
 
 @pytest.mark.asyncio
-async def test_waiting_approval_rejects_missing_retained_package(tmp_path) -> None:
+@pytest.mark.parametrize("approved", [True, False])
+async def test_waiting_approval_settles_before_missing_contract_failure(
+    tmp_path,
+    approved: bool,
+) -> None:
     home = tmp_path / "home"
     source = tmp_path / "catalog-plugin"
     _write_catalog_plugin(source)
@@ -1168,18 +1172,123 @@ async def test_waiting_approval_rejects_missing_retained_package(tmp_path) -> No
     second_application = LocalApplication.from_runtime(second_runtime, home=home)
     await second_application.start()
 
-    with pytest.raises(RuntimeError, match="required plugin catalog is no longer available"):
-        await second_runtime.approve_tool(
-            session_id=waiting.session.session_id,
-            run_id=waiting.run.run_id,
-            approval_id=waiting.run.pending_approval_id,
-            approved=True,
-        )
-    with pytest.raises(ValueError, match="retained by active durable runs"):
-        await second_application.plugins.remove(
-            "dev.ouro.catalog",
-            package_digest=installed.package_digest,
-        )
+    result = await second_runtime.approve_tool(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        approval_id=waiting.run.pending_approval_id,
+        approved=approved,
+        reason="not allowed",
+    )
+    persisted = second_store.load_session(waiting.session.session_id)
+    persisted_call = persisted.runs[0].active_tool_batch
+    approval_resolved = next(
+        event for event in persisted.events if event.event_type == "approval_resolved"
+    )
+
+    assert result.run.status == "failed"
+    assert result.run.pending_approval_id is None
+    assert "required plugin catalog is no longer available" in (result.run.error or "")
+    assert persisted_call is None
+    assert approval_resolved.payload["approved"] is approved
+    assert approval_resolved.payload["tool_call_status"] == ("ready" if approved else "rejected")
+    removed = await second_application.plugins.remove(
+        "dev.ouro.catalog",
+        package_digest=installed.package_digest,
+    )
+    assert removed.package_digest == installed.package_digest
+    await second_application.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("approved", [True, False])
+async def test_waiting_approval_settles_before_stale_builtin_contract_failure(
+    tmp_path,
+    approved: bool,
+) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    first_store = LocalSessionStore(home)
+    first_store.initialize()
+    first_tools = ToolRegistry()
+    for tool in builtin_tools():
+        first_tools.register(tool)
+    first_runtime = RuntimeService(
+        store=first_store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                event_batches=[
+                    [
+                        ProviderStreamEvent.from_tool_call(
+                            {
+                                "id": "call_stale_builtin",
+                                "name": "Write",
+                                "arguments": {
+                                    "path": "note.txt",
+                                    "content": "content",
+                                },
+                            }
+                        ),
+                        ProviderStreamEvent(type="done"),
+                    ]
+                ]
+            ),
+            ModelMetadata(model_id="contract", provider_id="faux"),
+        ),
+        tools=first_tools,
+        default_workspace=workspace,
+        environment=RuntimeEnvironment(home=home),
+    )
+    first_application = LocalApplication.from_runtime(first_runtime, home=home)
+    await first_application.start()
+    waiting = await first_runtime.run("write a file")
+    assert waiting.run.status == "waiting_approval"
+
+    generations = [dict(item) for item in waiting.run.metadata["extension_generations"]]
+    builtin_generation = next(item for item in generations if item["plugin_class"] == "builtin")
+    stale_contract_hash = "f" * 64
+    builtin_generation["release_id"] = stale_contract_hash
+    builtin_generation["builtin_contract_hash"] = stale_contract_hash
+    metadata = dict(waiting.run.metadata)
+    metadata["extension_generations"] = generations
+    first_store.save_run(waiting.run.model_copy(update={"metadata": metadata}))
+    await first_application.close()
+
+    second_store = LocalSessionStore(home)
+    second_store.initialize()
+    second_tools = ToolRegistry()
+    for tool in builtin_tools():
+        second_tools.register(tool)
+    second_runtime = RuntimeService(
+        store=second_store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="contract", provider_id="faux"),
+        ),
+        tools=second_tools,
+        default_workspace=workspace,
+        environment=RuntimeEnvironment(home=home),
+    )
+    second_application = LocalApplication.from_runtime(second_runtime, home=home)
+    await second_application.start()
+
+    result = await second_runtime.approve_tool(
+        session_id=waiting.session.session_id,
+        run_id=waiting.run.run_id,
+        approval_id=waiting.run.pending_approval_id,
+        approved=approved,
+        reason="not allowed",
+    )
+    persisted = second_store.load_session(waiting.session.session_id)
+    approval_resolved = next(
+        event for event in persisted.events if event.event_type == "approval_resolved"
+    )
+
+    assert result.run.status == "failed"
+    assert result.run.pending_approval_id is None
+    assert "required builtin plugin contract is no longer available" in (result.run.error or "")
+    assert approval_resolved.payload["approved"] is approved
+    assert approval_resolved.payload["tool_call_status"] == ("ready" if approved else "rejected")
     await second_application.close()
 
 

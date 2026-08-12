@@ -283,20 +283,6 @@ class ToolExecutor:
         result = _validated_tool_result(invocation, execution_result, context)
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
 
-    def rejected_result(
-        self,
-        invocation: ToolInvocation,
-        reason: str = "User rejected",
-    ) -> ToolResult:
-        return ToolResult(
-            tool_call_id=invocation.tool_call_id,
-            tool_name=invocation.tool_name,
-            is_error=True,
-            content=reason,
-            structured={"rejected": True, "reason": reason},
-            ended_at=utc_now(),
-        )
-
 
 def _error_outcome(
     invocation: ToolInvocation,

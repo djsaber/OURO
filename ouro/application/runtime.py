@@ -107,7 +107,7 @@ from ouro.core.prompt_policies import (
     PromptSkillActivationMetadata,
 )
 from ouro.core.reasoning import ReasoningRequest
-from ouro.core.redaction import SensitiveValueRedactor
+from ouro.core.redaction import SensitiveValueRedactor, redact_text
 from ouro.core.results import RunResult
 from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import (
@@ -125,7 +125,7 @@ from ouro.core.state import (
     RunRecord,
     SessionRecord,
 )
-from ouro.core.tool_batch_transitions import tool_batch_suspension
+from ouro.core.tool_batch_transitions import resolve_tool_approval, tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.tools import PermissionMode, tool_definition_contract_hash
@@ -2521,8 +2521,7 @@ class RuntimeService:
             resolved_approval_id = approval_id or run.pending_approval_id
             if resolved_approval_id is None:
                 raise ValueError("run has no pending approval")
-            await self._ensure_extension_snapshot(run)
-            batch = self._tool_calls_for_run(run.run_id).resolve_approval(
+            batch = resolve_tool_approval(
                 batch,
                 approval_id=resolved_approval_id,
                 approved=approved,
@@ -2533,6 +2532,14 @@ class RuntimeService:
                 call
                 for call in batch.calls
                 if call.approval is not None and call.approval.approval_id == resolved_approval_id
+            )
+            suspension = tool_batch_suspension(batch)
+            session, run = self.run_lifecycle.save_batch_state(
+                session=session,
+                run=run,
+                batch=batch,
+                status=suspension.status if suspension is not None else "running",
+                phase=suspension.run_phase if suspension is not None else "tool_execution",
             )
             sequence = self.store.latest_event_sequence(session_id)
             emitted: list[EventRecord] = []
@@ -2554,14 +2561,34 @@ class RuntimeService:
                     "resolver_id": None,
                 },
             )
-            result = await self._continue_resolved_batch(
-                snapshot=snapshot,
-                session=session,
-                run=run,
-                batch=batch,
-                emitted=emitted,
-                sequence=sequence,
-            )
+            if suspension is not None:
+                result = RunResult(session=session, run=run, events=emitted)
+            else:
+                try:
+                    await self._ensure_extension_snapshot(run)
+                except Exception as exc:  # noqa: BLE001 - settle the resolved interaction.
+                    error = (
+                        "tool batch continuation failed after approval resolution: "
+                        f"{type(exc).__name__}: {redact_text(str(exc))}"
+                    )
+                    result = await self.run_lifecycle.fail(
+                        emitted,
+                        sequence,
+                        session=session,
+                        run=run,
+                        error=error,
+                        final_text="",
+                        tool_results=[],
+                    )
+                else:
+                    result = await self._continue_resolved_batch(
+                        snapshot=snapshot,
+                        session=session,
+                        run=run,
+                        batch=batch,
+                        emitted=emitted,
+                        sequence=sequence,
+                    )
         finally:
             self.run_ownership.release(run_lock)
         # Queue draining starts a new Run and therefore must occur outside the
@@ -2779,7 +2806,6 @@ class RuntimeService:
         emitted: list[EventRecord],
         sequence: int,
     ) -> RunResult:
-        await self._ensure_extension_snapshot(run)
         suspension = tool_batch_suspension(batch)
         if suspension is not None:
             batch = batch.model_copy(
