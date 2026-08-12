@@ -1262,6 +1262,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
 
+    async def _refresh_models(self) -> tuple[AvailableModel, ...]:
+        """Synchronize the Host's model projection with the live Runtime catalog."""
+
+        models = await self._controller.models()
+        self._models = models
+        self._system_status = replace(
+            self._system_status,
+            provider_ids=tuple(sorted({model.provider_id for model in models})),
+            model_count=len(models),
+        )
+        self.query_one(ConversationView).set_system_status(self._system_status)
+        return models
+
     async def _sync_queued_inputs(self, session_id: str | None = None) -> None:
         panel = self.query_one(QueuedInputPanel)
         if session_id is None and self._controller.session_id is None:
@@ -1269,7 +1282,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         panel.set_inputs(await self._controller.queued_user_inputs(session_id))
 
-    def on_text_area_changed(self, message: TextArea.Changed) -> None:
+    async def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if message.text_area is not self.query_one(Composer):
             return
         value = message.text_area.text
@@ -1293,6 +1306,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             commands = matching_commands(value, self._command_catalog())
             popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
             return
+        static_command, _normalized_argument = resolve_command(_command_text, TUI_COMMANDS)
+        if static_command is not None and static_command.name == "/model" and (
+            not argument.strip()
+            or popup.argument_command is None
+            or popup.argument_command.name != "/model"
+        ):
+            try:
+                await self._refresh_models()
+            except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+                popup.hide()
+                self.notify(
+                    f"Could not refresh models: {exc}",
+                    severity="error",
+                    markup=False,
+                )
+                return
         command, _normalized_argument = resolve_command(value, self._command_catalog())
         if command is None or not command.takes_arguments:
             popup.hide()
@@ -2124,7 +2153,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._edit_reasoning()
 
     async def _choose_model(self) -> None:
-        self._models = await self._controller.models()
+        models = await self._refresh_models()
         state = await self._controller.session_reasoning()
         choices = tuple(
             Choice(
@@ -2132,7 +2161,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 label=model.display_name or model.model_id,
                 trailing=model.provider_id,
             )
-            for model in self._models
+            for model in models
         )
         selected = await self.push_screen_wait(
             ChoiceScreen(

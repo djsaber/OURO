@@ -4562,6 +4562,54 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_model_command_refreshes_endpoints_configured_after_tui_start(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=LocalApplication.build(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await app._controller.add_provider(
+            TuiProviderConfiguration(
+                provider_id="hot-provider",
+                provider_type="openai-compatible",
+                base_url="https://models.example.invalid/v1",
+                api_path="/chat/completions",
+                api_key=None,
+                api_key_env=None,
+                timeout=60.0,
+            )
+        )
+        await app._controller.add_endpoint(
+            TuiEndpointConfiguration(
+                provider_id="hot-provider",
+                endpoint_id="hot-model",
+                model_id="provider-model-id",
+                context_window=128_000,
+                max_output_tokens=8192,
+            )
+        )
+
+        assert "hot-provider/hot-model" not in {model.key for model in app._models}
+
+        await pilot.press("slash", *"model", "space")
+        await pilot.pause()
+
+        popup = app.query_one(CommandPopup)
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/model"
+        assert popup.selected_argument is not None
+        assert popup.selected_argument.value == "hot-provider/hot-model"
+        assert app._system_status.provider_ids == ("hot-provider",)
+        assert app._system_status.model_count == 1
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.query_one(Composer).text == ""
+        assert app._active_model == "hot-model"
+
+
+@pytest.mark.asyncio
 async def test_model_command_shows_endpoint_and_provider_without_changing_route_value(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4573,6 +4621,9 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
         selected.append(selector)
         return app._models[0]
 
+    async def models() -> tuple[AvailableModel, ...]:
+        return app._models
+
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         app._models = (
@@ -4583,6 +4634,7 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
                 model_id="provider-model-id",
             ),
         )
+        monkeypatch.setattr(app._controller, "models", models)
         monkeypatch.setattr(app._controller, "select_model", select_model)
         await pilot.press("slash", *"model", "space", *"model")
         await pilot.pause()

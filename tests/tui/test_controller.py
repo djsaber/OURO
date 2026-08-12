@@ -113,6 +113,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
         assert saved.supports_vision is True
+        assert "custom/new" in {model.key for model in await controller.models()}
         with pytest.raises(ConfigError, match="already exists"):
             await controller.add_endpoint(draft)
 
