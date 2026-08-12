@@ -461,6 +461,27 @@ class PluginRuntimeResource:
             assert catalog is not None
             return catalog.acquire(on_close=self._catalog_lease_closed)
 
+    async def replace_base_skills(self, skills: tuple[SkillMetadata, ...]) -> None:
+        """Publish a new Host Skill baseline for future Catalog leases.
+
+        Existing leases retain their immutable Catalog. The candidate is fully
+        projected with the active plugin generations before the pointer moves,
+        so a Host/plugin Skill conflict cannot partially publish.
+        """
+
+        candidate_skills = tuple(skill.model_copy(deep=True) for skill in skills)
+        async with self._mutation_lock:
+            if self._closed:
+                raise RuntimeError("plugin runtime is closed")
+            current = self._ensure_catalog()
+            catalog_base = self._capture_catalog_base(skills=candidate_skills)
+            catalog = current.rebase(catalog_base)
+            self._publish_catalog(
+                catalog,
+                catalog_base=catalog_base,
+                base_skills=candidate_skills,
+            )
+
     async def snapshot_for(
         self,
         expected_generations: list[dict[str, object]],
@@ -1102,18 +1123,7 @@ class PluginRuntimeResource:
                 == self.coordinator.tools.revision
             ):
                 return current
-            catalog_base = ExtensionCatalogBase.capture(
-                tools=self.coordinator.tools,
-                observers=self.coordinator.observers,
-                context_providers=self.coordinator.context_providers,
-                commands=self.coordinator.commands,
-                compaction=self.coordinator.compaction,
-                continuations=self.coordinator.continuations,
-                prompt_policies=self.coordinator.prompt_policies,
-                turn_policies=self.coordinator.turn_policies,
-                tool_policies=self.coordinator.tool_policies,
-                skills=self.base_skills,
-            )
+            catalog_base = self._capture_catalog_base(skills=self.base_skills)
             catalog = (
                 build_extension_catalog(catalog_base, ())
                 if current is None
@@ -1125,6 +1135,24 @@ class PluginRuntimeResource:
             if current is not None and current.lease_count == 0:
                 self._catalogs.pop(current.catalog_id, None)
             return catalog
+
+    def _capture_catalog_base(
+        self,
+        *,
+        skills: tuple[SkillMetadata, ...],
+    ) -> ExtensionCatalogBase:
+        return ExtensionCatalogBase.capture(
+            tools=self.coordinator.tools,
+            observers=self.coordinator.observers,
+            context_providers=self.coordinator.context_providers,
+            commands=self.coordinator.commands,
+            compaction=self.coordinator.compaction,
+            continuations=self.coordinator.continuations,
+            prompt_policies=self.coordinator.prompt_policies,
+            turn_policies=self.coordinator.turn_policies,
+            tool_policies=self.coordinator.tool_policies,
+            skills=skills,
+        )
 
     def _build_catalog(
         self,
@@ -1150,9 +1178,19 @@ class PluginRuntimeResource:
             tuple(generations[plugin_id] for plugin_id in ordered_ids),
         )
 
-    def _publish_catalog(self, catalog: ExtensionCatalog) -> None:
+    def _publish_catalog(
+        self,
+        catalog: ExtensionCatalog,
+        *,
+        catalog_base: ExtensionCatalogBase | None = None,
+        base_skills: tuple[SkillMetadata, ...] | None = None,
+    ) -> None:
         with self._catalog_pointer_lock:
             previous = self._current_catalog
+            if catalog_base is not None:
+                self._catalog_base = catalog_base
+            if base_skills is not None:
+                self.base_skills = base_skills
             self._catalogs[catalog.catalog_id] = catalog
             self._current_catalog = catalog
         if previous is not None:

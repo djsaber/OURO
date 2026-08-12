@@ -244,6 +244,22 @@ class LocalApplication:
 
         return _mcp_runtime_server_view(self.mcp.apply_config(config))
 
+    async def reconcile_mcp_configuration(
+        self,
+        config: MCPServerConfig,
+    ) -> MCPRuntimeServerView:
+        """Apply configuration that may change the live connection lifecycle."""
+
+        return _mcp_runtime_server_view(await self.mcp.reconcile_config(config))
+
+    async def refresh_skills(self, skills: tuple[SkillMetadata, ...]) -> None:
+        """Publish a new Host Skill baseline for subsequent Runs."""
+
+        if self.plugin_runtime is None:
+            self.runtime.skills = tuple(skill.model_copy(deep=True) for skill in skills)
+            return
+        await self.plugin_runtime.replace_base_skills(skills)
+
     async def close(self) -> None:
         if self._closed:
             return

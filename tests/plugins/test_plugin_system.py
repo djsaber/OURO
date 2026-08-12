@@ -1172,6 +1172,70 @@ async def test_plugin_skill_name_conflicts_fail_candidate_without_overriding_hos
 
 
 @pytest.mark.asyncio
+async def test_replacing_host_skills_publishes_new_catalog_and_preserves_old_lease(
+    tmp_path,
+) -> None:
+    original = SkillMetadata(
+        name="calendar",
+        description="Original calendar.",
+        location=str(tmp_path / "calendar" / "SKILL.md"),
+    )
+    replacement = SkillMetadata(
+        name="reviewer",
+        description="Review changes.",
+        location=str(tmp_path / "reviewer" / "SKILL.md"),
+    )
+    runtime, *_ = _runtime(tmp_path / "home", base_skills=(original,))
+    await runtime.start()
+    old = runtime.snapshot()
+
+    await runtime.replace_base_skills((replacement,))
+
+    with runtime.snapshot() as current:
+        assert [skill.name for skill in current.skills] == ["reviewer"]
+        assert current.catalog_id != old.catalog_id
+    assert [skill.name for skill in old.skills] == ["calendar"]
+    old.close()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_replacing_host_skills_rejects_plugin_conflict_without_publication(
+    tmp_path,
+) -> None:
+    source = tmp_path / "skill-plugin"
+    (source / "skills" / "calendar").mkdir(parents=True)
+    _write_native_plugin(
+        source,
+        contributes={"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
+    )
+    (source / "skills" / "calendar" / "SKILL.md").write_text(
+        "---\nname: calendar\ndescription: Plugin calendar.\n---\n",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+    service.authorize("dev.ouro.echo")
+    assert (await service.enable("dev.ouro.echo")).status == "active"
+    before = runtime.snapshot()
+    conflicting = SkillMetadata(
+        name="calendar",
+        description="Host calendar.",
+        location=str(tmp_path / "host" / "SKILL.md"),
+    )
+
+    with pytest.raises(ValueError, match="catalog skill name conflict"):
+        await runtime.replace_base_skills((conflicting,))
+
+    with runtime.snapshot() as current:
+        assert current.catalog_id == before.catalog_id
+        assert current.skills[0].description == "Plugin calendar."
+    before.close()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("declared_id", "skill_name", "expected"),
     [

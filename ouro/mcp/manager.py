@@ -131,6 +131,27 @@ class MCPManager:
         self._update(config.server_id, config=config)
         return self.get(config.server_id)
 
+    async def reconcile_config(self, config: MCPServerConfig) -> MCPServerRecord:
+        """Reconcile an enabled-state change with the owned connection lifecycle.
+
+        Policy-only changes remain in-place through ``apply_config``. Disabling
+        first drains the connection and withdraws its tools; enabling restores
+        the configured state and honors auto-start for the live Host.
+        """
+
+        current = self._servers.get(config.server_id)
+        if current is None:
+            return self.configure(config)
+        was_enabled = current.config.enabled
+        if was_enabled and not config.enabled:
+            await self.stop(config.server_id)
+            return self.configure(config)
+
+        record = self.apply_config(config)
+        if not was_enabled and config.enabled and config.auto_start:
+            return await self.start_background(config.server_id)
+        return record
+
     def get(self, server_id: str) -> MCPServerRecord:
         try:
             return self._servers[server_id]

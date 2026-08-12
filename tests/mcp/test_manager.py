@@ -314,6 +314,33 @@ async def test_tool_policy_update_reprojects_connected_tools_without_restarting(
 
 
 @pytest.mark.asyncio
+async def test_reconcile_enabled_state_withdraws_and_restores_live_tools() -> None:
+    session = FakeSession(tools=[_remote_tool()])
+    factory = FakeFactory(session)
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=factory)
+    manager.configure(_config(auto_start=True))
+    await manager.start("fs")
+    assert "fs__read" in registry.names()
+
+    disabled = await manager.reconcile_config(_config(enabled=False, auto_start=True))
+
+    assert disabled.status == "disabled"
+    assert disabled.config.enabled is False
+    assert "fs__read" not in registry.names()
+
+    enabled = await manager.reconcile_config(_config(enabled=True, auto_start=True))
+
+    assert enabled.status == "starting"
+    assert enabled.config.enabled is True
+    enabled = await manager.start("fs")
+    assert enabled.status == "connected"
+    assert "fs__read" in registry.names()
+    assert factory.open_count == 2
+    await manager.close()
+
+
+@pytest.mark.asyncio
 async def test_mcp_effect_without_annotation_or_override_is_unknown() -> None:
     session = FakeSession(tools=[MCPRemoteTool(name="mystery", annotations={})])
     registry = ToolRegistry()

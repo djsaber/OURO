@@ -60,6 +60,7 @@ from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
+from ouro.skills import SkillMetadata
 from ouro.tui.state import PendingInteraction
 
 EventPublisher = Callable[[EventRecord], None]
@@ -425,6 +426,9 @@ class TuiController:
             for skill in self._runtime().available_skills()
             if skill.enabled and skill.user_invocable
         )
+
+    def runtime_skill_names(self) -> tuple[str, ...]:
+        return tuple(sorted(skill.name for skill in self._runtime().available_skills()))
 
     async def abort(self) -> RunResult | None:
         if self._session_id is None:
@@ -846,14 +850,65 @@ class TuiController:
         configuration = self._require_configuration()
         return await asyncio.to_thread(configuration.mcp_server, server_id)
 
+    async def set_mcp_enabled(
+        self,
+        server_id: str,
+        *,
+        enabled: bool,
+    ) -> MCPServerConfigView:
+        configuration = self._require_configuration()
+        previous = await asyncio.to_thread(configuration.mcp_server, server_id)
+        if previous.enabled == enabled:
+            return previous
+
+        def update() -> tuple[MCPServerConfigView, MCPServerConfig]:
+            catalog = configuration.save_mcp_server(
+                server_id,
+                MCPServerConfigInput(enabled=enabled),
+            )
+            saved = next(item for item in catalog.servers if item.server_id == server_id)
+            config = configuration.mcp.get(server_id)
+            assert config is not None
+            return saved, config
+
+        saved, config = await asyncio.to_thread(update)
+        self._runtime()
+        assert self._application is not None
+        try:
+            await self._application.reconcile_mcp_configuration(config)
+        except Exception:
+            await asyncio.to_thread(
+                configuration.save_mcp_server,
+                server_id,
+                MCPServerConfigInput(enabled=previous.enabled),
+            )
+            restored = configuration.mcp.get(server_id)
+            assert restored is not None
+            await self._application.reconcile_mcp_configuration(restored)
+            raise
+        return saved
+
     async def save_mcp_configuration(
         self,
         draft: TuiMCPServerConfiguration,
     ) -> MCPServerConfigView:
+        configuration = self._require_configuration()
+        previous = await asyncio.to_thread(configuration.mcp_server, draft.server_id)
         saved, config = await asyncio.to_thread(self._save_mcp_configuration, draft)
         self._runtime()
         assert self._application is not None
-        self._application.apply_mcp_configuration(config)
+        try:
+            await self._application.reconcile_mcp_configuration(config)
+        except Exception:
+            await asyncio.to_thread(
+                configuration.save_mcp_server,
+                draft.server_id,
+                MCPServerConfigInput.model_validate(previous.model_dump(mode="python")),
+            )
+            restored = configuration.mcp.get(draft.server_id)
+            assert restored is not None
+            await self._application.reconcile_mcp_configuration(restored)
+            raise
         return saved
 
     def _save_mcp_configuration(
@@ -961,7 +1016,29 @@ class TuiController:
         enabled: bool,
     ) -> SkillManagementView:
         configuration = self._require_configuration()
-        return await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
+        result = await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
+        try:
+            await self._refresh_runtime_skills(configuration)
+        except Exception:
+            await asyncio.to_thread(
+                configuration.set_skill_enabled,
+                name,
+                enabled=not enabled,
+            )
+            raise
+        return result
+
+    async def _refresh_runtime_skills(self, configuration: ConfigurationFacade) -> None:
+        catalog = await asyncio.to_thread(configuration.skill_catalog)
+        skills = tuple(
+            SkillMetadata.model_validate(
+                skill.model_dump(mode="python", exclude={"managed", "install"})
+            )
+            for skill in catalog.skills
+        )
+        self._runtime()
+        assert self._application is not None
+        await self._application.refresh_skills(skills)
 
     async def validate_skill(self, name: str) -> SkillValidationView:
         return await asyncio.to_thread(self._validate_skill, name)

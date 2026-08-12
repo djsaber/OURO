@@ -32,6 +32,7 @@ class Choice:
     disabled: bool = False
     marker: str = ""
     edit_value: str | None = None
+    edit_placeholder: str = ""
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
@@ -352,6 +353,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             or normalized_needle in choice.label.casefold()
             or normalized_needle in choice.description.casefold()
             or normalized_needle in choice.group.casefold()
+            or normalized_needle in choice.trailing.casefold()
         )
 
 
@@ -589,15 +591,25 @@ class EditableChoiceScreen(ChoiceScreen):
         accent = theme_for(self).accent
         display_text = self._editor_display_text(self._edit_text)
         prompt = Text(overflow="ellipsis", no_wrap=True)
-        prompt.append(display_text[: self._edit_cursor])
+        if not display_text:
+            prompt.append(" ", style=f"not bold reverse {accent}")
+            choice = next(
+                (choice for choice in self._choices if choice.value == editing_value),
+                None,
+            )
+            if choice is not None and choice.edit_placeholder:
+                prompt.append(choice.edit_placeholder, style="not bold #7d8794 italic")
+            options.replace_option_prompt_at_index(option_index, prompt)
+            return
+        prompt.append(display_text[: self._edit_cursor], style="not bold")
         if self._edit_cursor < len(display_text):
             prompt.append(
                 display_text[self._edit_cursor],
-                style=f"bold reverse {accent}",
+                style=f"not bold reverse {accent}",
             )
-            prompt.append(display_text[self._edit_cursor + 1 :])
+            prompt.append(display_text[self._edit_cursor + 1 :], style="not bold")
         else:
-            prompt.append(" ", style=f"bold reverse {accent}")
+            prompt.append(" ", style=f"not bold reverse {accent}")
         options.replace_option_prompt_at_index(option_index, prompt)
 
     def _editor_display_text(self, value: str) -> str:

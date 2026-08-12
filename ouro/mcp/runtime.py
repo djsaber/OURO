@@ -77,6 +77,11 @@ class MCPRuntimeResource:
 
         return self.manager.apply_config(config)
 
+    async def reconcile_config(self, config: MCPServerConfig) -> MCPServerRecord:
+        """Reconcile saved configuration with the owned live lifecycle."""
+
+        return await self.manager.reconcile_config(config)
+
     @property
     def startup_configs(self) -> tuple[MCPServerConfig, ...]:
         """Enabled auto-start servers that this process resource will connect."""

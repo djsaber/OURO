@@ -73,6 +73,7 @@ from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
     SkillInstallScreen,
+    ToolExecutionConfigurationScreen,
 )
 from ouro.tui.controller import (
     TuiController,
@@ -1635,6 +1636,72 @@ async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
         await controller.submit("inspect tools again")
 
         assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_toggle_changes_subsequent_dialogue_runs_in_same_controller(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.save_mcp_server(
+        "live",
+        MCPServerConfigUpdate(
+            command="unused-in-test",
+            auto_start=True,
+            auto_reconnect=False,
+            timeout_seconds=1,
+            health_check_interval_seconds=60,
+        ),
+    )
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = ToolCapturingProvider()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="tool-capturing", provider_id=provider.provider_id),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    application = LocalApplication.from_runtime(runtime)
+    session = LiveMcpSession()
+    manager = MCPManager(
+        registry=runtime.tools,
+        client_factory=LiveMcpFactory(session),
+    )
+    configured = configuration.mcp.get("live")
+    assert configured is not None
+    manager.configure(configured)
+    application.mcp = MCPRuntimeResource(manager)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=configuration,
+    )
+
+    session.initialize_gate.set()
+    await controller.start()
+    try:
+        await manager.start("live")
+        await controller.submit("first turn")
+        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
+
+        await controller.set_mcp_enabled("live", enabled=False)
+        await controller.submit("second turn")
+        assert "live__search" not in {
+            str(tool["name"]) for tool in provider.tool_batches[-1]
+        }
+
+        await controller.set_mcp_enabled("live", enabled=True)
+        await manager.start("live")
+        await controller.submit("third turn")
+        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
     finally:
         await controller.close()
 
@@ -3642,6 +3709,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Add MCP server",
             "Connect MCP server",
             "Disconnect MCP server",
+            "Enable or disable MCP server",
             "Edit MCP server",
             "Remove MCP server",
             "List skills",
@@ -3659,7 +3727,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Session",) * 8,
             *("Providers",) * 10,
             *("Tools",) * 2,
-            *("MCP",) * 6,
+            *("MCP",) * 7,
             *("Skills",) * 6,
             "Compaction",
             "Runtime",
@@ -4239,9 +4307,51 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
             assert isinstance(app.screen, ChoiceScreen)
             assert app.screen.query_one("#choice-title", Static).render().plain == chooser_title
             assert [choice.value for choice in app.screen._choices] == ["local"]
+            assert app.screen._choices[0].group == "STDIO"
+            assert app.screen._choices[0].trailing == "enabled · configured"
+            assert app.screen._choices[0].description == ""
 
             await pilot.press("escape")
             await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_toggle_mcp_refreshes_without_closing_the_menu(tmp_path: Path) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="python", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = (
+            "Enable or disable MCP server"
+        )
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        toggle_screen = app.screen
+        assert app.screen.query_one("#choice-title", Static).render().plain == (
+            "ENABLE OR DISABLE MCP SERVER"
+        )
+        assert app.screen._choices[0].trailing == "enabled · configured"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        assert app.screen._choices[0].trailing == "disabled · disabled"
+        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is False
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is toggle_screen
+        assert app.screen._choices[0].trailing == "enabled · configured"
+        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is True
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio
@@ -4266,6 +4376,8 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
+        assert app.screen._choices[0].description == ""
+        assert app.screen._choices[0].trailing == "enabled · user"
 
 
 @pytest.mark.asyncio
@@ -4288,16 +4400,20 @@ async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -
         await pilot.pause()
 
         toggle_screen = app.screen
-        assert app.screen._choices[0].description.startswith("enabled ·")
+        assert app.screen._choices[0].trailing == "enabled · user"
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is toggle_screen
-        assert app.screen._choices[0].description.startswith("disabled ·")
+        assert app.screen._choices[0].trailing == "disabled · user"
+        assert app._controller.runtime_skill_names() == ()
+        assert app._system_status.skill_count == 0
 
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is toggle_screen
-        assert app.screen._choices[0].description.startswith("enabled ·")
+        assert app.screen._choices[0].trailing == "enabled · user"
+        assert app._controller.runtime_skill_names() == ("demo",)
+        assert app._system_status.skill_names == ("demo",)
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
 
@@ -4327,6 +4443,28 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
             "RUNTIME",
             "ACTIONS",
         }
+        options = screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("mcp-server-id")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        prompt = options.get_option("mcp-server-id").prompt
+        assert isinstance(prompt, Text)
+        assert "Enter a unique server ID" in prompt.plain
+        placeholder_offset = prompt.plain.index("Enter a unique server ID")
+        assert prompt.get_style_at_offset(Console(), placeholder_offset).bold is False
+        await pilot.press("escape")
+        await pilot.pause()
+
+        options.highlighted = options.get_option_index("mcp-server-id")
+        options.focus()
+        await pilot.press("enter", *"local")
+        await pilot.pause()
+        prompt = options.get_option("mcp-server-id").prompt
+        assert isinstance(prompt, Text)
+        assert prompt.get_style_at_offset(Console(), prompt.plain.index("local")).bold is False
+        await pilot.press("escape")
+        await pilot.pause()
 
         screen._values.update(
             {
@@ -4355,6 +4493,48 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
         assert draft.target == "python"
         assert draft.args == ["-m", "server"]
         assert draft.tool_effect_overrides == {"read": "read_only"}
+
+
+@pytest.mark.asyncio
+async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results = []
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        current = await app._controller.tool_execution_configuration()
+        screen = ToolExecutionConfigurationScreen(current)
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        assert [choice.group for choice in screen._choices] == [
+            "EXECUTION",
+            "EXECUTION",
+            "EXECUTION",
+            "PATH ACCESS",
+            "ACTIONS",
+        ]
+
+        screen._refresh("tool-execution-mode")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._values["tool-execution-mode"] != current.mode
+
+        screen._refresh("tool-workspace-only")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._workspace_only is not current.workspace_only
+
+        screen._refresh("tool-config-save")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert len(results) == 1
+        assert results[0].mode != current.mode
+        assert results[0].workspace_only is not current.workspace_only
 
 
 @pytest.mark.asyncio

@@ -20,6 +20,7 @@ from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
+from ouro.skills import discover_skill_catalog
 from ouro.tools import ToolRegistry, builtin_tools
 from ouro.tui.controller import (
     TuiCompactionConfiguration,
@@ -60,6 +61,42 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
             ),
         ),
         tools=tools,
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+class _SkillPromptCapturingProvider(FauxProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.system_prompts: list[str] = []
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        self.system_prompts.append(system_prompt)
+        async for event in super().stream(
+            model=model,
+            system_prompt=system_prompt,
+            messages=messages,
+            tools=tools,
+        ):
+            yield event
+
+
+def _skill_prompt_application(
+    tmp_path: Path,
+    provider: _SkillPromptCapturingProvider,
+) -> LocalApplication:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(model_id="skill-prompt", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+        skills=tuple(discover_skill_catalog(home=tmp_path).skills),
         default_workspace=tmp_path,
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
@@ -287,6 +324,16 @@ async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_conn
         assert runtime_config.permission_mode == "deny"
         assert runtime_config.tool_effect_overrides == {"read": "read_only"}
         assert controller.mcp_servers()[0].name == "Renamed"
+
+        disabled = await controller.set_mcp_enabled("local", enabled=False)
+        assert disabled.enabled is False
+        assert configuration.mcp_server("local").enabled is False
+        assert controller.mcp_servers()[0].status == "disabled"
+
+        enabled = await controller.set_mcp_enabled("local", enabled=True)
+        assert enabled.enabled is True
+        assert configuration.mcp_server("local").enabled is True
+        assert controller.mcp_servers()[0].status == "configured"
     finally:
         await controller.close()
 
@@ -320,6 +367,47 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
             item for item in (await controller.skill_catalog()).skills if item.name == "demo"
         )
         assert disabled.enabled is False
+        assert controller.runtime_skill_names() == ()
+        assert controller.skill_invocation_options() == ()
+
+        await controller.set_skill_enabled("demo", enabled=True)
+        assert controller.runtime_skill_names() == ("demo",)
+        assert [item.name for item in controller.skill_invocation_options()] == ["demo"]
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_skill_toggle_changes_subsequent_dialogue_runs_in_same_controller(
+    tmp_path: Path,
+) -> None:
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n\nUse the demo workflow.\n",
+        encoding="utf-8",
+    )
+    provider = _SkillPromptCapturingProvider()
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_skill_prompt_application(tmp_path, provider),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        await controller.submit("first turn")
+        assert "<name>demo</name>" in provider.system_prompts[-1]
+
+        await controller.set_skill_enabled("demo", enabled=False)
+        await controller.submit("second turn")
+        assert "<name>demo</name>" not in provider.system_prompts[-1]
+
+        await controller.set_skill_enabled("demo", enabled=True)
+        await controller.submit("third turn")
+        assert "<name>demo</name>" in provider.system_prompts[-1]
     finally:
         await controller.close()
 

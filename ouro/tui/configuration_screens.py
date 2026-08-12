@@ -45,90 +45,118 @@ _REASONING_REQUESTS: dict[str, ReasoningRequest | None] = {
 }
 
 
-class ToolExecutionConfigurationScreen(ModalScreen[TuiToolExecutionConfiguration | None]):
-    """Edit tool scheduling and the Host-owned path access boundary."""
+class ToolExecutionConfigurationScreen(EditableChoiceScreen):
+    """Edit tool execution and path access through the shared grouped menu."""
 
-    BINDINGS = [
-        Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
-        Binding("ctrl+s", "save", "Save", show=False, priority=True),
-    ]
+    _MODES = ("sequential", "parallel")
 
     def __init__(self, config: ToolExecutionConfigView) -> None:
-        super().__init__()
-        self._config = config
+        self._values = {
+            "tool-execution-mode": config.mode,
+            "tool-max-concurrency": str(config.max_concurrency),
+            "tool-max-output": str(config.max_output_chars),
+        }
+        self._workspace_only = config.workspace_only
+        super().__init__(
+            title="TOOL EXECUTION & PATH ACCESS",
+            placeholder="Filter tool execution settings…",
+            choices=self._tool_execution_choices(),
+            on_save=self._save_field,
+        )
 
-    def compose(self) -> ComposeResult:
-        with VerticalScroll(classes="configuration-panel"):
-            yield Static("TOOL EXECUTION & PATH ACCESS", classes="configuration-title")
-            yield Label("Execution mode", classes="configuration-label")
-            yield Select[str](
-                (("Sequential", "sequential"), ("Parallel", "parallel")),
-                value=self._config.mode,
-                allow_blank=False,
-                compact=True,
-                id="tool-execution-mode",
-            )
-            yield Label("Max concurrency", classes="configuration-label")
-            yield Input(value=str(self._config.max_concurrency), id="tool-max-concurrency")
-            yield Label("Max output characters", classes="configuration-label")
-            yield Input(value=str(self._config.max_output_chars), id="tool-max-output")
-            yield Checkbox(
-                "Restrict file and process paths to the workspace",
-                value=self._config.workspace_only,
-                id="tool-workspace-only",
-            )
-            yield Static(
-                "Tool effects are contracts; path scope does not change read/write labels.",
-                classes="configuration-note",
-            )
-            yield Static("", classes="configuration-error")
-            yield Static(
-                "Tab move · Space toggle · Ctrl+S save · Esc cancel",
-                classes="configuration-hint",
-            )
-            with Horizontal(classes="configuration-actions"):
-                yield Button("Cancel", id="tool-config-cancel")
-                yield Button("Save", variant="primary", id="tool-config-save")
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is None and selected == "tool-execution-mode":
+            current = self._values[selected]
+            self._values[selected] = self._MODES[(self._MODES.index(current) + 1) % 2]
+            self._refresh(selected)
+            return
+        if self._editing_value is None and selected == "tool-workspace-only":
+            self._workspace_only = not self._workspace_only
+            self._refresh(selected)
+            return
+        if self._editing_value is None and selected == "tool-config-save":
+            self._submit()
+            return
+        await super()._select_choice(selected)
 
-    def on_mount(self) -> None:
-        self.query_one("#tool-execution-mode", Select).focus()
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id] = value.strip()
+        return self._tool_execution_choices()
 
-    @on(Button.Pressed, "#tool-config-cancel")
-    def cancel_from_button(self) -> None:
-        self.action_cancel()
+    def _refresh(self, selected: str) -> None:
+        self._choices = self._tool_execution_choices()
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=selected,
+        )
+        self.query_one("#choice-list", OptionList).focus()
 
-    @on(Button.Pressed, "#tool-config-save")
-    def save_from_button(self) -> None:
-        self._submit()
+    def _draft(self) -> TuiToolExecutionConfiguration:
+        return TuiToolExecutionConfiguration(
+            mode=cast(ToolExecutionMode, self._values["tool-execution-mode"]),
+            max_concurrency=_positive_int(
+                self._values["tool-max-concurrency"], "Max concurrency"
+            ),
+            workspace_only=self._workspace_only,
+            max_output_chars=_positive_int(
+                self._values["tool-max-output"], "Max output characters"
+            ),
+        )
 
-    def action_cancel(self) -> None:
-        self.dismiss(None)
-
-    def action_save(self) -> None:
-        self._submit()
+    def _validation_error(self) -> str:
+        try:
+            self._draft()
+        except ValueError as exc:
+            return str(exc)
+        return ""
 
     def _submit(self) -> None:
         try:
-            mode = self.query_one("#tool-execution-mode", Select).value
-            if mode not in {"sequential", "parallel"}:
-                raise ValueError("Select an execution mode")
-            draft = TuiToolExecutionConfiguration(
-                mode=cast(ToolExecutionMode, mode),
-                max_concurrency=_positive_int(
-                    self.query_one("#tool-max-concurrency", Input).value,
-                    "Max concurrency",
-                ),
-                workspace_only=self.query_one("#tool-workspace-only", Checkbox).value,
-                max_output_chars=_positive_int(
-                    self.query_one("#tool-max-output", Input).value,
-                    "Max output characters",
-                ),
-            )
+            draft = self._draft()
         except ValueError as exc:
-            self.query_one(".configuration-error", Static).update(str(exc))
+            self.notify(str(exc), severity="warning", markup=False)
             return
-        self.dismiss(draft)
+        self.dismiss(draft)  # type: ignore[arg-type]
+
+    def _tool_execution_choices(self) -> tuple[Choice, ...]:
+        error = self._validation_error()
+        return (
+            Choice(
+                "tool-execution-mode",
+                "Execution mode",
+                trailing=self._values["tool-execution-mode"],
+                group="EXECUTION",
+            ),
+            Choice(
+                "tool-max-concurrency",
+                "Max concurrency",
+                trailing=self._values["tool-max-concurrency"] or "Required",
+                group="EXECUTION",
+                edit_value=self._values["tool-max-concurrency"],
+                edit_placeholder="Enter a positive integer",
+            ),
+            Choice(
+                "tool-max-output",
+                "Max output characters",
+                trailing=self._values["tool-max-output"] or "Required",
+                group="EXECUTION",
+                edit_value=self._values["tool-max-output"],
+                edit_placeholder="Enter a positive integer",
+            ),
+            Choice(
+                "tool-workspace-only",
+                "Restrict paths to workspace",
+                trailing=_enabled_label(self._workspace_only),
+                group="PATH ACCESS",
+            ),
+            Choice(
+                "tool-config-save",
+                "Save",
+                trailing=error,
+                group="ACTIONS",
+                disabled=bool(error),
+            ),
+        )
 
 
 class CompactionConfigurationScreen(ModalScreen[TuiCompactionConfiguration | None]):
@@ -538,6 +566,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 group="IDENTITY",
                 disabled=existing is not None,
                 edit_value=self._values["mcp-server-id"],
+                edit_placeholder="Enter a unique server ID",
             ),
             Choice(
                 "mcp-name",
@@ -545,6 +574,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=self._values["mcp-name"] or "Required",
                 group="IDENTITY",
                 edit_value=self._values["mcp-name"],
+                edit_placeholder="Enter a display name",
             ),
             Choice(
                 "mcp-transport",
@@ -558,6 +588,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=self._values["mcp-target"] or "Required",
                 group="CONNECTION",
                 edit_value=self._values["mcp-target"],
+                edit_placeholder="Enter a command or URL",
             ),
             Choice(
                 "mcp-args",
@@ -567,6 +598,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 else self._values["mcp-args"] or "Default",
                 group="PROCESS",
                 edit_value=self._values["mcp-args"],
+                edit_placeholder='Enter a JSON array, e.g. ["-m", "server"]',
             ),
             Choice(
                 "mcp-cwd",
@@ -574,6 +606,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=self._values["mcp-cwd"] or "Default",
                 group="PROCESS",
                 edit_value=self._values["mcp-cwd"],
+                edit_placeholder="Enter a working directory or leave blank",
             ),
             Choice(
                 "mcp-inherit-env",
@@ -585,6 +618,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 else self._values["mcp-inherit-env"] or "Default",
                 group="PROCESS",
                 edit_value=self._values["mcp-inherit-env"],
+                edit_placeholder='Enter a JSON array, e.g. ["PATH"]',
             ),
             Choice(
                 "mcp-env",
@@ -598,6 +632,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 ),
                 group="CREDENTIALS",
                 edit_value=self._values["mcp-env"],
+                edit_placeholder='Enter a JSON object, e.g. {"KEY":"value"}',
             ),
             Choice(
                 "mcp-headers",
@@ -611,6 +646,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 ),
                 group="CREDENTIALS",
                 edit_value=self._values["mcp-headers"],
+                edit_placeholder='Enter a JSON object, e.g. {"Authorization":"..."}',
             ),
             Choice(
                 "mcp-credential-refs",
@@ -624,6 +660,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 ),
                 group="CREDENTIALS",
                 edit_value=self._values["mcp-credential-refs"],
+                edit_placeholder='Enter credential references as a JSON object',
             ),
             Choice(
                 "mcp-permission",
@@ -641,6 +678,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 else self._values["mcp-tool-effects"] or "Default",
                 group="TOOLS",
                 edit_value=self._values["mcp-tool-effects"],
+                edit_placeholder='Enter tool effects as a JSON object',
             ),
             Choice(
                 "mcp-enabled",
@@ -666,6 +704,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=self._values["mcp-reconnect-attempts"],
                 group="RUNTIME",
                 edit_value=self._values["mcp-reconnect-attempts"],
+                edit_placeholder="Enter zero or a positive integer",
             ),
             Choice(
                 "mcp-reconnect-backoff",
@@ -673,6 +712,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=f"{self._values['mcp-reconnect-backoff']} seconds",
                 group="RUNTIME",
                 edit_value=self._values["mcp-reconnect-backoff"],
+                edit_placeholder="Enter seconds",
             ),
             Choice(
                 "mcp-timeout",
@@ -680,6 +720,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=f"{self._values['mcp-timeout']} seconds",
                 group="RUNTIME",
                 edit_value=self._values["mcp-timeout"],
+                edit_placeholder="Enter seconds",
             ),
             Choice(
                 "mcp-health-interval",
@@ -687,6 +728,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 trailing=f"{self._values['mcp-health-interval']} seconds",
                 group="RUNTIME",
                 edit_value=self._values["mcp-health-interval"],
+                edit_placeholder="Enter seconds",
             ),
             Choice("mcp-save", "Save", trailing=error, group="ACTIONS", disabled=bool(error)),
         )

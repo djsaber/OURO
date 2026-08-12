@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import cast
 
 from textual import work
@@ -23,6 +23,7 @@ from ouro.tui.controller import (
     TuiSkillInstallConfiguration,
     TuiSystemStatus,
     TuiToolConfiguration,
+    TuiToolExecutionConfiguration,
     project_mcp_system_status,
 )
 from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
@@ -65,6 +66,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
     SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
     SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
+    SystemSettingAction("mcp.toggle", "Enable or disable MCP server", "MCP"),
     SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
     SystemSettingAction("mcp.remove", "Remove MCP server", "MCP"),
     SystemSettingAction("skills.list", "List skills", "Skills"),
@@ -229,8 +231,9 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         draft = await self.push_screen_wait(ToolExecutionConfigurationScreen(current))
         if draft is None:
             return
+        tool_execution_draft = cast(TuiToolExecutionConfiguration, draft)
         try:
-            updated = await self._controller.update_tool_execution(draft)
+            updated = await self._controller.update_tool_execution(tool_execution_draft)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
@@ -251,9 +254,13 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 Choice(
                     config.server_id,
                     config.name,
-                    _mcp_description(config, runtime.get(config.server_id)),
+                    group=config.transport.upper(),
+                    trailing=_mcp_labels(config, runtime.get(config.server_id)),
                 )
-                for config in configs
+                for config in sorted(
+                    configs,
+                    key=lambda item: (item.transport, item.name.casefold()),
+                )
             )
             if not choices:
                 self.notify("No MCP servers are configured", severity="warning")
@@ -272,7 +279,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         await self._manage_mcp(selected)
 
     async def _choose_mcp_action(self, action: str) -> None:
-        if action not in {"connect", "disconnect", "edit", "remove"}:
+        if action not in {"connect", "disconnect", "toggle", "edit", "remove"}:
             await self.query_one(ConversationView).add_notice(
                 f"Unknown MCP action: {action}",
                 error=True,
@@ -308,24 +315,75 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         action_label = {
             "connect": "CONNECT",
             "disconnect": "DISCONNECT",
+            "toggle": "ENABLE OR DISABLE",
             "edit": "EDIT",
             "remove": "REMOVE",
         }[action]
         if not candidates:
             self.notify(f"No MCP servers are available to {action}", severity="warning")
             return
+        choices = tuple(
+            Choice(
+                config.server_id,
+                config.name,
+                group=config.transport.upper(),
+                trailing=_mcp_labels(config, runtime.get(config.server_id)),
+            )
+            for config in sorted(
+                candidates,
+                key=lambda item: (item.transport, item.name.casefold()),
+            )
+        )
+        if action == "toggle":
+            servers = {config.server_id: config for config in candidates}
+
+            async def toggle_mcp(server_id: str) -> tuple[Choice, ...] | None:
+                config = servers[server_id]
+                if not await self._set_mcp_enabled(
+                    server_id,
+                    enabled=not config.enabled,
+                ):
+                    return None
+                try:
+                    refreshed = await self._controller.mcp_configurations()
+                    refreshed_runtime = {
+                        item.server_id: item for item in self._controller.mcp_servers()
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                servers.clear()
+                servers.update({config.server_id: config for config in refreshed})
+                return tuple(
+                    Choice(
+                        config.server_id,
+                        config.name,
+                        group=config.transport.upper(),
+                        trailing=_mcp_labels(
+                            config,
+                            refreshed_runtime.get(config.server_id),
+                        ),
+                    )
+                    for config in sorted(
+                        servers.values(),
+                        key=lambda item: (item.transport, item.name.casefold()),
+                    )
+                )
+
+            await self.push_screen_wait(
+                ChoiceScreen(
+                    title="ENABLE OR DISABLE MCP SERVER",
+                    placeholder="Filter servers…",
+                    choices=choices,
+                    on_select=toggle_mcp,
+                )
+            )
+            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"{action_label} MCP SERVER",
                 placeholder="Filter servers…",
-                choices=tuple(
-                    Choice(
-                        config.server_id,
-                        config.name,
-                        _mcp_description(config, runtime.get(config.server_id)),
-                    )
-                    for config in candidates
-                ),
+                choices=choices,
             )
         )
         if selected is None:
@@ -352,25 +410,21 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         actions = [
-            Choice(
-                "edit",
-                "Edit configuration",
-                "Tool policy applies now; connection changes apply after restart",
-            ),
-            Choice("check", "Check connection", "Open a temporary validated connection"),
+            Choice("edit", "Edit configuration"),
+            Choice("check", "Check connection"),
         ]
         if status is not None:
             if status.status == "connected":
                 actions.extend(
                     (
-                        Choice("refresh", "Refresh tools", "Rediscover this server's tools"),
-                        Choice("restart", "Restart runtime", "Restart the current connection"),
-                        Choice("stop", "Stop runtime", "Stop the current connection"),
+                        Choice("refresh", "Refresh tools"),
+                        Choice("restart", "Restart runtime"),
+                        Choice("stop", "Stop runtime"),
                     )
                 )
             else:
-                actions.append(Choice("start", "Start runtime", "Start the current connection"))
-        actions.append(Choice("remove", "Remove configuration", "Delete after confirmation"))
+                actions.append(Choice("start", "Start runtime"))
+        actions.append(Choice("remove", "Remove configuration"))
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title=f"MCP · {config.name}",
@@ -457,6 +511,15 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self._refresh_mcp_system_status()
         self.notify(f"MCP configuration removed: {server_id} (next restart)")
 
+    async def _set_mcp_enabled(self, server_id: str, *, enabled: bool) -> bool:
+        try:
+            await self._controller.set_mcp_enabled(server_id, enabled=enabled)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return False
+        self._refresh_mcp_system_status()
+        return True
+
     @work(exclusive=True, group="configuration")
     async def _choose_skills(self, selector: str | None = None) -> None:
         try:
@@ -467,7 +530,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         selected = selector
         if selected is None:
             choices = tuple(
-                Choice(skill.name, skill.name, _skill_description(skill))
+                _skill_choice(skill)
                 for skill in catalog.skills
             )
             if not choices:
@@ -513,9 +576,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             "update": "UPDATE",
             "remove": "REMOVE",
         }[action]
-        choices = tuple(
-            Choice(skill.name, skill.name, _skill_description(skill)) for skill in candidates
-        )
+        choices = tuple(_skill_choice(skill) for skill in candidates)
         if action == "toggle":
             skills = {skill.name: skill for skill in candidates}
 
@@ -534,7 +595,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 skills.clear()
                 skills.update({skill.name: skill for skill in refreshed.skills})
                 return tuple(
-                    Choice(skill.name, skill.name, _skill_description(skill))
+                    _skill_choice(skill)
                     for skill in skills.values()
                 )
 
@@ -584,15 +645,14 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             Choice(
                 "disable" if skill.enabled else "enable",
                 "Disable" if skill.enabled else "Enable",
-                "Apply from the next runtime",
             ),
-            Choice("validate", "Validate", "Validate SKILL.md and referenced structure"),
+            Choice("validate", "Validate"),
         ]
         if skill.managed:
             actions.extend(
                 (
-                    Choice("update", "Update", "Refresh from the recorded source"),
-                    Choice("remove", "Remove", "Delete this managed installation"),
+                    Choice("update", "Update"),
+                    Choice("remove", "Remove"),
                 )
             )
         selected = await self.push_screen_wait(
@@ -630,6 +690,13 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
+        skill_names = self._controller.runtime_skill_names()
+        self._system_status = replace(
+            self._system_status,
+            skill_count=len(skill_names),
+            skill_names=skill_names,
+        )
+        self.query_one(ConversationView).set_system_status(self._system_status)
         return True
 
     async def _validate_skill(self, name: str) -> None:
@@ -703,20 +770,18 @@ def _tool_permission_description(value: str) -> str:
     return descriptions[value]
 
 
-def _mcp_description(
+def _mcp_labels(
     config: MCPServerConfigView,
     status: McpServerStatus | None,
 ) -> str:
-    runtime = status.status if status is not None else "next restart"
-    tools = f" · {status.tool_count} tool(s)" if status is not None else ""
     enabled = "enabled" if config.enabled else "disabled"
-    return (
-        f"{config.transport} · {enabled} · runtime: {runtime}{tools}"
-        f" · permission: {config.permission_mode}"
+    runtime = status.status if status is not None else "next restart"
+    return f"{enabled} · {runtime}"
+
+
+def _skill_choice(skill: SkillView) -> Choice:
+    return Choice(
+        skill.name,
+        skill.name,
+        trailing=("enabled" if skill.enabled else "disabled") + f" · {skill.source}",
     )
-
-
-def _skill_description(skill: SkillView) -> str:
-    status = "enabled" if skill.enabled else "disabled"
-    managed = "managed" if skill.managed else "discovered"
-    return f"{status} · {managed} · {skill.source} · {skill.description}"
