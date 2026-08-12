@@ -56,7 +56,7 @@ from ouro.core.reasoning import ReasoningRequest, resolve_reasoning
 from ouro.core.results import RunResult
 from ouro.core.state import RunRecord
 from ouro.core.tool_batches import ToolExecutionMode
-from ouro.core.tools import PermissionMode, ToolEffect
+from ouro.core.tools import PermissionMode, ToolEffect, ToolSource
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfig
@@ -162,7 +162,7 @@ class TuiEndpointConfiguration:
 class TuiToolConfiguration:
     name: str
     display_name: str
-    source: str
+    source: ToolSource | Literal["unavailable"]
     effect: ToolEffect
     default_permission: PermissionMode | None
     permission_override: PermissionMode | None

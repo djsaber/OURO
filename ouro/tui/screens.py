@@ -35,6 +35,7 @@ class Choice:
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
+ChoiceCancelHandler = Callable[[], bool]
 MultiChoiceConfirmationHandler = Callable[
     [tuple[str, ...]],
     Awaitable[tuple[Choice, ...] | None],
@@ -122,6 +123,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
+        on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
     ) -> None:
         super().__init__()
@@ -131,6 +133,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._initial_value = initial_value
         self._on_highlight = on_highlight
         self._on_select = on_select
+        self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
 
     def compose(self) -> ComposeResult:
@@ -158,6 +161,26 @@ class ChoiceScreen(ModalScreen[str | None]):
                 options,
                 preferred_value=self._initial_value,
             )
+
+    def replace_page(
+        self,
+        *,
+        title: str,
+        placeholder: str,
+        choices: tuple[Choice, ...],
+        initial_value: str | None = None,
+    ) -> None:
+        """Replace one menu level without stacking another modal screen."""
+
+        self._title = title
+        self._placeholder = placeholder
+        self._choices = choices
+        self.query_one("#choice-title", Static).update(title)
+        filter_input = self.query_one("#choice-filter", Input)
+        filter_input.placeholder = placeholder
+        filter_input.value = ""
+        self._refresh_options(needle="", preferred_value=initial_value)
+        filter_input.focus()
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._refresh_options(needle=event.value, preferred_value=None)
@@ -227,6 +250,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             self._on_highlight(str(event.option.id))
 
     def action_cancel(self) -> None:
+        if self._on_cancel is not None and self._on_cancel():
+            return
         self.dismiss(None)
 
     def action_previous_choice(self) -> None:

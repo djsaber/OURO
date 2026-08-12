@@ -44,7 +44,7 @@ from ouro.core.provider import (
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.core.state import RunRecord
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolSource
 from ouro.local_application import LocalApplication
 from ouro.mcp import (
     MCPManager,
@@ -879,6 +879,61 @@ def _application(
         ),
         tools=ToolRegistry(),
         skills=skills,
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    return LocalApplication.from_runtime(runtime)
+
+
+def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
+    registry = ToolRegistry()
+    tool_sources: tuple[tuple[str, ToolSource], ...] = (
+        ("BuiltinTest", "builtin"),
+        ("McpTest", "mcp"),
+        ("OfficialPluginTest", "official_plugin"),
+        ("ThirdPartyPluginTest", "third_party_plugin"),
+        ("AiGeneratedPluginTest", "ai_generated_plugin"),
+    )
+    for name, source in tool_sources:
+        registry.register(
+            Tool(
+                definition=ToolDefinition(
+                    name=name,
+                    display_name=name,
+                    description=f"{source} test tool",
+                    source=source,
+                    permission_mode="approval",
+                ),
+                handler=lambda invocation: ToolResult(
+                    tool_call_id=invocation.tool_call_id,
+                    tool_name=invocation.tool_name,
+                ),
+            )
+        )
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="ContractControlledTest",
+                description="Contract-controlled test tool",
+                source="third_party_plugin",
+                permission_mode="auto",
+                permission_control="tool",
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+            ),
+        )
+    )
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=registry,
         default_workspace=tmp_path,
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
@@ -4344,6 +4399,95 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
 
             await pilot.press("escape")
             await pilot.pause()
+
+
+@pytest.mark.asyncio
+async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> None:
+    ConfigurationFacade(tmp_path).set_tool_permission("UnavailableTest", "deny")
+    app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+
+        assert list(dict.fromkeys(choice.group for choice in app.screen._choices)) == [
+            "BUILT-IN",
+            "MCP",
+            "OFFICIAL PLUGINS",
+            "THIRD-PARTY PLUGINS",
+            "AI-GENERATED PLUGINS",
+            "UNAVAILABLE",
+        ]
+        choices = {choice.value: choice for choice in app.screen._choices}
+        assert choices["BuiltinTest"].group == "BUILT-IN"
+        assert choices["McpTest"].group == "MCP"
+        assert choices["OfficialPluginTest"].group == "OFFICIAL PLUGINS"
+        assert choices["ThirdPartyPluginTest"].group == "THIRD-PARTY PLUGINS"
+        assert choices["AiGeneratedPluginTest"].group == "AI-GENERATED PLUGINS"
+        assert choices["UnavailableTest"].group == "UNAVAILABLE"
+        assert choices["BuiltinTest"].trailing == "approval"
+        assert choices["ContractControlledTest"].trailing == "auto · contract"
+        assert choices["UnavailableTest"].trailing == "deny · unavailable"
+        assert all(choice.description == "" for choice in choices.values())
+
+
+@pytest.mark.asyncio
+async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+
+        tool_screen = app.screen
+        tool_screen.query_one("#choice-filter", Input).value = "BuiltinTest"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            ChoiceScreen,
+            title="TOOL PERMISSION · BuiltinTest",
+        )
+        assert app.screen is tool_screen
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        app.screen.query_one("#choice-filter", Input).value = "auto"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+
+        assert app.screen is tool_screen
+        assert app.screen.query_one("#choice-title", Static).render().plain == (
+            "TOOL PERMISSIONS"
+        )
+        assert (
+            next(
+                choice for choice in app.screen._choices if choice.value == "BuiltinTest"
+            ).trailing
+            == "auto"
+        )
+        assert ConfigurationFacade(tmp_path).permission_config().tools["BuiltinTest"] == "auto"
+
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            ChoiceScreen,
+            title="TOOL PERMISSION · BuiltinTest",
+        )
+        assert app.screen is tool_screen
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
+        assert app.screen is tool_screen
 
 
 @pytest.mark.asyncio

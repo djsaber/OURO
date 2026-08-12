@@ -86,6 +86,16 @@ _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
     "deny": "deny",
 }
 
+_TOOL_SOURCE_GROUPS = {
+    "builtin": "BUILT-IN",
+    "mcp": "MCP",
+    "official_plugin": "OFFICIAL PLUGINS",
+    "third_party_plugin": "THIRD-PARTY PLUGINS",
+    "ai_generated_plugin": "AI-GENERATED PLUGINS",
+    "unavailable": "UNAVAILABLE",
+}
+_TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
+
 
 class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
     """Own the keyboard-first TUI workflows for durable configuration."""
@@ -160,69 +170,86 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.notify(f"Compaction options saved: {route} (next restart)")
 
     @work(exclusive=True, group="configuration")
-    async def _choose_tools(self, selector: str | None = None) -> None:
+    async def _choose_tools(self) -> None:
         try:
             tools = await self._controller.tool_configurations()
         except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        selected = selector
-        if selected is None:
-            choices = tuple(
-                Choice(item.name, item.display_name, trailing=_tool_labels(item)) for item in tools
-            )
-            if not choices:
-                self.notify("No configurable tools are available", severity="warning")
-                return
-            selected = await self.push_screen_wait(
-                ChoiceScreen(
-                    title="TOOL PERMISSIONS",
-                    placeholder="Filter tools…",
-                    choices=choices,
-                )
-            )
-        if selected is None:
+        if not tools:
+            self.notify("No configurable tools are available", severity="warning")
             return
-        tool = next((item for item in tools if item.name == selected), None)
-        if tool is None:
-            await self.query_one(ConversationView).add_notice(
-                f"Tool not found: {selected}",
-                error=True,
+        tool_catalog = {tool.name: tool for tool in tools}
+        active_tool: TuiToolConfiguration | None = None
+
+        def show_tool_catalog(*, initial_value: str | None = None) -> None:
+            screen.replace_page(
+                title="TOOL PERMISSIONS",
+                placeholder="Filter tools…",
+                choices=_tool_choices(tuple(tool_catalog.values())),
+                initial_value=initial_value,
             )
-            return
-        if tool.permission_control == "tool":
-            self.notify(
-                f"{tool.name} permission is fixed by its tool contract",
-                severity="warning",
-            )
-            return
-        current = tool.permission_override or "inherit"
-        permission = await self.push_screen_wait(
-            ChoiceScreen(
-                title=f"TOOL PERMISSION · {tool.name}",
-                placeholder="Filter permission modes…",
-                choices=tuple(
-                    Choice(
-                        value,
-                        value,
-                        trailing="current" if value == current else "",
-                        marker=SELECTED_CHOICE_MARKER if value == current else "",
+
+        async def select_tool_or_permission(selected: str) -> tuple[Choice, ...] | None:
+            nonlocal active_tool
+            if active_tool is None:
+                tool = tool_catalog.get(selected)
+                if tool is None:
+                    await self.query_one(ConversationView).add_notice(
+                        f"Tool not found: {selected}",
+                        error=True,
                     )
-                    for value in _TOOL_PERMISSION_CHOICES
-                ),
-            )
+                    return None
+                if tool.permission_control == "tool":
+                    self.notify(
+                        f"{tool.name} permission is fixed by its tool contract",
+                        severity="warning",
+                    )
+                    return None
+                active_tool = tool
+                current = tool.permission_override or "inherit"
+                screen.replace_page(
+                    title=f"TOOL PERMISSION · {tool.name}",
+                    placeholder="Filter permission modes…",
+                    choices=_tool_permission_choices(current),
+                    initial_value=current,
+                )
+                return None
+
+            try:
+                await self._controller.set_tool_permission(
+                    active_tool.name,
+                    _TOOL_PERMISSION_CHOICES[selected],
+                )
+                refreshed = await self._controller.tool_configurations()
+            except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            tool_name = active_tool.name
+            tool_catalog.clear()
+            tool_catalog.update({tool.name: tool for tool in refreshed})
+            active_tool = None
+            show_tool_catalog(initial_value=tool_name)
+            self.notify(f"Tool permission saved: {tool_name} → {selected} (next restart)")
+            return None
+
+        def cancel_submenu() -> bool:
+            nonlocal active_tool
+            if active_tool is None:
+                return False
+            tool_name = active_tool.name
+            active_tool = None
+            show_tool_catalog(initial_value=tool_name)
+            return True
+
+        screen = ChoiceScreen(
+            title="TOOL PERMISSIONS",
+            placeholder="Filter tools…",
+            choices=_tool_choices(tools),
+            on_select=select_tool_or_permission,
+            on_cancel=cancel_submenu,
         )
-        if permission is None:
-            return
-        try:
-            await self._controller.set_tool_permission(
-                tool.name,
-                _TOOL_PERMISSION_CHOICES[permission],
-            )
-        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
-        self.notify(f"Tool permission saved: {tool.name} → {permission} (next restart)")
+        await self.push_screen_wait(screen)
 
     async def _configure_tool_execution(self) -> None:
         try:
@@ -747,10 +774,43 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.query_one(ConversationView).set_system_status(self._system_status)
 
 
+def _tool_choices(tools: tuple[TuiToolConfiguration, ...]) -> tuple[Choice, ...]:
+    ordered = sorted(
+        tools,
+        key=lambda tool: (
+            _TOOL_SOURCE_ORDER[tool.source],
+            tool.display_name.casefold(),
+            tool.name.casefold(),
+        ),
+    )
+    return tuple(
+        Choice(
+            tool.name,
+            tool.display_name,
+            group=_TOOL_SOURCE_GROUPS[tool.source],
+            trailing=_tool_labels(tool),
+        )
+        for tool in ordered
+    )
+
+
+def _tool_permission_choices(current: str) -> tuple[Choice, ...]:
+    return tuple(
+        Choice(
+            value,
+            value,
+            trailing="current" if value == current else "",
+            marker=SELECTED_CHOICE_MARKER if value == current else "",
+        )
+        for value in _TOOL_PERMISSION_CHOICES
+    )
+
+
 def _tool_labels(tool: TuiToolConfiguration) -> str:
     permission = tool.effective_permission or "unavailable"
+    control = " · contract" if tool.permission_control == "tool" else ""
     availability = "" if tool.available else " · unavailable"
-    return f"{tool.source} · {permission}{availability}"
+    return f"{permission}{control}{availability}"
 
 
 def _mcp_labels(
