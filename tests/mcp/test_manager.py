@@ -24,6 +24,7 @@ from ouro.tools import (
     ToolDefinition,
     ToolExecutionAborted,
     ToolExecutionContext,
+    ToolExecutor,
     ToolInvocation,
     ToolRegistry,
     ToolResult,
@@ -77,13 +78,14 @@ class FakeFactory:
         self.sessions = list(sessions)
         self.open_count = 0
         self.close_count = 0
+        self.opened_configs: list[MCPServerConfig] = []
         self.tools_changed = lambda: None
         self.connection_lost = lambda _error: None
 
     @asynccontextmanager
     async def open(self, config, **callbacks) -> AsyncGenerator[FakeSession, None]:
-        del config
         self.open_count += 1
+        self.opened_configs.append(config)
         self.tools_changed = callbacks["tools_changed"]
         self.connection_lost = callbacks["connection_lost"]
         session = self.sessions[min(self.open_count - 1, len(self.sessions) - 1)]
@@ -262,6 +264,52 @@ async def test_mcp_effect_normalization_prefers_user_override_and_keeps_unknown(
     assert registry.get("fs__write").definition.metadata["effect_source"] == "mcp_annotation"
     assert registry.get("fs__mystery").definition.effect == "read_only"
     assert registry.get("fs__mystery").definition.metadata["effect_source"] == "user_override"
+    await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_tool_policy_update_reprojects_connected_tools_without_restarting() -> None:
+    session = FakeSession(tools=[_remote_tool()])
+    factory = FakeFactory(session)
+    registry = ToolRegistry()
+    manager = MCPManager(registry=registry, client_factory=factory)
+    manager.configure(_config(permission_mode="auto"))
+    await manager.start("fs")
+    executor = ToolExecutor(registry)
+    invocation = ToolInvocation(
+        session_id="session",
+        run_id="run",
+        tool_name="fs__read",
+        arguments={"path": "README.md"},
+    )
+    assert executor.preflight(invocation).status == "ready"
+
+    before_revision = registry.revision
+    updated = manager.apply_config(
+        _config(
+            permission_mode="approval",
+            tool_effect_overrides={"read": "state_changing"},
+        )
+    )
+
+    definition = registry.get("fs__read").definition
+    assert updated.config.permission_mode == "approval"
+    assert updated.config.tool_effect_overrides == {"read": "state_changing"}
+    assert definition.permission_mode == "approval"
+    assert definition.effect == "state_changing"
+    assert definition.metadata["effect_source"] == "user_override"
+    assert registry.revision == before_revision + 1
+    assert executor.preflight(invocation).status == "approval_required"
+    assert manager.get("fs").status == "connected"
+    assert factory.open_count == 1
+    assert factory.opened_configs[0].name == "Filesystem"
+
+    restarted = await manager.restart("fs")
+
+    assert restarted.status == "connected"
+    assert factory.open_count == 2
+    assert factory.opened_configs[1].permission_mode == "approval"
+    assert factory.opened_configs[1].tool_effect_overrides == {"read": "state_changing"}
     await manager.close()
 
 

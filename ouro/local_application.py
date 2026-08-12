@@ -40,7 +40,7 @@ from ouro.core.prompt_policies import PromptPolicyRegistry
 from ouro.core.tool_policies import ToolPolicyRegistry
 from ouro.core.turn_policies import TurnPolicyRegistry
 from ouro.deployment import SessionBackend, resolve_session_backend
-from ouro.mcp import MCPRuntimeResource, MCPServerRecord
+from ouro.mcp import MCPRuntimeResource, MCPServerConfig, MCPServerRecord
 from ouro.plugins.contributions import ContributionCoordinator
 from ouro.plugins.registry import PluginCommandRegistry
 from ouro.plugins.runtime import PluginRuntimeResource
@@ -238,6 +238,11 @@ class LocalApplication:
 
     async def refresh_mcp_server_tools(self, server_id: str) -> MCPRuntimeServerView:
         return _mcp_runtime_server_view(await self.mcp.refresh_server_tools(server_id))
+
+    def apply_mcp_configuration(self, config: MCPServerConfig) -> MCPRuntimeServerView:
+        """Reconcile durable MCP configuration with the current process runtime."""
+
+        return _mcp_runtime_server_view(self.mcp.apply_config(config))
 
     async def close(self) -> None:
         if self._closed:

@@ -231,7 +231,7 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
 
 
 @pytest.mark.asyncio
-async def test_controller_separates_mcp_config_from_current_runtime_lifecycle(
+async def test_controller_hot_updates_mcp_tool_policy_without_reconfiguring_connection(
     tmp_path: Path,
 ) -> None:
     configuration = ConfigurationFacade(tmp_path)
@@ -271,18 +271,22 @@ async def test_controller_separates_mcp_config_from_current_runtime_lifecycle(
                 reconnect_backoff_seconds=0.5,
                 timeout_seconds=30.0,
                 health_check_interval_seconds=30.0,
-                permission_mode="approval",
+                permission_mode="deny",
                 tool_effect_overrides={"read": "read_only"},
             )
         )
 
         assert saved.name == "Renamed"
+        assert saved.permission_mode == "deny"
         assert saved.tool_effect_overrides == {"read": "read_only"}
         persisted = configuration.mcp.get("local")
         assert persisted is not None
         assert persisted.command == "python"
         assert persisted.args == ["-m", "server"]
-        assert controller.mcp_servers()[0].name == runtime_before.name
+        runtime_config = controller._application.mcp.manager.get("local").config
+        assert runtime_config.permission_mode == "deny"
+        assert runtime_config.tool_effect_overrides == {"read": "read_only"}
+        assert controller.mcp_servers()[0].name == "Renamed"
     finally:
         await controller.close()
 

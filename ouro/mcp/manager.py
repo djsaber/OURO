@@ -47,6 +47,8 @@ class _ServerRuntime:
     started: asyncio.Future[MCPServerRecord] | None = None
     task: asyncio.Task[None] | None = None
     session: MCPClientSession | None = None
+    connection_config: MCPServerConfig | None = None
+    discovered_tools: tuple[MCPRemoteTool, ...] = ()
     registered_tools: tuple[str, ...] = ()
     recycle_error: str | None = None
 
@@ -105,6 +107,29 @@ class MCPManager:
                     f"cannot configure active MCP server {config.server_id}; stop it first"
                 )
         return [self.configure(config) for config in configs]
+
+    def apply_config(self, config: MCPServerConfig) -> MCPServerRecord:
+        """Reconcile saved configuration with this process-owned runtime.
+
+        An inactive server can safely adopt the complete configuration. An active
+        connection keeps its lifecycle settings until restart, while tool policy
+        fields are immediately reprojected onto its registered tools.
+        """
+
+        current = self._servers.get(config.server_id)
+        if current is None or current.status not in _ACTIVE_STATUSES:
+            return self.configure(config)
+
+        runtime = self._runtimes.get(config.server_id)
+        if runtime is not None and runtime.discovered_tools:
+            self._replace_discovered_tools(
+                config.server_id,
+                runtime,
+                list(runtime.discovered_tools),
+                config=config,
+            )
+        self._update(config.server_id, config=config)
+        return self.get(config.server_id)
 
     def get(self, server_id: str) -> MCPServerRecord:
         try:
@@ -270,6 +295,7 @@ class MCPManager:
 
     async def _run_server(self, server_id: str, runtime: _ServerRuntime) -> None:
         config = self.get(server_id).config
+        runtime.connection_config = config
         reconnect_attempt = 0
         try:
             while not runtime.stop.is_set():
@@ -349,6 +375,7 @@ class MCPManager:
             raise
         finally:
             runtime.session = None
+            runtime.connection_config = None
             self._unregister_tools(server_id, runtime)
             if runtime.started is not None and not runtime.started.done():
                 runtime.started.set_result(self.get(server_id))
@@ -415,8 +442,10 @@ class MCPManager:
         server_id: str,
         runtime: _ServerRuntime,
         remote_tools: builtins.list[MCPRemoteTool],
+        *,
+        config: MCPServerConfig | None = None,
     ) -> tuple[str, ...]:
-        config = self.get(server_id).config
+        config = config or self.get(server_id).config
         tools = [
             adapt_mcp_tool(config, remote_tool, self._invoke_remote) for remote_tool in remote_tools
         ]
@@ -425,6 +454,7 @@ class MCPManager:
             raise ValueError(f"MCP server {server_id} returned duplicate tool names")
         if self._registry is not None:
             self._registry.replace(runtime.registered_tools, tools)
+        runtime.discovered_tools = tuple(remote_tools)
         runtime.registered_tools = names
         return names
 
@@ -484,6 +514,7 @@ class MCPManager:
             return
         if self._registry is not None:
             self._registry.unregister(runtime.registered_tools)
+        runtime.discovered_tools = ()
         runtime.registered_tools = ()
         if server_id in self._servers:
             self._update(server_id, tool_names=())
@@ -515,7 +546,12 @@ class MCPManager:
 
     def _safe_error(self, server_id: str, exc: Exception) -> str:
         message = str(exc) or type(exc).__name__
-        config = self.get(server_id).config
+        runtime = self._runtimes.get(server_id)
+        config = (
+            runtime.connection_config
+            if runtime is not None and runtime.connection_config is not None
+            else self.get(server_id).config
+        )
         for reference in config.credential_refs.values():
             with suppress(Exception):
                 secret = self._resolve_credential(reference)

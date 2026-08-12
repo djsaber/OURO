@@ -352,7 +352,11 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         actions = [
-            Choice("edit", "Edit configuration", "Saved changes apply on the next restart"),
+            Choice(
+                "edit",
+                "Edit configuration",
+                "Tool policy applies now; connection changes apply after restart",
+            ),
             Choice("check", "Check connection", "Open a temporary validated connection"),
         ]
         if status is not None:
@@ -394,7 +398,10 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_mcp_system_status()
-        self.notify(f"MCP configuration saved: {saved.server_id} (next restart)")
+        self.notify(
+            f"MCP configuration saved: {saved.server_id} · "
+            "tool policy active; restart for connection changes"
+        )
 
     async def _check_mcp(self, server_id: str) -> None:
         try:

@@ -72,6 +72,11 @@ class MCPRuntimeResource:
         await self.manager.refresh_tools(server_id)
         return self.manager.get(server_id)
 
+    def apply_config(self, config: MCPServerConfig) -> MCPServerRecord:
+        """Apply saved configuration at the strongest safe runtime boundary."""
+
+        return self.manager.apply_config(config)
+
     @property
     def startup_configs(self) -> tuple[MCPServerConfig, ...]:
         """Enabled auto-start servers that this process resource will connect."""

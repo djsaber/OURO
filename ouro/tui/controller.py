@@ -59,6 +59,7 @@ from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
+from ouro.mcp import MCPServerConfig
 from ouro.tui.state import PendingInteraction
 
 EventPublisher = Callable[[EventRecord], None]
@@ -849,12 +850,16 @@ class TuiController:
         self,
         draft: TuiMCPServerConfiguration,
     ) -> MCPServerConfigView:
-        return await asyncio.to_thread(self._save_mcp_configuration, draft)
+        saved, config = await asyncio.to_thread(self._save_mcp_configuration, draft)
+        self._runtime()
+        assert self._application is not None
+        self._application.apply_mcp_configuration(config)
+        return saved
 
     def _save_mcp_configuration(
         self,
         draft: TuiMCPServerConfiguration,
-    ) -> MCPServerConfigView:
+    ) -> tuple[MCPServerConfigView, MCPServerConfig]:
         payload: dict[str, object] = {
             "name": draft.name,
             "transport": draft.transport,
@@ -882,8 +887,12 @@ class TuiController:
             if value is not None:
                 payload[field_name] = value
         update = MCPServerConfigInput.model_validate(payload)
-        catalog = self._require_configuration().save_mcp_server(draft.server_id, update)
-        return next(item for item in catalog.servers if item.server_id == draft.server_id)
+        configuration = self._require_configuration()
+        catalog = configuration.save_mcp_server(draft.server_id, update)
+        saved = next(item for item in catalog.servers if item.server_id == draft.server_id)
+        config = configuration.mcp.get(draft.server_id)
+        assert config is not None
+        return saved, config
 
     async def remove_mcp_configuration(self, server_id: str) -> None:
         configuration = self._require_configuration()
