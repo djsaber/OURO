@@ -1830,7 +1830,7 @@ class QueuedInputPanel(VerticalScroll):
 
 
 class Composer(TextArea):
-    DEFAULT_PLACEHOLDER = "Ask anything…"
+    DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = "Enter queues a follow-up · Ctrl+Enter guides the active run…"
     QUESTION_PLACEHOLDER = "Choose an option above…"
     FREEFORM_PLACEHOLDER = "Type another answer…"

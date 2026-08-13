@@ -2191,7 +2191,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         composer = app.query_one(Composer)
-        assert composer.placeholder == "Ask anything…"
+        assert composer.placeholder == "Ask anything..."
 
         await pilot.click("#composer")
         await pilot.press(*"stream", "enter")
@@ -2207,7 +2207,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
 
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
-        assert composer.placeholder == "Ask anything…"
+        assert composer.placeholder == "Ask anything..."
 
 
 @pytest.mark.asyncio
