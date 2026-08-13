@@ -61,7 +61,6 @@ from ouro.tui.controller import (
     TuiSystemStatus,
     project_mcp_system_status,
 )
-from ouro.tui.model_menus import model_choices
 from ouro.tui.plan_confirmation import project_plan_confirmation
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.question_forms import project_question_form
@@ -131,13 +130,9 @@ _THOUGHT_DISPLAY_ACTION = "__ouro_thought_display__"
 _RENAME_SESSION_ACTION = "__ouro_rename_session__"
 _ARCHIVE_SESSION_ACTION = "__ouro_archive_session__"
 _DELETE_SESSION_ACTION = "__ouro_delete_session__"
-_SESSION_MODEL_SETTINGS_ACTION = "__ouro_session_model_settings__"
-_MODEL_ROUTE_ACTION = "__ouro_model_route__"
-_MODEL_REASONING_ACTION = "__ouro_model_reasoning__"
 _SYSTEM_SETTING_ACTION_PREFIX = "__ouro_system_setting__:"
 _RECENT_ACTION_PREFIX = "__ouro_recent_action__:"
 _MENU_ACTIONS: MenuDestination = "actions"
-_MENU_MODELS: MenuDestination = "models"
 _MENU_PLUGINS: MenuDestination = "plugins"
 _MENU_SESSIONS: MenuDestination = "sessions"
 _REASONING_REQUESTS: dict[str, ReasoningRequest] = {
@@ -669,14 +664,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             "Sessions",
             show=False,
             key_display="Ctrl+S",
-            priority=True,
-        ),
-        Binding(
-            "alt+m",
-            "models",
-            "Model",
-            show=False,
-            key_display="Alt+M",
             priority=True,
         ),
         Binding(
@@ -2073,8 +2060,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _fork_session(
         self,
         message_id: str | None = None,
-        *,
-        menu: ChoiceScreen | None = None,
     ) -> None:
         if self._has_active_run():
             self.notify("Abort the active run before forking the session", severity="warning")
@@ -2093,20 +2078,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         points_by_id = {point.message_id: point for point in points}
         selected = message_id
         if selected is None:
-            if menu is not None:
-
-                async def select_fork_point(message_id: str) -> tuple[Choice, ...] | None:
-                    menu.dismiss(None)
-                    await self._fork_from_message(message_id, points_by_id)
-                    return None
-
-                menu.push_page(
-                    title="FORK SESSION",
-                    placeholder="Filter user messages…",
-                    choices=_branch_point_choices(points),
-                    on_select=select_fork_point,
-                )
-                return
             selected = await self.push_screen_wait(
                 ChoiceScreen(
                     title="FORK SESSION",
@@ -2157,78 +2128,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             exclusive=True,
         )
 
-    def action_models(self) -> None:
-        self._request_menu_navigation(_MENU_MODELS)
-
-    async def _choose_model_settings(
-        self,
-        *,
-        menu: ChoiceScreen | None = None,
-        switch: bool = False,
-    ) -> None:
-        try:
-            state = await self._controller.session_reasoning()
-        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        choices = (
-            Choice(_MODEL_ROUTE_ACTION, "Model", trailing=state.model.endpoint_id),
-            Choice(
-                _MODEL_REASONING_ACTION,
-                "Thinking",
-                trailing=_reasoning_value(state.requested),
-            ),
-        )
-        model_menu: ChoiceScreen
-
-        async def select_setting(selected: str) -> tuple[Choice, ...] | None:
-            if selected == _MODEL_ROUTE_ACTION:
-                await self._choose_model(menu=model_menu)
-            elif selected == _MODEL_REASONING_ACTION:
-                await self._edit_reasoning(menu=model_menu)
-            return None
-
-        if menu is not None:
-            model_menu = menu
-            navigate = menu.switch_page if switch else menu.push_page
-            navigate(
-                navigation_id=_MENU_MODELS,
-                title="SESSION MODEL SETTINGS",
-                placeholder="Choose a model setting…",
-                choices=choices,
-                on_select=select_setting,
-            )
-            return
-        model_menu = ChoiceScreen(
-            navigation_id=_MENU_MODELS,
-            title="SESSION MODEL SETTINGS",
-            placeholder="Choose a model setting…",
-            choices=choices,
-            on_select=select_setting,
-        )
-        self.push_screen(model_menu)
-
-    async def _choose_model(self, *, menu: ChoiceScreen) -> None:
-        models = await self._refresh_models()
-        state = await self._controller.session_reasoning()
-        choices = model_choices(models, selected=state.model.key)
-
-        async def select_model(selected: str) -> tuple[Choice, ...] | None:
-            await self._select_model(selected)
-            if menu.navigation_root_id == _MENU_ACTIONS:
-                menu.pop_page()
-            else:
-                menu.dismiss(None)
-            return None
-
-        menu.push_page(
-            title="MODELS",
-            placeholder="Filter models…",
-            choices=choices,
-            initial_value=state.model.key,
-            on_select=select_model,
-        )
-
     async def _select_model(self, selector: str) -> None:
         applies_to_next_request = self._has_active_run()
         try:
@@ -2252,7 +2151,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._choose_approval_mode()
 
     @work(exclusive=True, group="navigation")
-    async def _choose_approval_mode(self, *, menu: ChoiceScreen | None = None) -> None:
+    async def _choose_approval_mode(self) -> None:
         try:
             current = await self._controller.session_approval_preset()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
@@ -2267,20 +2166,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             for mode in TUI_APPROVAL_PRESETS
         )
-        if menu is not None:
-
-            async def select_approval(selected: str) -> tuple[Choice, ...] | None:
-                await self._set_approval_mode(selected)
-                menu.pop_page()
-                return None
-
-            menu.push_page(
-                title="SESSION APPROVAL",
-                placeholder="Filter approval modes…",
-                choices=choices,
-                on_select=select_approval,
-            )
-            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title="SESSION APPROVAL",
@@ -2320,7 +2205,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _choose_reasoning(self) -> None:
         await self._edit_reasoning()
 
-    async def _edit_reasoning(self, *, menu: ChoiceScreen | None = None) -> None:
+    async def _edit_reasoning(self) -> None:
         if self._has_active_run():
             self.notify(
                 "Abort the active run before changing thinking settings",
@@ -2343,23 +2228,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             for argument in arguments
         )
-        if menu is not None:
-
-            async def select_reasoning(selected: str) -> tuple[Choice, ...] | None:
-                await self._set_reasoning(selected)
-                if menu.navigation_root_id == _MENU_ACTIONS:
-                    menu.pop_page()
-                else:
-                    menu.dismiss(None)
-                return None
-
-            menu.push_page(
-                title="MODEL THINKING",
-                placeholder="Filter thinking modes…",
-                choices=choices,
-                on_select=select_reasoning,
-            )
-            return
         selected = await self.push_screen_wait(
             ChoiceScreen(
                 title="MODEL THINKING",
@@ -2402,11 +2270,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             active_menu = self._active_navigation_menu()
             if destination == _MENU_ACTIONS:
                 await self._choose_action(
-                    menu=active_menu,
-                    switch=active_menu is not None,
-                )
-            elif destination == _MENU_MODELS:
-                await self._choose_model_settings(
                     menu=active_menu,
                     switch=active_menu is not None,
                 )
@@ -2456,14 +2319,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
             Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
             Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
-            self._command_action_choice("/fork", "Session"),
-            self._command_action_choice("/approval", "Session"),
-            Choice(
-                _SESSION_MODEL_SETTINGS_ACTION,
-                "Session model settings",
-                trailing=self._shortcut_for_action("models"),
-                group="Session",
-            ),
             *(
                 Choice(
                     f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
@@ -2509,15 +2364,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 return None
             if action_id == _DELETE_SESSION_ACTION:
                 await self._choose_session_delete(menu=action_screen)
-                return None
-            if action_id == "/fork":
-                self._fork_session(menu=action_screen)
-                return None
-            if action_id == "/approval":
-                self._choose_approval_mode(menu=action_screen)
-                return None
-            if action_id == _SESSION_MODEL_SETTINGS_ACTION:
-                await self._choose_model_settings(menu=action_screen)
                 return None
             if action_id == "/help":
                 action_screen.show_child(HelpScreen())

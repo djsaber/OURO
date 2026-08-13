@@ -3728,42 +3728,6 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
 
 
 @pytest.mark.asyncio
-async def test_session_model_settings_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        await pilot.press("alt+m")
-        await pilot.pause()
-
-        assert app.screen.query_one("#choice-title", Static).render().plain == (
-            "SESSION MODEL SETTINGS"
-        )
-        assert [choice.label for choice in app.screen._choices] == [
-            "Model",
-            "Thinking",
-        ]
-        assert app.screen._choices[0].trailing == "faux"
-        assert app.screen._choices[1].trailing == "default"
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        options = app.screen.query_one(OptionList)
-        assert options.get_option_at_index(options.highlighted).id == "faux/faux"
-        assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "faux"
-        assert app.screen._choices[0].group == "faux"
-        assert app.screen._choices[0].marker == SELECTED_CHOICE_MARKER
-
-        await pilot.press("enter")
-        await pilot.pause()
-
-        assert not isinstance(app.screen, ChoiceScreen)
-        assert app._active_model == "faux"
-
-
-@pytest.mark.asyncio
 async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
@@ -3781,7 +3745,7 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_thinking_completion_and_action_menu_share_endpoint_choices(
+async def test_thinking_completion_and_modal_share_supported_choices(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
@@ -3800,9 +3764,7 @@ async def test_thinking_completion_and_action_menu_share_endpoint_choices(
             assert value not in inline
 
         app.query_one(Composer).clear()
-        app.action_models()
-        await pilot.pause()
-        await pilot.press("down", "enter")
+        app.action_thinking_settings()
         await pilot.pause()
         modal = {choice.value for choice in app.screen._choices}
         for value in ("default", "enabled", "disabled", "low", "high"):
@@ -3869,9 +3831,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Rename session",
             "Archive session",
             "Delete session",
-            "Fork session",
-            "Session approval",
-            "Session model settings",
             "List providers",
             "Add provider",
             "Edit provider",
@@ -3903,7 +3862,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         ]
         assert [choice.group for choice in action_choices] == [
             *("Appearance",) * 2,
-            *("Session",) * 8,
+            *("Session",) * 5,
             *("Providers",) * 9,
             *("Plugins",) * 3,
             *("Tools",) * 2,
@@ -3919,7 +3878,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert {choice.label: choice.trailing for choice in action_choices if choice.trailing} == {
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
-            "Session model settings": "Alt+M",
             "List plugins": "Alt+P",
             "Abort run": "Ctrl+C",
             "Keyboard help": "Ctrl+H",
@@ -4641,11 +4599,11 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
         assert app.screen is plugin_screen
         assert plugin_filter.value == "tool"
 
-        app.post_message(events.Key("alt+m", "m"))
-        await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
+        app.post_message(events.Key("alt+p", "p"))
+        await pilot.pause()
 
         assert app.screen is plugin_screen
-        assert plugin_filter.value == ""
+        assert plugin_filter.value == "tool"
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
 
@@ -4669,17 +4627,8 @@ async def test_alt_menu_shortcuts_are_idempotent_and_do_not_stack_screens(
         assert len(menu._page_stack) == 0
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
 
-        for _ in range(3):
-            await pilot.press("alt+m")
-            await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
-
-        assert app.screen is menu
-        assert len(menu._page_stack) == 0
-        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
-
-
 @pytest.mark.asyncio
-async def test_alt_menu_shortcuts_navigate_beneath_actions_without_stacking(
+async def test_plugin_shortcut_navigates_beneath_actions_without_stacking(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
@@ -4693,8 +4642,6 @@ async def test_alt_menu_shortcuts_navigate_beneath_actions_without_stacking(
         for key, title in (
             ("alt+p", "PLUGINS"),
             ("alt+p", "PLUGINS"),
-            ("alt+m", "SESSION MODEL SETTINGS"),
-            ("alt+m", "SESSION MODEL SETTINGS"),
         ):
             await pilot.press(key)
             await _wait_for_screen(app, ChoiceScreen, title=title)
@@ -4831,7 +4778,7 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
         await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
         transient = app.screen
 
-        await pilot.press("alt+p", "alt+m")
+        await pilot.press("alt+p")
         await pilot.pause()
 
         assert app.screen is transient
@@ -6505,7 +6452,7 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "OURO shortcuts" in rendered
         assert "Ctrl+Enter / Ctrl+J" in rendered
         assert "↑ / ↓" in rendered
-        assert "Alt+M" in rendered
+        assert "Alt+M" not in rendered
         assert "Alt+P" in rendered
         assert "plugins" in rendered
         assert "Ctrl+M" not in rendered
