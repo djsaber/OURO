@@ -614,11 +614,13 @@ _OURO_TUI_CSS = """
     .grouped-menu-list .option-list--option-highlighted {
         color: $ouro-theme;
         background: $ouro-highlight;
+        text-style: not bold;
     }
 
     .grouped-menu-list:focus .option-list--option-highlighted {
         color: $ouro-theme;
         background: #2a2a2a;
+        text-style: not bold;
     }
 
     #choice-hint {

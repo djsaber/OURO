@@ -3504,6 +3504,11 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
             "Renamed title"
         )
         assert app._active_title == "Renamed title"
+        highlighted_style = options.get_visual_style(
+            "option-list--option",
+            "option-list--option-highlighted",
+        ).rich_style
+        assert highlighted_style.bold is False
 
         await pilot.press("enter", "home", "x", "escape")
         await pilot.pause()
@@ -3512,6 +3517,11 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert application.runtime.sessions.open(active.session_id).session.title == (
             "Renamed title"
         )
+        highlighted_style = options.get_visual_style(
+            "option-list--option",
+            "option-list--option-highlighted",
+        ).rich_style
+        assert highlighted_style.bold is False
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
