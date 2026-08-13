@@ -32,7 +32,13 @@ from ouro.application.configuration_models import (
 )
 from ouro.application.dto import ApplicationStartupReport
 from ouro.application.models import AvailableModel, ModelReasoningState
-from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
+from ouro.application.plugin_models import (
+    PluginActionResult,
+    PluginCommandExecutionView,
+    PluginCommandView,
+    PluginDetail,
+    PluginSummary,
+)
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.session_models import (
@@ -133,6 +139,36 @@ def project_mcp_system_status(
     )
 
 
+_PLUGIN_ISSUE_STATUSES = frozenset(
+    {
+        "invalid",
+        "incompatible",
+        "needs_configuration",
+        "needs_code_trust",
+        "needs_authorization",
+        "degraded",
+        "blocked",
+        "failed",
+    }
+)
+
+
+def project_plugin_system_status(
+    status: TuiSystemStatus,
+    plugins: tuple[PluginSummary, ...],
+) -> TuiSystemStatus:
+    """Project the canonical plugin catalog into the shared TUI summary."""
+
+    active = tuple(plugin for plugin in plugins if plugin.status in {"active", "ready"})
+    return replace(
+        status,
+        plugin_active_count=len(active),
+        plugin_total_count=len(plugins),
+        plugin_issue_count=sum(plugin.status in _PLUGIN_ISSUE_STATUSES for plugin in plugins),
+        plugin_active_names=tuple(sorted(plugin.name for plugin in active)),
+    )
+
+
 @dataclass(frozen=True)
 class TuiProviderConfiguration:
     """Supplier-level configuration intent collected by the TUI."""
@@ -229,6 +265,13 @@ class TuiSkillInstallConfiguration:
     install_all: bool = False
     force: bool = False
     ref: str | None = None
+
+
+@dataclass(frozen=True)
+class TuiPluginInstallConfiguration:
+    source: str
+    ref: str | None = None
+    subdirectory: str | None = None
 
 
 @dataclass(frozen=True)
@@ -349,19 +392,6 @@ class TuiController:
             tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
         skills = runtime.available_skills()
-        active_plugins = tuple(
-            item for item in plugin_summaries if item.status in {"active", "ready"}
-        )
-        plugin_issue_statuses = {
-            "invalid",
-            "incompatible",
-            "needs_configuration",
-            "needs_code_trust",
-            "needs_authorization",
-            "degraded",
-            "blocked",
-            "failed",
-        }
         mcp_servers = self.mcp_servers()
         return TuiBootstrap(
             models=models,
@@ -369,26 +399,23 @@ class TuiController:
             sessions=await self.sessions(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=project_mcp_system_status(
-                TuiSystemStatus(
-                    workspace=runtime.default_workspace,
-                    provider_ids=tuple(sorted({model.provider_id for model in models})),
-                    model_count=len(models),
-                    skill_count=len(skills),
-                    skill_names=tuple(sorted(item.name for item in skills)),
-                    plugin_active_count=len(active_plugins),
-                    plugin_total_count=len(plugin_summaries),
-                    plugin_issue_count=sum(
-                        item.status in plugin_issue_statuses for item in plugin_summaries
+            system_status=project_plugin_system_status(
+                project_mcp_system_status(
+                    TuiSystemStatus(
+                        workspace=runtime.default_workspace,
+                        provider_ids=tuple(sorted({model.provider_id for model in models})),
+                        model_count=len(models),
+                        skill_count=len(skills),
+                        skill_names=tuple(sorted(item.name for item in skills)),
+                        usage_request_count=usage.request_count,
+                        usage_input_tokens=usage.input_tokens,
+                        usage_output_tokens=usage.output_tokens,
+                        usage_estimated_cost=usage.estimated_cost,
+                        usage_priced_request_count=usage.priced_request_count,
                     ),
-                    plugin_active_names=tuple(sorted(item.name for item in active_plugins)),
-                    usage_request_count=usage.request_count,
-                    usage_input_tokens=usage.input_tokens,
-                    usage_output_tokens=usage.output_tokens,
-                    usage_estimated_cost=usage.estimated_cost,
-                    usage_priced_request_count=usage.priced_request_count,
+                    mcp_servers,
                 ),
-                mcp_servers,
+                plugin_summaries,
             ),
         )
 
@@ -1143,6 +1170,111 @@ class TuiController:
 
     async def compact(self) -> CompactionCommandResult:
         return await self._runtime().compact(session_id=self._require_session())
+
+    def plugins(self) -> tuple[PluginSummary, ...]:
+        application = self._application
+        if application is None or application.plugins is None:
+            return ()
+        return tuple(application.plugins.list())
+
+    def plugin(self, plugin_id: str) -> PluginDetail:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return application.plugins.show(plugin_id)
+
+    async def install_plugin(
+        self,
+        draft: TuiPluginInstallConfiguration,
+    ) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        result = await asyncio.to_thread(
+            application.plugins.install,
+            draft.source,
+            ref=draft.ref,
+            subdirectory=draft.subdirectory,
+        )
+        if not isinstance(result, PluginActionResult):
+            raise RuntimeError("plugin install unexpectedly returned a validation result")
+        return result
+
+    async def configure_plugin(
+        self,
+        plugin_id: str,
+        values: dict[str, object],
+        credential_refs: dict[str, str],
+    ) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await application.plugins.configure(
+            plugin_id,
+            values,
+            credential_refs=credential_refs,
+        )
+
+    async def enable_plugin(self, plugin_id: str) -> PluginActionResult:
+        return await self._plugin_operation("enable", plugin_id)
+
+    async def disable_plugin(self, plugin_id: str) -> PluginActionResult:
+        return await self._plugin_operation("disable", plugin_id)
+
+    async def restart_plugin(self, plugin_id: str) -> PluginActionResult:
+        return await self._plugin_operation("restart", plugin_id)
+
+    async def check_plugin(self, plugin_id: str) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await asyncio.to_thread(application.plugins.check, plugin_id)
+
+    async def authorize_plugin(self, plugin_id: str) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await asyncio.to_thread(application.plugins.authorize, plugin_id)
+
+    async def trust_plugin_code(self, plugin_id: str) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await asyncio.to_thread(application.plugins.trust_code, plugin_id)
+
+    async def revoke_plugin_grants(
+        self,
+        plugin_id: str,
+        *,
+        code_trust: bool,
+    ) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await application.plugins.revoke(plugin_id, code_trust=code_trust)
+
+    async def select_plugin_install(
+        self,
+        plugin_id: str,
+        package_digest: str,
+    ) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await application.plugins.select(plugin_id, package_digest)
+
+    async def remove_plugin(self, plugin_id: str) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        return await application.plugins.remove(plugin_id)
+
+    async def _plugin_operation(self, action: str, plugin_id: str) -> PluginActionResult:
+        application = self._application
+        if application is None or application.plugins is None:
+            raise RuntimeError("plugin management is unavailable")
+        operation = getattr(application.plugins, action)
+        return await operation(plugin_id)
 
     def plugin_commands(self) -> tuple[PluginCommandView, ...]:
         application = self._application

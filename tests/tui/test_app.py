@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 from rich.text import Text
+from textual import events
 from textual.color import Color
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
 from ouro.application.configuration import ConfigurationFacade
@@ -1354,15 +1355,11 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert [line.index("│") for line in user_lines[1:4]] == [2, 2, 2]
         assert user_lines[2].index("Hello") == 5
         code_segments = [
-            segment
-            for line in history.lines
-            for segment in line
-            if "print" in segment.text
+            segment for line in history.lines for segment in line if "print" in segment.text
         ]
         assert code_segments
         assert all(
-            segment.style.bgcolor == Color.parse("#171717").rich_color
-            for segment in code_segments
+            segment.style.bgcolor == Color.parse("#171717").rich_color for segment in code_segments
         )
         assert "Status changed" in history.rendered_text
         assert not conversation.query(AssistantTurn)
@@ -1724,9 +1721,7 @@ async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
         await manager.stop("live")
         await controller.submit("inspect tools again")
 
-        assert "live__search" not in {
-            str(tool["name"]) for tool in provider.tool_batches[-1]
-        }
+        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
     finally:
         await controller.close()
 
@@ -3799,6 +3794,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Edit endpoint",
             "Set default endpoint",
             "Remove endpoint",
+            "List plugins",
+            "Install plugin",
+            "Enable or disable plugin",
+            "Check plugin",
+            "Remove plugin",
             "Tool permissions",
             "Execution & path access",
             "List MCP servers",
@@ -3822,6 +3822,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Appearance",) * 2,
             *("Session",) * 8,
             *("Providers",) * 10,
+            *("Plugins",) * 5,
             *("Tools",) * 2,
             *("MCP",) * 7,
             *("Skills",) * 6,
@@ -3836,6 +3837,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
             "Session model settings": "Alt+M",
+            "List plugins": "Alt+P",
             "Abort run": "Ctrl+C",
             "Keyboard help": "?",
         }
@@ -4382,6 +4384,90 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
 
 
 @pytest.mark.asyncio
+async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "List plugins"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+
+        plugin_screen = app.screen
+        assert list(dict.fromkeys(choice.group for choice in plugin_screen._choices)) == [
+            "Built-in"
+        ]
+        toolkit = next(
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+        )
+        assert toolkit.label == "Toolkit"
+        assert toolkit.trailing == "v1.0.0 · disabled"
+        assert toolkit.marker == ""
+
+        plugin_screen.query_one("#choice-filter", Input).value = "Toolkit"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        assert app.screen is plugin_screen
+        assert [choice.label for choice in plugin_screen._choices] == [
+            "Enable",
+            "Check integrity and readiness",
+        ]
+
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        assert app.screen is plugin_screen
+        lifecycle = {choice.value: choice for choice in plugin_screen._choices}
+        assert lifecycle["disable"].trailing == "active"
+        assert "restart" in lifecycle
+        assert "Toolkit" in app._system_status.plugin_active_names
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+        refreshed = next(
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+        )
+        assert refreshed.marker == ""
+        assert refreshed.trailing == "v1.0.0 · active"
+
+
+@pytest.mark.asyncio
+async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        composer = app.query_one("#composer", TextArea)
+        composer.text = "draft"
+        composer.focus()
+        app.post_message(events.Key("alt+p", "p"))
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+
+        assert {choice.value for choice in app.screen._choices} >= {
+            "dev.ouro.agent_context",
+            "dev.ouro.toolkit",
+        }
+        assert composer.text == "draft"
+
+        plugin_screen = app.screen
+        plugin_filter = plugin_screen.query_one("#choice-filter", Input)
+        plugin_filter.value = "tool"
+        plugin_filter.focus()
+        app.post_message(events.Key("alt+m", "m"))
+        await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
+
+        assert app.screen is not plugin_screen
+        assert plugin_filter.value == "tool"
+
+
+@pytest.mark.asyncio
 async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Path) -> None:
     ConfigurationFacade(tmp_path).save_mcp_server(
         "local",
@@ -4487,13 +4573,9 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
 
         assert app.screen is tool_screen
-        assert app.screen.query_one("#choice-title", Static).render().plain == (
-            "TOOL PERMISSIONS"
-        )
+        assert app.screen.query_one("#choice-title", Static).render().plain == ("TOOL PERMISSIONS")
         assert (
-            next(
-                choice for choice in app.screen._choices if choice.value == "BuiltinTest"
-            ).trailing
+            next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
             == "auto"
         )
         assert not list(app.screen.query("Toast"))
@@ -4515,9 +4597,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
         assert app.screen is tool_screen
         assert (
-            next(
-                choice for choice in app.screen._choices if choice.value == "BuiltinTest"
-            ).trailing
+            next(choice for choice in app.screen._choices if choice.value == "BuiltinTest").trailing
             == "default · approval"
         )
         assert not list(app.screen.query("Toast"))
@@ -4641,10 +4721,10 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
         assert action_screen.styles.background.a == 0
         assert compaction_screen.styles.background.a == 0.45
 
-        compaction_screen.query_one("#choice-list", OptionList).highlighted = (
-            compaction_screen.query_one("#choice-list", OptionList).get_option_index(
-                "compaction-model"
-            )
+        compaction_screen.query_one(
+            "#choice-list", OptionList
+        ).highlighted = compaction_screen.query_one("#choice-list", OptionList).get_option_index(
+            "compaction-model"
         )
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
@@ -4678,9 +4758,7 @@ async def test_toggle_mcp_refreshes_without_closing_the_menu(tmp_path: Path) -> 
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = (
-            "Enable or disable MCP server"
-        )
+        app.screen.query_one("#choice-filter", Input).value = "Enable or disable MCP server"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
@@ -6014,6 +6092,8 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "Ctrl+Enter / Ctrl+J" in rendered
         assert "↑ / ↓" in rendered
         assert "Alt+M" in rendered
+        assert "Alt+P" in rendered
+        assert "plugins" in rendered
         assert "Ctrl+M" not in rendered
         assert "Ctrl+P" in rendered
         assert "Ctrl+↑" in rendered

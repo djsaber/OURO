@@ -27,7 +27,7 @@ from ouro.tui.controller import (
     TuiToolExecutionConfiguration,
     project_mcp_system_status,
 )
-from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
+from ouro.tui.plugin_workflows import PluginManagementWorkflows
 from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
 from ouro.tui.theme import SELECTED_CHOICE_MARKER
 from ouro.tui.widgets import ConversationView
@@ -61,6 +61,11 @@ SYSTEM_SETTING_ACTIONS = (
         "Providers",
     ),
     SystemSettingAction("providers.endpoints.remove", "Remove endpoint", "Providers"),
+    SystemSettingAction("plugins.list", "List plugins", "Plugins"),
+    SystemSettingAction("plugins.install", "Install plugin", "Plugins"),
+    SystemSettingAction("plugins.toggle", "Enable or disable plugin", "Plugins"),
+    SystemSettingAction("plugins.check", "Check plugin", "Plugins"),
+    SystemSettingAction("plugins.remove", "Remove plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
     SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
     SystemSettingAction("mcp.list", "List MCP servers", "MCP"),
@@ -97,7 +102,7 @@ _TOOL_SOURCE_GROUPS = {
 _TOOL_SOURCE_ORDER = {source: index for index, source in enumerate(_TOOL_SOURCE_GROUPS)}
 
 
-class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
+class ConfigurationWorkflowsApp(PluginManagementWorkflows):
     """Own the keyboard-first TUI workflows for durable configuration."""
 
     _controller: TuiController
@@ -126,6 +131,15 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         elif action_id.startswith("providers."):
             await self._choose_provider_action(
                 action_id.removeprefix("providers."),
+                menu=menu,
+            )
+        elif action_id == "plugins.list":
+            await self._choose_plugins(menu=menu)
+        elif action_id == "plugins.install":
+            await self._install_plugin(menu=menu)
+        elif action_id.startswith("plugins."):
+            await self._choose_plugin_action(
+                action_id.removeprefix("plugins."),
                 menu=menu,
             )
         elif action_id == "mcp.list":

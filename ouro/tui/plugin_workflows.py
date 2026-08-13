@@ -1,0 +1,499 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import cast
+
+from ouro.application.plugin_models import PluginDetail, PluginSummary
+from ouro.tui.configuration_screens import PluginConfigurationScreen, PluginInstallScreen
+from ouro.tui.controller import (
+    TuiController,
+    TuiPluginInstallConfiguration,
+    TuiSystemStatus,
+    project_plugin_system_status,
+)
+from ouro.tui.provider_workflows import ProviderConfigurationWorkflows
+from ouro.tui.screens import Choice, ChoiceScreen, ConfirmationScreen
+from ouro.tui.theme import SELECTED_CHOICE_MARKER
+from ouro.tui.widgets import ConversationView
+
+
+class PluginManagementWorkflows(ProviderConfigurationWorkflows):
+    """Project application-owned plugin management into shared TUI menus."""
+
+    _controller: TuiController
+    _system_status: TuiSystemStatus
+
+    async def _choose_plugins(
+        self,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            plugins = self._controller.plugins()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        if not plugins:
+            self.notify("No plugins are installed or available", severity="warning")
+            return
+        choices = _plugin_choices(plugins)
+        if menu is not None:
+
+            async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
+                await self._manage_plugin(plugin_id, menu=menu)
+                return None
+
+            menu.push_page(
+                title="PLUGINS",
+                placeholder="Filter plugins…",
+                choices=choices,
+                on_select=select_plugin,
+            )
+            return
+        selected = await self.push_screen_wait(
+            ChoiceScreen(title="PLUGINS", placeholder="Filter plugins…", choices=choices)
+        )
+        if selected is not None:
+            await self._manage_plugin(selected)
+
+    async def _choose_plugin_action(
+        self,
+        action: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        if action not in {"toggle", "check", "remove"}:
+            await self.query_one(ConversationView).add_notice(
+                f"Unknown plugin action: {action}",
+                error=True,
+            )
+            return
+        try:
+            plugins = self._controller.plugins()
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        candidates = tuple(
+            plugin for plugin in plugins if action != "remove" or plugin.plugin_class == "user"
+        )
+        if not candidates:
+            self.notify(f"No plugins are available to {action}", severity="warning")
+            return
+        plugin_catalog = {plugin.plugin_id: plugin for plugin in candidates}
+
+        async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
+            plugin = plugin_catalog[plugin_id]
+            if action == "toggle":
+                if not await self._set_plugin_enabled(
+                    plugin_id,
+                    enabled=not plugin.desired_enabled,
+                ):
+                    return None
+                refreshed = self._controller.plugins()
+                plugin_catalog.clear()
+                plugin_catalog.update({item.plugin_id: item for item in refreshed})
+                return _plugin_choices(refreshed)
+            if action == "check":
+                await self._check_plugin(plugin_id)
+            else:
+                await self._remove_plugin(
+                    plugin_id,
+                    menu=menu,
+                    return_to_catalog=False,
+                )
+            return None
+
+        title = {
+            "toggle": "ENABLE OR DISABLE PLUGIN",
+            "check": "CHECK PLUGIN",
+            "remove": "REMOVE PLUGIN",
+        }[action]
+        choices = _plugin_choices(candidates)
+        if menu is not None:
+            menu.push_page(
+                title=title,
+                placeholder="Filter plugins…",
+                choices=choices,
+                on_select=select_plugin,
+                retain_focus_position_on_select=action == "toggle",
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title=title,
+                placeholder="Filter plugins…",
+                choices=choices,
+                on_select=select_plugin,
+                retain_focus_position_on_select=action == "toggle",
+            )
+        )
+
+    async def _manage_plugin(
+        self,
+        plugin_id: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            plugin = self._controller.plugin(plugin_id)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+        def cancel_plugin() -> bool:
+            if menu is None:
+                return False
+            menu.pop_page(
+                choices=_plugin_choices(self._controller.plugins()),
+                initial_value=plugin_id,
+            )
+            return True
+
+        async def select_action(selected: str) -> tuple[Choice, ...] | None:
+            if selected in {"enable", "disable"}:
+                await self._set_plugin_enabled(plugin_id, enabled=selected == "enable")
+            elif selected == "check":
+                await self._check_plugin(plugin_id)
+            elif selected == "restart":
+                await self._run_plugin_operation("restart", plugin_id)
+            elif selected == "configure":
+                await self._configure_plugin(plugin_id, menu=menu)
+            elif selected in {"authorize", "trust-code", "revoke", "revoke-code-trust"}:
+                await self._change_plugin_grants(selected, plugin_id, menu=menu)
+            elif selected == "select-install":
+                await self._choose_plugin_install(plugin_id, menu=menu)
+            elif selected == "remove":
+                await self._remove_plugin(
+                    plugin_id,
+                    menu=menu,
+                    return_to_catalog=True,
+                )
+                return None
+            if menu is not None:
+                refreshed = self._controller.plugin(plugin_id)
+                menu.replace_page(
+                    title=f"PLUGIN · {refreshed.name}",
+                    placeholder="Choose an action…",
+                    choices=_plugin_action_choices(refreshed),
+                    on_select=select_action,
+                    on_cancel=cancel_plugin,
+                )
+            return None
+
+        choices = _plugin_action_choices(plugin)
+        if menu is not None:
+            menu.push_page(
+                title=f"PLUGIN · {plugin.name}",
+                placeholder="Choose an action…",
+                choices=choices,
+                on_select=select_action,
+                on_cancel=cancel_plugin,
+            )
+            return
+        selected = await self.push_screen_wait(
+            ChoiceScreen(
+                title=f"PLUGIN · {plugin.name}",
+                placeholder="Choose an action…",
+                choices=choices,
+            )
+        )
+        if selected is not None:
+            await select_action(selected)
+
+    async def _install_plugin(self, *, menu: ChoiceScreen | None = None) -> None:
+        draft = await (
+            menu.open_child(PluginInstallScreen())
+            if menu is not None
+            else self.push_screen_wait(PluginInstallScreen())
+        )
+        if draft is None:
+            return
+        try:
+            result = await self._controller.install_plugin(
+                cast(TuiPluginInstallConfiguration, draft)
+            )
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._refresh_plugin_system_status()
+        suffix = "installed" if result.changed else "already installed"
+        self.notify(f"Plugin {suffix}: {result.plugin_id} · {result.status}")
+
+    async def _configure_plugin(
+        self,
+        plugin_id: str,
+        *,
+        menu: ChoiceScreen | None,
+    ) -> None:
+        plugin = self._controller.plugin(plugin_id)
+        if not plugin.configuration_supported:
+            self.notify(f"Plugin has no configuration schema: {plugin_id}", severity="warning")
+            return
+        draft = await (
+            menu.open_child(PluginConfigurationScreen(plugin))
+            if menu is not None
+            else self.push_screen_wait(PluginConfigurationScreen(plugin))
+        )
+        if draft is None:
+            return
+        values, credential_refs = cast(tuple[dict[str, object], dict[str, str]], draft)
+        try:
+            result = await self._controller.configure_plugin(
+                plugin_id,
+                values,
+                credential_refs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._refresh_plugin_system_status()
+        self.notify(f"Plugin configured: {plugin_id} · {result.status}")
+
+    async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
+        operation = self._controller.enable_plugin if enabled else self._controller.disable_plugin
+        try:
+            result = await operation(plugin_id)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return False
+        self._refresh_plugin_system_status()
+        self.notify(f"Plugin {result.status}: {plugin_id}")
+        return True
+
+    async def _check_plugin(self, plugin_id: str) -> None:
+        try:
+            result = await self._controller.check_plugin(plugin_id)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        messages = "; ".join(item.message for item in result.diagnostics)
+        if result.status in {"active", "ready", "disabled"} and not messages:
+            self.notify(f"Plugin check passed: {plugin_id} · {result.status}")
+            return
+        await self.query_one(ConversationView).add_notice(
+            f"Plugin check: {plugin_id} · {result.status}" + (f" · {messages}" if messages else ""),
+            error=result.status in {"invalid", "incompatible", "blocked", "failed"},
+        )
+
+    async def _run_plugin_operation(self, action: str, plugin_id: str) -> None:
+        try:
+            result = await self._controller.restart_plugin(plugin_id)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._refresh_plugin_system_status()
+        self.notify(f"Plugin {action}: {plugin_id} · {result.status}")
+
+    async def _change_plugin_grants(
+        self,
+        action: str,
+        plugin_id: str,
+        *,
+        menu: ChoiceScreen | None,
+    ) -> None:
+        plugin = self._controller.plugin(plugin_id)
+        labels = {
+            "authorize": ("AUTHORIZE PLUGIN", "Authorize", "declared capabilities"),
+            "trust-code": ("TRUST PLUGIN CODE", "Trust code", "selected executable digest"),
+            "revoke": ("REVOKE PLUGIN AUTHORIZATION", "Revoke", "capability grants"),
+            "revoke-code-trust": ("REVOKE PLUGIN CODE TRUST", "Revoke", "code trust grants"),
+        }
+        title, confirm_label, subject = labels[action]
+        permissions = (
+            ", ".join(str(item.get("id")) for item in plugin.permissions if item.get("id"))
+            or "none"
+        )
+        selected = await (
+            menu.open_child(
+                ConfirmationScreen(
+                    title=title,
+                    message=(
+                        f"Change {subject} for {plugin.name} ({plugin_id})? "
+                        f"Declared permissions: {permissions}."
+                    ),
+                    confirm_label=confirm_label,
+                )
+            )
+            if menu is not None
+            else self.push_screen_wait(
+                ConfirmationScreen(
+                    title=title,
+                    message=f"Change {subject} for {plugin.name} ({plugin_id})?",
+                    confirm_label=confirm_label,
+                )
+            )
+        )
+        if not ConfirmationScreen.confirmed(selected):
+            return
+        try:
+            if action == "authorize":
+                result = await self._controller.authorize_plugin(plugin_id)
+            elif action == "trust-code":
+                result = await self._controller.trust_plugin_code(plugin_id)
+            else:
+                result = await self._controller.revoke_plugin_grants(
+                    plugin_id,
+                    code_trust=action == "revoke-code-trust",
+                )
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._refresh_plugin_system_status()
+        self.notify(f"Plugin grants updated: {plugin_id} · {result.status}")
+
+    async def _choose_plugin_install(
+        self,
+        plugin_id: str,
+        *,
+        menu: ChoiceScreen | None,
+    ) -> None:
+        plugin = self._controller.plugin(plugin_id)
+        choices = tuple(
+            Choice(
+                install.package_digest,
+                install.version,
+                trailing=("selected" if install.selected else install.package_digest[:12]),
+                marker=SELECTED_CHOICE_MARKER if install.selected else "",
+            )
+            for install in plugin.installs
+        )
+
+        async def select_install(package_digest: str) -> tuple[Choice, ...] | None:
+            try:
+                result = await self._controller.select_plugin_install(
+                    plugin_id,
+                    package_digest,
+                )
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            self._refresh_plugin_system_status()
+            self.notify(f"Plugin version selected: {plugin_id} · {result.status}")
+            return tuple(
+                replace(
+                    choice,
+                    marker=(
+                        SELECTED_CHOICE_MARKER if choice.value == result.package_digest else ""
+                    ),
+                    trailing=(
+                        "selected" if choice.value == result.package_digest else choice.value[:12]
+                    ),
+                )
+                for choice in choices
+            )
+
+        screen = ChoiceScreen(
+            title=f"PLUGIN VERSIONS · {plugin.name}",
+            placeholder="Filter versions…",
+            choices=choices,
+            on_select=select_install,
+        )
+        if menu is not None:
+            await menu.open_child(screen)
+        else:
+            await self.push_screen_wait(screen)
+
+    async def _remove_plugin(
+        self,
+        plugin_id: str,
+        *,
+        menu: ChoiceScreen | None,
+        return_to_catalog: bool,
+    ) -> None:
+        plugin = self._controller.plugin(plugin_id)
+        selected = await (
+            menu.open_child(
+                ConfirmationScreen(
+                    title="REMOVE PLUGIN",
+                    message=(
+                        f"Remove the selected install of {plugin.name} ({plugin_id})? "
+                        "Plugin data is retained."
+                    ),
+                    confirm_label="Remove",
+                )
+            )
+            if menu is not None
+            else self.push_screen_wait(
+                ConfirmationScreen(
+                    title="REMOVE PLUGIN",
+                    message=f"Remove the selected install of {plugin.name} ({plugin_id})?",
+                    confirm_label="Remove",
+                )
+            )
+        )
+        if not ConfirmationScreen.confirmed(selected):
+            return
+        try:
+            await self._controller.remove_plugin(plugin_id)
+        except Exception as exc:  # noqa: BLE001
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        self._refresh_plugin_system_status()
+        self.notify(f"Plugin removed: {plugin_id}")
+        if menu is not None:
+            if return_to_catalog:
+                menu.pop_page(
+                    choices=_plugin_choices(self._controller.plugins()),
+                    initial_value=plugin_id,
+                )
+            else:
+                menu.pop_page()
+
+    def _refresh_plugin_system_status(self) -> None:
+        self._system_status = project_plugin_system_status(
+            self._system_status,
+            self._controller.plugins(),
+        )
+        self.query_one(ConversationView).set_system_status(self._system_status)
+
+
+def _plugin_choices(plugins: tuple[PluginSummary, ...]) -> tuple[Choice, ...]:
+    return tuple(
+        Choice(
+            plugin.plugin_id,
+            plugin.name,
+            description=plugin.plugin_id,
+            group="Built-in" if plugin.plugin_class == "builtin" else "Installed",
+            trailing=f"v{plugin.version} · {plugin.status}",
+        )
+        for plugin in sorted(
+            plugins,
+            key=lambda item: (item.plugin_class != "builtin", item.name.casefold()),
+        )
+    )
+
+
+def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
+    actions = [
+        Choice(
+            "disable" if plugin.desired_enabled else "enable",
+            "Disable" if plugin.desired_enabled else "Enable",
+            trailing=plugin.status,
+            group="LIFECYCLE",
+        ),
+        Choice("check", "Check integrity and readiness", group="LIFECYCLE"),
+    ]
+    if plugin.status in {"active", "degraded", "failed"}:
+        actions.append(Choice("restart", "Restart", group="LIFECYCLE"))
+    if plugin.plugin_class == "user":
+        if plugin.configuration_supported:
+            actions.append(Choice("configure", "Configuration", group="SECURITY & CONFIG"))
+        actions.append(Choice("authorize", "Authorize capabilities", group="SECURITY & CONFIG"))
+        if plugin.runtime_kind != "declarative":
+            actions.append(Choice("trust-code", "Trust selected code", group="SECURITY & CONFIG"))
+        actions.append(Choice("revoke", "Revoke authorization", group="SECURITY & CONFIG"))
+        if plugin.runtime_kind != "declarative":
+            actions.append(
+                Choice("revoke-code-trust", "Revoke code trust", group="SECURITY & CONFIG")
+            )
+        if len(plugin.installs) > 1:
+            actions.append(
+                Choice(
+                    "select-install",
+                    "Select installed version",
+                    trailing=f"{len(plugin.installs)} versions",
+                    group="VERSIONS",
+                )
+            )
+        actions.append(Choice("remove", "Remove selected install", group="DANGER ZONE"))
+    return tuple(actions)

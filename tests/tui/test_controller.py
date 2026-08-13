@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from ouro.tui.controller import (
     TuiController,
     TuiEndpointConfiguration,
     TuiMCPServerConfiguration,
+    TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
     TuiToolExecutionConfiguration,
 )
@@ -375,6 +377,105 @@ async def test_controller_tool_catalog_follows_plugin_activation_without_restart
 
         tools = {item.name: item for item in await controller.tool_configurations()}
         assert "Glob" not in tools
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_manages_plugins_through_local_application_boundary(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=ConfigurationFacade(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        plugins = {item.plugin_id: item for item in controller.plugins()}
+        assert plugins["dev.ouro.toolkit"].plugin_class == "builtin"
+        assert plugins["dev.ouro.toolkit"].status == "disabled"
+
+        enabled = await controller.enable_plugin("dev.ouro.toolkit")
+        assert enabled.status == "active"
+        detail = controller.plugin("dev.ouro.toolkit")
+        assert detail.desired_enabled is True
+        assert detail.configuration_supported is False
+
+        checked = await controller.check_plugin("dev.ouro.toolkit")
+        assert checked.status == "active"
+        assert (await controller.disable_plugin("dev.ouro.toolkit")).status == "disabled"
+
+        with pytest.raises(Exception, match="does not exist|not found|No such file"):
+            await controller.install_plugin(
+                TuiPluginInstallConfiguration(source=str(tmp_path / "missing-plugin"))
+            )
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) -> None:
+    source = tmp_path / "user-plugin"
+    manifest_dir = source / ".ouro-plugin"
+    manifest_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "plugin_id": "dev.ouro.tui_config",
+                "name": "TUI configuration",
+                "version": "1.0.0",
+                "namespace": "tui_config",
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+                "runtime": {"kind": "declarative"},
+                "contributes": {},
+                "permissions": [],
+                "configuration": {"schema": "./configuration.schema.json", "version": 1},
+                "dependencies": {"plugins": []},
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "configuration.schema.json").write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {"mode": {"type": "string"}},
+                "required": ["mode"],
+                "additionalProperties": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=ConfigurationFacade(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        installed = await controller.install_plugin(
+            TuiPluginInstallConfiguration(source=str(source))
+        )
+        assert installed.plugin_id == "dev.ouro.tui_config"
+        assert controller.plugin(installed.plugin_id).configuration_supported is True
+
+        configured = await controller.configure_plugin(
+            installed.plugin_id,
+            {"mode": "safe"},
+            {},
+        )
+        assert configured.status == "disabled"
+        detail = controller.plugin(installed.plugin_id)
+        assert detail.configuration_values == {"mode": "safe"}
+        assert detail.credential_refs == {}
     finally:
         await controller.close()
 

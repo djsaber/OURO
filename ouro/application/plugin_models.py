@@ -50,6 +50,9 @@ class PluginDetail(PluginSummary):
     dependencies: list[dict[str, str | None]] = Field(default_factory=list)
     active_generations: list[dict[str, object]] = Field(default_factory=list)
     diagnostics: list[PluginDiagnostic] = Field(default_factory=list)
+    configuration_supported: bool = False
+    configuration_values: dict[str, object] = Field(default_factory=dict)
+    credential_refs: dict[str, str] = Field(default_factory=dict)
 
 
 class PluginValidationView(OuroModel):

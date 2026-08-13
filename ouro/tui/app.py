@@ -648,7 +648,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     BINDINGS = [
         Binding("ctrl+n", "new_session", "New session", show=False, key_display="Ctrl+N"),
         Binding("ctrl+s", "sessions", "Sessions", show=False, key_display="Ctrl+S"),
-        Binding("alt+m", "models", "Model", show=False, key_display="Alt+M"),
+        Binding(
+            "alt+m",
+            "models",
+            "Model",
+            show=False,
+            key_display="Alt+M",
+            priority=True,
+        ),
+        Binding(
+            "alt+p",
+            "plugins",
+            "Plugins",
+            show=False,
+            key_display="Alt+P",
+            priority=True,
+        ),
         Binding("ctrl+p", "actions", "Actions", show=False, key_display="Ctrl+P"),
         Binding(
             "ctrl+up",
@@ -1221,10 +1236,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
             return
         static_command, _normalized_argument = resolve_command(_command_text, TUI_COMMANDS)
-        if static_command is not None and static_command.name == "/model" and (
-            not argument.strip()
-            or popup.argument_command is None
-            or popup.argument_command.name != "/model"
+        if (
+            static_command is not None
+            and static_command.name == "/model"
+            and (
+                not argument.strip()
+                or popup.argument_command is None
+                or popup.argument_command.name != "/model"
+            )
         ):
             try:
                 await self._refresh_models()
@@ -2318,6 +2337,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def action_actions(self) -> None:
         self._choose_action()
 
+    def action_plugins(self) -> None:
+        self.run_worker(self._choose_plugins(), exclusive=True, group="navigation")
+
     @work(exclusive=True, group="navigation")
     async def _choose_action(self) -> None:
         actions = (
@@ -2349,6 +2371,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 Choice(
                     f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
                     action.label,
+                    trailing=(
+                        self._shortcut_for_action("plugins")
+                        if action.action_id == "plugins.list"
+                        else ""
+                    ),
                     group=action.group,
                 )
                 for action in SYSTEM_SETTING_ACTIONS

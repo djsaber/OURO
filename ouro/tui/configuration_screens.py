@@ -12,12 +12,14 @@ from ouro.application.configuration_models import (
     ToolExecutionConfigView,
 )
 from ouro.application.models import AvailableModel
+from ouro.application.plugin_models import PluginDetail
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
 from ouro.core.tools import PermissionMode, ToolEffect
 from ouro.tui.controller import (
     TuiCompactionConfiguration,
     TuiMCPServerConfiguration,
+    TuiPluginInstallConfiguration,
     TuiSkillInstallConfiguration,
     TuiToolExecutionConfiguration,
 )
@@ -84,9 +86,7 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
     def _draft(self) -> TuiToolExecutionConfiguration:
         return TuiToolExecutionConfiguration(
             mode=cast(ToolExecutionMode, self._values["tool-execution-mode"]),
-            max_concurrency=_positive_int(
-                self._values["tool-max-concurrency"], "Max concurrency"
-            ),
+            max_concurrency=_positive_int(self._values["tool-max-concurrency"], "Max concurrency"),
             workspace_only=self._workspace_only,
             max_output_chars=_positive_int(
                 self._values["tool-max-output"], "Max output characters"
@@ -712,7 +712,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 ),
                 group="CREDENTIALS",
                 edit_value=self._values["mcp-credential-refs"],
-                edit_placeholder='Enter credential references as a JSON object',
+                edit_placeholder="Enter credential references as a JSON object",
             ),
             Choice(
                 "mcp-permission",
@@ -730,7 +730,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 else self._values["mcp-tool-effects"] or "Default",
                 group="TOOLS",
                 edit_value=self._values["mcp-tool-effects"],
-                edit_placeholder='Enter tool effects as a JSON object',
+                edit_placeholder="Enter tool effects as a JSON object",
             ),
             Choice(
                 "mcp-enabled",
@@ -783,6 +783,165 @@ class MCPConfigurationScreen(EditableChoiceScreen):
                 edit_placeholder="Enter seconds",
             ),
             Choice("mcp-save", "Save", trailing=error, group="ACTIONS", disabled=bool(error)),
+        )
+
+
+class PluginInstallScreen(EditableChoiceScreen):
+    """Collect an install source using the same inline form as other resources."""
+
+    def __init__(self) -> None:
+        self._values = {"source": "", "ref": "", "subdirectory": ""}
+        super().__init__(
+            title="INSTALL PLUGIN",
+            placeholder="Filter plugin install settings…",
+            choices=self._plugin_install_choices(),
+            on_save=self._save_field,
+        )
+
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is None and selected == "plugin-install":
+            self._submit()
+            return
+        await super()._select_choice(selected)
+
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id.removeprefix("plugin-")] = value.strip()
+        return self._plugin_install_choices()
+
+    def _submit(self) -> None:
+        source = self._values["source"]
+        if not source:
+            self.notify("Source is required", severity="warning", markup=False)
+            return
+        draft = TuiPluginInstallConfiguration(
+            source=source,
+            ref=self._values["ref"] or None,
+            subdirectory=self._values["subdirectory"] or None,
+        )
+        self.dismiss(draft)  # type: ignore[arg-type]
+
+    def _plugin_install_choices(self) -> tuple[Choice, ...]:
+        source = self._values["source"]
+        return (
+            Choice(
+                "plugin-source",
+                "Source",
+                trailing=source or "Required",
+                group="SOURCE",
+                edit_value=source,
+                edit_placeholder="Enter a local path, Git URL, or archive URL",
+            ),
+            Choice(
+                "plugin-ref",
+                "Git ref",
+                trailing=self._values["ref"] or "Default",
+                group="SOURCE",
+                edit_value=self._values["ref"],
+                edit_placeholder="Optional branch, tag, or commit",
+            ),
+            Choice(
+                "plugin-subdirectory",
+                "Subdirectory",
+                trailing=self._values["subdirectory"] or "Root",
+                group="SOURCE",
+                edit_value=self._values["subdirectory"],
+                edit_placeholder="Optional package path inside the repository",
+            ),
+            Choice(
+                "plugin-install",
+                "Install",
+                trailing="" if source else "Source is required",
+                group="ACTIONS",
+                disabled=not source,
+            ),
+        )
+
+
+class PluginConfigurationScreen(EditableChoiceScreen):
+    """Edit the application-owned plugin configuration JSON contract."""
+
+    def __init__(self, plugin: PluginDetail) -> None:
+        self._plugin_id = plugin.plugin_id
+        self._values = {
+            "plugin-config-values": json.dumps(
+                plugin.configuration_values,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+            "plugin-config-credentials": json.dumps(
+                plugin.credential_refs,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        }
+        super().__init__(
+            title=f"PLUGIN CONFIGURATION · {plugin.name}",
+            placeholder="Filter plugin configuration…",
+            choices=self._configuration_choices(),
+            on_save=self._save_field,
+        )
+
+    async def _select_choice(self, selected: str) -> None:
+        if self._editing_value is None and selected == "plugin-config-save":
+            self._submit()
+            return
+        await super()._select_choice(selected)
+
+    async def _save_field(self, field_id: str, value: str) -> tuple[Choice, ...] | None:
+        self._values[field_id] = value.strip()
+        return self._configuration_choices()
+
+    def _draft(self) -> tuple[dict[str, object], dict[str, str]]:
+        values = _json_object(self._values["plugin-config-values"], "Values")
+        credentials = _json_string_object(
+            self._values["plugin-config-credentials"],
+            "Credential references",
+        )
+        if any(not reference.startswith("env:") for reference in credentials.values()):
+            raise ValueError("Credential references must use env: references")
+        return values, credentials
+
+    def _validation_error(self) -> str:
+        try:
+            self._draft()
+        except ValueError as exc:
+            return str(exc)
+        return ""
+
+    def _submit(self) -> None:
+        try:
+            draft = self._draft()
+        except ValueError as exc:
+            self.notify(str(exc), severity="warning", markup=False)
+            return
+        self.dismiss(draft)  # type: ignore[arg-type]
+
+    def _configuration_choices(self) -> tuple[Choice, ...]:
+        error = self._validation_error()
+        return (
+            Choice(
+                "plugin-config-values",
+                "Values",
+                trailing=self._values["plugin-config-values"],
+                group="CONFIGURATION",
+                edit_value=self._values["plugin-config-values"],
+                edit_placeholder="Enter a JSON object",
+            ),
+            Choice(
+                "plugin-config-credentials",
+                "Credential references",
+                trailing=self._values["plugin-config-credentials"],
+                group="CONFIGURATION",
+                edit_value=self._values["plugin-config-credentials"],
+                edit_placeholder='Enter slot-to-env references, e.g. {"api":"env:API_KEY"}',
+            ),
+            Choice(
+                "plugin-config-save",
+                "Save",
+                trailing=error,
+                group="ACTIONS",
+                disabled=bool(error),
+            ),
         )
 
 
@@ -909,6 +1068,20 @@ def _optional_json_string_list(raw: str, label: str) -> list[str] | None:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{label} must be a JSON string array")
     return value
+
+
+def _json_object(raw: str, label: str) -> dict[str, object]:
+    value = _optional_json(raw, label)
+    if not isinstance(value, dict) or any(not isinstance(key, str) for key in value):
+        raise ValueError(f"{label} must be a JSON object")
+    return dict(value)
+
+
+def _json_string_object(raw: str, label: str) -> dict[str, str]:
+    value = _json_object(raw, label)
+    if any(not isinstance(item, str) for item in value.values()):
+        raise ValueError(f"{label} must contain string values")
+    return cast(dict[str, str], value)
 
 
 def _enabled_label(enabled: bool) -> str:

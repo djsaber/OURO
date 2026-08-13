@@ -964,11 +964,12 @@ class HelpScreen(ModalScreen[None]):
             ("Enter", "send / queue", "Shift+Enter", "new line"),
             ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
             ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-            ("Alt+M", "model", "Ctrl+P", "actions"),
+            ("Alt+M", "model", "Alt+P", "plugins"),
+            ("Ctrl+P", "actions", "?", "help"),
             ("Ctrl+↑", "conversation top", "Ctrl+↓", "conversation bottom"),
             ("Ctrl+←", "previous user message", "Ctrl+→", "next user message"),
             ("Ctrl+C", "abort run", "Ctrl+Q", "quit"),
-            ("Esc", "close menu", "?", "help"),
+            ("Esc", "close menu", "", ""),
         )
         for left_key, left_desc, right_key, right_desc in pairs:
             text.append(left_key, style="bold")

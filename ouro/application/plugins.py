@@ -216,6 +216,7 @@ class PluginService:
         installed = _require_selected(record)
         summary = self._summary(record)
         manifest = installed.manifest
+        configuration = record.activation.configuration_for(installed.package_digest)
         generations: list[dict[str, object]] = []
         if self.runtime is not None:
             with self.runtime.snapshot() as snapshot:
@@ -244,6 +245,11 @@ class PluginService:
             ],
             active_generations=generations,
             diagnostics=(self.runtime.diagnostics(plugin_id) if self.runtime is not None else []),
+            configuration_supported=manifest.configuration is not None,
+            configuration_values=(dict(configuration.values) if configuration is not None else {}),
+            credential_refs=(
+                dict(configuration.credential_refs) if configuration is not None else {}
+            ),
         )
 
     def diagnostics(self, plugin_id: str | None = None) -> builtins.list[PluginDiagnostic]:
