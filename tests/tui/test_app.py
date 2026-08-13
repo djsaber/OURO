@@ -4496,6 +4496,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
             ).trailing
             == "auto"
         )
+        assert not list(app.screen.query("Toast"))
         assert ConfigurationFacade(tmp_path).permission_config().tools["BuiltinTest"] == "auto"
 
         await pilot.press("enter")
@@ -4519,6 +4520,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
             ).trailing
             == "default · approval"
         )
+        assert not list(app.screen.query("Toast"))
         assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
 
 

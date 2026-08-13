@@ -245,12 +245,10 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
             selected_catalog_value = active_tool.name
-            selected_name = active_tool.name
             tool_catalog.clear()
             tool_catalog.update({tool.name: tool for tool in refreshed})
             active_tool = None
             show_tool_catalog(initial_value=selected_catalog_value)
-            self.notify(f"Tool permission saved: {selected_name} → {selected}")
             return None
 
         def cancel_submenu() -> bool:
