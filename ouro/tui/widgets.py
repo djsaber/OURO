@@ -40,6 +40,7 @@ from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
+from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import TuiTheme, theme_for
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
 
@@ -753,9 +754,7 @@ class ConversationView(VerticalScroll):
         materialized = list(messages)
         run_presentations = tuple(runs)
         requests = {
-            request.message_id: request
-            for run in run_presentations
-            for request in run.requests
+            request.message_id: request for run in run_presentations for request in run.requests
         }
         tool_activities = _tool_activities_from_messages(materialized)
         chronological: list[tuple[int, int, TranscriptEntry]] = []
@@ -1829,7 +1828,7 @@ class QueuedInputPanel(VerticalScroll):
         self.scroll_end(animate=False)
 
 
-class Composer(TextArea):
+class Composer(TuiTextArea):
     DEFAULT_PLACEHOLDER = "Ask anything..."
     ACTIVE_RUN_PLACEHOLDER = "Enter queues a follow-up · Ctrl+Enter guides the active run…"
     QUESTION_PLACEHOLDER = "Choose an option above…"

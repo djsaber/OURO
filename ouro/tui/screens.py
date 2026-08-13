@@ -18,6 +18,7 @@ from textual.widgets.option_list import Option
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import slash_command_help
+from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import theme_for
 
 
@@ -169,7 +170,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             )
 
     def _filter_input(self) -> Input:
-        return Input(placeholder=self._placeholder, id="choice-filter")
+        return TuiInput(placeholder=self._placeholder, id="choice-filter")
 
     def on_mount(self) -> None:
         self.query_one("#choice-filter", Input).focus()
@@ -506,7 +507,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
 
 
-class _MultiChoiceFilterInput(Input):
+class _MultiChoiceFilterInput(TuiInput):
     BINDINGS = [
         Binding("space", "toggle_choice", "Toggle", show=False, priority=True),
     ]

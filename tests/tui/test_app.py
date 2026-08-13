@@ -4447,6 +4447,10 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
         composer = app.query_one("#composer", TextArea)
         composer.text = "draft"
         composer.focus()
+        app.post_message(events.Key("alt+x", "x"))
+        await pilot.pause()
+        assert composer.text == "draft"
+
         app.post_message(events.Key("alt+p", "p"))
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
 
@@ -4460,6 +4464,11 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
         plugin_filter = plugin_screen.query_one("#choice-filter", Input)
         plugin_filter.value = "tool"
         plugin_filter.focus()
+        app.post_message(events.Key("alt+x", "x"))
+        await pilot.pause()
+        assert app.screen is plugin_screen
+        assert plugin_filter.value == "tool"
+
         app.post_message(events.Key("alt+m", "m"))
         await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
 
