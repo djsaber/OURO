@@ -23,6 +23,7 @@ from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import TextArea
 
+from ouro import __version__
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.session_models import SessionCatalogEntry
@@ -109,6 +110,7 @@ class LifecycleStatusReceived(Message):
 _RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
+_WELCOME_HEADER_CONTEXT = f"v{__version__}"
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
     "run_completed",
@@ -956,6 +958,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _show_welcome(self, *, refresh_status: bool = True) -> None:
         if refresh_status:
             await self._refresh_system_status()
+        self.query_one(BrandHeader).set_context(session_title=_WELCOME_HEADER_CONTEXT)
         await self.query_one(ConversationView).show_welcome()
 
     def _sync_mcp_status(self) -> None:

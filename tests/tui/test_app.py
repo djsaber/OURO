@@ -16,6 +16,7 @@ from textual.containers import Vertical, VerticalScroll
 from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
+from ouro import __version__
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
 from ouro.application.models import AvailableModel
@@ -1288,6 +1289,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         # Startup enters the empty state: the LOGO welcome frame is the sole
         # content of the conversation area and projects the workspace status.
         welcome = conversation.query_one(WelcomePanel)
+        assert header.render().plain == f" ▣ OURO v{__version__}"
+        assert "New session" not in header.render().plain
         assert "██████" in welcome.render().plain
         assert f"Workspace {tmp_path}" in welcome.render().plain
         conversation.set_system_status(
@@ -3631,6 +3634,7 @@ async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: P
 
         assert app._projection is not None
         assert app._projection.session_id == destination.session_id
+        assert app.query_one(BrandHeader).render().plain == " ▣ OURO Destination"
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
 
