@@ -37,6 +37,14 @@ class ToolExecutor:
         self.permission_overrides = dict(permission_overrides or {})
         self.permission_floors = dict(permission_floors or {})
 
+    def replace_permission_overrides(
+        self,
+        permission_overrides: Mapping[str, PermissionMode],
+    ) -> None:
+        """Publish the host permission policy used by subsequent preflight checks."""
+
+        self.permission_overrides = dict(permission_overrides)
+
     async def execute(
         self,
         invocation: ToolInvocation,

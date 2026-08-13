@@ -4441,7 +4441,7 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         assert choices["ThirdPartyPluginTest"].group == "Third-party plugins"
         assert choices["AiGeneratedPluginTest"].group == "AI-generated plugins"
         assert choices["UnavailableTest"].group == "Unavailable"
-        assert choices["BuiltinTest"].trailing == "approval"
+        assert choices["BuiltinTest"].trailing == "default · approval"
         assert choices["ContractControlledTest"].trailing == "auto · contract"
         assert choices["UnavailableTest"].trailing == "deny · unavailable"
         assert all(choice.description == "" for choice in choices.values())
@@ -4471,6 +4471,11 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         )
         assert app.screen is tool_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        current = next(choice for choice in app.screen._choices if choice.value == "default")
+        assert current.label == "default"
+        assert current.marker == SELECTED_CHOICE_MARKER
+        assert current.trailing == "approval"
+        assert all(choice.trailing != "current" for choice in app.screen._choices)
         app.screen.query_one("#choice-filter", Input).value = "auto"
         await pilot.pause()
         await pilot.press("enter")
@@ -4496,9 +4501,20 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         )
         assert app.screen is tool_screen
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
-        await pilot.press("escape")
+        assert "default" in {choice.value for choice in app.screen._choices}
+        assert "inherit" not in {choice.value for choice in app.screen._choices}
+        app.screen.query_one("#choice-filter", Input).value = "default"
+        await pilot.pause()
+        await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
         assert app.screen is tool_screen
+        assert (
+            next(
+                choice for choice in app.screen._choices if choice.value == "BuiltinTest"
+            ).trailing
+            == "default · approval"
+        )
+        assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
 
 
 @pytest.mark.asyncio

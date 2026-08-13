@@ -7,7 +7,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.config.tool_execution import ToolExecutionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent, ToolCallDelta
-from ouro.core.tools import ToolCallRequest
+from ouro.core.tools import ToolCallRequest, ToolInvocation
 from ouro.plugins.api import adapt_sdk_contributions
 from ouro.providers import FauxProvider
 from ouro.sdk.plugins import v1 as sdk
@@ -67,6 +67,32 @@ def test_runtime_reuses_one_tool_coordinator_for_each_run(tmp_path) -> None:
     second = runtime._tool_calls_for_run("run_scope")
 
     assert first is second
+
+
+def test_runtime_publishes_permission_updates_to_existing_and_future_coordinators(
+    tmp_path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="Deploy", description="Deploy changes."),
+            handler=lambda invocation: _result(invocation, "deployed"),
+        )
+    )
+    runtime = _runtime(tmp_path, registry=registry, first_calls=[])
+    existing = runtime._tool_calls_for_run("existing").executor
+    invocation = ToolInvocation(
+        session_id="session",
+        run_id="existing",
+        tool_name="Deploy",
+    )
+
+    runtime.replace_tool_permission_overrides({"Deploy": "deny"})
+
+    assert existing.preflight(invocation).invocation.permission_mode == "deny"
+    future = runtime._tool_calls_for_run("future").executor
+    assert future.preflight(invocation).invocation.permission_mode == "deny"
+    assert runtime.tool_permission_overrides() == {"Deploy": "deny"}
 
 
 @pytest.mark.asyncio

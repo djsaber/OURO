@@ -16,6 +16,7 @@ from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
 from ouro.providers import FauxProvider
@@ -238,7 +239,7 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
     controller = TuiController(
         lambda _event: None,
         lambda _status: None,
-        application=_reasoning_application(tmp_path),
+        application=(application := _reasoning_application(tmp_path)),
         configuration=configuration,
     )
     await controller.start()
@@ -247,10 +248,44 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
         tools = {item.name: item for item in await controller.tool_configurations()}
         assert tools["Read"].effect == "read_only"
         assert tools["Write"].effect == "state_changing"
+        active_executor = application.runtime._tool_calls_for_run("active").executor
 
         updated = await controller.set_tool_permission("Write", "deny")
         assert updated is not None and updated.permission_override == "deny"
         assert configuration.permission_config().tools["Write"] == "deny"
+        denied = active_executor.preflight(
+            ToolInvocation(
+                session_id="session",
+                run_id="active",
+                tool_name="Write",
+                arguments={"path": "unused.txt", "content": "content"},
+            )
+        )
+        assert denied.invocation.permission_mode == "deny"
+
+        automatic = await controller.set_tool_permission("Write", "auto")
+        assert automatic is not None and automatic.permission_override == "auto"
+        ready = active_executor.preflight(
+            ToolInvocation(
+                session_id="session",
+                run_id="active",
+                tool_name="Write",
+                arguments={"path": "unused.txt", "content": "content"},
+            )
+        )
+        assert ready.status == "ready"
+
+        inherited = await controller.set_tool_permission("Write", None)
+        assert inherited is not None and inherited.permission_override is None
+        protected = active_executor.preflight(
+            ToolInvocation(
+                session_id="session",
+                run_id="active",
+                tool_name="Write",
+                arguments={"path": "unused.txt", "content": "content"},
+            )
+        )
+        assert protected.status == "approval_required"
 
         execution = await controller.update_tool_execution(
             TuiToolExecutionConfiguration(

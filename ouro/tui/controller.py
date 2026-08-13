@@ -763,8 +763,9 @@ class TuiController:
 
     def _tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
         definitions = {item.name: item for item in self._runtime().tools.definitions()}
-        overrides = self._require_configuration().permission_config().tools
-        names = sorted(set(definitions).union(overrides))
+        configured_overrides = self._require_configuration().permission_config().tools
+        runtime_overrides = self._runtime().tool_permission_overrides()
+        names = sorted(set(definitions).union(configured_overrides))
         items: list[TuiToolConfiguration] = []
         for name in names:
             definition = definitions.get(name)
@@ -776,7 +777,7 @@ class TuiController:
                         source="unavailable",
                         effect="unknown",
                         default_permission=None,
-                        permission_override=overrides.get(name),
+                        permission_override=configured_overrides.get(name),
                         permission_control="host",
                         available=False,
                     )
@@ -789,7 +790,7 @@ class TuiController:
                     source=definition.source,
                     effect=definition.effect,
                     default_permission=definition.permission_mode,
-                    permission_override=overrides.get(name),
+                    permission_override=runtime_overrides.get(name),
                     permission_control=definition.permission_control,
                 )
             )
@@ -800,13 +801,21 @@ class TuiController:
         tool_name: str,
         mode: PermissionMode | None,
     ) -> TuiToolConfiguration | None:
-        return await asyncio.to_thread(self._set_tool_permission, tool_name, mode)
+        await asyncio.to_thread(self._persist_tool_permission, tool_name, mode)
+        overrides = await asyncio.to_thread(
+            lambda: self._require_configuration().permission_config().tools
+        )
+        self._runtime().replace_tool_permission_overrides(overrides)
+        return next(
+            (item for item in self._tool_configurations() if item.name == tool_name),
+            None,
+        )
 
-    def _set_tool_permission(
+    def _persist_tool_permission(
         self,
         tool_name: str,
         mode: PermissionMode | None,
-    ) -> TuiToolConfiguration | None:
+    ) -> None:
         current = next(
             (item for item in self._tool_configurations() if item.name == tool_name),
             None,
@@ -820,10 +829,6 @@ class TuiController:
             configuration.clear_tool_permission(tool_name)
         else:
             configuration.set_tool_permission(tool_name, mode)
-        return next(
-            (item for item in self._tool_configurations() if item.name == tool_name),
-            None,
-        )
 
     async def tool_execution_configuration(self) -> ToolExecutionConfigView:
         configuration = self._require_configuration()

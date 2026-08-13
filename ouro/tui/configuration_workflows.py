@@ -80,7 +80,7 @@ SYSTEM_SETTING_ACTIONS = (
 )
 
 _TOOL_PERMISSION_CHOICES: dict[str, PermissionMode | None] = {
-    "inherit": None,
+    "default": None,
     "auto": "auto",
     "approval": "approval",
     "deny": "deny",
@@ -221,11 +221,14 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     )
                     return None
                 active_tool = tool
-                current = tool.permission_override or "inherit"
+                current = tool.permission_override or "default"
                 screen.replace_page(
                     title=f"TOOL PERMISSION · {tool.name}",
                     placeholder="Filter permission modes…",
-                    choices=_tool_permission_choices(current),
+                    choices=_tool_permission_choices(
+                        current,
+                        default_permission=tool.default_permission,
+                    ),
                     initial_value=current,
                     on_select=select_tool_or_permission,
                     on_cancel=cancel_submenu,
@@ -246,7 +249,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             tool_catalog.update({tool.name: tool for tool in refreshed})
             active_tool = None
             show_tool_catalog(initial_value=tool_name)
-            self.notify(f"Tool permission saved: {tool_name} → {selected} (next restart)")
+            self.notify(f"Tool permission saved: {tool_name} → {selected}")
             return None
 
         def cancel_submenu() -> bool:
@@ -1001,12 +1004,18 @@ def _tool_choices(tools: tuple[TuiToolConfiguration, ...]) -> tuple[Choice, ...]
     )
 
 
-def _tool_permission_choices(current: str) -> tuple[Choice, ...]:
+def _tool_permission_choices(
+    current: str,
+    *,
+    default_permission: PermissionMode | None,
+) -> tuple[Choice, ...]:
     return tuple(
         Choice(
             value,
             value,
-            trailing="current" if value == current else "",
+            trailing=(
+                default_permission if value == "default" and default_permission is not None else ""
+            ),
             marker=SELECTED_CHOICE_MARKER if value == current else "",
         )
         for value in _TOOL_PERMISSION_CHOICES
@@ -1014,7 +1023,15 @@ def _tool_permission_choices(current: str) -> tuple[Choice, ...]:
 
 
 def _tool_labels(tool: TuiToolConfiguration) -> str:
-    permission = tool.effective_permission or "unavailable"
+    permission: str
+    if tool.permission_override is not None:
+        permission = tool.permission_override
+    elif tool.permission_control == "tool":
+        permission = tool.effective_permission or "unavailable"
+    elif tool.effective_permission is not None:
+        permission = f"default · {tool.effective_permission}"
+    else:
+        permission = "unavailable"
     control = " · contract" if tool.permission_control == "tool" else ""
     availability = "" if tool.available else " · unavailable"
     return f"{permission}{control}{availability}"

@@ -301,6 +301,29 @@ class RuntimeService:
         self._run_delegated_constraints: dict[str, DelegatedConstraints] = {}
         self._run_tool_coordinators: dict[str, ToolCallCoordinator] = {}
 
+    def tool_permission_overrides(self) -> dict[str, PermissionMode]:
+        """Return the permission policy currently published to tool execution."""
+
+        return dict(self._permission_overrides)
+
+    def replace_tool_permission_overrides(
+        self,
+        permission_overrides: Mapping[str, PermissionMode],
+    ) -> None:
+        """Apply a permission policy to future checks, including active Runs."""
+
+        invalid = {
+            name: mode
+            for name, mode in permission_overrides.items()
+            if not name or mode not in ("auto", "approval", "deny")
+        }
+        if invalid:
+            raise ValueError(f"invalid tool permission overrides: {invalid}")
+        published = dict(permission_overrides)
+        self._permission_overrides = published
+        for coordinator in self._run_tool_coordinators.values():
+            coordinator.executor.replace_permission_overrides(published)
+
     def bind_extensions(
         self,
         *,
