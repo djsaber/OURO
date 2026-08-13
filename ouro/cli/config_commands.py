@@ -138,13 +138,18 @@ def show_permissions_config(
         )
         return 0
 
-    if not config.tools:
+    if not config.tools and not config.plugins:
         print("No tool permission overrides configured.")
         return 0
 
-    print("Tool permission overrides:")
-    for name, mode_value in sorted(config.tools.items()):
-        print(f"- {name}: {mode_value}")
+    if config.plugins:
+        print("Plugin tool permission defaults:")
+        for plugin_id, mode_value in sorted(config.plugins.items()):
+            print(f"- {plugin_id}: {mode_value}")
+    if config.tools:
+        print("Tool permission overrides:")
+        for name, mode_value in sorted(config.tools.items()):
+            print(f"- {name}: {mode_value}")
     return 0
 
 

@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from ouro.core.approvals import (
     ApprovalRecord,
     SessionApprovalMode,
+    configured_tool_permission,
     resolve_tool_permission,
     restrict_tool_permission,
 )
@@ -31,19 +32,24 @@ class ToolExecutor:
         self,
         registry: ToolRegistry,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         permission_floors: Mapping[str, PermissionMode] | None = None,
     ) -> None:
         self.registry = registry
         self.permission_overrides = dict(permission_overrides or {})
+        self.plugin_permission_overrides = dict(plugin_permission_overrides or {})
         self.permission_floors = dict(permission_floors or {})
 
     def replace_permission_overrides(
         self,
         permission_overrides: Mapping[str, PermissionMode],
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
     ) -> None:
         """Publish the host permission policy used by subsequent preflight checks."""
 
         self.permission_overrides = dict(permission_overrides)
+        if plugin_permission_overrides is not None:
+            self.plugin_permission_overrides = dict(plugin_permission_overrides)
 
     async def execute(
         self,
@@ -95,11 +101,18 @@ class ToolExecutor:
                 error_type="ToolExecutionContractMismatch",
                 error_message=contract_error,
             )
+        raw_plugin_id = tool.definition.metadata.get("plugin_id")
+        plugin_id = raw_plugin_id if isinstance(raw_plugin_id, str) and raw_plugin_id else None
         effective_mode = resolve_tool_permission(
             tool.definition.permission_mode,
             approval_mode,
             permission_control=tool.definition.permission_control,
-            override=self.permission_overrides.get(tool.definition.name),
+            override=configured_tool_permission(
+                tool.definition.name,
+                plugin_id,
+                tool_overrides=self.permission_overrides,
+                plugin_overrides=self.plugin_permission_overrides,
+            ),
         )
         effective_mode = restrict_tool_permission(
             effective_mode,

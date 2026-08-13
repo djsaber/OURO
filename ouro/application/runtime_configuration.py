@@ -30,6 +30,7 @@ class RuntimeConfigurationSnapshot:
     provider_options: ProviderRuntimeOptions
     system_prompt: str
     permission_overrides: dict[str, PermissionMode]
+    plugin_permission_overrides: dict[str, PermissionMode]
     compaction: CompactionConfig
     tool_execution: ToolExecutionConfig
     run_budget: RunBudgetPolicy
@@ -57,12 +58,14 @@ class RuntimeConfigurationResolver:
         system_prompt: str | None = None,
     ) -> RuntimeConfigurationSnapshot:
         skill_catalog = discover_skill_catalog(home=self.root)
+        permissions = self._permissions.snapshot()
         return RuntimeConfigurationSnapshot(
             provider_options=self._providers.resolve_runtime_options(
                 provider_options or ProviderRuntimeOptions()
             ),
             system_prompt=self._prompts.resolve_system_prompt(system_prompt),
-            permission_overrides=self._permissions.snapshot().tools,
+            permission_overrides=permissions.tools,
+            plugin_permission_overrides=permissions.plugins,
             compaction=self._compaction.snapshot(),
             tool_execution=self._tool_execution.snapshot(),
             run_budget=self._run_budget.snapshot(),

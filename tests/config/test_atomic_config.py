@@ -4,6 +4,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from ouro.config.file import JsonConfigFile
+from ouro.config.permissions import PermissionConfigManager
 from ouro.config.prompts import PromptConfigManager
 from ouro.config.queued_inputs import QueuedInputConfigManager
 
@@ -47,3 +48,21 @@ def test_config_commands_preserve_concurrent_section_updates(tmp_path) -> None:
     raw = JsonConfigFile(tmp_path).read()
     assert raw["queued_inputs"] == {"consumption_mode": "all_at_once"}
     assert raw["prompts"] == {"system": "Concurrent prompt"}
+
+
+def test_permission_config_preserves_tool_and_plugin_overrides_independently(tmp_path) -> None:
+    permissions = PermissionConfigManager(tmp_path)
+
+    permissions.set_plugin_mode("dev.ouro.deploy", "approval")
+    permissions.set_tool_mode("deploy__preview", "auto")
+    permissions.clear_plugin_mode("dev.ouro.deploy")
+
+    snapshot = permissions.snapshot()
+    assert snapshot.plugins == {}
+    assert snapshot.tools == {"deploy__preview": "auto"}
+
+    permissions.set_plugin_mode("dev.ouro.deploy", "deny")
+    permissions.clear_tool_mode("deploy__preview")
+    snapshot = permissions.snapshot()
+    assert snapshot.plugins == {"dev.ouro.deploy": "deny"}
+    assert snapshot.tools == {}

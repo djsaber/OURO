@@ -141,6 +141,7 @@ class SystemPromptConfigView(ApplicationDTO):
 class PermissionConfigView(ApplicationDTO):
     config_path: str
     tools: dict[str, PermissionMode] = Field(default_factory=dict)
+    plugins: dict[str, PermissionMode] = Field(default_factory=dict)
     change: ConfigurationChange | None = None
 
 

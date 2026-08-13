@@ -16,6 +16,7 @@ def test_config_permissions_default_json(tmp_path, capsys) -> None:
     assert code == 0
     assert payload["status"] == "ok"
     assert payload["tools"] == {}
+    assert payload["plugins"] == {}
 
 
 def test_config_permissions_set_tool(tmp_path, capsys) -> None:
@@ -71,6 +72,17 @@ def test_config_permissions_human_readable(tmp_path, capsys) -> None:
 
     assert "Write" in captured.out
     assert "approval" in captured.out
+
+
+def test_config_permissions_human_readable_includes_plugin_defaults(tmp_path, capsys) -> None:
+    PermissionConfigManager(tmp_path).set_plugin_mode("dev.ouro.deploy", "deny")
+
+    code = main(["config", "permissions", "--home", str(tmp_path)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert "Plugin tool permission defaults" in captured.out
+    assert "dev.ouro.deploy: deny" in captured.out
 
 
 def test_config_permissions_supports_hard_deny(tmp_path, capsys) -> None:

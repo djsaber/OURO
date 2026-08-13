@@ -45,7 +45,12 @@ from ouro.application.session_models import (
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageTotals
 from ouro.config import ProviderType
-from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
+from ouro.core.approvals import (
+    SESSION_APPROVAL_MODES,
+    SessionApprovalMode,
+    ToolPermissionControl,
+)
+from ouro.core.base import Metadata
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError
@@ -165,15 +170,24 @@ class TuiToolConfiguration:
     source: ToolSource | Literal["unavailable"]
     effect: ToolEffect
     default_permission: PermissionMode | None
+    plugin_id: str | None
+    plugin_name: str | None
+    plugin_permission_override: PermissionMode | None
     permission_override: PermissionMode | None
-    permission_control: str
+    permission_control: ToolPermissionControl
     available: bool = True
+
+    @property
+    def inherited_permission(self) -> PermissionMode | None:
+        if self.permission_control == "tool":
+            return self.default_permission
+        return self.plugin_permission_override or self.default_permission
 
     @property
     def effective_permission(self) -> PermissionMode | None:
         if self.permission_control == "tool":
             return self.default_permission
-        return self.permission_override or self.default_permission
+        return self.permission_override or self.inherited_permission
 
 
 @dataclass(frozen=True)
@@ -762,9 +776,19 @@ class TuiController:
         return await asyncio.to_thread(self._tool_configurations)
 
     def _tool_configurations(self) -> tuple[TuiToolConfiguration, ...]:
-        definitions = {item.name: item for item in self._runtime().tools.definitions()}
-        configured_overrides = self._require_configuration().permission_config().tools
+        definitions = {item.name: item for item in self._runtime().available_tool_definitions()}
+        permissions = self._require_configuration().permission_config()
+        configured_overrides = permissions.tools
         runtime_overrides = self._runtime().tool_permission_overrides()
+        plugin_overrides = self._runtime().plugin_permission_overrides()
+        plugin_names = {
+            item.plugin_id: item.name
+            for item in (
+                self._application.plugins.list()
+                if self._application is not None and self._application.plugins is not None
+                else ()
+            )
+        }
         names = sorted(set(definitions).union(configured_overrides))
         items: list[TuiToolConfiguration] = []
         for name in names:
@@ -777,6 +801,9 @@ class TuiController:
                         source="unavailable",
                         effect="unknown",
                         default_permission=None,
+                        plugin_id=None,
+                        plugin_name=None,
+                        plugin_permission_override=None,
                         permission_override=configured_overrides.get(name),
                         permission_control="host",
                         available=False,
@@ -790,6 +817,11 @@ class TuiController:
                     source=definition.source,
                     effect=definition.effect,
                     default_permission=definition.permission_mode,
+                    plugin_id=(plugin_id := _tool_plugin_id(definition.metadata)),
+                    plugin_name=plugin_names.get(plugin_id) if plugin_id is not None else None,
+                    plugin_permission_override=(
+                        plugin_overrides.get(plugin_id) if plugin_id is not None else None
+                    ),
                     permission_override=runtime_overrides.get(name),
                     permission_control=definition.permission_control,
                 )
@@ -802,10 +834,8 @@ class TuiController:
         mode: PermissionMode | None,
     ) -> TuiToolConfiguration | None:
         await asyncio.to_thread(self._persist_tool_permission, tool_name, mode)
-        overrides = await asyncio.to_thread(
-            lambda: self._require_configuration().permission_config().tools
-        )
-        self._runtime().replace_tool_permission_overrides(overrides)
+        overrides = await asyncio.to_thread(self._require_configuration().permission_config)
+        self._runtime().replace_tool_permission_overrides(overrides.tools, overrides.plugins)
         return next(
             (item for item in self._tool_configurations() if item.name == tool_name),
             None,
@@ -822,7 +852,7 @@ class TuiController:
         )
         if current is None:
             raise ConfigError(f"tool not found: {tool_name}")
-        if mode is not None and current.permission_control == "tool":
+        if current.permission_control == "tool":
             raise ConfigError(f"tool permission is controlled by its contract: {tool_name}")
         configuration = self._require_configuration()
         if mode is None:
@@ -1437,3 +1467,8 @@ class TuiController:
 def _plugin_session_title(name: str, argument: str) -> str:
     normalized = " ".join(argument.split())
     return normalized[:60] if normalized else f"/{name}"
+
+
+def _tool_plugin_id(metadata: Metadata) -> str | None:
+    plugin_id = metadata.get("plugin_id")
+    return plugin_id if isinstance(plugin_id, str) and plugin_id else None

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ouro.tools import Tool, ToolDefinition, ToolInvocation, builtin_tools
+from ouro.tools import Tool, ToolDefinition, ToolInvocation, ToolResult, builtin_tools
 from ouro.tools.builtin_shell import detect_command_shell
 from ouro.tools.executor import ToolExecutor
 from ouro.tools.registry import ToolRegistry
@@ -64,6 +64,44 @@ async def test_permission_override_changes_mode_to_auto(tmp_path) -> None:
     assert outcome.result is not None
     assert outcome.result.is_error is False
     assert target.read_text(encoding="utf-8") == "auto-written"
+
+
+def test_tool_override_takes_precedence_over_plugin_override() -> None:
+    registry = ToolRegistry()
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="deploy__run",
+                description="Deploy the project.",
+                permission_mode="approval",
+                source="third_party_plugin",
+                metadata={"plugin_id": "dev.ouro.deploy"},
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+            ),
+        )
+    )
+    invocation = ToolInvocation(
+        session_id="session",
+        run_id="run",
+        tool_name="deploy__run",
+    )
+
+    plugin_default = ToolExecutor(
+        registry,
+        plugin_permission_overrides={"dev.ouro.deploy": "deny"},
+    ).preflight(invocation)
+    tool_override = ToolExecutor(
+        registry,
+        permission_overrides={"deploy__run": "auto"},
+        plugin_permission_overrides={"dev.ouro.deploy": "deny"},
+    ).preflight(invocation)
+
+    assert plugin_default.invocation.permission_mode == "deny"
+    assert tool_override.status == "ready"
+    assert tool_override.invocation.permission_mode == "auto"
 
 
 def test_session_auto_mode_overrides_protected_tool_policy() -> None:

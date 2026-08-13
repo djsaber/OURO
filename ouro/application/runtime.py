@@ -128,7 +128,7 @@ from ouro.core.state import (
 from ouro.core.tool_batch_transitions import resolve_tool_approval, tool_batch_suspension
 from ouro.core.tool_batches import ToolCallBatchRecord
 from ouro.core.tool_policies import ToolPolicyRegistry
-from ouro.core.tools import PermissionMode, tool_definition_contract_hash
+from ouro.core.tools import PermissionMode, ToolDefinition, tool_definition_contract_hash
 from ouro.core.turn_policies import TurnCompletionCandidate, TurnPolicyRegistry
 from ouro.prompts import DEFAULT_SYSTEM_PROMPT, render_agent_skills_prompt
 from ouro.sessions import RuntimeSessionSnapshot, SessionStore
@@ -178,6 +178,7 @@ class RuntimeService:
         additional_system_prompt: str | None = None,
         event_sink: RuntimeEventSink | None = None,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         tool_execution_config: ToolExecutionConfig | None = None,
         compaction_config: CompactionConfig | None = None,
         compaction_strategies: CompactionStrategyRegistry | None = None,
@@ -217,6 +218,7 @@ class RuntimeService:
             else None
         )
         self._permission_overrides = dict(permission_overrides or {})
+        self._plugin_permission_overrides = dict(plugin_permission_overrides or {})
         self._tool_execution_config = tool_execution_config or ToolExecutionConfig()
         self.observers = observers or ObserverRegistry()
         self.context_providers = context_providers or ContextProviderRegistry()
@@ -306,23 +308,47 @@ class RuntimeService:
 
         return dict(self._permission_overrides)
 
+    def plugin_permission_overrides(self) -> dict[str, PermissionMode]:
+        """Return plugin-wide permission overrides published to tool execution."""
+
+        return dict(self._plugin_permission_overrides)
+
     def replace_tool_permission_overrides(
         self,
         permission_overrides: Mapping[str, PermissionMode],
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
     ) -> None:
         """Apply a permission policy to future checks, including active Runs."""
 
+        self._validate_permission_overrides("tool", permission_overrides)
+        if plugin_permission_overrides is not None:
+            self._validate_permission_overrides("plugin", plugin_permission_overrides)
+        published_tools = dict(permission_overrides)
+        published_plugins = (
+            dict(plugin_permission_overrides)
+            if plugin_permission_overrides is not None
+            else dict(self._plugin_permission_overrides)
+        )
+        self._permission_overrides = published_tools
+        self._plugin_permission_overrides = published_plugins
+        for coordinator in self._run_tool_coordinators.values():
+            coordinator.executor.replace_permission_overrides(
+                published_tools,
+                published_plugins,
+            )
+
+    @staticmethod
+    def _validate_permission_overrides(
+        scope: str,
+        overrides: Mapping[str, PermissionMode],
+    ) -> None:
         invalid = {
             name: mode
-            for name, mode in permission_overrides.items()
+            for name, mode in overrides.items()
             if not name or mode not in ("auto", "approval", "deny")
         }
         if invalid:
-            raise ValueError(f"invalid tool permission overrides: {invalid}")
-        published = dict(permission_overrides)
-        self._permission_overrides = published
-        for coordinator in self._run_tool_coordinators.values():
-            coordinator.executor.replace_permission_overrides(published)
+            raise ValueError(f"invalid {scope} permission overrides: {invalid}")
 
     def bind_extensions(
         self,
@@ -471,6 +497,7 @@ class RuntimeService:
             executor=ToolExecutor(
                 tools,
                 permission_overrides=self._permission_overrides,
+                plugin_permission_overrides=self._plugin_permission_overrides,
                 permission_floors={
                     reference.public_name: reference.minimum_permission_mode
                     for reference in self._run_tool_refs.get(run_id, ())
@@ -654,6 +681,20 @@ class RuntimeService:
         """Return enabled model endpoints from the current system configuration."""
 
         return self.models.list_models()
+
+    def available_tool_definitions(self) -> tuple[ToolDefinition, ...]:
+        """Return the tools published by the current Host and plugin catalog."""
+
+        if self._extension_catalog is None:
+            definitions = self.tools.definitions()
+            return tuple(definition.model_copy(deep=True) for definition in definitions)
+        lease = self._extension_catalog.snapshot()
+        try:
+            return tuple(
+                definition.model_copy(deep=True) for definition in lease.tools.definitions()
+            )
+        finally:
+            lease.close()
 
     def available_skills(self) -> tuple[SkillMetadata, ...]:
         """Return the current Host view without exposing discovery to interface layers."""
@@ -3229,6 +3270,7 @@ class RuntimeService:
             catalog = self._agent_definitions.catalog_snapshot(
                 self._tools_for_run(run.run_id),
                 permission_overrides=self._permission_overrides,
+                plugin_permission_overrides=self._plugin_permission_overrides,
                 approval_mode=session.approval_mode,
             )
             if self._agent_controls is not None:

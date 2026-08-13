@@ -346,10 +346,11 @@ async def open_local_agent_definitions(
     try:
         await mcp.start()
         await plugin_runtime.start()
-        yield LocalAgentDefinitionServices(
-            definitions=AgentDefinitionService(AgentDefinitionsConfigManager(root)),
-            tools=tools,
-        )
+        with plugin_runtime.snapshot() as catalog:
+            yield LocalAgentDefinitionServices(
+                definitions=AgentDefinitionService(AgentDefinitionsConfigManager(root)),
+                tools=catalog.tools,
+            )
     finally:
         errors: list[Exception] = []
         for close in (plugin_runtime.close, mcp.close):
@@ -402,6 +403,7 @@ def build_local_runtime(
         system_prompt=resolved.system_prompt,
         event_sink=event_sink,
         permission_overrides=resolved.permission_overrides,
+        plugin_permission_overrides=resolved.plugin_permission_overrides,
         tool_execution_config=resolved.tool_execution,
         run_budget=resolved.run_budget,
         compaction_config=resolved.compaction,

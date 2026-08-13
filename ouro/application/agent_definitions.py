@@ -20,6 +20,7 @@ from ouro.core.agents import (
 from ouro.core.approvals import (
     PermissionMode,
     SessionApprovalMode,
+    configured_tool_permission,
     resolve_tool_permission,
 )
 from ouro.core.errors import ConfigError
@@ -183,6 +184,7 @@ class AgentDefinitionService:
         tools: ToolRegistry,
         *,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
     ) -> AgentCatalogSnapshot:
         config = self.config.snapshot()
@@ -191,6 +193,7 @@ class AgentDefinitionService:
             entries=self._entries(
                 tools,
                 permission_overrides=permission_overrides,
+                plugin_permission_overrides=plugin_permission_overrides,
                 approval_mode=approval_mode,
             ),
         )
@@ -200,10 +203,12 @@ class AgentDefinitionService:
         tools: ToolRegistry,
         *,
         permission_overrides: Mapping[str, PermissionMode] | None = None,
+        plugin_permission_overrides: Mapping[str, PermissionMode] | None = None,
         approval_mode: SessionApprovalMode = "inherit",
     ) -> tuple[AgentCatalogEntry, ...]:
         config = self.config.snapshot()
         overrides = permission_overrides or {}
+        plugin_overrides = plugin_permission_overrides or {}
         definitions = (GENERAL_AGENT_DEFINITION, *config.definitions)
         candidates = {
             definition.name: definition for definition in self._candidate_definitions(tools)
@@ -221,11 +226,20 @@ class AgentDefinitionService:
                 if name not in candidates:
                     continue
                 tool = candidates[name]
+                raw_plugin_id = tool.metadata.get("plugin_id")
+                plugin_id = (
+                    raw_plugin_id if isinstance(raw_plugin_id, str) and raw_plugin_id else None
+                )
                 permission = resolve_tool_permission(
                     tool.permission_mode,
                     approval_mode,
                     permission_control=tool.permission_control,
-                    override=overrides.get(name),
+                    override=configured_tool_permission(
+                        name,
+                        plugin_id,
+                        tool_overrides=overrides,
+                        plugin_overrides=plugin_overrides,
+                    ),
                 )
                 if permission == "deny":
                     continue

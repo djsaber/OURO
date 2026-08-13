@@ -116,6 +116,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
 
     prompt = facade.set_system_prompt("Custom prompt")
     permissions = facade.set_tool_permission("Bash", "approval")
+    plugin_permissions = facade.set_plugin_permission("dev.ouro.deploy", "deny")
     execution = facade.update_tool_execution(mode="parallel", max_concurrency=3)
     queued = facade.update_queued_inputs(consumption_mode="all_at_once")
     budget = facade.update_run_budget(max_model_rounds=8, max_elapsed_seconds=60)
@@ -132,6 +133,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
 
     assert prompt.change is not None and prompt.change.effective_from == "next_runtime"
     assert permissions.tools == {"Bash": "approval"}
+    assert plugin_permissions.plugins == {"dev.ouro.deploy": "deny"}
     assert execution.mode == "parallel"
     assert queued.consumption_mode == "all_at_once"
     assert budget.max_model_rounds == 8
@@ -144,6 +146,7 @@ def test_configuration_section_commands_preserve_other_sections(tmp_path) -> Non
     overview = ConfigurationFacade(tmp_path).overview()
     assert overview.prompt.system_prompt == "Custom prompt"
     assert overview.permissions.tools == {"Bash": "approval"}
+    assert overview.permissions.plugins == {"dev.ouro.deploy": "deny"}
     assert overview.tool_execution.max_concurrency == 3
     assert overview.queued_inputs.consumption_mode == "all_at_once"
     assert overview.run_budget.max_elapsed_seconds == 60

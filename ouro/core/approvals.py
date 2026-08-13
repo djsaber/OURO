@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Literal, Self, assert_never, cast, get_args
 
@@ -66,6 +67,23 @@ def resolve_tool_permission(
             return "deny"
         case _ as invalid_mode:
             assert_never(invalid_mode)
+
+
+def configured_tool_permission(
+    tool_name: str,
+    plugin_id: str | None,
+    *,
+    tool_overrides: Mapping[str, PermissionMode],
+    plugin_overrides: Mapping[str, PermissionMode],
+) -> PermissionMode | None:
+    """Resolve the most specific persisted host override for one tool."""
+
+    tool_override = tool_overrides.get(tool_name)
+    if tool_override is not None:
+        return tool_override
+    if plugin_id is None:
+        return None
+    return plugin_overrides.get(plugin_id)
 
 
 class ApprovalRecord(VersionedOuroModel):

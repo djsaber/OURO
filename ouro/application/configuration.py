@@ -657,6 +657,7 @@ class ConfigurationFacade:
         return PermissionConfigView(
             config_path=str(snapshot.config_path),
             tools=snapshot.tools,
+            plugins=snapshot.plugins,
             change=change,
         )
 
@@ -670,6 +671,18 @@ class ConfigurationFacade:
         self.permissions.clear_tool_mode(tool_name)
         return self.permission_config(
             change=configuration_change("permissions", "tool_mode_cleared", "next_runtime")
+        )
+
+    def set_plugin_permission(self, plugin_id: str, mode: PermissionMode) -> PermissionConfigView:
+        self.permissions.set_plugin_mode(plugin_id, mode)
+        return self.permission_config(
+            change=configuration_change("permissions", "plugin_mode_saved", "next_runtime")
+        )
+
+    def clear_plugin_permission(self, plugin_id: str) -> PermissionConfigView:
+        self.permissions.clear_plugin_mode(plugin_id)
+        return self.permission_config(
+            change=configuration_change("permissions", "plugin_mode_cleared", "next_runtime")
         )
 
     def tool_execution_config(

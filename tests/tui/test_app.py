@@ -887,14 +887,14 @@ def _application(
 
 def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
     registry = ToolRegistry()
-    tool_sources: tuple[tuple[str, ToolSource], ...] = (
-        ("BuiltinTest", "builtin"),
-        ("McpTest", "mcp"),
-        ("OfficialPluginTest", "official_plugin"),
-        ("ThirdPartyPluginTest", "third_party_plugin"),
-        ("AiGeneratedPluginTest", "ai_generated_plugin"),
+    tool_sources: tuple[tuple[str, ToolSource, str | None], ...] = (
+        ("BuiltinTest", "builtin", None),
+        ("McpTest", "mcp", None),
+        ("OfficialPluginTest", "official_plugin", "dev.ouro.official"),
+        ("ThirdPartyPluginTest", "third_party_plugin", "dev.ouro.third-party"),
+        ("AiGeneratedPluginTest", "ai_generated_plugin", "dev.ouro.generated"),
     )
-    for name, source in tool_sources:
+    for name, source, plugin_id in tool_sources:
         registry.register(
             Tool(
                 definition=ToolDefinition(
@@ -903,6 +903,7 @@ def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
                     description=f"{source} test tool",
                     source=source,
                     permission_mode="approval",
+                    metadata={"plugin_id": plugin_id} if plugin_id is not None else {},
                 ),
                 handler=lambda invocation: ToolResult(
                     tool_call_id=invocation.tool_call_id,
@@ -918,6 +919,7 @@ def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
                 source="third_party_plugin",
                 permission_mode="auto",
                 permission_control="tool",
+                metadata={"plugin_id": "dev.ouro.third-party"},
             ),
             handler=lambda invocation: ToolResult(
                 tool_call_id=invocation.tool_call_id,
@@ -4429,20 +4431,23 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         assert list(dict.fromkeys(choice.group for choice in app.screen._choices)) == [
             "Built-in",
             "MCP",
-            "Official plugins",
-            "Third-party plugins",
-            "AI-generated plugins",
+            "dev.ouro.official",
+            "dev.ouro.third-party",
+            "dev.ouro.generated",
             "Unavailable",
         ]
         choices = {choice.value: choice for choice in app.screen._choices}
         assert choices["BuiltinTest"].group == "Built-in"
         assert choices["McpTest"].group == "MCP"
-        assert choices["OfficialPluginTest"].group == "Official plugins"
-        assert choices["ThirdPartyPluginTest"].group == "Third-party plugins"
-        assert choices["AiGeneratedPluginTest"].group == "AI-generated plugins"
+        assert choices["OfficialPluginTest"].group == "dev.ouro.official"
+        assert choices["ThirdPartyPluginTest"].group == "dev.ouro.third-party"
+        assert choices["AiGeneratedPluginTest"].group == "dev.ouro.generated"
+        assert not any(choice.label == "Plugin default" for choice in choices.values())
         assert choices["UnavailableTest"].group == "Unavailable"
         assert choices["BuiltinTest"].trailing == "default · approval"
-        assert choices["ContractControlledTest"].trailing == "auto · contract"
+        assert choices["ContractControlledTest"].trailing == "contract · auto"
+        assert choices["ContractControlledTest"].disabled is True
+        assert choices["ThirdPartyPluginTest"].disabled is False
         assert choices["UnavailableTest"].trailing == "deny · unavailable"
         assert all(choice.description == "" for choice in choices.values())
 

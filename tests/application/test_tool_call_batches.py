@@ -87,12 +87,16 @@ def test_runtime_publishes_permission_updates_to_existing_and_future_coordinator
         tool_name="Deploy",
     )
 
-    runtime.replace_tool_permission_overrides({"Deploy": "deny"})
+    runtime.replace_tool_permission_overrides(
+        {"Deploy": "deny"},
+        {"dev.ouro.deploy": "approval"},
+    )
 
     assert existing.preflight(invocation).invocation.permission_mode == "deny"
     future = runtime._tool_calls_for_run("future").executor
     assert future.preflight(invocation).invocation.permission_mode == "deny"
     assert runtime.tool_permission_overrides() == {"Deploy": "deny"}
+    assert runtime.plugin_permission_overrides() == {"dev.ouro.deploy": "approval"}
 
 
 @pytest.mark.asyncio

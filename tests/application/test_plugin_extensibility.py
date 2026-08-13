@@ -163,6 +163,52 @@ async def test_inprocess_plugin_tool_policy_can_restrict_builtin_tool(tmp_path) 
 
 
 @pytest.mark.asyncio
+async def test_runtime_available_tools_follow_the_published_plugin_catalog(tmp_path) -> None:
+    home = tmp_path / "home"
+    store = LocalSessionStore(home)
+    store.initialize()
+    tools = ToolRegistry()
+    for tool in builtin_tools():
+        tools.register(tool)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(model_id="catalog", provider_id="faux"),
+        ),
+        tools=tools,
+        environment=RuntimeEnvironment(home=home),
+    )
+    application = LocalApplication.from_runtime(runtime, home=home)
+    source = tmp_path / "catalog-plugin"
+    _write_catalog_plugin(source)
+    assert application.plugins is not None
+    application.plugins.install(source)
+    application.plugins.authorize("dev.ouro.catalog")
+    application.plugins.trust_code("dev.ouro.catalog")
+    await application.start()
+
+    try:
+        assert "catalog__generation" not in {
+            definition.name for definition in runtime.available_tool_definitions()
+        }
+        assert (await application.plugins.enable("dev.ouro.catalog")).status == "active"
+
+        available = {
+            definition.name: definition for definition in runtime.available_tool_definitions()
+        }
+        assert available["catalog__generation"].metadata["plugin_id"] == "dev.ouro.catalog"
+        assert "catalog__generation" not in runtime.tools.names()
+
+        assert (await application.plugins.disable("dev.ouro.catalog")).status == "disabled"
+        assert "catalog__generation" not in {
+            definition.name for definition in runtime.available_tool_definitions()
+        }
+    finally:
+        await application.close()
+
+
+@pytest.mark.asyncio
 async def test_inprocess_prompt_policy_uses_the_run_catalog_and_denies_without_state(
     tmp_path,
 ) -> None:

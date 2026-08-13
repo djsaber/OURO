@@ -22,7 +22,7 @@ from ouro.mcp import MCPServerConfigUpdate
 from ouro.providers import FauxProvider
 from ouro.sessions import LocalSessionStore
 from ouro.skills import discover_skill_catalog
-from ouro.tools import ToolRegistry, builtin_tools
+from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult, builtin_tools
 from ouro.tui.controller import (
     TuiCompactionConfiguration,
     TuiController,
@@ -298,6 +298,83 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
         assert execution.mode == "parallel"
         assert execution.workspace_only is False
         assert configuration.tool_execution.snapshot().workspace_only is False
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_rejects_overrides_for_contract_controlled_plugin_tools(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    application = _reasoning_application(tmp_path)
+    application.runtime.tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="controlled__run",
+                description="Run with contract-controlled permission.",
+                permission_mode="auto",
+                permission_control="tool",
+                source="third_party_plugin",
+                metadata={"plugin_id": "dev.ouro.controlled"},
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+            ),
+        )
+    )
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        with pytest.raises(ConfigError, match="controlled by its contract"):
+            await controller.set_tool_permission("controlled__run", None)
+        assert configuration.permission_config().plugins == {}
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_tool_catalog_follows_plugin_activation_without_restart(
+    tmp_path: Path,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=ConfigurationFacade(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        assert application.plugins is not None
+
+        tools = {item.name: item for item in await controller.tool_configurations()}
+        assert "Glob" not in tools
+
+        assert (await application.plugins.enable("dev.ouro.toolkit")).status == "active"
+
+        tools = {item.name: item for item in await controller.tool_configurations()}
+
+        assert tools["Glob"].plugin_id == "dev.ouro.toolkit"
+        assert tools["Glob"].plugin_name == "Toolkit"
+        assert {name for name, tool in tools.items() if tool.plugin_id == "dev.ouro.toolkit"} == {
+            "Glob",
+            "Grep",
+            "TodoList",
+        }
+
+        assert (await application.plugins.disable("dev.ouro.toolkit")).status == "disabled"
+
+        tools = {item.name: item for item in await controller.tool_configurations()}
+        assert "Glob" not in tools
     finally:
         await controller.close()
 

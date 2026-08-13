@@ -227,7 +227,7 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
                     placeholder="Filter permission modes…",
                     choices=_tool_permission_choices(
                         current,
-                        default_permission=tool.default_permission,
+                        default_permission=tool.inherited_permission,
                     ),
                     initial_value=current,
                     on_select=select_tool_or_permission,
@@ -244,21 +244,22 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
             except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
-            tool_name = active_tool.name
+            selected_catalog_value = active_tool.name
+            selected_name = active_tool.name
             tool_catalog.clear()
             tool_catalog.update({tool.name: tool for tool in refreshed})
             active_tool = None
-            show_tool_catalog(initial_value=tool_name)
-            self.notify(f"Tool permission saved: {tool_name} → {selected}")
+            show_tool_catalog(initial_value=selected_catalog_value)
+            self.notify(f"Tool permission saved: {selected_name} → {selected}")
             return None
 
         def cancel_submenu() -> bool:
             nonlocal active_tool
             if active_tool is None:
                 return False
-            tool_name = active_tool.name
+            initial_value = active_tool.name
             active_tool = None
-            show_tool_catalog(initial_value=tool_name)
+            show_tool_catalog(initial_value=initial_value)
             return True
 
         if menu is not None:
@@ -984,24 +985,39 @@ class ConfigurationWorkflowsApp(ProviderConfigurationWorkflows):
         self.query_one(ConversationView).set_system_status(self._system_status)
 
 
-def _tool_choices(tools: tuple[TuiToolConfiguration, ...]) -> tuple[Choice, ...]:
+def _tool_choices(
+    tools: tuple[TuiToolConfiguration, ...],
+) -> tuple[Choice, ...]:
     ordered = sorted(
         tools,
         key=lambda tool: (
             _TOOL_SOURCE_ORDER[tool.source],
+            (tool.plugin_name or tool.plugin_id or "").casefold(),
+            (tool.plugin_id or "").casefold(),
             tool.display_name.casefold(),
             tool.name.casefold(),
         ),
     )
-    return tuple(
-        Choice(
-            tool.name,
-            tool.display_name,
-            group=_TOOL_SOURCE_GROUPS[tool.source],
-            trailing=_tool_labels(tool),
+    choices: list[Choice] = []
+    for tool in ordered:
+        plugin_group = tool.plugin_name or tool.plugin_id
+        choices.append(
+            Choice(
+                tool.name,
+                tool.display_name,
+                group=(
+                    plugin_group if plugin_group is not None else _TOOL_SOURCE_GROUPS[tool.source]
+                ),
+                group_trailing=(
+                    tool.plugin_id
+                    if tool.plugin_id is not None and tool.plugin_name is not None
+                    else ""
+                ),
+                trailing=_tool_labels(tool),
+                disabled=tool.permission_control == "tool",
+            )
         )
-        for tool in ordered
-    )
+    return tuple(choices)
 
 
 def _tool_permission_choices(
@@ -1024,17 +1040,17 @@ def _tool_permission_choices(
 
 def _tool_labels(tool: TuiToolConfiguration) -> str:
     permission: str
-    if tool.permission_override is not None:
-        permission = tool.permission_override
-    elif tool.permission_control == "tool":
+    if tool.permission_control == "tool":
         permission = tool.effective_permission or "unavailable"
+        return f"contract · {permission}"
+    elif tool.permission_override is not None:
+        permission = tool.permission_override
     elif tool.effective_permission is not None:
         permission = f"default · {tool.effective_permission}"
     else:
         permission = "unavailable"
-    control = " · contract" if tool.permission_control == "tool" else ""
     availability = "" if tool.available else " · unavailable"
-    return f"{permission}{control}{availability}"
+    return f"{permission}{availability}"
 
 
 def _mcp_labels(
