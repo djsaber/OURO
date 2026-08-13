@@ -61,7 +61,7 @@ TOOLKIT_PLUGIN = BuiltinPluginDefinition(
     ),
     factory=create_plugin,
     root=Path(__file__).parent,
-    default_enabled=False,
+    default_enabled=True,
 )
 
 

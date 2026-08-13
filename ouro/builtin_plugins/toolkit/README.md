@@ -1,7 +1,7 @@
 # Toolkit 内置插件
 
 `dev.ouro.toolkit` 提供常用只读检索和 Session Todo 工具。它通过普通 builtin Plugin SDK factory 进入
-Generation 与 Catalog，不在 Runtime 或 CLI 中注册旁路工具。插件默认关闭，使用前通过标准 builtin 管理入口启用。
+Generation 与 Catalog，不在 Runtime 或 CLI 中注册旁路工具。插件默认启用，仍可通过标准 builtin 管理入口显式禁用。
 
 ## 工具
 

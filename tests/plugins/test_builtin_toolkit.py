@@ -156,8 +156,9 @@ def context(workspace: Path) -> _ExecutionContext:
 def test_toolkit_is_assembled_in_local_builtin_registry() -> None:
     assert PLUGIN_ID in LOCAL_BUILTIN_PLUGINS.plugin_ids
     assert {"Glob", "Grep", "TodoList"} <= LOCAL_BUILTIN_PLUGINS.exposed_tool_names
+    assert all(definition.default_enabled for definition in LOCAL_BUILTIN_PLUGINS.list())
     definition = LOCAL_BUILTIN_PLUGINS.require(PLUGIN_ID)
-    assert definition.default_enabled is False
+    assert definition.default_enabled is True
 
 
 async def test_toolkit_contracts_guide_model_decisions_and_describe_fields(

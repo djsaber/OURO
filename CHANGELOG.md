@@ -6,6 +6,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- All OURO builtin plugins are now enabled by default when no explicit user activation override
+  exists. Existing explicit enable/disable choices remain authoritative.
 - Plugin trust requirements are now derived once by the Host from runtime, permissions, and
   contributions, projected as explicit `not_required` / `missing` / `granted` application state,
   enforced by activation and selected-version changes, and consumed directly by TUI actions.

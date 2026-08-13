@@ -26,7 +26,7 @@ class BuiltinPluginDefinition:
     manifest: PluginManifest
     factory: BuiltinPluginFactory
     root: Path
-    default_enabled: bool = False
+    default_enabled: bool = True
     _contract_hash: str = field(init=False, repr=False)
 
     def __post_init__(self) -> None:

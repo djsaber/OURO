@@ -372,7 +372,7 @@ def test_goal_builtin_manifest_is_the_public_harness_contract() -> None:
         "sessions.write",
         "background.run",
     }
-    assert GOAL_MODE_PLUGIN.default_enabled is False
+    assert GOAL_MODE_PLUGIN.default_enabled is True
 
 
 @pytest.mark.asyncio

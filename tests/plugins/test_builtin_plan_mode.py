@@ -8,6 +8,7 @@ import pytest
 
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.builtin_plugins.plan_mode import PLAN_MODE_PLUGIN
 from ouro.cli.interactive import run_interactive
 from ouro.cli.interactive_commands import handle_command
 from ouro.core.adapter import RuntimeAdapter
@@ -35,6 +36,10 @@ from ouro.tools import (
 )
 
 PLUGIN_ID = "dev.ouro.plan_mode"
+
+
+def test_plan_mode_is_enabled_by_default() -> None:
+    assert PLAN_MODE_PLUGIN.default_enabled is True
 
 
 class PlanBuildProvider:

@@ -17,7 +17,7 @@ class BuiltinPluginContract:
     version: str
     contract_hash: str
     dependencies: tuple[tuple[str, str], ...] = ()
-    default_enabled: bool = False
+    default_enabled: bool = True
 
 
 @dataclass(frozen=True)

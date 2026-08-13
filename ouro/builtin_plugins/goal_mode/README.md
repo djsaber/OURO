@@ -29,5 +29,5 @@ the terminal update is explicitly treated as nonterminal and receives a continua
 An explicit user lifecycle command, a Runtime failure, or a token-budget boundary also stops
 automatic continuation.
 
-The plugin is disabled by default. Enable `dev.ouro.goal_mode` and authorize its declared
-`sessions.write` and `background.run` permissions before using `/goal`.
+The plugin is enabled by default. Builtin plugins do not require capability grants or code trust,
+so `/goal` is available immediately unless the user explicitly disables `dev.ouro.goal_mode`.

@@ -1,7 +1,7 @@
 # Plan Mode 内置插件
 
-`dev.ouro.plan_mode` 用插件贡献实现 Session 级计划模式，不在 Runtime 中建立专用执行分支。插件默认关闭；
-使用前通过标准 builtin 管理入口启用。
+`dev.ouro.plan_mode` 用插件贡献实现 Session 级计划模式，不在 Runtime 中建立专用执行分支。插件默认启用，
+仍可通过标准 builtin 管理入口显式禁用。
 
 ## 职责
 
