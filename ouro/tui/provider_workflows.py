@@ -38,10 +38,12 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         choices = tuple(_provider_choice(provider) for provider in catalog.providers)
         if menu is not None:
-            providers = {provider.provider_id: provider for provider in catalog.providers}
-
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
-                await self._manage_provider(providers[provider_id], menu=menu)
+                refreshed = await self._controller.provider_catalog()
+                provider = next(
+                    item for item in refreshed.providers if item.provider_id == provider_id
+                )
+                await self._manage_provider(provider, menu=menu)
                 return None
 
             menu.push_page(
@@ -258,27 +260,27 @@ class ProviderConfigurationWorkflows(App[int]):
         *,
         menu: ChoiceScreen | None = None,
     ) -> None:
-        choices = [
-            Choice("edit", "Edit provider"),
-            Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
-            Choice("add-endpoint", "Add endpoint"),
-        ]
-        if not provider.default:
-            choices.insert(
-                1,
-                Choice(
-                    "toggle",
-                    "Disable provider" if provider.enabled else "Enable provider",
-                ),
-            )
-        choices.append(Choice("remove", "Remove provider"))
+        choices = _provider_management_choices(provider)
         if menu is not None:
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
+                nonlocal provider
                 if selected == "edit":
                     await self._edit_provider(provider, menu=menu)
                 elif selected == "toggle":
-                    await self._set_provider_enabled(provider, enabled=not provider.enabled)
+                    saved = await self._set_provider_enabled(
+                        provider,
+                        enabled=not provider.enabled,
+                    )
+                    if saved is None:
+                        return None
+                    provider = saved
+                    catalog = await self._controller.provider_catalog()
+                    menu.update_parent_choices(
+                        tuple(_provider_choice(item) for item in catalog.providers),
+                        initial_value=provider.provider_id,
+                    )
+                    return _provider_management_choices(provider)
                 elif selected == "endpoints":
                     await self._choose_endpoints(provider, menu=menu)
                 elif selected == "add-endpoint":
@@ -290,7 +292,7 @@ class ProviderConfigurationWorkflows(App[int]):
             menu.push_page(
                 title=f"PROVIDER · {provider.provider_id}",
                 placeholder="Choose an action…",
-                choices=tuple(choices),
+                choices=choices,
                 on_select=select_action,
             )
             return
@@ -298,7 +300,7 @@ class ProviderConfigurationWorkflows(App[int]):
             ChoiceScreen(
                 title=f"PROVIDER · {provider.provider_id}",
                 placeholder="Choose an action…",
-                choices=tuple(choices),
+                choices=choices,
             )
         )
         if selected == "edit":
@@ -725,6 +727,20 @@ def _provider_choice(provider: ProviderView, *, disabled: bool = False) -> Choic
         marker=SELECTED_CHOICE_MARKER if provider.default else "",
         trailing=f"{provider.provider_type} · {provider.endpoint_count} · {state}",
         disabled=disabled,
+    )
+
+
+def _provider_management_choices(provider: ProviderView) -> tuple[Choice, ...]:
+    return (
+        Choice("edit", "Edit provider"),
+        Choice(
+            "toggle",
+            "Disable provider" if provider.enabled else "Enable provider",
+            disabled=provider.default,
+        ),
+        Choice("endpoints", "Manage endpoints", trailing=str(provider.endpoint_count)),
+        Choice("add-endpoint", "Add endpoint"),
+        Choice("remove", "Remove provider"),
     )
 
 

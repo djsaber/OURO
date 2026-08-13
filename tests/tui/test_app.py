@@ -17,6 +17,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
 from ouro.application.configuration import ConfigurationFacade
+from ouro.application.configuration_models import SkillView
 from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import (
     PluginCommandArgumentView,
@@ -73,13 +74,16 @@ from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
+    PluginInstallScreen,
     SkillInstallScreen,
     ToolExecutionConfigurationScreen,
 )
+from ouro.tui.configuration_workflows import _skill_choice
 from ouro.tui.controller import (
     TuiController,
     TuiEndpointConfiguration,
     TuiPluginCommandExecution,
+    TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
     TuiSystemStatus,
 )
@@ -126,7 +130,11 @@ async def _wait_for_screen(
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
         screen = app.screen
-        if isinstance(screen, screen_type) and screen._title == title:
+        if (
+            isinstance(screen, screen_type)
+            and screen._title == title
+            and len(screen.query("#choice-filter")) == 1
+        ):
             return
         if asyncio.get_running_loop().time() >= deadline:
             raise AssertionError(f"Timed out waiting for {title}")
@@ -886,6 +894,33 @@ def _application(
     return LocalApplication.from_runtime(runtime)
 
 
+def _write_skill_plugin(source: Path) -> None:
+    manifest_dir = source / ".ouro-plugin"
+    skill_dir = source / "skills" / "calendar"
+    manifest_dir.mkdir(parents=True)
+    skill_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        """{
+  "schema_version": 3,
+  "plugin_id": "dev.ouro.tui_skill",
+  "name": "TUI Skill",
+  "version": "1.0.0",
+  "namespace": "tui_skill",
+  "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+  "runtime": {"kind": "declarative"},
+  "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
+  "permissions": [],
+  "dependencies": {"plugins": []},
+  "metadata": {}
+} """.strip(),
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: calendar\ndescription: Manage calendars.\n---\n\nUse calendars.\n",
+        encoding="utf-8",
+    )
+
+
 def _application_with_tool_sources(tmp_path: Path) -> LocalApplication:
     registry = ToolRegistry()
     tool_sources: tuple[tuple[str, ToolSource, str | None], ...] = (
@@ -1418,6 +1453,45 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
         assert conversation.region.right == app.screen.region.right
         assert conversation.vertical_scrollbar.region.width == 0
+
+
+@pytest.mark.asyncio
+async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        live_skill = SkillMetadata(
+            name="live-skill",
+            description="Added after TUI startup.",
+            location=str(tmp_path / "live-skill" / "SKILL.md"),
+        )
+        await application.refresh_skills((live_skill,))
+        assert app._system_status.skill_names == ()
+
+        await app._show_welcome()
+        await pilot.pause()
+
+        assert app._system_status.skill_names == ("live-skill",)
+        welcome = app.query_one(ConversationView).query_one(WelcomePanel)
+        assert "1 available · live-skill" in welcome.render().plain
+
+
+def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
+    choice = _skill_choice(
+        SkillView(
+            name="calendar",
+            description="Manage calendars.",
+            location="C:/plugins/calendar/SKILL.md",
+            source="plugin",
+            enabled=True,
+            extensions={"ouro": {"plugin_id": "dev.ouro.calendar"}},
+        )
+    )
+
+    assert choice.disabled is True
+    assert choice.trailing == "plugin · enabled"
 
 
 @pytest.mark.asyncio
@@ -3797,7 +3871,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "List providers",
             "Add provider",
             "Edit provider",
-            "Enable or disable provider",
             "Remove provider",
             "List endpoints",
             "Add endpoint",
@@ -3806,8 +3879,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Remove endpoint",
             "List plugins",
             "Install plugin",
-            "Enable or disable plugin",
-            "Check plugin",
             "Remove plugin",
             "Tool permissions",
             "Execution & path access",
@@ -3815,12 +3886,10 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Add MCP server",
             "Connect MCP server",
             "Disconnect MCP server",
-            "Enable or disable MCP server",
             "Edit MCP server",
             "Remove MCP server",
             "List skills",
             "Install skill",
-            "Enable or disable skill",
             "Validate skill",
             "Update skill",
             "Remove skill",
@@ -3831,11 +3900,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         assert [choice.group for choice in action_choices] == [
             *("Appearance",) * 2,
             *("Session",) * 8,
-            *("Providers",) * 10,
-            *("Plugins",) * 5,
+            *("Providers",) * 9,
+            *("Plugins",) * 3,
             *("Tools",) * 2,
-            *("MCP",) * 7,
-            *("Skills",) * 6,
+            *("MCP",) * 6,
+            *("Skills",) * 5,
             "Compaction",
             "Runtime",
             "Support",
@@ -3891,72 +3960,100 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_toggle_provider_keeps_default_visible_but_disabled(tmp_path: Path) -> None:
+async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Path) -> None:
     configuration = ConfigurationFacade(tmp_path)
-    for provider_id in ("primary", "secondary"):
-        configuration.add_provider(
-            provider_id,
-            provider_type="openai-compatible",
-            base_url=f"https://{provider_id}.example.invalid/v1",
-        )
-        configuration.save_endpoint(
-            provider_id,
-            f"{provider_id}-chat",
-            model=f"{provider_id}-model",
-        )
-    configuration.use_provider("primary")
+    configuration.add_provider(
+        "secondary",
+        provider_type="openai-compatible",
+        base_url="https://secondary.example.invalid/v1",
+        enabled=False,
+    )
     app = OuroTuiApp(application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Enable or disable provider"
+        app.screen.query_one("#choice-filter", Input).value = "List providers"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-
-        toggle_screen = app.screen
-        choices = {choice.value: choice for choice in app.screen._choices}
-        assert set(choices) == {"primary", "secondary"}
-        assert choices["primary"].label == "primary"
-        assert choices["primary"].marker == SELECTED_CHOICE_MARKER
-        assert "default" not in choices["primary"].trailing
-        assert choices["primary"].disabled is True
-        assert choices["secondary"].disabled is False
-
-        options = app.screen.query_one(OptionList)
-        provider_options = {
-            str(option.id): option
-            for index in range(options.option_count)
-            if (option := options.get_option_at_index(index)).id is not None
-        }
-        assert provider_options["primary"].disabled is True
-        assert provider_options["secondary"].disabled is False
-        app.screen.query_one("#choice-filter", Input).value = "primary"
-        await pilot.pause()
-        assert options.highlighted is None
-        await pilot.press("enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
-
         app.screen.query_one("#choice-filter", Input).value = "secondary"
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen is toggle_screen
-        choices = {choice.value: choice for choice in app.screen._choices}
-        assert choices["secondary"].trailing.endswith("· disabled")
-        assert ConfigurationFacade(tmp_path).provider("secondary").enabled is False
 
+        assert app.screen.query_one("#choice-title", Static).render().plain == (
+            "PROVIDER · secondary"
+        )
+        toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
+        assert toggle.label == "Enable provider"
+
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("toggle")
+        options.focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen is toggle_screen
-        choices = {choice.value: choice for choice in app.screen._choices}
-        assert choices["secondary"].trailing.endswith("· enabled")
         assert ConfigurationFacade(tmp_path).provider("secondary").enabled is True
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "toggle"
+        ).label == "Disable provider"
+
         await pilot.press("escape")
+        await pilot.pause()
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "secondary"
+        ).trailing.endswith("· enabled")
+        await pilot.press("enter")
+        await pilot.pause()
+        options = app.screen.query_one("#choice-list", OptionList)
+        await pilot.click(options, offset=(4, 1))
+        await pilot.pause()
+        assert ConfigurationFacade(tmp_path).provider("secondary").enabled is False
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "toggle"
+        ).label == "Enable provider"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "secondary"
+        ).trailing.endswith("· disabled")
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "primary",
+        provider_type="openai-compatible",
+        base_url="https://primary.example.invalid/v1",
+    )
+    configuration.save_endpoint("primary", "chat", model="primary-model")
+    configuration.use_provider("primary")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "primary"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
+        assert toggle.label == "Disable provider"
+        assert toggle.disabled is True
+        option = app.screen.query_one("#choice-list", OptionList).get_option("toggle")
+        assert option.disabled is True
 
 
 @pytest.mark.parametrize(
@@ -4427,14 +4524,18 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         assert [choice.label for choice in plugin_screen._choices] == [
             "Enable",
             "Check integrity and readiness",
+            "Restart",
         ]
+        assert next(
+            choice for choice in plugin_screen._choices if choice.value == "restart"
+        ).disabled is True
 
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
         assert app.screen is plugin_screen
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
         assert lifecycle["disable"].trailing == "active"
-        assert "restart" in lifecycle
+        assert lifecycle["restart"].disabled is False
         assert "Toolkit" in app._system_status.plugin_active_names
 
         await pilot.press("escape")
@@ -4442,8 +4543,65 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
-        assert refreshed.marker == ""
         assert refreshed.trailing == "v1.0.0 · active"
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        options = plugin_screen.query_one("#choice-list", OptionList)
+        await pilot.click(options, offset=(4, 1))
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
+        assert next(
+            choice for choice in plugin_screen._choices if choice.value == "enable"
+        ).trailing == "disabled"
+        assert next(
+            choice for choice in plugin_screen._choices if choice.value == "restart"
+        ).disabled is True
+        assert plugin_screen.query_one("#choice-list", OptionList).get_option(
+            "restart"
+        ).disabled is True
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+        refreshed = next(
+            choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
+        )
+        assert refreshed.marker == ""
+        assert refreshed.trailing == "v1.0.0 · disabled"
+
+
+@pytest.mark.asyncio
+async def test_plugin_install_failure_uses_error_toast_without_changing_conversation(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+        await pilot.pause(0.5)
+        history = app.query_one(ConversationHistory)
+        entries_before = history.entries
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "Install plugin"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, PluginInstallScreen, title="INSTALL PLUGIN")
+
+        install_screen = app.screen
+        options = install_screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("plugin-source")
+        options.focus()
+        await pilot.press("enter", *"missing-plugin-source", "enter")
+        await pilot.pause()
+        options.highlighted = options.get_option_index("plugin-install")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause(0.5)
+
+        toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
+        assert toast.has_class("-error")
+        assert "plugin source does not exist" in toast.render().plain
+        assert history.entries == entries_before
+        assert "plugin source does not exist" not in history.rendered_text
 
 
 @pytest.mark.asyncio
@@ -4845,10 +5003,44 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
         assert app.screen is action_screen
+        toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
+        assert toggle.label == "Disable server"
+
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("toggle")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is False
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "toggle"
+        ).label == "Enable server"
+        start = next(choice for choice in app.screen._choices if choice.value == "start")
+        assert start.label == "Start runtime"
+        assert start.disabled is True
+        assert options.get_option("start").disabled is True
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "local"
+        ).trailing == "disabled · disabled"
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        options = app.screen.query_one("#choice-list", OptionList)
+        await pilot.click(options, offset=(4, 1))
+        await pilot.pause()
+        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is True
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "toggle"
+        ).label == "Disable server"
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
         assert app.screen is action_screen
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "local"
+        ).trailing.startswith("enabled ·")
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
@@ -4962,43 +5154,6 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
 
 
 @pytest.mark.asyncio
-async def test_toggle_mcp_refreshes_without_closing_the_menu(tmp_path: Path) -> None:
-    ConfigurationFacade(tmp_path).save_mcp_server(
-        "local",
-        MCPServerConfigUpdate(command="python", auto_start=False),
-    )
-    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
-        await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Enable or disable MCP server"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-
-        toggle_screen = app.screen
-        assert app.screen.query_one("#choice-title", Static).render().plain == (
-            "ENABLE OR DISABLE MCP SERVER"
-        )
-        assert app.screen._choices[0].trailing == "enabled · configured"
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is toggle_screen
-        assert app.screen._choices[0].trailing == "disabled · disabled"
-        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is False
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is toggle_screen
-        assert app.screen._choices[0].trailing == "enabled · configured"
-        assert ConfigurationFacade(tmp_path).mcp_server("local").enabled is True
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-        await pilot.press("escape")
-
-
-@pytest.mark.asyncio
 async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "demo"
     skill_dir.mkdir(parents=True)
@@ -5021,11 +5176,39 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
         assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "enabled · user"
+        assert app.screen._choices[0].trailing == "user · enabled"
 
 
 @pytest.mark.asyncio
-async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -> None:
+async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: Path) -> None:
+    source = tmp_path / "skill-plugin"
+    _write_skill_plugin(source)
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        installed = await app._controller.install_plugin(
+            TuiPluginInstallConfiguration(source=str(source))
+        )
+        await app._controller.authorize_plugin(installed.plugin_id)
+        assert (await app._controller.enable_plugin(installed.plugin_id)).status == "active"
+
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+        app.screen.query_one("#choice-filter", Input).value = "List skills"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen.query_one("#choice-title", Static).render().plain == "SKILLS"
+        assert [choice.value for choice in app.screen._choices] == ["calendar"]
+        assert app.screen._choices[0].disabled is True
+        assert app.screen._choices[0].trailing == "plugin · enabled"
+
+
+@pytest.mark.asyncio
+async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "demo"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
@@ -5034,31 +5217,43 @@ async def test_toggle_skill_refreshes_without_closing_the_menu(tmp_path: Path) -
     )
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
+    async with app.run_test(size=(100, 34)) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+p")
         await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Enable or disable skill"
+        app.screen.query_one("#choice-filter", Input).value = "List skills"
         await pilot.pause()
-        await pilot.press("enter")
+        await pilot.press("enter", "enter")
         await pilot.pause()
 
-        toggle_screen = app.screen
-        assert app.screen._choices[0].trailing == "enabled · user"
+        assert app.screen.query_one("#choice-title", Static).render().plain == "SKILL · demo"
+        assert app.screen._choices[0].label == "Disable"
+
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.focus()
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen is toggle_screen
-        assert app.screen._choices[0].trailing == "disabled · user"
         assert app._controller.runtime_skill_names() == ()
-        assert app._system_status.skill_count == 0
+        assert app.screen._choices[0].label == "Enable"
 
+        await pilot.press("escape")
+        await pilot.pause()
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "demo"
+        ).trailing == "user · disabled"
         await pilot.press("enter")
         await pilot.pause()
-        assert app.screen is toggle_screen
-        assert app.screen._choices[0].trailing == "enabled · user"
+        options = app.screen.query_one("#choice-list", OptionList)
+        await pilot.click(options, offset=(4, 0))
+        await pilot.pause()
         assert app._controller.runtime_skill_names() == ("demo",)
-        assert app._system_status.skill_names == ("demo",)
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+        assert app.screen._choices[0].label == "Disable"
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "demo"
+        ).trailing == "user · enabled"
         await pilot.press("escape")
 
 

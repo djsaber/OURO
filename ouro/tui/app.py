@@ -851,7 +851,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.workers.cancel_all()
 
     async def _start(self) -> None:
-        conversation = self.query_one(ConversationView)
         try:
             bootstrap = await self._controller.start()
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
@@ -859,17 +858,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(f"OURO could not start: {exc}", severity="error", markup=False)
             return
         self._apply_bootstrap(bootstrap)
+        self._apply_system_status(bootstrap)
         await self._refresh_reasoning_indicator()
         if self._resume_session_id is not None:
             try:
                 await self._open_session(self._resume_session_id)
             except Exception as exc:  # noqa: BLE001 - invalid persisted selection is recoverable.
                 self.notify(f"Could not open session: {exc}", severity="error", markup=False)
-                await conversation.show_welcome()
+                await self._show_welcome(refresh_status=False)
         else:
-            await conversation.show_welcome()
+            await self._show_welcome(refresh_status=False)
         await self._refresh_approval_indicator()
-        self._apply_system_status(bootstrap)
         if bootstrap.mcp_servers and self._mcp_status_timer is not None:
             self._mcp_status_timer.resume()
         composer = self.query_one(Composer)
@@ -939,6 +938,25 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
         self._system_status = bootstrap.system_status
         self.query_one(ConversationView).set_system_status(self._system_status)
+
+    async def _refresh_system_status(self) -> bool:
+        try:
+            status = await self._controller.system_status()
+        except Exception as exc:  # noqa: BLE001 - retain the last valid Host projection.
+            self.notify(
+                f"Could not refresh system status: {exc}",
+                severity="warning",
+                markup=False,
+            )
+            return False
+        self._system_status = status
+        self.query_one(ConversationView).set_system_status(status)
+        return True
+
+    async def _show_welcome(self, *, refresh_status: bool = True) -> None:
+        if refresh_status:
+            await self._refresh_system_status()
+        await self.query_one(ConversationView).show_welcome()
 
     def _sync_mcp_status(self) -> None:
         """Refresh the visible summary from the process-owned live MCP records."""
@@ -1595,8 +1613,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             else:
                 await self._command_usage(command)
         elif command.name == "/clear":
-            await self._refresh_usage_status()
-            await self.query_one(ConversationView).show_welcome()
+            await self._show_welcome()
         elif command.name == "/navigate":
             self._navigate_to(argument)
         elif command.name == "/abort":
@@ -1837,7 +1854,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sync_interaction(None)
         await self._refresh_approval_indicator()
         self.query_one(QueuedInputPanel).set_inputs(())
-        await self.query_one(ConversationView).show_welcome()
+        await self._show_welcome()
 
     def action_new_session(self) -> None:
         menu = self._active_navigation_menu()

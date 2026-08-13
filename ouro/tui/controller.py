@@ -28,6 +28,7 @@ from ouro.application.configuration_models import (
     SkillInstallScopeInput,
     SkillManagementView,
     SkillValidationView,
+    SkillView,
     ToolExecutionConfigView,
 )
 from ouro.application.dto import ApplicationStartupReport
@@ -388,10 +389,6 @@ class TuiController:
             self._configuration = ConfigurationFacade(runtime.environment.home)
         models = tuple(runtime.available_models())
         usage = await self.usage_totals()
-        plugin_summaries = (
-            tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
-        )
-        skills = runtime.available_skills()
         mcp_servers = self.mcp_servers()
         return TuiBootstrap(
             models=models,
@@ -399,24 +396,44 @@ class TuiController:
             sessions=await self.sessions(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
-            system_status=project_plugin_system_status(
-                project_mcp_system_status(
-                    TuiSystemStatus(
-                        workspace=runtime.default_workspace,
-                        provider_ids=tuple(sorted({model.provider_id for model in models})),
-                        model_count=len(models),
-                        skill_count=len(skills),
-                        skill_names=tuple(sorted(item.name for item in skills)),
-                        usage_request_count=usage.request_count,
-                        usage_input_tokens=usage.input_tokens,
-                        usage_output_tokens=usage.output_tokens,
-                        usage_estimated_cost=usage.estimated_cost,
-                        usage_priced_request_count=usage.priced_request_count,
-                    ),
-                    mcp_servers,
+            system_status=self._project_system_status(models, usage, mcp_servers),
+        )
+
+    async def system_status(self) -> TuiSystemStatus:
+        """Project current process-owned resources for a newly opened Host view."""
+
+        models, usage = await asyncio.gather(self.models(), self.usage_totals())
+        return self._project_system_status(models, usage, self.mcp_servers())
+
+    def _project_system_status(
+        self,
+        models: tuple[AvailableModel, ...],
+        usage: UsageTotals,
+        mcp_servers: tuple[McpServerStatus, ...],
+    ) -> TuiSystemStatus:
+        runtime = self._runtime()
+        assert self._application is not None
+        skills = self._application.available_skills()
+        plugins = (
+            tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
+        )
+        return project_plugin_system_status(
+            project_mcp_system_status(
+                TuiSystemStatus(
+                    workspace=runtime.default_workspace,
+                    provider_ids=tuple(sorted({model.provider_id for model in models})),
+                    model_count=len(models),
+                    skill_count=len(skills),
+                    skill_names=tuple(sorted(item.name for item in skills)),
+                    usage_request_count=usage.request_count,
+                    usage_input_tokens=usage.input_tokens,
+                    usage_output_tokens=usage.output_tokens,
+                    usage_estimated_cost=usage.estimated_cost,
+                    usage_priced_request_count=usage.priced_request_count,
                 ),
-                plugin_summaries,
+                mcp_servers,
             ),
+            plugins,
         )
 
     async def close(self) -> None:
@@ -1046,7 +1063,24 @@ class TuiController:
 
     async def skill_catalog(self) -> SkillCatalogView:
         configuration = self._require_configuration()
-        return await asyncio.to_thread(configuration.skill_catalog, include_disabled=True)
+        configured = await asyncio.to_thread(
+            configuration.skill_catalog,
+            include_disabled=True,
+        )
+        self._runtime()
+        assert self._application is not None
+        effective = self._application.available_skills()
+        skills = {skill.name: skill for skill in configured.skills}
+        for metadata in effective:
+            configured_skill = skills.get(metadata.name)
+            skills[metadata.name] = SkillView(
+                **metadata.model_dump(mode="python"),
+                managed=(configured_skill.managed if configured_skill is not None else False),
+                install=(configured_skill.install if configured_skill is not None else None),
+            )
+        return configured.model_copy(
+            update={"skills": [skills[name] for name in sorted(skills)]}
+        )
 
     async def install_skills(
         self,
@@ -1077,6 +1111,18 @@ class TuiController:
         *,
         enabled: bool,
     ) -> SkillManagementView:
+        plugin_skill = next(
+            (
+                skill
+                for skill in self._runtime().available_skills()
+                if skill.name == name and _plugin_skill_owner(skill) is not None
+            ),
+            None,
+        )
+        if plugin_skill is not None:
+            raise ConfigError(
+                f"plugin skill {name!r} is managed through its owning plugin"
+            )
         configuration = self._require_configuration()
         result = await asyncio.to_thread(configuration.set_skill_enabled, name, enabled=enabled)
         try:
@@ -1603,4 +1649,12 @@ def _plugin_session_title(name: str, argument: str) -> str:
 
 def _tool_plugin_id(metadata: Metadata) -> str | None:
     plugin_id = metadata.get("plugin_id")
+    return plugin_id if isinstance(plugin_id, str) and plugin_id else None
+
+
+def _plugin_skill_owner(skill: SkillMetadata) -> str | None:
+    ouro = skill.extensions.get("ouro")
+    if not isinstance(ouro, dict):
+        return None
+    plugin_id = ouro.get("plugin_id")
     return plugin_id if isinstance(plugin_id, str) and plugin_id else None

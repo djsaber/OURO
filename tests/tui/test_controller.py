@@ -596,6 +596,70 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path) -> None:
+    source = tmp_path / "skill-plugin"
+    manifest_dir = source / ".ouro-plugin"
+    skill_dir = source / "skills" / "calendar"
+    manifest_dir.mkdir(parents=True)
+    skill_dir.mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "plugin_id": "dev.ouro.tui_skill",
+                "name": "TUI Skill",
+                "version": "1.0.0",
+                "namespace": "tui_skill",
+                "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
+                "runtime": {"kind": "declarative"},
+                "contributes": {
+                    "skills": [{"id": "calendar", "path": "./skills/calendar"}]
+                },
+                "permissions": [],
+                "dependencies": {"plugins": []},
+                "metadata": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: calendar\ndescription: Manage calendars.\n---\n\nUse calendars.\n",
+        encoding="utf-8",
+    )
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=ConfigurationFacade(tmp_path),
+    )
+    await controller.start()
+
+    try:
+        installed = await controller.install_plugin(
+            TuiPluginInstallConfiguration(source=str(source))
+        )
+        assert installed.plugin_id == "dev.ouro.tui_skill"
+        assert "calendar" not in {skill.name for skill in (await controller.skill_catalog()).skills}
+
+        await controller.authorize_plugin(installed.plugin_id)
+        assert (await controller.enable_plugin(installed.plugin_id)).status == "active"
+        enabled_catalog = await controller.skill_catalog()
+        plugin_skill = next(skill for skill in enabled_catalog.skills if skill.name == "calendar")
+        assert plugin_skill.source == "plugin"
+        assert plugin_skill.extensions["ouro"]["plugin_id"] == installed.plugin_id
+        assert (await controller.system_status()).skill_names == ("calendar",)
+
+        with pytest.raises(ConfigError, match="managed through its owning plugin"):
+            await controller.set_skill_enabled("calendar", enabled=False)
+
+        assert (await controller.disable_plugin(installed.plugin_id)).status == "disabled"
+        assert "calendar" not in {skill.name for skill in (await controller.skill_catalog()).skills}
+        assert (await controller.system_status()).skill_names == ()
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_skill_toggle_changes_subsequent_dialogue_runs_in_same_controller(
     tmp_path: Path,
 ) -> None:

@@ -260,6 +260,11 @@ class LocalApplication:
             return
         await self.plugin_runtime.replace_base_skills(skills)
 
+    def available_skills(self) -> tuple[SkillMetadata, ...]:
+        """Return the skills published by the current live extension Catalog."""
+
+        return self.runtime.available_skills()
+
     async def close(self) -> None:
         if self._closed:
             return

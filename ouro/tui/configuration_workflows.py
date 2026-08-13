@@ -46,11 +46,6 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("providers.list", "List providers", "Providers"),
     SystemSettingAction("providers.add", "Add provider", "Providers"),
     SystemSettingAction("providers.edit", "Edit provider", "Providers"),
-    SystemSettingAction(
-        "providers.toggle",
-        "Enable or disable provider",
-        "Providers",
-    ),
     SystemSettingAction("providers.remove", "Remove provider", "Providers"),
     SystemSettingAction("providers.endpoints.list", "List endpoints", "Providers"),
     SystemSettingAction("providers.endpoints.add", "Add endpoint", "Providers"),
@@ -63,8 +58,6 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("providers.endpoints.remove", "Remove endpoint", "Providers"),
     SystemSettingAction("plugins.list", "List plugins", "Plugins"),
     SystemSettingAction("plugins.install", "Install plugin", "Plugins"),
-    SystemSettingAction("plugins.toggle", "Enable or disable plugin", "Plugins"),
-    SystemSettingAction("plugins.check", "Check plugin", "Plugins"),
     SystemSettingAction("plugins.remove", "Remove plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
     SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
@@ -72,12 +65,10 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
     SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
     SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
-    SystemSettingAction("mcp.toggle", "Enable or disable MCP server", "MCP"),
     SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
     SystemSettingAction("mcp.remove", "Remove MCP server", "MCP"),
     SystemSettingAction("skills.list", "List skills", "Skills"),
     SystemSettingAction("skills.install", "Install skill", "Skills"),
-    SystemSettingAction("skills.toggle", "Enable or disable skill", "Skills"),
     SystemSettingAction("skills.validate", "Validate skill", "Skills"),
     SystemSettingAction("skills.update", "Update skill", "Skills"),
     SystemSettingAction("skills.remove", "Remove skill", "Skills"),
@@ -329,18 +320,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         selected = selector
         if selected is None:
-            choices = tuple(
-                Choice(
-                    config.server_id,
-                    config.name,
-                    group=config.transport.upper(),
-                    trailing=_mcp_labels(config, runtime.get(config.server_id)),
-                )
-                for config in sorted(
-                    configs,
-                    key=lambda item: (item.transport, item.name.casefold()),
-                )
-            )
+            choices = _mcp_choices(configs, runtime)
             if not choices:
                 self.notify("No MCP servers are configured", severity="warning")
                 return
@@ -545,27 +525,32 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
-        actions = [
-            Choice("edit", "Edit configuration"),
-            Choice("check", "Check connection"),
-        ]
-        if status is not None:
-            if status.status == "connected":
-                actions.extend(
-                    (
-                        Choice("refresh", "Refresh tools"),
-                        Choice("restart", "Restart runtime"),
-                        Choice("stop", "Stop runtime"),
-                    )
-                )
-            else:
-                actions.append(Choice("start", "Start runtime"))
-        actions.append(Choice("remove", "Remove configuration"))
+
+        actions = _mcp_management_choices(config, status)
+
         if menu is not None:
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
+                nonlocal config, status
                 if selected == "edit":
                     await self._edit_mcp(config, menu=menu)
+                elif selected == "toggle":
+                    if not await self._set_mcp_enabled(
+                        server_id,
+                        enabled=not config.enabled,
+                    ):
+                        return None
+                    configs = await self._controller.mcp_configurations()
+                    runtime = {
+                        item.server_id: item for item in self._controller.mcp_servers()
+                    }
+                    config = next(item for item in configs if item.server_id == server_id)
+                    status = runtime.get(server_id)
+                    menu.update_parent_choices(
+                        _mcp_choices(configs, runtime),
+                        initial_value=server_id,
+                    )
+                    return _mcp_management_choices(config, status)
                 elif selected == "check":
                     await self._check_mcp(server_id)
                 elif selected in {"start", "stop", "restart", "refresh"}:
@@ -577,7 +562,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             menu.push_page(
                 title=f"MCP · {config.name}",
                 placeholder="Choose an action…",
-                choices=tuple(actions),
+                choices=actions,
                 on_select=select_action,
             )
             return
@@ -585,11 +570,13 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             ChoiceScreen(
                 title=f"MCP · {config.name}",
                 placeholder="Choose an action…",
-                choices=tuple(actions),
+                choices=actions,
             )
         )
         if selected == "edit":
             await self._edit_mcp(config)
+        elif selected == "toggle":
+            await self._set_mcp_enabled(server_id, enabled=not config.enabled)
         elif selected == "check":
             await self._check_mcp(server_id)
         elif selected in {"start", "stop", "restart", "refresh"}:
@@ -864,25 +851,39 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 error=True,
             )
             return
-        actions = [
-            Choice(
-                "disable" if skill.enabled else "enable",
-                "Disable" if skill.enabled else "Enable",
-            ),
-            Choice("validate", "Validate"),
-        ]
-        if skill.managed:
-            actions.extend(
-                (
-                    Choice("update", "Update"),
-                    Choice("remove", "Remove"),
-                )
-            )
+        plugin_id = _plugin_skill_owner(skill)
+        if plugin_id is not None:
+            self.notify(f"Skill {name} is managed by plugin {plugin_id}")
+            return
+
+        actions = _skill_management_choices(skill)
         if menu is not None:
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
+                nonlocal skill
                 if selected in {"enable", "disable"}:
-                    await self._set_skill_enabled(name, enabled=selected == "enable")
+                    if not await self._set_skill_enabled(
+                        name,
+                        enabled=selected == "enable",
+                    ):
+                        return None
+                    catalog = await self._controller.skill_catalog()
+                    refreshed = next(
+                        (item for item in catalog.skills if item.name == name),
+                        None,
+                    )
+                    if refreshed is None:
+                        await self.query_one(ConversationView).add_notice(
+                            f"Skill not found after state change: {name}",
+                            error=True,
+                        )
+                        return None
+                    skill = refreshed
+                    menu.update_parent_choices(
+                        tuple(_skill_choice(item) for item in catalog.skills),
+                        initial_value=name,
+                    )
+                    return _skill_management_choices(skill)
                 elif selected == "validate":
                     await self._validate_skill(name)
                 elif selected == "update":
@@ -894,7 +895,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             menu.push_page(
                 title=f"SKILL · {name}",
                 placeholder="Choose an action…",
-                choices=tuple(actions),
+                choices=actions,
                 on_select=select_action,
             )
             return
@@ -902,7 +903,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             ChoiceScreen(
                 title=f"SKILL · {name}",
                 placeholder="Choose an action…",
-                choices=tuple(actions),
+                choices=actions,
             )
         )
         if selected in {"enable", "disable"}:
@@ -1074,9 +1075,79 @@ def _mcp_labels(
     return f"{enabled} · {runtime}"
 
 
+def _mcp_choices(
+    configs: tuple[MCPServerConfigView, ...],
+    runtime: dict[str, McpServerStatus],
+) -> tuple[Choice, ...]:
+    return tuple(
+        Choice(
+            config.server_id,
+            config.name,
+            group=config.transport.upper(),
+            trailing=_mcp_labels(config, runtime.get(config.server_id)),
+        )
+        for config in sorted(
+            configs,
+            key=lambda item: (item.transport, item.name.casefold()),
+        )
+    )
+
+
+def _mcp_management_choices(
+    config: MCPServerConfigView,
+    status: McpServerStatus | None,
+) -> tuple[Choice, ...]:
+    actions = [
+        Choice("edit", "Edit configuration"),
+        Choice(
+            "toggle",
+            "Disable server" if config.enabled else "Enable server",
+        ),
+        Choice("check", "Check connection"),
+    ]
+    if config.enabled and status is not None:
+        if status.status == "connected":
+            actions.extend(
+                (
+                    Choice("refresh", "Refresh tools"),
+                    Choice("restart", "Restart runtime"),
+                    Choice("stop", "Stop runtime"),
+                )
+            )
+        else:
+            actions.append(Choice("start", "Start runtime"))
+    else:
+        actions.append(Choice("start", "Start runtime", disabled=True))
+    actions.append(Choice("remove", "Remove configuration"))
+    return tuple(actions)
+
+
 def _skill_choice(skill: SkillView) -> Choice:
+    plugin_id = _plugin_skill_owner(skill)
     return Choice(
         skill.name,
         skill.name,
-        trailing=("enabled" if skill.enabled else "disabled") + f" · {skill.source}",
+        trailing=f"{skill.source} · {'enabled' if skill.enabled else 'disabled'}",
+        disabled=plugin_id is not None,
     )
+
+
+def _skill_management_choices(skill: SkillView) -> tuple[Choice, ...]:
+    actions = [
+        Choice(
+            "disable" if skill.enabled else "enable",
+            "Disable" if skill.enabled else "Enable",
+        ),
+        Choice("validate", "Validate"),
+    ]
+    if skill.managed:
+        actions.extend((Choice("update", "Update"), Choice("remove", "Remove")))
+    return tuple(actions)
+
+
+def _plugin_skill_owner(skill: SkillView) -> str | None:
+    ouro = skill.extensions.get("ouro")
+    if not isinstance(ouro, dict):
+        return None
+    plugin_id = ouro.get("plugin_id")
+    return plugin_id if isinstance(plugin_id, str) and plugin_id else None

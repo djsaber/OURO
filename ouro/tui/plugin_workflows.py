@@ -179,13 +179,11 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 return None
             if menu is not None:
                 refreshed = self._controller.plugin(plugin_id)
-                menu.replace_page(
-                    title=f"PLUGIN · {refreshed.name}",
-                    placeholder="Choose an action…",
-                    choices=_plugin_action_choices(refreshed),
-                    on_select=select_action,
-                    on_cancel=cancel_plugin,
+                menu.update_parent_choices(
+                    _plugin_choices(self._controller.plugins()),
+                    initial_value=plugin_id,
                 )
+                return _plugin_action_choices(refreshed)
             return None
 
         choices = _plugin_action_choices(plugin)
@@ -221,7 +219,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 cast(TuiPluginInstallConfiguration, draft)
             )
         except Exception as exc:  # noqa: BLE001
-            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            self.notify(str(exc), severity="error", markup=False)
             return
         self._refresh_plugin_system_status()
         suffix = "installed" if result.changed else "already installed"
@@ -448,8 +446,13 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 menu.pop_page()
 
     def _refresh_plugin_system_status(self) -> None:
+        skill_names = self._controller.runtime_skill_names()
         self._system_status = project_plugin_system_status(
-            self._system_status,
+            replace(
+                self._system_status,
+                skill_count=len(skill_names),
+                skill_names=skill_names,
+            ),
             self._controller.plugins(),
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
@@ -480,9 +483,13 @@ def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
             group="LIFECYCLE",
         ),
         Choice("check", "Check integrity and readiness", group="LIFECYCLE"),
+        Choice(
+            "restart",
+            "Restart",
+            group="LIFECYCLE",
+            disabled=plugin.status not in {"active", "degraded", "failed"},
+        ),
     ]
-    if plugin.status in {"active", "degraded", "failed"}:
-        actions.append(Choice("restart", "Restart", group="LIFECYCLE"))
     if plugin.plugin_class == "user":
         if plugin.configuration_supported:
             actions.append(Choice("configure", "Configuration", group="SECURITY & CONFIG"))

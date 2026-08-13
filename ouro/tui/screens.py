@@ -329,6 +329,24 @@ class ChoiceScreen(ModalScreen[str | None]):
             self.query_one("#choice-filter", Input).value = page.filter_value
         return True
 
+    def update_parent_choices(
+        self,
+        choices: tuple[Choice, ...],
+        *,
+        initial_value: str | None = None,
+    ) -> bool:
+        """Refresh the immediate parent snapshot retained for backward navigation."""
+
+        if not self._page_stack:
+            return False
+        parent = self._page_stack[-1]
+        self._page_stack[-1] = replace(
+            parent,
+            choices=choices,
+            initial_value=initial_value if initial_value is not None else parent.initial_value,
+        )
+        return True
+
     async def open_child(self, screen: ModalScreen[ScreenResult]) -> ScreenResult | None:
         """Replace this menu visually with a child and restore it on return.
 
