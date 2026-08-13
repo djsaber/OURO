@@ -486,11 +486,17 @@ def _plugin_action_choices(plugin: PluginDetail) -> tuple[Choice, ...]:
     if plugin.plugin_class == "user":
         if plugin.configuration_supported:
             actions.append(Choice("configure", "Configuration", group="SECURITY & CONFIG"))
-        actions.append(Choice("authorize", "Authorize capabilities", group="SECURITY & CONFIG"))
-        if plugin.runtime_kind != "declarative":
+        if plugin.trust.capability_authorization == "missing":
+            actions.append(
+                Choice("authorize", "Authorize capabilities", group="SECURITY & CONFIG")
+            )
+        elif plugin.trust.capability_authorization == "granted":
+            actions.append(
+                Choice("revoke", "Revoke authorization", group="SECURITY & CONFIG")
+            )
+        if plugin.trust.code_trust == "missing":
             actions.append(Choice("trust-code", "Trust selected code", group="SECURITY & CONFIG"))
-        actions.append(Choice("revoke", "Revoke authorization", group="SECURITY & CONFIG"))
-        if plugin.runtime_kind != "declarative":
+        elif plugin.trust.code_trust == "granted":
             actions.append(
                 Choice("revoke-code-trust", "Revoke code trust", group="SECURITY & CONFIG")
             )

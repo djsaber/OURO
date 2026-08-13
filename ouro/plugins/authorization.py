@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -13,10 +14,19 @@ from ouro.plugins.models import (
     CodeTrustGrant,
     InstalledPlugin,
     PluginActivationState,
+    PluginTrustStatus,
 )
 from ouro.plugins.package import resolve_manifest_path
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+
+
+@dataclass(frozen=True)
+class PluginTrustAssessment:
+    """Host-derived trust requirements for one selected user-plugin digest."""
+
+    capability_authorization: PluginTrustStatus
+    code_trust: PluginTrustStatus
 
 
 def permission_fingerprint(manifest: PluginManifest) -> str:
@@ -75,8 +85,8 @@ def capability_grant_is_valid(
     installed: InstalledPlugin,
     activation: PluginActivationState,
 ) -> bool:
-    if not activation.capability_grants:
-        return not _requires_capability_grant(installed.manifest)
+    if not requires_capability_authorization(installed.manifest):
+        return True
     return any(
         grant.plugin_id == installed.plugin_id
         and grant.permission_fingerprint == permission_fingerprint(installed.manifest)
@@ -111,15 +121,42 @@ def plugin_install_readiness(
 
     if configuration_errors(installed, activation, package_root):
         return "needs_configuration"
-    if not code_trust_is_valid(installed, activation):
+    trust = assess_plugin_trust(installed, activation)
+    if trust.code_trust == "missing":
         return "needs_code_trust"
-    if not capability_grant_is_valid(installed, activation):
+    if trust.capability_authorization == "missing":
         return "needs_authorization"
     return "ready"
 
 
+def assess_plugin_trust(
+    installed: InstalledPlugin,
+    activation: PluginActivationState,
+) -> PluginTrustAssessment:
+    """Evaluate grants against requirements derived exclusively by the Host."""
+
+    return PluginTrustAssessment(
+        capability_authorization=_trust_status(
+            required=requires_capability_authorization(installed.manifest),
+            granted=capability_grant_is_valid(installed, activation),
+        ),
+        code_trust=_trust_status(
+            required=requires_code_trust(installed.manifest),
+            granted=code_trust_is_valid(installed, activation),
+        ),
+    )
+
+
+def requires_capability_authorization(manifest: PluginManifest) -> bool:
+    """Require consent for every declared permission or Host contribution."""
+
+    return bool(manifest.permissions or manifest.contributes.capabilities())
+
+
 def requires_code_trust(manifest: PluginManifest) -> bool:
-    return manifest.runtime.kind != "declarative"
+    return manifest.runtime.kind != "declarative" or any(
+        request.id == "process.spawn" for request in manifest.permissions
+    )
 
 
 def configuration_errors(
@@ -184,8 +221,10 @@ def _credential_binding_errors(
     return errors
 
 
-def _requires_capability_grant(manifest: PluginManifest) -> bool:
-    return bool(manifest.permissions or manifest.contributes.capabilities())
+def _trust_status(*, required: bool, granted: bool) -> PluginTrustStatus:
+    if not required:
+        return "not_required"
+    return "granted" if granted else "missing"
 
 
 def _fingerprint(value: object) -> str:

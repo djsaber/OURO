@@ -7,7 +7,7 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 from ouro.core.session_controls import AttributedSessionInput
 from ouro.plugins.manifest import PluginRuntimeKind, PluginStatus
-from ouro.plugins.models import PluginClass, PluginDiagnostic
+from ouro.plugins.models import PluginClass, PluginDiagnostic, PluginTrustStatus
 
 
 class PluginProvenanceView(OuroModel):
@@ -40,6 +40,11 @@ class PluginSummary(OuroModel):
     default_enabled: bool | None = None
 
 
+class PluginTrustView(OuroModel):
+    capability_authorization: PluginTrustStatus
+    code_trust: PluginTrustStatus
+
+
 class PluginDetail(PluginSummary):
     description: str = ""
     namespace: str
@@ -53,6 +58,7 @@ class PluginDetail(PluginSummary):
     configuration_supported: bool = False
     configuration_values: dict[str, object] = Field(default_factory=dict)
     credential_refs: dict[str, str] = Field(default_factory=dict)
+    trust: PluginTrustView
 
 
 class PluginValidationView(OuroModel):

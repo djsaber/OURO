@@ -404,6 +404,8 @@ async def test_controller_manages_plugins_through_local_application_boundary(
         detail = controller.plugin("dev.ouro.toolkit")
         assert detail.desired_enabled is True
         assert detail.configuration_supported is False
+        assert detail.trust.capability_authorization == "not_required"
+        assert detail.trust.code_trust == "not_required"
 
         checked = await controller.check_plugin("dev.ouro.toolkit")
         assert checked.status == "active"
@@ -465,7 +467,10 @@ async def test_controller_installs_and_configures_user_plugin(tmp_path: Path) ->
             TuiPluginInstallConfiguration(source=str(source))
         )
         assert installed.plugin_id == "dev.ouro.tui_config"
-        assert controller.plugin(installed.plugin_id).configuration_supported is True
+        installed_detail = controller.plugin(installed.plugin_id)
+        assert installed_detail.configuration_supported is True
+        assert installed_detail.trust.capability_authorization == "not_required"
+        assert installed_detail.trust.code_trust == "not_required"
 
         configured = await controller.configure_plugin(
             installed.plugin_id,

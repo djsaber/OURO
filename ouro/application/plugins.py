@@ -16,18 +16,20 @@ from ouro.application.plugin_models import (
     PluginProvenanceView,
     PluginScaffoldView,
     PluginSummary,
+    PluginTrustView,
     PluginValidationView,
 )
 from ouro.application.session_controls import SessionControlCoordinator
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import AttributedSessionControlTransition
 from ouro.plugins.authorization import (
-    capability_grant_is_valid,
-    code_trust_is_valid,
+    assess_plugin_trust,
     configuration_errors,
     create_capability_grant,
     create_code_trust_grant,
     plugin_install_readiness,
+    requires_capability_authorization,
+    requires_code_trust,
 )
 from ouro.plugins.builtin import BuiltinPluginDefinition, BuiltinPluginRegistry
 from ouro.plugins.catalog import ExtensionCatalogLease
@@ -217,6 +219,7 @@ class PluginService:
         summary = self._summary(record)
         manifest = installed.manifest
         configuration = record.activation.configuration_for(installed.package_digest)
+        trust = assess_plugin_trust(installed, record.activation)
         generations: list[dict[str, object]] = []
         if self.runtime is not None:
             with self.runtime.snapshot() as snapshot:
@@ -249,6 +252,10 @@ class PluginService:
             configuration_values=(dict(configuration.values) if configuration is not None else {}),
             credential_refs=(
                 dict(configuration.credential_refs) if configuration is not None else {}
+            ),
+            trust=PluginTrustView(
+                capability_authorization=trust.capability_authorization,
+                code_trust=trust.code_trust,
             ),
         )
 
@@ -445,6 +452,10 @@ class PluginService:
         self._require_user_operation(plugin_id, "authorize")
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
+        if not requires_capability_authorization(installed.manifest):
+            raise PluginOperationNotAllowedError(
+                f"plugin declares no capabilities that require authorization: {plugin_id}"
+            )
         grant = create_capability_grant(installed)
         if preview:
             return PluginActionResult(
@@ -484,6 +495,10 @@ class PluginService:
         self._require_user_operation(plugin_id, "trust code for")
         record = self._record(plugin_id)
         installed = _select_install(record, package_digest)
+        if not requires_code_trust(installed.manifest):
+            raise PluginOperationNotAllowedError(
+                f"plugin runtime does not require code trust: {plugin_id}"
+            )
         grant = create_code_trust_grant(installed)
         if preview:
             return PluginActionResult(
@@ -634,9 +649,10 @@ class PluginService:
             package_root = self.store.package_path(plugin_id, installed.package_digest)
             if configuration_errors(installed, record.activation, package_root):
                 raise PluginPackageError("selected plugin digest needs configuration")
-            if not code_trust_is_valid(installed, record.activation):
+            trust = assess_plugin_trust(installed, record.activation)
+            if trust.code_trust == "missing":
                 raise PermissionError("selected plugin digest needs code trust")
-            if not capability_grant_is_valid(installed, record.activation):
+            if trust.capability_authorization == "missing":
                 raise PermissionError("selected plugin digest needs capability authorization")
 
         selected_expected = expected_digest if expected_digest is not None else previous_digest
@@ -997,6 +1013,10 @@ class PluginService:
             active_generations=generations,
             diagnostics=(
                 self.runtime.diagnostics(definition.plugin_id) if self.runtime is not None else []
+            ),
+            trust=PluginTrustView(
+                capability_authorization="not_required",
+                code_trust="not_required",
             ),
         )
 

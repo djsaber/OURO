@@ -100,8 +100,11 @@ Session 后端默认是 `files`，也可通过 `OURO_SESSION_BACKEND=sqlite` 设
 
 原生插件使用 `.ouro-plugin/plugin.json`。插件是系统级扩展，只分 builtin 与 user；安装、state、grant、CLI 和 DTO
 均不定义 workspace/project scope。安装只做静态校验和不可变发布，
-不 import entrypoint、启动 worker 或 MCP；启用前按 runtime 分别检查代码信任、能力授权与配置。完成信任和
+不 import entrypoint、启动 worker 或 MCP；启用前根据 Manifest 事实分别检查代码信任、能力授权与配置。完成信任和
 能力授权后，插件工具权限不按来源降级；manifest 声明属于 contribution 授权指纹的一部分。
+插件只声明 `runtime`、`permissions` 与 `contributes`，是否需要以及是否已满足授权由 Host 统一投影为
+`not_required`、`missing` 或 `granted`；TUI/其他前端不自行推导规则。缺少 required grant 时 runtime 不会加载插件代码
+或发布贡献。
 
 ```bash
 uv run ouro plugin scaffold ./my-plugin --plugin-id dev.example.plugin --name "Example plugin"
@@ -127,7 +130,8 @@ uv run ouro plugin remove dev.example.plugin --home ./.ouro-dev
 ```
 
 `python-inprocess` 是用户明确授予的同进程完整代码信任；`worker` 提供进程和协议隔离，但不等于 OS 安全
-沙箱。`update` 只并排安装候选 digest，不隐式切换运行版本；候选版本须单独授权、配置并通过 `select` 发布。
+沙箱。声明 `process.spawn` 的 declarative package（例如 stdio MCP）同样需要 exact-digest code trust。
+`update` 只并排安装候选 digest，不隐式切换运行版本；候选版本须单独授权、配置并通过 `select` 发布。
 插件配置中的凭据只接受 manifest `credentials.use` 声明槽位对应的 `env:VARIABLE` 引用；worker 只得到临时
 环境变量名，秘密值不进入初始化 JSON。`reload` 先并排安装本地候选，只有候选就绪才原子切换；缺少显式授权时旧
 Catalog 保持不变。Git source 在 checkout 前按 tree 校验路径、文件数和大小，subdirectory 使用 sparse checkout，

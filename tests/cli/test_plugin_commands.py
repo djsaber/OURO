@@ -64,12 +64,22 @@ def create_plugin(context): return Plugin()
     assert listed["plugin_class"] == "user"
     assert "scope" not in listed
     assert main(["plugin", "show", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
-    assert json.loads(capsys.readouterr().out)["runtime_kind"] == "python-inprocess"
+    detail = json.loads(capsys.readouterr().out)
+    assert detail["runtime_kind"] == "python-inprocess"
+    assert detail["trust"] == {
+        "capability_authorization": "missing",
+        "code_trust": "missing",
+    }
 
     assert main(["plugin", "authorize", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     capsys.readouterr()
     assert main(["plugin", "trust-code", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     capsys.readouterr()
+    assert main(["plugin", "show", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["trust"] == {
+        "capability_authorization": "granted",
+        "code_trust": "granted",
+    }
     assert main(["plugin", "enable", "dev.ouro.cli", "--home", str(home), "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "active"
 

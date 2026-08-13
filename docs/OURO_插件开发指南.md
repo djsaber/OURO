@@ -21,7 +21,7 @@ workspace 可以作为一次 Tool/Command 调用的 request context。项目级�
 
 | Runtime | 用途 | 信任与资源边界 |
 |---|---|---|
-| `declarative` | Agent Skill、MCP descriptor 等静态资源 | 不 import 插件代码 |
+| `declarative` | Agent Skill、MCP descriptor 等声明式资源 | 不 import 插件 entrypoint；声明 `process.spawn` 时仍需 exact-digest code trust |
 | `python-inprocess` | 深度 Python 扩展、低延迟回调、Host request context | 与 OURO 同进程、full-trust、exact-digest code trust |
 | `worker` | 独立进程、多语言或进程故障隔离 | 严格 stdio JSON-RPC 协议；不是 OS sandbox |
 
@@ -59,7 +59,13 @@ uv run ouro plugin run-command dev.example.my_plugin:hello world --home ./.ouro-
 ```
 
 安装只保存不可变 bytes，不 import、不执行、不给权限也不启用。`authorize` 接受 manifest 声明的 Host capability；
-`trust-code` 接受 executable package 的 exact digest。两者不是同一个授权。
+`trust-code` 接受 executable package 的 exact digest。可执行 runtime 与声明 `process.spawn` 的 package 都属于该边界；
+后者包括可启动包内脚本的 declarative stdio MCP。两者不是同一个授权。
+
+插件作者只声明 `runtime`、`permissions` 和 `contributes` 等事实，不声明 `requires_authorization` 或
+`requires_code_trust`。OURO Host 从这些事实推导两类信任的 `not_required | missing | granted` 状态，并在激活前
+真实校验 grant；缺失时不会 import entrypoint、启动 worker/MCP 或发布 contribution。前端直接消费 application DTO
+中的信任状态，不按 runtime 名称重复推导安全规则。
 
 本地修改后可使用开发 reload：
 

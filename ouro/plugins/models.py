@@ -12,6 +12,7 @@ from ouro.plugins.manifest import PluginManifest, PluginRuntimeKind, PluginStatu
 
 PluginSourceKind = Literal["local", "git", "archive"]
 PluginClass = Literal["builtin", "user"]
+PluginTrustStatus = Literal["not_required", "missing", "granted"]
 DiagnosticSeverity = Literal["info", "warning", "error"]
 
 

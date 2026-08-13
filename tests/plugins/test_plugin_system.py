@@ -656,6 +656,9 @@ async def test_plugin_mcp_starts_on_enable_without_manifest_auto_start(tmp_path)
     service.authorize("dev.ouro.echo")
 
     assert service.check("dev.ouro.echo").status == "disabled"
+    assert service.show("dev.ouro.echo").trust.code_trust == "missing"
+    assert (await service.enable("dev.ouro.echo")).status == "needs_code_trust"
+    service.trust_code("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "failed"
     assert service.check("dev.ouro.echo").status != "needs_code_trust"
     await runtime.close()
@@ -689,6 +692,7 @@ async def test_optional_plugin_mcp_failure_degrades_without_fake_contract(tmp_pa
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
     service.authorize("dev.ouro.echo")
+    service.trust_code("dev.ouro.echo")
 
     assert (await service.enable("dev.ouro.echo")).status == "degraded"
     with runtime.snapshot() as snapshot:
@@ -730,6 +734,7 @@ async def test_plugin_mcp_tools_are_frozen_in_catalog_and_resource_closes(tmp_pa
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
     service.authorize("dev.ouro.echo")
+    service.trust_code("dev.ouro.echo")
 
     assert (await asyncio.wait_for(service.enable("dev.ouro.echo"), timeout=15)).status == "active"
     resource = runtime._active["dev.ouro.echo"].resources[0]
@@ -1216,8 +1221,15 @@ async def test_replacing_host_skills_rejects_plugin_conflict_without_publication
     runtime, *_ = _runtime(tmp_path / "home")
     service = PluginService(runtime.store, runtime=runtime)
     service.install(source)
+    pending = service.show("dev.ouro.echo")
+    assert pending.trust.capability_authorization == "missing"
+    assert pending.trust.code_trust == "not_required"
+    assert (await service.enable("dev.ouro.echo")).status == "needs_authorization"
     service.authorize("dev.ouro.echo")
     assert (await service.enable("dev.ouro.echo")).status == "active"
+    granted = service.show("dev.ouro.echo")
+    assert granted.trust.capability_authorization == "granted"
+    assert granted.trust.code_trust == "not_required"
     before = runtime.snapshot()
     conflicting = SkillMetadata(
         name="calendar",
@@ -1232,6 +1244,75 @@ async def test_replacing_host_skills_rejects_plugin_conflict_without_publication
         assert current.catalog_id == before.catalog_id
         assert current.skills[0].description == "Plugin calendar."
     before.close()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_host_derived_trust_rejects_irrelevant_grants(tmp_path) -> None:
+    source = tmp_path / "empty-declarative"
+    source.mkdir()
+    _write_native_plugin(source)
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+
+    detail = service.show("dev.ouro.echo")
+    assert detail.trust.capability_authorization == "not_required"
+    assert detail.trust.code_trust == "not_required"
+    with pytest.raises(PluginOperationNotAllowedError, match="no capabilities"):
+        service.authorize("dev.ouro.echo")
+    with pytest.raises(PluginOperationNotAllowedError, match="does not require code trust"):
+        service.trust_code("dev.ouro.echo")
+    assert (await service.enable("dev.ouro.echo")).status == "active"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_executable_plugin_cannot_activate_without_exact_code_trust(tmp_path) -> None:
+    source = tmp_path / "empty-executable"
+    import_marker = tmp_path / "plugin-imported.txt"
+    source.mkdir()
+    _write_native_plugin(
+        source,
+        runtime={"kind": "python-inprocess", "entrypoint": "echo_plugin:create_plugin"},
+        extra={
+            "permissions": [
+                {"id": "network.outbound", "reason": "Exercise the authorization gate."}
+            ]
+        },
+    )
+    (source / "echo_plugin.py").write_text(
+        f"""from pathlib import Path
+from ouro.sdk.plugins.v1 import ContributionSet
+Path({json.dumps(str(import_marker))}).write_text('imported', encoding='utf-8')
+class Plugin:
+    def __init__(self, context):
+        assert 'network.outbound' in context.permissions
+    async def prepare(self): return ContributionSet()
+    async def start(self): pass
+    async def stop(self, reason, deadline): pass
+def create_plugin(context): return Plugin(context)
+""",
+        encoding="utf-8",
+    )
+    runtime, *_ = _runtime(tmp_path / "home")
+    service = PluginService(runtime.store, runtime=runtime)
+    service.install(source)
+
+    pending = service.show("dev.ouro.echo")
+    assert pending.trust.capability_authorization == "missing"
+    assert pending.trust.code_trust == "missing"
+    assert (await service.enable("dev.ouro.echo")).status == "needs_code_trust"
+    assert not import_marker.exists()
+    with runtime.snapshot() as catalog:
+        assert catalog.generations == ()
+    service.trust_code("dev.ouro.echo")
+    assert service.show("dev.ouro.echo").trust.code_trust == "granted"
+    assert (await service.enable("dev.ouro.echo")).status == "needs_authorization"
+    assert not import_marker.exists()
+    service.authorize("dev.ouro.echo")
+    assert (await service.enable("dev.ouro.echo")).status == "active"
+    assert import_marker.read_text(encoding="utf-8") == "imported"
     await runtime.close()
 
 

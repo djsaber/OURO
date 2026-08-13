@@ -4,6 +4,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ## Unreleased
 
+### Changed
+
+- Plugin trust requirements are now derived once by the Host from runtime, permissions, and
+  contributions, projected as explicit `not_required` / `missing` / `granted` application state,
+  enforced by activation and selected-version changes, and consumed directly by TUI actions.
+
 ### Added
 
 - Ten restrained, persistent TUI accent palettes selectable and keyboard-previewable from the

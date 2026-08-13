@@ -614,11 +614,18 @@ tool list 和执行 registry 中按轮次隐藏。插件回调可以读取业务
 ### 11.1 Trust 模型
 
 - Builtin plugin 由 OURO composition root 信任；
-- User declarative plugin 通过显式 install、select 和 enable 接受静态资源；
-- User executable plugin 的 code trust 绑定 exact digest 和 runtime kind；
+- User declarative plugin 通过显式 install、select 和 enable 接受纯静态资源；声明 `process.spawn` 的 package 即使
+  runtime 为 declarative，也必须取得 exact-digest code trust；
+- User executable runtime 或声明 `process.spawn` 的 package，其 code trust 绑定 exact digest 和 runtime kind；
 - capability grant 绑定 plugin id、permission fingerprint、contribution fingerprint 和 runtime kind；
 - permission/contribution/runtime 变化使旧 capability grant 失效；
 - executable digest 变化使旧 code trust 失效。
+
+插件只声明 `runtime`、`permissions` 与 `contributes` 等可验证事实，不得声明
+`requires_authorization`、`requires_code_trust` 或任何自行降低信任要求的布尔值。Host 从这些事实统一推导
+capability authorization 与 code trust 各自的 `not_required | missing | granted` 状态；激活、已启用版本切换和
+application DTO 必须消费同一评估结果。前端只根据 DTO 提供 authorize/trust/revoke 动作，不重新解释 runtime 或
+Manifest。任一 required trust 为 `missing` 时，不得 import executable entrypoint、启动 worker/MCP 或发布 contribution。
 
 CLI/UI 可以合并确认步骤，但底层事实不能合并为一个 `trusted=true`。
 
