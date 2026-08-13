@@ -27,6 +27,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         self,
         *,
         menu: ChoiceScreen | None = None,
+        switch: bool = False,
     ) -> None:
         try:
             plugins = self._controller.plugins()
@@ -37,24 +38,31 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             self.notify("No plugins are installed or available", severity="warning")
             return
         choices = _plugin_choices(plugins)
+        plugin_menu: ChoiceScreen
+
+        async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
+            await self._manage_plugin(plugin_id, menu=plugin_menu)
+            return None
+
         if menu is not None:
-
-            async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
-                await self._manage_plugin(plugin_id, menu=menu)
-                return None
-
-            menu.push_page(
+            plugin_menu = menu
+            navigate = menu.switch_page if switch else menu.push_page
+            navigate(
+                navigation_id="plugins",
                 title="PLUGINS",
                 placeholder="Filter plugins…",
                 choices=choices,
                 on_select=select_plugin,
             )
             return
-        selected = await self.push_screen_wait(
-            ChoiceScreen(title="PLUGINS", placeholder="Filter plugins…", choices=choices)
+        plugin_menu = ChoiceScreen(
+            navigation_id="plugins",
+            title="PLUGINS",
+            placeholder="Filter plugins…",
+            choices=choices,
+            on_select=select_plugin,
         )
-        if selected is not None:
-            await self._manage_plugin(selected)
+        self.push_screen(plugin_menu)
 
     async def _choose_plugin_action(
         self,

@@ -108,7 +108,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
     _controller: TuiController
     _system_status: TuiSystemStatus
 
-    @work(exclusive=True, group="configuration-navigation")
+    @work(exclusive=True, group="navigation")
     async def _run_system_setting(
         self,
         action_id: str,

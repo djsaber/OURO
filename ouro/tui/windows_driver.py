@@ -8,8 +8,13 @@ from textual import events
 from textual.drivers.windows_driver import WindowsDriver
 from textual.message import Message
 
-from ouro.tui.keyboard import normalize_windows_alt_key, normalize_windows_modified_enter
+from ouro.tui.keyboard import (
+    normalize_windows_alt_key,
+    normalize_windows_ctrl_h,
+    normalize_windows_modified_enter,
+)
 
+_VK_CONTROL = 0x11
 _VK_SHIFT = 0x10
 _VK_MENU = 0x12
 _KEY_DOWN = 0x8000
@@ -23,6 +28,10 @@ def _shift_pressed() -> bool:
     return bool(_GET_ASYNC_KEY_STATE(_VK_SHIFT) & _KEY_DOWN)
 
 
+def _ctrl_pressed() -> bool:
+    return bool(_GET_ASYNC_KEY_STATE(_VK_CONTROL) & _KEY_DOWN)
+
+
 def _alt_pressed() -> bool:
     return bool(_GET_ASYNC_KEY_STATE(_VK_MENU) & _KEY_DOWN)
 
@@ -32,6 +41,10 @@ class OuroWindowsDriver(WindowsDriver):
 
     def process_message(self, message: Message) -> None:
         if isinstance(message, events.Key):
+            message = normalize_windows_ctrl_h(
+                message,
+                ctrl_pressed=_ctrl_pressed(),
+            )
             if message.key == "enter":
                 message = normalize_windows_modified_enter(
                     message,

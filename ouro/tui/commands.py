@@ -149,7 +149,7 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "[target]",
     ),
     TuiCommand("/abort", "Abort run", "Stop the active run"),
-    TuiCommand("/help", "Keyboard help", "Show shortcuts and commands", aliases=("/?",)),
+    TuiCommand("/help", "Keyboard help", "Show shortcuts and commands"),
     TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit", "/quite")),
 )
 

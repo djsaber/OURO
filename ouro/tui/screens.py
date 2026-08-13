@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import TypeVar
+from typing import Literal, TypeVar
 
 from rich.table import Table
 from rich.text import Text
@@ -45,10 +45,13 @@ MultiChoiceConfirmationHandler = Callable[
 ]
 ChoiceEditHandler = Callable[[str, str], Awaitable[tuple[Choice, ...] | None]]
 ScreenResult = TypeVar("ScreenResult")
+MenuDestination = Literal["actions", "models", "plugins", "sessions"]
 
 
 @dataclass(frozen=True)
 class _ChoicePage:
+    navigation_id: MenuDestination | None
+    retain_for_switching: bool
     title: str
     placeholder: str
     choices: tuple[Choice, ...]
@@ -128,7 +131,6 @@ class ChoiceScreen(ModalScreen[str | None]):
         Binding("right", "next_group", "Next group", show=False, priority=True),
         Binding("enter", "accept_choice", "Select", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
     ]
 
     def __init__(
@@ -142,6 +144,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
+        navigation_id: MenuDestination | None = None,
+        retain_for_switching: bool = False,
     ) -> None:
         super().__init__()
         self._title = title
@@ -152,8 +156,22 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_select = on_select
         self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
+        self._navigation_id = navigation_id
+        self._retain_for_switching = retain_for_switching
         self._page_stack: list[_ChoicePage] = []
         self._child_background: Color | None = None
+
+    @property
+    def navigation_id(self) -> MenuDestination | None:
+        """Identify the current top-level keyboard navigation destination."""
+
+        return self._navigation_id
+
+    @property
+    def navigation_root_id(self) -> MenuDestination | None:
+        """Identify the root that owns this menu's in-place page history."""
+
+        return self._page_stack[0].navigation_id if self._page_stack else self._navigation_id
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -192,6 +210,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
+        navigation_id: MenuDestination | None = None,
+        retain_for_switching: bool = False,
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
@@ -202,12 +222,55 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._on_select = on_select
         self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
+        self._navigation_id = navigation_id
+        self._retain_for_switching = retain_for_switching
         self.query_one("#choice-title", Static).update(title)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
         filter_input.value = ""
         self._refresh_options(needle="", preferred_value=initial_value)
         filter_input.focus()
+
+    def switch_page(
+        self,
+        *,
+        navigation_id: MenuDestination,
+        title: str,
+        placeholder: str,
+        choices: tuple[Choice, ...],
+        initial_value: str | None = None,
+        on_highlight: Callable[[str], None] | None = None,
+        on_select: ChoiceSelectionHandler | None = None,
+        on_cancel: ChoiceCancelHandler | None = None,
+        retain_focus_position_on_select: bool = False,
+        retain_for_switching: bool = False,
+    ) -> None:
+        """Switch keyboard menu destinations without creating another modal.
+
+        A retained root remains the single Esc destination while peer roots
+        replace their complete page history. Repeating the shortcut for the
+        visible destination is intentionally idempotent.
+        """
+
+        if self._navigation_id == navigation_id:
+            return
+        root = self._page_stack[0] if self._page_stack else self._page()
+        returning_to_root = root.retain_for_switching and navigation_id == root.navigation_id
+        self._page_stack = [root] if root.retain_for_switching and not returning_to_root else []
+        self.replace_page(
+            navigation_id=navigation_id,
+            title=title,
+            placeholder=placeholder,
+            choices=choices,
+            initial_value=initial_value,
+            on_highlight=on_highlight,
+            on_select=on_select,
+            on_cancel=on_cancel,
+            retain_focus_position_on_select=retain_focus_position_on_select,
+            retain_for_switching=(
+                root.retain_for_switching if returning_to_root else retain_for_switching
+            ),
+        )
 
     def push_page(
         self,
@@ -220,6 +283,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_select: ChoiceSelectionHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
+        navigation_id: MenuDestination | None = None,
+        retain_for_switching: bool = False,
     ) -> None:
         """Navigate to a grouped submenu while retaining the current page for Esc."""
 
@@ -233,6 +298,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=on_select,
             on_cancel=on_cancel,
             retain_focus_position_on_select=retain_focus_position_on_select,
+            navigation_id=navigation_id,
+            retain_for_switching=retain_for_switching,
         )
 
     def pop_page(
@@ -255,6 +322,8 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_select=page.on_select,
             on_cancel=page.on_cancel,
             retain_focus_position_on_select=page.retain_focus_position_on_select,
+            navigation_id=page.navigation_id,
+            retain_for_switching=page.retain_for_switching,
         )
         if choices is None and initial_value is None and page.filter_value:
             self.query_one("#choice-filter", Input).value = page.filter_value
@@ -270,14 +339,22 @@ class ChoiceScreen(ModalScreen[str | None]):
         """
 
         async def wait_for_child() -> ScreenResult | None:
-            panel = self.query_one("#choice-panel", Vertical)
-            panel.display = False
-            self._child_background = self.styles.background
-            self.styles.background = Color(0, 0, 0, 0)
+            self._hide_for_child()
             return await self.app.push_screen_wait(screen)
 
         worker = self.app.run_worker(wait_for_child(), group="choice-child")
         return await worker.wait()
+
+    def show_child(self, screen: ModalScreen[None]) -> None:
+        """Show a result-free child without creating a waiting worker."""
+
+        self._hide_for_child()
+        self.app.push_screen(screen)
+
+    def _hide_for_child(self) -> None:
+        self.query_one("#choice-panel", Vertical).display = False
+        self._child_background = self.styles.background
+        self.styles.background = Color(0, 0, 0, 0)
 
     def on_screen_resume(self) -> None:
         """Restore a parent menu only after its child has left the screen stack."""
@@ -292,6 +369,8 @@ class ChoiceScreen(ModalScreen[str | None]):
 
     def _page(self) -> _ChoicePage:
         return _ChoicePage(
+            navigation_id=self._navigation_id,
+            retain_for_switching=self._retain_for_switching,
             title=self._title,
             placeholder=self._placeholder,
             choices=self._choices,
@@ -544,7 +623,6 @@ class EditableChoiceScreen(ChoiceScreen):
         Binding("delete", "edit_delete", "Delete", show=False, priority=True),
         Binding("enter", "accept_choice", "Edit / save", show=False, priority=True),
         Binding("escape", "cancel", "Cancel", show=False),
-        Binding("ctrl+c", "cancel", "Cancel", show=False, priority=True),
     ]
 
     def __init__(
@@ -789,7 +867,6 @@ class MultiChoiceScreen(ChoiceScreen):
         Binding("space", "toggle_choice", "Toggle", show=False, priority=True),
         Binding("enter", "accept_choice", "Confirm", show=False, priority=True),
         Binding("escape", "cancel", "Close", show=False),
-        Binding("ctrl+c", "cancel", "Close", show=False, priority=True),
     ]
 
     def __init__(
@@ -946,13 +1023,7 @@ class ConfirmationScreen(ChoiceScreen):
 
 class HelpScreen(ModalScreen[None]):
     BINDINGS = [
-        Binding(
-            "escape,question_mark,ctrl+c",
-            "close",
-            "Close",
-            show=False,
-            priority=True,
-        ),
+        Binding("escape", "close", "Close", show=False, priority=True),
     ]
 
     def compose(self) -> ComposeResult:
@@ -966,7 +1037,7 @@ class HelpScreen(ModalScreen[None]):
             ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
             ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
             ("Alt+M", "model", "Alt+P", "plugins"),
-            ("Ctrl+P", "actions", "?", "help"),
+            ("Ctrl+P", "actions", "Ctrl+H", "help"),
             ("Ctrl+↑", "conversation top", "Ctrl+↓", "conversation bottom"),
             ("Ctrl+←", "previous user message", "Ctrl+→", "next user message"),
             ("Ctrl+C", "abort run", "Ctrl+Q", "quit"),

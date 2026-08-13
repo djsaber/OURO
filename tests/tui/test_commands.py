@@ -33,6 +33,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
     alias, alias_argument = resolve_command("/exit")
     typo_alias, _ = resolve_command("/quite")
+    removed_help_alias, _ = resolve_command("/?")
     unknown, _ = resolve_command("/missing")
 
     assert command is not None and command.name == "/model"
@@ -52,6 +53,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert alias is not None and alias.name == "/quit"
     assert typo_alias is not None and typo_alias.name == "/quit"
     assert alias_argument == ""
+    assert removed_help_alias is None
     assert unknown is None
 
 

@@ -3839,7 +3839,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Session model settings": "Alt+M",
             "List plugins": "Alt+P",
             "Abort run": "Ctrl+C",
-            "Keyboard help": "?",
+            "Keyboard help": "Ctrl+H",
         }
 
         app.screen.query_one("#choice-filter", Input).value = "Compaction policy"
@@ -4472,8 +4472,204 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
         app.post_message(events.Key("alt+m", "m"))
         await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
 
-        assert app.screen is not plugin_screen
-        assert plugin_filter.value == "tool"
+        assert app.screen is plugin_screen
+        assert plugin_filter.value == ""
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+
+@pytest.mark.asyncio
+async def test_alt_menu_shortcuts_are_idempotent_and_do_not_stack_screens(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("alt+p")
+        await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+        menu = app.screen
+
+        for _ in range(3):
+            await pilot.press("alt+p")
+            await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
+
+        assert app.screen is menu
+        assert len(menu._page_stack) == 0
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+        for _ in range(3):
+            await pilot.press("alt+m")
+            await _wait_for_screen(app, ChoiceScreen, title="SESSION MODEL SETTINGS")
+
+        assert app.screen is menu
+        assert len(menu._page_stack) == 0
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+
+@pytest.mark.asyncio
+async def test_alt_menu_shortcuts_navigate_beneath_actions_without_stacking(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
+
+        for key, title in (
+            ("alt+p", "PLUGINS"),
+            ("alt+p", "PLUGINS"),
+            ("alt+m", "SESSION MODEL SETTINGS"),
+            ("alt+m", "SESSION MODEL SETTINGS"),
+        ):
+            await pilot.press(key)
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+            assert app.screen is menu
+            assert len(menu._page_stack) == 1
+            assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is menu
+
+
+@pytest.mark.asyncio
+async def test_actions_and_session_shortcuts_switch_on_the_active_menu_surface(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    application.runtime.sessions.create(session_id="ses_shortcut", title="Shortcut session")
+    app = OuroTuiApp(home=tmp_path, application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
+
+        for key, title, page_depth in (
+            ("ctrl+s", "SESSIONS", 1),
+            ("ctrl+p", "ACTIONS", 0),
+            ("ctrl+p", "ACTIONS", 0),
+        ):
+            await pilot.press(key)
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+            assert app.screen is menu
+            assert len(menu._page_stack) == page_depth
+            assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_question_mark_remains_composer_input_after_help_shortcut_migration(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        composer = app.query_one("#composer", TextArea)
+        composer.focus()
+        app.post_message(events.Key("question_mark", "?"))
+        await pilot.pause()
+
+        assert composer.text == "?"
+        assert not isinstance(app.screen, HelpScreen)
+
+
+@pytest.mark.asyncio
+async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
+
+        await pilot.press("ctrl+h")
+        await pilot.pause()
+        assert isinstance(app.screen, HelpScreen)
+        assert menu in app.screen_stack
+        assert menu.query_one("#choice-panel", Vertical).display is False
+
+        await pilot.press("ctrl+h")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert app.screen is menu
+
+        await pilot.press("ctrl+n")
+        await pilot.pause()
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert len(app.screen_stack) == 1
+        assert app._active_title == "New session"
+
+
+@pytest.mark.asyncio
+async def test_navigation_menu_routes_ctrl_c_to_abort_without_closing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    aborted = False
+
+    def abort() -> None:
+        nonlocal aborted
+        aborted = True
+
+    monkeypatch.setattr(app, "_has_active_run", lambda: True)
+    monkeypatch.setattr(app, "_abort_run", abort)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
+
+        await pilot.press("ctrl+c")
+        await pilot.pause()
+
+        assert aborted is True
+        assert app.screen is menu
+
+
+@pytest.mark.asyncio
+async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 42)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        actions = app.screen
+        actions.query_one("#choice-filter", Input).value = "Compaction policy"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
+        editor = app.screen
+        options = editor.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("compaction-model")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="COMPACTION MODEL")
+        transient = app.screen
+
+        await pilot.press("alt+p", "alt+m")
+        await pilot.pause()
+
+        assert app.screen is transient
+        assert transient.navigation_root_id is None
+        assert len(app.screen_stack) == 4
+        await pilot.press("escape")
+        await _wait_for_screen(app, CompactionConfigurationScreen, title="CONTEXT COMPACTION")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio
@@ -6105,6 +6301,7 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "plugins" in rendered
         assert "Ctrl+M" not in rendered
         assert "Ctrl+P" in rendered
+        assert "Ctrl+H" in rendered
         assert "Ctrl+↑" in rendered
         assert "Ctrl+↓" in rendered
         assert "Ctrl+←" in rendered

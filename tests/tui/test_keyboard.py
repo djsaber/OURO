@@ -2,7 +2,24 @@ from __future__ import annotations
 
 from textual.events import Key
 
-from ouro.tui.keyboard import normalize_windows_alt_key, normalize_windows_modified_enter
+from ouro.tui.keyboard import (
+    normalize_windows_alt_key,
+    normalize_windows_ctrl_h,
+    normalize_windows_modified_enter,
+)
+
+
+def test_windows_ctrl_h_is_restored_from_textual_backspace() -> None:
+    event = normalize_windows_ctrl_h(Key("backspace", None), ctrl_pressed=True)
+
+    assert event.key == "ctrl+h"
+    assert event.character is None
+
+
+def test_windows_plain_backspace_is_unchanged() -> None:
+    event = Key("backspace", None)
+
+    assert normalize_windows_ctrl_h(event, ctrl_pressed=False) is event
 
 
 def test_windows_alt_is_restored_when_console_reports_plain_characters() -> None:

@@ -5,6 +5,14 @@ from __future__ import annotations
 from textual.events import Key
 
 
+def normalize_windows_ctrl_h(event: Key, *, ctrl_pressed: bool) -> Key:
+    """Restore Ctrl+H when Textual parses its shared byte as Backspace."""
+
+    if event.key == "backspace" and ctrl_pressed:
+        return Key("ctrl+h", None)
+    return event
+
+
 def normalize_windows_alt_key(event: Key, *, alt_pressed: bool) -> Key:
     """Restore Alt when the Windows console reports only the produced character."""
 
