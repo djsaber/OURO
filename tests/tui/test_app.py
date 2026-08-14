@@ -1568,7 +1568,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         )
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
-        assert context.plain == "3.0K █░░░░░░░░░░ 2%"
+        assert context.plain == "3.0K █▒▒▒▒▒▒▒▒▒▒ 2%"
         assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
             app.tui_theme.accent
         )

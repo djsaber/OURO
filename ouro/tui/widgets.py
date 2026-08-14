@@ -2218,7 +2218,7 @@ class StatusLine(Horizontal):
                 content = Text(f"{_compact_count(used)} ")
                 content.append("█" * completed, style=theme_for(self).accent)
                 content.append(
-                    "░" * (_CONTEXT_PROGRESS_WIDTH - completed),
+                    "▒" * (_CONTEXT_PROGRESS_WIDTH - completed),
                     style="#34373d",
                 )
                 percentage_tone = _WARNING_TONE if ratio > 0.8 else _MUTED_TONE
