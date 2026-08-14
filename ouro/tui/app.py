@@ -90,6 +90,7 @@ from ouro.tui.widgets import (
     PlanConfirmationPanel,
     QueuedInputPanel,
     StatusLine,
+    WelcomePanel,
     user_message_text,
 )
 
@@ -196,6 +197,16 @@ _OURO_TUI_CSS = """
     $ouro-border-right: #34373d;
     $ouro-border-focus: #3f4650;
     $ouro-highlight: #242424;
+    $welcome-width: 72%;
+    $welcome-min-width: 68;
+    $welcome-max-width: 116;
+    $welcome-inline-padding: 2;
+    $welcome-logo-gap: 2;
+    $welcome-info-min-height: 15;
+    $welcome-section-gap: 2;
+    $welcome-system-gap: 3;
+    $welcome-label-width: 11;
+    $welcome-tips-min-width: 20;
 
     Screen {
         width: 100%;
@@ -309,26 +320,56 @@ _OURO_TUI_CSS = """
         scrollbar-gutter: auto;
     }
 
-    .welcome {
+    #input-region {
         width: 100%;
-        max-width: 100%;
         height: auto;
-        margin: 2 0;
-        padding: 1 2;
+        margin: 0;
+        padding: 0;
         color: #aeb5bf;
         background: $ouro-background;
+    }
+
+    .welcome-only {
+        display: none;
+    }
+
+    #main.welcome-page {
+        align: center middle;
+    }
+
+    #main.welcome-page #conversation {
+        display: none;
+    }
+
+    #input-region.welcome-page {
+        width: $welcome-width;
+        min-width: $welcome-min-width;
+        max-width: $welcome-max-width;
+        height: 100%;
+        padding: 0 $welcome-inline-padding;
+    }
+
+    #input-region.welcome-page .welcome-only {
+        display: block;
+    }
+
+    .welcome-top {
+        width: 100%;
+        height: 1fr;
+        align: center bottom;
     }
 
     .welcome-logo {
         width: auto;
         height: auto;
-        margin-bottom: 2;
+        margin-bottom: $welcome-logo-gap;
     }
 
-    .welcome-content {
-        width: auto;
-        max-width: 100%;
-        height: auto;
+    .welcome-bottom {
+        width: 100%;
+        height: 1fr;
+        min-height: $welcome-info-min-height;
+        overflow: hidden;
     }
 
     .welcome-section {
@@ -337,8 +378,14 @@ _OURO_TUI_CSS = """
     }
 
     .welcome-system {
-        width: auto;
-        max-width: 100%;
+        width: 100%;
+        margin: $welcome-system-gap 0 0 0;
+        overflow: hidden;
+    }
+
+    .welcome-system-heading {
+        width: 100%;
+        height: 1;
     }
 
     .welcome-title {
@@ -349,26 +396,29 @@ _OURO_TUI_CSS = """
     }
 
     .welcome-row {
-        width: auto;
+        width: 100%;
         height: 1;
+        overflow: hidden;
     }
 
     .welcome-label {
-        width: 11;
+        width: $welcome-label-width;
         height: 1;
         color: #788492;
     }
 
     .welcome-value {
-        width: auto;
+        width: 1fr;
         height: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .welcome-lower {
-        width: 100%;
-        max-width: 100%;
+        width: auto;
         height: auto;
-        margin-top: 2;
+        margin: $welcome-section-gap 0 0 0;
+        overflow: hidden;
     }
 
     .welcome-usage {
@@ -382,6 +432,11 @@ _OURO_TUI_CSS = """
 
     .welcome-tips {
         width: auto;
+        min-width: $welcome-tips-min-width;
+    }
+
+    .welcome-tips .welcome-title {
+        color: $ouro-theme;
     }
 
     .welcome-usage-line {
@@ -399,6 +454,32 @@ _OURO_TUI_CSS = """
         width: auto;
         height: 1;
         color: #8f9aa8;
+    }
+
+    .welcome-version {
+        width: 1fr;
+        height: 1;
+        color: #d6d9df;
+        text-style: bold;
+        text-align: left;
+    }
+
+    #input-region.welcome-page #command-popup {
+        overlay: screen;
+        offset-y: -100%;
+    }
+
+    #input-region.welcome-page #composer,
+    #input-region.welcome-page #command-popup,
+    #input-region.welcome-page StatusLine {
+        width: 100%;
+        margin-left: 0;
+        margin-right: 0;
+    }
+
+    #input-region.welcome-page StatusLine {
+        padding-left: 0;
+        padding-right: 0;
     }
 
     .turn {
@@ -869,16 +950,16 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
 
     def compose(self) -> ComposeResult:
-        yield BrandHeader(initial_context=_WELCOME_HEADER_CONTEXT)
+        header = BrandHeader(initial_context=_WELCOME_HEADER_CONTEXT)
+        header.display = False
+        yield header
         with Vertical(id="main"):
-            yield ConversationView(reasoning_expanded=self._preferences.reasoning_expanded)
-            yield CommandPopup()
-            yield AskUserPanel()
-            yield PlanConfirmationPanel()
-            yield InteractionBar()
-            yield Composer()
-            yield QueuedInputPanel()
-            yield StatusLine()
+            yield ConversationView(
+                reasoning_expanded=self._preferences.reasoning_expanded,
+                welcome_state_changed=self._set_welcome_mode,
+                system_status_changed=self._set_welcome_system_status,
+            )
+            yield WelcomePanel()
 
     def get_driver_class(self) -> type[Driver]:
         driver_class = super().get_driver_class()
@@ -944,8 +1025,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if bootstrap.mcp_servers and self._mcp_status_timer is not None:
             self._mcp_status_timer.resume()
         composer = self.query_one(Composer)
-        composer.disabled = False
-        composer.focus()
+        with self.batch_update():
+            composer.display = True
+            composer.disabled = False
+            composer.focus()
 
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
@@ -1030,6 +1113,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._refresh_system_status()
         self.query_one(BrandHeader).set_context(session_title=_WELCOME_HEADER_CONTEXT)
         await self.query_one(ConversationView).show_welcome()
+        self._set_welcome_mode(True)
+
+    def _set_welcome_mode(self, enabled: bool) -> None:
+        self.query_one(BrandHeader).display = not enabled
+        self.query_one("#main", Vertical).set_class(enabled, "welcome-page")
+        self.query_one(WelcomePanel).set_welcome_mode(enabled)
+
+    def _set_welcome_system_status(self, status: TuiSystemStatus) -> None:
+        self.query_one(WelcomePanel).set_system_status(status)
 
     def _sync_mcp_status(self) -> None:
         """Refresh the visible summary from the process-owned live MCP records."""
@@ -1234,6 +1326,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         *,
         skill_invocation: SkillInvocationRequest | None = None,
     ) -> None:
+        self._set_welcome_mode(False)
         active_run = self._has_active_run()
         if not active_run:
             self.query_one(StatusLine).set_activity("queued")
@@ -2121,7 +2214,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._projection = None
         self._interaction = None
         self._sync_interaction(None)
-        await self.query_one(ConversationView).load_messages(
+        conversation = self.query_one(ConversationView)
+        await conversation.load_messages(
             loaded.messages,
             loaded.compactions,
             project_run_presentations(
@@ -2129,6 +2223,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 loaded.messages,
             ),
         )
+        self._set_welcome_mode(conversation.showing_welcome)
         self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
         await self._restore_projection(loaded)
         session = loaded.detail.session

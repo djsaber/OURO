@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 SELECTED_CHOICE_MARKER = "●"
+WELCOME_BULLET = "•"
+WELCOME_SEPARATOR = f" {WELCOME_BULLET} "
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,5 +121,7 @@ __all__ = [
     "SELECTED_CHOICE_MARKER",
     "TUI_THEMES",
     "TuiTheme",
+    "WELCOME_BULLET",
+    "WELCOME_SEPARATOR",
     "theme_for",
 ]

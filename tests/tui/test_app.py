@@ -73,7 +73,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp, _session_choices
-from ouro.tui.commands import TUI_COMMANDS
+from ouro.tui.commands import TUI_COMMANDS, TuiCommand
 from ouro.tui.configuration_screens import (
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
@@ -170,9 +170,14 @@ async def _wait_for_welcome_render(
 ) -> WelcomePanel:
     deadline = asyncio.get_running_loop().time() + timeout
     while True:
-        matches = list(app.query_one(ConversationView).query(WelcomePanel))
+        matches = list(app.query(WelcomePanel))
         welcome = matches[0] if matches else None
-        if welcome is not None and contains in _welcome_plain_text(welcome):
+        if (
+            welcome is not None
+            and welcome.has_class("welcome-page")
+            and welcome._logo.region.width > 0
+            and contains in _welcome_plain_text(welcome)
+        ):
             await pilot._wait_for_screen()
             return welcome
         if asyncio.get_running_loop().time() >= deadline:
@@ -1319,7 +1324,9 @@ def _plan_confirmation_application(
 
 
 @pytest.mark.asyncio
-async def test_tui_shows_version_while_startup_is_still_in_progress(tmp_path: Path) -> None:
+async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
+    tmp_path: Path,
+) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
     startup_entered = asyncio.Event()
     release_startup = asyncio.Event()
@@ -1337,8 +1344,17 @@ async def test_tui_shows_version_while_startup_is_still_in_progress(tmp_path: Pa
             await asyncio.wait_for(startup_entered.wait(), timeout=1)
             await pilot.pause()
             header = app.query_one(BrandHeader)
-            assert header.render().plain == f" ▣ OURO v{__version__}"
-            assert "New session" not in header.render().plain
+            composer = app.query_one(Composer)
+            status_line = app.query_one(StatusLine)
+            assert not header.display
+            assert not composer.display
+            assert status_line.display
+            assert status_line.region.bottom == app.screen.region.bottom
+            visible_input_children = [
+                child for child in app.query_one(WelcomePanel).children if child.display
+            ]
+            assert visible_input_children == [status_line]
+            assert f"v{__version__}" in _welcome_plain_text(app.query_one(WelcomePanel))
         finally:
             release_startup.set()
 
@@ -1353,13 +1369,13 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         transcript = conversation.query_one("#conversation-transcript")
         header = app.query_one(BrandHeader)
 
-        # Startup enters the empty state: the LOGO welcome frame is the sole
-        # content of the conversation area and projects the workspace status.
-        assert header.render().plain == f" ▣ OURO v{__version__}"
-        assert "New session" not in header.render().plain
+        # Startup enters the empty state: the centered welcome frame projects
+        # the workspace status while the conversation surface remains hidden.
+        assert not header.display
+        assert app.query_one(Composer).display
         assert "██████" in welcome._logo.render().plain
         assert welcome._system._workspace.render().plain == str(tmp_path)
-        conversation.set_system_status(
+        welcome.set_system_status(
             TuiSystemStatus(
                 workspace=str(tmp_path),
                 provider_ids=("deepseek", "openai"),
@@ -1382,11 +1398,12 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         )
         await pilot.pause()
 
-        welcome = conversation.query_one(WelcomePanel)
+        welcome = app.query_one(WelcomePanel)
         status_text = _welcome_plain_text(welcome)
         assert "SYSTEM" in status_text
+        assert f"v{__version__}" in status_text
         assert str(tmp_path) in status_text
-        assert status_text.index("SYSTEM") < status_text.index("TIPS")
+        assert status_text.index("TIPS") < status_text.index("SYSTEM")
         assert "Tell me what you want to accomplish." not in status_text
         assert "Enter" not in status_text
         assert "Ctrl+Enter" not in status_text
@@ -1401,12 +1418,15 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
             "Ctrl+P": "Actions",
             "Ctrl+S": "Sessions",
         }.items() <= tips.items()
+        tips_title = welcome._tips.query_one(".welcome-title", Static)
+        assert tips_title.render().plain == "• TIPS"
+        assert tips_title.styles.color == Color.parse(app.tui_theme.accent)
         assert "Health" not in status_text
-        assert "deepseek, openai · 3 model(s)" in status_text
-        assert "7 available · browser, documents, github, +1" in status_text
-        assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
-        assert "3/3 connected · 8 tool(s)" in status_text
-        assert "4 request(s) · $0.0421" in status_text
+        assert "deepseek, openai • 3 model(s)" in status_text
+        assert "7 available • browser, documents, github, +1" in status_text
+        assert "2/3 active • Goals, Guardian • 1 need attention" in status_text
+        assert "3/3 connected • 8 tool(s)" in status_text
+        assert "4 request(s) • $0.0421" in status_text
         assert "12.3K in / 1.2K out" in status_text
         ctrl_p = next(
             widget.render()
@@ -1424,8 +1444,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert app.screen.region.y == 0
         assert app.screen.region.width == 100
         assert app.screen.region.height == 32
-        assert header.region.x == 0
-        assert header.region.right == app.screen.region.right
+        assert not header.display
         main = app.query_one("#main")
         assert main.region.x == 0
         assert main.region.right == app.screen.region.right
@@ -1435,20 +1454,39 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         # Hidden scrollbar must not collapse the layout: virtual width should
         # follow the content area, and the welcome panel keeps its CSS width.
         assert conversation.virtual_size.width >= conversation.content_region.width
-        assert welcome.region.width >= 80
+        composer = app.query_one(Composer)
+        status_line = app.query_one(StatusLine)
+        assert 64 <= composer.region.width <= 112
+        assert composer.region.x == (app.screen.region.width - composer.region.width) // 2
+        assert abs((composer.region.y + composer.region.height / 2) - 16) <= 2
+        assert status_line.region.x == composer.region.x
+        assert status_line.region.right == composer.region.right
+        assert status_line.region.y == composer.region.bottom
+        assert abs(
+            (welcome._logo.region.x + welcome._logo.region.width / 2)
+            - app.screen.region.width / 2
+        ) <= 0.5
+        assert welcome._logo.region.bottom + 2 == composer.region.y
+        assert welcome._usage.region.x == composer.region.x
+        assert welcome._tips.region.right == composer.region.right
+        assert welcome._lower.region.y - status_line.region.bottom == 2
+        assert welcome._system.region.x == composer.region.x
+        assert welcome._system.region.right == composer.region.right
+        assert welcome._system.region.y - welcome._lower.region.bottom == 3
+        assert welcome._system._version.region.x == welcome._system._workspace.region.x
         assert conversation.scroll_y >= 0
 
         # Once dialogue content arrives the welcome frame yields to the
         # conversation — visual layering keeps the LOGO only at startup and
         # when a new session begins, never alongside messages.
         await conversation.add_user("Hello")
-        composer = app.query_one(Composer)
         await conversation.append_assistant("```python\nprint('Hi')\n```")
         await pilot.pause()
         code_fence = conversation.query_one(MarkdownFence)
         assert code_fence.styles.background == composer.styles.background
         await conversation.add_notice("Status changed")
-        assert not conversation.query(WelcomePanel)
+        assert not welcome.has_class("welcome-page")
+        assert header.display
 
         popup = app.query_one(CommandPopup)
         assert popup.styles.overflow_y == "hidden"
@@ -1542,6 +1580,26 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert conversation.vertical_scrollbar.region.width == 0
 
 
+@pytest.mark.parametrize(
+    ("terminal_width", "expected_composer_width"),
+    ((80, 64), (100, 68), (200, 112)),
+)
+@pytest.mark.asyncio
+async def test_welcome_composer_width_clamps_and_stays_centered(
+    tmp_path: Path,
+    terminal_width: int,
+    expected_composer_width: int,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(terminal_width, 40)) as pilot:
+        await _wait_for_welcome_render(app, pilot, contains="██████")
+        composer = app.query_one(Composer)
+
+        assert composer.region.width == expected_composer_width
+        assert composer.region.x == (terminal_width - expected_composer_width) // 2
+
+
 @pytest.mark.asyncio
 async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path: Path) -> None:
     application = _application(tmp_path)
@@ -1561,7 +1619,7 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
         welcome = await _wait_for_welcome_render(app, pilot, contains="live-skill")
 
         assert app._system_status.skill_names == ("live-skill",)
-        assert "1 available · live-skill" in welcome._system._skills.render().plain
+        assert "1 available • live-skill" in welcome._system._skills.render().plain
 
 
 def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
@@ -1798,7 +1856,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
     async with app.run_test(size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
         starting_status = welcome._system._mcp.render()
-        assert "0/1 connected · 0 tool(s) · 1 connecting" in starting_status.plain
+        assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
             starting_status.plain.index("connecting"),
         ).foreground == Color.parse(app.tui_theme.accent)
@@ -1806,7 +1864,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         session.initialize_gate.set()
         await pilot.pause(0.6)
         connected_status = welcome._system._mcp.render()
-        assert "1/1 connected · 1 tool(s)" in connected_status.plain
+        assert "1/1 connected • 1 tool(s)" in connected_status.plain
         assert connected_status.get_style_at_offset(
             connected_status.plain.index("connected"),
         ).foreground == Color.parse(app.tui_theme.accent)
@@ -1815,12 +1873,12 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         session.tools.append(LiveMcpSession._tool("fetch"))
         factory.tools_changed()
         await pilot.pause(0.6)
-        assert "1/1 connected · 2 tool(s)" in welcome._system._mcp.render().plain
+        assert "1/1 connected • 2 tool(s)" in welcome._system._mcp.render().plain
         assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
 
         factory.connection_lost("connection lost")
         await pilot.pause(0.6)
-        assert "0/1 connected · 0 tool(s) · 1 failed" in welcome._system._mcp.render().plain
+        assert "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain
         assert "live__search" not in application.runtime.tools.names()
 
     assert app._mcp_status_timer is None
@@ -5883,20 +5941,60 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("with_conversation", (False, True), ids=("welcome", "session"))
-async def test_command_popup_reflows_conversation_viewport_atomically(
-    tmp_path: Path,
-    *,
-    with_conversation: bool,
-) -> None:
+async def test_welcome_command_popup_aligns_without_pushing_logo_up(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        welcome = await _wait_for_welcome_render(app, pilot, contains="██████")
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        status_line = app.query_one(StatusLine)
+        resting_regions = (
+            welcome._logo.region,
+            composer.region,
+            status_line.region,
+            welcome._lower.region,
+            welcome._system.region,
+        )
+
+        await pilot.press("slash")
+        await pilot.pause()
+
+        assert popup.display is True
+        assert popup.styles.overlay == "screen"
+        assert popup.region.x == composer.region.x
+        assert popup.region.right == composer.region.right
+        assert popup.region.bottom == composer.region.y
+        assert (
+            welcome._logo.region,
+            composer.region,
+            status_line.region,
+            welcome._lower.region,
+            welcome._system.region,
+        ) == resting_regions
+
+        composer.clear()
+        await pilot.pause()
+
+        assert popup.display is False
+        assert (
+            welcome._logo.region,
+            composer.region,
+            status_line.region,
+            welcome._lower.region,
+            welcome._system.region,
+        ) == resting_regions
+
+
+@pytest.mark.asyncio
+async def test_command_popup_reflows_session_viewport_atomically(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
         await pilot.pause(0.5)
         conversation = app.query_one(ConversationView)
-        if with_conversation:
-            await conversation.load_messages(_scrollable_messages())
-            await pilot.pause()
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
 
         popup = app.query_one(CommandPopup)
         composer = app.query_one(Composer)
@@ -5942,9 +6040,8 @@ async def test_command_popup_reflows_conversation_viewport_atomically(
             assert command_state[0].bottom == popup.region.y
             assert popup.region.bottom == composer.region.y
             assert_atomic_transition(resting_state, command_state)
-            if with_conversation:
-                viewport_delta = resting_state[0].height - command_state[0].height
-                assert command_state[3].bottom == resting_state[3].bottom - viewport_delta
+            viewport_delta = resting_state[0].height - command_state[0].height
+            assert command_state[3].bottom == resting_state[3].bottom - viewport_delta
 
             frames.clear()
             await pilot.press("h")
@@ -5965,14 +6062,13 @@ async def test_command_popup_reflows_conversation_viewport_atomically(
             assert visual_state() == resting_state
             assert_atomic_transition(filtered_state, resting_state)
 
-            if with_conversation:
-                await pilot.press("ctrl+up")
-                await pilot.pause()
-                assert conversation.scroll_y == 0
+            await pilot.press("ctrl+up")
+            await pilot.pause()
+            assert conversation.scroll_y == 0
 
-                await pilot.press("ctrl+down")
-                await pilot.pause()
-                assert conversation.scroll_y == conversation.max_scroll_y
+            await pilot.press("ctrl+down")
+            await pilot.pause()
+            assert conversation.scroll_y == conversation.max_scroll_y
         finally:
             app.post_display_hook = post_display_hook
 
@@ -6110,6 +6206,31 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
         await pilot.press("enter")
         await pilot.pause()
         assert isinstance(app.screen, HelpScreen)
+
+
+@pytest.mark.asyncio
+async def test_command_popup_truncates_long_rows_on_first_open(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 32)) as pilot:
+        await _wait_for_welcome_render(app, pilot, contains="██████")
+        popup = app.query_one(CommandPopup)
+        popup.show_commands(
+            (
+                TuiCommand("/short", "Short command", "Short command"),
+                TuiCommand(
+                    "/long",
+                    "A command title that is intentionally much wider than the popup",
+                    "Long command",
+                ),
+            )
+        )
+        await pilot.pause()
+
+        rendered = popup.query_one("#command-popup-content", Static).render().plain
+        rendered_lines = rendered.splitlines()
+        assert len(rendered_lines) == 2
+        assert rendered_lines[1].endswith("…")
 
 
 @pytest.mark.asyncio

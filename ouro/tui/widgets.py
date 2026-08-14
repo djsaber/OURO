@@ -20,6 +20,7 @@ from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Label, Markdown, Static, TextArea
 
+from ouro import __version__
 from ouro.application.queued_inputs import (
     QueuedInputMode,
     QueuedUserInputView,
@@ -41,7 +42,7 @@ from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.text_inputs import TuiTextArea
-from ouro.tui.theme import TuiTheme, theme_for
+from ouro.tui.theme import WELCOME_BULLET, WELCOME_SEPARATOR, TuiTheme, theme_for
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -588,10 +589,15 @@ class _WelcomeSystemBlock(Vertical):
         self._skills = Static(classes="welcome-value")
         self._plugins = Static(classes="welcome-value")
         self._mcp = Static(classes="welcome-value")
+        self._version = Static(f"v{__version__}", classes="welcome-version")
         self._render_values()
 
     def compose(self) -> ComposeResult:
-        yield Static("SYSTEM", classes="welcome-title")
+        yield Horizontal(
+            Static("SYSTEM", classes="welcome-title welcome-label"),
+            self._version,
+            classes="welcome-system-heading",
+        )
         for label, value in (
             ("Workspace", self._workspace),
             ("Providers", self._providers),
@@ -614,12 +620,15 @@ class _WelcomeSystemBlock(Vertical):
         self._workspace.update(Text(status.workspace or "not set", style="#d6d9df"))
 
         providers = Text(_compact_names(status.provider_ids) or "none configured", style="#d6d9df")
-        providers.append(f" · {status.model_count} model(s)", style="#8f9aa8")
+        providers.append(f"{WELCOME_SEPARATOR}{status.model_count} model(s)", style="#8f9aa8")
         self._providers.update(providers)
 
         skills = Text(f"{status.skill_count} available", style="#8f9aa8")
         if status.skill_names:
-            skills.append(f" · {_compact_names(status.skill_names)}", style="#647180")
+            skills.append(
+                f"{WELCOME_SEPARATOR}{_compact_names(status.skill_names)}",
+                style="#647180",
+            )
         self._skills.update(skills)
 
         plugins = Text(
@@ -628,12 +637,12 @@ class _WelcomeSystemBlock(Vertical):
         )
         if status.plugin_active_names:
             plugins.append(
-                f" · {_compact_names(status.plugin_active_names)}",
+                f"{WELCOME_SEPARATOR}{_compact_names(status.plugin_active_names)}",
                 style="#647180",
             )
         if status.plugin_issue_count:
             plugins.append(
-                f" · {status.plugin_issue_count} need attention",
+                f"{WELCOME_SEPARATOR}{status.plugin_issue_count} need attention",
                 style="#e08a8a",
             )
         self._plugins.update(plugins)
@@ -644,14 +653,17 @@ class _WelcomeSystemBlock(Vertical):
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
                 style=theme_for(self).accent,
             )
-            mcp.append(f" · {status.mcp_tool_count} tool(s)", style="#8f9aa8")
+            mcp.append(f"{WELCOME_SEPARATOR}{status.mcp_tool_count} tool(s)", style="#8f9aa8")
             if status.mcp_connecting_count:
                 mcp.append(
-                    f" · {status.mcp_connecting_count} connecting",
+                    f"{WELCOME_SEPARATOR}{status.mcp_connecting_count} connecting",
                     style=theme_for(self).accent,
                 )
             if status.mcp_failed_count:
-                mcp.append(f" · {status.mcp_failed_count} failed", style="#e08a8a")
+                mcp.append(
+                    f"{WELCOME_SEPARATOR}{status.mcp_failed_count} failed",
+                    style="#e08a8a",
+                )
         else:
             mcp.append("not configured", style="#647180")
         self._mcp.update(mcp)
@@ -691,14 +703,20 @@ class _WelcomeUsageBlock(Vertical):
             chart.append("■", style=color)
         if daily_tokens:
             days = len(daily_tokens)
-            chart.append(f" · last {days} day{'s' if days != 1 else ''}", style="#647180")
+            chart.append(
+                f"{WELCOME_SEPARATOR}last {days} day{'s' if days != 1 else ''}",
+                style="#647180",
+            )
         else:
-            chart.append(" · no records", style="#647180")
+            chart.append(f"{WELCOME_SEPARATOR}no records", style="#647180")
         self._chart.update(chart)
 
         requests = Text(f"{status.usage_request_count} request(s)", style="#8f9aa8")
         if status.usage_priced_request_count:
-            requests.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
+            requests.append(
+                f"{WELCOME_SEPARATOR}${status.usage_estimated_cost:.4f}",
+                style="#647180",
+            )
         self._requests.update(requests)
         self._tokens.update(
             Text(
@@ -714,7 +732,7 @@ class _WelcomeTipsBlock(Vertical):
         super().__init__(classes="welcome-section welcome-tips")
 
     def compose(self) -> ComposeResult:
-        yield Static("⦁ TIPS", classes="welcome-title")
+        yield Static(f"{WELCOME_BULLET} TIPS", classes="welcome-title")
         for key, description in _INPUT_TIPS:
             yield Horizontal(
                 Static(key, classes="welcome-tip-key"),
@@ -725,7 +743,7 @@ class _WelcomeTipsBlock(Vertical):
 
 class WelcomePanel(Vertical):
     def __init__(self, status: TuiSystemStatus | None = None) -> None:
-        super().__init__(classes="welcome")
+        super().__init__(id="input-region")
         self._status = status or TuiSystemStatus()
         self._logo = Static(classes="welcome-logo")
         self._system = _WelcomeSystemBlock(self._status)
@@ -737,16 +755,29 @@ class WelcomePanel(Vertical):
             self._tips,
             classes="welcome-lower",
         )
-        self._content = Vertical(
-            self._system,
-            self._lower,
-            classes="welcome-content",
+        self._top = Vertical(
+            self._logo,
+            classes="welcome-only welcome-top",
         )
+        self._bottom = Vertical(
+            self._lower,
+            self._system,
+            classes="welcome-only welcome-bottom",
+        )
+        self._composer = Composer()
+        self._composer.display = False
         self._render_logo()
 
     def compose(self) -> ComposeResult:
-        yield self._logo
-        yield self._content
+        yield self._top
+        yield CommandPopup()
+        yield AskUserPanel()
+        yield PlanConfirmationPanel()
+        yield InteractionBar()
+        yield self._composer
+        yield QueuedInputPanel()
+        yield StatusLine()
+        yield self._bottom
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
@@ -756,13 +787,16 @@ class WelcomePanel(Vertical):
     def on_mount(self) -> None:
         self.refresh_theme()
 
+    def set_welcome_mode(self, enabled: bool) -> None:
+        self.set_class(enabled, "welcome-page")
+
     def refresh_theme(self) -> None:
         self._render_logo()
         self._system.refresh_theme()
         self._usage.refresh_theme()
 
     def _render_logo(self) -> None:
-        self._logo.update(Text(_OURO_LOGO, style=f"bold {theme_for(self).accent}"))
+        self._logo.update(Text(_OURO_LOGO.strip("\n"), style=f"bold {theme_for(self).accent}"))
 
 
 def _tool_activities_from_messages(
@@ -816,17 +850,25 @@ def _compaction_notice(compaction: CompactionRecord | int) -> str:
 
 
 class ConversationView(VerticalScroll):
-    def __init__(self, *, reasoning_expanded: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        reasoning_expanded: bool = True,
+        welcome_state_changed: Callable[[bool], None] | None = None,
+        system_status_changed: Callable[[TuiSystemStatus], None] | None = None,
+    ) -> None:
         super().__init__(id="conversation")
         self._follow_tail = True
         self._reasoning_expanded = reasoning_expanded
+        self._welcome_state_changed = welcome_state_changed
+        self._system_status_changed = system_status_changed
         self._history = ConversationHistory(
             _tool_activity_text,
             reasoning_expanded=reasoning_expanded,
         )
         self._transcript = Vertical(self._history, id="conversation-transcript")
         self._system_status = TuiSystemStatus()
-        self._welcome: WelcomePanel | None = None
+        self._showing_welcome = False
         self._assistant: AssistantTurn | None = None
         self._tools: dict[str, ToolActivityRow] = {}
         self._current_run_id: str | None = None
@@ -872,18 +914,26 @@ class ConversationView(VerticalScroll):
     async def show_welcome(self) -> None:
         await self._clear_live_transcript()
         self._history.replace(())
-        self._welcome = None
+        self._set_showing_welcome(True)
         self._assistant = None
         self._tools.clear()
         self._current_run_id = None
         self._presented_run_ids.clear()
-        await self._mount_welcome()
         self.anchor()
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._system_status = status
-        if self._welcome is not None:
-            self._welcome.set_system_status(status)
+        if self._system_status_changed is not None:
+            self._system_status_changed(status)
+
+    @property
+    def showing_welcome(self) -> bool:
+        return self._showing_welcome
+
+    def _set_showing_welcome(self, showing: bool) -> None:
+        self._showing_welcome = showing
+        if self._welcome_state_changed is not None:
+            self._welcome_state_changed(showing)
 
     def set_reasoning_expanded(self, expanded: bool) -> None:
         if self._reasoning_expanded == expanded:
@@ -892,10 +942,6 @@ class ConversationView(VerticalScroll):
         self._history.set_reasoning_expanded(expanded)
         if self._assistant is not None:
             self._assistant.set_reasoning_expanded(expanded)
-
-    async def _mount_welcome(self) -> None:
-        self._welcome = WelcomePanel(self._system_status)
-        await self._transcript.mount(self._welcome)
 
     async def load_messages(
         self,
@@ -906,7 +952,7 @@ class ConversationView(VerticalScroll):
         await self._clear_live_transcript()
         self._assistant = None
         self._tools.clear()
-        self._welcome = None
+        self._showing_welcome = False
         self._current_run_id = None
         self._presented_run_ids.clear()
 
@@ -994,11 +1040,12 @@ class ConversationView(VerticalScroll):
         if not transcript:
             # A loaded session with no visible dialogue is still an empty state.
             self._history.replace(())
-            await self._mount_welcome()
+            self._set_showing_welcome(True)
             self.anchor()
             return
 
         self._history.replace(transcript)
+        self._set_showing_welcome(False)
         await self._history.wait_until_rendered()
         self.anchor()
 
@@ -1028,19 +1075,9 @@ class ConversationView(VerticalScroll):
         self.scroll_to_user_turn(index)
 
     async def _dismiss_welcome(self) -> None:
-        """Transition from the empty welcome state to the conversation state.
-
-        The welcome panel is an empty-state placeholder shown only while the
-        conversation has no content. As soon as any dialogue content arrives —
-        a user message, an assistant turn, a tool call, or a notice — the
-        welcome panel yields to the conversation, so the LOGO welcome frame
-        stays visible only at startup and when a new session begins.
-        """
-        if self._welcome is None:
-            return
-        welcome = self._welcome
-        self._welcome = None
-        await welcome.remove()
+        """Transition from the empty welcome layout to the conversation layout."""
+        if self._showing_welcome:
+            self._set_showing_welcome(False)
 
     async def add_user(self, text: str) -> None:
         await self._dismiss_welcome()
@@ -1911,12 +1948,31 @@ class CommandPopup(VerticalScroll):
         self._render_rows(tuple(rows))
 
     def _render_rows(self, rows: tuple[Text, ...]) -> None:
+        self._render_rows_at_width(rows, retry_after_layout=True)
+
+    def _render_rows_at_width(
+        self,
+        rows: tuple[Text, ...],
+        *,
+        retry_after_layout: bool,
+    ) -> None:
         width = self.scrollable_content_region.width
-        if width > 0:
-            for row in rows:
-                row.truncate(width, overflow="ellipsis", pad=True)
-        self._content.update(Text("\n").join(rows))
-        self.call_after_refresh(self._scroll_selected_into_view, rows)
+        if width <= 0:
+            self._content.update(Text("\n").join(rows))
+            if retry_after_layout:
+                self.call_after_refresh(
+                    self._render_rows_at_width,
+                    rows,
+                    retry_after_layout=False,
+                )
+            return
+
+        fitted_rows = tuple(row.copy() for row in rows)
+        for row in fitted_rows:
+            row.truncate(width, overflow="ellipsis", pad=True)
+        self._content.styles.width = width
+        self._content.update(Text("\n").join(fitted_rows))
+        self.call_after_refresh(self._scroll_selected_into_view, fitted_rows)
 
     def _scroll_selected_into_view(self, rows: tuple[Text, ...]) -> None:
         if not rows or self._selected >= len(rows):
