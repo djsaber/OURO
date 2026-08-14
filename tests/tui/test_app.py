@@ -81,6 +81,7 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.configuration_workflows import _skill_choice
 from ouro.tui.controller import (
+    TuiBootstrap,
     TuiController,
     TuiEndpointConfiguration,
     TuiPluginCommandExecution,
@@ -1274,6 +1275,31 @@ def _plan_confirmation_application(
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
     return LocalApplication.from_runtime(runtime)
+
+
+@pytest.mark.asyncio
+async def test_tui_shows_version_while_startup_is_still_in_progress(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    startup_entered = asyncio.Event()
+    release_startup = asyncio.Event()
+    start = app._controller.start
+
+    async def delayed_start() -> TuiBootstrap:
+        startup_entered.set()
+        await release_startup.wait()
+        return await start()
+
+    app._controller.start = delayed_start  # type: ignore[method-assign]
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        try:
+            await asyncio.wait_for(startup_entered.wait(), timeout=1)
+            await pilot.pause()
+            header = app.query_one(BrandHeader)
+            assert header.render().plain == f" ▣ OURO v{__version__}"
+            assert "New session" not in header.render().plain
+        finally:
+            release_startup.set()
 
 
 @pytest.mark.asyncio

@@ -786,7 +786,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
 
     def compose(self) -> ComposeResult:
-        yield BrandHeader()
+        yield BrandHeader(initial_context=_WELCOME_HEADER_CONTEXT)
         with Vertical(id="main"):
             yield ConversationView(reasoning_expanded=self._preferences.reasoning_expanded)
             yield CommandPopup()
@@ -869,7 +869,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sessions = bootstrap.sessions
         self._active_model = bootstrap.current_model.endpoint_id
         header = self.query_one(BrandHeader)
-        header.set_context(session_title=self._active_title)
+        header.set_context(session_title=_WELCOME_HEADER_CONTEXT)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
@@ -1838,7 +1838,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._projection = None
         self._interaction = None
         self._active_title = "New session"
-        self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self.query_one(BrandHeader).set_context(session_title=_WELCOME_HEADER_CONTEXT)
         self.query_one(StatusLine).set_activity("idle")
         self.query_one(StatusLine).set_context(None)
         self._sync_interaction(None)

@@ -125,9 +125,9 @@ class _MarkdownWriter(Protocol):
 class BrandHeader(Static):
     """Static brand identity and session title docked at the top of the screen."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, initial_context: str = "New session") -> None:
         super().__init__(id="brand-header")
-        self._session_title = "New session"
+        self._session_title = initial_context
 
     def on_mount(self) -> None:
         self._render_header()
