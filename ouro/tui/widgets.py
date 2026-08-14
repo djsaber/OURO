@@ -14,7 +14,6 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.events import Resize
 from textual.geometry import Region
 from textual.message import Message
 from textual.timer import Timer
@@ -1044,30 +1043,30 @@ class InteractionBar(Static):
         return self._selected == 0
 
     def show_interaction(self, interaction: PendingInteraction | None) -> None:
-        if interaction is None or interaction.kind != "approval":
-            self.display = False
-            self.disabled = True
-            self._interaction = None
-            self._identity = None
-            self._selected = 0
-            self.update("")
-            return
-        identity = (interaction.run_id, interaction.request_id or interaction.tool_call_id)
-        if identity != self._identity:
-            self._selected = 0
-        self._interaction = interaction
-        self._identity = identity
-        self.disabled = False
-        self.display = True
-        self._render_approval()
+        with self.app.batch_update():
+            if interaction is None or interaction.kind != "approval":
+                self.display = False
+                self._interaction = None
+                self._identity = None
+                self._selected = 0
+                return
+            identity = (interaction.run_id, interaction.request_id or interaction.tool_call_id)
+            if identity != self._identity:
+                self._selected = 0
+            self._interaction = interaction
+            self._identity = identity
+            self.disabled = False
+            self.display = True
+            self._render_approval()
 
     def resume(self) -> None:
         if self._interaction is None:
             return
-        self.disabled = False
-        self.display = True
-        self._render_approval()
-        self.focus()
+        with self.app.batch_update():
+            self.disabled = False
+            self.display = True
+            self._render_approval()
+            self.focus()
 
     def refresh_theme(self) -> None:
         self._render_approval()
@@ -1178,32 +1177,33 @@ class AskUserPanel(Static):
         return self._awaiting_freeform
 
     def show_request(self, request: QuestionForm) -> None:
-        self._request = request
-        self._question_index = 0
-        self._cursor = 0
-        self._selected.clear()
-        self._answers.clear()
-        self._awaiting_freeform = False
-        self.disabled = False
-        self.display = True
-        self._render_question()
-        self.focus()
-        if not self._question.options:
-            self._request_freeform()
-
-    def hide_panel(self) -> None:
-        self.display = False
-        self.disabled = True
-        self._request = None
-        self._awaiting_freeform = False
-        self.update("")
-
-    def resume(self) -> None:
-        if self._request is not None:
+        with self.app.batch_update():
+            self._request = request
+            self._question_index = 0
+            self._cursor = 0
+            self._selected.clear()
+            self._answers.clear()
+            self._awaiting_freeform = False
             self.disabled = False
             self.display = True
             self._render_question()
             self.focus()
+            if not self._question.options:
+                self._request_freeform()
+
+    def hide_panel(self) -> None:
+        with self.app.batch_update():
+            self.display = False
+            self._request = None
+            self._awaiting_freeform = False
+
+    def resume(self) -> None:
+        if self._request is not None:
+            with self.app.batch_update():
+                self.disabled = False
+                self.display = True
+                self._render_question()
+                self.focus()
 
     def accept_freeform(self, value: str) -> None:
         if not self._awaiting_freeform or self._request is None:
@@ -1402,37 +1402,36 @@ class PlanConfirmationPanel(Vertical):
         return self._request.actions[self._cursor]
 
     def show_request(self, request: PlanConfirmationRequest) -> None:
-        self._request = request
-        self._stage = "action"
-        self._cursor = 0
-        self._awaiting_feedback = False
-        self.disabled = False
-        self.display = True
-        self._render_panel()
-        self._document.scroll_home(animate=False)
-        self.focus()
+        with self.app.batch_update():
+            self._request = request
+            self._stage = "action"
+            self._cursor = 0
+            self._awaiting_feedback = False
+            self.disabled = False
+            self.display = True
+            self._render_panel()
+            self._document.scroll_home(animate=False)
+            self.focus()
 
     def hide_panel(self) -> None:
-        self.display = False
-        self.disabled = True
-        self._request = None
-        self._stage = "action"
-        self._cursor = 0
-        self._awaiting_feedback = False
-        self._title.update("")
-        self._plan_body.update("")
-        self._controls.update("")
+        with self.app.batch_update():
+            self.display = False
+            self._request = None
+            self._stage = "action"
+            self._cursor = 0
+            self._awaiting_feedback = False
 
     def resume(self) -> None:
         if self._request is None:
             return
-        self.disabled = False
-        self.display = True
-        self._render_panel()
-        if self._awaiting_feedback:
-            self.post_message(self.FeedbackRequested())
-        else:
-            self.focus()
+        with self.app.batch_update():
+            self.disabled = False
+            self.display = True
+            self._render_panel()
+            if self._awaiting_feedback:
+                self.post_message(self.FeedbackRequested())
+            else:
+                self.focus()
 
     def accept_feedback(self, value: str) -> None:
         if self._request is None or not self._awaiting_feedback:
@@ -1526,11 +1525,12 @@ class PlanConfirmationPanel(Vertical):
         request = self._request
         if request is None:
             return
-        theme = theme_for(self)
-        title = Text("? PLAN APPROVAL", style=f"bold {theme.accent_bright}")
-        self._title.update(title)
-        self._plan_body.update(Text(request.plan, style="#d6d9df"))
-        self._render_controls(request)
+        with self.app.batch_update():
+            theme = theme_for(self)
+            title = Text("? PLAN APPROVAL", style=f"bold {theme.accent_bright}")
+            self._title.update(title)
+            self._plan_body.update(Text(request.plan, style="#d6d9df"))
+            self._render_controls(request)
 
     def _render_controls(self, request: PlanConfirmationRequest) -> None:
         theme = theme_for(self)
@@ -1618,11 +1618,6 @@ class CommandPopup(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield self._content
 
-    def on_resize(self, _: Resize) -> None:
-        width = self.scrollable_content_region.width
-        if width > 0 and self._content.content_region.width != width:
-            self._content.styles.width = width
-
     @property
     def selected_command(self) -> TuiCommand | None:
         if self._argument_command is not None or not self._commands:
@@ -1640,34 +1635,38 @@ class CommandPopup(VerticalScroll):
         return self._arguments[self._selected]
 
     def show_commands(self, commands: tuple[TuiCommand, ...]) -> None:
-        selected_name = self.selected_command.name if self.selected_command is not None else None
-        self._commands = commands
-        self._argument_command = None
-        self._arguments = ()
-        self._selected = next(
-            (index for index, item in enumerate(commands) if item.name == selected_name),
-            0,
-        )
-        self.display = True
-        self._render_commands()
+        with self.app.batch_update():
+            selected_name = (
+                self.selected_command.name if self.selected_command is not None else None
+            )
+            self._commands = commands
+            self._argument_command = None
+            self._arguments = ()
+            self._selected = next(
+                (index for index, item in enumerate(commands) if item.name == selected_name),
+                0,
+            )
+            self.display = True
+            self._render_commands()
 
     def show_arguments(
         self,
         command: TuiCommand,
         arguments: tuple[TuiCommandArgument, ...],
     ) -> None:
-        selected_value = (
-            self.selected_argument.value if self.selected_argument is not None else None
-        )
-        self._commands = ()
-        self._argument_command = command
-        self._arguments = arguments
-        self._selected = next(
-            (index for index, item in enumerate(arguments) if item.value == selected_value),
-            0,
-        )
-        self.display = True
-        self._render_arguments()
+        with self.app.batch_update():
+            selected_value = (
+                self.selected_argument.value if self.selected_argument is not None else None
+            )
+            self._commands = ()
+            self._argument_command = command
+            self._arguments = arguments
+            self._selected = next(
+                (index for index, item in enumerate(arguments) if item.value == selected_value),
+                0,
+            )
+            self.display = True
+            self._render_arguments()
 
     def hide(self) -> None:
         if (
@@ -1676,15 +1675,14 @@ class CommandPopup(VerticalScroll):
             and self._argument_command is None
             and not self._arguments
             and self._selected == 0
-            and self._content.content == ""
         ):
             return
-        self.display = False
-        self._commands = ()
-        self._argument_command = None
-        self._arguments = ()
-        self._selected = 0
-        self._content.update("")
+        with self.app.batch_update():
+            self.display = False
+            self._commands = ()
+            self._argument_command = None
+            self._arguments = ()
+            self._selected = 0
 
     def navigate(self, offset: int) -> None:
         items = self._arguments if self._argument_command is not None else self._commands
@@ -1806,26 +1804,26 @@ class QueuedInputPanel(VerticalScroll):
         self.set_inputs(self._inputs)
 
     def set_inputs(self, inputs: tuple[QueuedUserInputView, ...]) -> None:
-        self._inputs = inputs
-        if not inputs:
-            self.display = False
-            self._content.update("")
-            return
-        theme = theme_for(self)
-        content = Text()
-        for index, item in enumerate(inputs, start=1):
-            label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
-            tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
-            prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
-            if item.skill_name is not None:
-                prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
-            content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
-            content.append(prompt, style="#d6d9df")
-            if index < len(inputs):
-                content.append("\n")
-        self._content.update(content)
-        self.display = True
-        self.scroll_end(animate=False)
+        with self.app.batch_update():
+            self._inputs = inputs
+            if not inputs:
+                self.display = False
+                return
+            self.display = True
+            theme = theme_for(self)
+            content = Text()
+            for index, item in enumerate(inputs, start=1):
+                label = "FOLLOW" if item.mode == "follow_up" else "GUIDE"
+                tone = theme.accent if item.mode == "follow_up" else theme.accent_bright
+                prompt = " ↵ ".join(line.strip() for line in item.prompt.splitlines())
+                if item.skill_name is not None:
+                    prompt = f"/skill {item.skill_name}{f' {prompt}' if prompt else ''}"
+                content.append(f"{index}. {label:<6} ", style=f"bold {tone}")
+                content.append(prompt, style="#d6d9df")
+                if index < len(inputs):
+                    content.append("\n")
+            self._content.update(content)
+            self.scroll_end(animate=False)
 
 
 class Composer(TuiTextArea):

@@ -13,6 +13,7 @@ from rich.text import Text
 from textual import events
 from textual.color import Color
 from textual.containers import Vertical, VerticalScroll
+from textual.geometry import Region
 from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
@@ -5818,6 +5819,53 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
         await app._dispatch_command("/quite")
         await pilot.pause()
         assert app.is_running is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_conversation", (False, True), ids=("welcome", "session"))
+async def test_command_popup_never_reflows_conversation_viewport(
+    tmp_path: Path,
+    *,
+    with_conversation: bool,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        if with_conversation:
+            await conversation.add_user("Keep the session viewport stable")
+            await conversation.append_assistant("The command menu should float above it.")
+            await pilot.pause()
+
+        viewport = conversation.region
+        scroll_y = conversation.scroll_y
+        popup = app.query_one(CommandPopup)
+        composer = app.query_one(Composer)
+        frames: list[tuple[Region, float]] = []
+        post_display_hook = app.post_display_hook
+        app.post_display_hook = lambda: frames.append((conversation.region, conversation.scroll_y))
+        try:
+            await pilot.click("#composer")
+            frames.clear()
+            await pilot.press("slash")
+            await pilot.pause()
+
+            assert popup.display is True
+            assert popup.styles.overlay == "screen"
+            assert popup.region.bottom == composer.region.y
+            assert frames
+            assert all(frame == (viewport, scroll_y) for frame in frames)
+
+            frames.clear()
+            composer.clear()
+            await pilot.pause()
+
+            assert popup.display is False
+            assert frames
+            assert all(frame == (viewport, scroll_y) for frame in frames)
+        finally:
+            app.post_display_hook = post_display_hook
 
 
 @pytest.mark.asyncio

@@ -462,6 +462,11 @@ _OURO_TUI_CSS = """
     }
 
     #command-popup {
+        /* Command completion is transient chrome, not conversation content.
+           Keep it out of the vertical flow and anchor it immediately above
+           the lower chrome so typing never resizes the conversation viewport. */
+        overlay: screen;
+        offset: 0 -100%;
         height: auto;
         max-height: 14;
         margin: 0 2;
@@ -477,7 +482,7 @@ _OURO_TUI_CSS = """
     }
 
     #command-popup-content {
-        width: auto;
+        width: 100%;
         height: auto;
     }
 
@@ -1494,34 +1499,35 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return interaction
 
     def _sync_interaction(self, interaction: PendingInteraction | None) -> None:
-        interaction_bar = self.query_one(InteractionBar)
-        ask_user = self.query_one(AskUserPanel)
-        plan_panel = self.query_one(PlanConfirmationPanel)
-        composer = self.query_one(Composer)
-        if interaction is not None and interaction.kind == "question":
-            interaction_bar.show_interaction(None)
-            plan_request = project_plan_confirmation(interaction)
-            if plan_request is not None:
-                ask_user.hide_panel()
-                plan_panel.show_request(plan_request)
-            else:
-                plan_panel.hide_panel()
-                ask_user.show_request(
-                    project_question_form(interaction.tool_name, interaction.request)
-                )
-            composer.disabled = False
+        with self.batch_update():
+            interaction_bar = self.query_one(InteractionBar)
+            ask_user = self.query_one(AskUserPanel)
+            plan_panel = self.query_one(PlanConfirmationPanel)
+            composer = self.query_one(Composer)
+            if interaction is not None and interaction.kind == "question":
+                interaction_bar.show_interaction(None)
+                plan_request = project_plan_confirmation(interaction)
+                if plan_request is not None:
+                    ask_user.hide_panel()
+                    plan_panel.show_request(plan_request)
+                else:
+                    plan_panel.hide_panel()
+                    ask_user.show_request(
+                        project_question_form(interaction.tool_name, interaction.request)
+                    )
+                composer.disabled = False
+                self._sync_composer_placeholder()
+                return
+            ask_user.hide_panel()
+            plan_panel.hide_panel()
+            interaction_bar.show_interaction(interaction)
             self._sync_composer_placeholder()
-            return
-        ask_user.hide_panel()
-        plan_panel.hide_panel()
-        interaction_bar.show_interaction(interaction)
-        self._sync_composer_placeholder()
-        if interaction is not None and interaction.kind == "approval":
-            composer.disabled = True
-            interaction_bar.focus()
-        else:
-            composer.disabled = False
-            composer.focus()
+            if interaction is not None and interaction.kind == "approval":
+                composer.disabled = True
+                interaction_bar.focus()
+            else:
+                composer.disabled = False
+                composer.focus()
 
     def _sync_composer_placeholder(self) -> None:
         """Project run and interaction state onto the composer hint."""
