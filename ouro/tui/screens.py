@@ -71,6 +71,26 @@ class _ChoiceGroupHeaderText(Text):
     """Marks a text-backed group heading without conflating it with disabled rows."""
 
 
+def _choice_option(choice: Choice, *, group_accent: str) -> Option:
+    """Render one selectable row independently from its surrounding group chrome."""
+
+    label = Text(overflow="ellipsis", no_wrap=True)
+    if choice.marker:
+        label.append(f"{choice.marker} ", style=f"bold {group_accent}")
+    label.append(choice.label, style=choice.accent or "")
+    if choice.trailing:
+        row = Table.grid(expand=True, padding=0)
+        row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
+        row.add_column(ratio=1)
+        row.add_column(width=2)
+        row.add_column(justify="right", no_wrap=True)
+        row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
+        return Option(row, id=choice.value, disabled=choice.disabled)
+    if choice.description:
+        label.append(f"\n{choice.description}", style="#7d8794")
+    return Option(label, id=choice.value, disabled=choice.disabled)
+
+
 def grouped_choice_options(
     choices: tuple[Choice, ...],
     *,
@@ -104,22 +124,7 @@ def grouped_choice_options(
                     )
                 options.append(Option(group_header, disabled=True))
             previous_group = choice.group
-        label = Text(overflow="ellipsis", no_wrap=True)
-        if choice.marker:
-            label.append(f"{choice.marker} ", style=f"bold {group_accent}")
-        label.append(choice.label, style=choice.accent or "")
-        if choice.trailing:
-            row = Table.grid(expand=True, padding=0)
-            row.add_column(ratio=2, overflow="ellipsis", no_wrap=True)
-            row.add_column(ratio=1)
-            row.add_column(width=2)
-            row.add_column(justify="right", no_wrap=True)
-            row.add_row(label, "", "", Text(choice.trailing, style="#7d8794"))
-            options.append(Option(row, id=choice.value, disabled=choice.disabled))
-            continue
-        if choice.description:
-            label.append(f"\n{choice.description}", style="#7d8794")
-        options.append(Option(label, id=choice.value, disabled=choice.disabled))
+        options.append(_choice_option(choice, group_accent=group_accent))
     return options
 
 
@@ -929,9 +934,16 @@ class MultiChoiceScreen(ChoiceScreen):
         else:
             self._selected.add(selected)
         self._choices = self._project_markers(self._choices)
-        self._refresh_options(
-            needle=self.query_one("#choice-filter", Input).value,
-            preferred_value=selected,
+        choice = next(choice for choice in self._choices if choice.value == selected)
+        options = self.query_one("#choice-list", OptionList)
+        option_index = options.get_option_index(selected)
+        prompt = _choice_option(
+            choice,
+            group_accent=theme_for(self).accent,
+        ).prompt
+        options.replace_option_prompt_at_index(
+            option_index,
+            prompt,
         )
 
     async def _select_choice(self, highlighted: str) -> None:

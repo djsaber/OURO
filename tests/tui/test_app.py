@@ -3539,6 +3539,65 @@ async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
 
 
 @pytest.mark.asyncio
+async def test_delete_session_toggle_preserves_list_scroll_position(tmp_path: Path) -> None:
+    async def confirm_selected(_selected: tuple[str, ...]) -> tuple[Choice, ...] | None:
+        return None
+
+    choices = tuple(
+        Choice(
+            f"ses_delete_scroll_{index:02d}",
+            f"Delete scroll {index:02d}",
+            group="Archived",
+        )
+        for index in range(30)
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 20)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            MultiChoiceScreen(
+                title="DELETE SESSIONS",
+                placeholder="Filter archived sessions…",
+                choices=choices,
+                on_confirm=confirm_selected,
+                selected_marker=SELECTED_CHOICE_MARKER,
+            )
+        )
+        await pilot.pause()
+
+        delete_screen = app.screen
+        assert isinstance(delete_screen, MultiChoiceScreen)
+        options = delete_screen.query_one("#choice-list", OptionList)
+        target = choices[15].value
+        target_index = options.get_option_index(target)
+        options.highlighted = target_index
+        options.focus()
+        options.scroll_to(y=target_index - 2, animate=False, immediate=True)
+        await pilot.pause()
+        scroll_before = options.scroll_y
+        assert scroll_before > 0
+
+        await pilot.press("space")
+        await pilot.pause()
+
+        assert options.highlighted == target_index
+        assert options.scroll_y == scroll_before
+        assert next(
+            choice for choice in delete_screen._choices if choice.value == target
+        ).marker == SELECTED_CHOICE_MARKER
+
+        await pilot.press("space")
+        await pilot.pause()
+
+        assert options.highlighted == target_index
+        assert options.scroll_y == scroll_before
+        assert next(
+            choice for choice in delete_screen._choices if choice.value == target
+        ).marker == ""
+
+
+@pytest.mark.asyncio
 async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
     tmp_path: Path,
 ) -> None:
