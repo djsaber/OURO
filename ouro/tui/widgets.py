@@ -14,7 +14,8 @@ from textual import events, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.geometry import Region
+from textual.geometry import Region, Size
+from textual.layout import DockArrangeResult
 from textual.message import Message
 from textual.timer import Timer
 from textual.widgets import Label, Markdown, Static, TextArea
@@ -690,6 +691,7 @@ def _compaction_notice(compaction: CompactionRecord | int) -> str:
 class ConversationView(VerticalScroll):
     def __init__(self, *, reasoning_expanded: bool = True) -> None:
         super().__init__(id="conversation")
+        self._follow_tail = True
         self._reasoning_expanded = reasoning_expanded
         self._history = ConversationHistory(
             _tool_activity_text,
@@ -705,6 +707,37 @@ class ConversationView(VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield self._transcript
+
+    def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
+        """Resolve the scroll position from the viewport used by this layout pass.
+
+        Dynamic siblings change the conversation's height. Scroll correction must use
+        this pass's ``size`` so child placement and scrolling reach the screen as one
+        coherent frame. A later resize callback is already one frame too late.
+        """
+
+        arrangement = super().arrange(size, optimal)
+        if not optimal:
+            max_scroll_y = max(0, arrangement.total_region.bottom - size.height)
+            self._follow_tail = self._follow_tail or self.scroll_y >= max_scroll_y
+            scroll_y = max_scroll_y if self._follow_tail else self.scroll_y
+            self.set_scroll(None, scroll_y)
+            self.scroll_target_y = scroll_y
+        return arrangement
+
+    def anchor(self, anchor: bool = True) -> None:
+        self._follow_tail = anchor
+        if anchor:
+            self.scroll_end(immediate=True, animate=False)
+
+    def release_anchor(self) -> None:
+        self._follow_tail = False
+        self.scroll_target_y = self.scroll_y
+
+    def watch_scroll_y(self, old_value: float, new_value: float) -> None:
+        super().watch_scroll_y(old_value, new_value)
+        if not self._follow_tail and new_value >= self.max_scroll_y:
+            self._follow_tail = True
 
     def on_mount(self) -> None:
         self.anchor()
@@ -1604,7 +1637,7 @@ class PlanConfirmationPanel(Vertical):
 
 
 class CommandPopup(VerticalScroll):
-    """Composer-controlled popup whose keyboard navigation owns its hidden scrolling."""
+    """Composer-controlled command panel with keyboard-owned hidden scrolling."""
 
     def __init__(self) -> None:
         super().__init__(id="command-popup")

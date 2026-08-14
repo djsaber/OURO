@@ -462,11 +462,6 @@ _OURO_TUI_CSS = """
     }
 
     #command-popup {
-        /* Command completion is transient chrome, not conversation content.
-           Keep it out of the vertical flow and anchor it immediately above
-           the lower chrome so typing never resizes the conversation viewport. */
-        overlay: screen;
-        offset: 0 -100%;
         height: auto;
         max-height: 14;
         margin: 0 2;

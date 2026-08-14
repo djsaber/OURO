@@ -26,6 +26,7 @@ from ouro.application.plugin_models import (
     PluginCommandExecutionView,
     PluginCommandView,
 )
+from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
@@ -1399,13 +1400,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert not conversation.query(WelcomePanel)
 
         popup = app.query_one(CommandPopup)
-        assert composer.styles.background == popup.styles.background
         assert popup.styles.overflow_y == "hidden"
         assert popup.show_vertical_scrollbar is False
-        assert popup.styles.border_left[0] == "solid"
-        assert popup.styles.border_right[0] == "solid"
-        assert popup.styles.border_top[0] == ""
-        assert popup.styles.border_bottom[0] == ""
         assert composer.styles.scrollbar_size_vertical == 0
         assert composer.show_vertical_scrollbar is False
         assert (
@@ -1435,7 +1431,16 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert composer.styles.border_top[0] == ""
         assert composer.styles.border_bottom[0] == ""
 
-        for panel in (app.query_one(InteractionBar), app.query_one(AskUserPanel)):
+        dynamic_panels = (
+            popup,
+            app.query_one(InteractionBar),
+            app.query_one(AskUserPanel),
+            app.query_one(PlanConfirmationPanel),
+            app.query_one(QueuedInputPanel),
+        )
+        for panel in dynamic_panels:
+            assert panel.styles.overlay != "screen"
+            assert panel.styles.background == composer.styles.background
             assert panel.styles.border_left[0] == "solid"
             assert panel.styles.border_right[0] == "solid"
             assert panel.styles.border_top[0] == ""
@@ -5823,7 +5828,7 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("with_conversation", (False, True), ids=("welcome", "session"))
-async def test_command_popup_never_reflows_conversation_viewport(
+async def test_command_popup_reflows_conversation_viewport_atomically(
     tmp_path: Path,
     *,
     with_conversation: bool,
@@ -5834,36 +5839,161 @@ async def test_command_popup_never_reflows_conversation_viewport(
         await pilot.pause(0.5)
         conversation = app.query_one(ConversationView)
         if with_conversation:
-            await conversation.add_user("Keep the session viewport stable")
-            await conversation.append_assistant("The command menu should float above it.")
+            await conversation.load_messages(_scrollable_messages())
             await pilot.pause()
 
-        viewport = conversation.region
-        scroll_y = conversation.scroll_y
         popup = app.query_one(CommandPopup)
         composer = app.query_one(Composer)
-        frames: list[tuple[Region, float]] = []
+        transcript = conversation.query_one("#conversation-transcript")
+
+        def visual_state() -> tuple[Region, int, Region, Region]:
+            return (
+                conversation.region,
+                round(conversation.scroll_y),
+                transcript.region,
+                transcript.children[-1].region,
+            )
+
+        resting_state = visual_state()
+        frames: list[tuple[Region, int, Region, Region]] = []
+
+        def assert_atomic_transition(
+            before: tuple[Region, int, Region, Region],
+            after: tuple[Region, int, Region, Region],
+        ) -> None:
+            assert before != after
+            assert frames
+            assert frames[-1] == after
+            first_final_frame = frames.index(after)
+            assert all(frame == before for frame in frames[:first_final_frame])
+            assert all(frame == after for frame in frames[first_final_frame:])
+
         post_display_hook = app.post_display_hook
-        app.post_display_hook = lambda: frames.append((conversation.region, conversation.scroll_y))
+
+        def capture_frame() -> None:
+            frames.append(visual_state())
+
+        app.post_display_hook = capture_frame
         try:
             await pilot.click("#composer")
             frames.clear()
             await pilot.press("slash")
             await pilot.pause()
 
+            command_state = visual_state()
             assert popup.display is True
-            assert popup.styles.overlay == "screen"
+            assert popup.styles.overlay != "screen"
+            assert command_state[0].bottom == popup.region.y
             assert popup.region.bottom == composer.region.y
-            assert frames
-            assert all(frame == (viewport, scroll_y) for frame in frames)
+            assert_atomic_transition(resting_state, command_state)
+            if with_conversation:
+                viewport_delta = resting_state[0].height - command_state[0].height
+                assert command_state[3].bottom == resting_state[3].bottom - viewport_delta
+
+            frames.clear()
+            await pilot.press("h")
+            await pilot.pause()
+
+            filtered_state = visual_state()
+            assert popup.display is True
+            assert popup.selected_command is not None
+            assert popup.selected_command.name == "/help"
+            assert filtered_state[0].bottom == popup.region.y
+            assert_atomic_transition(command_state, filtered_state)
 
             frames.clear()
             composer.clear()
             await pilot.pause()
 
             assert popup.display is False
-            assert frames
-            assert all(frame == (viewport, scroll_y) for frame in frames)
+            assert visual_state() == resting_state
+            assert_atomic_transition(filtered_state, resting_state)
+
+            if with_conversation:
+                await pilot.press("ctrl+up")
+                await pilot.pause()
+                assert conversation.scroll_y == 0
+
+                await pilot.press("ctrl+down")
+                await pilot.pause()
+                assert conversation.scroll_y == conversation.max_scroll_y
+        finally:
+            app.post_display_hook = post_display_hook
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("panel_kind", ("queue", "approval"))
+async def test_dynamic_flow_panels_reflow_anchored_conversation_atomically(
+    tmp_path: Path,
+    panel_kind: str,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(_scrollable_messages())
+        await pilot.pause()
+        transcript = conversation.query_one("#conversation-transcript")
+
+        def visual_state() -> tuple[Region, int, Region, Region]:
+            return (
+                conversation.region,
+                round(conversation.scroll_y),
+                transcript.region,
+                transcript.children[-1].region,
+            )
+
+        resting_state = visual_state()
+        frames: list[tuple[Region, int, Region, Region]] = []
+        post_display_hook = app.post_display_hook
+        app.post_display_hook = lambda: frames.append(visual_state())
+        try:
+            if panel_kind == "queue":
+                panel = app.query_one(QueuedInputPanel)
+                panel.set_inputs(
+                    (
+                        QueuedUserInputView(
+                            queue_id="queued_atomic_layout",
+                            prompt="Continue after the current run",
+                            mode="follow_up",
+                            queued_at=datetime.now(UTC),
+                        ),
+                    )
+                )
+            else:
+                panel = app.query_one(InteractionBar)
+                app._sync_interaction(
+                    PendingInteraction(
+                        kind="approval",
+                        run_id="run_atomic_layout",
+                        tool_call_id="call_atomic_layout",
+                        tool_name="Write",
+                        request_id="approval_atomic_layout",
+                    )
+                )
+            await pilot.pause()
+
+            panel_state = visual_state()
+            assert panel.display is True
+            assert panel_state[0].height < resting_state[0].height
+            first_panel_frame = frames.index(panel_state)
+            assert all(frame == resting_state for frame in frames[:first_panel_frame])
+            assert all(frame == panel_state for frame in frames[first_panel_frame:])
+            viewport_delta = resting_state[0].height - panel_state[0].height
+            assert panel_state[3].bottom == resting_state[3].bottom - viewport_delta
+
+            frames.clear()
+            if panel_kind == "queue":
+                panel.set_inputs(())
+            else:
+                app._sync_interaction(None)
+            await pilot.pause()
+
+            assert visual_state() == resting_state
+            first_resting_frame = frames.index(resting_state)
+            assert all(frame == panel_state for frame in frames[:first_resting_frame])
+            assert all(frame == resting_state for frame in frames[first_resting_frame:])
         finally:
             app.post_display_hook = post_display_hook
 
