@@ -79,8 +79,9 @@ from ouro.tui.configuration_screens import (
     SkillInstallScreen,
     ToolExecutionConfigurationScreen,
 )
-from ouro.tui.configuration_workflows import _skill_choice
+from ouro.tui.configuration_workflows import _mcp_management_choices, _skill_choice
 from ouro.tui.controller import (
+    McpServerStatus,
     TuiBootstrap,
     TuiController,
     TuiEndpointConfiguration,
@@ -4954,6 +4955,67 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
         assert "BuiltinTest" not in ConfigurationFacade(tmp_path).permission_config().tools
 
 
+@pytest.mark.parametrize(
+    ("enabled", "runtime_status", "selectable_runtime_actions"),
+    (
+        (False, "disabled", set()),
+        (True, None, set()),
+        (True, "configured", {"start"}),
+        (True, "failed", {"start"}),
+        (True, "stopped", {"start"}),
+        (True, "starting", {"stop"}),
+        (True, "reconnecting", {"stop"}),
+        (True, "connected", {"refresh", "restart", "stop"}),
+        (True, "stopping", set()),
+    ),
+)
+def test_mcp_management_menu_keeps_stable_actions_and_disables_unavailable_ones(
+    tmp_path: Path,
+    *,
+    enabled: bool,
+    runtime_status: str | None,
+    selectable_runtime_actions: set[str],
+) -> None:
+    catalog = ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="python", enabled=enabled, auto_start=False),
+    )
+    config = next(server for server in catalog.servers if server.server_id == "local")
+    status = (
+        McpServerStatus(
+            server_id="local",
+            name="local",
+            transport="stdio",
+            status=runtime_status,
+        )
+        if runtime_status is not None
+        else None
+    )
+
+    choices = _mcp_management_choices(config, status)
+
+    assert [choice.value for choice in choices] == [
+        "edit",
+        "toggle",
+        "check",
+        "start",
+        "refresh",
+        "restart",
+        "stop",
+        "remove",
+    ]
+    assert {choice.value for choice in choices if not choice.disabled} == {
+        "edit",
+        "toggle",
+        "check",
+        "remove",
+        *selectable_runtime_actions,
+    }
+    assert next(choice for choice in choices if choice.value == "toggle").label == (
+        "Disable server" if enabled else "Enable server"
+    )
+
+
 @pytest.mark.asyncio
 async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
     tmp_path: Path,
@@ -4980,6 +5042,16 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
         assert app.screen is action_screen
+        assert [choice.value for choice in app.screen._choices] == [
+            "edit",
+            "toggle",
+            "check",
+            "start",
+            "refresh",
+            "restart",
+            "stop",
+            "remove",
+        ]
         toggle = next(choice for choice in app.screen._choices if choice.value == "toggle")
         assert toggle.label == "Disable server"
 
@@ -4996,6 +5068,11 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert start.label == "Start runtime"
         assert start.disabled is True
         assert options.get_option("start").disabled is True
+        assert all(
+            next(choice for choice in app.screen._choices if choice.value == action).disabled
+            for action in ("refresh", "restart", "stop")
+        )
+        assert all(options.get_option(action).disabled for action in ("refresh", "restart", "stop"))
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
@@ -5011,6 +5088,9 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         assert next(
             choice for choice in app.screen._choices if choice.value == "toggle"
         ).label == "Disable server"
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "start"
+        ).disabled is False
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
@@ -5021,6 +5101,85 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is action_screen
+
+
+@pytest.mark.asyncio
+async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(
+            command="unused-in-test",
+            auto_start=False,
+            auto_reconnect=False,
+            timeout_seconds=1,
+            health_check_interval_seconds=60,
+        ),
+    )
+    application = _application(tmp_path)
+    session = LiveMcpSession()
+    manager = MCPManager(
+        registry=application.runtime.tools,
+        client_factory=LiveMcpFactory(session),
+    )
+    config = configuration.mcp.get("local")
+    assert config is not None
+    manager.configure(config)
+    application.mcp = MCPRuntimeResource(manager)
+    app = OuroTuiApp(home=tmp_path, application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        action_screen = app.screen
+        action_screen.query_one("#choice-filter", Input).value = "List MCP servers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+
+        options = action_screen.query_one("#choice-list", OptionList)
+        assert options.get_option("start").disabled is False
+        session.initialize_gate.set()
+        options.highlighted = options.get_option_index("start")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert action_screen is app.screen
+        assert options.get_option("start").disabled is True
+        assert options.get_option("refresh").disabled is False
+        assert options.get_option("restart").disabled is False
+        assert options.get_option("stop").disabled is False
+
+        options.highlighted = options.get_option_index("stop")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert [choice.value for choice in action_screen._choices] == [
+            "edit",
+            "toggle",
+            "check",
+            "start",
+            "refresh",
+            "restart",
+            "stop",
+            "remove",
+        ]
+        assert options.get_option("start").disabled is False
+        assert options.get_option("refresh").disabled is True
+        assert options.get_option("restart").disabled is True
+        assert options.get_option("stop").disabled is True
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "local"
+        ).trailing == "enabled · stopped"
 
 
 @pytest.mark.asyncio

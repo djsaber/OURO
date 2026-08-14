@@ -554,7 +554,19 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 elif selected == "check":
                     await self._check_mcp(server_id)
                 elif selected in {"start", "stop", "restart", "refresh"}:
-                    await self._run_mcp_action(server_id, selected)
+                    updated_status = await self._run_mcp_action(server_id, selected)
+                    if updated_status is None:
+                        return None
+                    configs = await self._controller.mcp_configurations()
+                    runtime = {
+                        item.server_id: item for item in self._controller.mcp_servers()
+                    }
+                    status = runtime.get(server_id, updated_status)
+                    menu.update_parent_choices(
+                        _mcp_choices(configs, runtime),
+                        initial_value=server_id,
+                    )
+                    return _mcp_management_choices(config, status)
                 elif selected == "remove":
                     await self._remove_mcp(server_id, menu=menu)
                 return None
@@ -622,7 +634,11 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 error=True,
             )
 
-    async def _run_mcp_action(self, server_id: str, action: str) -> None:
+    async def _run_mcp_action(
+        self,
+        server_id: str,
+        action: str,
+    ) -> McpServerStatus | None:
         operations = {
             "start": self._controller.start_mcp_server,
             "stop": self._controller.stop_mcp_server,
@@ -633,13 +649,14 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             status = await operations[action](server_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
-            return
+            return None
         self._refresh_mcp_system_status()
         if status.status == "failed":
             self.notify(
                 f"MCP {server_id}: {status.status} · {status.tool_count} tool(s)",
                 severity="error",
             )
+        return status
 
     async def _remove_mcp(
         self,
@@ -1097,29 +1114,28 @@ def _mcp_management_choices(
     config: MCPServerConfigView,
     status: McpServerStatus | None,
 ) -> tuple[Choice, ...]:
-    actions = [
+    runtime_status = status.status if status is not None else None
+    runtime_available = config.enabled and status is not None
+    can_start = runtime_available and runtime_status in {"configured", "failed", "stopped"}
+    can_manage_connection = runtime_available and runtime_status == "connected"
+    can_stop = runtime_available and runtime_status in {
+        "starting",
+        "connected",
+        "reconnecting",
+    }
+    return (
         Choice("edit", "Edit configuration"),
         Choice(
             "toggle",
             "Disable server" if config.enabled else "Enable server",
         ),
         Choice("check", "Check connection"),
-    ]
-    if config.enabled and status is not None:
-        if status.status == "connected":
-            actions.extend(
-                (
-                    Choice("refresh", "Refresh tools"),
-                    Choice("restart", "Restart runtime"),
-                    Choice("stop", "Stop runtime"),
-                )
-            )
-        else:
-            actions.append(Choice("start", "Start runtime"))
-    else:
-        actions.append(Choice("start", "Start runtime", disabled=True))
-    actions.append(Choice("remove", "Remove configuration"))
-    return tuple(actions)
+        Choice("start", "Start runtime", disabled=not can_start),
+        Choice("refresh", "Refresh tools", disabled=not can_manage_connection),
+        Choice("restart", "Restart runtime", disabled=not can_manage_connection),
+        Choice("stop", "Stop runtime", disabled=not can_stop),
+        Choice("remove", "Remove configuration"),
+    )
 
 
 def _skill_choice(skill: SkillView) -> Choice:
