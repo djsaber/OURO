@@ -310,12 +310,95 @@ _OURO_TUI_CSS = """
     }
 
     .welcome {
-        width: 86;
+        width: 100%;
         max-width: 100%;
+        height: auto;
         margin: 2 0;
         padding: 1 2;
         color: #aeb5bf;
         background: $ouro-background;
+    }
+
+    .welcome-logo {
+        width: auto;
+        height: auto;
+        margin-bottom: 2;
+    }
+
+    .welcome-content {
+        width: auto;
+        max-width: 100%;
+        height: auto;
+    }
+
+    .welcome-section {
+        height: auto;
+        background: transparent;
+    }
+
+    .welcome-system {
+        width: auto;
+        max-width: 100%;
+    }
+
+    .welcome-title {
+        width: auto;
+        height: 1;
+        color: #788492;
+        text-style: bold;
+    }
+
+    .welcome-row {
+        width: auto;
+        height: 1;
+    }
+
+    .welcome-label {
+        width: 11;
+        height: 1;
+        color: #788492;
+    }
+
+    .welcome-value {
+        width: auto;
+        height: 1;
+    }
+
+    .welcome-lower {
+        width: 100%;
+        max-width: 100%;
+        height: auto;
+        margin-top: 2;
+    }
+
+    .welcome-usage {
+        width: auto;
+    }
+
+    .welcome-spacer {
+        width: 1fr;
+        height: 1;
+    }
+
+    .welcome-tips {
+        width: auto;
+    }
+
+    .welcome-usage-line {
+        width: auto;
+        height: 1;
+    }
+
+    .welcome-tip-key {
+        width: 8;
+        height: 1;
+        color: #788492;
+    }
+
+    .welcome-tip-description {
+        width: auto;
+        height: 1;
+        color: #8f9aa8;
     }
 
     .turn {

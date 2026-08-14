@@ -50,7 +50,7 @@ from ouro.application.session_models import (
     SessionView,
 )
 from ouro.application.skill_activations import SkillInvocationRequest
-from ouro.application.usage_models import UsageTotals
+from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.config import ProviderType
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
@@ -58,6 +58,7 @@ from ouro.core.approvals import (
     ToolPermissionControl,
 )
 from ouro.core.base import Metadata
+from ouro.core.billing import UsageFilter
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import ConfigError
@@ -119,6 +120,7 @@ class TuiSystemStatus:
     usage_output_tokens: int = 0
     usage_estimated_cost: float = 0.0
     usage_priced_request_count: int = 0
+    usage_daily_tokens: tuple[int, ...] = ()
 
 
 def project_mcp_system_status(
@@ -388,7 +390,7 @@ class TuiController:
         if self._configuration is None and runtime.environment.home is not None:
             self._configuration = ConfigurationFacade(runtime.environment.home)
         models = tuple(runtime.available_models())
-        usage = await self.usage_totals()
+        usage = await self.usage_summary()
         mcp_servers = self.mcp_servers()
         return TuiBootstrap(
             models=models,
@@ -402,13 +404,13 @@ class TuiController:
     async def system_status(self) -> TuiSystemStatus:
         """Project current process-owned resources for a newly opened Host view."""
 
-        models, usage = await asyncio.gather(self.models(), self.usage_totals())
+        models, usage = await asyncio.gather(self.models(), self.usage_summary())
         return self._project_system_status(models, usage, self.mcp_servers())
 
     def _project_system_status(
         self,
         models: tuple[AvailableModel, ...],
-        usage: UsageTotals,
+        usage: UsageSummary,
         mcp_servers: tuple[McpServerStatus, ...],
     ) -> TuiSystemStatus:
         runtime = self._runtime()
@@ -417,6 +419,7 @@ class TuiController:
         plugins = (
             tuple(self._application.plugins.list()) if self._application.plugins is not None else ()
         )
+        totals = usage.totals
         return project_plugin_system_status(
             project_mcp_system_status(
                 TuiSystemStatus(
@@ -425,11 +428,14 @@ class TuiController:
                     model_count=len(models),
                     skill_count=len(skills),
                     skill_names=tuple(sorted(item.name for item in skills)),
-                    usage_request_count=usage.request_count,
-                    usage_input_tokens=usage.input_tokens,
-                    usage_output_tokens=usage.output_tokens,
-                    usage_estimated_cost=usage.estimated_cost,
-                    usage_priced_request_count=usage.priced_request_count,
+                    usage_request_count=totals.request_count,
+                    usage_input_tokens=totals.input_tokens,
+                    usage_output_tokens=totals.output_tokens,
+                    usage_estimated_cost=totals.estimated_cost,
+                    usage_priced_request_count=totals.priced_request_count,
+                    usage_daily_tokens=tuple(
+                        group.totals.total_tokens for group in usage.groups[-10:]
+                    ),
                 ),
                 mcp_servers,
             ),
@@ -1389,6 +1395,21 @@ class TuiController:
     def _usage_totals(self) -> UsageTotals:
         usage = self._runtime().usage
         return usage.summarize().totals if usage is not None else UsageTotals()
+
+    async def usage_summary(self) -> UsageSummary:
+        return await asyncio.to_thread(self._usage_summary)
+
+    def _usage_summary(self) -> UsageSummary:
+        usage = self._runtime().usage
+        return (
+            usage.summarize(group_by="date")
+            if usage is not None
+            else UsageSummary(
+                usage_filter=UsageFilter(),
+                totals=UsageTotals(),
+                group_by="date",
+            )
+        )
 
     async def select_model(self, selector: str) -> AvailableModel:
         """Select a Session model and reset reasoning only when the route changes.

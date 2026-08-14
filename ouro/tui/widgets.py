@@ -538,8 +538,6 @@ def _tool_elapsed_seconds(tool: RuntimeToolCallActivity) -> int | None:
     return max(0, int((ended_at - tool.started_at).total_seconds()))
 
 
-_SYSTEM_LABEL_WIDTH = 9
-_TIP_KEY_WIDTH = 6
 _INPUT_TIPS = (
     ("/", "Commands"),
     ("Ctrl+P", "Actions"),
@@ -547,95 +545,224 @@ _INPUT_TIPS = (
 )
 
 
-class WelcomePanel(Static):
+def _blend_hex(background: str, foreground: str, ratio: float) -> str:
+    """Blend two Rich-compatible hex colors without depending on terminal palettes."""
+
+    amount = min(1.0, max(0.0, ratio))
+    background_rgb = tuple(int(background[index : index + 2], 16) for index in (1, 3, 5))
+    foreground_rgb = tuple(int(foreground[index : index + 2], 16) for index in (1, 3, 5))
+    blended = tuple(
+        round(start + (end - start) * amount)
+        for start, end in zip(background_rgb, foreground_rgb, strict=True)
+    )
+    return "#" + "".join(f"{channel:02x}" for channel in blended)
+
+
+def _usage_block_colors(values: tuple[int, ...], accent: str) -> tuple[str, ...]:
+    """Map daily token totals onto a theme-derived dark-to-accent scale."""
+
+    darkest_ratio = 0.28
+    if not values:
+        return (_blend_hex("#0c0c0c", accent, darkest_ratio),)
+    lowest = min(values)
+    highest = max(values)
+    if lowest == highest:
+        return tuple(accent for _ in values)
+    return tuple(
+        _blend_hex(
+            "#0c0c0c",
+            accent,
+            darkest_ratio
+            + (1.0 - darkest_ratio) * ((value - lowest) / (highest - lowest)),
+        )
+        for value in values
+    )
+
+
+class _WelcomeSystemBlock(Vertical):
     def __init__(self, status: TuiSystemStatus | None = None) -> None:
-        super().__init__(classes="welcome")
+        super().__init__(classes="welcome-section welcome-system")
         self._status = status or TuiSystemStatus()
+        self._workspace = Static(classes="welcome-value")
+        self._providers = Static(classes="welcome-value")
+        self._skills = Static(classes="welcome-value")
+        self._plugins = Static(classes="welcome-value")
+        self._mcp = Static(classes="welcome-value")
+        self._render_values()
+
+    def compose(self) -> ComposeResult:
+        yield Static("SYSTEM", classes="welcome-title")
+        for label, value in (
+            ("Workspace", self._workspace),
+            ("Providers", self._providers),
+            ("Skills", self._skills),
+            ("Plugins", self._plugins),
+            ("MCP", self._mcp),
+        ):
+            yield Horizontal(
+                Static(label, classes="welcome-label"),
+                value,
+                classes="welcome-row",
+            )
 
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
-        self._render_panel()
+        self._render_values()
 
-    def on_mount(self) -> None:
-        self._render_panel()
-
-    def refresh_theme(self) -> None:
-        self._render_panel()
-
-    def _render_panel(self) -> None:
+    def _render_values(self) -> None:
         status = self._status
-        accent = theme_for(self).accent
-        content = Text()
-        content.append(_OURO_LOGO, style=f"bold {accent}")
-        content.append("\n\n")
-        content.append("SYSTEM\n", style="bold #788492")
+        self._workspace.update(Text(status.workspace or "not set", style="#d6d9df"))
 
-        content.append(f"{'Workspace'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
-        content.append(status.workspace or "not set", style="#d6d9df")
-        content.append("\n")
-        provider_names = _compact_names(status.provider_ids) or "none configured"
-        content.append(f"{'Models'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
-        content.append(provider_names, style="#d6d9df")
-        content.append(
-            f" · {status.model_count} model(s)\n",
-            style="#8f9aa8",
-        )
-        content.append(f"{'Skills'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
-        content.append(f"{status.skill_count} available", style="#8f9aa8")
+        providers = Text(_compact_names(status.provider_ids) or "none configured", style="#d6d9df")
+        providers.append(f" · {status.model_count} model(s)", style="#8f9aa8")
+        self._providers.update(providers)
+
+        skills = Text(f"{status.skill_count} available", style="#8f9aa8")
         if status.skill_names:
-            content.append(f" · {_compact_names(status.skill_names)}", style="#647180")
-        content.append("\n")
-        content.append(f"{'Plugins'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
-        content.append(
+            skills.append(f" · {_compact_names(status.skill_names)}", style="#647180")
+        self._skills.update(skills)
+
+        plugins = Text(
             f"{status.plugin_active_count}/{status.plugin_total_count} active",
             style="#8f9aa8",
         )
         if status.plugin_active_names:
-            content.append(
+            plugins.append(
                 f" · {_compact_names(status.plugin_active_names)}",
                 style="#647180",
             )
         if status.plugin_issue_count:
-            content.append(
+            plugins.append(
                 f" · {status.plugin_issue_count} need attention",
                 style="#e08a8a",
             )
-        content.append("\n")
-        content.append(f"{'MCP'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
+        self._plugins.update(plugins)
+
+        mcp = Text()
         if status.mcp_total_count:
-            content.append(
+            mcp.append(
                 f"{status.mcp_connected_count}/{status.mcp_total_count} connected",
-                style=accent,
+                style=theme_for(self).accent,
             )
-            content.append(f" · {status.mcp_tool_count} tool(s)", style="#8f9aa8")
+            mcp.append(f" · {status.mcp_tool_count} tool(s)", style="#8f9aa8")
             if status.mcp_connecting_count:
-                content.append(
+                mcp.append(
                     f" · {status.mcp_connecting_count} connecting",
-                    style=accent,
+                    style=theme_for(self).accent,
                 )
             if status.mcp_failed_count:
-                content.append(
-                    f" · {status.mcp_failed_count} failed",
-                    style="#e08a8a",
-                )
+                mcp.append(f" · {status.mcp_failed_count} failed", style="#e08a8a")
         else:
-            content.append("not configured", style="#647180")
-        content.append("\n")
-        content.append(f"{'Usage'.ljust(_SYSTEM_LABEL_WIDTH)} ", style="#788492")
-        content.append(f"{status.usage_request_count} request(s)", style="#8f9aa8")
-        content.append(
-            f" · {_compact_count(status.usage_input_tokens)} in"
-            f" / {_compact_count(status.usage_output_tokens)} out",
-            style="#647180",
-        )
+            mcp.append("not configured", style="#647180")
+        self._mcp.update(mcp)
+
+    def refresh_theme(self) -> None:
+        self._render_values()
+
+
+class _WelcomeUsageBlock(Vertical):
+    def __init__(self, status: TuiSystemStatus | None = None) -> None:
+        super().__init__(classes="welcome-section welcome-usage")
+        self._status = status or TuiSystemStatus()
+        self._chart = Static(classes="welcome-usage-line")
+        self._requests = Static(classes="welcome-usage-line")
+        self._tokens = Static(classes="welcome-usage-line")
+        self._render_values()
+
+    def compose(self) -> ComposeResult:
+        yield Static("USAGE", classes="welcome-title")
+        yield self._chart
+        yield self._requests
+        yield self._tokens
+
+    def set_system_status(self, status: TuiSystemStatus) -> None:
+        self._status = status
+        self._render_values()
+
+    def refresh_theme(self) -> None:
+        self._render_values()
+
+    def _render_values(self) -> None:
+        status = self._status
+        accent = theme_for(self).accent
+        daily_tokens = status.usage_daily_tokens
+        chart = Text()
+        for color in _usage_block_colors(daily_tokens, accent):
+            chart.append("■", style=color)
+        if daily_tokens:
+            days = len(daily_tokens)
+            chart.append(f" · last {days} day{'s' if days != 1 else ''}", style="#647180")
+        else:
+            chart.append(" · no records", style="#647180")
+        self._chart.update(chart)
+
+        requests = Text(f"{status.usage_request_count} request(s)", style="#8f9aa8")
         if status.usage_priced_request_count:
-            content.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
-        content.append("\n\n")
-        content.append("TIPS\n", style="bold #788492")
+            requests.append(f" · ${status.usage_estimated_cost:.4f}", style="#647180")
+        self._requests.update(requests)
+        self._tokens.update(
+            Text(
+                f"{_compact_count(status.usage_input_tokens)} in"
+                f" / {_compact_count(status.usage_output_tokens)} out",
+                style="#647180",
+            )
+        )
+
+
+class _WelcomeTipsBlock(Vertical):
+    def __init__(self) -> None:
+        super().__init__(classes="welcome-section welcome-tips")
+
+    def compose(self) -> ComposeResult:
+        yield Static("⦁ TIPS", classes="welcome-title")
         for key, description in _INPUT_TIPS:
-            content.append(f"{key.ljust(_TIP_KEY_WIDTH)}  ", style="#788492")
-            content.append(f"{description}\n", style="#8f9aa8")
-        self.update(content)
+            yield Horizontal(
+                Static(key, classes="welcome-tip-key"),
+                Static(description, classes="welcome-tip-description"),
+                classes="welcome-row",
+            )
+
+
+class WelcomePanel(Vertical):
+    def __init__(self, status: TuiSystemStatus | None = None) -> None:
+        super().__init__(classes="welcome")
+        self._status = status or TuiSystemStatus()
+        self._logo = Static(classes="welcome-logo")
+        self._system = _WelcomeSystemBlock(self._status)
+        self._usage = _WelcomeUsageBlock(self._status)
+        self._tips = _WelcomeTipsBlock()
+        self._lower = Horizontal(
+            self._usage,
+            Static(classes="welcome-spacer"),
+            self._tips,
+            classes="welcome-lower",
+        )
+        self._content = Vertical(
+            self._system,
+            self._lower,
+            classes="welcome-content",
+        )
+        self._render_logo()
+
+    def compose(self) -> ComposeResult:
+        yield self._logo
+        yield self._content
+
+    def set_system_status(self, status: TuiSystemStatus) -> None:
+        self._status = status
+        self._system.set_system_status(status)
+        self._usage.set_system_status(status)
+
+    def on_mount(self) -> None:
+        self.refresh_theme()
+
+    def refresh_theme(self) -> None:
+        self._render_logo()
+        self._system.refresh_theme()
+        self._usage.refresh_theme()
+
+    def _render_logo(self) -> None:
+        self._logo.update(Text(_OURO_LOGO, style=f"bold {theme_for(self).accent}"))
 
 
 def _tool_activities_from_messages(
