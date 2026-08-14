@@ -20,6 +20,7 @@ from ouro.core.agents import (
     DelegationRecord,
     ToolSelection,
 )
+from ouro.core.errors import PersistenceError
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.core.tool_batches import ToolBatchCall, ToolCallBatchRecord
@@ -312,7 +313,7 @@ def test_child_run_contract_mismatch_fails_closed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status", ("completed", "running"))
-async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
+async def test_agent_target_reconcile_rebuilds_terminal_result_without_replaying_child(
     tmp_path,
     status: str,
 ) -> None:
@@ -328,7 +329,6 @@ async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
         tools=tools,
     )
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,
@@ -336,6 +336,7 @@ async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     root = _create_root(store)
     relation = store.create_delegation(_relation(root))
     relation, child = _persist_child_created(store, root, relation)
@@ -351,7 +352,7 @@ async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
         expected_revision=relation.revision,
     )
 
-    diagnostics = await service.start()
+    diagnostics = await runtime.reconcile_session(root.session_id)
 
     recovered_run = store.load_run(child.session_id, run.run_id)
     recovered = store.load_delegation(root.session_id, relation.delegation_id)
@@ -374,15 +375,17 @@ async def test_agent_start_rebuilds_terminal_result_without_replaying_child(
 
 
 @pytest.mark.asyncio
-async def test_local_application_reports_agent_recovery_diagnostics(tmp_path) -> None:
+async def test_local_application_reports_agent_recovery_when_root_is_opened(tmp_path) -> None:
     application = LocalApplication.build(tmp_path, session_backend="files")
     root = _create_root(application.runtime.store)
     relation = application.runtime.store.create_delegation(_relation(root))
 
     await application.start()
 
+    assert application.startup_report.diagnostics == ()
+    diagnostics = await application.runtime.reconcile_session(root.session_id)
     assert "delegation_child_missing" in {
-        item.code for item in application.startup_report.diagnostics
+        item.code for item in diagnostics
     }
     assert (
         application.runtime.store.load_delegation(
@@ -395,7 +398,7 @@ async def test_local_application_reports_agent_recovery_diagnostics(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_local_application_starts_with_incompatible_delegation_record(tmp_path) -> None:
+async def test_incompatible_delegation_is_isolated_until_root_is_opened(tmp_path) -> None:
     application = LocalApplication.build(tmp_path, session_backend="files")
     root = _create_root(application.runtime.store)
     relation = application.runtime.store.create_delegation(_relation(root))
@@ -411,17 +414,61 @@ async def test_local_application_starts_with_incompatible_delegation_record(tmp_
 
     await application.start()
 
+    assert application.startup_report.diagnostics == ()
+    diagnostics = await application.runtime.reconcile_session(root.session_id)
     assert "session_runtime_incompatible" in {
-        item.code for item in application.startup_report.diagnostics
+        item.code for item in diagnostics
     }
     result = await application.runtime.run("new independent Session")
     assert result.run.status == "completed"
     assert result.session.session_id != root.session_id
+    with pytest.raises(PersistenceError, match="incompatible persisted data"):
+        await application.runtime.run("must remain isolated", session_id=root.session_id)
     await application.close()
 
 
 @pytest.mark.asyncio
-async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_path) -> None:
+async def test_corrupt_child_session_blocks_only_the_child(tmp_path) -> None:
+    application = LocalApplication.build(tmp_path, session_backend="files")
+    store = application.runtime.store
+    assert isinstance(store, LocalSessionStore)
+    root = _create_root(store)
+    relation = store.create_delegation(_relation(root))
+    relation, child = _persist_child_created(store, root, relation)
+    child_run = _run(relation, child, status="completed")
+    store.save_run(child_run)
+    store.save_delegation(
+        relation.model_copy(
+            update={
+                "current_child_run_id": child_run.run_id,
+                "spawn_state": "submitted",
+            }
+        ),
+        expected_revision=relation.revision,
+    )
+    (store.sessions_dir / child.session_id / "session.json").write_text(
+        "{not-json",
+        encoding="utf-8",
+    )
+
+    async with application:
+        root_result = await application.runtime.run(
+            "continue the valid root Session",
+            session_id=root.session_id,
+        )
+        with pytest.raises(PersistenceError, match="could not decode session record"):
+            await application.runtime.run(
+                "must remain isolated",
+                session_id=child.session_id,
+            )
+
+    assert root_result.run.status == "completed"
+
+
+@pytest.mark.asyncio
+async def test_target_reconcile_reports_parent_wait_referencing_missing_delegation(
+    tmp_path,
+) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     runtime = RuntimeService(
@@ -433,7 +480,6 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
         tools=ToolRegistry(),
     )
     definitions = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
-    runtime.bind_extensions(agent_definitions=definitions)
     supervisor = RuntimeSupervisor(runtime)
     service = AgentService(
         store=store,
@@ -441,6 +487,7 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
         scheduler=supervisor,
         events=runtime.event_recorder,
     )
+    runtime.bind_extensions(agent_definitions=definitions, agent_controls=service)
     wait = AgentWaitRequest(delegation_id="dlg_missing")
     batch = ToolCallBatchRecord(
         turn_id="turn_parent",
@@ -479,7 +526,7 @@ async def test_startup_reports_parent_wait_referencing_missing_delegation(tmp_pa
     store.create_session(root)
     store.save_run(run)
 
-    diagnostics = await service.start()
+    diagnostics = await runtime.reconcile_session(root.session_id)
 
     mismatch = next(item for item in diagnostics if item.code == "parent_agent_wait_mismatch")
     assert mismatch.session_id == root.session_id

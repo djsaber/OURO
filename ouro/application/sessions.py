@@ -306,7 +306,7 @@ class SessionService:
             session = self._load_session_record(session_id)
             if session.session_kind == "primary":
                 active = self._active_or_unresolved_agent_descendants(
-                    self._store.list_delegations(session.root_session_id or session.session_id)
+                    self._store.list_delegations(session.agent_root_session_id)
                 )
                 if active:
                     raise SessionBusyError(

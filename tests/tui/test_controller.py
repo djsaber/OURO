@@ -70,6 +70,32 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
     return LocalApplication.from_runtime(runtime)
 
 
+@pytest.mark.asyncio
+async def test_controller_start_defers_session_catalog_until_requested(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    application = _reasoning_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+        configuration=ConfigurationFacade(tmp_path),
+    )
+
+    def unexpected_catalog(*_args, **_kwargs):
+        raise AssertionError("TUI startup must not load the Session catalog")
+
+    monkeypatch.setattr(application.runtime.sessions, "catalog", unexpected_catalog)
+
+    bootstrap = await controller.start()
+
+    try:
+        assert bootstrap.sessions == ()
+    finally:
+        await controller.close()
+
+
 class _SkillPromptCapturingProvider(FauxProvider):
     def __init__(self) -> None:
         super().__init__()

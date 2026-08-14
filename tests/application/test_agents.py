@@ -737,6 +737,38 @@ async def test_spawn_runs_child_as_independent_session_with_frozen_tools(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_primary_fork_owns_agent_tree_independently_from_lineage_root(tmp_path) -> None:
+    service, supervisor, store, _provider = await _services(tmp_path)
+    branch = store.load_session_record("ses_root").model_copy(
+        update={
+            "root_session_id": "ses_deleted_lineage_root",
+            "parent_session_id": "ses_deleted_lineage_root",
+        }
+    )
+    store.save_session(branch)
+
+    handle = await service.spawn_agent(
+        SpawnAgentRequest(
+            request_id="host/branch-request",
+            parent_session_id=branch.session_id,
+            parent_run_id="run_parent",
+            agent_id="reader",
+            task="Inspect the surviving branch.",
+            description="Inspect branch",
+        )
+    )
+    await service.wait_agents((handle.delegation_id,))
+
+    relation = store.load_delegation(branch.session_id, handle.delegation_id)
+    child = store.load_session_record(handle.child_session_id)
+    assert branch.agent_root_session_id == branch.session_id
+    assert relation.root_session_id == branch.session_id
+    assert child.root_session_id == branch.session_id
+    await service.close()
+    await supervisor.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_child_context_contains_only_task_and_counts_child_input(
     tmp_path,
 ) -> None:

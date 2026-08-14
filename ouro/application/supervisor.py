@@ -31,7 +31,7 @@ from ouro.application.supervisor_models import (
 )
 from ouro.core.agents import AgentWaitResolution
 from ouro.core.base import utc_now
-from ouro.core.errors import OuroError, PersistenceError, SessionBusyError, SessionNotFoundError
+from ouro.core.errors import OuroError, SessionBusyError, SessionNotFoundError
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
 from ouro.core.session_controls import DelegatedTaskInput, HostSessionInput
@@ -185,6 +185,12 @@ class RuntimeSupervisor:
         async with self._lifecycle_lock:
             return await self._start()
 
+    async def recover_session(self, session_id: str) -> None:
+        """Recover one Session execution boundary without scanning the store."""
+
+        await self.start()
+        await self.runtime.reconcile_execution_session(session_id)
+
     async def _start(self) -> SupervisorStartResult:
         if self._closed:
             raise OuroError("runtime supervisor is closed")
@@ -194,40 +200,6 @@ class RuntimeSupervisor:
             for resource in self._managed_resources:
                 await resource.start()
                 self._started_resources.append(resource)
-            recovered: list[RuntimeStatusSnapshot] = []
-            diagnostics: list[Diagnostic] = []
-            for session in self.store.list_sessions():
-                try:
-                    snapshot = self.runtime.session_recovery.recover_runtime(session.session_id)
-                except PersistenceError as exc:
-                    diagnostics.append(
-                        Diagnostic(
-                            code="session_runtime_incompatible",
-                            severity="warning",
-                            component="runtime.recovery",
-                            message=(
-                                f"Session {session.session_id} was excluded from runtime recovery "
-                                f"because its persisted execution data is incompatible: {exc}"
-                            ),
-                            session_id=session.session_id,
-                            recoverable=True,
-                            suggested_action=(
-                                "Inspect the retained data or remove the session with "
-                                f"`ouro session remove {session.session_id}`."
-                            ),
-                            metadata={"error_type": type(exc).__name__},
-                        )
-                    )
-                    continue
-                for run in snapshot.runs:
-                    if run.status == "recoverable":
-                        recovered.append(
-                            RuntimeStatusSnapshot(
-                                session_id=session.session_id,
-                                run_id=run.run_id,
-                                status="recoverable",
-                            )
-                        )
             self._workers = [
                 asyncio.create_task(self._worker(index), name=f"ouro-runtime-{index}")
                 for index in range(self.max_concurrency)
@@ -240,10 +212,7 @@ class RuntimeSupervisor:
             self._started_resources.clear()
             raise
         self._started = True
-        return SupervisorStartResult(
-            recovered=tuple(recovered),
-            diagnostics=tuple(diagnostics),
-        )
+        return SupervisorStartResult()
 
     async def submit(
         self,
@@ -266,6 +235,7 @@ class RuntimeSupervisor:
                 self.store.load_session_record(session_id)
             except FileNotFoundError as exc:
                 raise SessionNotFoundError(f"session not found: {session_id}") from exc
+            await self.runtime.reconcile_session(session_id)
         if session_id in self._jobs_by_session:
             raise SessionBusyError(f"session already has a supervised run: {session_id}")
         if maybe_active_run(self.store.load_runs(session_id)) is not None:

@@ -345,9 +345,14 @@ SessionRecord 增加：
 
 现有字段继续使用：
 
-- root_session_id：整棵 Session tree 根；
+- primary 的 root_session_id：branch lineage 根；
+- subagent 的 root_session_id：拥有其 Delegation 的 primary Session；
 - parent_session_id：直接父 Session；
 - forked_from_message_id、forked_from_run_id：只表示 branch lineage。
+
+`agent_root_session_id` 是从 Session identity 派生的运行期不变量：primary 永远返回自身 session_id，subagent
+返回 root_session_id。primary fork 可以继续保存已进入回收站的 lineage root；这个谱系引用不得用于定位
+Delegation、AgentTree、预算或交互收件箱，也不得使一个仍存在的 primary Session 依赖祖先目录。
 
 subagent Session 必须满足：
 
@@ -394,7 +399,7 @@ AgentWaitCheckpoint。child 完成后解析原 ToolCall，恢复同一父 Run，
         events.jsonl
         runs/
 
-Delegation 由 root Session 拥有。child Session 只保存 delegation_id 引用，不复制完整 relation。
+Delegation 由发起它的 primary Session 自身拥有。child Session 只保存 delegation_id 引用，不复制完整 relation。
 
 DelegationRepository 作为后端中立端口组合进现有 SessionStore，至少支持：
 
@@ -835,7 +840,9 @@ event 与工具 schema 只包含 digest、稳定 identity 或安全 description�
 
 ## 错误、恢复与诊断
 
-启动恢复顺序：
+进程启动只建立 MCP/plugin 资源、Supervisor worker 和 Agent scheduler，不读取 Session catalog、Run 或
+Delegation。恢复在 Host 明确打开、运行 Session 或执行 Agent 命令时，以目标 `agent_root_session_id` 为边界执行；
+全库 reconcile 仅是显式维护操作。目标恢复顺序：
 
 1. 运行现有 Session/Run recovery，将无 live lock 的 active child Run 转 recoverable。
 2. 将 child running tool calls 转 unknown_outcome。
@@ -847,8 +854,9 @@ event 与工具 schema 只包含 digest、稳定 identity 或安全 description�
 
 对账同时验证 Session 的 root/parent/delegation backlink、冻结 approval/interaction/workspace policy，以及 child Run 的
 parent/delegation/root/agent/definition-contract provenance。只有一个 Run 能由这些 durable identity 唯一证明归属时，
-才允许补齐 `current_child_run_id` 和 `spawn_state=submitted`；其余情况 fail-closed、保留证据并报告到 application
-startup report。根归档判断 active descendant 时以 child Run 为事实源，不能以可能缺失或跨记录不一致的 result 代替。
+才允许补齐 `current_child_run_id` 和 `spawn_state=submitted`；其余情况 fail-closed、保留证据并报告到目标操作的
+application diagnostic。根归档判断 active descendant 时以 child Run 为事实源，不能以可能缺失或跨记录不一致的
+result 代替。
 当前可编辑 Agent config 与旧 snapshot 不同是 `effective_from=next_run` 的正常结果，不参与旧 Delegation 对账；恢复只校验
 parent Run 冻结的 AgentCatalogSnapshot、Delegation definition/effective tools 和 child Run contract 三者的一致性。
 

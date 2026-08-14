@@ -55,7 +55,9 @@ durable 状态转换仍由 `RuntimeService`、`RunLifecycle` 和 `SessionStore` 
 - submit 进入显式 FIFO 队列，由固定数量 worker 提供全局并发上限。
 - status 返回类型化快照；terminal job 从 active Session registry 自动移除。
 - task 边界异常转换为 diagnostic，不终止其他 Session 的 worker。
-- Supervisor 启动扫描 SessionStore；无 live lock 的中断 Run 由现有恢复机制转为 `recoverable`。
+- Supervisor 启动只建立进程资源和 worker，不扫描 SessionStore。
+- Host 打开、运行或提交某个 Session 时调用定点恢复；无 live lock 的目标中断 Run 转为 `recoverable`。
+- Agent root 恢复只扩展到该 root 的 durable child Session，不读取其他 primary Session 历史。
 - 内存 handle 和 registry 只用于当前进程控制，不作为运行事实。
 - AgentService 通过窄 scheduler port 使用 `submit_prepared` 派发已经 durable 创建的 child Run；不会递归进入
   RuntimeService，也不建立 Agent 专用 worker pool。
@@ -69,7 +71,7 @@ diagnostic，不反向阻塞 Run。关闭 subscription 只表示 Host detach，�
 
 explicit abort 先通过 RuntimeService 持久化 aborted，再通知进程内协作式取消。shutdown policy 有两种：
 
-- `wait`：在有限时间内等待；超时后释放进程任务，未完成 durable Run 在下次启动恢复；
+- `wait`：在有限时间内等待；超时后释放进程任务，未完成 durable Run 在下次激活所属 Session 时恢复；
 - `abort`：显式 abort active Run，再在有限时间内等待资源释放。
 
 Agent root subscription 组合现有 per-Session Supervisor stream。初始值来自 canonical `AgentTreeSnapshot`；新

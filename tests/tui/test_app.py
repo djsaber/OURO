@@ -3432,7 +3432,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
         await pilot.pause(0.5)
         await pilot.press("ctrl+s")
-        await pilot.pause()
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
         groups = {choice.value: choice.group for choice in app.screen._choices}
         assert groups[active.session_id] == "Today"
         assert groups[archived.session_id] == "Archived"

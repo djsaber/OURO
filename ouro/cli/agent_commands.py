@@ -101,6 +101,16 @@ async def _runtime_command(args: argparse.Namespace) -> tuple[dict[str, Any], st
         if agents is None:
             raise RuntimeError("Agent controls are unavailable")
         command = args.agent_command
+        if command in {"list", "tree", "interactions"}:
+            await application.runtime.reconcile_session(args.root_session_id)
+        elif command == "spawn":
+            await application.runtime.reconcile_session(args.parent_session_id)
+        elif command == "wait":
+            for root_session_id in agents.delegation_root_session_ids(args.delegation_ids):
+                await application.runtime.reconcile_session(root_session_id)
+        else:
+            root_session_id = agents.delegation_root_session_ids((args.delegation_id,))[0]
+            await application.runtime.reconcile_session(root_session_id)
         if command == "list":
             handles = agents.list_agents(
                 args.root_session_id,

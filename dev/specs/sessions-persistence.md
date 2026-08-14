@@ -67,9 +67,10 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 `sessions/index.json` 是可重建查询投影，不属于 canonical transaction。索引更新失败时：
 
 1. canonical 写入保持成功；
-2. 写入 dirty marker；
-3. application 返回 diagnostic；
-4. 后续查询可扫描或重建索引。
+2. Session 写路径只在 catalog lock 下写入 dirty marker，不同步读取或重建全量索引；
+3. 进程初始化只把既有索引标记为待刷新，不解析索引或扫描 Session 目录；
+4. 只有显式 catalog 查询才扫描 canonical Session 并重建索引；
+5. dirty marker 写入或锁失败时 application 返回 diagnostic。
 
 ## 写入规则
 
@@ -126,7 +127,12 @@ Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempote
 无未完成 Run 的常规加载不读取 events；只有检测到需要恢复的中断 Run 时，Store 才加载恢复所需的模型流
 事件。该读取属于冷恢复路径，不能污染后续 Run 的正常成本。
 
-Session/Run 恢复之后，Agent reconciliation 按单向提交阶段核对 Delegation、child Session backlink、child Run
+进程启动不是 Session 恢复边界。LocalApplication 和 RuntimeSupervisor 启动不得枚举 Session、Run、消息、事件或
+Delegation；历史数量和单个历史记录损坏不能改变服务启动成本或可用性。Host 明确打开/运行目标 Session 时才先恢复
+该 Session；若它属于 Agent aggregate，则恢复范围最多扩展到同一 `agent_root_session_id` 下由 Delegation 明确引用的
+child Session。目标记录错误只使该目标操作 fail-closed，新 Session 和其他 primary Session 仍可运行。
+
+目标 Session/Run 恢复之后，Agent reconciliation 按单向提交阶段核对 Delegation、child Session backlink、child Run
 provenance 和冻结 contract。只有唯一可证明归属的记录才补齐；active child 转 `recoverable`，unknown outcome
 不自动重放。terminal child 可重建缺失的 DelegationResult，pending delivery 通过稳定 delivery identity 对账，
 不会重复写父消息或启动父 Run。无法证明一致的半提交关系 fail-closed，并保留全部 canonical 证据。

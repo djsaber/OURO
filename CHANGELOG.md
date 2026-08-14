@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Decouple LocalApplication, RuntimeSupervisor, AgentService, CLI, and TUI startup from persisted
+  Session history. Recovery now runs on the explicitly opened Session and its bounded Agent root;
+  primary forks own independent Agent trees even when their lineage root was trashed, while the
+  local Session catalog is invalidated in O(1) and rebuilt only on an explicit catalog query.
 - All OURO builtin plugins are now enabled by default when no explicit user activation override
   exists. Existing explicit enable/disable choices remain authoritative.
 - Plugin trust requirements are now derived once by the Host from runtime, permissions, and

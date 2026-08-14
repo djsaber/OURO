@@ -803,8 +803,8 @@ Run，不能在策略检查后重新读取 current catalog。Observer registrati
 
 - 相同 package、configuration revision、依赖和 contract 可以创建新 generation 并恢复；
 - package 缺失、contract 改变或依赖不满足时稳定失败；
-- terminal Run 的 pending continuation settlement 在启动时重放，但只提交 durable release/queue/checkpoint，
-  不因 Host 启动直接执行新 Run；
+- terminal Run 的 pending continuation settlement 在目标 Session 激活时重放，只提交 durable
+  release/queue/checkpoint，不因 Host 启动直接扫描历史或执行新 Run；
 - 不能仅按 tool name、plugin version 或随机 generation id 猜测等价性；
 - pending approval/tool batch 必须重新通过当前 generation gate 和 ToolExecutor。
 

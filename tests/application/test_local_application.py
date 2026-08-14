@@ -3,13 +3,15 @@ from __future__ import annotations
 import pytest
 
 from ouro.core.errors import ConfigError
+from ouro.core.state import SessionRecord
 from ouro.deployment import resolve_session_backend
 from ouro.local_application import (
     LocalApplication,
     build_local_services,
     open_local_agent_definitions,
 )
-from ouro.sessions import SQLiteSessionStore
+from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+from ouro.sessions.local_index import LocalSessionIndex
 
 
 async def test_local_application_composes_and_closes_sqlite_runtime(tmp_path) -> None:
@@ -80,3 +82,78 @@ def test_invalid_environment_backend_fails_at_composition_boundary(
 
     with pytest.raises(ConfigError, match="OURO_SESSION_BACKEND"):
         resolve_session_backend()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+async def test_application_start_does_not_read_session_history(
+    tmp_path,
+    monkeypatch,
+    backend: str,
+) -> None:
+    seed = LocalApplication.build(tmp_path, session_backend=backend)
+    seed.runtime.store.create_session(SessionRecord(title="Historical"))
+
+    def unexpected_history_read(*_args, **_kwargs):
+        raise AssertionError("application startup must not read Session history")
+
+    for name in (
+        "list_sessions",
+        "load_session_record",
+        "load_runs",
+        "list_delegations",
+        "read_catalog",
+    ):
+        monkeypatch.setattr(type(seed.runtime.store), name, unexpected_history_read)
+    if backend == "files":
+        monkeypatch.setattr(LocalSessionIndex, "scan", unexpected_history_read)
+
+    application = LocalApplication.build(tmp_path, session_backend=backend)
+    await application.start()
+
+    assert application.startup_report.diagnostics == ()
+    await application.close()
+
+
+@pytest.mark.asyncio
+async def test_corrupt_historical_session_does_not_block_start_or_new_run(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    historical = SessionRecord(title="Corrupt history")
+    store.create_session(historical)
+    (store.sessions_dir / historical.session_id / "session.json").write_text(
+        "{not-json",
+        encoding="utf-8",
+    )
+
+    application = LocalApplication.build(tmp_path, session_backend="files")
+    async with application:
+        result = await application.runtime.run("new independent Session")
+
+    assert result.run.status == "completed"
+    assert result.session.session_id != historical.session_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+async def test_primary_fork_runs_with_missing_lineage_root(tmp_path, backend: str) -> None:
+    application = LocalApplication.build(tmp_path, session_backend=backend)
+    branch = SessionRecord(
+        session_id="ses_surviving_branch",
+        root_session_id="ses_deleted_lineage_root",
+        parent_session_id="ses_deleted_lineage_root",
+        title="Surviving branch",
+    )
+    application.runtime.store.create_session(branch)
+
+    async with application:
+        result = await application.runtime.run(
+            "continue from the surviving branch",
+            session_id=branch.session_id,
+        )
+        assert application.agents is not None
+        tree = application.agents.agent_tree_snapshot(branch.session_id)
+
+    assert branch.agent_root_session_id == branch.session_id
+    assert result.run.status == "completed"
+    assert tree.root_session_id == branch.session_id

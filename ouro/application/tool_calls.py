@@ -7,6 +7,7 @@ from typing import Literal, Protocol, cast
 
 from pydantic import JsonValue, TypeAdapter
 
+from ouro.application.dto import Diagnostic
 from ouro.application.events import RuntimeEventRecorder
 from ouro.application.runs import RunLifecycle
 from ouro.application.session_controls import (
@@ -63,6 +64,11 @@ _OBSERVER_TOOL_CONTENT_LIMIT = 32_768
 
 
 class AgentControlExecutor(Protocol):
+    def recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
+        """Return the bounded execution scope required by one Agent aggregate."""
+
+        ...
+
     def constrain_catalog(self, catalog: AgentCatalogSnapshot) -> AgentCatalogSnapshot: ...
 
     def budget_reason(
@@ -92,6 +98,11 @@ class AgentControlExecutor(Protocol):
 
     async def settle_terminal_run(self, run: RunRecord) -> None:
         """Settle subagent lifecycle work caused by a durable Run terminal state."""
+
+        ...
+
+    async def reconcile_session(self, session: SessionRecord) -> tuple[Diagnostic, ...]:
+        """Recover the bounded Agent aggregate required by one Session."""
 
         ...
 

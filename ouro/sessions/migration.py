@@ -63,7 +63,7 @@ def import_sessions_to_sqlite(
                 )
             root_ids = sorted(
                 {
-                    session.root_session_id or session.session_id
+                    session.agent_root_session_id
                     for session in source_sessions
                     if session.session_kind == "primary"
                 }

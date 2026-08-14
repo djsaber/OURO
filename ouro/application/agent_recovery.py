@@ -16,10 +16,75 @@ class AgentRecoveryService:
         self.store = store
 
     def reconcile(self) -> tuple[Diagnostic, ...]:
+        """Run an explicit full-store maintenance reconciliation."""
+
         sessions = {session.session_id: session for session in self.store.list_sessions()}
         relations, diagnostics = self._load_relations(sessions.values())
         diagnostics.extend(self._audit_child_backlinks(sessions.values(), relations))
         for relation in relations:
+            diagnostics.extend(self._reconcile_relation(relation, sessions))
+        return tuple(diagnostics)
+
+    def reconcile_root(
+        self,
+        root_session_id: str,
+        *,
+        target_session_id: str | None = None,
+    ) -> tuple[Diagnostic, ...]:
+        """Reconcile one bounded Agent aggregate without scanning other Sessions."""
+
+        root = self.store.load_session_record(root_session_id)
+        if root.session_kind != "primary":
+            raise ValueError("Agent recovery root must be a primary Session")
+
+        try:
+            relations = self.store.list_delegations(root_session_id)
+        except PersistenceError as exc:
+            return (self._root_runtime_diagnostic(root_session_id, exc),)
+
+        sessions = {root.session_id: root}
+        diagnostics: list[Diagnostic] = []
+        unavailable_children: set[str] = set()
+        child_ids = {
+            relation.child_session_id
+            for relation in relations
+            if relation.child_session_id is not None
+        }
+        if target_session_id is not None:
+            child_ids.add(target_session_id)
+        child_ids.discard(root_session_id)
+        for child_id in sorted(child_ids):
+            try:
+                sessions[child_id] = self.store.load_session_record(child_id)
+            except FileNotFoundError:
+                continue
+            except PersistenceError as exc:
+                unavailable_children.add(child_id)
+                diagnostics.append(
+                    Diagnostic(
+                        code="session_runtime_incompatible",
+                        severity="warning",
+                        component="application.agent_recovery",
+                        message=(
+                            "Agent relation recovery skipped incompatible persisted Session "
+                            f"{child_id}: {exc}"
+                        ),
+                        session_id=child_id,
+                        recoverable=True,
+                        suggested_action=(
+                            "Inspect the retained Session data before an explicit retry."
+                        ),
+                        metadata={
+                            "root_session_id": root_session_id,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                )
+
+        diagnostics.extend(self._audit_child_backlinks(sessions.values(), relations))
+        for relation in relations:
+            if relation.child_session_id in unavailable_children:
+                continue
             diagnostics.extend(self._reconcile_relation(relation, sessions))
         return tuple(diagnostics)
 
@@ -392,9 +457,9 @@ class AgentRecoveryService:
         relations: list[DelegationRecord] = []
         diagnostics: list[Diagnostic] = []
         root_ids = sorted(
-            session.session_id
+            session.agent_root_session_id
             for session in sessions
-            if session.session_kind == "primary" and session.root_session_id == session.session_id
+            if session.session_kind == "primary"
         )
         for root_id in root_ids:
             try:
@@ -418,6 +483,25 @@ class AgentRecoveryService:
                     )
                 )
         return relations, diagnostics
+
+    @staticmethod
+    def _root_runtime_diagnostic(
+        root_session_id: str,
+        error: PersistenceError,
+    ) -> Diagnostic:
+        return Diagnostic(
+            code="session_runtime_incompatible",
+            severity="warning",
+            component="application.agent_recovery",
+            message=(
+                "Agent relation recovery skipped incompatible persisted data "
+                f"for root Session {root_session_id}: {error}"
+            ),
+            session_id=root_session_id,
+            recoverable=True,
+            suggested_action="Inspect the retained root Session data before an explicit retry.",
+            metadata={"error_type": type(error).__name__},
+        )
 
 
 __all__ = ["AgentRecoveryService"]

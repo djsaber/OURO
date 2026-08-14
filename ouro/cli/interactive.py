@@ -375,7 +375,7 @@ def _interaction_root_session_id(
 ) -> str | None:
     if session_id is None:
         return None
-    return runtime.sessions.open(session_id, recover=False).session.root_session_id
+    return runtime.sessions.open(session_id, recover=False).session.agent_root_session_id
 
 
 def _session_preferences(

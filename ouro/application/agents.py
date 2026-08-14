@@ -325,7 +325,7 @@ class AgentService:
 
     async def start(self) -> tuple[Diagnostic, ...]:
         started = await self.scheduler.start()
-        return (*started.diagnostics, *(await self.reconcile()))
+        return started.diagnostics
 
     async def close(self) -> None:
         self._closed = True
@@ -358,7 +358,7 @@ class AgentService:
             return
         if run.status not in {"aborted", "failed"}:
             return
-        root_id = parent_session.root_session_id or parent_session.session_id
+        root_id = parent_session.agent_root_session_id
         self._resolve_interrupted_parent_wait(run.session_id, run.run_id)
         relations = [
             relation
@@ -420,7 +420,7 @@ class AgentService:
         if self._closed:
             raise RuntimeError("AgentService is closed")
         parent = self.store.load_session_record(request.parent_session_id)
-        root_id = parent.root_session_id or parent.session_id
+        root_id = parent.agent_root_session_id
         lock = self._spawn_locks.setdefault(root_id, asyncio.Lock())
         async with lock:
             return await self._spawn_agent_serialized(request)
@@ -459,7 +459,7 @@ class AgentService:
             raise ValueError(
                 f"subagent lifecycle binding is not allowed: {request.lifecycle_binding}"
             )
-        root_id = parent_session.root_session_id or parent_session.session_id
+        root_id = parent_session.agent_root_session_id
         budget = self._effective_child_budget(
             root_session_id=root_id,
             parent_run=parent_run,
@@ -540,7 +540,7 @@ class AgentService:
         entry: AgentCatalogEntry,
         allow_external_paths: bool,
     ) -> None:
-        root_id = parent_session.root_session_id or parent_session.session_id
+        root_id = parent_session.agent_root_session_id
         prompt_digest = "sha256:" + hashlib.sha256(request.task.encode("utf-8")).hexdigest()
         matches = (
             relation.root_session_id == root_id
@@ -1102,8 +1102,80 @@ class AgentService:
         return handle
 
     async def reconcile(self) -> tuple[Diagnostic, ...]:
-        diagnostics = list(self.recovery.reconcile())
-        relations = self._all_relations()
+        """Run an explicit full-store maintenance reconciliation."""
+
+        diagnostics: list[Diagnostic] = []
+        roots = sorted(
+            session.agent_root_session_id
+            for session in self.store.list_sessions()
+            if session.session_kind == "primary"
+        )
+        for root_session_id in roots:
+            diagnostics.extend(await self.reconcile_root(root_session_id))
+        return tuple(diagnostics)
+
+    async def reconcile_session(self, session: SessionRecord) -> tuple[Diagnostic, ...]:
+        """Recover only the Agent aggregate needed by one target Session."""
+
+        return await self.reconcile_root(
+            session.agent_root_session_id,
+            target_session_id=session.session_id,
+        )
+
+    def delegation_root_session_ids(
+        self,
+        delegation_ids: Iterable[str],
+    ) -> tuple[str, ...]:
+        """Resolve the distinct Agent roots named by Delegations."""
+
+        return tuple(
+            sorted(
+                {
+                    self._load_by_id(delegation_id).root_session_id
+                    for delegation_id in delegation_ids
+                }
+            )
+        )
+
+    def recovery_session_ids(self, session: SessionRecord) -> tuple[str, ...]:
+        """Return the bounded execution scope required before Agent reconciliation."""
+
+        root_session_id = session.agent_root_session_id
+        try:
+            relations = self.store.list_delegations(root_session_id)
+        except PersistenceError:
+            return tuple(dict.fromkeys((root_session_id, session.session_id)))
+        child_session_ids = sorted(
+            relation.child_session_id
+            for relation in relations
+            if relation.child_session_id is not None
+        )
+        return tuple(
+            dict.fromkeys((root_session_id, session.session_id, *child_session_ids))
+        )
+
+    async def reconcile_root(
+        self,
+        root_session_id: str,
+        *,
+        target_session_id: str | None = None,
+    ) -> tuple[Diagnostic, ...]:
+        """Recover one Agent aggregate without consulting unrelated history."""
+
+        await self.scheduler.start()
+        root_session = self.store.load_session_record(root_session_id)
+        if root_session.session_kind != "primary":
+            raise ValueError("Agent recovery root must be a primary Session")
+        diagnostics = list(
+            self.recovery.reconcile_root(
+                root_session_id,
+                target_session_id=target_session_id,
+            )
+        )
+        try:
+            relations = self.store.list_delegations(root_session_id)
+        except PersistenceError:
+            return tuple(diagnostics)
         terminal_parents: dict[tuple[str, str], RunRecord] = {}
         for relation in relations:
             try:
@@ -1118,7 +1190,7 @@ class AgentService:
         for parent_run in terminal_parents.values():
             await self.settle_terminal_run(parent_run)
 
-        relations = self._all_relations()
+        relations = self.store.list_delegations(root_session_id)
         for relation in relations:
             if not self.recovery.relation_is_consistent(relation):
                 continue
@@ -1136,7 +1208,7 @@ class AgentService:
             if relation.result is None and child_run.status not in ACTIVE_RUN_STATUSES:
                 diagnostics.append(self._missing_result_diagnostic(relation, child_run))
                 await self._finalize_result(relation.delegation_id)
-        relations = self._all_relations()
+        relations = self.store.list_delegations(root_session_id)
         pending_deliveries = [
             relation
             for relation in relations
@@ -1145,36 +1217,35 @@ class AgentService:
         for relation in pending_deliveries:
             if self.recovery.relation_is_consistent(relation):
                 await self._deliver_result(relation)
-        for session in self.store.list_sessions():
-            if session.session_kind != "primary" or session.active_run_id is None:
-                continue
+        session = root_session
+        if session.active_run_id is not None:
             try:
                 run = self.store.load_run(session.session_id, session.active_run_id)
-            except PersistenceError:
-                continue
-            batch = run.active_tool_batch
-            if run.status != "waiting_child" or batch is None:
-                continue
-            for call in batch.calls:
-                if call.status == "waiting_child" and call.agent_wait is not None:
-                    wait_error = self._parent_wait_error(session, call.agent_wait)
-                    if wait_error is not None:
-                        diagnostics.append(
-                            self._parent_wait_diagnostic(
+            except (FileNotFoundError, PersistenceError):
+                run = None
+            if run is not None:
+                batch = run.active_tool_batch
+                if run.status == "waiting_child" and batch is not None:
+                    for call in batch.calls:
+                        if call.status == "waiting_child" and call.agent_wait is not None:
+                            wait_error = self._parent_wait_error(session, call.agent_wait)
+                            if wait_error is not None:
+                                diagnostics.append(
+                                    self._parent_wait_diagnostic(
+                                        session=session,
+                                        run=run,
+                                        wait_id=call.agent_wait.wait_id,
+                                        message=wait_error,
+                                    )
+                                )
+                                continue
+                            await self.wait_parked(
                                 session=session,
                                 run=run,
-                                wait_id=call.agent_wait.wait_id,
-                                message=wait_error,
+                                batch=batch,
+                                tool_call_id=call.request.id,
+                                wait=call.agent_wait,
                             )
-                        )
-                        continue
-                    await self.wait_parked(
-                        session=session,
-                        run=run,
-                        batch=batch,
-                        tool_call_id=call.request.id,
-                        wait=call.agent_wait,
-                    )
         return tuple(diagnostics)
 
     def _parent_wait_error(
@@ -1837,7 +1908,7 @@ class AgentService:
             )
         else:
             parent_run = self.store.load_run(run.session_id, run.run_id)
-            root_session_id = session.root_session_id or session.session_id
+            root_session_id = session.agent_root_session_id
         state = self._root_budget_state(root_session_id, parent_run)
         if state is None:
             return None
@@ -1922,20 +1993,6 @@ class AgentService:
 
     def _load_by_id(self, delegation_id: str) -> DelegationRecord:
         return self.store.load_delegation_by_id(delegation_id)
-
-    def _all_relations(self) -> list[DelegationRecord]:
-        relations: list[DelegationRecord] = []
-        roots = {
-            session.root_session_id or session.session_id
-            for session in self.store.list_sessions()
-            if session.session_kind == "primary"
-        }
-        for root_id in sorted(roots):
-            try:
-                relations.extend(self.store.list_delegations(root_id))
-            except PersistenceError:
-                continue
-        return relations
 
     def _completion_event(self, delegation_id: str) -> asyncio.Event:
         return self._completion_events.setdefault(delegation_id, asyncio.Event())

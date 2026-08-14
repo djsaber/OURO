@@ -144,6 +144,12 @@ class SessionView(ApplicationDTO):
             tags=tuple(session.tags),
         )
 
+    @property
+    def agent_root_session_id(self) -> str:
+        """Return the primary Session that owns this Session's Agent tree."""
+
+        return self.session_id if self.session_kind == "primary" else self.root_session_id
+
 
 class SessionCatalogResult(ApplicationDTO):
     entries: tuple[SessionCatalogEntry, ...] = ()

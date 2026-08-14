@@ -195,6 +195,20 @@ class SessionRecord(VersionedOuroModel):
             )
         return self
 
+    @property
+    def agent_root_session_id(self) -> str:
+        """Return the durable Agent aggregate owned by this Session.
+
+        Primary forks retain their lineage in ``root_session_id``, but each
+        primary Session owns an independent Agent tree. Subagent Sessions keep
+        pointing at the primary Session that owns their Delegation records.
+        """
+
+        if self.session_kind == "primary":
+            return self.session_id
+        assert self.root_session_id is not None
+        return self.root_session_id
+
 
 class RunRecord(VersionedOuroModel):
     run_id: str = Field(default_factory=lambda: new_id("run"))

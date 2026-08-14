@@ -67,8 +67,8 @@ class AgentTreeProjector:
 
     def snapshot(self, root_session_id: str) -> AgentTreeSnapshot:
         root = self.store.load_session_record(root_session_id)
-        if root.session_kind != "primary" or root.root_session_id != root_session_id:
-            raise ValueError("Agent tree root must be a primary root Session")
+        if root.session_kind != "primary":
+            raise ValueError("Agent tree root must be a primary Session")
 
         root_run = self._selected_root_run(root_session_id)
         root_budget = self._run_budget(root_run)

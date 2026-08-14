@@ -133,7 +133,7 @@ async def test_supervisor_owns_long_lived_resource_shutdown(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_quarantines_incompatible_runtime_without_blocking_startup(
+async def test_supervisor_defers_incompatible_runtime_to_target_without_blocking_startup(
     tmp_path,
 ) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
@@ -154,7 +154,7 @@ async def test_supervisor_quarantines_incompatible_runtime_without_blocking_star
 
     started = await supervisor.start()
 
-    assert [item.code for item in started.diagnostics] == ["session_runtime_incompatible"]
+    assert started.diagnostics == ()
     with pytest.raises(PersistenceError, match="agent catalog contract hash"):
         await supervisor.submit("must remain strict", session_id=session.session_id)
     handle = await supervisor.submit("new session still works")
@@ -480,7 +480,7 @@ async def test_host_detach_does_not_abort_but_explicit_abort_does(tmp_path) -> N
 
 
 @pytest.mark.asyncio
-async def test_start_recovers_interrupted_durable_run_from_store(tmp_path) -> None:
+async def test_target_recovery_recovers_interrupted_durable_run_from_store(tmp_path) -> None:
     runtime = _runtime(tmp_path, FauxProvider())
     session = SessionRecord(status="running", active_run_id="run_interrupted")
     runtime.store.create_session(session)
@@ -495,9 +495,8 @@ async def test_start_recovers_interrupted_durable_run_from_store(tmp_path) -> No
 
     started = await supervisor.start()
 
-    assert [(item.run_id, item.status) for item in started.recovered] == [
-        ("run_interrupted", "recoverable")
-    ]
+    assert started.recovered == ()
+    await supervisor.recover_session(session.session_id)
     assert runtime.store.load_run(session.session_id, "run_interrupted").status == "recoverable"
     await supervisor.shutdown()
 

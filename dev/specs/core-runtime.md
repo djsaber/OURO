@@ -172,7 +172,8 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 
 `RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
 它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
-aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 由 SessionStore 在下次启动恢复。
+aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次打开、运行或提交所属 Session 时
+由 SessionStore 定点恢复；进程启动本身不扫描历史 Session。
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。
 

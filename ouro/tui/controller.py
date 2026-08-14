@@ -393,7 +393,7 @@ class TuiController:
         return TuiBootstrap(
             models=models,
             current_model=runtime.current_model(),
-            sessions=await self.sessions(),
+            sessions=(),
             startup_report=self._application.startup_report,
             mcp_servers=mcp_servers,
             system_status=self._project_system_status(models, usage, mcp_servers),
@@ -561,7 +561,7 @@ class TuiController:
     def _read_agent_interactions(self, session_id: str) -> tuple[AgentInteractionView, ...]:
         assert self._application is not None and self._application.agents is not None
         session = self._runtime().sessions.open(session_id, recover=False).session
-        return self._application.agents.list_agent_interactions(session.root_session_id)
+        return self._application.agents.list_agent_interactions(session.agent_root_session_id)
 
     def new_session(self) -> None:
         self._session_id = None
@@ -1540,6 +1540,7 @@ class TuiController:
         return await asyncio.to_thread(runtime.session_reasoning, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
+        await self._runtime().reconcile_session(session_id)
         loaded = await asyncio.to_thread(self._read_session, session_id)
         self._session_id = session_id
         self._session_archived = loaded.detail.session.archived
@@ -1556,7 +1557,7 @@ class TuiController:
 
     def _read_session(self, session_id: str) -> LoadedSession:
         sessions = self._runtime().sessions
-        detail = sessions.open(session_id)
+        detail = sessions.open(session_id, recover=False)
         messages = self._session_messages(session_id)
 
         events: list[EventRecord] = []

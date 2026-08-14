@@ -41,21 +41,23 @@ class LocalSessionIndex:
         self.lock_path = locks_dir / "catalog.lock"
 
     def try_initialize(self) -> str | None:
+        """Invalidate the disposable catalog without reading Session history."""
+
         try:
-            if not self.index_path.exists():
-                has_sessions = any(
-                    path.is_dir() and not path.name.startswith(".")
-                    for path in self.sessions_dir.iterdir()
-                )
-                if has_sessions:
-                    self._write(self.scan())
-                else:
-                    write_model_atomic(self.index_path, SessionIndex())
+            if self.dirty_path.exists():
+                return None
+            if self.index_path.exists():
+                return self._mark_dirty("session catalog requires refresh after process start")
+            has_sessions = any(
+                path.is_dir() and not path.name.startswith(".")
+                for path in self.sessions_dir.iterdir()
+            )
+            if has_sessions:
+                return self._mark_dirty("session catalog requires refresh after process start")
             else:
-                self.load()
+                write_model_atomic(self.index_path, SessionIndex())
         except (OSError, PersistenceError, ValueError) as exc:
-            self._mark_dirty(str(exc))
-            return str(exc)
+            return self._mark_dirty(str(exc)) or str(exc)
         return None
 
     def scan(self) -> SessionIndex:
@@ -79,41 +81,29 @@ class LocalSessionIndex:
         try:
             self.rebuild()
         except (OSError, PersistenceError, ValueError) as exc:
-            self._mark_dirty(str(exc))
-            return str(exc)
+            return self._mark_dirty(str(exc)) or str(exc)
         return None
 
     def try_update(
         self,
         session_id: str,
     ) -> str | None:
+        """Invalidate the catalog cache without coupling writes to a full scan."""
+
+        if self.dirty_path.exists():
+            return None
         lock = self._new_lock()
         try:
             if not lock.acquire():
                 error = "session index is busy"
-                self._mark_dirty(error)
-                return error
+                return self._mark_dirty(error) or error
             if self.dirty_path.exists():
-                self._write(self.scan())
                 return None
-
-            try:
-                index = SessionIndex.model_validate_json(self.index_path.read_text("utf-8"))
-            except (OSError, ValidationError, ValueError):
-                self._write(self.scan())
-                return None
-
-            entries = [entry for entry in index.sessions if entry.session_id != session_id]
-            session_dir = self.sessions_dir / session_id
-            if session_dir.exists():
-                entries.append(self._build_entry(session_dir))
-            self._write(SessionIndex(sessions=sort_catalog_entries(entries)))
+            return self._mark_dirty(f"session catalog changed: {session_id}")
         except (OSError, PersistenceError, ValueError) as exc:
-            self._mark_dirty(str(exc))
-            return str(exc)
+            return self._mark_dirty(str(exc)) or str(exc)
         finally:
             lock.release()
-        return None
 
     def load(self) -> SessionIndex:
         if self.dirty_path.exists():
@@ -256,6 +246,9 @@ class LocalSessionIndex:
             self.dirty_path.unlink()
         return index
 
-    def _mark_dirty(self, error: str) -> None:
-        with suppress(OSError, PersistenceError):
+    def _mark_dirty(self, error: str) -> str | None:
+        try:
             write_text_atomic(self.dirty_path, error)
+        except (OSError, PersistenceError) as exc:
+            return f"could not mark session catalog dirty: {exc}"
+        return None

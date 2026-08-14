@@ -308,7 +308,10 @@ def test_session_mutation_succeeds_with_visible_diagnostic_when_index_refresh_fa
     assert result.diagnostics[0].recoverable is True
 
 
-def test_dirty_index_marker_forces_a_later_catalog_self_heal(monkeypatch, tmp_path) -> None:
+def test_session_update_invalidates_catalog_until_explicit_self_heal(
+    monkeypatch,
+    tmp_path,
+) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Before").session
     original_write_index = store._catalog._write
@@ -318,7 +321,7 @@ def test_dirty_index_marker_forces_a_later_catalog_self_heal(monkeypatch, tmp_pa
 
     monkeypatch.setattr(store._catalog, "_write", fail_write_index)
     renamed = sessions.rename(session.session_id, "After")
-    assert renamed.diagnostics[0].code == "session_index_refresh_failed"
+    assert renamed.diagnostics == ()
     assert store._index_dirty_path.exists()
 
     monkeypatch.setattr(store._catalog, "_write", original_write_index)
@@ -328,7 +331,7 @@ def test_dirty_index_marker_forces_a_later_catalog_self_heal(monkeypatch, tmp_pa
     assert not store._index_dirty_path.exists()
 
 
-def test_session_update_uses_incremental_index_path(monkeypatch, tmp_path) -> None:
+def test_session_update_defers_full_scan_to_explicit_catalog_read(monkeypatch, tmp_path) -> None:
     store, sessions = _service(tmp_path)
     first = sessions.create(title="First").session
     second = sessions.create(title="Second").session
@@ -339,6 +342,7 @@ def test_session_update_uses_incremental_index_path(monkeypatch, tmp_path) -> No
     monkeypatch.setattr(store._catalog, "scan", reject_full_scan)
     sessions.rename(first.session_id, "First renamed")
 
+    monkeypatch.undo()
     by_id = {entry.session_id: entry for entry in store.read_catalog().sessions}
     assert by_id[first.session_id].title == "First renamed"
     assert by_id[second.session_id].title == "Second"

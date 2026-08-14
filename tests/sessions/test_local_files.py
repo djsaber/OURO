@@ -231,6 +231,26 @@ def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
     assert index.sessions[0].session_id == session.session_id
 
 
+def test_store_initialization_and_session_writes_never_scan_catalog(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    store.create_session(SessionRecord(title="Existing"))
+    reopened = LocalSessionStore(tmp_path)
+
+    def unexpected_scan():
+        raise AssertionError("Session history scan is only allowed on an explicit catalog read")
+
+    monkeypatch.setattr(reopened._catalog, "scan", unexpected_scan)
+
+    reopened.initialize()
+    reopened.create_session(SessionRecord(title="New"))
+
+    assert reopened._index_dirty_path.exists()
+
+
 def test_index_initialization_failure_does_not_block_canonical_session_open(
     monkeypatch,
     tmp_path,

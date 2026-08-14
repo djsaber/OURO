@@ -12,6 +12,7 @@ from ouro.application.compaction import (
     ContextPreparationService,
     LLMSummaryCompactionStrategy,
 )
+from ouro.application.dto import Diagnostic
 from ouro.application.events import RuntimeEventRecorder, RuntimeEventSink
 from ouro.application.models import (
     AvailableModel,
@@ -537,19 +538,37 @@ class RuntimeService:
         session = self.store.load_session_record(session_id)
         return tuple(item.model_copy(deep=True) for item in session.controls.activations)
 
-    def reconcile_interrupted_session_controls(self) -> tuple[str, ...]:
+    def reconcile_interrupted_session_controls(
+        self,
+        session_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Reconcile a target Session, or every Session for explicit maintenance."""
+
         reconciled: list[str] = []
-        for entry in self.sessions.catalog().entries:
-            if self.session_controls.reconcile_interrupted(entry.session_id):
-                reconciled.append(entry.session_id)
+        session_ids = (
+            (session_id,)
+            if session_id is not None
+            else tuple(entry.session_id for entry in self.sessions.catalog().entries)
+        )
+        for candidate_id in session_ids:
+            if self.session_controls.reconcile_interrupted(candidate_id):
+                reconciled.append(candidate_id)
         return tuple(reconciled)
 
-    async def reconcile_pending_run_continuations(self) -> tuple[str, ...]:
-        """Replay unfinished terminal continuation settlements without starting Runs."""
+    async def reconcile_pending_run_continuations(
+        self,
+        session_id: str | None = None,
+    ) -> tuple[str, ...]:
+        """Replay unfinished settlements for a target or explicit full maintenance."""
 
         settled_run_ids: list[str] = []
-        for entry in self.store.list_sessions():
-            for run in self.store.load_runs(entry.session_id):
+        session_ids = (
+            (session_id,)
+            if session_id is not None
+            else tuple(entry.session_id for entry in self.store.list_sessions())
+        )
+        for candidate_id in session_ids:
+            for run in self.store.load_runs(candidate_id):
                 checkpoint = run.continuation
                 if (
                     run.kind != "agent"
@@ -590,6 +609,101 @@ class RuntimeService:
                 finally:
                     self._release_extension_snapshot(run.run_id)
         return tuple(settled_run_ids)
+
+    async def reconcile_execution_session(
+        self,
+        session_id: str,
+    ) -> RuntimeSessionSnapshot:
+        """Recover execution state for exactly one Session."""
+
+        self.reconcile_interrupted_session_controls(session_id)
+        snapshot = self.session_recovery.recover_runtime(session_id)
+        settled = await self.reconcile_pending_run_continuations(session_id)
+        return self.store.load_runtime_session(session_id) if settled else snapshot
+
+    async def reconcile_session(self, session_id: str) -> tuple[Diagnostic, ...]:
+        """Recover only the target Session and its bounded Agent aggregate."""
+
+        _, diagnostics = await self._reconcile_session(session_id)
+        return diagnostics
+
+    async def _reconcile_session(
+        self,
+        session_id: str,
+    ) -> tuple[RuntimeSessionSnapshot, tuple[Diagnostic, ...]]:
+        """Return the post-reconciliation target snapshot for execution."""
+
+        session = self.store.load_session_record(session_id)
+        if self._agent_controls is None:
+            return await self.reconcile_execution_session(session_id), ()
+
+        diagnostics: list[Diagnostic] = []
+        root_session_id = session.agent_root_session_id
+        target_snapshot: RuntimeSessionSnapshot | None = None
+        for candidate_id in self._agent_controls.recovery_session_ids(session):
+            try:
+                recovered = await self.reconcile_execution_session(candidate_id)
+                if candidate_id == session_id:
+                    target_snapshot = recovered
+            except FileNotFoundError:
+                if candidate_id in {root_session_id, session_id}:
+                    raise
+            except PersistenceError as exc:
+                if candidate_id in {root_session_id, session_id}:
+                    raise
+                diagnostics.append(
+                    self._execution_recovery_diagnostic(
+                        root_session_id=root_session_id,
+                        session_id=candidate_id,
+                        error=exc,
+                    )
+                )
+        diagnostics.extend(await self._agent_controls.reconcile_session(session))
+        if target_snapshot is None:
+            raise FileNotFoundError(session_id)
+        return self.store.load_runtime_session(session_id), tuple(diagnostics)
+
+    @staticmethod
+    def _execution_recovery_diagnostic(
+        *,
+        root_session_id: str,
+        session_id: str,
+        error: PersistenceError,
+    ) -> Diagnostic:
+        return Diagnostic(
+            code="session_runtime_incompatible",
+            severity="warning",
+            component="runtime.recovery",
+            message=(
+                f"Session {session_id} was excluded from Agent aggregate recovery because "
+                f"its persisted execution data is incompatible: {error}"
+            ),
+            session_id=session_id,
+            recoverable=True,
+            suggested_action="Inspect the retained Session data before an explicit retry.",
+            metadata={
+                "root_session_id": root_session_id,
+                "error_type": type(error).__name__,
+            },
+        )
+
+    @staticmethod
+    def _raise_incompatible_target(
+        session: SessionRecord,
+        diagnostics: tuple[Diagnostic, ...],
+    ) -> None:
+        affected_session_ids = {session.session_id, session.agent_root_session_id}
+        incompatible = next(
+            (
+                diagnostic
+                for diagnostic in diagnostics
+                if diagnostic.code == "session_runtime_incompatible"
+                and diagnostic.session_id in affected_session_ids
+            ),
+            None,
+        )
+        if incompatible is not None:
+            raise PersistenceError(incompatible.message)
 
     async def release_session_control(
         self,
@@ -1179,10 +1293,20 @@ class RuntimeService:
                 )
             snapshot = RuntimeSessionSnapshot(session=session)
         else:
-            snapshot = self._load_runtime_snapshot(
-                session_id,
-                recover=(_prepared_run is None and not self.run_ownership.is_locked(session_id)),
+            should_reconcile = _prepared_run is None and not self.run_ownership.is_locked(
+                session_id
             )
+            if should_reconcile:
+                snapshot, reconciliation_diagnostics = await self._reconcile_session(session_id)
+                self._raise_incompatible_target(
+                    snapshot.session,
+                    reconciliation_diagnostics,
+                )
+            else:
+                snapshot = self._load_runtime_snapshot(
+                    session_id,
+                    recover=False,
+                )
             session = snapshot.session
             active_run = maybe_active_run(snapshot.runs)
             self._validate_model_resource_refs(
