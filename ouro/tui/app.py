@@ -198,7 +198,7 @@ _OURO_TUI_CSS = """
     $ouro-border-focus: #3f4650;
     $ouro-highlight: #242424;
     $welcome-width: 72%;
-    $welcome-min-width: 68;
+    $welcome-min-width: 48;
     $welcome-max-width: 116;
     $welcome-inline-padding: 2;
     $welcome-logo-gap: 2;

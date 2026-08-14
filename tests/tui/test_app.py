@@ -1456,7 +1456,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         assert conversation.virtual_size.width >= conversation.content_region.width
         composer = app.query_one(Composer)
         status_line = app.query_one(StatusLine)
-        assert 64 <= composer.region.width <= 112
+        assert 44 <= composer.region.width <= 112
         assert composer.region.x == (app.screen.region.width - composer.region.width) // 2
         assert abs((composer.region.y + composer.region.height / 2) - 16) <= 2
         assert status_line.region.x == composer.region.x
@@ -1582,7 +1582,7 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("terminal_width", "expected_composer_width"),
-    ((80, 64), (100, 68), (200, 112)),
+    ((60, 44), (80, 53), (100, 68), (200, 112)),
 )
 @pytest.mark.asyncio
 async def test_welcome_composer_width_clamps_and_stays_centered(
