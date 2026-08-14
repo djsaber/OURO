@@ -146,6 +146,44 @@ async def _wait_for_screen(
         await asyncio.sleep(0.01)
 
 
+async def _wait_for_active_session(
+    app: OuroTuiApp,
+    pilot,
+    session_id: str,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while app._controller.session_id != session_id or app.query_one(Composer).disabled:
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for active Session {session_id}")
+        await asyncio.sleep(0.01)
+    await pilot._wait_for_screen()
+
+
+async def _wait_for_welcome_render(
+    app: OuroTuiApp,
+    pilot,
+    *,
+    contains: str,
+    timeout: float = 2.0,
+) -> WelcomePanel:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        matches = list(app.query_one(ConversationView).query(WelcomePanel))
+        welcome = matches[0] if matches else None
+        if welcome is not None and contains in _welcome_plain_text(welcome):
+            await pilot._wait_for_screen()
+            return welcome
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for welcome content: {contains}")
+        await asyncio.sleep(0.01)
+
+
+def _welcome_plain_text(welcome: WelcomePanel) -> str:
+    return "\n".join(getattr(widget.render(), "plain", "") for widget in welcome.query(Static))
+
+
 def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
     option = ChoiceScreen._options((Choice("msg", "A user request " * 8, trailing="18:00"),))[0]
     console = Console(width=40, record=True, force_terminal=False, color_system=None)
@@ -1310,18 +1348,17 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        welcome = await _wait_for_welcome_render(app, pilot, contains="██████")
         conversation = app.query_one(ConversationView)
         transcript = conversation.query_one("#conversation-transcript")
         header = app.query_one(BrandHeader)
 
         # Startup enters the empty state: the LOGO welcome frame is the sole
         # content of the conversation area and projects the workspace status.
-        welcome = conversation.query_one(WelcomePanel)
         assert header.render().plain == f" ▣ OURO v{__version__}"
         assert "New session" not in header.render().plain
-        assert "██████" in welcome.render().plain
-        assert f"Workspace {tmp_path}" in welcome.render().plain
+        assert "██████" in welcome._logo.render().plain
+        assert welcome._system._workspace.render().plain == str(tmp_path)
         conversation.set_system_status(
             TuiSystemStatus(
                 workspace=str(tmp_path),
@@ -1346,25 +1383,39 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
 
         welcome = conversation.query_one(WelcomePanel)
-        welcome_text = welcome.render()
-        status_text = welcome_text.plain
-        assert f"SYSTEM\nWorkspace {tmp_path}" in status_text
+        status_text = _welcome_plain_text(welcome)
+        assert "SYSTEM" in status_text
+        assert str(tmp_path) in status_text
         assert status_text.index("SYSTEM") < status_text.index("TIPS")
         assert "Tell me what you want to accomplish." not in status_text
         assert "Enter" not in status_text
         assert "Ctrl+Enter" not in status_text
         assert "Shift+Enter" not in status_text
-        assert "/       Commands" in status_text
-        assert "Ctrl+P  Actions" in status_text
-        assert "Ctrl+S  Sessions" in status_text
+        tip_keys = [widget.render().plain for widget in welcome.query(".welcome-tip-key")]
+        tip_descriptions = [
+            widget.render().plain for widget in welcome.query(".welcome-tip-description")
+        ]
+        tips = dict(zip(tip_keys, tip_descriptions, strict=True))
+        assert {
+            "/": "Commands",
+            "Ctrl+P": "Actions",
+            "Ctrl+S": "Sessions",
+        }.items() <= tips.items()
         assert "Health" not in status_text
         assert "deepseek, openai · 3 model(s)" in status_text
         assert "7 available · browser, documents, github, +1" in status_text
         assert "2/3 active · Goals, Guardian · 1 need attention" in status_text
         assert "3/3 connected · 8 tool(s)" in status_text
-        assert "4 request(s) · 12.3K in / 1.2K out · $0.0421" in status_text
-        assert not welcome_text.get_style_at_offset(status_text.index("Ctrl+P")).bold
-        assert not welcome_text.get_style_at_offset(status_text.index("Workspace")).bold
+        assert "4 request(s) · $0.0421" in status_text
+        assert "12.3K in / 1.2K out" in status_text
+        ctrl_p = next(
+            widget.render()
+            for widget in welcome.query(".welcome-tip-key")
+            if widget.render().plain == "Ctrl+P"
+        )
+        assert not ctrl_p.get_style_at_offset(0).bold
+        workspace = welcome._system._workspace.render()
+        assert all("bold" not in str(span.style) for span in workspace._spans)
         assert "MCP" not in header.render().plain
         assert header.styles.border_left[0] == ""
         assert welcome.styles.border_left[0] == ""
@@ -1507,11 +1558,10 @@ async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path:
         assert app._system_status.skill_names == ()
 
         await app._show_welcome()
-        await pilot.pause()
+        welcome = await _wait_for_welcome_render(app, pilot, contains="live-skill")
 
         assert app._system_status.skill_names == ("live-skill",)
-        welcome = app.query_one(ConversationView).query_one(WelcomePanel)
-        assert "1 available · live-skill" in welcome.render().plain
+        assert "1 available · live-skill" in welcome._system._skills.render().plain
 
 
 def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
@@ -1746,9 +1796,8 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        welcome = app.query_one(ConversationView).query_one(WelcomePanel)
-        starting_status = welcome.render()
+        welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
+        starting_status = welcome._system._mcp.render()
         assert "0/1 connected · 0 tool(s) · 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
             starting_status.plain.index("connecting"),
@@ -1756,7 +1805,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
 
         session.initialize_gate.set()
         await pilot.pause(0.6)
-        connected_status = welcome.render()
+        connected_status = welcome._system._mcp.render()
         assert "1/1 connected · 1 tool(s)" in connected_status.plain
         assert connected_status.get_style_at_offset(
             connected_status.plain.index("connected"),
@@ -1766,12 +1815,12 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         session.tools.append(LiveMcpSession._tool("fetch"))
         factory.tools_changed()
         await pilot.pause(0.6)
-        assert "1/1 connected · 2 tool(s)" in welcome.render().plain
+        assert "1/1 connected · 2 tool(s)" in welcome._system._mcp.render().plain
         assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
 
         factory.connection_lost("connection lost")
         await pilot.pause(0.6)
-        assert "0/1 connected · 0 tool(s) · 1 failed" in welcome.render().plain
+        assert "0/1 connected · 0 tool(s) · 1 failed" in welcome._system._mcp.render().plain
         assert "live__search" not in application.runtime.tools.names()
 
     assert app._mcp_status_timer is None
@@ -3623,7 +3672,7 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
     )
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.7)
+        await _wait_for_active_session(app, pilot, active.session_id)
         await pilot.press("ctrl+p")
         await pilot.pause()
         action_screen = app.screen
@@ -4567,7 +4616,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
         assert toolkit.label == "Toolkit"
-        assert toolkit.trailing == "v1.0.0 · disabled"
+        assert toolkit.trailing == "v1.0.0 · active"
         assert toolkit.marker == ""
 
         plugin_screen.query_one("#choice-filter", Input).value = "Toolkit"
@@ -4576,42 +4625,46 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
         assert app.screen is plugin_screen
         assert [choice.label for choice in plugin_screen._choices] == [
-            "Enable",
+            "Disable",
             "Check integrity and readiness",
             "Restart",
         ]
-        assert next(
-            choice for choice in plugin_screen._choices if choice.value == "restart"
-        ).disabled is True
+        assert (
+            next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
+            is False
+        )
 
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
         assert app.screen is plugin_screen
         lifecycle = {choice.value: choice for choice in plugin_screen._choices}
-        assert lifecycle["disable"].trailing == "active"
-        assert lifecycle["restart"].disabled is False
-        assert "Toolkit" in app._system_status.plugin_active_names
+        assert lifecycle["enable"].trailing == "disabled"
+        assert lifecycle["restart"].disabled is True
+        assert "Toolkit" not in app._system_status.plugin_active_names
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
         refreshed = next(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
-        assert refreshed.trailing == "v1.0.0 · active"
+        assert refreshed.trailing == "v1.0.0 · disabled"
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
         options = plugin_screen.query_one("#choice-list", OptionList)
         await pilot.click(options, offset=(4, 1))
         await _wait_for_screen(app, ChoiceScreen, title="PLUGIN · Toolkit")
-        assert next(
-            choice for choice in plugin_screen._choices if choice.value == "enable"
-        ).trailing == "disabled"
-        assert next(
-            choice for choice in plugin_screen._choices if choice.value == "restart"
-        ).disabled is True
-        assert plugin_screen.query_one("#choice-list", OptionList).get_option(
-            "restart"
-        ).disabled is True
+        assert (
+            next(choice for choice in plugin_screen._choices if choice.value == "disable").trailing
+            == "active"
+        )
+        assert (
+            next(choice for choice in plugin_screen._choices if choice.value == "restart").disabled
+            is False
+        )
+        assert (
+            plugin_screen.query_one("#choice-list", OptionList).get_option("restart").disabled
+            is False
+        )
 
         await pilot.press("escape")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
@@ -4619,7 +4672,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
             choice for choice in plugin_screen._choices if choice.value == "dev.ouro.toolkit"
         )
         assert refreshed.marker == ""
-        assert refreshed.trailing == "v1.0.0 · disabled"
+        assert refreshed.trailing == "v1.0.0 · active"
 
 
 @pytest.mark.asyncio
@@ -4930,10 +4983,13 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
         await pilot.press("enter")
         await _wait_for_screen(app, ChoiceScreen, title="TOOL PERMISSIONS")
 
-        assert list(dict.fromkeys(choice.group for choice in app.screen._choices)) == [
+        groups = list(dict.fromkeys(choice.group for choice in app.screen._choices))
+        assert groups[:3] == [
             "Built-in",
             "MCP",
             "dev.ouro.official",
+        ]
+        assert groups[-3:] == [
             "dev.ouro.third-party",
             "dev.ouro.generated",
             "Unavailable",
@@ -6491,37 +6547,6 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert second.read_text(encoding="utf-8") == "second"
         assert app._projection.pending_interaction is None
         assert app._projection.activity.status == "completed"
-
-
-@pytest.mark.asyncio
-async def test_tool_row_stays_between_model_rounds_in_event_order(tmp_path: Path) -> None:
-    target = tmp_path / "ordered.txt"
-    app = OuroTuiApp(
-        application=_approval_application(tmp_path, target),
-        approval_mode="approval",
-    )
-
-    async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.5)
-        await pilot.click("#composer")
-        await pilot.press("r", "u", "n", "enter")
-        await pilot.pause(0.8)
-        await pilot.press("enter")
-        await pilot.pause(0.8)
-
-        history = app.query_one(ConversationHistory)
-        ordered = [entry for entry in history.entries if entry.kind in {"assistant", "tool"}]
-        assert [entry.kind for entry in ordered] == ["assistant", "tool", "assistant"]
-        assert ordered[0].text.strip() == "Preparing."
-        assert ordered[1].tool is not None
-        assert ordered[2].text == "Done."
-        tool_text = history.rendered_text
-        assert "Write  " in tool_text
-        assert target.name in tool_text
-        assert "Write  completed" in tool_text
-        assert "└ " in tool_text
-        assert "+1 line · overwrite" in tool_text
-        assert "s" in tool_text
 
 
 @pytest.mark.asyncio

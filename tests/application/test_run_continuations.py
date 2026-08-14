@@ -283,7 +283,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     assert (await application.plugins.enable("dev.ouro.goal")).status == "active"
 
     alias = await handle_command(
-        "/goal inspect the feature",
+        "/dev.ouro.goal:goal inspect the feature",
         runtime,
         None,
         plugins=application.plugins,
@@ -343,11 +343,17 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
     application.plugins.trust_code("dev.ouro.goal")
     await application.start()
     assert (await application.plugins.enable("dev.ouro.goal")).status == "active"
-    commands = iter(["/goal target", "/goal guide", "/exit"])
+    commands = iter(
+        [
+            "/dev.ouro.goal:goal target",
+            "/dev.ouro.goal:goal guide",
+            "/exit",
+        ]
+    )
 
     def input_func(_prompt: str) -> str:
         command = next(commands)
-        if command == "/goal guide":
+        if command == "/dev.ouro.goal:goal guide":
             assert provider.started.wait(timeout=2)
         if command == "/exit":
             provider.release.set()

@@ -88,9 +88,14 @@ OURO_IMPORT_ALLOWLIST: dict[str, frozenset[str]] = {
     "tui": frozenset(
         {
             "application",
+            "builtin_plugins",
+            "config",
             "core",
             "deployment",
             "local_application",
+            "local_io",
+            "mcp",
+            "skills",
             "tools",
         }
     ),
