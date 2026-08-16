@@ -279,5 +279,5 @@ result/delivery identity 和 revision，不镜像 running/waiting/terminal 状�
 - 未实现能力的推进顺序以 [开发路线图](OURO_AGENT_开发路线图.md) 为准。
 - 领域契约与验收证据见 [规格索引](../dev/specs/README.md)。
 - 未来能力的任务拆分见 [执行计划索引](../dev/plans/README.md)。
-- Goal builtin 的当前契约见 [OURO Goal 插件设计](OURO_Goal插件设计.md)。
+- Goal builtin 的当前契约见 [OURO Goal 插件设计](OURO_Goal插件设计_2026-08-16.md)。
 - 所有实现和评审遵循 [中文编码准则](OURO_AGENT_编码准则_ZH.md)。

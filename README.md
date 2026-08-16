@@ -37,8 +37,8 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 [开发架构](docs/OURO_AGENT_开发架构.md)。插件系统的外部项目研究见
 [Agent 插件系统调研报告](docs/Agent_插件系统调研报告_2026-07-16.md)，OURO 的当前契约见
 [插件系统规格](dev/specs/plugin-system.md)，总体扩展架构与 Pi 对照见
-[插件系统扩展性架构与 Pi 对照](docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，`/goal` 映射见
-[插件系统扩展性与目标模式设计](docs/OURO_插件系统扩展性与目标模式设计_2026-07-17.md)，插件作者从
+[插件系统扩展性架构与 Pi 对照](docs/OURO_插件系统扩展性架构与Pi对照_2026-07-17.md)，`/goal` 契约见
+[Goal 插件设计](docs/OURO_Goal插件设计_2026-08-16.md)，插件作者从
 [插件开发指南](docs/OURO_插件开发指南.md)与[可运行示例](examples/plugins/README.md)开始。
 
 ## 开发环境
@@ -185,7 +185,7 @@ continuation policy 可在每轮完成后请求继续、完成、暂停或失败
 `complete` 或 `blocked`。用户保留
 pause、resume、replace、cancel 与预算权限。Goal 与 Plan 竞争同一个 primary behavior claim，因此必须先退出或
 暂停当前模式再进入另一个模式。完整设计与验收边界见
-[Goal 插件设计](docs/OURO_Goal插件设计.md)。
+[Goal 插件设计](docs/OURO_Goal插件设计_2026-08-16.md)。
 
 ## Provider 与 Endpoint
 
