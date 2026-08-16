@@ -19,9 +19,21 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
     queue = QueuedInputQueue(store)
 
     snapshot = store.load_session(session.session_id)
-    session, _, _ = queue.enqueue(snapshot=snapshot, prompt="first", title=None)
+    session, _, _ = queue.enqueue(
+        snapshot=snapshot,
+        prompt="first",
+        title=None,
+        role="user",
+        scaffold=False,
+    )
     snapshot = store.load_session(session.session_id)
-    session, _, size = queue.enqueue(snapshot=snapshot, prompt="second", title="Second")
+    session, _, size = queue.enqueue(
+        snapshot=snapshot,
+        prompt="second",
+        title="Second",
+        role="user",
+        scaffold=False,
+    )
 
     snapshot = store.load_session(session.session_id)
     assert size == 2
@@ -148,6 +160,8 @@ def test_queued_input_queue_requires_explicit_acknowledgement(tmp_path) -> None:
         snapshot=store.load_session(session.session_id),
         prompt="second",
         title=None,
+        role="user",
+        scaffold=False,
     )
     snapshot = store.load_session(queued_session.session_id)
 
@@ -176,12 +190,16 @@ def test_queue_cancels_only_the_selected_direct_user_input(tmp_path, backend: st
         snapshot=store.load_session(session.session_id),
         prompt="Return this draft",
         title=None,
+        role="user",
+        scaffold=False,
     )
     _, host_input, _ = queue.enqueue(
         snapshot=store.load_session(session.session_id),
         prompt="Framework continuation",
         title=None,
         source="host",
+        role="system",
+        scaffold=True,
         host_source_id="ouro.runtime/test",
     )
 
@@ -229,6 +247,8 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
         prompt="",
         skill_activation=activation,
         title=None,
+        role="user",
+        scaffold=False,
     )
     restored = queue.peek(store.load_session(queued_session.session_id))
 
@@ -242,6 +262,8 @@ def test_queue_persists_argumentless_user_skill_activation_and_rejects_steering(
             skill_activation=activation,
             title=None,
             mode="steer",
+            role="user",
+            scaffold=False,
         )
 
 
@@ -259,12 +281,16 @@ def test_host_queued_input_requires_and_preserves_source_attribution(tmp_path) -
             prompt="anonymous framework input",
             title=None,
             source="host",
+            role="system",
+            scaffold=True,
         )
     _, queued, _ = queue.enqueue(
         snapshot=snapshot,
         prompt="recover from checkpoint",
         title="Recovery",
         source="host",
+        role="system",
+        scaffold=True,
         host_source_id="ouro.runtime/recovery",
         resource_refs=("resource_1",),
     )
@@ -290,7 +316,9 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
         prompt="The user's explicit command intent",
         title=None,
         source="plugin",
-        message_role="user",
+        role="user",
+        scaffold=True,
+        semantic_tag="plugin-intent",
         plugin_id="dev.example.plugin",
         contribution_id="command",
         generation_id="generation_1",
@@ -299,31 +327,38 @@ def test_plugin_queue_preserves_message_role_independently_from_provenance(tmp_p
     restored = queue.peek(store.load_session(queued_session.session_id))
 
     assert queued.source == "plugin"
-    assert queued.message_role == "user"
+    assert queued.role == "user"
+    assert queued.scaffold is True
+    assert queued.semantic_tag == "plugin-intent"
     assert restored is not None
     assert restored.source == "plugin"
-    assert restored.message_role == "user"
+    assert restored.role == "user"
+    assert restored.scaffold is True
+    assert restored.semantic_tag == "plugin-intent"
     assert restored.plugin_id == "dev.example.plugin"
-    with pytest.raises(ValidationError, match="Host queued input must use the synthetic"):
-        queue.enqueue(
-            snapshot=store.load_session(session.session_id),
-            prompt="Invalid Host role",
-            title=None,
-            source="host",
-            message_role="user",
-            host_source_id="ouro.runtime/test",
-        )
+    _, host_user_message, _ = queue.enqueue(
+        snapshot=store.load_session(session.session_id),
+        prompt="Host-owned user-role scaffold",
+        title=None,
+        source="host",
+        role="user",
+        scaffold=True,
+        host_source_id="ouro.runtime/test",
+    )
+    assert host_user_message.source == "host"
+    assert host_user_message.role == "user"
+    assert host_user_message.scaffold is True
 
 
-def test_legacy_plugin_queue_defaults_to_synthetic_message_role(tmp_path) -> None:
+def test_queue_rejects_persisted_items_missing_explicit_message_semantics(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(
-        title="Legacy plugin queue",
+        title="Incomplete plugin queue",
         metadata={
             QUEUED_INPUTS_KEY: [
                 {
-                    "prompt": "legacy plugin continuation",
+                    "prompt": "incomplete plugin continuation",
                     "mode": "follow_up",
                     "source": "plugin",
                     "plugin_id": "dev.example.plugin",
@@ -338,8 +373,8 @@ def test_legacy_plugin_queue_defaults_to_synthetic_message_role(tmp_path) -> Non
     store.create_session(session)
     restored = QueuedInputQueue(store).peek(store.load_session(session.session_id))
 
-    assert restored is not None
-    assert restored.message_role == "system_synthetic"
+    assert restored is None
+    assert QUEUED_INPUTS_KEY not in store.load_session_record(session.session_id).metadata
 
 
 def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_path) -> None:
@@ -356,6 +391,8 @@ def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_pat
             prompt="Inspect the target.",
             title=None,
             source="delegation",
+            role="user",
+            scaffold=True,
         )
 
     queued_session, queued, _ = queue.enqueue(
@@ -363,6 +400,8 @@ def test_delegated_task_input_requires_and_preserves_delegation_identity(tmp_pat
         prompt="Inspect the target.",
         title=None,
         source="delegation",
+        role="user",
+        scaffold=True,
         delegation_id="dlg_task",
     )
     restored = queue.peek(store.load_session(queued_session.session_id))
@@ -388,6 +427,8 @@ def test_queued_input_queue_merges_concurrent_stale_snapshot_enqueues(tmp_path) 
                 snapshot=stale,
                 prompt=f"prompt-{index}",
                 title=None,
+                role="user",
+                scaffold=False,
             )
             for index in range(20)
         ]

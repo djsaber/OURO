@@ -199,17 +199,6 @@ class SessionService:
             )
         else:
             source_messages = record.source_messages
-        if not record.semantic_envelopes:
-            # Snapshots created before semantic envelopes existed digest their
-            # synthetic source messages as raw text. Preserve that historical
-            # provider projection instead of invalidating an otherwise valid
-            # immutable snapshot during upgrade.
-            source_messages = [
-                message.model_copy(update={"semantic_tag": None})
-                if message.role == "system_synthetic"
-                else message
-                for message in source_messages
-            ]
         context = ContextView(
             context_id=record.context_id,
             system_prompt=record.system_prompt,

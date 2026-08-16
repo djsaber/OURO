@@ -344,7 +344,7 @@ class RuntimeSupervisor:
         *,
         session_id: str,
     ) -> HostInputReceipt:
-        """Durably accept synthetic Host traffic and schedule idle consumption."""
+        """Durably accept scaffold Host traffic and schedule idle consumption."""
 
         await self.start()
         receipt = await self.runtime.submit_host_input(session_input, session_id=session_id)

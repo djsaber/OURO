@@ -58,7 +58,14 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 
 ### Message 与 model turn
 
-- 用户和普通 assistant 消息属于 canonical history。
+- `MessageRole` 是封闭枚举：`system | user | assistant | tool_result`，只表达模型看到的上下文身份。
+- `scaffold: bool` 只表达消息是否由 Harness 有意构造并注入；它与 role 正交，四种 role 都可以是或不是
+  scaffold。
+- `semantic_tag` 是可选模型可见语义标记；它与 role、scaffold 和 producer provenance 都正交。只有提供方显式
+  声明标签时，统一 renderer 才形成语义包络。
+- 消息提供方必须显式定义 role、scaffold 和 semantic tag；Core、队列、Store 和 Provider adapter 只校验并传递，
+  不根据来源、role、标签或正文猜测、补全或改写其他维度。
+- 用户、assistant、Harness 和工具结果消息都可以属于 canonical history。
 - assistant 工具请求写入类型化 `tool_calls`。
 - 工具结果写入类型化 `tool_result`。
 - 可展示的模型思考写入类型化 `reasoning_content`。
@@ -66,8 +73,6 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 - 一次模型响应中的 assistant 工具请求及其结果共享 `turn_id`。
 - `turn_id` 只能出现在拥有 `run_id` 的消息上。
 - 工具身份与思考续接状态不得写入 `metadata`。
-- user 与 `system_synthetic` 输入都可携带合法 `semantic_tag`；标签通过统一 renderer 形成模型可见包络，但不改变
-  role、producer provenance 或授权语义。
 - durable input queue 把单条输入或非空有序 `SessionInputBatch` 视为消费单位；逐条消费配置不能拆分 batch，组内
   canonical messages 必须属于同一 Run 或同一安全 turn 边界。
 
@@ -77,7 +82,7 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 2. 新会话被创建，或现有会话通过不含 replay events 的运行态快照执行恢复检查。
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
-5. 用户消息持久化并产生事件。
+5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
 6. `InnerAgentLoop` 复用已加载的 canonical messages 构建上下文并调用 request-local `RuntimeAdapter`；正常
    模型轮次不得重新加载完整 Session 事件历史。
 7. 模型文本、reasoning 和工具调用增量到达时依次形成事件；`done` 后完整工具调用交给
@@ -125,31 +130,32 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 
 ## 排队输入
 
-active Run 期间的新输入写入 Session metadata 中的 durable 队列，每项显式保存交付模式：
+active Run 期间的新输入写入 Session metadata 中的 durable 队列。每项完整保存 `source` provenance、`role`、
+`scaffold`、可选 `semantic_tag` 和交付模式；这些字段分别由输入提供方定义，队列不互相推断：
 
 - `follow_up`：当前 Run 完整结束后交付，每次消费创建一个后续 Run；
 - `steer`：当前 model turn 完整结束后交付，作为同一 Run 下一轮模型请求的新 canonical 消息。
 
 每项还显式保存生产来源：
 
-- `user`：真实用户输入，持久化为 `role=user`，可以携带用户资源引用；
-- `host`：OURO Host/Application 产生的输入，必须携带稳定 `host_source_id`，持久化为
-  `role=system_synthetic`；
-- `plugin`：插件产生的输入，必须携带完整 plugin/contribution/generation/contract provenance，持久化为
-  `role=system_synthetic`；
+- `user`：真实用户输入，可以携带用户资源引用；
+- `host`：OURO Host/Application 产生的输入，必须携带稳定 `host_source_id`；
+- `plugin`：插件产生的输入，必须携带完整 plugin/contribution/generation/contract provenance；
 - `delegation`：只允许专用 `DelegatedTaskInput` 启动已准备好的 child Run，必须携带 `delegation_id`，
-  持久化为 `role=user`。
+  该提供方显式声明 `role=user, scaffold=true`。
 
-Host 和插件输入都不能冒充用户，也不能携带用户资源引用。delegation 输入可携带 Spawn 时已验证并复制到 child
-Session 的资源引用。未知来源、Host 来源缺少 source id、插件来源缺少完整执行归属、delegation 来源缺少 relation
-identity 的持久化项均按无效项移除。
+role 不改变 producer provenance，也不授予直接用户权限。Host 和插件输入不能携带未经对应 use case 验证的用户资源
+引用；delegation 输入可携带 Spawn 时已验证并复制到 child Session 的资源引用。未知来源、Host 来源缺少 source id、
+插件来源缺少完整执行归属、delegation 来源缺少 relation identity，或缺少消息三维契约字段的持久化项均按无效项
+移除，不按来源或历史默认值补全。
 
 工具请求及结果共享原子 turn，steer 必须在工具结果提交后插入。`queued_inputs.consumption_mode` 决定每个
 消费边界只取一条（`one_by_one`）或取出当时全部符合交付时机的消息（`all_at_once`）。过滤不同交付模式时，
 符合条件的消息保持原始入队顺序；较早的 follow-up 不阻塞较晚 steer 在 turn 边界生效。
 
-队列项具备唯一 id；只有 canonical 消息已经持久化后才确认队列项。恢复时若发现同一 queue id 已进入消息历史，
-必须只确认队列而不重复追加消息。缺少必需字段的队列项按无效项移除，不按旧格式补全。
+队列项具备唯一 id；只有 canonical 消息已经持久化后才确认队列项。完整消费单位先全部构造，再通过 Store 的批量
+追加边界一次持久化；Session 消息投影只推进一次。恢复时若发现同一 `queued_input_id` 已进入消息历史，必须只确认
+队列而不重复追加消息。当前实现不读取旧幂等字段或修复缺失契约。
 
 审批和 AskUser 恢复属于原 Run 的同一锁事务。恢复后即使 Run 已 completed，也不能在该锁的作用域内递归
 启动 follow-up；后续 Run 必须等恢复入口释放非重入 session run lock 后再取得新的锁。

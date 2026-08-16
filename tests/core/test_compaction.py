@@ -157,7 +157,7 @@ def test_compaction_projection_replaces_covered_prefix_without_mutating_history(
 
     assert [message.text_content for message in messages] == ["old", "answer", "latest"]
     assert [message.text_content for message in projected] == ["summary", "latest"]
-    assert projected[0].role == "system_synthetic"
+    assert projected[0].role == "system"
     assert projected[0].metadata["compaction_id"] == record.compaction_id
 
 

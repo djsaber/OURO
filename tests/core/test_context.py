@@ -128,7 +128,7 @@ def test_context_builder_preserves_native_system_prompt_when_no_skills_are_prese
     assert context.system_prompt == system_prompt
 
 
-def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
+def test_context_builder_counts_scaffold_context_as_fixed_tokens() -> None:
     without_context = ContextBuilder().build(messages=[], tools=[], input_token_budget=100)
     with_context = ContextBuilder().build(
         messages=[],
@@ -142,42 +142,70 @@ def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
     )
 
 
-def test_input_messages_default_and_validate_semantic_tags() -> None:
+def test_semantic_tags_are_optional_and_independent_from_message_roles() -> None:
     default = MessageRecord.text(
         session_id="ses_1",
-        role="system_synthetic",
+        role="system",
         text="default",
     )
     custom = MessageRecord.text(
         session_id="ses_1",
-        role="system_synthetic",
+        role="system",
         text="custom",
         semantic_tag="plugin-context",
     )
 
-    assert default.semantic_tag == "system-reminder"
+    assistant = MessageRecord.text(
+        session_id="ses_1",
+        role="assistant",
+        text="labeled answer",
+        scaffold=True,
+        semantic_tag="answer-section",
+    )
+
+    assert default.semantic_tag is None
     assert custom.semantic_tag == "plugin-context"
-    assert (
+    assert assistant.semantic_tag == "answer-section"
+    assert default.scaffold is False
+    assert custom.scaffold is False
+    assert assistant.scaffold is True
+    assert MessageRecord.model_validate(
+        {
+            "session_id": "ses_1",
+            "role": "system",
+            "content": [{"type": "text", "text": "unlabeled"}],
+        }
+    ).semantic_tag is None
+    user_scaffold = MessageRecord.text(
+        session_id="ses_1",
+        role="user",
+        text="scaffold",
+        scaffold=True,
+        semantic_tag="plugin-context",
+    )
+    assert user_scaffold.scaffold is True
+    assert user_scaffold.semantic_tag == "plugin-context"
+    with pytest.raises(ValueError, match="Input should be"):
         MessageRecord.model_validate(
             {
                 "session_id": "ses_1",
                 "role": "system_synthetic",
                 "content": [{"type": "text", "text": "legacy"}],
             }
-        ).semantic_tag
-        == "system-reminder"
-    )
-    user_scaffold = MessageRecord.text(
-        session_id="ses_1",
-        role="user",
-        text="scaffold",
-        semantic_tag="plugin-context",
-    )
-    assert user_scaffold.semantic_tag == "plugin-context"
+        )
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        MessageRecord.model_validate(
+            {
+                "session_id": "ses_1",
+                "role": "system",
+                "synthetic": True,
+                "content": [{"type": "text", "text": "legacy"}],
+            }
+        )
     with pytest.raises(ValueError, match="reserved for a model role"):
         MessageRecord.text(
             session_id="ses_1",
-            role="system_synthetic",
+            role="system",
             text="spoof",
             semantic_tag="user",
         )
@@ -186,18 +214,19 @@ def test_input_messages_default_and_validate_semantic_tags() -> None:
     with pytest.raises(ValueError, match="structured state must use typed message fields"):
         MessageRecord(
             session_id="ses_1",
-            role="system_synthetic",
+            role="system",
             metadata={"semantic_tag": "plugin-context"},
         )
 
 
-def test_provider_context_wraps_and_escapes_synthetic_message_envelopes() -> None:
+def test_provider_context_wraps_only_explicit_semantic_tags() -> None:
     context = ContextBuilder().build(
         messages=[
             MessageRecord.text(
                 session_id="ses_1",
-                role="system_synthetic",
+                role="system",
                 text="runtime reminder",
+                semantic_tag="system-reminder",
             ),
             MessageRecord.text(session_id="ses_1", role="user", text="hello"),
         ],
@@ -225,13 +254,14 @@ def test_provider_context_wraps_and_escapes_synthetic_message_envelopes() -> Non
 
 def test_message_token_estimate_counts_semantic_envelope() -> None:
     raw = ModelMessage(
-        role="system_synthetic",
+        role="system",
         content=[TextContent(text="context")],
     )
     tagged = MessageRecord.text(
         session_id="ses_1",
-        role="system_synthetic",
+        role="system",
         text="context",
+        semantic_tag="system-reminder",
     )
 
     assert estimate_message_tokens(tagged) > estimate_message_tokens(raw)

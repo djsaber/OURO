@@ -89,7 +89,10 @@ def _user_texts(messages: Sequence[MessageRecord | ModelMessage]) -> list[str]:
 
 
 @pytest.mark.asyncio
-async def test_one_by_one_consumption_never_splits_an_attributed_input_batch(tmp_path) -> None:
+async def test_one_by_one_consumption_persists_an_attributed_input_batch_together(
+    tmp_path,
+    monkeypatch,
+) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
     session = runtime.create_session(title="Atomic plugin input")
     common = {
@@ -109,6 +112,14 @@ async def test_one_by_one_consumption_never_splits_an_attributed_input_batch(tmp
             AttributedSessionInput(prompt="exact objective", role="user", **common),
         )
     )
+    persisted_batch_sizes: list[int] = []
+    append_messages = store.append_messages
+
+    def record_batch(messages: list[MessageRecord]) -> None:
+        persisted_batch_sizes.append(len(messages))
+        append_messages(messages)
+
+    monkeypatch.setattr(store, "append_messages", record_batch)
     provider.release_first.set()
 
     result = await runtime.submit_plugin_input_batch(batch, session_id=session.session_id)
@@ -119,6 +130,7 @@ async def test_one_by_one_consumption_never_splits_an_attributed_input_batch(tmp
     assert "<goal-create>" in visible[-2]
     assert "create instruction" in visible[-2]
     assert visible[-1] == "exact objective"
+    assert 2 in persisted_batch_sizes
     snapshot = store.load_session(session.session_id)
     inputs = [message for message in snapshot.messages if message.role == "user"]
     assert [message.semantic_tag for message in inputs] == ["goal-create", None]
@@ -200,7 +212,7 @@ async def test_follow_up_inputs_are_consumed_at_run_boundaries_in_fifo_order(
 
 
 @pytest.mark.asyncio
-async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_path) -> None:
+async def test_host_follow_up_preserves_explicit_scaffold_attribution(tmp_path) -> None:
     store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
 
     first_task = asyncio.create_task(runtime.run("initial"))
@@ -233,7 +245,7 @@ async def test_host_follow_up_is_queued_and_persisted_as_synthetic_input(tmp_pat
     )
     host_run = snapshot.runs[-1]
 
-    assert host_message.role == "system_synthetic"
+    assert host_message.role == "system"
     assert host_message.semantic_tag == "runtime-recovery"
     assert host_message.text_content == "Recover from the durable checkpoint."
     assert host_message.metadata["host_source_id"] == "ouro.runtime/recovery"

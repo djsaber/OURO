@@ -5,14 +5,11 @@ from typing import Annotated
 
 from pydantic import AfterValidator, Field
 
-DEFAULT_SYNTHETIC_MESSAGE_TAG = "system-reminder"
-
 _RESERVED_SEMANTIC_TAGS = frozenset(
     {
         "assistant",
         "developer",
         "system",
-        "system-synthetic",
         "tool",
         "tool-result",
         "user",
@@ -67,7 +64,6 @@ SemanticTag = Annotated[
 
 
 __all__ = [
-    "DEFAULT_SYNTHETIC_MESSAGE_TAG",
     "SemanticTag",
     "escape_semantic_envelope_delimiters",
     "render_semantic_envelope",

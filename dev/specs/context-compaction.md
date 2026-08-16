@@ -13,10 +13,10 @@ Skills 指令、恢复投影、摘要压缩和模型 token 预算。
 `ContextBuilder` 是纯构建器，不执行 Provider、文件或 SessionStore I/O。
 
 基础系统提示词保持原始内容；有 Skills 指令时使用稳定空行拼接。Context Provider 返回
-`target="system_prompt"` 的 ephemeral fragment 时，Core 先使用 fragment 的 `semantic_tag` 和统一 semantic
-envelope renderer 投影原始正文，再在基础提示词和 Skills 后按稳定顺序拼接；包裹后的文本进入 token 估算和
-请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，不把它升级为 canonical
-完成消息。
+`target="system_prompt"` 的 ephemeral fragment 时，只有 fragment 显式提供 `semantic_tag`，Core 才使用统一
+semantic envelope renderer 包裹原始正文；未提供标签时直接拼接正文。投影按稳定顺序位于基础提示词和 Skills
+之后，进入 token 估算和请求快照，但不构造消息。恢复投影只在模型上下文中标记 incomplete assistant 尝试，
+不把它升级为 canonical 完成消息。
 
 ## 最近一次 Provider 请求快照
 
@@ -29,9 +29,8 @@ Context Provider 注入、压缩/恢复后的 messages、tools、metrics、路�
 查询不执行 Context Provider、Observer 或自动压缩，也不写入 canonical history。手动压缩只激活新的
 `CompactionRecord`，不得改写最近请求快照；新摘要会在下一次模型请求准备后自然进入新的快照。
 
-`semantic_envelopes=false` 只允许读取 schema 1 已存在的历史快照，以原始 synthetic text 重建其当时的 digest；
-当前写入一律为 `true`。该读取分支的删除窗口是 ContextSnapshot schema 2：升级到 schema 2 时必须提供显式迁移
-或拒绝旧记录，届时同步删除该字段的双值语义和历史测试，禁止把它用于创建新的请求投影。
+`ContextSnapshotRecord` 只保存实际 Provider 请求的单一当前投影。语义包络完全由 source message/fragment 上是否
+存在 `semantic_tag` 决定；Store 不猜测旧投影方式。
 
 ## Token 预算
 

@@ -25,7 +25,7 @@ def messages_to_anthropic(
     converted: list[dict[str, Any]] = []
     for raw_message in messages:
         message = model_visible_message(raw_message)
-        if message.role == "system_synthetic":
+        if message.role == "system":
             if message.text_content:
                 system_parts.append(message.text_content)
             continue

@@ -57,7 +57,7 @@ def test_skill_activation_is_rejected_on_non_user_roles_and_counts_toward_budget
     with pytest.raises(ValueError, match="only valid on user messages"):
         MessageRecord(
             session_id="ses_1",
-            role="system_synthetic",
+            role="system",
             content=[_activation()],
         )
 

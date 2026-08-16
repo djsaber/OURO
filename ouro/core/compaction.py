@@ -369,9 +369,10 @@ def project_compacted_messages(
         return list(messages)
     summary = MessageRecord.text(
         session_id=active.session_id,
-        role="system_synthetic",
+        role="system",
         text=active.summary,
         sequence=-1,
+        scaffold=True,
         semantic_tag="conversation-summary",
     ).model_copy(
         update={

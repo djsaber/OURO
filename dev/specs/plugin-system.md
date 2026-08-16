@@ -70,8 +70,8 @@ OURO 是强扩展的个人智能体。插件是系统级扩展模块，不是项
 12. Observer 只能异步读取不可变事实，不能阻断、改写或同步反压 canonical Session/Run、durable sequence
     或用户消息来源。
 13. Command 和 Continuation 只返回类型化意图，只有 application 层可以持久化消息、排队和创建 Run。
-14. 插件输入的 producer provenance 与 model role 必须分离：始终保留 plugin、contribution 和 execution
-    contract 来源；默认保存为 synthetic context，只有当前用户显式命令意图的投影可声明 user role。
+14. 插件输入的 producer provenance、model role、`scaffold` 和可选 `semantic_tag` 必须分离：始终保留 plugin、
+    contribution 和 execution contract 来源；每个消息属性由插件输入显式声明，Host 不相互推断。
 15. 所有 task、进程、MCP、listener 和 connection 都属于一个可关闭 generation owner。
 16. Disable/revoke 后的每次插件调用必须经过 generation gate；关闭 gate 后不得开始新调用。
 17. 依赖未 active 时依赖者不得 active。
@@ -369,9 +369,11 @@ Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `
 接受完整 batch，并在同一安全边界把整组转为 canonical messages；`one_by_one` 只能选择完整消费单位，不能拆分
 batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类型化契约。
 
-`role` 只表达模型消息角色，producer provenance 独立保存。插件可以为脚手架选择 `role=user`，也可以在 user-role
-输入上声明 `semantic_tag`；这不会把 producer 改成直接用户，也不会自动授予用户权限。模型投影继续使用统一
-semantic envelope renderer。可选 `coalesce_key` 只允许新批次替换同一 Session、plugin owner 和 contribution 下
+`role` 只表达 `system | user | assistant | tool_result` 四种模型消息角色；`scaffold` 只表达 Harness 是否有意注入，
+`semantic_tag` 只表达可选的模型可见语义，producer provenance 独立保存。插件必须定义这些值，Application 仅校验
+和传递，不根据任何一个维度推导另一个。任意 role 都可作为脚手架并可选择语义标签；这不会把 producer 改成直接
+用户，也不会自动授予用户权限。只有标签存在时，模型投影才使用统一 semantic envelope renderer。可选
+`coalesce_key` 只允许新批次替换同一 Session、plugin owner 和 contribution 下
 尚未消费的旧控制投影；不能删除 canonical message、跨 owner 搜索、重排或建立通用优先级。
 
 ### 8.4 开发期 API 规则
@@ -513,16 +515,18 @@ producer、typed input/output、组合、失败和授权规则同时明确时才
 
 ### 10.2 Context Provider
 
-Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`。`message` 表示该语义必须在模型
-请求前由 application 以带 provider/generation provenance 的 `system_synthetic` canonical message 持久化；
+Context Fragment 显式声明 `persistence = ephemeral | message`，默认 `ephemeral`，并独立携带 role、scaffold 与
+可选 semantic tag（SDK 默认值是显式契约值 `role=system, scaffold=true, semantic_tag=None`）。`message` 表示该
+片段必须在模型请求前由 application 以提供方给出的消息属性和 provider/generation provenance 持久化为 canonical
+message；
 Run/model round/provider/fragment index 构成幂等 delivery identity。持久化失败阻断模型请求，不能退化为临时注入。
 该机制服务需要审计和恢复的 Harness 消息，不把所有动态 Context Provider 输出强制写入历史。
 
 Fragment 的 `target = message | system_prompt` 默认是 `message`。`system_prompt` target 只允许 ephemeral：
 Application 在基础 system prompt 和 Skills 之后按 provider/fragment 稳定顺序追加片段，但不得为它构造 canonical
-message。两种 target 都必须由 producer 通过 `semantic_tag` 声明语义，并由 Core 的同一 renderer 校验标签、转义
-正文中的同名包络分隔符、构造 model-visible envelope；producer 不得把包络写入 `text`。投影结果计入 token 预算
-与请求 digest。Context Provider call 可以读取 Host 提供的 Session workspace。
+message。两种 target 都可以由 producer 通过可选 `semantic_tag` 声明语义；标签存在时由 Core 的同一 renderer
+校验、转义正文中的同名包络分隔符并构造 model-visible envelope，不存在时正文保持原样。producer 不得把包络
+写入 `text`。投影结果计入 token 预算与请求 digest。Context Provider call 可以读取 Host 提供的 Session workspace。
 
 ### 10.3 Prompt Policy
 
@@ -648,8 +652,7 @@ Permission id 必须由 OURO 核心注册表定义。每个 id 都要有真实�
 - `credentials.use`：允许解析声明的 credential slot；
 - `process.spawn`：披露并授权插件 MCP/Host service 启动子进程；
 - `network.outbound`：披露并授权插件 MCP/Host service 建立远程连接；
-- `sessions.write`：允许请求带完整插件 provenance 的 Session input；输入默认 synthetic，显式用户命令投影
-  可以声明 user role；
+- `sessions.write`：允许请求带完整插件 provenance，以及显式 role、scaffold、semantic tag 契约的 Session input；
 - `sessions.prompt.inspect`：允许 Prompt Policy 接收用户提示正文和附件的安全 metadata；
 - `background.run`：允许请求 continuation/background Run。
 

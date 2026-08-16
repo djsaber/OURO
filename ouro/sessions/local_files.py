@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shutil
+from collections.abc import Sequence
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import TypeVar
@@ -348,9 +349,17 @@ class LocalSessionStore:
         return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
-        with self.session_mutation(message.session_id):
-            session_dir = self._require_session_dir(message.session_id)
-            self._append_jsonl(session_dir / "messages.jsonl", message)
+        self.append_messages([message])
+
+    def append_messages(self, messages: list[MessageRecord]) -> None:
+        if not messages:
+            return
+        session_id = messages[0].session_id
+        if any(message.session_id != session_id for message in messages):
+            raise PersistenceError("message batch must belong to one session")
+        with self.session_mutation(session_id):
+            session_dir = self._require_session_dir(session_id)
+            self._append_jsonl_batch(session_dir / "messages.jsonl", messages)
 
     def append_event(self, event: EventRecord) -> None:
         with self.session_mutation(event.session_id):
@@ -992,16 +1001,25 @@ class LocalSessionStore:
         write_json_atomic(path, value)
 
     def _append_jsonl(self, path: Path, model: OuroModel, *, durable: bool = True) -> None:
+        self._append_jsonl_batch(path, [model], durable=durable)
+
+    def _append_jsonl_batch(
+        self,
+        path: Path,
+        models: Sequence[OuroModel],
+        *,
+        durable: bool = True,
+    ) -> None:
         try:
+            payload = "".join(f"{model.model_dump_json()}\n" for model in models)
             path.parent.mkdir(parents=True, exist_ok=True)
             with path.open("a", encoding="utf-8") as file:
-                file.write(model.model_dump_json())
-                file.write("\n")
+                file.write(payload)
                 file.flush()
                 if durable:
                     os.fsync(file.fileno())
         except (OSError, TypeError, ValueError) as exc:
-            raise PersistenceError(f"could not append {path}: {exc}") from exc
+            raise PersistenceError(f"could not append batch to {path}: {exc}") from exc
 
     def _read_jsonl(self, path: Path) -> list[str]:
         if not path.exists():

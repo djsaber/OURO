@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from ouro.application.dto import ApplicationDTO
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
-from ouro.core.session_controls import SessionInputMode, SessionInputRequest, SessionInputRole
+from ouro.core.session_controls import SessionInputMode, SessionInputRequest
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
@@ -32,16 +33,17 @@ class QueuedUserInputView(ApplicationDTO):
 
 
 class QueuedInput(OuroModel):
-    queue_id: str = Field(default_factory=lambda: new_id("queued"))
+    queue_id: str = Field(min_length=1)
     prompt: str = ""
     skill_activation: SkillActivationContent | None = None
-    mode: QueuedInputMode = "follow_up"
+    mode: QueuedInputMode
     title: str | None = None
     resource_refs: tuple[str, ...] = ()
-    queued_at: datetime = Field(default_factory=utc_now)
-    source: QueuedInputSource = "user"
-    message_role: SessionInputRole = "user"
-    semantic_tag: SemanticTag | None = None
+    queued_at: datetime
+    source: QueuedInputSource
+    role: MessageRole
+    scaffold: bool
+    semantic_tag: SemanticTag | None
     batch_id: str | None = None
     batch_index: int | None = Field(default=None, ge=0)
     batch_size: int | None = Field(default=None, ge=1)
@@ -68,19 +70,6 @@ class QueuedInput(OuroModel):
             return None
         normalized = value.strip()
         return normalized or None
-
-    @model_validator(mode="before")
-    @classmethod
-    def default_legacy_message_role(cls, value: Any) -> Any:
-        if isinstance(value, dict) and "message_role" not in value:
-            normalized = dict(value)
-            normalized["message_role"] = (
-                "user"
-                if normalized.get("source", "user") in {"user", "delegation"}
-                else "system_synthetic"
-            )
-            return normalized
-        return value
 
     @model_validator(mode="after")
     def validate_source(self) -> QueuedInput:
@@ -120,11 +109,7 @@ class QueuedInput(OuroModel):
             self.host_source_id is not None
             or any(value is not None for value in plugin_attribution)
         ):
-            raise ValueError("user queued input cannot carry synthetic-source attribution")
-        if self.source in {"user", "delegation"} and self.message_role != "user":
-            raise ValueError(f"{self.source} queued input must use the user message role")
-        if self.source == "host" and self.message_role != "system_synthetic":
-            raise ValueError("Host queued input must use the synthetic message role")
+            raise ValueError("user queued input cannot carry Host or plugin attribution")
         batch_fields = (self.batch_id, self.batch_index, self.batch_size)
         if any(value is not None for value in batch_fields) and any(
             value is None for value in batch_fields
@@ -156,7 +141,7 @@ class QueuedInput(OuroModel):
         if not self.prompt.strip() and self.skill_activation is None:
             raise ValueError("queued input requires a prompt or skill activation")
         if self.skill_activation is not None:
-            if self.source != "user" or self.message_role != "user":
+            if self.source != "user" or self.role != "user" or self.scaffold:
                 raise ValueError("skill activation is only valid on direct user input")
             if self.mode != "follow_up":
                 raise ValueError("skill activation cannot steer an active run")
@@ -184,7 +169,8 @@ class QueuedInputQueue:
         resource_refs: tuple[str, ...] = (),
         queue_id: str | None = None,
         source: QueuedInputSource = "user",
-        message_role: SessionInputRole | None = None,
+        role: MessageRole,
+        scaffold: bool,
         semantic_tag: SemanticTag | None = None,
         host_source_id: str | None = None,
         delegation_id: str | None = None,
@@ -210,14 +196,10 @@ class QueuedInputQueue:
             mode=mode,
             title=title,
             resource_refs=resource_refs,
+            queued_at=utc_now(),
             source=source,
-            message_role=(
-                message_role
-                if message_role is not None
-                else "user"
-                if source in {"user", "delegation"}
-                else "system_synthetic"
-            ),
+            role=role,
+            scaffold=scaffold,
             semantic_tag=semantic_tag,
             batch_id=batch_id,
             batch_index=0 if batch_id is not None else None,
@@ -276,11 +258,14 @@ class QueuedInputQueue:
         batch_id = new_id("batch")
         queued_items = tuple(
             QueuedInput(
+                queue_id=new_id("queued"),
                 prompt=item.prompt,
                 mode=item.mode,
                 title=item.title,
+                queued_at=utc_now(),
                 source=source,
-                message_role=item.role,
+                role=item.role,
+                scaffold=item.scaffold,
                 semantic_tag=item.semantic_tag,
                 batch_id=batch_id,
                 batch_index=index,
@@ -532,156 +517,7 @@ class QueuedInputQueue:
     def _parse_item(self, item: object) -> QueuedInput | None:
         if not isinstance(item, dict):
             return None
-        prompt = item.get("prompt")
-        if not isinstance(prompt, str):
-            return None
-        raw_skill_activation = item.get("skill_activation")
         try:
-            skill_activation = (
-                SkillActivationContent.model_validate(raw_skill_activation)
-                if isinstance(raw_skill_activation, dict)
-                else None
-            )
+            return QueuedInput.model_validate(item)
         except ValidationError:
             return None
-        if not prompt.strip() and skill_activation is None:
-            return None
-        title = item.get("title")
-        raw_mode = item.get("mode")
-        if raw_mode not in {"follow_up", "steer"}:
-            return None
-        raw_source = item.get("source")
-        if raw_source not in {"user", "host", "plugin", "delegation"}:
-            return None
-        if "message_role" in item and item.get("message_role") not in {
-            "user",
-            "system_synthetic",
-        }:
-            return None
-        if raw_source == "plugin" and not all(
-            isinstance(item.get(field), str) and bool(item.get(field))
-            for field in (
-                "plugin_id",
-                "contribution_id",
-                "generation_id",
-                "execution_contract_hash",
-            )
-        ):
-            return None
-        if raw_source == "host" and not (
-            isinstance(item.get("host_source_id"), str) and bool(item.get("host_source_id"))
-        ):
-            return None
-        if raw_source == "delegation" and not (
-            isinstance(item.get("delegation_id"), str) and bool(item.get("delegation_id"))
-        ):
-            return None
-        raw_resource_refs = item.get("resource_refs", ())
-        resource_refs = (
-            tuple(value for value in raw_resource_refs if isinstance(value, str))
-            if isinstance(raw_resource_refs, list | tuple)
-            else ()
-        )
-        try:
-            return QueuedInput(
-                queue_id=str(item.get("queue_id") or new_id("queued")),
-                prompt=prompt,
-                skill_activation=skill_activation,
-                mode=raw_mode,
-                title=title if isinstance(title, str) else None,
-                resource_refs=resource_refs,
-                queued_at=item.get("queued_at") or utc_now(),
-                source=raw_source,
-                message_role=_parse_message_role(item.get("message_role"), raw_source),
-                semantic_tag=(
-                    item.get("semantic_tag") if isinstance(item.get("semantic_tag"), str) else None
-                ),
-                batch_id=(item.get("batch_id") if isinstance(item.get("batch_id"), str) else None),
-                batch_index=(
-                    item.get("batch_index") if isinstance(item.get("batch_index"), int) else None
-                ),
-                batch_size=(
-                    item.get("batch_size") if isinstance(item.get("batch_size"), int) else None
-                ),
-                coalesce_key=(
-                    item.get("coalesce_key") if isinstance(item.get("coalesce_key"), str) else None
-                ),
-                host_source_id=(
-                    item.get("host_source_id")
-                    if isinstance(item.get("host_source_id"), str)
-                    else None
-                ),
-                delegation_id=(
-                    item.get("delegation_id")
-                    if isinstance(item.get("delegation_id"), str)
-                    else None
-                ),
-                plugin_id=(
-                    item.get("plugin_id") if isinstance(item.get("plugin_id"), str) else None
-                ),
-                contribution_id=(
-                    item.get("contribution_id")
-                    if isinstance(item.get("contribution_id"), str)
-                    else None
-                ),
-                generation_id=(
-                    item.get("generation_id")
-                    if isinstance(item.get("generation_id"), str)
-                    else None
-                ),
-                execution_contract_hash=(
-                    item.get("execution_contract_hash")
-                    if isinstance(item.get("execution_contract_hash"), str)
-                    else None
-                ),
-                prompt_policy_checked=item.get("prompt_policy_checked") is True,
-                prospective_run_id=(
-                    item.get("prospective_run_id")
-                    if isinstance(item.get("prospective_run_id"), str)
-                    else None
-                ),
-                extension_catalog_id=(
-                    item.get("extension_catalog_id")
-                    if isinstance(item.get("extension_catalog_id"), str)
-                    else None
-                ),
-                extension_generations=(
-                    tuple(
-                        value
-                        for value in item.get("extension_generations", ())
-                        if isinstance(value, dict)
-                    )
-                    if isinstance(item.get("extension_generations", ()), list | tuple)
-                    else ()
-                ),
-                caused_by_run_id=(
-                    item.get("caused_by_run_id")
-                    if isinstance(item.get("caused_by_run_id"), str)
-                    else None
-                ),
-                continuation_decision_id=(
-                    item.get("continuation_decision_id")
-                    if isinstance(item.get("continuation_decision_id"), str)
-                    else None
-                ),
-                session_control_controller_id=(
-                    item.get("session_control_controller_id")
-                    if isinstance(item.get("session_control_controller_id"), str)
-                    else None
-                ),
-                session_control_activation_id=(
-                    item.get("session_control_activation_id")
-                    if isinstance(item.get("session_control_activation_id"), str)
-                    else None
-                ),
-            )
-        except ValidationError:
-            return None
-
-
-def _parse_message_role(value: object, source: QueuedInputSource) -> SessionInputRole:
-    if value == "user":
-        return "user"
-    if value == "system_synthetic":
-        return "system_synthetic"
-    return "user" if source in {"user", "delegation"} else "system_synthetic"

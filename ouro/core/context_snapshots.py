@@ -27,8 +27,6 @@ class ContextSnapshotRecord(VersionedOuroModel):
     endpoint_id: str | None = None
     model_id: str
     supports_vision: bool = False
-    # False is read-only schema-1 history. Remove it with the schema-2 migration.
-    semantic_envelopes: bool = False
     prepared_at: datetime = Field(default_factory=utc_now)
     completed_at: datetime | None = None
     system_prompt: str = ""

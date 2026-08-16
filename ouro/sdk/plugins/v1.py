@@ -11,7 +11,7 @@ ToolEffect = Literal["read_only", "state_changing", "unknown"]
 ToolBatchBehavior = Literal["compatible", "exclusive"]
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 SessionInputMode = Literal["follow_up", "steer"]
-SessionInputRole = Literal["user", "system_synthetic"]
+SessionInputRole = Literal["system", "user", "assistant", "tool_result"]
 PromptInputSource = Literal["user", "host", "plugin", "delegation"]
 SessionKind = Literal["primary", "subagent"]
 ContextFragmentPersistence = Literal["ephemeral", "message"]
@@ -246,14 +246,15 @@ ToolResumeHandler = (
 class SessionInput:
     """Request a provenance-bearing input through the Host runtime.
 
-    Inputs are synthetic by default. A command that projects the user's current,
-    explicit intent may select ``user`` without losing plugin provenance.
+    Model role, scaffold origin and semantic labeling are independent. The
+    producer declares each field; the Host preserves them without inference.
     """
 
     prompt: str
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system_synthetic"
+    role: SessionInputRole = "system"
+    scaffold: bool = True
     semantic_tag: str | None = None
 
 
@@ -561,7 +562,8 @@ class ContinuationDecision:
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system_synthetic"
+    role: SessionInputRole = "system"
+    scaffold: bool = True
     semantic_tag: str | None = None
     coalesce_key: str | None = None
     reason: str | None = None
@@ -668,16 +670,17 @@ class ContextOutput:
 class ContextFragment:
     """Model context supplied for one request or persisted as a canonical message.
 
-    Supply raw ``text`` and declare its meaning through ``semantic_tag``. The
-    Host validates that tag and constructs the model-visible semantic envelope
-    for both message and system-prompt targets. ``semantic_tag`` defaults to
-    ``system-reminder``.
+    Supply raw ``text`` and independently declare its message role, scaffold
+    origin and optional semantic label. The Host validates and renders a label
+    only when ``semantic_tag`` is present.
     """
 
     text: str
     persistence: ContextFragmentPersistence = "ephemeral"
-    semantic_tag: str = "system-reminder"
     target: ContextFragmentTarget = "message"
+    role: SessionInputRole = "system"
+    scaffold: bool = True
+    semantic_tag: str | None = None
 
 
 ContextHandler = Callable[

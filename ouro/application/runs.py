@@ -9,6 +9,7 @@ from ouro.core.base import utc_now
 from ouro.core.billing import UsagePurpose
 from ouro.core.errors import PersistenceError, SessionBusyError
 from ouro.core.events import EventRecord
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import (
     ContentBlock,
@@ -91,23 +92,55 @@ class RunLifecycle:
         self.store.refresh_catalog(active_session.session_id)
         return active_session, active_run
 
-    def append_user_message(
+    def append_input_message(
         self,
         *,
         session: SessionRecord,
         run: RunRecord,
         prompt: str,
+        role: MessageRole,
+        scaffold: bool,
         skill_activation: SkillActivationContent | None = None,
         sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
         semantic_tag: SemanticTag | None = None,
-        synthetic: bool = False,
     ) -> MessageRecord:
+        message = self.create_input_message(
+            session=session,
+            run=run,
+            prompt=prompt,
+            role=role,
+            scaffold=scaffold,
+            skill_activation=skill_activation,
+            sequence=sequence,
+            resource_refs=resource_refs,
+            metadata=metadata,
+            semantic_tag=semantic_tag,
+        )
+        self._append_message(session=session, run=run, message=message)
+        return message
+
+    def create_input_message(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        prompt: str,
+        role: MessageRole,
+        scaffold: bool,
+        skill_activation: SkillActivationContent | None = None,
+        sequence: int,
+        resource_refs: Iterable[str] = (),
+        metadata: dict[str, Any] | None = None,
+        semantic_tag: SemanticTag | None = None,
+    ) -> MessageRecord:
+        """Validate and construct an input without crossing a persistence boundary."""
+
         unique_resource_refs = list(dict.fromkeys(resource_refs))
         if unique_resource_refs and self._validate_resource_refs is None:
             raise ValueError(
-                "user message contains resource_refs but no ResourceService is configured"
+                "input message contains resource_refs but no ResourceService is configured"
             )
         if self._validate_resource_refs is not None:
             self._validate_resource_refs(session.session_id, unique_resource_refs)
@@ -119,53 +152,16 @@ class RunLifecycle:
         message = MessageRecord(
             session_id=session.session_id,
             run_id=run.run_id,
-            role="user",
+            role=role,
             sequence=sequence,
             content=content,
             semantic_tag=semantic_tag,
-            synthetic=synthetic,
+            scaffold=scaffold,
         )
         if unique_resource_refs:
             message = message.model_copy(update={"resource_refs": unique_resource_refs})
         if metadata:
             message = message.model_copy(update={"metadata": dict(metadata)})
-        self._append_message(session=session, run=run, message=message)
-        return message
-
-    def append_synthetic_input(
-        self,
-        *,
-        session: SessionRecord,
-        run: RunRecord,
-        prompt: str,
-        sequence: int,
-        metadata: dict[str, Any],
-        resource_refs: Iterable[str] = (),
-        semantic_tag: SemanticTag | None = None,
-    ) -> MessageRecord:
-        """Persist extension-produced context without impersonating the user."""
-
-        unique_resource_refs = list(dict.fromkeys(resource_refs))
-        if unique_resource_refs and self._validate_resource_refs is None:
-            raise ValueError(
-                "synthetic message contains resource_refs but no ResourceService is configured"
-            )
-        if self._validate_resource_refs is not None:
-            self._validate_resource_refs(session.session_id, unique_resource_refs)
-        message = MessageRecord.text(
-            session_id=session.session_id,
-            run_id=run.run_id,
-            role="system_synthetic",
-            text=prompt,
-            sequence=sequence,
-            semantic_tag=semantic_tag,
-        ).model_copy(
-            update={
-                "metadata": dict(metadata),
-                "resource_refs": unique_resource_refs,
-            }
-        )
-        self._append_message(session=session, run=run, message=message)
         return message
 
     def append_assistant_tool_batch_message(
@@ -693,22 +689,48 @@ class RunLifecycle:
         message: MessageRecord,
         allow_interrupted: bool = False,
     ) -> None:
+        self.append_messages(
+            session=session,
+            run=run,
+            messages=[message],
+            allow_interrupted=allow_interrupted,
+        )
+
+    def append_messages(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        messages: list[MessageRecord],
+        allow_interrupted: bool = False,
+    ) -> None:
+        """Persist one ordered message batch and advance the Session projection once."""
+
+        if not messages:
+            return
+        if any(
+            message.session_id != session.session_id or message.run_id != run.run_id
+            for message in messages
+        ):
+            raise ValueError("message batch must belong to the supplied Session and Run")
         with self.store.session_mutation(session.session_id):
             latest_run = self.store.load_run(session.session_id, run.run_id)
             reconcilable_statuses = {"aborted", "failed", "recoverable"}
             if not allow_interrupted or latest_run.status not in reconcilable_statuses:
                 self._require_active(latest_run)
-            self.store.append_message(message)
+            self.store.append_messages(messages)
             self._persist_appended_message(
                 session=session,
                 run=latest_run,
-                message=message,
+                message=messages[-1],
                 allow_interrupted=allow_interrupted,
             )
             cache = self._message_cache.get((session.session_id, run.run_id))
-            key = _message_cache_key(message)
-            if cache is not None and key is not None:
-                cache[key] = message
+            if cache is not None:
+                for message in messages:
+                    key = _message_cache_key(message)
+                    if key is not None:
+                        cache[key] = message
 
     def _persist_appended_message(
         self,

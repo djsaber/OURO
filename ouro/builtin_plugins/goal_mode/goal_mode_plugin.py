@@ -571,6 +571,7 @@ class GoalModePlugin:
                 prompt=continuation_prompt(goal),
                 title="Continue Goal",
                 role="user",
+                scaffold=True,
                 semantic_tag="goal-continue",
                 coalesce_key="goal-continuation",
                 reason="goal_active",

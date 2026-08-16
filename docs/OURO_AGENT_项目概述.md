@@ -42,7 +42,7 @@ Session 是长期容器，保存消息、运行、事件、模型路由、压缩
 - 消息和事件按稳定 cursor 增量读取，事件订阅也支持 after-sequence 追赶，长历史不要求 Host 全量加载；
 - Session Catalog 只读取有界 latest/count 投影：文件后端读取有限尾部，SQLite 使用聚合查询，不加载完整历史；
 - Goal、Plan、Todo 等扩展状态由 SessionRepository 按 owner/version/branch policy 保存；canonical 状态、
-  synthetic projection、branch、export 与 trash 共享同一生命周期契约；
+  scaffold projection、branch、export 与 trash 共享同一生命周期契约；
 - 后端中立 SessionRepository 下的本地可读文件与 SQLite 两种实现，以及原子、验证、失败回滚的
   文件到 SQLite 导入；
 - CLI Host 可通过 `--session-backend files|sqlite` 或 `OURO_SESSION_BACKEND` 选择后端；选择只决定当前数据集，
@@ -142,8 +142,8 @@ workspace/project 只影响一次执行的上下文，不存在项目插件或 w
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
-持久化 generation-frozen checkpoint、处理冲突并用稳定 queue id 幂等入队。插件输入保存完整来源归因并默认使用
-`system_synthetic`；需要用户角色脚手架语义时可以声明 `role=user`，但不会因此变成直接用户来源或获得用户权限。
+持久化 generation-frozen checkpoint、处理冲突并用稳定 queue id 幂等入队。插件输入保存完整来源归因，并显式
+携带 role、scaffold 和可选 semantic tag；这些维度不会相互推导，role 也不会使其变成直接用户来源或获得用户权限。
 Interactive 支持 canonical/唯一短别名 slash command，并在插件启动的执行链运行时继续接收修改、引导、follow-up、
 steer、暂停或中止输入。
 
@@ -217,9 +217,10 @@ generation-frozen continuation checkpoint。
 
 会话的 canonical 对话记录。工具请求使用 `tool_calls`，工具结果关联使用 `tool_result`；两者不隐藏在
 metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具续接状态使用路由绑定的
-`provider_continuation`。消息 role 与 producer provenance 正交：普通 Host 输入固定为 `system_synthetic`，插件输入
-默认 synthetic，但需要用户角色脚手架语义时可以使用 `user` role 并继续保留插件来源；这不等价于直接用户授权。
-直接用户输入以及携带 `delegation_id` 的子智能体初始 task 也使用 `user` role。
+`provider_continuation`。消息使用封闭的 `system | user | assistant | tool_result` role；`scaffold` 独立说明是否由
+Harness 有意注入，`semantic_tag` 独立提供可选模型语义包络。role、scaffold、tag 与 producer provenance 彼此正交，
+全部由消息提供方定义；框架不推断或补全。直接用户输入显式使用 `user/scaffold=false`，子智能体初始 task 显式使用
+`user/scaffold=true` 并保留 `delegation_id`。
 
 ### Event
 

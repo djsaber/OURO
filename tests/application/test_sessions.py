@@ -22,7 +22,7 @@ from ouro.core.compaction import (
     validate_compaction_lineage,
 )
 from ouro.core.context import ContextBuilder, estimate_message_tokens
-from ouro.core.context_snapshots import ContextSnapshotRecord, context_view_digest
+from ouro.core.context_snapshots import ContextSnapshotRecord
 from ouro.core.errors import PersistenceError, SessionBranchError, SessionBusyError
 from ouro.core.events import EventRecord
 from ouro.core.messages import MessageRecord, ToolResultReference
@@ -79,6 +79,50 @@ def test_session_run_result_projects_terminal_text_without_exposing_store(tmp_pa
     assert result.final_text == "done"
 
 
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_message_batch_round_trip_preserves_independent_semantics(tmp_path, backend: str) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    session = SessionRecord(title="Message contract")
+    store.create_session(session)
+    roles = ("system", "user", "assistant", "tool_result")
+    messages = [
+        MessageRecord.text(
+            session_id=session.session_id,
+            role=role,
+            text=f"{role} content",
+            sequence=index,
+            scaffold=index % 2 == 0,
+            semantic_tag=f"{role.replace('_', '-')}-context",
+        ).model_copy(
+            update={
+                    "tool_result": ToolResultReference(
+                        tool_call_id="call_1", tool_name="lookup"
+                    )
+                if role == "tool_result"
+                else None
+            }
+        )
+        for index, role in enumerate(roles, start=1)
+    ]
+
+    store.append_messages(messages)
+    reloaded = store.load_session(session.session_id).messages
+
+    assert [message.role for message in reloaded] == list(roles)
+    assert [message.scaffold for message in reloaded] == [False, True, False, True]
+    assert [message.semantic_tag for message in reloaded] == [
+        "system-context",
+        "user-context",
+        "assistant-context",
+        "tool-result-context",
+    ]
+
+
 def test_session_run_history_reads_run_facts_without_event_replay(tmp_path, monkeypatch) -> None:
     store, sessions = _service(tmp_path)
     session = sessions.create(title="Run history").session
@@ -124,41 +168,6 @@ def test_session_context_rejects_content_that_does_not_match_digest(tmp_path) ->
     assert sessions.context_status(session.session_id) is not None
     with pytest.raises(PersistenceError, match="does not match its stored digest"):
         sessions.context(session.session_id)
-
-
-def test_session_context_preserves_legacy_unwrapped_synthetic_snapshot_digest(tmp_path) -> None:
-    store, sessions = _service(tmp_path)
-    session = sessions.create(title="Legacy context digest").session
-    message = MessageRecord.text(
-        session_id=session.session_id,
-        role="system_synthetic",
-        text="legacy scaffold",
-    )
-    legacy_message = message.model_copy(update={"semantic_tag": None})
-    view = (
-        ContextBuilder()
-        .build(messages=[legacy_message], tools=[])
-        .model_copy(update={"context_id": "ctx_legacy"})
-    )
-    store.save_latest_context(
-        ContextSnapshotRecord(
-            context_id="ctx_legacy",
-            session_id=session.session_id,
-            run_id="run_legacy",
-            turn_id="turn_legacy",
-            model_round=1,
-            provider_id="test",
-            model_id="test-model",
-            source_messages=[message],
-            metrics=view.metrics,
-            context_digest=context_view_digest(view),
-        )
-    )
-
-    snapshot = sessions.context(session.session_id)
-
-    assert snapshot is not None
-    assert snapshot.provider_context.messages[0].text_content == "legacy scaffold"
 
 
 def test_message_page_does_not_load_full_large_session(monkeypatch, tmp_path) -> None:
@@ -553,7 +562,7 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
     )
     projection = MessageRecord.text(
         session_id=source.session_id,
-        role="system_synthetic",
+        role="system",
         semantic_tag="example-projection",
         text="active state",
         sequence=2,
@@ -610,7 +619,7 @@ def test_branch_rejects_reset_projection_as_branch_point(tmp_path) -> None:
     source = sessions.create(title="Projection boundary").session
     projection = MessageRecord.text(
         session_id=source.session_id,
-        role="system_synthetic",
+        role="system",
         semantic_tag="plan-context",
         text="current plan",
         sequence=1,
@@ -662,7 +671,7 @@ def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
     source = sessions.create(title="SQLite extension lifecycle").session
     projection = MessageRecord.text(
         session_id=source.session_id,
-        role="system_synthetic",
+        role="system",
         semantic_tag="example-projection",
         text="state projection",
         sequence=1,

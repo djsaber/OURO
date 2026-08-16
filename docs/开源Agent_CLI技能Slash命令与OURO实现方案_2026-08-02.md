@@ -377,7 +377,8 @@ class SkillActivationContent(OuroModel):
 Core 中使用自己的有界 Literal（或下沉后的中立 identity contract），不能为了复用一个类型而反向依赖
 `ouro.skills` feature 包。
 
-不要用 `system_synthetic` 承载它。该角色会提升用户所选技能的指令优先级，与 Codex/Kimi 的 user-role 语义相悖。
+不要用 system role 承载它。该角色会提升用户所选技能的指令优先级，与 Codex/Kimi 的 user-role 语义相悖；
+是否由 Harness 注入应另以 scaffold 字段表达。
 
 ### 7.4 Application 服务
 
@@ -588,7 +589,7 @@ sequenceDiagram
 - 重启后消费队列仍使用入队时正文；
 - 插件 generation 更新不改变旧队列/旧 Run；
 - Prompt Policy 拒绝前不创建 Session/Run/Message；
-- 用户消息 role 为 `user`，不是 `system_synthetic`；
+- 用户消息 role 为 `user`，并独立声明是否为 scaffold；
 - 同一 Run 多个 model round 都能看到一次语义相同的激活；
 - 不会在每一轮重复累加正文；
 - 当前 Run 自动压缩后仍有完整有效指令；

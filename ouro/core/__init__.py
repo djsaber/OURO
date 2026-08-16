@@ -16,6 +16,7 @@ from ouro.core.interactions import (
     ToolInputResolution,
     UnattendedResolution,
 )
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord, ModelResponseRecord, TextContent
 from ouro.core.provider import ProviderRetryPolicy
@@ -27,6 +28,7 @@ __all__ = [
     "EventRecord",
     "CompactionRecord",
     "MessageRecord",
+    "MessageRole",
     "ModelResponseRecord",
     "SemanticTag",
     "ProviderRetryPolicy",

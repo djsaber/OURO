@@ -188,7 +188,7 @@ def create_plugin(context):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("backend", ["files", "sqlite"])
-async def test_plugin_continuation_creates_attributed_synthetic_follow_up(
+async def test_plugin_continuation_creates_attributed_scaffold_follow_up(
     tmp_path,
     backend,
 ) -> None:
@@ -233,14 +233,14 @@ async def test_plugin_continuation_creates_attributed_synthetic_follow_up(
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
-        "system_synthetic",
+        "system",
         "assistant",
     ]
-    synthetic = snapshot.messages[2]
-    assert synthetic.metadata["plugin_id"] == "dev.ouro.goal"
-    assert synthetic.metadata["contribution_id"] == "goal"
-    assert synthetic.metadata["continuation_decision_id"]
-    assert synthetic.text_content.startswith("Check the goal")
+    scaffold = snapshot.messages[2]
+    assert scaffold.metadata["plugin_id"] == "dev.ouro.goal"
+    assert scaffold.metadata["contribution_id"] == "goal"
+    assert scaffold.metadata["continuation_decision_id"]
+    assert scaffold.text_content.startswith("Check the goal")
     events, _ = store.load_events_page(result.session.session_id, limit=100)
     assert any(event.event_type == "run_continuation_resolved" for event in events)
 
@@ -311,7 +311,7 @@ async def test_plugin_command_returns_permission_checked_session_input(tmp_path)
     snapshot = store.load_runtime_session(result.session.session_id)
     assert len(snapshot.runs) == 1
     assert snapshot.runs[0].origin == "plugin"
-    assert snapshot.messages[0].role == "system_synthetic"
+    assert snapshot.messages[0].role == "system"
     assert snapshot.messages[0].text_content == "Work on: ship the feature"
     assert inspected_prompts == []
 
@@ -909,7 +909,8 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
     assert restored.continuation is not None
     assert restored.continuation.action == "continue"
     assert [item.prompt for item in queued] == ["Resume the durable boundary work."]
-    assert queued[0].message_role == "user"
+    assert queued[0].role == "user"
+    assert queued[0].scaffold is True
     assert queued[0].semantic_tag == "goal-continue"
     assert queued[0].coalesce_key == "goal-continuation"
     assert [event.event_type for event in events].count("run_continuation_resolved") == 1
@@ -1112,6 +1113,8 @@ async def test_queued_user_input_supersedes_stale_automatic_continuation(tmp_pat
         snapshot=store.load_runtime_session(session.session_id),
         prompt="Use this newer user guidance",
         title=None,
+        role="user",
+        scaffold=False,
     )
     service = RunContinuationService(store=store, registry=registry, queue=queue)
 

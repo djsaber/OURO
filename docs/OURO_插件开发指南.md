@@ -132,8 +132,9 @@ Strategy、Skill、MCP Server、Background Service、Continuation Policy、Tool 
 Tool 可选择接收 Host-owned `ToolExecutionContext`，使用其中的 workspace、Host artifact 受约束路径解析、取消与
 输出限制。Command、
 Continuation 不直接写 Session/Run，而是返回类型化意图；application 层负责 attributed input、队列和持久化。
-`SessionInput` 默认是 synthetic；只有投影当前用户显式 command 意图时才声明 `role="user"`，插件 provenance
-始终保留。Tool
+`SessionInput` 分别携带 `role`、`scaffold` 和可选 `semantic_tag`；SDK 的默认构造值为
+`role="system", scaffold=True, semantic_tag=None`，插件应按消息真实语义显式选择，Host 不从其中任何一项推导
+另一项。插件 provenance 始终保留，`role="user"` 不等于直接用户来源或授权。Tool
 Policy 只能把执行提升为审批或拒绝，不能降低 Host policy、批准调用或改写参数。
 
 Tool handler 除 `ToolOutput` 或字符串外，还可返回 `ToolInputRequest(data=...)`。`data` 是 Host 透明转发和持久化的
@@ -182,23 +183,25 @@ def plan_scaffold(call):
             ContextFragment(
                 text="Plan mode is active for this Session.",
                 persistence="message",
+                role="system",
+                scaffold=True,
                 semantic_tag="plan-context",
             ),
         )
     )
 ```
 
-Host 在调用模型前把它写成带 plugin/provider/generation provenance 的 `system_synthetic` 消息；同一
-Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `system-reminder`，可设置为小写字母、数字和连字符
-组成的具体语义名。构建 ProviderContext 时正文会被包装为 `<plan-context>...</plan-context>`；标签只描述来源语义，
-不会改变消息的协议权限。不要把瞬时状态快照无差别持久化。
+Host 在调用模型前按 fragment 声明的 role/scaffold/tag 写入带 plugin/provider/generation provenance 的 canonical
+消息；同一 Run/model round 的恢复不会重复写入。`semantic_tag` 默认是 `None`，可设置为小写字母、数字和连字符
+组成的具体语义名。只有设置标签时，构建 ProviderContext 才把正文包装为
+`<plan-context>...</plan-context>`；标签不会改变 role、scaffold、来源或协议权限。不要把瞬时状态快照无差别持久化。
 
-如果片段属于完整 system prompt 而不是 synthetic message，显式使用
+如果片段属于完整 system prompt 而不是 canonical message，显式使用
 `ContextFragment(target="system_prompt")`。Application 会在基础 system prompt 与 Skills 指令之后按 Context
 Provider 顺序追加它；该目标只允许 `persistence="ephemeral"`，不会构造或持久化消息。
-提供方仍通过 `semantic_tag` 声明片段语义，正文只返回未包裹的原始文本；Core 与 message target 共用同一
-semantic envelope 投影，验证标签、转义正文中的同名包络分隔符并构造标签。`ContextCall.workspace` 提供本次
-Session 中 Agent 的工作目录。
+提供方可通过 `semantic_tag` 声明片段语义，正文只返回未包裹的原始文本；标签存在时 Core 与 message target
+共用同一 semantic envelope 投影，验证标签、转义正文中的同名包络分隔符并构造标签；标签不存在时原样投影。
+`ContextCall.workspace` 提供本次 Session 中 Agent 的工作目录。
 
 ### Observer 与 Prompt Policy
 
@@ -337,8 +340,9 @@ worker tool 以 `{"input_request": <任意 JSON 值>}` 返回同一种挂起请�
 `answer` 字段时协议校验失败。
 协议 `2.0` 在 `session_controller.call` 输入中提供 `session_kind`，允许 `continuation.call` 输出
 `session_control_transitions`，并使用新的 Observer/Prompt Policy 契约；它与 in-process Plugin API `2.0.0` 使用相同语义。
-`context.call` 的 `fragments` 既接受字符串，也接受
-`{"text": "...", "persistence": "ephemeral|message", "semantic_tag": "plugin-context"}` 对象。
+`context.call` 的 `fragments` 既接受字符串，也接受带 `text`、`persistence`、`target`、`role`、`scaffold` 和
+可选 `semantic_tag` 的对象。Worker 应传递自己选择的字段；Host 不从 target、persistence 或 provenance 反推
+消息属性。
 
 ## 8. 社区资源导入前审查
 

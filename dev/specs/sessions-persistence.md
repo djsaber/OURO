@@ -77,6 +77,8 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 - JSON 快照使用同目录临时文件、flush/fsync 和原子 replace。
 - Windows sharing conflict 仅在本地 I/O 原语中有限重试。
 - JSONL 追加后执行 flush/fsync。
+- `append_messages` 是有序消息批次的持久化边界：SQLite 在当前 mutation transaction 中插入整批；文件后端把
+  完整批次编码后以一次 JSONL append/flush/fsync 写入。调用方只在批次成功后推进 Session 投影和确认队列。
 - 临时文件和 staging 失败必须清理；无法安全回滚时错误中必须包含保留数据位置。
 - record id 在参与路径拼接前限制为安全字符和长度。
 
@@ -86,8 +88,12 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 索引、回收站发布以及 session lock；部署初始化和 catalog 维护不属于该端口。新的后端必须保持这些行为语义，
 而不只是复制方法签名。
 
+`MessageRecord` 显式保存封闭的 `role=system|user|assistant|tool_result`、独立的 `scaffold` 布尔值和可选
+`semantic_tag`。Store 逐字段原样往返，不从 role、标签、metadata 或 producer provenance 重建任何一个字段；旧字段
+严格拒绝。若未来明确决定保留旧数据，只能通过独立 migrator 转换，不能在读取热路径兼容。
+
 Session extension state 以 `(session_id, owner_id)` 为 identity，并显式保存自身 schema、branch policy、派生
-synthetic semantic tags 和 JSON payload。文件后端把版本化 collection 保存到 Session tree；SQLite schema v3 使用
+脚手架投影的 semantic tags 和 JSON payload。文件后端把版本化 collection 保存到 Session tree；SQLite schema v3 使用
 外键级联的 `session_extension_states` 表。插件代码 Generation 只拥有代码/执行资源，不拥有这些状态的生命周期。
 
 Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
@@ -160,7 +166,7 @@ root Session 有 active 或无法判定的 Agent descendant 时不能归档。tr
 - 分支消息获得新 id、清除 run/turn id，并记录 source identity。
 - 分支 lineage 写入 root/parent/fork 字段。
 - 含 `resource_refs` 的分支通过 ResourceService 验证存在性，并与消息一起原子发布引用关系。
-- extension state 的 `copy` 会随目标 Session 原子复制；`reset` 不复制并移除 owner 声明的 synthetic 投影；
+- extension state 的 `copy` 会随目标 Session 原子复制；`reset` 不复制并移除 owner 声明的脚手架投影；
   `reject` 明确拒绝分支。若请求分支点自身是必须 reset 的投影，则拒绝生成自相矛盾的 lineage。
 - export 包含完整、版本化 extension state section；普通消息分页和 Catalog 不暴露该私有状态。
 

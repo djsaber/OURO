@@ -59,7 +59,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 7. waiting_child 不占 Supervisor execution permit。
 8. child interaction 保存在 child，根 Host 只做汇聚投影和准确路由。
 9. 权限先求 hard capability intersection，再应用 auto/approval/deny。
-10. async result 使用 Host system_synthetic provenance 和 exact-once delivery。
+10. async result 使用 Host provenance、显式 `role=system, scaffold=true` 和 exact-once delivery。
 11. 首版 max_depth=1、bound 默认、detached 禁用；并发只受 root active child 总量限制。
 12. 首版不承诺崩溃后自动重启旧 child 执行。
 13. child Run 是执行状态唯一权威；Delegation 不镜像 running/waiting/terminal 状态。
@@ -499,7 +499,7 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - [x] Host 直接派遣使用 notify_only。
 - [x] async 固定 next_boundary，在 active parent 映射 Host steer、idle parent 创建后续 Run。
 - [x] resume_waiter 只供 sync。
-- [x] 使用 producer=host、system_synthetic、稳定 host_source_id。
+- [x] 使用 producer=host、`role=system, scaffold=true`、稳定 host_source_id。
 - [x] queue/message 提交后才确认 delivered。
 - [x] crash before/after queue/message/delivery update 的所有窗口可恢复。
 - [x] 绝不写 role=user。

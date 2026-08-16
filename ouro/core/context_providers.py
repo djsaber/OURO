@@ -8,7 +8,8 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
-from ouro.core.message_semantics import DEFAULT_SYNTHETIC_MESSAGE_TAG, SemanticTag
+from ouro.core.message_roles import MessageRole
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.redaction import redact_text
 
 ContextProviderFailureMode = Literal["omit", "block"]
@@ -25,12 +26,14 @@ class ContextProviderCall(OuroModel):
 
 
 class ContextFragment(OuroModel):
-    """Raw provider-owned context projected through a declared semantic envelope."""
+    """Raw provider-owned context with independently declared message semantics."""
 
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
-    semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
     target: ContextFragmentTarget = "message"
+    role: MessageRole = "system"
+    scaffold: bool = True
+    semantic_tag: SemanticTag | None = None
 
     @model_validator(mode="after")
     def validate_target_persistence(self) -> ContextFragment:
@@ -46,8 +49,10 @@ class AttributedContextFragment(OuroModel):
     fragment_index: int = Field(ge=0)
     text: str = Field(min_length=1)
     persistence: ContextFragmentPersistence = "ephemeral"
-    semantic_tag: SemanticTag = DEFAULT_SYNTHETIC_MESSAGE_TAG
     target: ContextFragmentTarget = "message"
+    role: MessageRole = "system"
+    scaffold: bool = True
+    semantic_tag: SemanticTag | None = None
 
     @model_validator(mode="after")
     def validate_target_persistence(self) -> AttributedContextFragment:
@@ -180,8 +185,10 @@ class ContextProviderRegistry:
                         fragment_index=index,
                         text=fragment.text,
                         persistence=fragment.persistence,
-                        semantic_tag=fragment.semantic_tag,
                         target=fragment.target,
+                        role=fragment.role,
+                        scaffold=fragment.scaffold,
+                        semantic_tag=fragment.semantic_tag,
                     )
                     for index, fragment in enumerate(result.fragments)
                 )

@@ -644,8 +644,8 @@ class InteractiveOutput:
         for call in calls:
             if not isinstance(call, dict):
                 continue
-            synthetic = event.model_copy(update={"payload": call})
-            key = self._tool_key_for_event(synthetic)
+            call_event = event.model_copy(update={"payload": call})
+            key = self._tool_key_for_event(call_event)
             if key is None:
                 continue
             status = _payload_text(call, "status")

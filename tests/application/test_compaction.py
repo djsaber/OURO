@@ -710,7 +710,7 @@ async def test_auto_compaction_persists_and_is_reused_by_new_runtime(tmp_path) -
     assert active_id is not None
     assert store.load_session(session.session_id).session.active_compaction_id == active_id
     assert canonical_after_first[:10] == first_snapshot.messages[:10]
-    assert second_provider.calls[0][0].role == "system_synthetic"
+    assert second_provider.calls[0][0].role == "system"
     assert second_provider.calls[0][0].text_content == (
         "<conversation-summary>\nsummary-1\n</conversation-summary>"
     )

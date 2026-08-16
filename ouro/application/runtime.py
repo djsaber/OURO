@@ -89,6 +89,7 @@ from ouro.core.interactions import (
     SESSION_INTERACTION_MODES,
     SessionInteractionMode,
 )
+from ouro.core.message_roles import MessageRole
 from ouro.core.messages import (
     MessageRecord,
     ModelResponseRecord,
@@ -287,7 +288,7 @@ class RuntimeService:
                 self.system_prompt,
                 self.additional_system_prompt,
             ),
-            append_context_message=self.run_lifecycle.append_synthetic_input,
+            append_context_message=self.run_lifecycle.append_input_message,
             project_model_messages=(
                 resources.project_model_messages if resources is not None else None
             ),
@@ -1267,9 +1268,15 @@ class RuntimeService:
                         run=preapproved_new_run,
                         inputs=[
                             QueuedInput(
+                                queue_id=new_id("queued"),
                                 prompt=prompt,
                                 title=title,
+                                mode="follow_up",
+                                queued_at=utc_now(),
                                 source="user",
+                                role="user",
+                                scaffold=False,
+                                semantic_tag=None,
                                 skill_activation=resolved_skill_activation,
                             )
                         ],
@@ -1314,7 +1321,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 session,
                 input_resource_refs,
-                message_role=_input_message_role(_input_attribution),
+                message_role=_input_role(_input_attribution),
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -1342,14 +1349,16 @@ class RuntimeService:
             raise ValueError("delegated task input must target its child Session")
         emitted: list[EventRecord] = []
 
-        queued_synthetic_input = next(
+        queued_attributed_input = next(
             (item for item in (_queued_inputs or []) if item.source != "user"),
             None,
         )
-        synthetic_source = (
+        attributed_source = (
             _attributed_input_source(_input_attribution)
             if _input_attribution is not None
-            else (queued_synthetic_input.source if queued_synthetic_input is not None else None)
+            else (
+                queued_attributed_input.source if queued_attributed_input is not None else None
+            )
         )
         run = (
             _prepared_run
@@ -1365,8 +1374,8 @@ class RuntimeService:
                 session_id=session.session_id,
                 status="running",
                 origin=(
-                    synthetic_source
-                    if synthetic_source is not None
+                    attributed_source
+                    if attributed_source is not None
                     else ("follow_up" if _queued_inputs else "user")
                 ),
                 parent_run_id=(
@@ -1382,9 +1391,9 @@ class RuntimeService:
                 initiator_id=(
                     _attributed_input_initiator(_input_attribution)
                     if _input_attribution is not None
-                    else _queued_input_initiator(queued_synthetic_input)
+                    else _queued_input_initiator(queued_attributed_input)
                 ),
-                trigger=synthetic_source or "user",
+                trigger=attributed_source or "user",
             )
         )
         run_lock = self.run_ownership.acquire(session.session_id, run.run_id)
@@ -1394,7 +1403,7 @@ class RuntimeService:
             self._validate_model_resource_refs(
                 snapshot.session,
                 input_resource_refs,
-                message_role=_input_message_role(_input_attribution),
+                message_role=_input_role(_input_attribution),
             )
             if active_run is not None and (
                 _prepared_run is None or active_run.run_id != _prepared_run.run_id
@@ -1492,23 +1501,23 @@ class RuntimeService:
                 )
             pending_inputs = _queued_inputs or [
                 QueuedInput(
+                    queue_id=new_id("queued"),
                     prompt=prompt,
                     skill_activation=resolved_skill_activation,
                     title=title,
                     mode=queue_mode,
                     resource_refs=input_resource_refs,
+                    queued_at=utc_now(),
                     source=(
                         _attributed_input_source(_input_attribution)
                         if _input_attribution is not None
                         else "user"
                     ),
-                    message_role=_input_message_role(_input_attribution),
+                    role=_input_role(_input_attribution),
+                    scaffold=_input_scaffold(_input_attribution),
                     semantic_tag=(
                         _input_attribution.semantic_tag
-                        if isinstance(
-                            _input_attribution,
-                            HostSessionInput | AttributedSessionInput,
-                        )
+                        if _input_attribution is not None
                         else None
                     ),
                     host_source_id=(
@@ -1552,7 +1561,7 @@ class RuntimeService:
                     session,
                     pending_input.resource_refs,
                     adapter=active_adapter,
-                    message_role=pending_input.message_role,
+                    message_role=pending_input.role,
                 )
             if preapproved_new_run is None and not (
                 _queued_inputs and _queued_inputs[0].prompt_policy_checked
@@ -1611,7 +1620,9 @@ class RuntimeService:
                         "message_id": input_message.message_id,
                         "queued_input_id": (queued_input.queue_id if is_queued_run else None),
                         "source": queued_input.source,
-                        "message_role": queued_input.message_role,
+                        "role": queued_input.role,
+                        "scaffold": queued_input.scaffold,
+                        "semantic_tag": queued_input.semantic_tag,
                         "host_source_id": queued_input.host_source_id,
                         "plugin_id": queued_input.plugin_id,
                         "contribution_id": queued_input.contribution_id,
@@ -1974,7 +1985,7 @@ class RuntimeService:
         *,
         session_id: str,
     ) -> HostInputReceipt:
-        """Durably accept an OURO-owned synthetic input without awaiting execution."""
+        """Durably accept an OURO-owned scaffold input without awaiting execution."""
 
         snapshot = self._load_runtime_snapshot(
             session_id,
@@ -1983,7 +1994,7 @@ class RuntimeService:
         self._validate_model_resource_refs(
             snapshot.session,
             session_input.resource_refs,
-            message_role="system_synthetic",
+            message_role=session_input.role,
         )
         _, queued_input, _ = await self._queue_input(
             snapshot=snapshot,
@@ -2049,7 +2060,8 @@ class RuntimeService:
         attribution: (AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None) = None,
     ) -> tuple[SessionRecord, QueuedInput, list[EventRecord]]:
         source = _attributed_input_source(attribution) if attribution is not None else "user"
-        message_role = _input_message_role(attribution)
+        role = _input_role(attribution)
+        scaffold = _input_scaffold(attribution)
         if skill_invocation is not None and (source != "user" or mode != "follow_up"):
             raise ValueError("skill invocation requires direct follow-up user input")
         queue_id = (
@@ -2096,7 +2108,13 @@ class RuntimeService:
                             title=title,
                             mode=mode,
                             resource_refs=resource_refs,
+                            queued_at=utc_now(),
                             source=source,
+                            role=role,
+                            scaffold=scaffold,
+                            semantic_tag=(
+                                attribution.semantic_tag if attribution is not None else None
+                            ),
                             delegation_id=(
                                 attribution.delegation_id
                                 if isinstance(attribution, DelegatedTaskInput)
@@ -2130,10 +2148,11 @@ class RuntimeService:
                 resource_refs=resource_refs,
                 queue_id=queue_id,
                 source=source,
-                message_role=message_role,
+                role=role,
+                scaffold=scaffold,
                 semantic_tag=(
                     attribution.semantic_tag
-                    if isinstance(attribution, HostSessionInput | AttributedSessionInput)
+                    if attribution is not None
                     else None
                 ),
                 host_source_id=(
@@ -2199,7 +2218,9 @@ class RuntimeService:
             "queue_size": queue_size,
             "resource_refs": list(queued_input.resource_refs),
             "source": queued_input.source,
-            "message_role": queued_input.message_role,
+            "role": queued_input.role,
+            "scaffold": queued_input.scaffold,
+            "semantic_tag": queued_input.semantic_tag,
             "host_source_id": queued_input.host_source_id,
             "delegation_id": queued_input.delegation_id,
             "plugin_id": queued_input.plugin_id,
@@ -2249,6 +2270,7 @@ class RuntimeService:
                 mode=item.mode,
                 title=item.title,
                 role=item.role,
+                scaffold=item.scaffold,
                 semantic_tag=item.semantic_tag,
             )
             for item in batch.inputs
@@ -2496,10 +2518,12 @@ class RuntimeService:
             }
             for item in evaluation.decisions
         ]
-        feedback_message = self.run_lifecycle.append_synthetic_input(
+        feedback_message = self.run_lifecycle.append_input_message(
             session=session,
             run=run,
             prompt=evaluation.feedback,
+            role="system",
+            scaffold=True,
             sequence=len(messages) + 2,
             metadata={
                 "session_input_source": "turn_policy",
@@ -2528,6 +2552,25 @@ class RuntimeService:
         )
 
     def _append_session_input(
+        self,
+        *,
+        session: SessionRecord,
+        run: RunRecord,
+        item: QueuedInput,
+        sequence: int,
+        is_queued: bool,
+    ) -> MessageRecord:
+        message = self._create_session_input_message(
+            session=session,
+            run=run,
+            item=item,
+            sequence=sequence,
+            is_queued=is_queued,
+        )
+        self.run_lifecycle.append_messages(session=session, run=run, messages=[message])
+        return message
+
+    def _create_session_input_message(
         self,
         *,
         session: SessionRecord,
@@ -2574,29 +2617,17 @@ class RuntimeService:
                     "continuation_decision_id": item.continuation_decision_id,
                 }
             )
-        if item.message_role == "system_synthetic":
-            return self.run_lifecycle.append_synthetic_input(
-                session=session,
-                run=run,
-                prompt=item.prompt,
-                sequence=sequence,
-                metadata=metadata,
-                resource_refs=item.resource_refs,
-                semantic_tag=(
-                    item.semantic_tag
-                    or ("plugin-message" if item.source == "plugin" else "host-message")
-                ),
-            )
-        return self.run_lifecycle.append_user_message(
+        return self.run_lifecycle.create_input_message(
             session=session,
             run=run,
             prompt=item.prompt,
+            role=item.role,
+            scaffold=item.scaffold,
             skill_activation=item.skill_activation,
             sequence=sequence,
             resource_refs=item.resource_refs,
             metadata=metadata,
             semantic_tag=item.semantic_tag,
-            synthetic=item.source == "plugin" and item.semantic_tag is not None,
         )
 
     def _start_queued_run(
@@ -2608,7 +2639,7 @@ class RuntimeService:
         inputs: list[QueuedInput],
         existing_message_count: int,
     ) -> tuple[SessionRecord, RunRecord, list[MessageRecord]]:
-        """Atomically cross queued inputs from cancellable state into canonical history."""
+        """Cross one selected queue batch into canonical history under one mutation."""
 
         with self.store.session_mutation(session.session_id):
             latest_session = self.store.load_session_record(session.session_id)
@@ -2622,16 +2653,21 @@ class RuntimeService:
                 run=run,
                 snapshot=snapshot,
             )
-            messages: list[MessageRecord] = []
-            for item in inputs:
-                message = self._append_session_input(
+            messages = [
+                self._create_session_input_message(
                     session=started_session,
                     run=started_run,
                     item=item,
-                    sequence=existing_message_count + len(messages) + 1,
+                    sequence=existing_message_count + index + 1,
                     is_queued=True,
                 )
-                messages.append(message)
+                for index, item in enumerate(inputs)
+            ]
+            self.run_lifecycle.append_messages(
+                session=started_session,
+                run=started_run,
+                messages=messages,
+            )
             self.queued_inputs.acknowledge_many(
                 session_id=session.session_id,
                 queue_ids=tuple(item.queue_id for item in inputs),
@@ -2657,7 +2693,6 @@ class RuntimeService:
                     message
                     for message in latest.messages
                     if message.metadata.get("queued_input_id") == item.queue_id
-                    or message.metadata.get("queued_follow_up_id") == item.queue_id
                 ),
                 None,
             )
@@ -2693,7 +2728,7 @@ class RuntimeService:
         resource_refs: tuple[str, ...],
         *,
         adapter: RuntimeAdapter | None = None,
-        message_role: str = "user",
+        message_role: MessageRole = "user",
     ) -> None:
         if not resource_refs:
             return
@@ -2806,7 +2841,6 @@ class RuntimeService:
     def _queued_input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
         return any(
             message.metadata.get("queued_input_id") == queue_id
-            or message.metadata.get("queued_follow_up_id") == queue_id
             for message in messages
         )
 
@@ -3707,12 +3741,20 @@ def _attributed_input_initiator(
     return attribution.plugin_id
 
 
-def _input_message_role(
+def _input_role(
     attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None,
 ) -> SessionInputRole:
     if attribution is None:
         return "user"
     return attribution.role
+
+
+def _input_scaffold(
+    attribution: AttributedSessionInput | HostSessionInput | DelegatedTaskInput | None,
+) -> bool:
+    if attribution is None:
+        return False
+    return attribution.scaffold
 
 
 def _queued_input_initiator(item: QueuedInput | None) -> str | None:

@@ -105,7 +105,8 @@ follow-up 是新的普通 `RunRecord`；`DelegationRecord` 只保存父子关系
 child Run 的运行状态。
 
 sync 使用原 SpawnAgent ToolBatchCall 中的 durable `AgentWaitRequest`：父 Run 进入 `waiting_child/subagent_join` 后释放
-Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。async 复用 Host synthetic input
+Supervisor execution permit，child 终态再按原 tool_call_id 恢复同一父 Run。async 复用显式声明
+`role=system, scaffold=true` 的 Host input
 队列，以稳定 delivery/queue identity 实现 next-boundary 的一次性交付；Host input 持久接收后返回 receipt，模型消费由后续普通
 Run 调度独立完成。父已 idle 时由同一 Host 边界创建后续 Run。child Approval/AskUser 始终
 保存在 child canonical Run，根 Host 通过 AgentService 聚合并按 child_session_id、child_run_id、tool_call_id 和
@@ -132,8 +133,8 @@ Session 的 Run usage/model rounds，返回相同 `RunBudgetReason` 并进入现
 聚合。Supervisor 继续使用原跨 Session FIFO；waiting 状态不占 execution permit，已完成 child result 不受后续
 root budget 耗尽影响。
 
-child 不继承或投影父 Session 的消息、压缩摘要、工具结果、reasoning/provider state 或
-system/plugin synthetic context，也不接受 canonical message id。它的文本上下文固定由 OURO
+child 不继承或投影父 Session 的消息、压缩摘要、工具结果、reasoning/provider state 或脚手架上下文，也不接受
+canonical message id。它的文本上下文固定由 OURO
 platform/base system instructions、冻结的 `AgentDefinition.system_prompt` 和 `SpawnAgent.task` 组成：
 前两者形成 system instructions，task 作为 child 第一条 canonical `user` message。主智能体负责在 task
 中提供完成委派所需的全部文本上下文；Agent 专用 system prompt 与 task 都进入 child 自己的 ContextView
@@ -209,11 +210,12 @@ Host 通过 `RuntimeService.pending_user_inputs` 读取类型化的直接用户�
 不得在提交时乐观插入对话：未消费输入只显示在队列视图，收到 canonical message identity 后才按事件顺序进入
 conversation。进程恢复时同样从 durable queue 重建视图，不维护第二份界面队列事实。
 
-队列 producer 来源是类型化的 `user | host | plugin | delegation`，与 model role 正交：直接用户输入和专用
-`DelegatedTaskInput` 写为 `role=user`，后者还携带稳定 `delegation_id`，且只允许启动已准备好的 child Run。
-OURO Host/Application 输入必须携带稳定 `host_source_id` 并固定为 `role=system_synthetic`。插件输入必须携带完整
-Generation/contract attribution，默认也是 synthetic；需要用户角色脚手架语义时可声明 `role=user`，但 producer
-仍是 plugin，不能因此丢失来源、变成直接用户输入或取得用户授权。插件输入不能携带资源；OURO Host
+队列 producer 来源是类型化的 `user | host | plugin | delegation`，与 model role、scaffold 和 semantic tag 正交。
+每个输入在入队前已由提供方定义这三个消息字段；Application、队列与 Store 只校验和原样传递，不根据来源、role
+或标签补全其他字段。直接用户输入显式使用 `role=user, scaffold=false`，专用 `DelegatedTaskInput` 显式使用
+`role=user, scaffold=true`，后者还携带稳定 `delegation_id`，且只允许启动已准备好的 child Run。
+OURO Host/Application 输入必须携带稳定 `host_source_id`，插件输入必须携带完整 Generation/contract attribution；
+它们选择的 role 不会改变 producer、变成直接用户输入或取得用户授权。插件输入不能携带资源；OURO Host
 input 只可携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。
 `RuntimeService.submit_host_input` 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence
 边界。
@@ -224,7 +226,7 @@ Goal 重构验证并落地了一个独立于 Goal 的最小输入变化轴，Goa
 - `SessionInputBatch` 表达必须保持顺序、原子入队并在同一安全边界消费的非空输入组；全局
   `one_by_one | all_at_once` 只能选择完整消费单位，不能拆分或交错 batch；
 - batch 在 durable queue 中只增加稳定 identity 与组内顺序，不增加状态机、优先级、依赖或嵌套；
-- `SessionInput.semantic_tag` 可用于 user-role 消息，role、producer provenance 与脚手架语义保持正交；
+- `SessionInput` 显式携带 role、scaffold 与可选 semantic tag；三者与 producer provenance 彼此正交；
 - owner-scoped coalesce key 只允许新批次替换同一 Session/owner/boundary 下尚未消费的旧控制投影，不能撤回
   canonical message，也不能跨 owner 搜索或重排队列。
 
@@ -324,12 +326,16 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 
 `MessageRecord` 使用类型化字段表达工具关系：
 
+- `role` 是封闭的 `system | user | assistant | tool_result` 模型身份枚举；
+- `scaffold` 独立标记消息是否由 Harness 有意构造和注入，任何 role 都可以取任意 scaffold 值；
+- `semantic_tag` 是独立、可选的模型可见语义标签，不存在默认推断；
 - assistant 工具请求写入 `tool_calls`；
 - tool result 关联写入 `tool_result`；
 - 可展示思考写入 `reasoning_content`，协议私有续接状态写入 `provider_continuation`；
-- `system_synthetic` 和 user-role 输入都可使用 `semantic_tag` 标明脚手架语义；synthetic 默认值为
-  `system-reminder`，user-role 不自动添加标签，且标签不改变 role；
 - `metadata` 只保存非结构化附加信息，不保存工具请求、关联身份或思考续接状态。
+
+这三个消息属性统一由消息提供方定义。Core、Application、queue persistence 和 Provider adapter 不从角色、来源、
+标签或正文猜测 scaffold，不自动添加标签，也不重写 role。
 
 一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
 没有模型回合身份的普通消息按用户请求分组；不完整工具交换及其后续恢复上下文作为受保护后缀。
@@ -337,14 +343,15 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 `ContextPreparationService` 负责把 canonical messages 投影为模型上下文，应用 Skills 指令、压缩摘要、
 snapshot-bound Context Provider 和 token 预算。Context Provider 在模型请求构建前返回带 owner 的类型化 fragment；
 fragment 默认只参与本次模型请求；声明 `persistence="message"` 时，Application 必须先通过 `RunLifecycle` 将它以
-`system_synthetic` 写入 canonical history，并记录 plugin、provider、generation、model round 和幂等 delivery key，
+提供方声明的 role/scaffold/semantic tag 写入 canonical history，并记录 plugin、provider、generation、model round
+和幂等 delivery key，
 成功后才能调用模型。同一 Run/model round 的重试不能重复落盘。optional provider 失败时省略自身，required
 provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
 通过 message id 前缀和 digest 验证摘要来源。
 
 Context Fragment 还可声明 `target="system_prompt"`。这类请求级片段在基础 system prompt 和 Skills 之后稳定追加，
-必须保持 ephemeral，不创建 canonical 或 synthetic message；Core 使用提供方声明的 `semantic_tag` 将原始正文
-投影为与 message target 相同的 semantic envelope，再进入统一 token 估算、请求快照和 ProviderContext digest。
+必须保持 ephemeral，不创建 canonical message；提供方声明 `semantic_tag` 时，Core 将原始正文投影为与 message
+target 相同的 semantic envelope；未声明时保留原文。两者都进入统一 token 估算、请求快照和 ProviderContext digest。
 Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
 
 内置 `dev.ouro.agent_context` 通过两个相互隔离的 Context Provider 实现这一契约：`agent-instructions` 在每次
@@ -354,13 +361,13 @@ Context Provider call 同时携带本次 Session 中 Agent 的 workspace。
 `OURO_HOME`，避免 builtin 从 artifact 私有路径反推 Host 布局。
 
 脚手架正文以原文持久化；构建统一 ProviderContext 时，Core 对 message 与 system-prompt fragment 使用同一个
-semantic envelope renderer，把经过校验的 `semantic_tag` 投影成 `<semantic-tag>...</semantic-tag>`。提供方声明
-标签语义但不手写包络。正文中只有可能改变当前同名包络边界的标记会转义，其他内容保持原样；标签只能使用
-小写字母、数字和连字符，且不能冒充模型角色。Context Fragment 可以覆盖默认标签，使运行时提醒、插件上下文、
+semantic envelope renderer，仅把显式且经过校验的 `semantic_tag` 投影成 `<semantic-tag>...</semantic-tag>`。
+提供方声明标签语义但不手写包络。正文中只有可能改变当前同名包络边界的标记会转义，其他内容保持原样；标签
+只能使用小写字母、数字和连字符，且不能冒充模型角色。Context Fragment 可以选择标签，使运行时提醒、插件上下文、
 Goal/Plan 状态和子智能体消息在不改变协议角色的前提下保持可辨别语义。包络参与 token 估算与 Provider 内容 digest。
 
 模型产生无工具的候选完成后，`InnerAgentLoop` 在完成 Run 前评估同一 Catalog 的 Turn Policy。策略只能返回
-`allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 synthetic feedback 持久化到同一
+`allow`，或返回带 feedback 的 `continue`；后者把候选回复和带 provenance 的 scaffold feedback 持久化到同一
 Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-closed 并暂停 Run。跨 Run 的 Continuation Policy 与此
 保持分离：前者约束当前 Run 的轮次收束，后者只消费终态 `RunOutcome`。
 
@@ -628,7 +635,7 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   `continue/complete/pause/fail/ignore`。`RunContinuationService` 负责冻结 generation、冲突处理、幂等入队和
   durable checkpoint；`run_finished` Observer 仍是 fail-open、非阻塞通知。
 - SDK 可提供绑定当前 plugin identity 的窄 Session state view；它只登记版本化 JSON 状态、branch policy 和
-  synthetic projection tags，不提供任意 Session 查询或通用数据库能力。候选 Generation 在正式发布前不能写
+  scaffold projection tags，不提供任意 Session 查询或通用数据库能力。候选 Generation 在正式发布前不能写
   canonical Session。Goal、Plan、Todo 使用该入口，旧插件私有 Session JSON 通过显式 migrator 一次性迁移，
   运行时不保留 fallback。
 - 插件工具可选接收 Host-owned、request-scoped `ToolExecutionContext`，复用 workspace/Host artifact 路径边界与
@@ -637,9 +644,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
   审批修改后的最终参数以及每个尚未执行的调用都必须重新评估。`permission_control="tool"` 只隔离 Host permission
   维度，不隔离插件策略维度。
-- 插件输入通过 canonical queue 进入合法边界，保存 plugin/contribution/generation/decision provenance，默认使用
-  `system_synthetic`；需要用户角色脚手架语义时可声明 `role=user`，producer 仍为 plugin，且 role 不能作为用户授权
-  证据。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为 superseded；目标插件在下一 Run 重新评估。
+- 插件输入通过 canonical queue 进入合法边界，保存 plugin/contribution/generation/decision provenance，并原样保存
+  提供方声明的 role、scaffold 和可选 semantic tag；producer 仍为 plugin，且 role 不能作为用户授权证据。旧 Run 的
+  续跑决策若遇到用户已排队输入或更新 Run，会被标记为 superseded；目标插件在下一 Run 重新评估。
 - `prompt_policies` 只检查 Host 路由后的直接用户提示并返回 `allow | deny`。Application 在 message、durable queue 和 Run
   之前 fail-closed 评估；user plugin 必须声明 `sessions.prompt.inspect`。允许后，直接或排队的 prospective Run 都固定
   同一 Catalog execution contract；拒绝路径不记录提示正文。

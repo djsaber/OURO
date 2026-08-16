@@ -597,7 +597,8 @@ class WorkerPluginInstance:
                 prompt=(str(result["prompt"]) if result.get("prompt") is not None else None),
                 mode=mode,
                 title=(str(result["title"]) if result.get("title") is not None else None),
-                role=_worker_session_input_role(result.get("role", "system_synthetic")),
+                role=_worker_session_input_role(result.get("role", "system")),
+                scaffold=_worker_scaffold(result.get("scaffold", True)),
                 semantic_tag=_worker_semantic_tag(result.get("semantic_tag")),
                 coalesce_key=(
                     str(result["coalesce_key"])
@@ -1337,6 +1338,7 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "prompt", str, method, allow_none=True)
         _require_optional_type(result, "title", str, method, allow_none=True)
         _require_optional_type(result, "role", str, method, allow_none=True)
+        _require_optional_type(result, "scaffold", bool, method)
         _require_optional_type(result, "semantic_tag", str, method, allow_none=True)
         _require_optional_type(result, "coalesce_key", str, method, allow_none=True)
         _require_optional_type(result, "reason", str, method, allow_none=True)
@@ -1402,7 +1404,8 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
         prompt = value.get("prompt")
         mode = value.get("mode", "follow_up")
         title = value.get("title")
-        role = value.get("role", "system_synthetic")
+        role = value.get("role", "system")
+        scaffold = _worker_scaffold(value.get("scaffold", True))
         semantic_tag = _worker_semantic_tag(value.get("semantic_tag"))
         if not isinstance(prompt, str) or not prompt.strip():
             raise WorkerProtocolError("worker session input prompt must not be empty")
@@ -1417,6 +1420,7 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
                 mode=mode,
                 title=title,
                 role=role,
+                scaffold=scaffold,
                 semantic_tag=semantic_tag,
             )
         )
@@ -1448,8 +1452,14 @@ def _worker_session_input_batches(
 
 
 def _worker_session_input_role(value: object) -> sdk.SessionInputRole:
-    if value not in {"user", "system_synthetic"}:
+    if value not in {"system", "user", "assistant", "tool_result"}:
         raise WorkerProtocolError(f"worker session input role is invalid: {value}")
+    return value
+
+
+def _worker_scaffold(value: object) -> bool:
+    if not isinstance(value, bool):
+        raise WorkerProtocolError("worker message scaffold must be a boolean")
     return value
 
 
@@ -1457,11 +1467,11 @@ def _worker_semantic_tag(value: object) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value:
-        raise WorkerProtocolError("worker session input semantic_tag must not be empty")
+        raise WorkerProtocolError("worker message semantic_tag must not be empty")
     try:
         return validate_semantic_tag(value)
     except ValueError as exc:
-        raise WorkerProtocolError(f"worker session input semantic_tag is invalid: {exc}") from exc
+        raise WorkerProtocolError(f"worker message semantic_tag is invalid: {exc}") from exc
 
 
 def _worker_control_transitions(
@@ -1501,24 +1511,24 @@ def _worker_context_fragment(raw: object) -> str | sdk.ContextFragment:
         raise WorkerProtocolError("worker context fragment must be a string or object")
     text = raw.get("text")
     persistence = raw.get("persistence", "ephemeral")
-    semantic_tag = raw.get("semantic_tag", "system-reminder")
+    target = raw.get("target", "message")
+    role = _worker_session_input_role(raw.get("role", "system"))
+    scaffold = _worker_scaffold(raw.get("scaffold", True))
+    semantic_tag = _worker_semantic_tag(raw.get("semantic_tag"))
     if not isinstance(text, str) or not text:
         raise WorkerProtocolError("worker context fragment text must not be empty")
     if persistence not in {"ephemeral", "message"}:
         raise WorkerProtocolError(
             "worker context fragment persistence must be ephemeral or message"
         )
-    if not isinstance(semantic_tag, str) or not semantic_tag:
-        raise WorkerProtocolError("worker context fragment semantic_tag must not be empty")
-    try:
-        semantic_tag = validate_semantic_tag(semantic_tag)
-    except ValueError as exc:
-        raise WorkerProtocolError(
-            f"worker context fragment semantic_tag is invalid: {exc}"
-        ) from exc
+    if target not in {"message", "system_prompt"}:
+        raise WorkerProtocolError("worker context fragment target is invalid")
     return sdk.ContextFragment(
         text=text,
         persistence=persistence,
+        target=target,
+        role=role,
+        scaffold=scaffold,
         semantic_tag=semantic_tag,
     )
 

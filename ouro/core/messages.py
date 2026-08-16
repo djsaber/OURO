@@ -7,8 +7,8 @@ from typing import Annotated, Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import (
-    DEFAULT_SYNTHETIC_MESSAGE_TAG,
     SemanticTag,
     escape_semantic_envelope_delimiters,
 )
@@ -52,9 +52,6 @@ ContentBlock = Annotated[
     TextContent | ImageContent | SkillActivationContent,
     Field(discriminator="type"),
 ]
-
-MessageRole = Literal["user", "assistant", "tool_result", "system_synthetic"]
-
 
 class ToolResultReference(OuroModel):
     tool_call_id: str
@@ -125,8 +122,6 @@ class ModelMessage(OuroModel):
 
     @model_validator(mode="after")
     def validate_tool_fields(self) -> ModelMessage:
-        if self.semantic_tag is not None and self.role not in {"user", "system_synthetic"}:
-            raise ValueError("only input messages may have a semantic tag")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant model messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":
@@ -155,8 +150,6 @@ class ModelMessage(OuroModel):
         text: str,
         semantic_tag: SemanticTag | None = None,
     ) -> ModelMessage:
-        if role == "system_synthetic" and semantic_tag is None:
-            semantic_tag = DEFAULT_SYNTHETIC_MESSAGE_TAG
         return cls(
             role=role,
             content=[TextContent(text=text)],
@@ -177,7 +170,7 @@ class MessageRecord(VersionedOuroModel):
     created_at: datetime = Field(default_factory=utc_now)
     sequence: int = 0
     content: list[ContentBlock] = Field(default_factory=list)
-    synthetic: bool = False
+    scaffold: bool = False
     semantic_tag: SemanticTag | None = None
     resource_refs: list[str] = Field(default_factory=list)
     tool_calls: list[ToolCallRequest] = Field(default_factory=list)
@@ -198,6 +191,7 @@ class MessageRecord(VersionedOuroModel):
             "model_response",
             "provider_continuation",
             "semantic_tag",
+            "scaffold",
         }
         misplaced = sorted(reserved_metadata.intersection(self.metadata))
         if misplaced:
@@ -207,11 +201,6 @@ class MessageRecord(VersionedOuroModel):
             )
         if self.turn_id is not None and self.run_id is None:
             raise ValueError("message turn_id requires run_id")
-        if self.role == "system_synthetic":
-            if self.semantic_tag is None:
-                self.semantic_tag = DEFAULT_SYNTHETIC_MESSAGE_TAG
-        elif self.semantic_tag is not None and self.role != "user":
-            raise ValueError("only input messages may have a semantic tag")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":
@@ -235,6 +224,7 @@ class MessageRecord(VersionedOuroModel):
         run_id: str | None = None,
         turn_id: str | None = None,
         sequence: int = 0,
+        scaffold: bool = False,
         semantic_tag: SemanticTag | None = None,
     ) -> MessageRecord:
         return cls(
@@ -243,7 +233,7 @@ class MessageRecord(VersionedOuroModel):
             turn_id=turn_id,
             role=role,
             sequence=sequence,
-            synthetic=role == "system_synthetic",
+            scaffold=scaffold,
             semantic_tag=semantic_tag,
             content=[TextContent(text=text)],
         )

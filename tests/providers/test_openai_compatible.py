@@ -289,7 +289,7 @@ async def test_openai_endpoint_options_and_system_prompt_shape_request() -> None
             messages=[
                 MessageRecord.text(
                     session_id="ses_1",
-                    role="system_synthetic",
+                    role="system",
                     text="Plugin state.",
                     semantic_tag="plugin-context",
                 ),

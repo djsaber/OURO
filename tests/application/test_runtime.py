@@ -665,7 +665,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
 
     plugin_result = await runtime.submit_plugin_input(
         AttributedSessionInput(
-            prompt="Synthetic command output",
+            prompt="Scaffold command output",
             plugin_id="dev.ouro.command",
             contribution_id="start",
             generation_id="gen_command",
@@ -676,7 +676,7 @@ async def test_prompt_policy_excludes_plugin_input_and_human_resolutions(tmp_pat
     assert plugin_result.run.status == "completed"
     assert inspected_prompts == ["Write the approved file", "Ask for a file"]
     plugin_snapshot = store.load_runtime_session(plugin_result.session.session_id)
-    assert plugin_snapshot.messages[0].role == "system_synthetic"
+    assert plugin_snapshot.messages[0].role == "system"
 
 
 @pytest.mark.asyncio
@@ -1077,7 +1077,7 @@ async def test_next_run_projects_interrupted_assistant_as_recovery_context(tmp_p
     assert resumed.run.status == "completed"
     assert [message.role for message in provider.messages] == [
         "user",
-        "system_synthetic",
+        "system",
         "user",
     ]
     assert "partial work" in provider.messages[1].text_content
@@ -1410,8 +1410,8 @@ async def test_runtime_context_provider_adds_context_to_provider(tmp_path) -> No
     result = await runtime.run("Use context")
 
     assert seen_system_prompts == [DEFAULT_SYSTEM_PROMPT]
-    assert seen_messages[0].role == "system_synthetic"
-    assert seen_messages[0].text_content == ("<system-reminder>\nextra context\n</system-reminder>")
+    assert seen_messages[0].role == "system"
+    assert seen_messages[0].text_content == "extra context"
     snapshot = store.load_runtime_session(result.session.session_id)
     assert not any(
         message.metadata.get("kind") == "context_provider" for message in snapshot.messages
@@ -1513,14 +1513,13 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     snapshot = store.load_runtime_session(result.session.session_id)
     context_snapshot = store.load_latest_context(result.session.session_id)
     assert context_snapshot is not None
-    assert context_snapshot.semantic_envelopes is True
     scaffold = next(
         message
         for message in snapshot.messages
         if message.metadata.get("kind") == "context_provider"
     )
-    assert scaffold.role == "system_synthetic"
-    assert scaffold.synthetic is True
+    assert scaffold.role == "system"
+    assert scaffold.scaffold is True
     assert scaffold.semantic_tag == "plugin-context"
     assert scaffold.text_content == "durable harness context"
     assert scaffold.metadata == {
@@ -1534,7 +1533,7 @@ async def test_runtime_persists_context_provider_message_with_provenance(tmp_pat
     }
     assert (
         sum(
-            message.role == "system_synthetic"
+            message.role == "system"
             and message.text_content
             == "<plugin-context>\ndurable harness context\n</plugin-context>"
             for message in provider.messages
@@ -1566,14 +1565,14 @@ async def test_context_provider_message_persistence_failure_blocks_model_request
             ),
         ),
     )
-    append_message = store.append_message
+    append_messages = store.append_messages
 
-    def fail_scaffold(message: MessageRecord) -> None:
-        if message.metadata.get("kind") == "context_provider":
+    def fail_scaffold(messages: list[MessageRecord]) -> None:
+        if any(message.metadata.get("kind") == "context_provider" for message in messages):
             raise PersistenceError("simulated scaffold persistence failure")
-        append_message(message)
+        append_messages(messages)
 
-    monkeypatch.setattr(store, "append_message", fail_scaffold)
+    monkeypatch.setattr(store, "append_messages", fail_scaffold)
     runtime = RuntimeService(
         store=store,
         adapter=RuntimeAdapter(
@@ -1639,10 +1638,10 @@ async def test_runtime_merges_context_builder_skills_before_provider_context(tmp
     assert provider.system_prompt.startswith(DEFAULT_SYSTEM_PROMPT.strip())
     assert "<skills_instructions>" in provider.system_prompt
     assert "<name>pdf</name>" in provider.system_prompt
-    synthetic_messages = [
-        message.text_content for message in provider.messages if message.role == "system_synthetic"
+    system_messages = [
+        message.text_content for message in provider.messages if message.role == "system"
     ]
-    assert synthetic_messages == ["<system-reminder>\nplugin context\n</system-reminder>"]
+    assert system_messages == ["plugin context"]
 
 
 @pytest.mark.asyncio
@@ -1743,7 +1742,7 @@ async def test_turn_policy_continues_inside_same_run_before_completion(tmp_path)
     assert [message.role for message in snapshot.messages] == [
         "user",
         "assistant",
-        "system_synthetic",
+        "system",
         "assistant",
     ]
     assert snapshot.messages[1].text_content == "candidate"
@@ -2011,6 +2010,8 @@ async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_messa
         snapshot=store.load_session(session.session_id),
         prompt="Queued prompt",
         title=None,
+        role="user",
+        scaffold=False,
     )
     queued = runtime.queued_inputs.peek(store.load_session(queued_session.session_id))
     assert queued is not None
@@ -2020,7 +2021,7 @@ async def test_runtime_acknowledges_follow_up_with_an_already_durable_user_messa
             role="user",
             text=queued.prompt,
             sequence=1,
-        ).model_copy(update={"metadata": {"queued_follow_up_id": queued.queue_id}})
+        ).model_copy(update={"metadata": {"queued_input_id": queued.queue_id}})
     )
 
     result = await runtime.run("Continue", session_id=session.session_id)
@@ -3141,7 +3142,7 @@ async def test_runtime_automatically_compacts_and_persists_context_projection(tm
     assert snapshot.session.active_compaction_id is not None
     assert snapshot.active_compaction is not None
     assert len(snapshot.messages) == 26
-    assert provider.business_messages[0].role == "system_synthetic"
+    assert provider.business_messages[0].role == "system"
     assert provider.business_messages[0].text_content.startswith(
         "<conversation-summary>\ndurable summary"
     )

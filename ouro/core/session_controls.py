@@ -7,10 +7,11 @@ from typing import Any, Literal, Self
 from pydantic import Field, JsonValue, field_validator, model_validator
 
 from ouro.core.base import OuroModel, new_id, utc_now
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 
 SessionInputMode = Literal["follow_up", "steer"]
-SessionInputRole = Literal["user", "system_synthetic"]
+SessionInputRole = MessageRole
 SessionControlAccess = Literal["exclusive", "shared"]
 SessionControlPhase = Literal["activating", "active", "deactivating", "failed"]
 SessionControlTransitionAction = Literal["acquire", "release", "replace"]
@@ -32,7 +33,8 @@ class SessionInputRequest(OuroModel):
     prompt: str = Field(min_length=1)
     mode: SessionInputMode = "follow_up"
     title: str | None = None
-    role: SessionInputRole = "system_synthetic"
+    role: SessionInputRole = "system"
+    scaffold: bool = True
     semantic_tag: SemanticTag | None = None
 
     @field_validator("prompt")
@@ -92,11 +94,11 @@ class AttributedSessionInputBatch(OuroModel):
 
 
 class HostSessionInput(SessionInputRequest):
-    """A synthetic input produced by an OURO Host/Application component."""
+    """A scaffold input produced by an OURO Host/Application component."""
 
-    role: Literal["system_synthetic"] = "system_synthetic"
+    scaffold: Literal[True] = True
     host_source_id: str = Field(min_length=1)
-    semantic_tag: SemanticTag = "host-message"
+    semantic_tag: SemanticTag | None = None
     queue_id: str | None = Field(default=None, min_length=1, max_length=256)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 
@@ -129,6 +131,7 @@ class DelegatedTaskInput(SessionInputRequest):
     """
 
     role: Literal["user"] = "user"
+    scaffold: Literal[True] = True
     delegation_id: str = Field(min_length=1, max_length=128)
     resource_refs: tuple[str, ...] = Field(default=(), max_length=16)
 

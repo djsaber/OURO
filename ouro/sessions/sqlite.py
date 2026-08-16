@@ -467,12 +467,22 @@ class SQLiteSessionStore:
             return trash_id
 
     def append_message(self, message: MessageRecord) -> None:
-        with self.session_mutation(message.session_id):
+        self.append_messages([message])
+
+    def append_messages(self, messages: list[MessageRecord]) -> None:
+        if not messages:
+            return
+        session_id = messages[0].session_id
+        if any(message.session_id != session_id for message in messages):
+            raise PersistenceError("message batch must belong to one session")
+        with self.session_mutation(session_id):
             try:
-                self._insert_message(self._transaction_connection(), message)
+                connection = self._transaction_connection()
+                for message in messages:
+                    self._insert_message(connection, message)
             except sqlite3.IntegrityError as exc:
                 raise PersistenceError(
-                    f"could not append message {message.message_id}: {exc}"
+                    f"could not append message batch for {session_id}: {exc}"
                 ) from exc
 
     def append_event(self, event: EventRecord) -> None:

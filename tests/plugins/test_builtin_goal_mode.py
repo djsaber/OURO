@@ -343,13 +343,13 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         assert set(by_tag) == {"goal-create", "goal-continue"}
         for scaffold in by_tag.values():
             assert scaffold.role == "user"
-            assert scaffold.synthetic is True
+            assert scaffold.scaffold is True
         objective = next(
             message for message in messages if message.text_content == "Ship end to end"
         )
         assert objective.role == "user"
         assert objective.semantic_tag is None
-        assert objective.synthetic is False
+        assert objective.scaffold is False
     finally:
         await application.close()
 

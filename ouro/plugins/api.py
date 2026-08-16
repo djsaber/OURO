@@ -875,6 +875,7 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                         mode=item.mode,
                         title=item.title,
                         role=item.role,
+                        scaffold=item.scaffold,
                         semantic_tag=item.semantic_tag,
                     )
                     for item in raw.session_inputs
@@ -887,6 +888,7 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                                 mode=item.mode,
                                 title=item.title,
                                 role=item.role,
+                                scaffold=item.scaffold,
                                 semantic_tag=item.semantic_tag,
                             )
                             for item in batch.inputs
@@ -981,8 +983,10 @@ def _adapt_context(contribution: sdk.ContextContribution) -> ContextProviderRegi
                 ContextFragment(
                     text=value.text,
                     persistence=value.persistence,
-                    semantic_tag=value.semantic_tag,
                     target=value.target,
+                    role=value.role,
+                    scaffold=value.scaffold,
+                    semantic_tag=value.semantic_tag,
                 )
                 if isinstance(value, sdk.ContextFragment)
                 else ContextFragment(text=value)
@@ -1062,6 +1066,7 @@ def _adapt_continuation_policy(
             mode=raw.mode,
             title=raw.title,
             role=raw.role,
+            scaffold=raw.scaffold,
             semantic_tag=raw.semantic_tag,
             coalesce_key=raw.coalesce_key,
             reason=raw.reason,

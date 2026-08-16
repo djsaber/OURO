@@ -1616,7 +1616,7 @@ async def test_build_runtime_injects_available_skills_from_home_and_workspace(
     assert "<skills_instructions>" in provider.system_prompt
     assert "<name>pdf</name>" in provider.system_prompt
     assert "<name>xlsx</name>" in provider.system_prompt
-    assert all(message.role != "system_synthetic" for message in provider.messages)
+    assert all(message.role != "system" for message in provider.messages)
 
 
 def test_skills_commands_list_show_roots_and_prompt(

@@ -254,6 +254,7 @@ class RunContinuationService:
             mode=decision.mode,
             title=decision.title,
             role=decision.role,
+            scaffold=decision.scaffold,
             semantic_tag=decision.semantic_tag,
             coalesce_key=decision.coalesce_key,
             reason=decision.reason,
@@ -424,6 +425,7 @@ class RunContinuationService:
             mode=plan.mode,
             title=plan.title,
             role=plan.role,
+            scaffold=plan.scaffold,
             semantic_tag=plan.semantic_tag,
             coalesce_key=plan.coalesce_key,
             reason=plan.reason,
@@ -541,6 +543,7 @@ class RunContinuationService:
         mode: SessionInputMode,
         title: str | None,
         role: SessionInputRole,
+        scaffold: bool,
         semantic_tag: SemanticTag | None,
         coalesce_key: str | None,
         reason: str | None,
@@ -640,7 +643,8 @@ class RunContinuationService:
                 prompt=prompt,
                 mode=mode,
                 title=title,
-                message_role=role,
+                role=role,
+                scaffold=scaffold,
                 semantic_tag=semantic_tag,
                 coalesce_key=coalesce_key,
                 source="plugin",
@@ -735,7 +739,6 @@ def _last_assistant_text(messages: list[MessageRecord], run_id: str) -> str:
 def _input_is_durable(messages: list[MessageRecord], queue_id: str) -> bool:
     return any(
         message.metadata.get("queued_input_id") == queue_id
-        or message.metadata.get("queued_follow_up_id") == queue_id
         for message in messages
     )
 

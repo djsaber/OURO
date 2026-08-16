@@ -145,7 +145,11 @@ class ContextBuilder:
             if value
         ]
         prompt_fragments = [
-            render_semantic_envelope(fragment.text, fragment.semantic_tag)
+            (
+                render_semantic_envelope(fragment.text, fragment.semantic_tag)
+                if fragment.semantic_tag is not None
+                else fragment.text
+            )
             for fragment in context_fragments
             if fragment.target == "system_prompt"
         ]
@@ -156,7 +160,7 @@ class ContextBuilder:
         )
         context_messages = [
             ModelMessage.text(
-                role="system_synthetic",
+                role=fragment.role,
                 text=fragment.text,
                 semantic_tag=fragment.semantic_tag,
             )
@@ -289,13 +293,14 @@ def project_recovery_messages(messages: list[MessageRecord]) -> list[MessageReco
             session_id=message.session_id,
             run_id=message.run_id,
             turn_id=message.turn_id,
-            role="system_synthetic",
+            role="system",
             text=(
                 "A previous assistant model attempt was interrupted before completion. "
                 "Treat the following text as partial work, not as a completed answer:\n\n"
                 f"{message.text_content}"
             ),
             sequence=message.sequence,
+            scaffold=True,
             semantic_tag="interrupted-assistant-attempt",
         ).model_copy(
             update={

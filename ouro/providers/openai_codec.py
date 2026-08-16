@@ -19,9 +19,7 @@ def _message_to_openai(
 ) -> dict[str, Any]:
     message = model_visible_message(message)
     role = message.role
-    if role == "system_synthetic":
-        openai_role = "system"
-    elif role == "tool_result":
+    if role == "tool_result":
         openai_role = "tool"
     else:
         openai_role = role

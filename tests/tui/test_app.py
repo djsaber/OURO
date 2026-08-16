@@ -876,7 +876,7 @@ class TuiPlanConfirmationProvider:
             scaffold = next(
                 message.text_content
                 for message in reversed(messages)
-                if message.role == "system_synthetic" and "Plan file:" in message.text_content
+                if message.role == "system" and "Plan file:" in message.text_content
             )
             match = re.search(r"Plan file: (.+)", scaffold)
             assert match is not None

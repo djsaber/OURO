@@ -27,7 +27,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 - 插件管理闭环：严格 manifest、local/Git/archive 安装、不可变 digest store、独立代码信任与能力授权、
   declarative / Python in-process / stdio worker runtime、原子 owner contribution、Run generation snapshot、
   候选 digest 并排安装/回滚、插件 Skills/MCP、依赖解析、兼容报告、类型化 application facade 与 CLI；插件还可
-  通过 durable continuation policy 和 provenance-bearing synthetic input 实现跨 Run 的目标模式，并用
+  通过 durable continuation policy 和携带显式 role/scaffold/provenance 的输入实现跨 Run 的目标模式，并用
   Host-owned 工具执行上下文与限制性 tool policy 实现 plan mode、危险命令确认和受保护路径等通用扩展；
   类型化 Observer 以独立 mailbox 非阻塞接收已发生事实，Prompt Policy 在直接用户提示持久化前 fail-closed；
   Session Controller 通过声明式 control claim 仲裁长期模式，分别支持模型轮次级 `active_when` 可见性、
@@ -162,8 +162,9 @@ Plugin MCP 启用即连接：required 失败不发布候选，optional 失败进
 
 Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>` 是稳定全名，只有 local name
 唯一时才允许 `/<name>`。builtin 始终优先。获得 `sessions.write` 与 `background.run` 的插件 command 可返回
-类型化会话输入；producer provenance 与 model role 是两个独立维度。输入默认以 `system_synthetic` 持久化；
-只有投影当前用户显式命令意图时才使用 `user`，同时仍保留完整 execution-contract provenance。Run
+类型化会话输入；producer provenance、`system | user | assistant | tool_result` model role、`scaffold` 和可选
+`semantic_tag` 是彼此独立的维度，由输入提供方定义并由框架原样持久化。role 不改变完整 execution-contract
+provenance，也不自动授予直接用户权限。Run
 continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
 插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
 插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，

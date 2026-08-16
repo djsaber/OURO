@@ -46,6 +46,7 @@ from ouro.core.errors import (
     PersistenceError,
 )
 from ouro.core.events import EventRecord
+from ouro.core.message_roles import MessageRole
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord, ModelMessage, model_visible_message
 from ouro.core.observers import ContextPreparedObservation, FrozenJson, freeze_json
@@ -92,6 +93,8 @@ class ContextMessageAppender(Protocol):
         session: SessionRecord,
         run: RunRecord,
         prompt: str,
+        role: MessageRole,
+        scaffold: bool,
         sequence: int,
         metadata: dict[str, object],
         semantic_tag: SemanticTag | None = None,
@@ -409,7 +412,8 @@ class LLMSummaryCompactionStrategy:
             session_id=session_id,
             role="user",
             text=_summary_payload(previous_summary, messages),
-        ).model_copy(update={"synthetic": True, "metadata": {"kind": "compaction_input"}})
+            scaffold=True,
+        ).model_copy(update={"metadata": {"kind": "compaction_input"}})
         context = ContextView(
             system_prompt=rendered_prompt,
             model_messages=[ModelMessage.from_record(summary_input)],
@@ -765,8 +769,10 @@ class ContextPreparationService:
                 ephemeral.append(
                     ContextFragment(
                         text=fragment.text,
-                        semantic_tag=fragment.semantic_tag,
                         target=fragment.target,
+                        role=fragment.role,
+                        scaffold=fragment.scaffold,
+                        semantic_tag=fragment.semantic_tag,
                     )
                 )
                 continue
@@ -794,6 +800,8 @@ class ContextPreparationService:
                     session=session,
                     run=run,
                     prompt=fragment.text,
+                    role=fragment.role,
+                    scaffold=fragment.scaffold,
                     sequence=len(messages) + 1,
                     metadata=metadata,
                     semantic_tag=fragment.semantic_tag,
@@ -855,7 +863,6 @@ class ContextPreparationService:
                 endpoint_id=adapter.model.endpoint_id,
                 model_id=adapter.model.model_id,
                 supports_vision=adapter.model.supports_vision,
-                semantic_envelopes=True,
                 system_prompt=prepared.system_prompt,
                 injected_messages=prepared.model_messages[:injected_message_count],
                 source_messages=source_messages,
@@ -1385,10 +1392,10 @@ def _serialize_messages(messages: Sequence[MessageRecord]) -> str:
     parts: list[str] = []
     for message in messages:
         label = {
+            "system": "System",
             "user": "User",
             "assistant": "Assistant",
             "tool_result": "Tool result",
-            "system_synthetic": "Synthetic context",
         }[message.role]
         if message.semantic_tag is not None:
             label += f" ({message.semantic_tag})"

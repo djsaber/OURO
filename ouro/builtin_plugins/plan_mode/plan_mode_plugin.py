@@ -359,6 +359,8 @@ class PlanModePlugin:
                 ContextFragment(
                     text=scaffold,
                     persistence="message",
+                    role="system",
+                    scaffold=True,
                     semantic_tag="plan-context",
                 ),
             )

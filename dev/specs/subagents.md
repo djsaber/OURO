@@ -76,7 +76,7 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
 2. child 继续使用正常 RuntimeService/InnerAgentLoop；不得创建 SubagentLoop 分叉实现。
 3. 并发、等待、取消、结果交付和恢复由 application/RuntimeSupervisor 编排。
 4. 模型工具只产生类型化 Agent control request；只有 application 可以创建 Session/Run、修改 Delegation
-   或排队 Host synthetic input。
+   或排队带显式 role/scaffold/provenance 的 Host input。
 5. user plugin 和 builtin plugin 都不得直接持有 RuntimeService、SessionStore、Supervisor 或可变 Agent registry。
 6. 同一 child Session 同时最多一个 active Run；根 Session 与不同 child Session 可并发运行。
 7. sync 等待是 spawn 后的 durable join，不是另一套执行路径。
@@ -433,8 +433,9 @@ RuntimeService -> AgentService -> RuntimeSupervisor -> RuntimeService 的实现�
 - CLI、Desktop 和未来 API 复用同一 supervised composition，不各自创建 Agent 调度路径。
 
 RuntimeSupervisor.submit/job 必须区分 `DelegatedTaskInput` 与普通 `HostSessionInput`。child 初始任务携带稳定
-`delegation_id` provenance，并以 `role=user` 进入 child canonical history；不得调用裸 `runtime.run(prompt)` 丢失
-委派身份。普通 Host/插件输入仍为 `role=system_synthetic`，不能借委派入口伪装用户消息。
+`delegation_id` provenance，并由该提供方显式声明 `role=user, scaffold=true` 进入 child canonical history；不得调用裸
+`runtime.run(prompt)` 丢失委派身份。普通 Host/插件输入保留各自 provenance 和提供方声明的 role/scaffold，不能借
+委派入口取得 delegation 身份或直接用户授权。
 
 ## Spawn 提交协议与幂等
 
@@ -541,7 +542,7 @@ next_boundary 应复用现有 durable queued input：
 
 - producer=host；
 - host_source_id=ouro.subagents/<delegation_id>；
-- role=system_synthetic；
+- role=system，scaffold=true；
 - queue id 与 delivery_id 稳定关联；
 
 `submit_host_input` 只负责持久接收并返回 receipt，`consume_host_input` 才把已接收项推进普通 Run 路径。异步 child
@@ -570,8 +571,8 @@ initial_message_id 与 prompt_digest，不复制 prompt。child 的文本上下�
 - 显式授权且属于父 Session 可达范围的 resource refs；
 - 必需的项目规则、Skills 和工具 contract。
 
-父 Session history、CompactionRecord、tool result、assistant tool call、reasoning/provider continuation 和
-system/plugin synthetic message 均不投影到 child。模型工具与 Host API 都不接受 canonical message ids；主智能体必须
+父 Session history、CompactionRecord、tool result、assistant tool call、reasoning/provider continuation 和各类
+脚手架消息均不投影到 child。模型工具与 Host API 都不接受 canonical message ids；主智能体必须
 在 task 中显式写出 child 完成任务所需的文本上下文。这样只有一条派遣语义，不建立第二套上下文选择、摘要或消息引用协议。
 
 资源不随父子关系隐式继承。Spawn 请求必须显式列出父 Session 已可达的 resource refs；ResourceService 在持有源

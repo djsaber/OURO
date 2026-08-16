@@ -68,7 +68,7 @@ class PlanBuildProvider:
             scaffold = next(
                 message.text_content
                 for message in reversed(messages)
-                if message.role == "system_synthetic" and "Plan file:" in message.text_content
+                if message.role == "system" and "Plan file:" in message.text_content
             )
             match = re.search(r"Plan file: (.+)", scaffold)
             assert match is not None
@@ -338,7 +338,7 @@ async def test_plan_mode_builds_with_shared_write_persists_scaffolds_and_resumes
         and message.metadata.get("plugin_id") == PLUGIN_ID
     ]
     assert len(scaffolds) == 3
-    assert all(message.role == "system_synthetic" for message in scaffolds)
+    assert all(message.role == "system" for message in scaffolds)
     assert all(message.semantic_tag == "plan-context" for message in scaffolds)
     assert all(str(first_provider.plan_path) in message.text_content for message in scaffolds)
     assert all(

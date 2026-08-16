@@ -151,8 +151,9 @@ async def test_anthropic_provider_maps_messages_tools_and_response_blocks() -> N
             messages=[
                 MessageRecord.text(
                     session_id="ses_1",
-                    role="system_synthetic",
+                    role="system",
                     text="Workspace policy.",
+                    semantic_tag="system-reminder",
                 ),
                 user,
                 assistant,
