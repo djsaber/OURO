@@ -291,6 +291,31 @@ def test_context_builder_derives_budget_metrics_from_model_limits() -> None:
     )
 
 
+def test_context_metrics_apply_model_limits_without_changing_usage_facts() -> None:
+    original = ContextBuilder().build(
+        messages=[MessageRecord.text(session_id="ses_1", role="user", text="hello")],
+        tools=[],
+        context_window_tokens=1_000,
+        reserved_output_tokens=200,
+    ).metrics
+
+    updated = original.with_model_limits(
+        context_window_tokens=2_000,
+        reserved_output_tokens=300,
+    )
+
+    assert updated.estimated_input_tokens == original.estimated_input_tokens
+    assert updated.estimated_fixed_tokens == original.estimated_fixed_tokens
+    assert updated.estimator_id == original.estimator_id
+    assert updated.estimator_version == original.estimator_version
+    assert updated.context_window_tokens == 2_000
+    assert updated.reserved_output_tokens == 300
+    assert updated.input_budget_tokens == 1_700
+    assert updated.estimated_remaining_tokens == 1_700 - original.estimated_input_tokens
+    assert updated.estimated_utilization_ratio == original.estimated_input_tokens / 1_700
+    assert original.context_window_tokens == 1_000
+
+
 def test_message_token_estimate_does_not_count_base64_image_bytes_as_text() -> None:
     small = ModelMessage(role="user", content=[ImageContent(uri="data:image/png;base64,AA==")])
     large = ModelMessage(

@@ -84,6 +84,7 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.configuration_workflows import _mcp_management_choices, _skill_choice
 from ouro.tui.controller import (
+    LoadedSession,
     McpServerStatus,
     TuiBootstrap,
     TuiController,
@@ -1483,11 +1484,15 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await conversation.add_user("Hello")
         await conversation.append_assistant("```python\nprint('Hi')\n```")
         await pilot.pause()
+        assert header.render().plain == " ▣ OURO New session"
+        assert f"v{__version__}" not in header.render().plain
         code_fence = conversation.query_one(MarkdownFence)
         assert code_fence.styles.background == composer.styles.background
         await conversation.add_notice("Status changed")
         assert not welcome.has_class("welcome-page")
         assert header.display
+        assert composer.region.x == conversation.content_region.x
+        assert composer.region.right == conversation.content_region.right
 
         popup = app.query_one(CommandPopup)
         assert popup.styles.overflow_y == "hidden"
@@ -1539,6 +1544,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         status_line = app.query_one(StatusLine)
         assert status_line.region.y == composer.region.bottom
         assert status_line.region.bottom == app.query_one("#main").region.bottom
+        assert status_line.content_region.x == composer.region.x
+        assert status_line.content_region.right == composer.region.right
         assert status_line.query_one("#context-detail", Static).render().plain == ""
         assert len(status_line.query("#status-detail")) == 0
         ready = status_line.query_one(ActivityIndicator).render()
@@ -1570,6 +1577,8 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
         assert context.plain == "3.0K █▒▒▒▒▒▒▒▒▒▒ 2%"
+        await pilot.pause()
+        assert context_detail.region.right == composer.region.right
         assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
             app.tui_theme.accent
         )
@@ -1795,6 +1804,50 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
         await app._select_model("supplier/chat-endpoint")
 
         assert "Ready • inherit • chat-endpoint" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    result = await application.runtime.run("create context")
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=result.session.session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        projection = app._projection
+        assert projection is not None
+        before = projection.activity.effective_context_metrics
+        assert before is not None
+        selected = app._models[0].model_copy(
+            update={"context_window": 256_000, "max_output_tokens": 16_000}
+        )
+
+        async def select_model(_selector: str) -> AvailableModel:
+            return selected
+
+        monkeypatch.setattr(app._controller, "select_model", select_model)
+        await app._select_model(selected.key)
+
+        after = projection.activity.effective_context_metrics
+        assert after is not None
+        assert after.estimated_input_tokens == before.estimated_input_tokens
+        assert after.estimated_fixed_tokens == before.estimated_fixed_tokens
+        assert after.estimator_id == before.estimator_id
+        assert after.context_window_tokens == 256_000
+        assert after.reserved_output_tokens == 16_000
+        assert after.input_budget_tokens == 240_000
+        status_line = app.query_one(StatusLine)
+        assert status_line._context_metrics == after
+        assert status_line.query_one("#context-detail", Static).render().plain
+
+        app._sync_activity(projection.activity)
+        assert status_line._context_metrics == after
 
 
 @pytest.mark.asyncio
@@ -3652,6 +3705,40 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
 
 
 @pytest.mark.asyncio
+async def test_session_load_projects_loading_activity_until_history_is_ready(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Long session").session
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        load_started = asyncio.Event()
+        release_load = asyncio.Event()
+        load_session = app._controller.load_session
+
+        async def slow_load(session_id: str) -> LoadedSession:
+            load_started.set()
+            await release_load.wait()
+            return await load_session(session_id)
+
+        monkeypatch.setattr(app._controller, "load_session", slow_load)
+        loading = asyncio.create_task(app._open_session(session.session_id))
+        await asyncio.wait_for(load_started.wait(), timeout=1)
+        await pilot.pause()
+
+        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
+        assert "Loading session" in indicator.render().plain
+
+        release_load.set()
+        await asyncio.wait_for(loading, timeout=2)
+        await pilot.pause()
+        assert "Ready" in indicator.render().plain
+
+
+@pytest.mark.asyncio
 async def test_session_picker_contains_load_failure_in_choice_dialog(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3680,6 +3767,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
         error = app.screen._choices[0].description
         assert session.session_id in error
         assert "message journal is invalid" in error
+        assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
         await pilot.press("escape")
         await pilot.pause()

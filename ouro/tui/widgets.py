@@ -57,6 +57,7 @@ _OURO_LOGO = """
 """
 _BUSY_ACTIVITIES = {
     "starting",
+    "loading_session",
     "mcp_connecting",
     "queued",
     "preparing_model",
@@ -72,6 +73,7 @@ _BUSY_ACTIVITIES = {
 }
 _ACTIVITY_LABELS = {
     "starting": "Starting services",
+    "loading_session": "Loading session",
     "mcp_connecting": "Connecting MCP servers",
     "idle": "Ready",
     "queued": "Queued",

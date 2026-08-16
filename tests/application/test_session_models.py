@@ -77,6 +77,8 @@ class _StaticCatalog:
             provider_id=provider_id,
             endpoint_id=endpoint_id,
             model_id=adapter.model.model_id,
+            context_window=adapter.model.context_window,
+            max_output_tokens=adapter.model.max_output_tokens,
         )
 
 
@@ -94,6 +96,8 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 model_id="alpha-model",
                 provider_id="alpha",
                 endpoint_id="default",
+                context_window=128_000,
+                max_output_tokens=8_000,
                 reasoning=ReasoningCapability(
                     activation="toggle",
                     supported_efforts=("low", "high"),
@@ -107,6 +111,8 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
                 model_id="beta-model",
                 provider_id="beta",
                 endpoint_id="fast",
+                context_window=256_000,
+                max_output_tokens=16_000,
                 reasoning=ReasoningCapability(
                     activation="always_on",
                     supported_efforts=("low",),
@@ -126,6 +132,30 @@ def _runtime(tmp_path) -> tuple[RuntimeService, _StaticCatalog, dict[str, _Respo
         catalog,
         providers,
     )
+
+
+@pytest.mark.asyncio
+async def test_session_context_metrics_keep_usage_and_follow_selected_model_limits(
+    tmp_path,
+) -> None:
+    runtime, _catalog, _providers = _runtime(tmp_path)
+    result = await runtime.run("first")
+    session_id = result.session.session_id
+    durable = runtime.sessions.effective_context_metrics(session_id)
+    assert durable is not None
+
+    runtime.switch_session_model(session_id, "beta/fast")
+    projected = runtime.session_context_metrics(session_id)
+
+    assert projected is not None
+    assert projected.estimated_input_tokens == durable.estimated_input_tokens
+    assert projected.estimated_fixed_tokens == durable.estimated_fixed_tokens
+    assert projected.estimator_id == durable.estimator_id
+    assert projected.context_window_tokens == 256_000
+    assert projected.reserved_output_tokens == 16_000
+    assert projected.input_budget_tokens == 240_000
+    assert durable.context_window_tokens == 128_000
+    assert durable.reserved_output_tokens == 8_000
 
 
 @pytest.mark.asyncio

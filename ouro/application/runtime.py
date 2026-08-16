@@ -64,7 +64,7 @@ from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
 from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
-from ouro.core.context import ContextBuilder
+from ouro.core.context import ContextBuilder, ContextMetrics
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
 from ouro.core.errors import (
@@ -875,6 +875,18 @@ class RuntimeService:
             return self.models.default_model()
         session = self.store.load_session_record(session_id)
         return self.models.resolve(session.current_model or self.models.default_model().key)
+
+    def session_context_metrics(self, session_id: str) -> ContextMetrics | None:
+        """Project existing context usage against the Session's selected model limits."""
+
+        metrics = self.sessions.effective_context_metrics(session_id)
+        if metrics is None:
+            return None
+        model = self.current_model(session_id)
+        return metrics.with_model_limits(
+            context_window_tokens=model.context_window,
+            reserved_output_tokens=model.max_output_tokens,
+        )
 
     def resolve_model(self, selector: str) -> AvailableModel:
         """Resolve and validate a model route before it is attached to a session."""

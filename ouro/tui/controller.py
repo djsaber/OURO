@@ -1595,7 +1595,8 @@ class TuiController:
         self._session_archived = False
 
     def _read_session(self, session_id: str) -> LoadedSession:
-        sessions = self._runtime().sessions
+        runtime = self._runtime()
+        sessions = runtime.sessions
         detail = sessions.open(session_id, recover=False)
         messages = self._session_messages(session_id)
 
@@ -1625,7 +1626,7 @@ class TuiController:
             events=tuple(events),
             runs=sessions.run_history(session_id),
             context_status=sessions.context_status(session_id),
-            effective_context_metrics=sessions.effective_context_metrics(session_id),
+            effective_context_metrics=runtime.session_context_metrics(session_id),
             compactions=sessions.compactions(session_id),
             queued_inputs=self._queued_user_inputs(session_id),
         )

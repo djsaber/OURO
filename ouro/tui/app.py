@@ -23,7 +23,6 @@ from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import TextArea
 
-from ouro import __version__
 from ouro.application.models import AvailableModel, ModelReasoningState
 from ouro.application.queued_inputs import QueuedInputMode, QueuedUserInputView
 from ouro.application.session_models import SessionCatalogEntry
@@ -110,7 +109,6 @@ class LifecycleStatusReceived(Message):
 _RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
-_WELCOME_HEADER_CONTEXT = f"v{__version__}"
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "compaction_completed",
     "run_completed",
@@ -202,6 +200,8 @@ _OURO_TUI_CSS = """
     $ouro-border-right: #34373d;
     $ouro-border-focus: #3f4650;
     $ouro-highlight: #242424;
+    $conversation-left-gutter: 2;
+    $conversation-right-gutter: 1;
     $welcome-width: 72%;
     $welcome-min-width: 48;
     $welcome-max-width: 116;
@@ -291,7 +291,7 @@ _OURO_TUI_CSS = """
     #conversation {
         width: 100%;
         height: 1fr;
-        padding: 1 1 0 2;
+        padding: 1 $conversation-right-gutter 0 $conversation-left-gutter;
         background: $ouro-background;
         scrollbar-background: transparent;
         scrollbar-color: transparent;
@@ -652,7 +652,7 @@ _OURO_TUI_CSS = """
 
     #composer {
         height: 3;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: #e5e7eb;
         background: $ouro-panel;
@@ -701,7 +701,7 @@ _OURO_TUI_CSS = """
     StatusLine {
         height: 1;
         margin: 0;
-        padding: 0 2;
+        padding: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         color: #6f7a87;
         background: $ouro-background;
     }
@@ -955,7 +955,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
 
     def compose(self) -> ComposeResult:
-        header = BrandHeader(initial_context=_WELCOME_HEADER_CONTEXT)
+        header = BrandHeader(initial_context=self._active_title)
         header.display = False
         yield header
         with Vertical(id="main"):
@@ -1042,8 +1042,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._models = bootstrap.models
         self._sessions = bootstrap.sessions
         self._active_model = bootstrap.current_model.endpoint_id
-        header = self.query_one(BrandHeader)
-        header.set_context(session_title=_WELCOME_HEADER_CONTEXT)
         status_line = self.query_one(StatusLine)
         status_line.set_model(self._active_model)
         status_line.set_activity("idle")
@@ -1119,7 +1117,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _show_welcome(self, *, refresh_status: bool = True) -> None:
         if refresh_status:
             await self._refresh_system_status()
-        self.query_one(BrandHeader).set_context(session_title=_WELCOME_HEADER_CONTEXT)
         await self.query_one(ConversationView).show_welcome()
         self._set_welcome_mode(True)
 
@@ -2023,7 +2020,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._projection = None
         self._interaction = None
         self._active_title = "New session"
-        self.query_one(BrandHeader).set_context(session_title=_WELCOME_HEADER_CONTEXT)
+        self.query_one(BrandHeader).set_context(session_title=self._active_title)
         self.query_one(StatusLine).set_activity("idle")
         self.query_one(StatusLine).set_context(None)
         self._sync_interaction(None)
@@ -2222,33 +2219,43 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return True
 
     async def _open_session(self, session_id: str) -> None:
-        loaded = await self._controller.load_session(session_id)
-        # The selected Session now owns the surface. Clear every interaction
-        # projected by the previous Session before yielding while its history
-        # is mounted; the new projection will restore its own pending request.
-        self._projection = None
-        self._interaction = None
-        self._sync_interaction(None)
-        conversation = self.query_one(ConversationView)
-        await conversation.load_messages(
-            loaded.messages,
-            loaded.compactions,
-            project_run_presentations(
-                (run for run in loaded.runs if run.kind == "agent"),
+        previous_projection = self._projection
+        status_line = self.query_one(StatusLine)
+        status_line.set_activity("loading_session")
+        try:
+            loaded = await self._controller.load_session(session_id)
+            # The selected Session now owns the surface. Clear every interaction
+            # projected by the previous Session before yielding while its history
+            # is mounted; the new projection will restore its own pending request.
+            self._projection = None
+            self._interaction = None
+            self._sync_interaction(None)
+            conversation = self.query_one(ConversationView)
+            await conversation.load_messages(
                 loaded.messages,
-            ),
-        )
-        self._set_welcome_mode(conversation.showing_welcome)
-        self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
-        await self._restore_projection(loaded)
-        session = loaded.detail.session
-        self._active_title = session.title
-        if session.current_model is not None:
-            self._active_model = _model_endpoint_name(session.current_model)
-        self.query_one(BrandHeader).set_context(session_title=self._active_title)
-        self.query_one(StatusLine).set_model(self._active_model)
-        await self._refresh_approval_indicator()
-        await self._refresh_reasoning_indicator()
+                loaded.compactions,
+                project_run_presentations(
+                    (run for run in loaded.runs if run.kind == "agent"),
+                    loaded.messages,
+                ),
+            )
+            self._set_welcome_mode(conversation.showing_welcome)
+            self.query_one(QueuedInputPanel).set_inputs(loaded.queued_inputs)
+            await self._restore_projection(loaded)
+            session = loaded.detail.session
+            self._active_title = session.title
+            if session.current_model is not None:
+                self._active_model = _model_endpoint_name(session.current_model)
+            self.query_one(BrandHeader).set_context(session_title=self._active_title)
+            status_line.set_model(self._active_model)
+            await self._refresh_approval_indicator()
+            await self._refresh_reasoning_indicator()
+        except Exception:
+            if previous_projection is None:
+                status_line.set_activity("idle")
+            else:
+                self._sync_activity(previous_projection.activity)
+            raise
 
     def _show_session_load_error(
         self,
@@ -2348,9 +2355,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify(str(exc), severity="error", markup=False)
             return
         self._active_model = model.endpoint_id
-        self.query_one(StatusLine).set_model(self._active_model)
+        status_line = self.query_one(StatusLine)
+        status_line.set_model(self._active_model)
         await self._refresh_reasoning_indicator()
-        self.query_one(StatusLine).set_context(None)
+        projection = self._projection
+        metrics = None
+        if projection is not None:
+            metrics = projection.activity.effective_context_metrics
+            if metrics is not None:
+                metrics = metrics.with_model_limits(
+                    context_window_tokens=model.context_window,
+                    reserved_output_tokens=model.max_output_tokens,
+                )
+                projection.activity = projection.activity.model_copy(
+                    update={"effective_context_metrics": metrics}
+                )
+        status_line.set_context_metrics(metrics)
         if applies_to_next_request:
             reasoning = (
                 f" · {_format_reasoning_state(self._reasoning_state)}"

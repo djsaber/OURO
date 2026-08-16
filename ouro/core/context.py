@@ -70,6 +70,32 @@ class ContextMetrics(OuroModel):
             raise ValueError("over-budget state does not match the input estimate and budget")
         return self
 
+    def with_model_limits(
+        self,
+        *,
+        context_window_tokens: int,
+        reserved_output_tokens: int,
+    ) -> ContextMetrics:
+        """Keep measured context facts while applying another model's capacity."""
+
+        input_budget_tokens = context_window_tokens - reserved_output_tokens
+        if input_budget_tokens < 1:
+            raise ValueError("reserved_output_tokens must be lower than context_window_tokens")
+        estimated_remaining_tokens = input_budget_tokens - self.estimated_input_tokens
+        return ContextMetrics.model_validate(
+            {
+                **self.model_dump(),
+                "context_window_tokens": context_window_tokens,
+                "reserved_output_tokens": reserved_output_tokens,
+                "input_budget_tokens": input_budget_tokens,
+                "estimated_remaining_tokens": estimated_remaining_tokens,
+                "estimated_utilization_ratio": (
+                    self.estimated_input_tokens / input_budget_tokens
+                ),
+                "over_budget": estimated_remaining_tokens < 0,
+            }
+        )
+
 
 class ProviderContext(OuroModel):
     """Provider-neutral arguments accepted by OURO's unified Provider boundary."""
