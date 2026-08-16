@@ -547,6 +547,72 @@ async def test_abnormal_terminal_policy_can_pause_and_release_exact_control(
 
 
 @pytest.mark.asyncio
+async def test_bound_terminal_policy_can_replace_its_exact_activation(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    plugin_id = "dev.example.mode"
+    activation = _activation(plugin_id, "mode")
+    session = SessionRecord(controls=SessionControlState(revision=1, activations=[activation]))
+    store.create_session(session)
+    controller_ref = _controller(plugin_id, "boundary", "gen-mode").model_copy(
+        update={
+            "active_when_controller_id": activation.controller_id,
+            "activation_id": activation.activation_id,
+        }
+    )
+    run = RunRecord(
+        session_id=session.session_id,
+        status="completed",
+        continuation=RunContinuationCheckpoint(controllers=[controller_ref]),
+    )
+    store.save_run(run)
+    registry = RunContinuationRegistry()
+    registry.replace_owner(
+        "mode-policy",
+        (
+            ContinuationPolicyRegistration(
+                plugin_id=plugin_id,
+                policy_id="boundary",
+                handler=lambda _outcome: ContinuationDecision(
+                    action="pause",
+                    reason="budget_exhausted",
+                    session_control_transitions=[
+                        SessionControlTransitionRequest(
+                            action="replace",
+                            controller_id="mode",
+                            replace_activation_ids=[activation.activation_id],
+                            payload={"status": "budget_exhausted"},
+                        )
+                    ],
+                ),
+                generation_id="gen-mode",
+                execution_contract_hash=controller_ref.execution_contract_hash,
+                contract_hash=controller_ref.contract_hash,
+                active_when_controller_id=activation.controller_id,
+            ),
+        ),
+    )
+    lifecycle_calls = []
+
+    settlement = await RunContinuationService(
+        store=store,
+        registry=registry,
+        queue=QueuedInputQueue(store),
+        session_controllers=_session_controller_registry(
+            plugin_id,
+            controller_ref.execution_contract_hash,
+            lifecycle_calls,
+        ),
+    ).settle(session_id=session.session_id, run_id=run.run_id)
+
+    remaining = store.load_session_record(session.session_id).controls.activations
+    assert settlement.settled is True
+    assert len(remaining) == 1
+    assert remaining[0].activation_id != activation.activation_id
+    assert [call.activation_id for call in lifecycle_calls] == [activation.activation_id]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure_mode", "error_type"),
     [
@@ -785,6 +851,9 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
         contract_hash=controller_ref.contract_hash,
         action="continue",
         prompt="Resume the durable boundary work.",
+        role="user",
+        semantic_tag="goal-continue",
+        coalesce_key="goal-continuation",
     )
     run = RunRecord(
         session_id=session.session_id,
@@ -840,6 +909,9 @@ async def test_runtime_startup_reconciliation_replays_pending_settlement_without
     assert restored.continuation is not None
     assert restored.continuation.action == "continue"
     assert [item.prompt for item in queued] == ["Resume the durable boundary work."]
+    assert queued[0].message_role == "user"
+    assert queued[0].semantic_tag == "goal-continue"
+    assert queued[0].coalesce_key == "goal-continuation"
     assert [event.event_type for event in events].count("run_continuation_resolved") == 1
     await runtime.close()
 

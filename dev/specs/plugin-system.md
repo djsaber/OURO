@@ -340,7 +340,7 @@ Context 只暴露稳定、必要的能力：
 - 只读 configuration；
 - plugin-private data view；候选读取共享数据，但写入/删除进入隔离 staging，active 发布后才提交到共享 data；
 - 可选的 owner-bound Session state view：只读写当前 plugin id 在指定 Session 下的版本化 JSON 值，并声明
-  `copy | reset | reject` branch policy 与 synthetic projection tags；它不是通用 KV，也不暴露 SessionStore；
+  `copy | reset | reject` branch policy 与 semantic projection tags；它不是通用 KV，也不暴露 SessionStore；
   candidate Generation 可以读取，但发布前写入一律失败；
 - credential slot resolver；
 - supervised tasks；
@@ -352,8 +352,8 @@ Context 只暴露稳定、必要的能力：
 不暴露 RuntimeService、SessionStore、全局 registry、Host UI、原始配置文件或 credential store。
 
 以 `session_id` 为 identity 且影响后续模型行为的插件状态属于 Session 聚合。当前 Goal、Plan、Todo 已使用该
-owner-bound view；branch、export、trash 与 File/SQLite migration 由 Host 的 Session 生命周期负责。旧
-`plugins/data/<plugin>/sessions|todos/*.json` 只由启动期显式 migrator 消费，不存在运行时 fallback 双轨。
+owner-bound view；branch、export、trash 与 File/SQLite migration 由 Host 的 Session 生命周期负责。旧 Plan/Todo
+文件只由启动期显式 migrator 消费，不存在运行时 fallback 双轨；Goal v3 不接受旧状态结构。
 
 ### 8.2 Request context
 
@@ -362,7 +362,19 @@ owner-bound view；branch、export、trash 与 File/SQLite migration 由 Host �
 Session Controller 的 activate/deactivate call 还必须提供 Host 已知的 `session_kind = primary | subagent`；插件不能
 从 session id、父目录或私有存储推断 Session 类型。
 
-### 8.3 开发期 API 规则
+### 8.3 Session input
+
+插件 command 可返回单条 `SessionInput`，或返回一个或多个 `SessionInputBatch`；同一 command 结果不能混用两种
+形态。batch 必须非空、保持组内顺序且所有成员使用相同 delivery mode。Application 以一个 Session mutation 原子
+接受完整 batch，并在同一安全边界把整组转为 canonical messages；`one_by_one` 只能选择完整消费单位，不能拆分
+batch。SDK、in-process adapter、worker protocol、CLI 和 TUI 使用同一类型化契约。
+
+`role` 只表达模型消息角色，producer provenance 独立保存。插件可以为脚手架选择 `role=user`，也可以在 user-role
+输入上声明 `semantic_tag`；这不会把 producer 改成直接用户，也不会自动授予用户权限。模型投影继续使用统一
+semantic envelope renderer。可选 `coalesce_key` 只允许新批次替换同一 Session、plugin owner 和 contribution 下
+尚未消费的旧控制投影；不能删除 canonical message、跨 owner 搜索、重排或建立通用优先级。
+
+### 8.4 开发期 API 规则
 
 - `plugin_api` 和 worker protocol 使用显式版本；
 - 当前阶段发现模型错误可以直接破坏式修正；

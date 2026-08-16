@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from ouro.application.queued_inputs import QUEUED_INPUTS_KEY, QueuedInputQueue
 from ouro.core.messages import SkillActivationContent
+from ouro.core.session_controls import SessionInputRequest
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
 
@@ -41,6 +42,61 @@ def test_queued_input_queue_persists_items_fifo_and_clears_when_empty(tmp_path) 
     assert second.prompt == "second"
     assert second.title == "Second"
     assert QUEUED_INPUTS_KEY not in snapshot.session.metadata
+
+
+def test_atomic_batch_is_one_ordered_unit_and_coalesces_only_its_owner(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Atomic batches")
+    store.create_session(session)
+    queue = QueuedInputQueue(store)
+    attribution = {
+        "source": "plugin",
+        "plugin_id": "dev.example.goal",
+        "contribution_id": "goal",
+        "generation_id": "generation_1",
+        "execution_contract_hash": "contract_1",
+    }
+
+    _, first, _, _ = queue.enqueue_batch(
+        snapshot=store.load_session(session.session_id),
+        inputs=(
+            SessionInputRequest(
+                prompt="control",
+                role="user",
+                semantic_tag="goal-updated",
+            ),
+            SessionInputRequest(prompt="objective", role="user"),
+        ),
+        coalesce_key="goal-lifecycle",
+        **attribution,
+    )
+    queue.enqueue_batch(
+        snapshot=store.load_session(session.session_id),
+        inputs=(SessionInputRequest(prompt="another owner"),),
+        source="plugin",
+        plugin_id="dev.example.other",
+        contribution_id="goal",
+        generation_id="generation_1",
+        execution_contract_hash="contract_1",
+        coalesce_key="goal-lifecycle",
+    )
+    _, replacement, _, superseded = queue.enqueue_batch(
+        snapshot=store.load_session(session.session_id),
+        inputs=(SessionInputRequest(prompt="final control", role="user"),),
+        coalesce_key="goal-lifecycle",
+        **attribution,
+    )
+
+    units = queue.eligible_units(store.load_session(session.session_id))
+    assert [item.prompt for item in superseded] == ["control", "objective"]
+    assert len({item.batch_id for item in first}) == 1
+    assert [item.batch_index for item in first] == [0, 1]
+    assert [[item.prompt for item in unit] for unit in units] == [
+        ["another owner"],
+        ["final control"],
+    ]
+    assert units[-1] == replacement
 
 
 def test_queued_input_queue_removes_invalid_item(tmp_path) -> None:

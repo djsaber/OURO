@@ -29,6 +29,7 @@ from ouro.core.observers import (
     ToolCallRequestedObservation,
 )
 from ouro.core.prompt_policies import PromptPolicyCall
+from ouro.core.session_controls import SessionInputBatchRequest, SessionInputRequest
 from ouro.core.state import RunOutcome, RunRecord, SessionRecord
 from ouro.core.tool_policies import ToolPolicyCall, ToolPolicyRegistry
 from ouro.core.tools import ToolInvocation
@@ -68,7 +69,12 @@ from ouro.plugins.models import (
     create_configuration_revision,
 )
 from ouro.plugins.package import PluginPackageError, validate_plugin_package
-from ouro.plugins.registry import PluginCommand, PluginCommandError, PluginCommandRegistry
+from ouro.plugins.registry import (
+    PluginCommand,
+    PluginCommandError,
+    PluginCommandRegistry,
+    PluginCommandResult,
+)
 from ouro.plugins.runtime import PluginRuntimeResource
 from ouro.plugins.store import (
     PluginPackageStore,
@@ -2398,15 +2404,26 @@ for line in sys.stdin:
         argument = request['params']['call']['argument']
         result = {
             'output': 'started',
-            'session_inputs': [{
-                'prompt': 'Goal: ' + argument,
-                'mode': 'follow_up',
-                'role': 'user',
+            'session_input_batches': [{
+                'coalesce_key': 'goal-control',
+                'inputs': [{
+                    'prompt': 'Goal: ' + argument,
+                    'mode': 'follow_up',
+                    'role': 'user',
+                    'semantic_tag': 'goal-create',
+                }],
             }],
         }
     elif method == 'continuation.call':
         if request['params']['call']['status'] == 'completed':
-            result = {'action': 'continue', 'prompt': 'Continue goal', 'state_revision': 3}
+            result = {
+                'action': 'continue',
+                'prompt': 'Continue goal',
+                'role': 'user',
+                'semantic_tag': 'goal-continue',
+                'coalesce_key': 'goal-control',
+                'state_revision': 3,
+            }
         else:
             result = {
                 'action': 'pause',
@@ -2429,7 +2446,7 @@ for line in sys.stdin:
                 {
                     'text': 'Current goal: ship',
                     'persistence': 'message',
-                    'semantic_tag': 'goal-contract',
+                    'semantic_tag': 'worker-context',
                 },
             ]
         }
@@ -2472,8 +2489,10 @@ for line in sys.stdin:
 
     assert (await service.enable("dev.ouro.worker_goal")).status == "active"
     command = await service.execute_command("dev.ouro.worker_goal:goal", "ship")
-    assert command.session_inputs[0].prompt == "Goal: ship"
-    assert command.session_inputs[0].role == "user"
+    assert command.session_inputs == []
+    assert command.session_input_batches[0].inputs[0].prompt == "Goal: ship"
+    assert command.session_input_batches[0].inputs[0].role == "user"
+    assert command.session_input_batches[0].inputs[0].semantic_tag == "goal-create"
     snapshot = runtime.snapshot()
     policy = snapshot.continuations.registered()[0]
     decision = await policy.handler(
@@ -2486,6 +2505,9 @@ for line in sys.stdin:
     )
     assert decision.action == "continue"
     assert decision.prompt == "Continue goal"
+    assert decision.role == "user"
+    assert decision.semantic_tag == "goal-continue"
+    assert decision.coalesce_key == "goal-control"
     assert decision.state_revision == 3
     terminal_decision = await policy.handler(
         RunOutcome(
@@ -2530,7 +2552,7 @@ for line in sys.stdin:
     )
     assert [fragment.text for fragment in context_result.fragments] == ["Current goal: ship"]
     assert context_result.fragments[0].persistence == "message"
-    assert context_result.fragments[0].semantic_tag == "goal-contract"
+    assert context_result.fragments[0].semantic_tag == "worker-context"
     assert context_provider.failure_mode == "block"
     turn_policy = snapshot.turn_policies.registered()[0]
     turn_decision = await turn_policy.handler(
@@ -4025,3 +4047,47 @@ async def test_plugin_command_boundary_is_namespaced_timed_and_redacted() -> Non
 
     assert "command-secret" not in str(raised.value)
     assert "token=***" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_plugin_command_attributes_an_atomic_input_batch_as_one_owner() -> None:
+    registry = PluginCommandRegistry()
+
+    async def batch_command(request):
+        return PluginCommandResult(
+            command_id=request.command_id,
+            session_input_batches=[
+                SessionInputBatchRequest(
+                    inputs=(
+                        SessionInputRequest(
+                            prompt="control",
+                            role="user",
+                            semantic_tag="goal-updated",
+                        ),
+                        SessionInputRequest(prompt="objective", role="user"),
+                    ),
+                    coalesce_key="goal-lifecycle",
+                )
+            ],
+        )
+
+    registry.register(
+        PluginCommand(
+            name="batch",
+            plugin_id="dev.example.commands",
+            handler=batch_command,
+            allow_session_inputs=True,
+            generation_id="generation_1",
+            execution_contract_hash="contract_1",
+        )
+    )
+
+    result = await registry.execute("dev.example.commands:batch")
+
+    assert result.attributed_session_inputs == []
+    assert len(result.attributed_session_input_batches) == 1
+    batch = result.attributed_session_input_batches[0]
+    assert batch.coalesce_key == "goal-lifecycle"
+    assert [item.prompt for item in batch.inputs] == ["control", "objective"]
+    assert {item.plugin_id for item in batch.inputs} == {"dev.example.commands"}
+    assert {item.contribution_id for item in batch.inputs} == {"batch"}

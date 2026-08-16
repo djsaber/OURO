@@ -8,8 +8,13 @@ from pydantic import Field, model_validator
 
 from ouro.core.base import OuroModel
 from ouro.core.callbacks import invoke_bounded_callback
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.redaction import redact_text
-from ouro.core.session_controls import SessionControlTransitionRequest, SessionInputMode
+from ouro.core.session_controls import (
+    SessionControlTransitionRequest,
+    SessionInputMode,
+    SessionInputRole,
+)
 from ouro.core.state import RunOutcome
 
 ContinuationAction = Literal["ignore", "continue", "complete", "pause", "fail"]
@@ -22,6 +27,9 @@ class ContinuationDecision(OuroModel):
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
+    role: SessionInputRole = "system_synthetic"
+    semantic_tag: SemanticTag | None = None
+    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)

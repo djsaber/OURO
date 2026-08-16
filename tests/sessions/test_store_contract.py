@@ -310,18 +310,18 @@ def test_session_store_owns_extension_state_lifecycle(session_store: SessionStor
     session_store.create_session(session)
     state = SessionExtensionStateRecord(
         session_id=session.session_id,
-        owner_id="dev.ouro.goal_mode",
+        owner_id="dev.example.state",
         state_schema_version=2,
         branch_policy="reset",
-        projection_semantic_tags=("goal-contract",),
-        payload={"goal": {"status": "active"}},
+        projection_semantic_tags=("example-projection",),
+        payload={"status": "active"},
     )
 
     assert session_store.load_session_extension_states(session.session_id) == []
     session_store.save_session_extension_state(state)
     assert session_store.load_session_extension_states(session.session_id) == [state]
 
-    updated = state.model_copy(update={"payload": {"goal": {"status": "complete"}}})
+    updated = state.model_copy(update={"payload": {"status": "complete"}})
     session_store.save_session_extension_state(updated)
     assert session_store.load_session_extension_states(session.session_id) == [updated]
     assert session_store.load_session(session.session_id).extension_states == [updated]

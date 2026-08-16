@@ -114,10 +114,12 @@ from ouro.core.run_budget import RunBudgetPolicy
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
+    AttributedSessionInputBatch,
     DelegatedTaskInput,
     HostSessionInput,
     SessionControlActivation,
     SessionControlTransitionResult,
+    SessionInputRequest,
     SessionInputRole,
 )
 from ouro.core.state import (
@@ -1503,10 +1505,10 @@ class RuntimeService:
                     message_role=_input_message_role(_input_attribution),
                     semantic_tag=(
                         _input_attribution.semantic_tag
-                        if isinstance(_input_attribution, HostSessionInput)
-                        else "plugin-message"
-                        if isinstance(_input_attribution, AttributedSessionInput)
-                        and _input_attribution.role == "system_synthetic"
+                        if isinstance(
+                            _input_attribution,
+                            HostSessionInput | AttributedSessionInput,
+                        )
                         else None
                     ),
                     host_source_id=(
@@ -1917,6 +1919,55 @@ class RuntimeService:
             _input_attribution=session_input,
         )
 
+    async def submit_plugin_input_batch(
+        self,
+        batch: AttributedSessionInputBatch,
+        *,
+        session_id: str,
+    ) -> RunResult:
+        """Durably accept and consume one attributed atomic input unit."""
+
+        snapshot = self._load_runtime_snapshot(
+            session_id,
+            recover=not self.run_ownership.is_locked(session_id),
+        )
+        active = maybe_active_run(snapshot.runs)
+        queued_session, queued, _ = await self._queue_input_batch(
+            snapshot=snapshot,
+            active_run=active,
+            batch=batch,
+        )
+        if active is not None:
+            return RunResult(session=queued_session, run=active)
+        target_ids = {item.queue_id for item in queued}
+        while True:
+            snapshot = self._load_runtime_snapshot(
+                session_id,
+                recover=not self.run_ownership.is_locked(session_id),
+            )
+            active = maybe_active_run(snapshot.runs)
+            if active is not None:
+                return RunResult(session=snapshot.session, run=active)
+            pending = self._pending_queued_inputs(snapshot)
+            if not pending:
+                break
+            try:
+                result = await self.run(
+                    pending[0].prompt,
+                    session_id=session_id,
+                    title=pending[0].title,
+                    _queued_inputs=pending,
+                )
+            except _QueuedInputSelectionChanged:
+                continue
+            consumed_ids = {
+                str(message.metadata.get("queued_input_id"))
+                for message in self.store.load_runtime_session(session_id).messages
+            }
+            if target_ids <= consumed_ids or result.run.status != "completed":
+                return result
+        raise PersistenceError("accepted plugin input batch is missing from queue and history")
+
     async def submit_host_input(
         self,
         session_input: HostSessionInput,
@@ -2082,10 +2133,7 @@ class RuntimeService:
                 message_role=message_role,
                 semantic_tag=(
                     attribution.semantic_tag
-                    if isinstance(attribution, HostSessionInput)
-                    else "plugin-message"
-                    if isinstance(attribution, AttributedSessionInput)
-                    and message_role == "system_synthetic"
+                    if isinstance(attribution, HostSessionInput | AttributedSessionInput)
                     else None
                 ),
                 host_source_id=(
@@ -2187,6 +2235,69 @@ class RuntimeService:
             )
         return session, queued_input, emitted
 
+    async def _queue_input_batch(
+        self,
+        *,
+        snapshot: RuntimeSessionSnapshot,
+        active_run: RunRecord | None,
+        batch: AttributedSessionInputBatch,
+    ) -> tuple[SessionRecord, tuple[QueuedInput, ...], list[EventRecord]]:
+        first = batch.inputs[0]
+        requests = tuple(
+            SessionInputRequest(
+                prompt=item.prompt,
+                mode=item.mode,
+                title=item.title,
+                role=item.role,
+                semantic_tag=item.semantic_tag,
+            )
+            for item in batch.inputs
+        )
+        session, queued, queue_size, superseded = self.queued_inputs.enqueue_batch(
+            snapshot=snapshot,
+            inputs=requests,
+            source="plugin",
+            plugin_id=first.plugin_id,
+            contribution_id=first.contribution_id,
+            generation_id=first.generation_id,
+            execution_contract_hash=first.execution_contract_hash,
+            coalesce_key=batch.coalesce_key,
+            caused_by_run_id=active_run.run_id if active_run is not None else None,
+        )
+        for item in superseded:
+            self._release_queued_extension_snapshot(item.queue_id)
+        emitted: list[EventRecord] = []
+        payload = {
+            "batch_id": queued[0].batch_id,
+            "queue_ids": [item.queue_id for item in queued],
+            "batch_size": len(queued),
+            "mode": queued[0].mode,
+            "queue_size": queue_size,
+            "plugin_id": first.plugin_id,
+            "contribution_id": first.contribution_id,
+            "coalesce_key": batch.coalesce_key,
+            "superseded_queue_ids": [item.queue_id for item in superseded],
+        }
+        if active_run is None:
+            emitted.append(
+                await self.event_recorder.publish(
+                    session_id=session.session_id,
+                    run_id=None,
+                    event_type="session_input_batch_queued",
+                    payload=payload,
+                )
+            )
+        else:
+            await self.event_recorder.emit(
+                emitted,
+                self.store.latest_event_sequence(session.session_id),
+                session_id=session.session_id,
+                run_id=active_run.run_id,
+                event_type="session_input_batch_queued",
+                payload=payload,
+            )
+        return session, queued, emitted
+
     async def _drain_queued_input_queue(self, session_id: str) -> None:
         while True:
             snapshot = self._load_runtime_snapshot(
@@ -2212,28 +2323,37 @@ class RuntimeService:
                 return
 
     def _pending_queued_inputs(self, snapshot: RuntimeSessionSnapshot) -> list[QueuedInput]:
-        limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
-        queued = self.queued_inputs.eligible(snapshot, limit=limit)
-        pending: list[QueuedInput] = []
-        for item in queued:
-            if self._queued_input_is_durable(snapshot.messages, item.queue_id):
-                self.queued_inputs.acknowledge(snapshot, item.queue_id)
-                self._release_queued_extension_snapshot(item.queue_id)
+        units = self.queued_inputs.eligible_units(snapshot)
+        pending_units: list[tuple[QueuedInput, ...]] = []
+        for unit in units:
+            durable = [
+                self._queued_input_is_durable(snapshot.messages, item.queue_id) for item in unit
+            ]
+            if all(durable):
+                self.queued_inputs.acknowledge_many(
+                    session_id=snapshot.session.session_id,
+                    queue_ids=tuple(item.queue_id for item in unit),
+                )
+                for item in unit:
+                    self._release_queued_extension_snapshot(item.queue_id)
                 continue
-            pending.append(item)
-        if pending and self.queued_input_config.consumption_mode == "all_at_once":
-            first = pending[0]
-            compatible: list[QueuedInput] = []
-            for item in pending:
-                if first.prompt_policy_checked:
-                    matches = self._same_approved_queue_contract(first, item)
-                else:
-                    matches = not item.prompt_policy_checked
-                if not matches:
-                    break
-                compatible.append(item)
-            pending = compatible
-        return pending
+            pending_units.append(unit)
+        if not pending_units:
+            return []
+        if self.queued_input_config.consumption_mode == "one_by_one":
+            return list(pending_units[0])
+        first = pending_units[0][0]
+        compatible_units: list[tuple[QueuedInput, ...]] = []
+        for unit in pending_units:
+            item = unit[0]
+            if first.prompt_policy_checked:
+                matches = all(self._same_approved_queue_contract(first, member) for member in unit)
+            else:
+                matches = not item.prompt_policy_checked
+            if not matches:
+                break
+            compatible_units.append(unit)
+        return [item for unit in compatible_units for item in unit]
 
     @staticmethod
     def _same_approved_queue_contract(first: QueuedInput, item: QueuedInput) -> bool:
@@ -2260,8 +2380,10 @@ class RuntimeService:
         turn_id: str,
     ) -> TurnBoundaryInputResult:
         snapshot = self.store.load_runtime_session(session.session_id)
-        limit = 1 if self.queued_input_config.consumption_mode == "one_by_one" else None
-        eligible = self.queued_inputs.eligible(snapshot, mode="steer", limit=limit)
+        units = self.queued_inputs.eligible_units(snapshot, mode="steer")
+        if self.queued_input_config.consumption_mode == "one_by_one":
+            units = units[:1]
+        eligible = [item for unit in units for item in unit]
         if not eligible:
             return TurnBoundaryInputResult(sequence=sequence)
 
@@ -2425,6 +2547,15 @@ class RuntimeService:
         if is_queued:
             metadata["queued_input_id"] = item.queue_id
             metadata["queued_input_mode"] = item.mode
+        if item.batch_id is not None:
+            metadata.update(
+                {
+                    "session_input_batch_id": item.batch_id,
+                    "session_input_batch_index": item.batch_index,
+                    "session_input_batch_size": item.batch_size,
+                    "session_input_coalesce_key": item.coalesce_key,
+                }
+            )
         if item.source == "plugin" and item.resource_refs:
             raise ResourceAttachmentError(
                 "plugin session inputs cannot attach Host resource references"
@@ -2464,6 +2595,7 @@ class RuntimeService:
             sequence=sequence,
             resource_refs=item.resource_refs,
             metadata=metadata,
+            semantic_tag=item.semantic_tag,
         )
 
     def _start_queued_run(
@@ -2499,8 +2631,10 @@ class RuntimeService:
                     is_queued=True,
                 )
                 messages.append(message)
-                latest = self.store.load_runtime_session(session.session_id)
-                self.queued_inputs.acknowledge(latest, item.queue_id)
+            self.queued_inputs.acknowledge_many(
+                session_id=session.session_id,
+                queue_ids=tuple(item.queue_id for item in inputs),
+            )
         return started_session, started_run, messages
 
     def _consume_queued_turn_input(
@@ -2527,7 +2661,13 @@ class RuntimeService:
                 None,
             )
             if durable is not None:
-                self.queued_inputs.acknowledge(latest, item.queue_id)
+                if item.batch_id is None:
+                    self.queued_inputs.acknowledge(latest, item.queue_id)
+                elif item.batch_size is not None and item.batch_index == item.batch_size - 1:
+                    self.queued_inputs.acknowledge_batch(
+                        session_id=session.session_id,
+                        batch_id=item.batch_id,
+                    )
                 return durable, False
             message = self._append_session_input(
                 session=session,
@@ -2536,8 +2676,14 @@ class RuntimeService:
                 sequence=sequence,
                 is_queued=True,
             )
-            latest = self.store.load_runtime_session(session.session_id)
-            self.queued_inputs.acknowledge(latest, item.queue_id)
+            if item.batch_id is None:
+                latest = self.store.load_runtime_session(session.session_id)
+                self.queued_inputs.acknowledge(latest, item.queue_id)
+            elif item.batch_size is not None and item.batch_index == item.batch_size - 1:
+                self.queued_inputs.acknowledge_batch(
+                    session_id=session.session_id,
+                    batch_id=item.batch_id,
+                )
             return message, True
 
     def _validate_model_resource_refs(

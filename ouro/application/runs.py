@@ -101,6 +101,7 @@ class RunLifecycle:
         sequence: int,
         resource_refs: Iterable[str] = (),
         metadata: dict[str, Any] | None = None,
+        semantic_tag: SemanticTag | None = None,
     ) -> MessageRecord:
         unique_resource_refs = list(dict.fromkeys(resource_refs))
         if unique_resource_refs and self._validate_resource_refs is None:
@@ -120,6 +121,7 @@ class RunLifecycle:
             role="user",
             sequence=sequence,
             content=content,
+            semantic_tag=semantic_tag,
         )
         if unique_resource_refs:
             message = message.model_copy(update={"resource_refs": unique_resource_refs})

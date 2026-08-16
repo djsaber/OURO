@@ -254,6 +254,27 @@ class SessionInput:
     mode: SessionInputMode = "follow_up"
     title: str | None = None
     role: SessionInputRole = "system_synthetic"
+    semantic_tag: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionInputBatch:
+    """Submit one non-empty, ordered group of inputs as a single delivery unit.
+
+    Every input must use the same delivery mode. ``coalesce_key`` may be used
+    for replaceable pending projections owned by the same command.
+    """
+
+    inputs: tuple[SessionInput, ...]
+    coalesce_key: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.inputs:
+            raise ValueError("session input batch cannot be empty")
+        if len({item.mode for item in self.inputs}) != 1:
+            raise ValueError("all inputs in a session input batch must use the same mode")
+        if self.coalesce_key is not None and not self.coalesce_key.strip():
+            raise ValueError("session input batch coalesce key cannot be blank")
 
 
 @dataclass(frozen=True)
@@ -519,6 +540,7 @@ class CommandOutput:
     output: str = ""
     data: Mapping[str, object] = field(default_factory=dict)
     session_inputs: tuple[SessionInput, ...] = ()
+    session_input_batches: tuple[SessionInputBatch, ...] = ()
     session_control_transitions: tuple[SessionControlTransition, ...] = ()
 
 
@@ -539,6 +561,9 @@ class ContinuationDecision:
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
+    role: SessionInputRole = "system_synthetic"
+    semantic_tag: str | None = None
+    coalesce_key: str | None = None
     reason: str | None = None
     state_revision: int | None = None
     session_control_transitions: tuple[SessionControlTransition, ...] = ()
@@ -789,6 +814,7 @@ __all__ = [
     "SessionControllerHandler",
     "SessionControllerOutput",
     "SessionInput",
+    "SessionInputBatch",
     "SessionInputMode",
     "SessionInputRole",
     "SessionKind",

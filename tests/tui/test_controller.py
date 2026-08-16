@@ -17,6 +17,7 @@ from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
+from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 from ouro.core.tools import ToolInvocation
 from ouro.local_application import LocalApplication
 from ouro.mcp import MCPServerConfigUpdate
@@ -642,9 +643,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
                 "namespace": "tui_skill",
                 "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
                 "runtime": {"kind": "declarative"},
-                "contributes": {
-                    "skills": [{"id": "calendar", "path": "./skills/calendar"}]
-                },
+                "contributes": {"skills": [{"id": "calendar", "path": "./skills/calendar"}]},
                 "permissions": [],
                 "dependencies": {"plugins": []},
                 "metadata": {},
@@ -806,6 +805,78 @@ async def test_controller_resolves_plugin_commands_and_creates_required_session(
         assert result.execution.output == "hello world"
         assert controller.session_id is not None
         assert application.runtime.sessions.open(controller.session_id).session.title == "world"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) -> None:
+    application = _reasoning_application(tmp_path)
+    common = {
+        "plugin_id": "dev.ouro.demo",
+        "contribution_id": "goal",
+        "generation_id": "generation_1",
+        "execution_contract_hash": "contract_1",
+    }
+
+    class Plugins:
+        def list_commands(self) -> list[PluginCommandView]:
+            return [
+                PluginCommandView(
+                    command_id="dev.ouro.demo:goal",
+                    plugin_id="dev.ouro.demo",
+                    name="goal",
+                    requires_session=True,
+                )
+            ]
+
+        async def execute_command(
+            self,
+            command_id: str,
+            argument: str,
+            **_kwargs: object,
+        ) -> PluginCommandExecutionView:
+            return PluginCommandExecutionView(
+                command_id=command_id,
+                output=f"goal {argument}",
+                session_input_batches=[
+                    AttributedSessionInputBatch(
+                        inputs=(
+                            AttributedSessionInput(
+                                prompt="create",
+                                role="user",
+                                semantic_tag="goal-create",
+                                **common,
+                            ),
+                            AttributedSessionInput(
+                                prompt=argument,
+                                role="user",
+                                **common,
+                            ),
+                        )
+                    )
+                ],
+            )
+
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+    application.plugins = Plugins()  # type: ignore[assignment]
+
+    try:
+        result = await controller.execute_plugin_command("goal", "ship")
+
+        assert result is not None
+        assert len(result.run_results) == 1
+        assert controller.session_id is not None
+        snapshot = application.runtime.store.load_session(controller.session_id)
+        messages = [message for message in snapshot.messages if message.role == "user"]
+        assert [message.text_content for message in messages] == ["create", "ship"]
+        assert [message.semantic_tag for message in messages] == ["goal-create", None]
+        assert len({message.run_id for message in messages}) == 1
     finally:
         await controller.close()
 

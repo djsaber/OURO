@@ -32,7 +32,7 @@ from ouro.core.reasoning import (
 if TYPE_CHECKING:
     from ouro.application.models import ModelReasoningState
     from ouro.application.plugins import PluginService
-    from ouro.core.session_controls import AttributedSessionInput
+    from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 
 _APPROVAL_MODE_CHOICES = "|".join(SESSION_APPROVAL_MODES)
 _THINKING_CHOICES = ("default", "enabled", "disabled", *REASONING_EFFORTS)
@@ -49,6 +49,7 @@ class CommandResult:
     initial_model: str | None = None
     reasoning_request: ReasoningRequest | None = None
     session_inputs: tuple[AttributedSessionInput, ...] = ()
+    session_input_batches: tuple[AttributedSessionInputBatch, ...] = ()
     skill_invocation: SkillInvocationRequest | None = None
 
 
@@ -359,6 +360,7 @@ async def _plugin_command(
         session_id=target_session_id,
         output=executed.output,
         session_inputs=tuple(executed.session_inputs),
+        session_input_batches=tuple(executed.session_input_batches),
     )
 
 

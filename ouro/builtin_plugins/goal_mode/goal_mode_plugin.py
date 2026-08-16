@@ -3,20 +3,20 @@ from __future__ import annotations
 import threading
 from collections.abc import Mapping
 from dataclasses import replace
-from typing import Literal
-from uuid import uuid4
 
 from ouro.sdk.plugins.v1 import (
     CommandContribution,
     ContextCall,
     ContextContribution,
-    ContextFragment,
     ContextOutput,
     ContinuationDecision,
     ContinuationPolicyContribution,
     ContributionSet,
     JsonValue,
     PluginContext,
+    PromptPolicyCall,
+    PromptPolicyContribution,
+    PromptPolicyDecision,
     RunOutcome,
     SessionControlClaim,
     SessionControllerCall,
@@ -34,12 +34,8 @@ from .prompts import (
     GET_GOAL_DESCRIPTION,
     UPDATE_GOAL_DESCRIPTION,
     continuation_prompt,
-    goal_scaffold,
 )
 from .state import (
-    UNFINISHED_GOAL_STATUSES,
-    GoalActor,
-    GoalContract,
     GoalRecord,
     GoalRunBinding,
     GoalStateRepository,
@@ -53,14 +49,14 @@ _TERMINAL_RUN_STATUSES = {"completed", "aborted", "failed", "paused", "recoverab
 
 class GoalModePlugin:
     def __init__(self, context: PluginContext) -> None:
-        required = {"sessions.write", "background.run"}
+        required = {"sessions.write", "background.run", "sessions.prompt.inspect"}
         missing = required - context.permissions
         if missing:
             raise RuntimeError(
                 "Goal mode requires authorized permissions: " + ", ".join(sorted(missing))
             )
         if context.session_state is None:
-            raise RuntimeError("Goal mode requires Host-managed Session state")
+            raise RuntimeError("Goal mode requires conversation state storage")
         self._state = GoalStateRepository(context.session_state)
         self._lock = threading.RLock()
         self._commands = GoalCommandService(self._state, self._lock)
@@ -90,91 +86,21 @@ class GoalModePlugin:
                     parameters_schema={
                         "type": "object",
                         "properties": {
-                            "source_request": {
+                            "objective": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": (
-                                    "The complete explicit request that authorized Goal "
-                                    "creation, preserved exactly without rewriting."
-                                ),
-                            },
-                            "outcome": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": (
-                                    "The concrete result to deliver, without materially "
-                                    "expanding or narrowing source_request."
-                                ),
-                            },
-                            "verification": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {"type": "string", "minLength": 1},
-                                "description": (
-                                    "Observable pass/fail checks that demonstrate the "
-                                    "outcome is complete."
-                                ),
-                            },
-                            "constraints": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                                "description": (
-                                    "Actual constraints stated by the user. Use an empty "
-                                    "array when none are known; do not invent constraints."
-                                ),
-                            },
-                            "boundaries": {
-                                "type": "array",
-                                "items": {"type": "string", "minLength": 1},
-                                "description": (
-                                    "Explicit in-scope or out-of-scope boundaries. Use an "
-                                    "empty array when none are established. Boundaries never "
-                                    "grant tool, approval, filesystem, or safety authority."
-                                ),
-                            },
-                            "iteration_strategy": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": (
-                                    "A concrete inspect-act-verify-adapt strategy for "
-                                    "successive bounded Runs."
-                                ),
-                            },
-                            "blocked_conditions": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": {"type": "string", "minLength": 1},
-                                "description": (
-                                    "Concrete conditions that require unavailable user input "
-                                    "or an external state change after useful attempts."
-                                ),
-                            },
-                            "replace_goal_id": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": (
-                                    "The exact current goal_id. Include only when the user "
-                                    "explicitly requested replacing that Goal."
-                                ),
+                                "description": "The exact requested objective.",
                             },
                             "token_budget": {
                                 "type": "integer",
                                 "minimum": 1,
                                 "description": (
-                                    "Optional total token budget. Include only when the user "
-                                    "explicitly supplied it."
+                                    "The exact total token budget when one was explicitly "
+                                    "requested."
                                 ),
                             },
                         },
-                        "required": [
-                            "source_request",
-                            "outcome",
-                            "verification",
-                            "constraints",
-                            "boundaries",
-                            "iteration_strategy",
-                            "blocked_conditions",
-                        ],
+                        "required": ["objective"],
                         "additionalProperties": False,
                     },
                     permission_mode="approval",
@@ -190,15 +116,14 @@ class GoalModePlugin:
                     parameters_schema={
                         "type": "object",
                         "properties": {
-                            "goal_id": {"type": "string", "minLength": 1},
                             "status": {"type": "string", "enum": ["complete", "blocked"]},
                             "report": {
                                 "type": "string",
                                 "minLength": 1,
-                                "description": "Evidence-based completion or blocker report.",
+                                "description": "The result and evidence, or the exact blocker.",
                             },
                         },
-                        "required": ["goal_id", "status", "report"],
+                        "required": ["status", "report"],
                         "additionalProperties": False,
                     },
                     permission_mode="auto",
@@ -211,11 +136,11 @@ class GoalModePlugin:
             commands=[
                 CommandContribution(
                     id="goal",
-                    description="Create and control a durable Goal for the current Session.",
+                    description="Create and control the latest goal for this conversation.",
                     usage=(
-                        "[--token-budget N] <request> | status | pause | "
-                        "resume [--token-budget N] | cancel | "
-                        "replace [--token-budget N] <request>"
+                        "[--token-budget N|unlimited] <objective> | status | pause | "
+                        "resume [--token-budget N|unlimited] | cancel | "
+                        "replace [--token-budget N|unlimited] <objective>"
                     ),
                     handler=self._commands.handle,
                 )
@@ -223,7 +148,7 @@ class GoalModePlugin:
             session_controllers=[
                 SessionControllerContribution(
                     id="mode",
-                    description="Own one durable Goal lifecycle for a primary Session.",
+                    description="Own the latest Goal lifecycle.",
                     claims=(
                         SessionControlClaim(
                             domain="ouro.session.primary_behavior",
@@ -236,8 +161,8 @@ class GoalModePlugin:
             ],
             context_providers=[
                 ContextContribution(
-                    id="goal-scaffold",
-                    handler=self.goal_context,
+                    id="goal-run-binding",
+                    handler=self.bind_goal_run,
                     priority=10,
                     timeout_seconds=5,
                     failure_mode="block",
@@ -248,6 +173,15 @@ class GoalModePlugin:
                 ContinuationPolicyContribution(
                     id="goal-continuation",
                     handler=self.goal_continuation,
+                    priority=10,
+                    timeout_seconds=5,
+                    active_when="mode",
+                )
+            ],
+            prompt_policies=[
+                PromptPolicyContribution(
+                    id="goal-input-gate",
+                    handler=self.goal_input_gate,
                     priority=10,
                     timeout_seconds=5,
                     active_when="mode",
@@ -265,242 +199,226 @@ class GoalModePlugin:
         with self._lock:
             goal = self._state.load(call.session_id).goal
         if goal is None:
-            return ToolOutput(
-                content="No Goal exists for this Session.",
-                structured={"goal": None},
-            )
+            return _tool_error("goal_not_found", "No goal exists.")
         return ToolOutput(
             content=format_goal_status(goal),
             structured={"goal": goal.to_public()},
         )
 
     def create_goal(self, call: ToolCall) -> ToolOutput:
-        source_request = _non_empty_argument(call.arguments.get("source_request"))
-        if source_request is None:
-            return _tool_error(
-                "invalid_source_request",
-                "CreateGoal requires the exact non-empty source_request.",
-            )
-        contract, contract_error = _goal_contract(call.arguments)
-        if contract_error is not None:
-            return _tool_error("invalid_goal_contract", contract_error)
-        assert contract is not None
+        objective = _non_empty_text(call.arguments.get("objective"))
+        if objective is None:
+            return _tool_error("invalid_objective", "CreateGoal requires an objective.")
         token_budget, budget_error = _optional_budget(call.arguments.get("token_budget"))
         if budget_error is not None:
             return _tool_error("invalid_token_budget", budget_error)
-        raw_replace_goal_id = call.arguments.get("replace_goal_id")
-        replace_goal_id = _non_empty_argument(raw_replace_goal_id)
-        if raw_replace_goal_id is not None and replace_goal_id is None:
-            return _tool_error(
-                "invalid_replace_goal_id",
-                "replace_goal_id must be a non-empty Goal ID when supplied.",
-            )
         with self._lock:
             current = self._state.load(call.session_id).goal
-        transition_action: Literal["acquire", "replace"]
-        replace_activation_ids: tuple[str, ...]
-        if replace_goal_id is not None:
-            if current is None:
-                return _tool_error(
-                    "goal_not_found",
-                    "The explicitly requested Goal replacement no longer has a current Goal.",
-                )
-            if current.goal_id != replace_goal_id:
-                return _tool_error(
-                    "stale_goal_id",
-                    (
-                        "Goal replacement identity is stale. The current goal_id is "
-                        f"{current.goal_id}."
-                    ),
-                )
-            operation = "replace"
-            expected_goal = current
-            if current.status == "active" and current.activation_id is not None:
-                transition_action = "replace"
-                replace_activation_ids = (current.activation_id,)
-            else:
-                transition_action = "acquire"
-                replace_activation_ids = ()
-        elif current is not None and current.status in UNFINISHED_GOAL_STATUSES:
+        if current is not None and current.status != "complete":
             return _tool_error(
                 "unfinished_goal_exists",
-                (
-                    f"Goal {current.goal_id} is {current.status}. CreateGoal cannot "
-                    "autonomously replace it; the user must explicitly request replacement."
-                ),
-            )
-        else:
-            operation = "create"
-            expected_goal = None
-            transition_action = "acquire"
-            replace_activation_ids = ()
-        goal_id = uuid4().hex
-        payload: dict[str, JsonValue] = {
-            "operation": operation,
-            "goal_id": goal_id,
-            "source_request": source_request,
-            "contract": contract.to_json(),
-            "token_budget": token_budget,
-            "actor": "model",
-        }
-        if expected_goal is not None:
-            payload.update(
-                {
-                    "expected_goal_id": expected_goal.goal_id,
-                    "expected_revision": expected_goal.revision,
-                }
+                f"The current goal is {current.status}; it must be updated by the user first.",
             )
         return ToolOutput(
-            content=f"Goal {goal_id} will be activated for: {contract.outcome}",
+            content="The goal will be created.",
             structured={
-                "goal_id": goal_id,
-                "source_request": source_request,
-                "contract": contract.to_json(),
-                "status": "active",
-                "token_budget": token_budget,
+                "goal": {
+                    "objective": objective,
+                    "status": "active",
+                    "token_budget": token_budget,
+                    "tokens_used": 0,
+                }
             },
             session_control_transitions=(
                 SessionControlTransition(
-                    action=transition_action,
+                    action="acquire",
                     controller_id="mode",
-                    replace_activation_ids=replace_activation_ids,
-                    payload=payload,
-                    reason=(
-                        "model_replaced_goal" if operation == "replace" else "model_created_goal"
-                    ),
+                    payload={
+                        "operation": "create",
+                        "objective": objective,
+                        "token_budget": token_budget,
+                        "source_run_id": call.run_id,
+                    },
+                    reason="goal_created",
                 ),
             ),
         )
 
     def update_goal(self, call: ToolCall) -> ToolOutput:
-        goal_id = _non_empty_argument(call.arguments.get("goal_id"))
         status = call.arguments.get("status")
-        report = _non_empty_argument(call.arguments.get("report"))
-        if goal_id is None:
-            return _tool_error("invalid_goal_id", "UpdateGoal requires the exact goal_id.")
+        report = _non_empty_text(call.arguments.get("report"))
         if status not in {"complete", "blocked"}:
-            return _tool_error("invalid_status", "UpdateGoal status must be complete or blocked.")
+            return _tool_error("invalid_status", "Status must be complete or blocked.")
         if report is None:
             return _tool_error("invalid_report", "UpdateGoal requires a non-empty report.")
         with self._lock:
-            goal = self._state.load(call.session_id).goal
-        if goal is None:
-            return _tool_error("goal_not_found", "No Goal exists for this Session.")
-        if goal.goal_id != goal_id:
+            state = self._state.load(call.session_id)
+        goal = state.goal
+        binding = state.run_binding
+        if goal is None or goal.status != "active" or goal.activation_id is None:
+            return _tool_error("goal_not_active", "There is no active goal to update.")
+        if (
+            binding is None
+            or binding.run_id != call.run_id
+            or binding.activation_id != goal.activation_id
+            or binding.goal_revision != goal.revision
+        ):
             return _tool_error(
-                "stale_goal_id",
-                f"Goal identity is stale. The current goal_id is {goal.goal_id}.",
+                "stale_goal_update",
+                "This work started before the current goal was created or updated.",
             )
-        if goal.status != "active" or goal.activation_id is None:
-            return _tool_error(
-                "goal_not_active", f"Goal {goal.goal_id} is {goal.status}, not active."
+        payload: dict[str, JsonValue] = {
+            "operation": status,
+            "expected_activation_id": goal.activation_id,
+            "expected_revision": goal.revision,
+            "report": report,
+            "source_run_id": call.run_id,
+        }
+        if status == "complete":
+            transition = SessionControlTransition(
+                action="release",
+                controller_id="mode",
+                activation_id=goal.activation_id,
+                payload=payload,
+                reason="goal_complete",
             )
-        terminal_status: GoalStatus = status
+        else:
+            transition = SessionControlTransition(
+                action="replace",
+                controller_id="mode",
+                replace_activation_ids=(goal.activation_id,),
+                payload=payload,
+                reason="goal_blocked",
+            )
         return ToolOutput(
-            content=(
-                f"Goal {goal.goal_id} marked {terminal_status}. Goal mode will exit after "
-                "this tool result is committed."
-            ),
-            structured={
-                "goal_id": goal.goal_id,
-                "status": terminal_status,
-                "report": report,
-            },
-            session_control_transitions=(
-                SessionControlTransition(
-                    action="release",
-                    controller_id="mode",
-                    activation_id=goal.activation_id,
-                    payload={
-                        "operation": "settle",
-                        "goal_id": goal.goal_id,
-                        "expected_revision": goal.revision,
-                        "status": terminal_status,
-                        "actor": "model",
-                        "reason_code": (
-                            "goal_completed" if terminal_status == "complete" else "goal_blocked"
-                        ),
-                        "report": report,
-                    },
-                    reason=f"goal_{terminal_status}",
-                ),
-            ),
+            content=f"The current goal will be marked {status}.",
+            structured={"status": status, "report": report},
+            session_control_transitions=(transition,),
         )
 
     def activate_goal_controller(self, call: SessionControllerCall) -> SessionControllerOutput:
         if call.session_kind != "primary":
-            raise RuntimeError("Goal mode is only supported for primary Sessions")
+            raise RuntimeError("Goal mode is only supported for primary conversations")
         payload = _mapping_payload(call.payload)
         operation = _required_payload_text(payload, "operation")
         with self._lock:
             state = self._state.load(call.session_id)
-            if operation in {"create", "replace"}:
-                goal_id = _required_payload_text(payload, "goal_id")
-                source_request = _required_payload_text(payload, "source_request")
-                contract = _payload_contract(payload.get("contract"))
-                token_budget = _payload_budget(payload.get("token_budget"))
-                actor = _payload_actor(payload.get("actor"))
+            if operation == "create":
                 if (
                     state.goal is not None
-                    and state.goal.status == "active"
                     and state.goal.activation_id == call.activation_id
-                    and state.goal.goal_id == goal_id
+                    and state.goal.status == "active"
                 ):
                     goal = state.goal
+                    binding = state.run_binding
                 else:
-                    if operation == "create" and (
-                        state.goal is not None and state.goal.status in UNFINISHED_GOAL_STATUSES
-                    ):
+                    if state.goal is not None and state.goal.status != "complete":
                         raise RuntimeError("an unfinished Goal already exists")
-                    if operation == "replace":
-                        _validate_expected_goal(payload, state.goal)
-                    goal = _new_goal(
-                        goal_id=goal_id,
-                        source_request=source_request,
-                        contract=contract,
+                    objective = _required_payload_text(payload, "objective")
+                    token_budget = _payload_budget(payload.get("token_budget"))
+                    stamp = utc_now()
+                    goal = GoalRecord(
+                        objective=objective,
+                        status="active",
                         token_budget=token_budget,
-                        actor=actor,
+                        tokens_used=0,
+                        created_at=stamp,
+                        updated_at=stamp,
+                        report=None,
                         activation_id=call.activation_id,
+                        revision=1,
+                        last_accounted_run_id=None,
                     )
-                    self._state.save(call.session_id, SessionGoalState(goal=goal))
-            elif operation == "resume":
-                resume_goal = state.goal
-                if resume_goal is None:
-                    raise RuntimeError("cannot resume a missing Goal")
-                goal = resume_goal
-                if (
-                    goal.status == "active"
-                    and goal.activation_id == call.activation_id
-                    and goal.goal_id == payload.get("goal_id")
-                ):
-                    pass
-                else:
-                    _validate_expected_goal(payload, goal)
-                    if goal.status not in {"paused", "blocked"}:
+                    source_run_id = _optional_payload_text(payload.get("source_run_id"))
+                    binding = (
+                        GoalRunBinding(
+                            run_id=source_run_id,
+                            activation_id=call.activation_id,
+                            goal_revision=goal.revision,
+                        )
+                        if source_run_id is not None
+                        else None
+                    )
+                    self._state.save(
+                        call.session_id,
+                        SessionGoalState(goal=goal, run_binding=binding),
+                    )
+            else:
+                current_goal = state.goal
+                if current_goal is None or current_goal.activation_id is None:
+                    raise RuntimeError("Goal transition requires an unfinished Goal")
+                _validate_expected_goal(payload, current_goal)
+                stamp = utc_now()
+                goal = replace(
+                    current_goal,
+                    activation_id=call.activation_id,
+                    revision=current_goal.revision + 1,
+                    updated_at=stamp,
+                )
+                if operation == "pause":
+                    if goal.status != "active":
+                        raise RuntimeError(f"Goal cannot pause from status {goal.status}")
+                    goal = replace(goal, status="paused", report=None)
+                elif operation == "resume":
+                    if goal.status not in {"paused", "blocked", "budget_exhausted"}:
                         raise RuntimeError(f"Goal cannot resume from status {goal.status}")
                     token_budget = _payload_budget(payload.get("token_budget"))
-                    if token_budget is not None and token_budget <= goal.tokens_used:
-                        raise RuntimeError(
-                            "resumed token budget must be greater than tokens already used"
-                        )
-                    stamp = utc_now()
+                    _require_budget_above_usage(token_budget, goal.tokens_used)
                     goal = replace(
                         goal,
                         status="active",
-                        actor="user",
-                        revision=goal.revision + 1,
-                        activation_id=call.activation_id,
                         token_budget=token_budget,
-                        reason_code=None,
                         report=None,
-                        updated_at=stamp,
-                        status_changed_at=stamp,
                     )
-                    self._state.save(call.session_id, SessionGoalState(goal=goal))
-            else:
-                raise RuntimeError(f"unsupported Goal activation operation: {operation}")
+                elif operation == "replace":
+                    if goal.status == "complete":
+                        raise RuntimeError("completed Goal cannot be replaced")
+                    token_budget = _payload_budget(payload.get("token_budget"))
+                    _require_budget_above_usage(token_budget, goal.tokens_used)
+                    goal = replace(
+                        goal,
+                        objective=_required_payload_text(payload, "objective"),
+                        status="active",
+                        token_budget=token_budget,
+                        report=None,
+                    )
+                elif operation == "blocked":
+                    if goal.status != "active":
+                        raise RuntimeError(f"Goal cannot be blocked from status {goal.status}")
+                    goal = replace(
+                        goal,
+                        status="blocked",
+                        report=_required_payload_text(payload, "report"),
+                    )
+                elif operation in {"budget_exhausted", "runtime_paused"}:
+                    if goal.status != "active":
+                        raise RuntimeError(f"Goal cannot stop from status {goal.status}")
+                    stopped_status: GoalStatus = (
+                        "budget_exhausted" if operation == "budget_exhausted" else "paused"
+                    )
+                    goal = replace(
+                        goal,
+                        status=stopped_status,
+                        report=_required_payload_text(payload, "report"),
+                    )
+                else:
+                    raise RuntimeError(f"unsupported Goal transition: {operation}")
+                source_run_id = _optional_payload_text(payload.get("source_run_id"))
+                binding = (
+                    GoalRunBinding(
+                        run_id=source_run_id,
+                        activation_id=call.activation_id,
+                        goal_revision=goal.revision,
+                    )
+                    if source_run_id is not None
+                    else state.run_binding
+                )
+                self._state.save(
+                    call.session_id,
+                    SessionGoalState(goal=goal, run_binding=binding),
+                )
         return SessionControllerOutput(
-            output=f"Goal {goal.goal_id} activated.",
+            output=f"Goal is now {goal.status}.",
             data={"goal": goal.to_public()},
             owner_state_revision=goal.revision,
         )
@@ -511,10 +429,10 @@ class GoalModePlugin:
             state = self._state.load(call.session_id)
             goal = state.goal
             if goal is None:
-                return SessionControllerOutput(output="No Goal remains active.")
+                return SessionControllerOutput(output="No Goal remains.")
             if goal.activation_id != call.activation_id:
                 return SessionControllerOutput(
-                    output="Superseded Goal activation required no cleanup.",
+                    output="Superseded Goal work required no cleanup.",
                     data={"goal": goal.to_public(), "superseded": True},
                     owner_state_revision=goal.revision,
                 )
@@ -523,68 +441,66 @@ class GoalModePlugin:
                 _validate_expected_goal(payload, goal)
                 self._state.delete(call.session_id)
                 return SessionControllerOutput(
-                    output=f"Goal {goal.goal_id} cancelled.",
-                    data={"goal_id": goal.goal_id, "cancelled": True},
+                    output="Goal cancelled.",
+                    data={"goal": None, "cancelled": True},
                     owner_state_revision=goal.revision + 1,
                 )
-            if operation == "settle":
+            if operation == "complete":
                 _validate_expected_goal(payload, goal)
-                status = _payload_status(payload.get("status"))
-                actor = _payload_actor(payload.get("actor"))
-                reason_code = _required_payload_text(payload, "reason_code")
-                report = _required_payload_text(payload, "report")
-            else:
-                status = "paused"
-                actor = "user" if (call.reason or "").startswith("user_") else "runtime"
-                reason_code = call.reason or "controller_released"
-                report = "Goal mode was released before the Goal reached a terminal result."
-            stamp = utc_now()
-            settled = replace(
-                goal,
-                status=status,
-                actor=actor,
-                revision=goal.revision + 1,
-                activation_id=None,
-                reason_code=reason_code,
-                report=report,
-                updated_at=stamp,
-                status_changed_at=stamp,
+                stamp = utc_now()
+                completed = replace(
+                    goal,
+                    status="complete",
+                    report=_required_payload_text(payload, "report"),
+                    activation_id=None,
+                    revision=goal.revision + 1,
+                    updated_at=stamp,
+                )
+                self._state.save(
+                    call.session_id,
+                    SessionGoalState(goal=completed, run_binding=state.run_binding),
+                )
+                return SessionControllerOutput(
+                    output="Goal completed.",
+                    data={"goal": completed.to_public()},
+                    owner_state_revision=completed.revision,
+                )
+            self._state.delete(call.session_id)
+            return SessionControllerOutput(
+                output="Goal cancelled because its control was released.",
+                data={"goal": None, "cancelled": True},
+                owner_state_revision=goal.revision + 1,
             )
-            self._state.save(
-                call.session_id,
-                SessionGoalState(goal=settled, run_binding=state.run_binding),
-            )
-        return SessionControllerOutput(
-            output=f"Goal {settled.goal_id} is now {settled.status}.",
-            data={"goal": settled.to_public()},
-            owner_state_revision=settled.revision,
-        )
 
-    def goal_context(self, call: ContextCall) -> ContextOutput:
+    def bind_goal_run(self, call: ContextCall) -> ContextOutput:
         with self._lock:
             state = self._state.load(call.session_id)
             goal = state.goal
             if goal is None or goal.status != "active" or goal.activation_id is None:
-                raise RuntimeError("Goal controller is active without a matching active Goal")
+                return ContextOutput()
             binding = GoalRunBinding(
                 run_id=call.run_id,
-                goal_id=goal.goal_id,
-                goal_revision=goal.revision,
                 activation_id=goal.activation_id,
+                goal_revision=goal.revision,
             )
             if state.run_binding != binding:
                 self._state.save(
                     call.session_id,
                     SessionGoalState(goal=goal, run_binding=binding),
                 )
-        return ContextOutput(
-            fragments=(
-                ContextFragment(
-                    text=goal_scaffold(goal),
-                    persistence="message",
-                    semantic_tag="goal-contract",
-                ),
-            )
+        return ContextOutput()
+
+    def goal_input_gate(self, call: PromptPolicyCall) -> PromptPolicyDecision:
+        with self._lock:
+            goal = self._state.load(call.session_id).goal
+        if goal is None or goal.status in {"active", "complete"}:
+            return PromptPolicyDecision()
+        return PromptPolicyDecision(
+            action="deny",
+            reason=(
+                f"The current goal is {goal.status}. Use /goal resume, /goal replace, "
+                "or /goal cancel before sending ordinary input."
+            ),
         )
 
     def goal_continuation(self, outcome: RunOutcome) -> ContinuationDecision:
@@ -594,67 +510,58 @@ class GoalModePlugin:
             state = self._state.load(outcome.session_id)
             goal = state.goal
             binding = state.run_binding
-            if (
-                goal is None
-                or binding is None
-                or binding.run_id != outcome.run_id
-                or binding.goal_id != goal.goal_id
-            ):
-                return ContinuationDecision()
-            if goal.status == "active" and goal.activation_id != binding.activation_id:
+            if goal is None or binding is None or binding.run_id != outcome.run_id:
                 return ContinuationDecision()
             usage_tokens = _canonical_usage_tokens(outcome.usage)
             if goal.last_accounted_run_id != outcome.run_id:
-                stamp = utc_now()
                 goal = replace(
                     goal,
-                    revision=goal.revision + 1,
                     tokens_used=goal.tokens_used + (usage_tokens or 0),
-                    runs_used=goal.runs_used + 1,
                     last_accounted_run_id=outcome.run_id,
-                    updated_at=stamp,
+                    revision=goal.revision + 1,
+                    updated_at=utc_now(),
                 )
+                binding = replace(binding, goal_revision=goal.revision)
                 self._state.save(
                     outcome.session_id,
                     SessionGoalState(goal=goal, run_binding=binding),
                 )
-
             if goal.status == "complete":
                 return ContinuationDecision(
                     action="complete",
-                    reason=goal.reason_code or "goal_completed",
+                    reason="goal_complete",
                     state_revision=goal.revision,
                 )
-            if goal.status in {"paused", "blocked"}:
+            if goal.status in {"paused", "blocked", "budget_exhausted"}:
                 return ContinuationDecision(
                     action="pause",
-                    reason=goal.reason_code or f"goal_{goal.status}",
+                    reason=f"goal_{goal.status}",
                     state_revision=goal.revision,
                 )
-            assert goal.activation_id is not None
+            if binding.activation_id != goal.activation_id:
+                return ContinuationDecision()
             if outcome.status != "completed":
-                return self._runtime_pause_decision(
+                return self._runtime_stop_decision(
                     goal,
                     binding,
-                    reason_code=f"run_{outcome.status}",
-                    report=outcome.error or f"Run ended with status {outcome.status}.",
+                    operation="runtime_paused",
+                    reason=f"run_{outcome.status}",
+                    report=outcome.error or f"Work ended with status {outcome.status}.",
                 )
             if goal.token_budget is not None and usage_tokens is None:
-                return self._runtime_pause_decision(
+                return self._runtime_stop_decision(
                     goal,
                     binding,
-                    reason_code="usage_unavailable",
-                    report=(
-                        "Canonical provider token usage was unavailable, so the budgeted "
-                        "Goal was paused instead of treating missing usage as zero."
-                    ),
+                    operation="runtime_paused",
+                    reason="usage_unavailable",
+                    report="Token usage was unavailable, so budgeted work was paused.",
                 )
             if goal.token_budget is not None and goal.tokens_used >= goal.token_budget:
-                return self._runtime_pause_decision(
+                return self._runtime_stop_decision(
                     goal,
                     binding,
-                    status="blocked",
-                    reason_code="token_budget_exhausted",
+                    operation="budget_exhausted",
+                    reason="goal_budget_exhausted",
                     report=(
                         f"Token budget exhausted: used {goal.tokens_used} of "
                         f"{goal.token_budget} tokens."
@@ -663,72 +570,43 @@ class GoalModePlugin:
             return ContinuationDecision(
                 action="continue",
                 prompt=continuation_prompt(goal),
-                title=f"Continue Goal {goal.goal_id[:8]}",
-                reason="goal_still_active",
+                title="Continue Goal",
+                role="user",
+                semantic_tag="goal-continue",
+                coalesce_key="goal-continuation",
+                reason="goal_active",
                 state_revision=goal.revision,
             )
 
-    def _runtime_pause_decision(
-        self,
+    @staticmethod
+    def _runtime_stop_decision(
         goal: GoalRecord,
         binding: GoalRunBinding,
         *,
-        reason_code: str,
+        operation: str,
+        reason: str,
         report: str,
-        status: GoalStatus = "paused",
     ) -> ContinuationDecision:
+        assert goal.activation_id is not None
         return ContinuationDecision(
             action="pause",
-            reason=reason_code,
+            reason=reason,
             state_revision=goal.revision,
             session_control_transitions=(
                 SessionControlTransition(
-                    action="release",
+                    action="replace",
                     controller_id="mode",
-                    activation_id=binding.activation_id,
+                    replace_activation_ids=(binding.activation_id,),
                     payload={
-                        "operation": "settle",
-                        "goal_id": goal.goal_id,
+                        "operation": operation,
+                        "expected_activation_id": binding.activation_id,
                         "expected_revision": goal.revision,
-                        "status": status,
-                        "actor": "runtime",
-                        "reason_code": reason_code,
                         "report": report,
                     },
-                    reason=reason_code,
+                    reason=reason,
                 ),
             ),
         )
-
-
-def _new_goal(
-    *,
-    goal_id: str,
-    source_request: str,
-    contract: GoalContract,
-    token_budget: int | None,
-    actor: GoalActor,
-    activation_id: str,
-) -> GoalRecord:
-    stamp = utc_now()
-    return GoalRecord(
-        goal_id=goal_id,
-        source_request=source_request,
-        contract=contract,
-        status="active",
-        actor=actor,
-        revision=1,
-        activation_id=activation_id,
-        token_budget=token_budget,
-        tokens_used=0,
-        runs_used=0,
-        last_accounted_run_id=None,
-        reason_code=None,
-        report=None,
-        created_at=stamp,
-        updated_at=stamp,
-        status_changed_at=stamp,
-    )
 
 
 def _tool_error(error_type: str, message: str) -> ToolOutput:
@@ -739,29 +617,8 @@ def _tool_error(error_type: str, message: str) -> ToolOutput:
     )
 
 
-def _non_empty_argument(value: object) -> str | None:
+def _non_empty_text(value: object) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
-
-
-def _goal_contract(
-    arguments: Mapping[str, object],
-) -> tuple[GoalContract | None, str | None]:
-    try:
-        return (
-            GoalContract.from_json(
-                {
-                    "outcome": arguments.get("outcome"),
-                    "verification": arguments.get("verification"),
-                    "constraints": arguments.get("constraints"),
-                    "boundaries": arguments.get("boundaries"),
-                    "iteration_strategy": arguments.get("iteration_strategy"),
-                    "blocked_conditions": arguments.get("blocked_conditions"),
-                }
-            ),
-            None,
-        )
-    except ValueError as exc:
-        return None, str(exc)
 
 
 def _optional_budget(value: object) -> tuple[int | None, str | None]:
@@ -777,14 +634,23 @@ def _mapping_payload(value: object, *, allow_empty: bool = False) -> Mapping[str
         return value
     if value is None and allow_empty:
         return {}
-    raise RuntimeError("Goal controller payload must be an object")
+    raise RuntimeError("Goal transition data must be an object")
 
 
 def _required_payload_text(payload: Mapping[str, object], name: str) -> str:
-    value = _non_empty_argument(payload.get(name))
+    value = _non_empty_text(payload.get(name))
     if value is None:
-        raise RuntimeError(f"Goal controller payload requires {name}")
+        raise RuntimeError(f"Goal transition requires {name}")
     return value
+
+
+def _optional_payload_text(value: object) -> str | None:
+    if value is None:
+        return None
+    text = _non_empty_text(value)
+    if text is None:
+        raise RuntimeError("Goal transition text cannot be blank")
+    return text
 
 
 def _payload_budget(value: object) -> int | None:
@@ -794,41 +660,21 @@ def _payload_budget(value: object) -> int | None:
     return budget
 
 
-def _payload_contract(value: object) -> GoalContract:
-    try:
-        return GoalContract.from_json(value)
-    except ValueError as exc:
-        raise RuntimeError(f"Goal controller payload has an invalid contract: {exc}") from exc
+def _require_budget_above_usage(token_budget: int | None, tokens_used: int) -> None:
+    if token_budget is not None and token_budget <= tokens_used:
+        raise RuntimeError("total token budget must be greater than tokens already used")
 
 
-def _payload_actor(value: object) -> GoalActor:
-    if value not in {"user", "model", "runtime"}:
-        raise RuntimeError("Goal controller payload has an invalid actor")
-    return value
-
-
-def _payload_status(value: object) -> GoalStatus:
-    if value not in {"paused", "blocked", "complete"}:
-        raise RuntimeError("Goal controller payload has an invalid terminal status")
-    return value
-
-
-def _validate_expected_goal(
-    payload: Mapping[str, object],
-    goal: GoalRecord | None,
-) -> None:
-    if goal is None:
-        raise RuntimeError("Goal controller expected an existing Goal")
-    expected_id = payload.get("expected_goal_id", payload.get("goal_id"))
+def _validate_expected_goal(payload: Mapping[str, object], goal: GoalRecord) -> None:
+    if payload.get("expected_activation_id") != goal.activation_id:
+        raise RuntimeError("Goal transition has a stale activation")
     expected_revision = payload.get("expected_revision")
-    if expected_id != goal.goal_id:
-        raise RuntimeError("Goal controller payload has a stale goal identity")
     if (
         isinstance(expected_revision, bool)
         or not isinstance(expected_revision, int)
         or expected_revision != goal.revision
     ):
-        raise RuntimeError("Goal controller payload has a stale Goal revision")
+        raise RuntimeError("Goal transition has a stale revision")
 
 
 def _canonical_usage_tokens(usage: Mapping[str, int | float]) -> int | None:

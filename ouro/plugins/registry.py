@@ -15,7 +15,9 @@ from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     AttributedSessionInput,
+    AttributedSessionInputBatch,
     SessionControlTransitionRequest,
+    SessionInputBatchRequest,
     SessionInputRequest,
 )
 
@@ -35,6 +37,10 @@ class PluginCommandResult(OuroModel):
     data: dict[str, Any] = Field(default_factory=dict)
     session_inputs: list[SessionInputRequest] = Field(default_factory=list)
     attributed_session_inputs: list[AttributedSessionInput] = Field(default_factory=list)
+    session_input_batches: list[SessionInputBatchRequest] = Field(default_factory=list)
+    attributed_session_input_batches: list[AttributedSessionInputBatch] = Field(
+        default_factory=list
+    )
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)
     attributed_control_transitions: list[AttributedSessionControlTransition] = Field(
         default_factory=list
@@ -201,12 +207,22 @@ class PluginCommandRegistry:
             result = PluginCommandResult(command_id=command_id, output=raw)
         else:
             result = PluginCommandResult(command_id=command_id, data=dict(raw))
-        if result.session_inputs and not command.allow_session_inputs:
+        if (
+            result.session_inputs or result.session_input_batches
+        ) and not command.allow_session_inputs:
             raise PluginCommandError(
                 "plugin command requires sessions.write and background.run permissions: "
                 f"{command_id}"
             )
-        if not result.session_inputs and not result.session_control_transitions:
+        if result.session_inputs and result.session_input_batches:
+            raise PluginCommandError(
+                "plugin command cannot mix individual inputs with input batches"
+            )
+        if (
+            not result.session_inputs
+            and not result.session_input_batches
+            and not result.session_control_transitions
+        ):
             return result
         if command.generation_id is None or command.execution_contract_hash is None:
             raise PluginCommandError(
@@ -220,12 +236,33 @@ class PluginCommandRegistry:
                         mode=item.mode,
                         title=item.title,
                         role=item.role,
+                        semantic_tag=item.semantic_tag,
                         plugin_id=command.plugin_id,
                         contribution_id=command.name,
                         generation_id=command.generation_id,
                         execution_contract_hash=command.execution_contract_hash,
                     )
                     for item in result.session_inputs
+                ],
+                "attributed_session_input_batches": [
+                    AttributedSessionInputBatch(
+                        inputs=tuple(
+                            AttributedSessionInput(
+                                prompt=item.prompt,
+                                mode=item.mode,
+                                title=item.title,
+                                role=item.role,
+                                semantic_tag=item.semantic_tag,
+                                plugin_id=command.plugin_id,
+                                contribution_id=command.name,
+                                generation_id=command.generation_id,
+                                execution_contract_hash=command.execution_contract_hash,
+                            )
+                            for item in batch.inputs
+                        ),
+                        coalesce_key=batch.coalesce_key,
+                    )
+                    for batch in result.session_input_batches
                 ],
                 "attributed_control_transitions": [
                     AttributedSessionControlTransition(

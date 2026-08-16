@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-from ouro.builtin_plugins.goal_mode.state import SessionGoalState
 from ouro.builtin_plugins.plan_mode.state import SessionPlanState
 from ouro.builtin_plugins.toolkit.todos import TodoItem
 from ouro.core.errors import MigrationRequiredError, PersistenceError
@@ -14,7 +13,6 @@ from ouro.core.session_extensions import SessionExtensionStateRecord
 from ouro.sdk.plugins.v1 import JsonValue
 from ouro.sessions.base import SessionRepository
 
-_GOAL_OWNER = "dev.ouro.goal_mode"
 _PLAN_OWNER = "dev.ouro.plan_mode"
 _TODO_OWNER = "dev.ouro.toolkit"
 
@@ -34,7 +32,6 @@ def migrate_builtin_session_state(
 
     report = BuiltinSessionStateMigrationReport()
     roots = (
-        (home / "plugins" / "data" / _GOAL_OWNER / "sessions", _GOAL_OWNER),
         (home / "plugins" / "data" / _PLAN_OWNER / "sessions", _PLAN_OWNER),
         (home / "plugins" / "data" / _TODO_OWNER / "todos", _TODO_OWNER),
     )
@@ -94,13 +91,7 @@ def _load_legacy_record(
         if not isinstance(raw, dict):
             raise ValueError("root must be an object")
         projection_tags: tuple[str, ...]
-        if owner_id == _GOAL_OWNER:
-            if raw.get("schema_version") != 2:
-                raise ValueError("unsupported Goal state schema")
-            payload = cast(JsonValue, SessionGoalState.from_json(raw.get("state")).to_json())
-            state_schema_version = 2
-            projection_tags = ("goal-contract",)
-        elif owner_id == _PLAN_OWNER:
+        if owner_id == _PLAN_OWNER:
             if raw.get("schema_version") != 1:
                 raise ValueError("unsupported Plan state schema")
             payload = cast(JsonValue, SessionPlanState.from_json(raw.get("state")).to_json())

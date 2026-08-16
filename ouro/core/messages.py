@@ -125,8 +125,8 @@ class ModelMessage(OuroModel):
 
     @model_validator(mode="after")
     def validate_tool_fields(self) -> ModelMessage:
-        if self.semantic_tag is not None and self.role != "system_synthetic":
-            raise ValueError("only system_synthetic model messages may have a semantic tag")
+        if self.semantic_tag is not None and self.role not in {"user", "system_synthetic"}:
+            raise ValueError("only input messages may have a semantic tag")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant model messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":
@@ -210,8 +210,8 @@ class MessageRecord(VersionedOuroModel):
         if self.role == "system_synthetic":
             if self.semantic_tag is None:
                 self.semantic_tag = DEFAULT_SYNTHETIC_MESSAGE_TAG
-        elif self.semantic_tag is not None:
-            raise ValueError("only system_synthetic messages may have a semantic tag")
+        elif self.semantic_tag is not None and self.role != "user":
+            raise ValueError("only input messages may have a semantic tag")
         if self.tool_calls and self.role != "assistant":
             raise ValueError("only assistant messages may contain tool_calls")
         if self.tool_result is not None and self.role != "tool_result":

@@ -27,7 +27,7 @@ from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.results import RunResult
-from ouro.core.session_controls import AttributedSessionInput
+from ouro.core.session_controls import AttributedSessionInput, AttributedSessionInputBatch
 from ouro.deployment import SessionBackend
 from ouro.local_application import LocalApplication
 
@@ -238,9 +238,13 @@ async def _run_interactive_session(
                 if command_result.should_exit:
                     await _stop_plugin_run(runtime, plugin_run_task, session_id)
                     return 0
-                if command_result.session_inputs:
+                if command_result.session_inputs or command_result.session_input_batches:
                     if session_id is None:
-                        first = command_result.session_inputs[0]
+                        first = (
+                            command_result.session_inputs[0]
+                            if command_result.session_inputs
+                            else command_result.session_input_batches[0].inputs[0]
+                        )
                         created = runtime.create_session(
                             title=first.title or _interactive_title(first.prompt),
                             initial_model=initial_model,
@@ -254,16 +258,24 @@ async def _run_interactive_session(
                             _submit_plugin_inputs(
                                 runtime,
                                 command_result.session_inputs,
+                                command_result.session_input_batches,
                                 session_id,
                             ),
                             name=f"ouro-plugin-input-{session_id}",
                         )
                     else:
-                        for session_input in command_result.session_inputs:
-                            await runtime.submit_plugin_input(
-                                session_input,
-                                session_id=session_id,
-                            )
+                        if command_result.session_input_batches:
+                            for batch in command_result.session_input_batches:
+                                await runtime.submit_plugin_input_batch(
+                                    batch,
+                                    session_id=session_id,
+                                )
+                        else:
+                            for session_input in command_result.session_inputs:
+                                await runtime.submit_plugin_input(
+                                    session_input,
+                                    session_id=session_id,
+                                )
                 if command_result.skill_invocation is None:
                     continue
                 skill_invocation = command_result.skill_invocation
@@ -327,11 +339,16 @@ async def _report_runtime_error(
 async def _submit_plugin_inputs(
     runtime: RuntimeService,
     session_inputs: tuple[AttributedSessionInput, ...],
+    session_input_batches: tuple[AttributedSessionInputBatch, ...],
     session_id: str,
 ) -> RunResult:
     result: RunResult | None = None
-    for session_input in session_inputs:
-        result = await runtime.submit_plugin_input(session_input, session_id=session_id)
+    if session_input_batches:
+        for batch in session_input_batches:
+            result = await runtime.submit_plugin_input_batch(batch, session_id=session_id)
+    else:
+        for session_input in session_inputs:
+            result = await runtime.submit_plugin_input(session_input, session_id=session_id)
     assert result is not None
     return result
 

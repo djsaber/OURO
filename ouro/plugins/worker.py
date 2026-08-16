@@ -336,6 +336,7 @@ class WorkerPluginInstance:
                         if contribution_type.worker is not None
                     ),
                     "session_inputs",
+                    "session_input_batches",
                     "tool_input_requests",
                 ],
                 "limits": {"max_message_bytes": self.client.max_message_bytes},
@@ -504,6 +505,7 @@ class WorkerPluginInstance:
                 output=str(result.get("output", "")),
                 data=_object_value(result.get("data", {})),
                 session_inputs=_worker_session_inputs(result),
+                session_input_batches=_worker_session_input_batches(result),
                 session_control_transitions=_worker_control_transitions(result),
             )
 
@@ -595,6 +597,13 @@ class WorkerPluginInstance:
                 prompt=(str(result["prompt"]) if result.get("prompt") is not None else None),
                 mode=mode,
                 title=(str(result["title"]) if result.get("title") is not None else None),
+                role=_worker_session_input_role(result.get("role", "system_synthetic")),
+                semantic_tag=_worker_semantic_tag(result.get("semantic_tag")),
+                coalesce_key=(
+                    str(result["coalesce_key"])
+                    if result.get("coalesce_key") is not None
+                    else None
+                ),
                 reason=(str(result["reason"]) if result.get("reason") is not None else None),
                 state_revision=revision,
                 session_control_transitions=tuple(_worker_control_transitions(result)),
@@ -1295,6 +1304,7 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
         _require_optional_type(result, "output", str, method)
         _require_optional_type(result, "data", dict, method)
         _worker_session_inputs(result)
+        _worker_session_input_batches(result)
         _worker_control_transitions(result)
         return
     if method == "session_controller.call":
@@ -1326,6 +1336,9 @@ def _validate_worker_result(method: str, result: dict[str, Any]) -> None:
             raise WorkerProtocolError(f"worker continuation mode is invalid: {mode}")
         _require_optional_type(result, "prompt", str, method, allow_none=True)
         _require_optional_type(result, "title", str, method, allow_none=True)
+        _require_optional_type(result, "role", str, method, allow_none=True)
+        _require_optional_type(result, "semantic_tag", str, method, allow_none=True)
+        _require_optional_type(result, "coalesce_key", str, method, allow_none=True)
         _require_optional_type(result, "reason", str, method, allow_none=True)
         _require_optional_type(result, "state_revision", int, method, allow_none=True)
         _worker_control_transitions(result)
@@ -1390,16 +1403,65 @@ def _worker_session_inputs(raw: dict[str, Any]) -> tuple[sdk.SessionInput, ...]:
         mode = value.get("mode", "follow_up")
         title = value.get("title")
         role = value.get("role", "system_synthetic")
+        semantic_tag = _worker_semantic_tag(value.get("semantic_tag"))
         if not isinstance(prompt, str) or not prompt.strip():
             raise WorkerProtocolError("worker session input prompt must not be empty")
         if mode not in {"follow_up", "steer"}:
             raise WorkerProtocolError(f"worker session input mode is invalid: {mode}")
         if title is not None and not isinstance(title, str):
             raise WorkerProtocolError("worker session input title must be a string")
-        if role not in {"user", "system_synthetic"}:
-            raise WorkerProtocolError(f"worker session input role is invalid: {role}")
-        inputs.append(sdk.SessionInput(prompt=prompt, mode=mode, title=title, role=role))
+        role = _worker_session_input_role(role)
+        inputs.append(
+            sdk.SessionInput(
+                prompt=prompt,
+                mode=mode,
+                title=title,
+                role=role,
+                semantic_tag=semantic_tag,
+            )
+        )
     return tuple(inputs)
+
+
+def _worker_session_input_batches(
+    raw: dict[str, Any],
+) -> tuple[sdk.SessionInputBatch, ...]:
+    values = raw.get("session_input_batches", [])
+    if not isinstance(values, list):
+        raise WorkerProtocolError("worker session_input_batches result must be a list")
+    batches: list[sdk.SessionInputBatch] = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise WorkerProtocolError("worker session input batch must be an object")
+        coalesce_key = value.get("coalesce_key")
+        if coalesce_key is not None and (
+            not isinstance(coalesce_key, str) or not coalesce_key.strip()
+        ):
+            raise WorkerProtocolError("worker session input batch coalesce_key must not be empty")
+        batches.append(
+            sdk.SessionInputBatch(
+                inputs=_worker_session_inputs({"session_inputs": value.get("inputs", [])}),
+                coalesce_key=coalesce_key,
+            )
+        )
+    return tuple(batches)
+
+
+def _worker_session_input_role(value: object) -> sdk.SessionInputRole:
+    if value not in {"user", "system_synthetic"}:
+        raise WorkerProtocolError(f"worker session input role is invalid: {value}")
+    return value
+
+
+def _worker_semantic_tag(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise WorkerProtocolError("worker session input semantic_tag must not be empty")
+    try:
+        return validate_semantic_tag(value)
+    except ValueError as exc:
+        raise WorkerProtocolError(f"worker session input semantic_tag is invalid: {exc}") from exc
 
 
 def _worker_control_transitions(

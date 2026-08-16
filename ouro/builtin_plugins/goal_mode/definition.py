@@ -18,8 +18,8 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
             "schema_version": 3,
             "plugin_id": "dev.ouro.goal_mode",
             "name": "Goal Mode",
-            "version": "1.0.0",
-            "description": "Runs one durable, user-owned Goal across bounded OURO Runs.",
+            "version": "2.0.0",
+            "description": "Maintains and advances the latest user-owned Goal.",
             "namespace": "goal_mode",
             "engines": {"ouro": ">=0.1.0,<0.2.0", "plugin_api": "^2.0.0"},
             "runtime": {
@@ -60,12 +60,12 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                     {
                         "id": "goal",
                         "description": (
-                            "Create and control a durable Goal for the current Session."
+                            "Create and control the latest Goal for this conversation."
                         ),
                         "usage": (
-                            "[--token-budget N] <request> | status | pause | "
-                            "resume [--token-budget N] | cancel | "
-                            "replace [--token-budget N] <request>"
+                            "[--token-budget N|unlimited] <objective> | status | pause | "
+                            "resume [--token-budget N|unlimited] | cancel | "
+                            "replace [--token-budget N|unlimited] <objective>"
                         ),
                         "argument_options": [
                             {
@@ -79,7 +79,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             {
                                 "value": "resume",
                                 "description": "Resume a paused or blocked Goal.",
-                                "usage": "[--token-budget N]",
+                                "usage": "[--token-budget N|unlimited]",
                             },
                             {
                                 "value": "cancel",
@@ -88,7 +88,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             {
                                 "value": "replace",
                                 "description": "Replace the current Goal with a new objective.",
-                                "usage": "[--token-budget N] <request>",
+                                "usage": "[--token-budget N|unlimited] <objective>",
                             },
                         ],
                         "requires_session": True,
@@ -109,7 +109,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                 ],
                 "context_providers": [
                     {
-                        "id": "goal-scaffold",
+                        "id": "goal-run-binding",
                         "priority": 10,
                         "timeout_seconds": 5,
                         "failure_mode": "block",
@@ -119,6 +119,14 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                 "continuation_policies": [
                     {
                         "id": "goal-continuation",
+                        "priority": 10,
+                        "timeout_seconds": 5,
+                        "active_when": "mode",
+                    }
+                ],
+                "prompt_policies": [
+                    {
+                        "id": "goal-input-gate",
                         "priority": 10,
                         "timeout_seconds": 5,
                         "active_when": "mode",
@@ -135,6 +143,10 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                 {
                     "id": "background.run",
                     "reason": "Continue an active Goal after each bounded Run settles.",
+                },
+                {
+                    "id": "sessions.prompt.inspect",
+                    "reason": "Prevent ordinary prompts from implicitly resuming a stopped Goal.",
                 },
             ],
             "dependencies": {"plugins": []},

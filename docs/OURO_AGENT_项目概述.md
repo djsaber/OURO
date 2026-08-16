@@ -142,9 +142,10 @@ workspace/project 只影响一次执行的上下文，不存在项目插件或 w
 
 插件可贡献 Host-neutral command 和 Run continuation policy。command 经 `sessions.write` 与 `background.run`
 授权后可请求会话输入；continuation policy 在每个 Agent Run 终态后返回继续、完成、暂停或失败。application
-持久化 generation-frozen checkpoint、处理冲突并用稳定 queue id 幂等入队。插件输入保存为带来源归因的
-`system_synthetic`，不冒充用户。Interactive 支持 canonical/唯一短别名 slash command，并在插件启动的执行链
-运行时继续接收修改、引导、follow-up、steer、暂停或中止输入。
+持久化 generation-frozen checkpoint、处理冲突并用稳定 queue id 幂等入队。插件输入保存完整来源归因并默认使用
+`system_synthetic`；需要用户角色脚手架语义时可以声明 `role=user`，但不会因此变成直接用户来源或获得用户权限。
+Interactive 支持 canonical/唯一短别名 slash command，并在插件启动的执行链运行时继续接收修改、引导、follow-up、
+steer、暂停或中止输入。
 
 插件工具可选接收 Host-owned workspace/path/cancel 上下文；限制性 tool policy 可实现 plan mode、危险命令确认、
 受保护路径和合规门禁。策略只能提升审批或拒绝，不能批准、放宽 Host policy 或修改调用参数，失败时默认拒绝；
@@ -216,8 +217,9 @@ generation-frozen continuation checkpoint。
 
 会话的 canonical 对话记录。工具请求使用 `tool_calls`，工具结果关联使用 `tool_result`；两者不隐藏在
 metadata 中。可展示思考使用 `reasoning_content`，协议私有的工具续接状态使用路由绑定的
-`provider_continuation`。插件和普通 Host 产生的会话输入使用 `system_synthetic` 与 provenance metadata；直接用户输入
-以及携带 `delegation_id` 的子智能体初始 task 使用 `user` role。
+`provider_continuation`。消息 role 与 producer provenance 正交：普通 Host 输入固定为 `system_synthetic`，插件输入
+默认 synthetic，但需要用户角色脚手架语义时可以使用 `user` role 并继续保留插件来源；这不等价于直接用户授权。
+直接用户输入以及携带 `delegation_id` 的子智能体初始 task 也使用 `user` role。
 
 ### Event
 
@@ -277,4 +279,5 @@ result/delivery identity 和 revision，不镜像 running/waiting/terminal 状�
 - 未实现能力的推进顺序以 [开发路线图](OURO_AGENT_开发路线图.md) 为准。
 - 领域契约与验收证据见 [规格索引](../dev/specs/README.md)。
 - 未来能力的任务拆分见 [执行计划索引](../dev/plans/README.md)。
+- Goal builtin 的当前契约见 [OURO Goal 插件设计](OURO_Goal插件设计_2026-08-16.md)。
 - 所有实现和评审遵循 [中文编码准则](OURO_AGENT_编码准则_ZH.md)。

@@ -33,6 +33,7 @@ class SessionInputRequest(OuroModel):
     mode: SessionInputMode = "follow_up"
     title: str | None = None
     role: SessionInputRole = "system_synthetic"
+    semantic_tag: SemanticTag | None = None
 
     @field_validator("prompt")
     @classmethod
@@ -49,6 +50,45 @@ class AttributedSessionInput(SessionInputRequest):
     contribution_id: str
     generation_id: str
     execution_contract_hash: str
+
+
+class SessionInputBatchRequest(OuroModel):
+    """One ordered input unit accepted and consumed atomically."""
+
+    inputs: tuple[SessionInputRequest, ...] = Field(min_length=1)
+    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_delivery_mode(self) -> SessionInputBatchRequest:
+        modes = {item.mode for item in self.inputs}
+        if len(modes) != 1:
+            raise ValueError("all inputs in a session input batch must use the same mode")
+        return self
+
+
+class AttributedSessionInputBatch(OuroModel):
+    """An atomic input unit bound to the extension generation that produced it."""
+
+    inputs: tuple[AttributedSessionInput, ...] = Field(min_length=1)
+    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_batch(self) -> AttributedSessionInputBatch:
+        modes = {item.mode for item in self.inputs}
+        if len(modes) != 1:
+            raise ValueError("all inputs in a session input batch must use the same mode")
+        owners = {
+            (
+                item.plugin_id,
+                item.contribution_id,
+                item.generation_id,
+                item.execution_contract_hash,
+            )
+            for item in self.inputs
+        }
+        if len(owners) != 1:
+            raise ValueError("all inputs in a session input batch must have one owner")
+        return self
 
 
 class HostSessionInput(SessionInputRequest):
@@ -83,9 +123,9 @@ class DelegatedTaskInput(SessionInputRequest):
     """The user-role task that starts one prepared subagent Run.
 
     Delegation provenance is application-owned and durable, but it must not
-    change the model role of the task supplied through ``SpawnAgent``. General
-    Host and plugin inputs remain synthetic; only this narrow boundary creates
-    an attributed user message for a child Session.
+    change the model role of the task supplied through ``SpawnAgent``. The user
+    role describes message semantics only; provenance still records delegation
+    as the producer and does not grant direct-user authority.
     """
 
     role: Literal["user"] = "user"

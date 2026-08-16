@@ -8,7 +8,11 @@ from ouro.config.queued_inputs import QueuedInputConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.messages import MessageRecord, ModelMessage
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
-from ouro.core.session_controls import HostSessionInput
+from ouro.core.session_controls import (
+    AttributedSessionInput,
+    AttributedSessionInputBatch,
+    HostSessionInput,
+)
 from ouro.sessions import LocalSessionStore
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult
 
@@ -82,6 +86,43 @@ async def _active_session(store: LocalSessionStore):
 
 def _user_texts(messages: Sequence[MessageRecord | ModelMessage]) -> list[str]:
     return [message.text_content for message in messages if message.role == "user"]
+
+
+@pytest.mark.asyncio
+async def test_one_by_one_consumption_never_splits_an_attributed_input_batch(tmp_path) -> None:
+    store, provider, runtime = _runtime(tmp_path, consumption_mode="one_by_one")
+    session = runtime.create_session(title="Atomic plugin input")
+    common = {
+        "plugin_id": "dev.example.goal",
+        "contribution_id": "goal",
+        "generation_id": "generation_1",
+        "execution_contract_hash": "contract_1",
+    }
+    batch = AttributedSessionInputBatch(
+        inputs=(
+            AttributedSessionInput(
+                prompt="create instruction",
+                role="user",
+                semantic_tag="goal-create",
+                **common,
+            ),
+            AttributedSessionInput(prompt="exact objective", role="user", **common),
+        )
+    )
+    provider.release_first.set()
+
+    result = await runtime.submit_plugin_input_batch(batch, session_id=session.session_id)
+
+    assert result.run.status == "completed"
+    assert len(provider.contexts) == 1
+    visible = _user_texts(provider.contexts[0])
+    assert "<goal-create>" in visible[-2]
+    assert "create instruction" in visible[-2]
+    assert visible[-1] == "exact objective"
+    snapshot = store.load_session(session.session_id)
+    inputs = [message for message in snapshot.messages if message.role == "user"]
+    assert [message.semantic_tag for message in inputs] == ["goal-create", None]
+    assert len({message.run_id for message in inputs}) == 1
 
 
 @pytest.mark.asyncio

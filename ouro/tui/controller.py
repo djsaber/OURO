@@ -1371,8 +1371,14 @@ class TuiController:
             session_id=self._session_id,
             workspace=runtime.default_workspace,
         )
-        if self._session_id is None and execution.session_inputs:
-            first = execution.session_inputs[0]
+        if self._session_id is None and (
+            execution.session_inputs or execution.session_input_batches
+        ):
+            first = (
+                execution.session_inputs[0]
+                if execution.session_inputs
+                else execution.session_input_batches[0].inputs[0]
+            )
             created = runtime.create_session(
                 title=first.title or _plugin_session_title(selected.name, argument),
                 initial_model=self._initial_model,
@@ -1383,10 +1389,17 @@ class TuiController:
             self._session_id = created.session_id
             self._initial_model = None
         results: list[RunResult] = []
-        for session_input in execution.session_inputs:
-            results.append(
-                await runtime.submit_plugin_input(session_input, session_id=self._session_id)
-            )
+        if execution.session_input_batches:
+            assert self._session_id is not None
+            for batch in execution.session_input_batches:
+                results.append(
+                    await runtime.submit_plugin_input_batch(batch, session_id=self._session_id)
+                )
+        else:
+            for session_input in execution.session_inputs:
+                results.append(
+                    await runtime.submit_plugin_input(session_input, session_id=self._session_id)
+                )
         return TuiPluginCommandExecution(execution=execution, run_results=tuple(results))
 
     async def usage_totals(self) -> UsageTotals:

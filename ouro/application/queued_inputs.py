@@ -9,7 +9,7 @@ from ouro.application.dto import ApplicationDTO
 from ouro.core.base import OuroModel, new_id, utc_now
 from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import SkillActivationContent
-from ouro.core.session_controls import SessionInputMode, SessionInputRole
+from ouro.core.session_controls import SessionInputMode, SessionInputRequest, SessionInputRole
 from ouro.core.state import SessionRecord
 from ouro.sessions import RuntimeSessionSnapshot, SessionRepository
 
@@ -42,6 +42,10 @@ class QueuedInput(OuroModel):
     source: QueuedInputSource = "user"
     message_role: SessionInputRole = "user"
     semantic_tag: SemanticTag | None = None
+    batch_id: str | None = None
+    batch_index: int | None = Field(default=None, ge=0)
+    batch_size: int | None = Field(default=None, ge=1)
+    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     host_source_id: str | None = None
     delegation_id: str | None = None
     plugin_id: str | None = None
@@ -121,8 +125,20 @@ class QueuedInput(OuroModel):
             raise ValueError(f"{self.source} queued input must use the user message role")
         if self.source == "host" and self.message_role != "system_synthetic":
             raise ValueError("Host queued input must use the synthetic message role")
-        if self.message_role == "user" and self.semantic_tag is not None:
-            raise ValueError("user-role queued input cannot carry a semantic tag")
+        batch_fields = (self.batch_id, self.batch_index, self.batch_size)
+        if any(value is not None for value in batch_fields) and any(
+            value is None for value in batch_fields
+        ):
+            raise ValueError("queued input batch identity requires id, index, and size")
+        if (
+            self.batch_id is not None
+            and self.batch_index is not None
+            and self.batch_size is not None
+        ):
+            if self.batch_index >= self.batch_size:
+                raise ValueError("queued input batch index must be smaller than its size")
+        if self.coalesce_key is not None and self.batch_id is None:
+            raise ValueError("coalescing is only valid for an atomic input unit")
         if self.source == "plugin" and self.resource_refs:
             raise ValueError("plugin queued input cannot carry Host resource references")
         if (self.session_control_controller_id is None) is not (
@@ -184,7 +200,9 @@ class QueuedInputQueue:
         prospective_run_id: str | None = None,
         extension_catalog_id: str | None = None,
         extension_generations: tuple[dict[str, object], ...] = (),
+        coalesce_key: str | None = None,
     ) -> tuple[SessionRecord, QueuedInput, int]:
+        batch_id = new_id("batch") if coalesce_key is not None else None
         item = QueuedInput(
             queue_id=queue_id or new_id("queued"),
             prompt=prompt,
@@ -201,6 +219,10 @@ class QueuedInputQueue:
                 else "system_synthetic"
             ),
             semantic_tag=semantic_tag,
+            batch_id=batch_id,
+            batch_index=0 if batch_id is not None else None,
+            batch_size=1 if batch_id is not None else None,
+            coalesce_key=coalesce_key,
             host_source_id=host_source_id,
             delegation_id=delegation_id,
             plugin_id=plugin_id,
@@ -229,6 +251,75 @@ class QueuedInputQueue:
             session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
             self.store.save_session(session)
         return session, item, len(queue)
+
+    def enqueue_batch(
+        self,
+        *,
+        snapshot: RuntimeSessionSnapshot,
+        inputs: tuple[SessionInputRequest, ...],
+        source: QueuedInputSource,
+        plugin_id: str,
+        contribution_id: str,
+        generation_id: str,
+        execution_contract_hash: str,
+        coalesce_key: str | None = None,
+        caused_by_run_id: str | None = None,
+        session_control_controller_id: str | None = None,
+        session_control_activation_id: str | None = None,
+    ) -> tuple[SessionRecord, tuple[QueuedInput, ...], int, tuple[QueuedInput, ...]]:
+        """Atomically enqueue one ordered input unit and supersede its pending projection."""
+
+        if not inputs:
+            raise ValueError("queued input batch cannot be empty")
+        if len({item.mode for item in inputs}) != 1:
+            raise ValueError("all inputs in a queued batch must use the same mode")
+        batch_id = new_id("batch")
+        queued_items = tuple(
+            QueuedInput(
+                prompt=item.prompt,
+                mode=item.mode,
+                title=item.title,
+                source=source,
+                message_role=item.role,
+                semantic_tag=item.semantic_tag,
+                batch_id=batch_id,
+                batch_index=index,
+                batch_size=len(inputs),
+                coalesce_key=coalesce_key,
+                plugin_id=plugin_id,
+                contribution_id=contribution_id,
+                generation_id=generation_id,
+                execution_contract_hash=execution_contract_hash,
+                caused_by_run_id=caused_by_run_id,
+                session_control_controller_id=session_control_controller_id,
+                session_control_activation_id=session_control_activation_id,
+            )
+            for index, item in enumerate(inputs)
+        )
+        with self.store.session_mutation(snapshot.session.session_id):
+            latest = self.store.load_session_record(snapshot.session.session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            superseded: list[QueuedInput] = []
+            retained: list[object] = []
+            for raw_item in queue:
+                existing = self._parse_item(raw_item)
+                if (
+                    coalesce_key is not None
+                    and existing is not None
+                    and existing.source == source
+                    and existing.plugin_id == plugin_id
+                    and existing.contribution_id == contribution_id
+                    and existing.coalesce_key == coalesce_key
+                ):
+                    superseded.append(existing)
+                else:
+                    retained.append(raw_item)
+            retained.extend(item.model_dump(mode="python") for item in queued_items)
+            metadata[QUEUED_INPUTS_KEY] = retained
+            session = latest.model_copy(update={"metadata": metadata, "updated_at": utc_now()})
+            self.store.save_session(session)
+        return session, queued_items, len(retained), tuple(superseded)
 
     def eligible(
         self,
@@ -265,6 +356,44 @@ class QueuedInputQueue:
         if saw_invalid:
             self._remove_invalid(session.session_id)
         return valid
+
+    def eligible_units(
+        self,
+        snapshot: RuntimeSessionSnapshot,
+        *,
+        mode: QueuedInputMode | None = None,
+    ) -> list[tuple[QueuedInput, ...]]:
+        """Return complete delivery units without splitting an atomic batch."""
+
+        return self.eligible_units_session(snapshot.session, mode=mode)
+
+    def eligible_units_session(
+        self,
+        session: SessionRecord,
+        *,
+        mode: QueuedInputMode | None = None,
+    ) -> list[tuple[QueuedInput, ...]]:
+        items = self.eligible_session(session, mode=mode)
+        units: list[tuple[QueuedInput, ...]] = []
+        index = 0
+        while index < len(items):
+            item = items[index]
+            if item.batch_id is None:
+                units.append((item,))
+                index += 1
+                continue
+            assert item.batch_size is not None
+            candidate = tuple(items[index : index + item.batch_size])
+            if (
+                len(candidate) != item.batch_size
+                or any(member.batch_id != item.batch_id for member in candidate)
+                or [member.batch_index for member in candidate] != list(range(item.batch_size))
+            ):
+                index += 1
+                continue
+            units.append(candidate)
+            index += item.batch_size
+        return units
 
     def peek(self, snapshot: RuntimeSessionSnapshot) -> QueuedInput | None:
         items = self.eligible(snapshot, limit=1)
@@ -307,6 +436,45 @@ class QueuedInputQueue:
                     queue.pop(index)
                     self._save_queue(latest, metadata, queue)
                     return
+
+    def acknowledge_many(self, *, session_id: str, queue_ids: tuple[str, ...]) -> None:
+        """Atomically remove a complete delivery unit after all messages are durable."""
+
+        selected = set(queue_ids)
+        if not selected:
+            return
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            retained = []
+            removed: set[str] = set()
+            for raw_item in queue:
+                item = self._parse_item(raw_item)
+                if item is not None and item.queue_id in selected:
+                    removed.add(item.queue_id)
+                else:
+                    retained.append(raw_item)
+            if removed:
+                self._save_queue(latest, metadata, retained)
+
+    def acknowledge_batch(self, *, session_id: str, batch_id: str) -> None:
+        """Atomically acknowledge every still-queued member of one batch."""
+
+        with self.store.session_mutation(session_id):
+            latest = self.store.load_session_record(session_id)
+            metadata = dict(latest.metadata)
+            queue = self._raw_queue(metadata)
+            retained = []
+            removed = False
+            for raw_item in queue:
+                item = self._parse_item(raw_item)
+                if item is not None and item.batch_id == batch_id:
+                    removed = True
+                else:
+                    retained.append(raw_item)
+            if removed:
+                self._save_queue(latest, metadata, retained)
 
     def cancel_for_session_control(
         self,
@@ -427,6 +595,16 @@ class QueuedInputQueue:
                 message_role=_parse_message_role(item.get("message_role"), raw_source),
                 semantic_tag=(
                     item.get("semantic_tag") if isinstance(item.get("semantic_tag"), str) else None
+                ),
+                batch_id=(item.get("batch_id") if isinstance(item.get("batch_id"), str) else None),
+                batch_index=(
+                    item.get("batch_index") if isinstance(item.get("batch_index"), int) else None
+                ),
+                batch_size=(
+                    item.get("batch_size") if isinstance(item.get("batch_size"), int) else None
+                ),
+                coalesce_key=(
+                    item.get("coalesce_key") if isinstance(item.get("coalesce_key"), str) else None
                 ),
                 host_source_id=(
                     item.get("host_source_id")

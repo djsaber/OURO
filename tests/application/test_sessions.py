@@ -548,14 +548,14 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
     first = MessageRecord.text(
         session_id=source.session_id,
         role="user",
-        text="define goal",
+        text="define state",
         sequence=1,
     )
     projection = MessageRecord.text(
         session_id=source.session_id,
         role="system_synthetic",
-        semantic_tag="goal-contract",
-        text="active goal",
+        semantic_tag="example-projection",
+        text="active state",
         sequence=2,
     )
     branch_point = MessageRecord.text(
@@ -569,10 +569,10 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
     store.save_session_extension_state(
         SessionExtensionStateRecord(
             session_id=source.session_id,
-            owner_id="dev.ouro.goal_mode",
+            owner_id="dev.example.reset_state",
             state_schema_version=2,
             branch_policy="reset",
-            projection_semantic_tags=("goal-contract",),
+            projection_semantic_tags=("example-projection",),
             payload={"status": "active"},
         )
     )
@@ -588,7 +588,7 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
 
     exported = sessions.export(source.session_id)
     assert {state.owner_id for state in exported.extension_states} == {
-        "dev.ouro.goal_mode",
+        "dev.example.reset_state",
         "dev.example.preferences",
     }
 
@@ -596,7 +596,7 @@ def test_branch_applies_extension_copy_and_reset_policies(tmp_path) -> None:
     snapshot = store.load_session(result.session.session_id)
 
     assert [message.text_content for message in snapshot.messages] == [
-        "define goal",
+        "define state",
         "continue",
     ]
     assert projection.message_id not in result.message_id_map
@@ -663,8 +663,8 @@ def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
     projection = MessageRecord.text(
         session_id=source.session_id,
         role="system_synthetic",
-        semantic_tag="goal-contract",
-        text="goal",
+        semantic_tag="example-projection",
+        text="state projection",
         sequence=1,
     )
     branch_point = MessageRecord.text(
@@ -678,10 +678,10 @@ def test_sqlite_branch_applies_extension_reset_policy(tmp_path) -> None:
     store.save_session_extension_state(
         SessionExtensionStateRecord(
             session_id=source.session_id,
-            owner_id="dev.ouro.goal_mode",
+            owner_id="dev.example.reset_state",
             state_schema_version=2,
             branch_policy="reset",
-            projection_semantic_tags=("goal-contract",),
+            projection_semantic_tags=("example-projection",),
             payload={"status": "active"},
         )
     )

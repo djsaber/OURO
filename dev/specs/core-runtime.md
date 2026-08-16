@@ -66,6 +66,10 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 - 一次模型响应中的 assistant 工具请求及其结果共享 `turn_id`。
 - `turn_id` 只能出现在拥有 `run_id` 的消息上。
 - 工具身份与思考续接状态不得写入 `metadata`。
+- user 与 `system_synthetic` 输入都可携带合法 `semantic_tag`；标签通过统一 renderer 形成模型可见包络，但不改变
+  role、producer provenance 或授权语义。
+- durable input queue 把单条输入或非空有序 `SessionInputBatch` 视为消费单位；逐条消费配置不能拆分 batch，组内
+  canonical messages 必须属于同一 Run 或同一安全 turn 边界。
 
 ## 运行流程
 

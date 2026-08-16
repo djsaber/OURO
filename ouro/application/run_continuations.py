@@ -12,12 +12,14 @@ from ouro.core.continuations import (
     ContinuationPolicyRegistration,
     RunContinuationRegistry,
 )
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.messages import MessageRecord
 from ouro.core.redaction import redact_text
 from ouro.core.session_controls import (
     AttributedSessionControlTransition,
     SessionControlTransitionRequest,
     SessionInputMode,
+    SessionInputRole,
 )
 from ouro.core.state import (
     RunContinuationCheckpoint,
@@ -251,6 +253,9 @@ class RunContinuationService:
             prompt=decision.prompt,
             mode=decision.mode,
             title=decision.title,
+            role=decision.role,
+            semantic_tag=decision.semantic_tag,
+            coalesce_key=decision.coalesce_key,
             reason=decision.reason,
             state_revision=decision.state_revision,
             session_control_transitions=transitions,
@@ -265,25 +270,42 @@ class RunContinuationService:
         if not transitions:
             return []
         if len(transitions) != 1:
-            raise ValueError("continuation decision may release only its one bound activation")
+            raise ValueError("continuation decision may update only its one bound activation")
         if controller_ref.active_when_controller_id is None or controller_ref.activation_id is None:
             raise ValueError("unbound continuation policy cannot emit Session control transitions")
         transition = transitions[0]
-        if transition.action != "release":
-            raise ValueError("continuation policy may only release its checkpoint-bound activation")
+        if transition.action not in {"release", "replace"}:
+            raise ValueError(
+                "continuation policy may only release or replace its checkpoint-bound activation"
+            )
         prefix = f"{controller_ref.plugin_id}/session_controllers/"
         if not controller_ref.active_when_controller_id.startswith(prefix):
             raise ValueError("bound Session controller does not belong to the policy plugin")
         local_controller_id = controller_ref.active_when_controller_id.removeprefix(prefix)
         if transition.controller_id not in {None, local_controller_id}:
             raise ValueError("continuation transition selected another Session controller")
-        if transition.activation_id not in {None, controller_ref.activation_id}:
+        if transition.action == "release":
+            if transition.activation_id not in {None, controller_ref.activation_id}:
+                raise ValueError("continuation transition selected another controller activation")
+            return [
+                transition.model_copy(
+                    update={
+                        "controller_id": local_controller_id,
+                        "activation_id": controller_ref.activation_id,
+                    }
+                )
+            ]
+        if transition.activation_id is not None or set(transition.replace_activation_ids) not in (
+            set(),
+            {controller_ref.activation_id},
+        ):
             raise ValueError("continuation transition selected another controller activation")
         return [
             transition.model_copy(
                 update={
                     "controller_id": local_controller_id,
-                    "activation_id": controller_ref.activation_id,
+                    "activation_id": None,
+                    "replace_activation_ids": [controller_ref.activation_id],
                 }
             )
         ]
@@ -401,6 +423,9 @@ class RunContinuationService:
             prompt=plan.prompt,
             mode=plan.mode,
             title=plan.title,
+            role=plan.role,
+            semantic_tag=plan.semantic_tag,
+            coalesce_key=plan.coalesce_key,
             reason=plan.reason,
             state_revision=plan.state_revision,
             session_control_controller_id=controller_ref.active_when_controller_id,
@@ -515,6 +540,9 @@ class RunContinuationService:
         prompt: str,
         mode: SessionInputMode,
         title: str | None,
+        role: SessionInputRole,
+        semantic_tag: SemanticTag | None,
+        coalesce_key: str | None,
         reason: str | None,
         state_revision: int | None,
         session_control_controller_id: str | None,
@@ -612,6 +640,9 @@ class RunContinuationService:
                 prompt=prompt,
                 mode=mode,
                 title=title,
+                message_role=role,
+                semantic_tag=semantic_tag,
+                coalesce_key=coalesce_key,
                 source="plugin",
                 plugin_id=plugin_id,
                 contribution_id=policy_id,

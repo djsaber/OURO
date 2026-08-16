@@ -52,6 +52,7 @@ from ouro.core.redaction import SensitiveValueRedactor
 from ouro.core.session_controls import (
     SessionControlClaim,
     SessionControlTransitionRequest,
+    SessionInputBatchRequest,
     SessionInputRequest,
 )
 from ouro.core.session_extensions import SessionExtensionStateRecord
@@ -874,8 +875,25 @@ def _adapt_command(contribution: sdk.CommandContribution) -> PluginCommand:
                         mode=item.mode,
                         title=item.title,
                         role=item.role,
+                        semantic_tag=item.semantic_tag,
                     )
                     for item in raw.session_inputs
+                ],
+                session_input_batches=[
+                    SessionInputBatchRequest(
+                        inputs=tuple(
+                            SessionInputRequest(
+                                prompt=item.prompt,
+                                mode=item.mode,
+                                title=item.title,
+                                role=item.role,
+                                semantic_tag=item.semantic_tag,
+                            )
+                            for item in batch.inputs
+                        ),
+                        coalesce_key=batch.coalesce_key,
+                    )
+                    for batch in raw.session_input_batches
                 ],
                 session_control_transitions=[
                     SessionControlTransitionRequest(
@@ -1043,6 +1061,9 @@ def _adapt_continuation_policy(
             prompt=raw.prompt,
             mode=raw.mode,
             title=raw.title,
+            role=raw.role,
+            semantic_tag=raw.semantic_tag,
+            coalesce_key=raw.coalesce_key,
             reason=raw.reason,
             state_revision=raw.state_revision,
             session_control_transitions=[

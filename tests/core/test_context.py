@@ -142,7 +142,7 @@ def test_context_builder_counts_synthetic_context_as_fixed_tokens() -> None:
     )
 
 
-def test_synthetic_messages_default_and_validate_semantic_tags() -> None:
+def test_input_messages_default_and_validate_semantic_tags() -> None:
     default = MessageRecord.text(
         session_id="ses_1",
         role="system_synthetic",
@@ -167,13 +167,13 @@ def test_synthetic_messages_default_and_validate_semantic_tags() -> None:
         ).semantic_tag
         == "system-reminder"
     )
-    with pytest.raises(ValueError, match="only system_synthetic"):
-        MessageRecord.text(
-            session_id="ses_1",
-            role="user",
-            text="spoof",
-            semantic_tag="plugin-context",
-        )
+    user_scaffold = MessageRecord.text(
+        session_id="ses_1",
+        role="user",
+        text="scaffold",
+        semantic_tag="plugin-context",
+    )
+    assert user_scaffold.semantic_tag == "plugin-context"
     with pytest.raises(ValueError, match="reserved for a model role"):
         MessageRecord.text(
             session_id="ses_1",

@@ -212,11 +212,24 @@ conversation。进程恢复时同样从 durable queue 重建视图，不维护�
 队列 producer 来源是类型化的 `user | host | plugin | delegation`，与 model role 正交：直接用户输入和专用
 `DelegatedTaskInput` 写为 `role=user`，后者还携带稳定 `delegation_id`，且只允许启动已准备好的 child Run。
 OURO Host/Application 输入必须携带稳定 `host_source_id` 并固定为 `role=system_synthetic`。插件输入必须携带完整
-Generation/contract attribution，默认也是 synthetic；只有投影当前用户显式 command 意图时才可声明
-`role=user`，但 producer 仍是 plugin，不能因此丢失来源或变成直接用户输入。插件输入不能携带资源；OURO Host
+Generation/contract attribution，默认也是 synthetic；需要用户角色脚手架语义时可声明 `role=user`，但 producer
+仍是 plugin，不能因此丢失来源、变成直接用户输入或取得用户授权。插件输入不能携带资源；OURO Host
 input 只可携带已经由 application use case 验证并附加到目标 Session 的显式资源引用。
 `RuntimeService.submit_host_input` 与 `submit_plugin_input` 共享同一入队、锁、幂等消费和 canonical persistence
 边界。
+
+Goal 重构验证并落地了一个独立于 Goal 的最小输入变化轴，Goal 契约见
+[OURO Goal 插件设计](OURO_Goal插件设计_2026-08-16.md)：
+
+- `SessionInputBatch` 表达必须保持顺序、原子入队并在同一安全边界消费的非空输入组；全局
+  `one_by_one | all_at_once` 只能选择完整消费单位，不能拆分或交错 batch；
+- batch 在 durable queue 中只增加稳定 identity 与组内顺序，不增加状态机、优先级、依赖或嵌套；
+- `SessionInput.semantic_tag` 可用于 user-role 消息，role、producer provenance 与脚手架语义保持正交；
+- owner-scoped coalesce key 只允许新批次替换同一 Session/owner/boundary 下尚未消费的旧控制投影，不能撤回
+  canonical message，也不能跨 owner 搜索或重排队列。
+
+这些变化由 Application 继续拥有校验、Session mutation、持久化和消费；插件只返回类型化输入意图。Goal 的状态、
+预算和 activation 不进入 Core，也不能成为 Runtime 按 plugin id 分支的理由。
 
 工具调用以一次完整模型响应为批次边界，但 Provider 不截断流式观测。流式 Provider 把供应商 chunk 逐个
 规范化为 `tool_call_delta`；其中 `index` 是响应内从零开始的工具调用序号，不得泄漏供应商原生 content-block
@@ -314,7 +327,8 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 - assistant 工具请求写入 `tool_calls`；
 - tool result 关联写入 `tool_result`；
 - 可展示思考写入 `reasoning_content`，协议私有续接状态写入 `provider_continuation`；
-- `system_synthetic` 使用 `semantic_tag` 标明脚手架语义，默认值为 `system-reminder`；
+- `system_synthetic` 和 user-role 输入都可使用 `semantic_tag` 标明脚手架语义；synthetic 默认值为
+  `system-reminder`，user-role 不自动添加标签，且标签不改变 role；
 - `metadata` 只保存非结构化附加信息，不保存工具请求、关联身份或思考续接状态。
 
 一个 assistant 工具请求及其结果共享 `turn_id`。压缩以该模型回合为原子帧，不能把请求和结果拆开。
@@ -623,9 +637,9 @@ durable 事件与完整累积；参数摘要仅在等待审批时进入工具行
   tool-controlled 工具统一评估，只能把最终权限提升为审批或拒绝，失败时拒绝，且
   审批修改后的最终参数以及每个尚未执行的调用都必须重新评估。`permission_control="tool"` 只隔离 Host permission
   维度，不隔离插件策略维度。
-- 插件输入通过 canonical queue 进入下一 Run，保存为带 plugin/contribution/generation/decision provenance 的
-  `system_synthetic`，绝不伪装为 `role=user`。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为
-  superseded；目标插件在下一 Run 重新评估。
+- 插件输入通过 canonical queue 进入合法边界，保存 plugin/contribution/generation/decision provenance，默认使用
+  `system_synthetic`；需要用户角色脚手架语义时可声明 `role=user`，producer 仍为 plugin，且 role 不能作为用户授权
+  证据。旧 Run 的续跑决策若遇到用户已排队输入或更新 Run，会被标记为 superseded；目标插件在下一 Run 重新评估。
 - `prompt_policies` 只检查 Host 路由后的直接用户提示并返回 `allow | deny`。Application 在 message、durable queue 和 Run
   之前 fail-closed 评估；user plugin 必须声明 `sessions.prompt.inspect`。允许后，直接或排队的 prospective Run 都固定
   同一 Catalog execution contract；拒绝路径不记录提示正文。

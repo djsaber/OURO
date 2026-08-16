@@ -9,11 +9,13 @@ from ouro.core.agents import AgentCatalogSnapshot
 from ouro.core.approvals import SessionApprovalMode
 from ouro.core.base import Metadata, MetadataField, OuroModel, VersionedOuroModel, new_id, utc_now
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.message_semantics import SemanticTag
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.session_controls import (
     SessionControlState,
     SessionControlTransitionRequest,
     SessionInputMode,
+    SessionInputRole,
 )
 from ouro.core.tool_batches import ToolCallBatchRecord
 
@@ -115,6 +117,9 @@ class RunContinuationSettlementPlan(OuroModel):
     prompt: str | None = None
     mode: SessionInputMode = "follow_up"
     title: str | None = None
+    role: SessionInputRole = "system_synthetic"
+    semantic_tag: SemanticTag | None = None
+    coalesce_key: str | None = Field(default=None, min_length=1, max_length=128)
     reason: str | None = None
     state_revision: int | None = Field(default=None, ge=0)
     session_control_transitions: list[SessionControlTransitionRequest] = Field(default_factory=list)

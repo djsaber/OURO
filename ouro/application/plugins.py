@@ -364,6 +364,7 @@ class PluginService:
             output="\n".join(output_parts),
             data=data,
             session_inputs=list(result.attributed_session_inputs),
+            session_input_batches=list(result.attributed_session_input_batches),
         )
 
     async def _command_catalog(
