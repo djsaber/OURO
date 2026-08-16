@@ -219,7 +219,7 @@ input 只可携带已经由 application use case 验证并附加到目标 Sessio
 边界。
 
 Goal 重构验证并落地了一个独立于 Goal 的最小输入变化轴，Goal 契约见
-[OURO Goal 插件设计](OURO_Goal插件设计_2026-08-16.md)：
+[OURO Goal 插件设计](OURO_Goal插件设计.md)：
 
 - `SessionInputBatch` 表达必须保持顺序、原子入队并在同一安全边界消费的非空输入组；全局
   `one_by_one | all_at_once` 只能选择完整消费单位，不能拆分或交错 batch；

@@ -227,6 +227,7 @@ def test_manifest_and_tool_contract_are_minimal_and_generic() -> None:
     }
     assert [item.id for item in manifest.contributes.context_providers] == ["goal-run-binding"]
     assert [item.id for item in manifest.contributes.prompt_policies] == ["goal-input-gate"]
+    assert {item.active_when for item in manifest.contributes.tools} == {None}
     assert {item.id for item in manifest.permissions} == {
         "sessions.write",
         "background.run",
@@ -266,6 +267,7 @@ async def test_tool_schemas_use_objective_and_implicit_update_identity(tmp_path)
         "status",
         "report",
     }
+    assert {item.active_when for item in tools.values()} == {None}
 
 
 def test_create_command_returns_one_atomic_user_message_pair(tmp_path) -> None:
@@ -335,25 +337,39 @@ async def test_goal_runs_end_to_end_and_retains_final_usage(tmp_path) -> None:
         assert goal.tokens_used == 20
         assert goal.report == "Delivered and checked."
         assert runtime.store.load_session(session.session_id).runs[-1].status == "completed"
+
+        messages = store.load_session(session.session_id).messages
+        by_tag = {message.semantic_tag: message for message in messages if message.semantic_tag}
+        assert set(by_tag) == {"goal-create", "goal-continue"}
+        for scaffold in by_tag.values():
+            assert scaffold.role == "user"
+            assert scaffold.synthetic is True
+        objective = next(
+            message for message in messages if message.text_content == "Ship end to end"
+        )
+        assert objective.role == "user"
+        assert objective.semantic_tag is None
+        assert objective.synthetic is False
     finally:
         await application.close()
 
 
 @pytest.mark.parametrize(
-    ("argument", "action", "budget", "supplied", "objective"),
+    ("argument", "action", "budget", "objective"),
     [
-        ("status", "status", None, False, None),
-        ("--token-budget unlimited New goal", "create", None, True, "New goal"),
-        ("resume --token-budget 25", "resume", 25, True, None),
-        ("resume", "resume", None, False, None),
-        ("replace --token-budget=40 Updated", "replace", 40, True, "Updated"),
+        ("status", "status", None, None),
+        ("New goal", "create", None, "New goal"),
+        ("--token-budget 30 New goal", "create", 30, "New goal"),
+        ("resume --token-budget 25", "resume", 25, None),
+        ("resume", "resume", None, None),
+        ("replace --token-budget=40 Updated", "replace", 40, "Updated"),
+        ("replace Updated", "replace", None, "Updated"),
     ],
 )
-def test_goal_command_parser_distinguishes_omitted_and_unlimited_budget(
+def test_goal_command_parser_treats_missing_budget_as_unlimited(
     argument: str,
     action: str,
     budget: int | None,
-    supplied: bool,
     objective: str | None,
 ) -> None:
     parsed = parse_goal_command(argument)
@@ -361,7 +377,6 @@ def test_goal_command_parser_distinguishes_omitted_and_unlimited_budget(
     assert parsed.error is None
     assert parsed.action == action
     assert parsed.token_budget == budget
-    assert parsed.budget_supplied is supplied
     assert parsed.objective == objective
 
 
@@ -549,7 +564,7 @@ def test_complete_wins_over_budget_exhaustion_in_the_same_execution(tmp_path) ->
     assert decision.action == "complete"
 
 
-def test_resume_exhausted_goal_requires_explicit_valid_budget(tmp_path) -> None:
+def test_resume_exhausted_goal_without_budget_removes_the_budget(tmp_path) -> None:
     plugin, state = _plugin(tmp_path)
     _create(plugin, token_budget=10)
     decision = plugin.goal_continuation(
@@ -564,13 +579,6 @@ def test_resume_exhausted_goal_requires_explicit_valid_budget(tmp_path) -> None:
     transition = decision.session_control_transitions[0]
     _activate(plugin, activation_id="activation_2", payload=transition.payload)
 
-    missing = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
-        sdk.CommandCall(
-            command_id=f"{PLUGIN_ID}:goal",
-            argument="resume",
-            session_id="session_1",
-        )
-    )
     too_small = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
         sdk.CommandCall(
             command_id=f"{PLUGIN_ID}:goal",
@@ -581,12 +589,11 @@ def test_resume_exhausted_goal_requires_explicit_valid_budget(tmp_path) -> None:
     resumed = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
         sdk.CommandCall(
             command_id=f"{PLUGIN_ID}:goal",
-            argument="resume --token-budget unlimited",
+            argument="resume",
             session_id="session_1",
         )
     )
 
-    assert missing.data["error"] == "budget_required"
     assert too_small.data["error"] == "invalid_token_budget"
     assert len(resumed.session_input_batches) == 1
     assert resumed.session_input_batches[0].coalesce_key == "goal-lifecycle"
@@ -638,7 +645,7 @@ def test_pause_resume_replace_and_cancel_are_user_owned_transitions(tmp_path) ->
     assert updated is not None
     assert updated.objective == "Updated objective"
     assert updated.created_at == created_at
-    assert updated.token_budget == 100
+    assert updated.token_budget is None
 
     cancel = plugin._commands.handle(  # noqa: SLF001 - builtin contract test
         sdk.CommandCall(

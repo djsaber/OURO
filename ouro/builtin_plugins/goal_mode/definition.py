@@ -53,7 +53,6 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                         "permission_control": "tool",
                         "effect": "state_changing",
                         "batch_behavior": "exclusive",
-                        "active_when": "mode",
                     },
                 ],
                 "commands": [
@@ -63,9 +62,9 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             "Create and control the latest Goal for this conversation."
                         ),
                         "usage": (
-                            "[--token-budget N|unlimited] <objective> | status | pause | "
-                            "resume [--token-budget N|unlimited] | cancel | "
-                            "replace [--token-budget N|unlimited] <objective>"
+                            "[--token-budget N] <objective> | status | pause | "
+                            "resume [--token-budget N] | cancel | "
+                            "replace [--token-budget N] <objective>"
                         ),
                         "argument_options": [
                             {
@@ -79,7 +78,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             {
                                 "value": "resume",
                                 "description": "Resume a paused or blocked Goal.",
-                                "usage": "[--token-budget N|unlimited]",
+                                "usage": "[--token-budget N]",
                             },
                             {
                                 "value": "cancel",
@@ -88,7 +87,7 @@ GOAL_MODE_PLUGIN = BuiltinPluginDefinition(
                             {
                                 "value": "replace",
                                 "description": "Replace the current Goal with a new objective.",
-                                "usage": "[--token-budget N|unlimited] <objective>",
+                                "usage": "[--token-budget N] <objective>",
                             },
                         ],
                         "requires_session": True,

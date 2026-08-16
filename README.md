@@ -173,18 +173,19 @@ continuation policy 可在每轮完成后请求继续、完成、暂停或失败
 默认启用。可直接使用：
 
 ```text
-/goal [--token-budget N|unlimited] <request>
+/goal [--token-budget N] <request>
 /goal status
 /goal pause
-/goal resume [--token-budget N|unlimited]
-/goal replace [--token-budget N|unlimited] <request>
+/goal resume [--token-budget N]
+/goal replace [--token-budget N] <request>
 /goal cancel
 ```
 
-一次 Run 的自然结束不会完成 Goal；模型必须通过 `UpdateGoal` 明确报告 `complete` 或 `blocked`。用户保留
+省略 `--token-budget` 即不设预算。一次 Run 的自然结束不会完成 Goal；模型必须通过 `UpdateGoal` 明确报告
+`complete` 或 `blocked`。用户保留
 pause、resume、replace、cancel 与预算权限。Goal 与 Plan 竞争同一个 primary behavior claim，因此必须先退出或
 暂停当前模式再进入另一个模式。完整设计与验收边界见
-[Goal 插件设计](docs/OURO_Goal插件设计_2026-08-16.md)。
+[Goal 插件设计](docs/OURO_Goal插件设计.md)。
 
 ## Provider 与 Endpoint
 

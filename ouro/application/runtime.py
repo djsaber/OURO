@@ -2596,6 +2596,7 @@ class RuntimeService:
             resource_refs=item.resource_refs,
             metadata=metadata,
             semantic_tag=item.semantic_tag,
+            synthetic=item.source == "plugin" and item.semantic_tag is not None,
         )
 
     def _start_queued_run(

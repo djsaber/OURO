@@ -130,7 +130,6 @@ class GoalModePlugin:
                     permission_control="tool",
                     effect="state_changing",
                     batch_behavior="exclusive",
-                    active_when="mode",
                 ),
             ],
             commands=[
@@ -138,9 +137,9 @@ class GoalModePlugin:
                     id="goal",
                     description="Create and control the latest goal for this conversation.",
                     usage=(
-                        "[--token-budget N|unlimited] <objective> | status | pause | "
-                        "resume [--token-budget N|unlimited] | cancel | "
-                        "replace [--token-budget N|unlimited] <objective>"
+                        "[--token-budget N] <objective> | status | pause | "
+                        "resume [--token-budget N] | cancel | "
+                        "replace [--token-budget N] <objective>"
                     ),
                     handler=self._commands.handle,
                 )

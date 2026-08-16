@@ -1672,7 +1672,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
 
         context_detail = status_line.query_one("#context-detail", Static)
         context = context_detail.render()
-        assert context.plain == "48.0K █████░░░░░░ 40%"
+        assert context.plain == "48.0K █████▒▒▒▒▒▒ 40%"
         percentage_offset = context.plain.index("40%")
         assert context.get_style_at_offset(percentage_offset).foreground == Color.parse("#6f7a87")
 
@@ -1687,7 +1687,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
         )
         status_line.set_context(context_status.model_copy(update={"metrics": at_warning_boundary}))
         boundary = context_detail.render()
-        assert boundary.plain == "96.0K █████████░░ 80%"
+        assert boundary.plain == "96.0K █████████▒▒ 80%"
         assert boundary.get_style_at_offset(boundary.plain.index("80%")).foreground == Color.parse(
             "#6f7a87"
         )
@@ -1705,7 +1705,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
             context_status.model_copy(update={"metrics": above_warning_boundary})
         )
         warning = context_detail.render()
-        assert warning.plain == "97.2K █████████░░ 81%"
+        assert warning.plain == "97.2K █████████▒▒ 81%"
         assert warning.get_style_at_offset(warning.plain.index("81%")).foreground == Color.parse(
             "#968264"
         )
