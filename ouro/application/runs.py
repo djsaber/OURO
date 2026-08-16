@@ -731,6 +731,10 @@ class RunLifecycle:
                     key = _message_cache_key(message)
                     if key is not None:
                         cache[key] = message
+        # A durable message batch changes the bounded list projection even
+        # while its Run remains active. Refresh only this Session; catalog
+        # query paths never compensate by scanning canonical history.
+        self.store.refresh_catalog(session.session_id)
 
     def _persist_appended_message(
         self,

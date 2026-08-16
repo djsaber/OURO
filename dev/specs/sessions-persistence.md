@@ -64,13 +64,16 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 `data_layout_version`、SQLite schema version 和插件 manifest/state schema 是独立版本域，不能因为当前数字相同
 而共用迁移规则。Session resource reference index 与 Session catalog 是 layout-bound 文档，不冒充核心 record 版本。
 
-`sessions/index.json` 是可重建查询投影，不属于 canonical transaction。索引更新失败时：
+`sessions/index.json` 与 SQLite `session_catalog` 表是可重建查询投影，不属于 canonical transaction。Catalog
+查询是严格只读的投影查询：只读取并校验索引自身的结构，不抢 catalog lock、不打开 Session 目录/表，也不因为
+索引缺失、过期或损坏而隐式扫描 canonical 数据。指定 Session 的 `open/messages/runs` 查询才读取并严格校验该
+Session 的 canonical records；一个坏 Session 不能把列表查询升级成全库数据质量检查。
 
-1. canonical 写入保持成功；
-2. Session 写路径只在 catalog lock 下写入 dirty marker，不同步读取或重建全量索引；
-3. 进程初始化只把既有索引标记为待刷新，不解析索引或扫描 Session 目录；
-4. 只有显式 catalog 查询才扫描 canonical Session 并重建索引；
-5. dirty marker 写入或锁失败时 application 返回 diagnostic。
+Canonical mutation 成功后，adapter 在独立 catalog 边界只重算受影响的一个条目；删除则移除该条目。该刷新最多
+读取目标 Session 的有界 `latest + count` 投影，不扫描无关 Session。刷新、索引写入或 catalog lock 失败时 canonical
+写入仍保持成功，application 返回可恢复 diagnostic，列表可暂时读取旧快照。全量扫描只属于显式
+`rebuild_catalog` 维护或确定性的 schema/layout 迁移，不得从 `read_catalog`、Host 会话选择器或进程启动的常规路径
+触发。已有 canonical Session 但索引缺失/损坏时，列表明确报告需要重建；不能用空列表或同步自愈掩盖故障。
 
 ## 写入规则
 
@@ -93,7 +96,7 @@ Store 不通过字段默认值猜测旧格式；需要兼容的历史版本必�
 严格拒绝。若未来明确决定保留旧数据，只能通过独立 migrator 转换，不能在读取热路径兼容。
 
 Session extension state 以 `(session_id, owner_id)` 为 identity，并显式保存自身 schema、branch policy、派生
-脚手架投影的 semantic tags 和 JSON payload。文件后端把版本化 collection 保存到 Session tree；SQLite schema v3 使用
+脚手架投影的 semantic tags 和 JSON payload。文件后端把版本化 collection 保存到 Session tree；SQLite schema v4 使用
 外键级联的 `session_extension_states` 表。插件代码 Generation 只拥有代码/执行资源，不拥有这些状态的生命周期。
 
 Delegation 以 root Session 为聚合边界，使用 `(root_session_id, idempotency_key)` 唯一约束、child Session 唯一
@@ -153,7 +156,9 @@ application 提供：
 - branch 与 trash。
 
 Catalog 与 Host DTO 均不保存完整 transcript；文本查询只覆盖 title、至多 160 字符的最后消息预览、workspace、
-model 和 tags。全文搜索是独立未来能力，不能借 disposable Catalog 复制 canonical 对话。
+model 和 tags。最后消息预览只选择消息提供方明确声明为 `scaffold=false` 的 user/assistant 消息；不得从 role、
+semantic tag 或 producer provenance 猜测脚手架属性。全文搜索是独立未来能力，不能借 disposable Catalog 复制
+canonical 对话。
 
 root Session 有 active 或无法判定的 Agent descendant 时不能归档。trash 与归档语义不同：删除任意 root 或 subagent
 都会先通过 `SessionRecord.parent_session_id` 解析 owning primary 和传递 subagent scope，再删除完整根树。该路径不得

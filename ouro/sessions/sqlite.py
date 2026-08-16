@@ -40,7 +40,7 @@ from ouro.sessions.index import SessionIndex, SessionIndexEntry
 from ouro.sessions.locks import SessionRunLock
 
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
-SQLITE_SCHEMA_VERSION = 3
+SQLITE_SCHEMA_VERSION = 4
 
 
 class SQLiteSessionStore:
@@ -68,6 +68,11 @@ class SQLiteSessionStore:
                     CREATE TABLE IF NOT EXISTS sessions (
                         session_id TEXT PRIMARY KEY,
                         payload TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS session_catalog (
+                        session_id TEXT PRIMARY KEY,
+                        payload TEXT NOT NULL,
+                        FOREIGN KEY(session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
                     );
                     CREATE TABLE IF NOT EXISTS messages (
                         row_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,21 +167,25 @@ class SQLiteSessionStore:
             existing = connection.execute(
                 "SELECT value FROM metadata WHERE key = 'sqlite_schema_version'"
             ).fetchone()
+            rebuild_catalog = False
             if existing is None:
                 connection.execute(
                     "INSERT INTO metadata(key, value) VALUES('sqlite_schema_version', ?)",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
-            elif int(existing[0]) in {1, 2}:
+            elif int(existing[0]) in {1, 2, 3}:
                 connection.execute(
                     "UPDATE metadata SET value = ? WHERE key = 'sqlite_schema_version'",
                     (str(SQLITE_SCHEMA_VERSION),),
                 )
+                rebuild_catalog = True
             elif int(existing[0]) != SQLITE_SCHEMA_VERSION:
                 raise MigrationRequiredError(
                     "OURO SQLite migration required: "
                     f"found {existing[0]}, expected {SQLITE_SCHEMA_VERSION}"
                 )
+            if rebuild_catalog:
+                self._replace_catalog(connection, self._scan_catalog(connection))
             connection.commit()
         except MigrationRequiredError:
             if connection is not None:
@@ -841,11 +850,44 @@ class SQLiteSessionStore:
         self,
         session_id: str,
     ) -> str | None:
-        del session_id
+        try:
+            with self.session_mutation(session_id):
+                connection = self._transaction_connection()
+                entries = self._scan_catalog(connection, session_id=session_id)
+                if entries:
+                    connection.execute(
+                        "INSERT INTO session_catalog(session_id, payload) VALUES(?, ?) "
+                        "ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload",
+                        (session_id, entries[0].model_dump_json()),
+                    )
+                else:
+                    connection.execute(
+                        "DELETE FROM session_catalog WHERE session_id = ?",
+                        (session_id,),
+                    )
+        except (OSError, PersistenceError, sqlite3.Error, ValueError) as exc:
+            return str(exc)
         return None
 
     def read_catalog(self) -> SessionIndex:
-        return self._build_catalog()
+        with self._read_connection() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM session_catalog ORDER BY session_id"
+            ).fetchall()
+        try:
+            entries = [SessionIndexEntry.model_validate_json(row[0]) for row in rows]
+        except (ValidationError, ValueError, TypeError) as exc:
+            raise PersistenceError(f"could not load SQLite session index: {exc}") from exc
+        return SessionIndex(sessions=sort_catalog_entries(entries))
+
+    def rebuild_catalog(self) -> SessionIndex:
+        """Explicitly rebuild the disposable projection from canonical rows."""
+
+        with self.session_mutation("catalog_rebuild"):
+            connection = self._transaction_connection()
+            entries = self._scan_catalog(connection)
+            self._replace_catalog(connection, entries)
+        return SessionIndex(sessions=sort_catalog_entries(entries))
 
     def acquire_session_lock(self, session_id: str, run_id: str) -> SessionRunLock | None:
         lock = SessionRunLock(
@@ -872,22 +914,34 @@ class SQLiteSessionStore:
                 f"could not inspect SQLite session lock for {session_id}: {exc}"
             ) from exc
 
-    def _build_catalog(self) -> SessionIndex:
-        with self._read_connection() as connection:
-            rows = connection.execute(
-                "SELECT s.session_id, s.payload, "
-                "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.session_id), "
-                "(SELECT m.payload FROM messages m WHERE m.session_id = s.session_id "
-                "AND CASE WHEN json_valid(m.payload) "
-                "THEN json_extract(m.payload, '$.role') END IN ('user', 'assistant') "
-                "ORDER BY m.row_id DESC LIMIT 1), "
-                "(SELECT COUNT(*) FROM runs r WHERE r.session_id = s.session_id), "
-                "(SELECT r.payload FROM runs r WHERE r.session_id = s.session_id "
-                "ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1), "
-                "(SELECT COUNT(*) FROM resource_references rr "
-                "WHERE rr.session_id = s.session_id) "
-                "FROM sessions s ORDER BY s.session_id"
-            ).fetchall()
+    def _scan_catalog(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        session_id: str | None = None,
+    ) -> list[SessionIndexEntry]:
+        parameters: tuple[object, ...] = ()
+        where = ""
+        if session_id is not None:
+            where = " WHERE s.session_id = ?"
+            parameters = (session_id,)
+        rows = connection.execute(
+            "SELECT s.session_id, s.payload, "
+            "(SELECT COUNT(*) FROM messages m WHERE m.session_id = s.session_id), "
+            "(SELECT m.payload FROM messages m WHERE m.session_id = s.session_id "
+            "AND CASE WHEN json_valid(m.payload) "
+            "THEN json_extract(m.payload, '$.role') END IN ('user', 'assistant') "
+            "AND COALESCE(CASE WHEN json_valid(m.payload) "
+            "THEN json_extract(m.payload, '$.scaffold') END, 0) = 0 "
+            "ORDER BY m.row_id DESC LIMIT 1), "
+            "(SELECT COUNT(*) FROM runs r WHERE r.session_id = s.session_id), "
+            "(SELECT r.payload FROM runs r WHERE r.session_id = s.session_id "
+            "ORDER BY r.started_at DESC, r.run_id DESC LIMIT 1), "
+            "(SELECT COUNT(*) FROM resource_references rr "
+            "WHERE rr.session_id = s.session_id) "
+            f"FROM sessions s{where} ORDER BY s.session_id",
+            parameters,
+        ).fetchall()
         entries: list[SessionIndexEntry] = []
         for row in rows:
             session_id = str(row[0])
@@ -940,7 +994,18 @@ class SQLiteSessionStore:
                     ),
                 )
             )
-        return SessionIndex(sessions=sort_catalog_entries(entries))
+        return entries
+
+    @staticmethod
+    def _replace_catalog(
+        connection: sqlite3.Connection,
+        entries: list[SessionIndexEntry],
+    ) -> None:
+        connection.execute("DELETE FROM session_catalog")
+        connection.executemany(
+            "INSERT INTO session_catalog(session_id, payload) VALUES(?, ?)",
+            [(entry.session_id, entry.model_dump_json()) for entry in entries],
+        )
 
     @staticmethod
     def _unreadable_catalog_entry(

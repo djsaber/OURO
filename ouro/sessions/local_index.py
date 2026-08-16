@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -13,7 +12,7 @@ from ouro.core.errors import MigrationRequiredError, PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.state import RunRecord, SessionRecord
-from ouro.local_io import write_model_atomic, write_text_atomic
+from ouro.local_io import write_model_atomic
 from ouro.local_locks import FileOwnerLock
 from ouro.sessions.catalog import (
     SessionCatalogProjection,
@@ -37,27 +36,23 @@ class LocalSessionIndex:
     ) -> None:
         self.sessions_dir = sessions_dir
         self.index_path = sessions_dir / "index.json"
-        self.dirty_path = sessions_dir / ".index-dirty"
         self.lock_path = locks_dir / "catalog.lock"
 
     def try_initialize(self) -> str | None:
-        """Invalidate the disposable catalog without reading Session history."""
+        """Create the initial empty projection without reading Session history."""
 
         try:
-            if self.dirty_path.exists():
-                return None
             if self.index_path.exists():
-                return self._mark_dirty("session catalog requires refresh after process start")
+                return None
             has_sessions = any(
                 path.is_dir() and not path.name.startswith(".")
                 for path in self.sessions_dir.iterdir()
             )
             if has_sessions:
-                return self._mark_dirty("session catalog requires refresh after process start")
-            else:
-                write_model_atomic(self.index_path, SessionIndex())
+                return f"session index is missing and requires rebuild: {self.index_path}"
+            write_model_atomic(self.index_path, SessionIndex())
         except (OSError, PersistenceError, ValueError) as exc:
-            return self._mark_dirty(str(exc)) or str(exc)
+            return str(exc)
         return None
 
     def scan(self) -> SessionIndex:
@@ -81,47 +76,40 @@ class LocalSessionIndex:
         try:
             self.rebuild()
         except (OSError, PersistenceError, ValueError) as exc:
-            return self._mark_dirty(str(exc)) or str(exc)
+            return str(exc)
         return None
 
     def try_update(
         self,
         session_id: str,
     ) -> str | None:
-        """Invalidate the catalog cache without coupling writes to a full scan."""
+        """Refresh one projection entry without scanning unrelated Sessions."""
 
-        if self.dirty_path.exists():
-            return None
+        if not _RECORD_ID.fullmatch(session_id):
+            return f"invalid session id: {session_id!r}"
         lock = self._new_lock()
         try:
             if not lock.acquire():
-                error = "session index is busy"
-                return self._mark_dirty(error) or error
-            if self.dirty_path.exists():
-                return None
-            return self._mark_dirty(f"session catalog changed: {session_id}")
+                return "session index is busy"
+            index = self.load()
+            entries = [entry for entry in index.sessions if entry.session_id != session_id]
+            session_dir = self.sessions_dir / session_id
+            if session_dir.is_dir():
+                entries.append(self._build_entry(session_dir))
+            self._write(SessionIndex(sessions=sort_catalog_entries(entries)))
         except (OSError, PersistenceError, ValueError) as exc:
-            return self._mark_dirty(str(exc)) or str(exc)
+            return str(exc)
         finally:
             lock.release()
+        return None
 
     def load(self) -> SessionIndex:
-        if self.dirty_path.exists():
-            try:
-                return self.rebuild()
-            except (OSError, PersistenceError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not refresh dirty session index {self.index_path}: {exc}"
-                ) from exc
         try:
             return SessionIndex.model_validate_json(self.index_path.read_text("utf-8"))
-        except (OSError, ValidationError, ValueError):
-            try:
-                return self.rebuild()
-            except (OSError, PersistenceError, ValueError) as exc:
-                raise PersistenceError(
-                    f"could not rebuild session index {self.index_path}: {exc}"
-                ) from exc
+        except (OSError, ValidationError, ValueError) as exc:
+            raise PersistenceError(
+                f"could not load session index {self.index_path}; rebuild required: {exc}"
+            ) from exc
 
     def _new_lock(self) -> FileOwnerLock:
         return FileOwnerLock(
@@ -197,7 +185,11 @@ class LocalSessionIndex:
                         raw,
                         label="message for catalog preview",
                     )
-                    if message.role in {"user", "assistant"} and message.text_content:
+                    if (
+                        not message.scaffold
+                        and message.role in {"user", "assistant"}
+                        and message.text_content
+                    ):
                         return message
                 buffer = lines[0] if end > 0 else b""
         return None
@@ -242,13 +234,4 @@ class LocalSessionIndex:
 
     def _write(self, index: SessionIndex) -> SessionIndex:
         write_model_atomic(self.index_path, index)
-        with suppress(OSError):
-            self.dirty_path.unlink()
         return index
-
-    def _mark_dirty(self, error: str) -> str | None:
-        try:
-            write_text_atomic(self.dirty_path, error)
-        except (OSError, PersistenceError) as exc:
-            return f"could not mark session catalog dirty: {exc}"
-        return None

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sqlite3
+from contextlib import closing
+
 import pytest
 
 from ouro.core.agents import AgentDefinition, DelegationRecord
@@ -13,6 +16,25 @@ from ouro.sessions import (
     SQLiteSessionStore,
     import_sessions_to_sqlite,
 )
+
+
+def test_sqlite_v3_migration_builds_catalog_projection(tmp_path) -> None:
+    database = tmp_path / "ouro.db"
+    store = SQLiteSessionStore(database)
+    store.initialize()
+    session = SessionRecord(session_id="ses_v3", title="Migrated catalog")
+    store.create_session(session)
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "UPDATE metadata SET value = '3' WHERE key = 'sqlite_schema_version'"
+        )
+        connection.execute("DROP TABLE session_catalog")
+        connection.commit()
+
+    migrated = SQLiteSessionStore(database)
+    migrated.initialize()
+
+    assert migrated.read_catalog().sessions[0].title == "Migrated catalog"
 
 
 def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
@@ -72,6 +94,10 @@ def test_import_sessions_to_sqlite_is_exact_and_verified(tmp_path) -> None:
     assert report.resource_reference_count == 1
     assert report.extension_state_count == 1
     assert report.delegation_count == 1
+    assert {entry.session_id for entry in target.read_catalog().sessions} == {
+        first.session_id,
+        second.session_id,
+    }
     assert target.list_delegations(first.session_id) == [delegation]
     for session in source.list_sessions():
         assert target.load_session(session.session_id) == source.load_session(session.session_id)

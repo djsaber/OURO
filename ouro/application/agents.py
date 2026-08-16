@@ -690,6 +690,7 @@ class AgentService:
                 interaction_mode=relation.interaction_mode,
             )
             self.store.create_session(child)
+            self.store.refresh_catalog(child.session_id)
             return child
         if (
             child.session_kind != "subagent"

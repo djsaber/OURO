@@ -217,18 +217,21 @@ def test_stream_delta_events_group_commit_at_durable_boundary(monkeypatch, tmp_p
     assert fsync_calls == 1
 
 
-def test_local_file_store_rebuilds_corrupt_index(tmp_path) -> None:
+def test_local_file_store_keeps_catalog_repair_out_of_read_path(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(title="Indexed")
     store.create_session(session)
+    assert store.refresh_catalog(session.session_id) is None
     (tmp_path / "sessions" / "index.json").write_text("{not-json", encoding="utf-8")
 
     repaired = LocalSessionStore(tmp_path)
     repaired.initialize()
-    index = repaired.read_catalog()
 
-    assert index.sessions[0].session_id == session.session_id
+    with pytest.raises(PersistenceError, match="rebuild required"):
+        repaired.read_catalog()
+    assert repaired.load_session_record(session.session_id).title == "Indexed"
+    assert repaired.rebuild_catalog().sessions[0].session_id == session.session_id
 
 
 def test_store_initialization_and_session_writes_never_scan_catalog(
@@ -237,7 +240,9 @@ def test_store_initialization_and_session_writes_never_scan_catalog(
 ) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
-    store.create_session(SessionRecord(title="Existing"))
+    existing = SessionRecord(title="Existing")
+    store.create_session(existing)
+    assert store.refresh_catalog(existing.session_id) is None
     reopened = LocalSessionStore(tmp_path)
 
     def unexpected_scan():
@@ -246,13 +251,14 @@ def test_store_initialization_and_session_writes_never_scan_catalog(
     monkeypatch.setattr(reopened._catalog, "scan", unexpected_scan)
 
     reopened.initialize()
-    reopened.create_session(SessionRecord(title="New"))
+    new = SessionRecord(title="New")
+    reopened.create_session(new)
+    assert reopened.refresh_catalog(new.session_id) is None
 
-    assert reopened._index_dirty_path.exists()
+    assert {entry.title for entry in reopened.read_catalog().sessions} == {"Existing", "New"}
 
 
 def test_index_initialization_failure_does_not_block_canonical_session_open(
-    monkeypatch,
     tmp_path,
 ) -> None:
     store = LocalSessionStore(tmp_path)
@@ -261,17 +267,14 @@ def test_index_initialization_failure_does_not_block_canonical_session_open(
     store.create_session(session)
     (store.sessions_dir / "index.json").unlink()
 
-    def fail_index_write(_path, _model) -> None:
-        raise PersistenceError("index is read-only")
-
-    monkeypatch.setattr("ouro.sessions.local_index.write_model_atomic", fail_index_write)
     reopened = LocalSessionStore(tmp_path)
 
     reopened.initialize()
     snapshot = reopened.load_session(session.session_id)
 
     assert snapshot.session.title == "Canonical remains available"
-    assert reopened._index_dirty_path.exists()
+    with pytest.raises(PersistenceError, match="rebuild required"):
+        reopened.read_catalog()
 
 
 def test_local_file_store_recovers_interrupted_run(tmp_path) -> None:

@@ -23,7 +23,7 @@ from ouro.core.errors import (
 from ouro.core.messages import ImageContent, MessageRecord, TextContent
 from ouro.core.resources import ResourceSource, ResourceSourceKind, SessionResourceReference
 from ouro.resources import ResourceStore
-from ouro.sessions import SessionRepository
+from ouro.sessions import SessionStore
 
 DEFAULT_MAX_RESOURCE_BYTES = 100 * 1024 * 1024
 DEFAULT_MAX_MODEL_TEXT_BYTES = 1 * 1024 * 1024
@@ -40,7 +40,7 @@ class ResourceService:
         self,
         *,
         store: ResourceStore,
-        sessions: SessionRepository,
+        sessions: SessionStore,
         max_resource_bytes: int = DEFAULT_MAX_RESOURCE_BYTES,
         max_model_text_bytes: int = DEFAULT_MAX_MODEL_TEXT_BYTES,
         max_model_image_bytes: int = DEFAULT_MAX_MODEL_IMAGE_BYTES,
@@ -383,18 +383,33 @@ class ResourceService:
         session_id: str,
         resource_id: str,
     ) -> tuple[Diagnostic, ...]:
-        error = self._store.try_update_index()
-        if error is None:
-            return ()
-        return (
-            Diagnostic(
-                code="resource_index_refresh_failed",
-                severity="warning",
-                component="resources.index",
-                message=error,
-                session_id=session_id,
-                resource_id=resource_id,
-                recoverable=True,
-                suggested_action="Rebuild the resource index.",
-            ),
-        )
+        diagnostics: list[Diagnostic] = []
+        session_error = self._sessions.refresh_catalog(session_id)
+        if session_error is not None:
+            diagnostics.append(
+                Diagnostic(
+                    code="session_index_refresh_failed",
+                    severity="warning",
+                    component="sessions.catalog",
+                    message=session_error,
+                    session_id=session_id,
+                    resource_id=resource_id,
+                    recoverable=True,
+                    suggested_action="Rebuild the session index.",
+                )
+            )
+        resource_error = self._store.try_update_index()
+        if resource_error is not None:
+            diagnostics.append(
+                Diagnostic(
+                    code="resource_index_refresh_failed",
+                    severity="warning",
+                    component="resources.index",
+                    message=resource_error,
+                    session_id=session_id,
+                    resource_id=resource_id,
+                    recoverable=True,
+                    suggested_action="Rebuild the resource index.",
+                )
+            )
+        return tuple(diagnostics)

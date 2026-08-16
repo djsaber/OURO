@@ -625,7 +625,9 @@ class TuiController:
         session_id = self._require_session()
         return await asyncio.to_thread(
             lambda: tuple(
-                message for message in self._session_messages(session_id) if message.role == "user"
+                message
+                for message in self._session_messages(session_id)
+                if message.role == "user" and not message.scaffold
             )
         )
 
@@ -647,7 +649,11 @@ class TuiController:
             (
                 index
                 for index, message in enumerate(messages)
-                if message.message_id == message_id and message.role == "user"
+                if (
+                    message.message_id == message_id
+                    and message.role == "user"
+                    and not message.scaffold
+                )
             ),
             None,
         )

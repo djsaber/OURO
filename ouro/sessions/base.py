@@ -194,7 +194,7 @@ class SessionRepository(Protocol):
 
 
 class SessionCatalogStore(Protocol):
-    """Disposable catalog projection maintained outside canonical state."""
+    """Disposable projection whose reads never inspect canonical Session state."""
 
     def read_catalog(self) -> SessionIndex: ...
 

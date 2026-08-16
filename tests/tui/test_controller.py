@@ -845,12 +845,14 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
                             AttributedSessionInput(
                                 prompt="create",
                                 role="user",
+                                scaffold=True,
                                 semantic_tag="goal-create",
                                 **common,
                             ),
                             AttributedSessionInput(
                                 prompt=argument,
                                 role="user",
+                                scaffold=False,
                                 **common,
                             ),
                         )
@@ -875,8 +877,17 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
         snapshot = application.runtime.store.load_session(controller.session_id)
         messages = [message for message in snapshot.messages if message.role == "user"]
         assert [message.text_content for message in messages] == ["create", "ship"]
+        assert [message.scaffold for message in messages] == [True, False]
         assert [message.semantic_tag for message in messages] == ["goal-create", None]
         assert len({message.run_id for message in messages}) == 1
+        added = [
+            event
+            for event in result.run_results[0].events
+            if event.event_type == "plugin_message_added"
+        ]
+        assert [event.payload["message_id"] for event in added] == [
+            message.message_id for message in messages
+        ]
     finally:
         await controller.close()
 

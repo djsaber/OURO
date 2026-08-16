@@ -81,6 +81,9 @@ def import_sessions_to_sqlite(
                 report = report.model_copy(
                     update={"delegation_count": report.delegation_count + len(expected)}
                 )
+            # Import is an explicit maintenance boundary. Publish the complete
+            # disposable projection in the same all-or-nothing target transaction.
+            target.rebuild_catalog()
     except PersistenceError:
         raise
     except Exception as exc:

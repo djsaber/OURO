@@ -65,6 +65,12 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
 文件、SQLite 或工具业务规则。高频 Markdown 使用 Textual `Markdown.get_stream` 合并增量，流对象随 assistant
 控件卸载显式关闭。
 
+TUI 的实时与重载 transcript 使用同一消息可见性契约：canonical `MessageRecord.scaffold=true` 不进入用户对话面，
+`scaffold=false` 才按消息自身 role 投影。`user_message_added`、`host_message_added`、`plugin_message_added` 只表达
+producer provenance，不能决定是否显示；实时链收到任一输入事件后按 `message_id` 读取 canonical message，再使用
+其 `role/scaffold`。语义标签只影响模型包络，不参与 TUI 可见性。会话选择器只调用 Catalog 投影查询，不能在打开
+具体 Session 之前触发 canonical history 扫描或数据质量维修。
+
 每个 assistant turn 分别拥有 reasoning 与 answer 两个 Markdown stream。`model_reasoning_delta` 只追加到 dim
 reasoning 区域，不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
 `streaming_reasoning` 后收敛为 `THOUGHT`。后续模型轮次再次产生 reasoning 时复用同一区域并恢复 live 状态。

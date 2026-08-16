@@ -61,7 +61,6 @@ class LocalSessionStore:
             self.sessions_dir,
             self.session_locks_dir,
         )
-        self._index_dirty_path = self._catalog.dirty_path
 
     def initialize(self) -> None:
         (self.root / "config").mkdir(parents=True, exist_ok=True)
@@ -911,8 +910,7 @@ class LocalSessionStore:
         """Discard the transcript-bearing catalog; it is a rebuildable projection."""
         with suppress(OSError):
             self._catalog.index_path.unlink()
-        with suppress(OSError):
-            self._catalog.dirty_path.unlink()
+        self._catalog.rebuild()
 
     def _recover_trash_staging(self) -> None:
         for staging_dir in self.trash_sessions_dir.glob(".*.staging"):

@@ -956,7 +956,10 @@ class ConversationView(VerticalScroll):
         self._current_run_id = None
         self._presented_run_ids.clear()
 
-        materialized = list(messages)
+        # Canonical history contains both autonomous dialogue and harness
+        # scaffolding. Presentation provenance is explicit on each message;
+        # role, semantic tags, and producer source must not be used to infer it.
+        materialized = [message for message in messages if not message.scaffold]
         run_presentations = tuple(runs)
         requests = {
             request.message_id: request for run in run_presentations for request in run.requests
@@ -1088,6 +1091,8 @@ class ConversationView(VerticalScroll):
         await self._history.wait_until_rendered()
 
     async def add_user_message(self, message: MessageRecord) -> None:
+        if message.role != "user" or message.scaffold:
+            return
         text = user_message_text(message)
         if text:
             await self.add_user(text)

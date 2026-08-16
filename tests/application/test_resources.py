@@ -62,6 +62,9 @@ def test_import_is_content_addressed_deduplicated_and_does_not_expose_source_pat
     assert len(list(resource_store.blobs_dir.iterdir())) == 1
     assert resources.session_resource_ids(first_session.session_id) == (first.resource.resource_id,)
     assert str(source.parent) not in json.dumps(first.model_dump(mode="json"))
+    catalog = {entry.session_id: entry for entry in session_service.catalog().entries}
+    assert catalog[first_session.session_id].resource_count == 1
+    assert catalog[second_session.session_id].resource_count == 1
 
 
 def test_resource_store_rejects_record_without_explicit_schema_version(tmp_path) -> None:

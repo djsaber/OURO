@@ -3199,6 +3199,106 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
+async def test_history_load_projects_scaffold_visibility_from_message_record(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    messages = (
+        MessageRecord.text(
+            session_id="ses_scaffold",
+            role="user",
+            text="internal goal instruction",
+            scaffold=True,
+            semantic_tag="goal-create",
+            sequence=1,
+        ),
+        MessageRecord.text(
+            session_id="ses_scaffold",
+            role="user",
+            text="Ship the visible objective",
+            scaffold=False,
+            sequence=2,
+        ),
+        MessageRecord.text(
+            session_id="ses_scaffold",
+            role="assistant",
+            text="internal assistant scaffold",
+            scaffold=True,
+            sequence=3,
+        ),
+        MessageRecord.text(
+            session_id="ses_scaffold",
+            role="assistant",
+            text="Visible answer",
+            scaffold=False,
+            sequence=4,
+        ),
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.load_messages(messages)
+
+        entries = conversation.query_one(ConversationHistory).entries
+        assert [(entry.kind, entry.text) for entry in entries] == [
+            ("user", "Ship the visible objective"),
+            ("assistant", "Visible answer"),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_message_event_renders_non_scaffold_user_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    visible = MessageRecord.text(
+        session_id="ses_plugin_input",
+        role="user",
+        text="Ship through Goal",
+        scaffold=False,
+        sequence=1,
+    )
+    scaffold = MessageRecord.text(
+        session_id="ses_plugin_input",
+        role="user",
+        text="internal goal instruction",
+        scaffold=True,
+        semantic_tag="goal-create",
+        sequence=2,
+    )
+    by_id = {message.message_id: message for message in (visible, scaffold)}
+
+    async def message(_session_id: str, message_id: str) -> MessageRecord:
+        return by_id[message_id]
+
+    async def queued_user_inputs(_session_id: str):
+        return ()
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(app._controller, "message", message)
+        monkeypatch.setattr(app._controller, "queued_user_inputs", queued_user_inputs)
+        events = tuple(
+            EventRecord(
+                session_id="ses_plugin_input",
+                event_type="plugin_message_added",
+                payload={"message_id": item.message_id},
+                sequence=index,
+            )
+            for index, item in enumerate((scaffold, visible), start=1)
+        )
+
+        await app._apply_runtime_events(events, allow_new_projection=True)
+
+        entries = app.query_one(ConversationHistory).entries
+        assert [(entry.kind, entry.text) for entry in entries] == [
+            ("user", "Ship through Goal")
+        ]
+
+
+@pytest.mark.asyncio
 async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
     """A tool_result with is_error must surface as a failed tool row."""
     app = OuroTuiApp(application=_application(tmp_path))

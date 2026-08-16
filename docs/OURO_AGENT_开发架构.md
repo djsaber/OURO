@@ -461,13 +461,14 @@ OURO_HOME/
 
 `session.json`、messages、events、runs 和 compactions 是 canonical history；`context.json` 是可替换的最新
 Provider 请求快照，SQLite 使用对应的 `latest_contexts` 单行记录；`sessions/index.json` 是可重建
-查询投影。索引失败不得破坏 canonical 写入，失败通过 dirty marker 和 diagnostic 暴露。
-Catalog source 是有界的 `latest + count` 投影：文件实现最多读取 64 KiB 消息尾部并按 `last_run_id` 读取单个
-Run，SQLite 用一条聚合查询生成全部条目；两者都不为列表/重建加载 RuntimeSessionSnapshot。Catalog 不含完整
-transcript，文本查询只覆盖 title、160 字符最后消息预览、workspace、model 与 tags。未来全文搜索必须使用独立、
-可重建且可关闭的索引能力。
+查询投影，SQLite 使用独立 `session_catalog` 投影表。`read_catalog` 只读索引自身，不抢锁、不扫描或校验 canonical
+Session；缺失/损坏明确要求显式重建。Canonical mutation 后只重算受影响 Session 的有界 `latest + count` 条目，
+索引失败不得破坏 canonical 写入，并通过 diagnostic 暴露。全量 canonical 扫描只属于显式 maintenance 或版本迁移，
+不能隐藏在会话列表查询内。文件实现构造单条投影时最多读取 64 KiB 消息尾部并按 `last_run_id` 读取单个 Run；SQLite
+用单 Session 聚合查询更新投影。Catalog 不含完整 transcript，预览忽略显式 `scaffold=true` 的消息，文本查询只
+覆盖 title、160 字符最后消息预览、workspace、model 与 tags。未来全文搜索必须使用独立、可重建且可关闭的索引能力。
 以 `session_id` 为 identity 且影响后续行为的扩展状态同样属于 canonical Session：文件后端保存版本化
-`extensions/index.json`，SQLite schema v3 保存外键级联表。状态按稳定 plugin owner 隔离，branch 使用显式
+`extensions/index.json`，SQLite schema v4 保存外键级联表与 disposable catalog 投影。状态按稳定 plugin owner 隔离，branch 使用显式
 `copy/reset/reject`，export 完整表达，trash 与 Session 同事务/同 staging 封存。
 `billing/usage.jsonl` 是独立的全局 canonical 账本，不随 Session 归档或进入回收站而删除。
 messages/events JSONL 同时提供稳定 byte cursor 分页端口；增量读取不依赖完整 `SessionRecord` 装载，append 后

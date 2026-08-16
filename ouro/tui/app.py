@@ -118,6 +118,11 @@ _RUNTIME_RENDER_BOUNDARY_EVENTS = {
     "run_failed",
     "run_paused",
 }
+_SESSION_INPUT_MESSAGE_EVENTS = {
+    "user_message_added",
+    "host_message_added",
+    "plugin_message_added",
+}
 _AGENT_INTERACTION_EVENTS = {
     "agent_spawned",
     "agent_wait_requested",
@@ -1237,13 +1242,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await flush_stream()
                 await conversation.finish_assistant()
                 conversation.begin_model_request(run_id=event.run_id)
-            if event.event_type in {"user_message_added", "queued_input_consumed"}:
+            if event.event_type in {*_SESSION_INPUT_MESSAGE_EVENTS, "queued_input_consumed"}:
                 await flush_stream()
                 message_id = event.payload.get("message_id")
                 if isinstance(message_id, str):
-                    user_message = await self._controller.message(event.session_id, message_id)
-                    if user_message.role == "user":
-                        await conversation.add_user_message(user_message)
+                    input_message = await self._controller.message(event.session_id, message_id)
+                    if input_message.role == "user" and not input_message.scaffold:
+                        await conversation.add_user_message(input_message)
                         assistant_visible = False
             if event.event_type == "compaction_completed":
                 await flush_stream()
@@ -1254,7 +1259,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 "follow_up_input_queued",
                 "steering_input_queued",
                 "queued_input_cancelled",
-                "user_message_added",
+                *_SESSION_INPUT_MESSAGE_EVENTS,
                 "queued_input_consumed",
             }:
                 queue_changed = True

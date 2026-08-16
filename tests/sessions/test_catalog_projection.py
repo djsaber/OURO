@@ -5,10 +5,46 @@ from contextlib import closing
 
 import pytest
 
+from ouro.core.errors import PersistenceError
 from ouro.core.messages import MessageRecord
 from ouro.core.resources import SessionResourceReference
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SQLiteSessionStore
+
+
+@pytest.mark.parametrize("backend", ("files", "sqlite"))
+def test_catalog_read_does_not_validate_canonical_session_rows(
+    backend: str,
+    tmp_path,
+) -> None:
+    store = (
+        LocalSessionStore(tmp_path / "files")
+        if backend == "files"
+        else SQLiteSessionStore(tmp_path / "sqlite" / "ouro.db")
+    )
+    store.initialize()
+    session = SessionRecord(session_id="ses_deferred_validation", title="Indexed title")
+    store.create_session(session)
+    assert store.refresh_catalog(session.session_id) is None
+
+    if isinstance(store, LocalSessionStore):
+        (store.sessions_dir / session.session_id / "session.json").write_text(
+            "{broken",
+            encoding="utf-8",
+        )
+    else:
+        with closing(sqlite3.connect(store.database)) as connection:
+            connection.execute(
+                "UPDATE sessions SET payload = ? WHERE session_id = ?",
+                ("{broken", session.session_id),
+            )
+            connection.commit()
+
+    catalog = store.read_catalog()
+
+    assert catalog.sessions[0].title == "Indexed title"
+    with pytest.raises(PersistenceError):
+        store.load_session_record(session.session_id)
 
 
 @pytest.mark.parametrize("backend", ("files", "sqlite"))
@@ -45,6 +81,7 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
     reference = SessionResourceReference(resource_id="res_" + "d" * 64)
     store.create_session_snapshot(session, [first, latest], [reference])
     store.save_run(run)
+    assert store.refresh_catalog(session.session_id) is None
     if isinstance(store, LocalSessionStore):
         (store.sessions_dir / session.session_id / "compactions.jsonl").write_text(
             "{broken\n",
@@ -62,9 +99,7 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
         raise AssertionError("Catalog must not load RuntimeSessionSnapshot")
 
     monkeypatch.setattr(store, "load_runtime_session", reject_full_history)
-    catalog = (
-        store.rebuild_catalog() if isinstance(store, LocalSessionStore) else store.read_catalog()
-    )
+    catalog = store.read_catalog()
 
     assert len(catalog.sessions) == 1
     entry = catalog.sessions[0]
@@ -75,7 +110,7 @@ def test_catalog_uses_bounded_projection_without_loading_runtime_history(
     assert "historical-needle" not in catalog.model_dump_json()
 
 
-def test_sqlite_catalog_rebuild_is_one_bounded_aggregate_query(
+def test_sqlite_catalog_read_uses_only_projection_rows(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -84,6 +119,7 @@ def test_sqlite_catalog_rebuild_is_one_bounded_aggregate_query(
     for index in range(25):
         session = SessionRecord(session_id=f"ses_{index}", title=f"Session {index}")
         store.create_session(session)
+        assert store.refresh_catalog(session.session_id) is None
 
     statements: list[str] = []
     original_connect = store._connect
@@ -100,7 +136,13 @@ def test_sqlite_catalog_rebuild_is_one_bounded_aggregate_query(
     catalog_selects = [
         statement
         for statement in statements
-        if statement.lstrip().upper().startswith("SELECT S.SESSION_ID")
+        if statement.lstrip().upper().startswith("SELECT PAYLOAD FROM SESSION_CATALOG")
+    ]
+    canonical_selects = [
+        statement
+        for statement in statements
+        if "FROM SESSIONS S" in statement.upper()
     ]
     assert len(catalog.sessions) == 25
     assert len(catalog_selects) == 1
+    assert canonical_selects == []
