@@ -13,6 +13,7 @@ from ouro.application.plugin_models import PluginCommandExecutionView, PluginCom
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
@@ -26,6 +27,8 @@ from ouro.sessions import LocalSessionStore
 from ouro.skills import discover_skill_catalog
 from ouro.tools import Tool, ToolDefinition, ToolRegistry, ToolResult, builtin_tools
 from ouro.tui.controller import (
+    TuiAgentDefinitionConfiguration,
+    TuiAgentRuntimeConfiguration,
     TuiCompactionConfiguration,
     TuiController,
     TuiEndpointConfiguration,
@@ -327,6 +330,82 @@ async def test_controller_manages_tool_permissions_and_path_scope_via_facade(
         assert execution.mode == "parallel"
         assert execution.workspace_only is False
         assert configuration.tool_execution.snapshot().workspace_only is False
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_manages_subagent_policy_and_definitions(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        runtime = await controller.agent_runtime_configuration()
+        updated_runtime = await controller.update_agent_runtime(
+            TuiAgentRuntimeConfiguration(
+                expected_revision=runtime.revision,
+                allowed_agent_id_patterns=("review-*",),
+                allowed_model_patterns=("faux",),
+                allowed_execution_modes=("sync",),
+                allow_write=False,
+                allow_network=False,
+                allow_mcp=False,
+                allow_external_paths=False,
+            )
+        )
+        assert updated_runtime.spawn_policy.allowed_agent_id_patterns == ("review-*",)
+        assert updated_runtime.spawn_policy.allowed_execution_modes == ("sync",)
+        assert updated_runtime.spawn_policy.allow_write is False
+
+        catalog = await controller.agent_definition_catalog()
+        created = await controller.create_agent_definition(
+            TuiAgentDefinitionConfiguration(
+                agent_id="review-code",
+                name="Code reviewer",
+                description="Review a bounded code change.",
+                system_prompt="Review the change and report concrete findings.",
+                tool_selection=ToolSelection(mode="all"),
+                model="faux",
+            ),
+            expected_revision=catalog.revision,
+        )
+        assert any(item.agent_id == "review-code" for item in created.definitions)
+
+        detail = await controller.agent_definition("review-code")
+        assert detail.system_prompt.startswith("Review the change")
+        assert detail.model == "faux"
+        updated = await controller.update_agent_definition(
+            TuiAgentDefinitionConfiguration(
+                agent_id=detail.agent_id,
+                name=detail.name,
+                description="Review code and tests.",
+                system_prompt=detail.system_prompt,
+                tool_selection=detail.tool_selection,
+                model=None,
+            ),
+            expected_revision=created.revision,
+        )
+        assert (
+            next(item for item in updated.definitions if item.agent_id == "review-code").description
+            == "Review code and tests."
+        )
+        assert next(
+            item for item in updated.definitions if item.agent_id == "review-code"
+        ).model is None
+
+        deleted = await controller.delete_agent_definition(
+            "review-code",
+            expected_revision=updated.revision,
+        )
+        assert all(item.agent_id != "review-code" for item in deleted.definitions)
     finally:
         await controller.close()
 

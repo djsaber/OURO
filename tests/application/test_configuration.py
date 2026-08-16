@@ -236,6 +236,32 @@ def test_invalid_agent_runtime_update_does_not_change_persisted_state(tmp_path) 
     assert after == before
 
 
+def test_agent_runtime_update_exposes_the_complete_spawn_policy(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+
+    updated = facade.update_agent_runtime(
+        expected_revision=0,
+        allowed_agent_id_patterns=("review-*",),
+        allowed_model_patterns=("trusted/*",),
+        allowed_execution_modes=("async",),
+        allowed_lifecycle_bindings=("bound",),
+        allow_write=False,
+        allow_network=False,
+        allow_mcp=False,
+        allow_external_paths=False,
+    )
+
+    assert updated.revision == 1
+    assert updated.spawn_policy.allowed_agent_id_patterns == ("review-*",)
+    assert updated.spawn_policy.allowed_model_patterns == ("trusted/*",)
+    assert updated.spawn_policy.allowed_execution_modes == ("async",)
+    assert updated.spawn_policy.allowed_lifecycle_bindings == ("bound",)
+    assert updated.spawn_policy.allow_write is False
+    assert updated.spawn_policy.allow_network is False
+    assert updated.spawn_policy.allow_mcp is False
+    assert updated.spawn_policy.allow_external_paths is False
+
+
 @pytest.mark.asyncio
 async def test_agent_runtime_config_is_applied_by_local_composition_root(tmp_path) -> None:
     ConfigurationFacade(tmp_path).update_agent_runtime(

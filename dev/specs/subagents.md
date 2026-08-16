@@ -129,8 +129,10 @@ child_run_id 和状态。Handle 是控制引用，不是 canonical 运行事实�
 
 ## AgentDefinition
 
-AgentDefinition 是严格、不可变且可序列化的值对象，同一个类型同时用于 product-owned registry 和
-Delegation 中的冻结副本；不定义字段近似相同的 AgentDefinitionSnapshot。它至少包含：
+AgentDefinition 是严格、可序列化并按值替换的领域对象，同一个类型同时用于 product-owned registry 和
+Delegation 中的冻结副本；不定义字段近似相同的 AgentDefinitionSnapshot。这里的“不可变”是执行契约语义：
+配置更新必须产生新的 definition、contract hash 和 config revision，已经进入 Run catalog 或 Delegation 的旧值
+不得被原地改写；它不要求为 Core model 增加另一套 frozen 类型。它至少包含：
 
 | 字段 | 契约 |
 |---|---|
@@ -138,8 +140,7 @@ Delegation 中的冻结副本；不定义字段近似相同的 AgentDefinitionSn
 | name、description | Host 展示名与 SpawnAgent 模型选择说明；可编辑但不是 identity |
 | system_prompt | child 专用指令，不包含父级秘密或未经选择的完整历史 |
 | tool_selection | `all`，或 `selected` + 一组 ToolRegistry public names；selected 允许空集 |
-| model_policy | 固定模型、允许模型集合或 inherit |
-| workspace_policy | inherit、read_only、workspace_write 或显式隔离工作区 |
+| model | 固定模型 route key；`None` 表示继承当前 Session model |
 | can_spawn | 是否可创建下一层 child |
 | default_budget | 复用 RunBudgetPolicy 的 model round、token 和 elapsed time 上限 |
 | contract_hash | 本次定义内容的稳定摘要 |
@@ -178,18 +179,23 @@ contract hash、AgentCatalogSnapshot、SpawnAgent schema 投影、capability 求
     agents:
       revision: <monotonic integer>
       definitions:
-        <agent_id>:
+        - agent_id: ...
           name: ...
           description: ...
           system_prompt: ...
+          model: null | <model route key>
           tool_selection:
             mode: all | selected
-            tool_names: [...]
+            names: [...]
 
 builtin definition 不复制进用户配置；目录在读取时把 code-owned builtin 与 user section 合并。细粒度
 AgentDefinitionService 提供 list/get/create/update/delete/copy_builtin 和 compatibility/tool-option 查询，底层
 AgentDefinitionConfigManager 复用 JsonConfigFile 的跨进程锁、read-validate-write 和原子 replace。mutation 接受
 expected revision，避免 Desktop/CLI 并发编辑丢失更新。
+
+Agent 配置模型继续遵循全局 `OuroModel(extra="ignore")` 兼容策略：历史数据中的未知字段可被忽略，已知必填字段、字段
+约束和跨字段不变量仍必须校验。不得为了 Agent 配置另建一套 strict model；definition 总数、identity 唯一性和
+reserved id 等约束直接属于当前配置模型，并在写入完整新值前重新校验。
 
 同一 `agents` 分区还保存 composition 配置：`runtime.max_depth=1` 和
 `runtime.spawn_policy.allowed_agent_id_patterns=("*",)`。definition 与 runtime policy 共用一个 expected
@@ -199,8 +205,15 @@ detached/nested 在校验期明确失败。runtime policy 由 `LocalApplication`
 `effective_from=next_run`。根软预算继续来自现有 `run_budget` 并冻结到 parent Run，每个 definition 的
 subagent 默认值继续复用 `RunBudgetPolicy`，不增加第二套 AgentBudget 配置或执行引擎。
 
-用户编辑面覆盖 name、description、system_prompt 和 tool_selection。model/workspace/budget/can_spawn
-先由产品默认值归一化，只有已有权限模型能安全表达的字段才逐项开放；不接受任意 policy JSON。新增可编辑字段必须进入
+`AgentSpawnPolicy` 是所有 definition 共用的平台派遣上限，不是 per-definition 配置。它统一表达允许的 agent/model
+pattern、execution/lifecycle mode，以及 write、network、MCP 和 external-path 能力；每个 parent Run 再冻结一份
+当时的全局 policy。最终 child 能力继续由全局 policy、选中 AgentDefinition、父级可下放能力和当前权限策略求交。
+Application 配置 API 必须能读取和更新完整 policy；CLI、TUI 或其他 Host 可以只展示适合其产品面的字段，但不能
+在入口层复制或缩减底层 policy 语义。
+
+用户编辑面覆盖 name、description、system_prompt、model 和 tool_selection。model 使用单选，默认
+`None`（继承当前 Session model）；workspace/budget/can_spawn 先由产品默认值归一化，只有已有权限模型能安全表达的字段
+才逐项开放；不接受任意 policy JSON。新增可编辑字段必须进入
 同一 AgentDefinition validator、contract hash、Run snapshot 和 Delegation freeze，不得成为旁路配置。
 
 AgentDefinitionService 与 AgentService 是两个真实变化轴：前者只管理系统级 definition 配置、编辑器选项和不可变目录
@@ -208,8 +221,9 @@ AgentDefinitionService 与 AgentService 是两个真实变化轴：前者只管�
 全部 API，也不合并成大一统 facade。
 
 create 返回稳定 agent_id；name 后续可自由修改而不改变已有引用。builtin id 和 reserved namespace 不能被 user
-占用。字段数量、name/description/system_prompt 长度、definition 总数和 selected tool 数使用集中、可测试的产品上限，
-避免配置文件、模型工具 schema 和 child 上下文无界增长。
+占用。name/description/system_prompt 长度和 definition 总数使用配置模型中的集中、可测试产品上限，并在原子写入
+前验证完整的新配置。selected tool 不设置固定数量上限；用户自行决定 Agent 的工具范围，框架只校验名称非空、
+唯一、保存时可解析，并继续执行权限和能力求交。
 
 删除或修改 user definition 只影响新的 AgentCatalogSnapshot：
 
@@ -226,7 +240,7 @@ contract 与已创建 child 的恢复需求。
 tool_selection 保存当前产品公开的 ToolRegistry name，不保存 display name、schema 副本或本地 owner 路径：
 
 - all：选择本次 Run ExtensionCatalog 中对 child 可见的全部候选工具；
-- selected：只选择 tool_names 与本次 Run 可见工具的精确交集；空列表表示无工具 Agent；
+- selected：只选择 names 与本次 Run 可见工具的精确交集；空列表表示无工具 Agent；不设置固定数量上限；
 - 两种模式都继续与 platform hard cap、父级可下放约束、workspace、depth、当前 revocation 和现有
   auto/approval/deny、ToolPolicy 求交；
 - all 不是 all permissions，不跳过 approval，也不自动允许 shell、network、MCP、external path 或 Agent control；
@@ -893,6 +907,18 @@ AgentDefinitionService 与管理 DTO 至少提供：
 - list_agent_definition_tool_options；
 - agent_definition_catalog_snapshot / compatibility diagnostics。
 
+ConfigurationFacade 的 Agent runtime 配置 API 必须完整覆盖 AgentSpawnPolicy；Host 可以只投影其中一部分。TUI
+Actions 至少提供完整 definition 目录列表、派遣策略配置，以及 user definition 的创建、编辑和删除入口；所有操作复用
+上述 service、live tool catalog 和 expected revision，不直接读取或修改 config JSON。编辑表单的未完成状态只能显示
+简短字段提示，不得把底层结构化校验堆栈直接渲染到菜单行。
+
+TUI Actions 的 Subagents 分组按 Dispatch policy、List subagents、Create、Edit、Delete 排列。List 是可继续导航的目录页：
+builtin 与 user 同时展示，builtin 采用既有 disabled 样式，user 进入复用 Edit/Delete 的管理页；独立 Edit/Delete 入口也
+展示同一 builtin disabled 分组。Definition 的 model 从当前 model catalog 单选，首项为继承 Session model；selected tools
+和派遣策略 agent/model allowlist 都以 Choice marker 表达选择状态，不重复显示 selected/not selected 文案，也不要求用户
+输入 agent_id 或 model route key。Application policy 仍保留 pattern 能力；TUI 保存的是当前目录中被勾选项的精确值。
+Subagents 分组的正常导航、取消和成功保存保持静默，只有 warning/error 才进入 notice/notification 通道。
+
 AgentService 与 application DTO 至少提供：
 
 - spawn_agent；
@@ -924,7 +950,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 当前契约由以下自动化证据约束：
 
 - domain 模型与 schema 验证测试；
-- agents config 分区的原子 CRUD、expected revision、已声明字段校验和产品上限测试；
+- agents config 分区的原子 CRUD、expected revision、字段校验和 definition 产品上限写前拒绝测试；
 - builtin general 永远存在、不可覆盖/编辑/删除，copy 生成新 user agent_id 测试；
 - builtin/user definition 经过相同 validator、contract hash、spawn、权限、HITL 与恢复路径测试；
 - name 修改不改变 agent_id，旧 Run/Delegation 不从 name 重新解析测试；

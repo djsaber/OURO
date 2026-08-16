@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from ouro.config.agents import AgentDefinitionsConfigManager, AgentRuntimeConfig
+from ouro.config.agents import (
+    MAX_USER_AGENT_DEFINITIONS,
+    AgentDefinitionsConfigManager,
+    AgentRuntimeConfig,
+)
 from ouro.core.agents import AgentDefinition, AgentSpawnPolicy, ToolSelection
 from ouro.core.errors import ConfigError
 
@@ -79,6 +83,22 @@ def test_agent_definition_mutation_preserves_other_config_sections(tmp_path) -> 
     AgentDefinitionsConfigManager(tmp_path).create(_definition(), expected_revision=0)
 
     assert json.loads(path.read_text(encoding="utf-8"))["prompts"] == {"system": "keep"}
+
+
+def test_agent_definition_limit_is_rejected_before_persisting_invalid_config(tmp_path) -> None:
+    manager = AgentDefinitionsConfigManager(tmp_path)
+    for revision in range(MAX_USER_AGENT_DEFINITIONS):
+        manager.create(_definition(f"reviewer-{revision}"), expected_revision=revision)
+
+    with pytest.raises(ConfigError, match="invalid agents config"):
+        manager.create(
+            _definition("one-too-many"),
+            expected_revision=MAX_USER_AGENT_DEFINITIONS,
+        )
+
+    snapshot = manager.snapshot()
+    assert snapshot.revision == MAX_USER_AGENT_DEFINITIONS
+    assert len(snapshot.definitions) == MAX_USER_AGENT_DEFINITIONS
 
 
 def test_agent_runtime_config_defaults_and_update_preserve_definitions(tmp_path) -> None:

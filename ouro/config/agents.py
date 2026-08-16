@@ -32,7 +32,20 @@ class AgentRuntimeConfig(OuroModel):
 class AgentDefinitionsConfig(OuroModel):
     revision: int = Field(default=0, ge=0)
     runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
-    definitions: tuple[AgentDefinition, ...] = ()
+    definitions: tuple[AgentDefinition, ...] = Field(
+        default=(),
+        max_length=MAX_USER_AGENT_DEFINITIONS,
+    )
+
+    @model_validator(mode="after")
+    def validate_definitions(self) -> Self:
+        ids = [item.agent_id for item in self.definitions]
+        if len(set(ids)) != len(ids):
+            raise ValueError("duplicate agent_id")
+        reserved = sorted(RESERVED_AGENT_IDS.intersection(ids))
+        if reserved:
+            raise ValueError("reserved agent ids cannot be user-defined: " + ", ".join(reserved))
+        return self
 
 
 class AgentDefinitionsConfigManager:
@@ -53,19 +66,6 @@ class AgentDefinitionsConfigManager:
             config = AgentDefinitionsConfig.model_validate(dict(raw))
         except ValidationError as exc:
             raise ConfigError(f"invalid agents config: {exc}") from exc
-        ids = [item.agent_id for item in config.definitions]
-        if len(set(ids)) != len(ids):
-            raise ConfigError("invalid agents config: duplicate agent_id")
-        reserved = sorted(RESERVED_AGENT_IDS.intersection(ids))
-        if reserved:
-            raise ConfigError(
-                "invalid agents config: reserved agent ids cannot be user-defined: "
-                + ", ".join(reserved)
-            )
-        if len(config.definitions) > MAX_USER_AGENT_DEFINITIONS:
-            raise ConfigError(
-                f"invalid agents config: at most {MAX_USER_AGENT_DEFINITIONS} definitions"
-            )
         return config
 
     @atomic_config_update
@@ -81,10 +81,11 @@ class AgentDefinitionsConfigManager:
         if any(item.agent_id == definition.agent_id for item in current.definitions):
             raise ConfigError(f"agent definition already exists: {definition.agent_id}")
         return self._save(
-            AgentDefinitionsConfig(
-                revision=current.revision + 1,
-                runtime=current.runtime,
-                definitions=(*current.definitions, definition),
+            current.model_copy(
+                update={
+                    "revision": current.revision + 1,
+                    "definitions": (*current.definitions, definition),
+                }
             )
         )
 
@@ -157,10 +158,14 @@ class AgentDefinitionsConfigManager:
         return current
 
     def _save(self, config: AgentDefinitionsConfig) -> AgentDefinitionsConfig:
+        try:
+            validated = AgentDefinitionsConfig.model_validate(config.model_dump())
+        except ValidationError as exc:
+            raise ConfigError(f"invalid agents config: {exc}") from exc
         raw = deepcopy(self._file.read())
-        raw["agents"] = config.model_dump(mode="json")
+        raw["agents"] = validated.model_dump(mode="json")
         self._file.write(raw)
-        return config
+        return validated
 
 
 __all__ = [

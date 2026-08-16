@@ -65,6 +65,17 @@ TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Ru
 文件、SQLite 或工具业务规则。高频 Markdown 使用 Textual `Markdown.get_stream` 合并增量，流对象随 assistant
 控件卸载显式关闭。
 
+Actions 的 Subagents 分组通过同一可复用菜单和配置表单依次提供 Dispatch policy、List、Create、Edit 和 Delete。List
+是 builtin/user 统一 definition 目录及 compatibility 的可导航页面；builtin 以 disabled 样式保留，user 可进入 Edit/Delete
+管理页，独立 Edit/Delete 入口也展示相同的 disabled builtin 分组。Definition 编辑开放 name、description、system prompt、
+单选 model 和 all/selected tools；model 默认继承 Session model，agent_id 创建后不可修改。工具 marker 是选择状态的唯一
+表达，不重复显示 selected/not selected。
+
+派遣策略是全局 AgentSpawnPolicy，TUI 将当前 definition/model catalog 投影为多选页，并展示 sync/async 和显式能力开关；
+用户不手输 agent_id、model route key 或原始 pattern。固定的 depth=1、bound lifecycle 只读展示。Application API 仍完整
+保留 pattern 语义。definition 保存从 next Run 生效，派遣策略从 next Runtime 生效。Subagents 的正常导航和成功 mutation
+不显示 notification，只有 warning/error 使用现有 notice 通道。
+
 TUI 的实时与重载 transcript 使用同一消息可见性契约：canonical `MessageRecord.scaffold=true` 不进入用户对话面，
 `scaffold=false` 才按消息自身 role 投影。`user_message_added`、`host_message_added`、`plugin_message_added` 只表达
 producer provenance，不能决定是否显示；实时链收到任一输入事件后按 `message_id` 读取 canonical message，再使用
@@ -196,6 +207,9 @@ Provider check 的 provider id 使用唯一位置参数；运行时覆盖使用 
 definition list/show/tools/create/update/delete/copy 通过 provider-independent 的本地 composition 打开
 `AgentDefinitionService` 与同一 live Tool catalog；CLI 不读取或修改 config JSON。mutation 使用 expected revision，
 builtin general 只可查询或复制，不可编辑、删除或覆盖；目录变更从 next Run 生效。
+
+Application 的 Agent runtime 配置接口覆盖完整 AgentSpawnPolicy。CLI 当前只开放 max depth 和 agent-id patterns；TUI
+开放常用派遣与能力字段。两者都是 Host 投影，未展示字段继续由同一 Application API 管理，入口不另建 policy。
 
 运行命令统一构建 `LocalApplication` 并调用 `AgentService`。短生命周期 CLI 只能基于 completed parent Run 的冻结
 Agent catalog 发起 Host delegation，child 固定使用 unattended interaction mode；spawn 与 follow-up 在命令进程内

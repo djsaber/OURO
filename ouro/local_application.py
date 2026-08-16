@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager, suppress
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -186,6 +186,24 @@ class LocalApplication:
     async def __aenter__(self) -> LocalApplication:
         await self.start()
         return self
+
+    @contextmanager
+    def agent_definition_services(self) -> Iterator[LocalAgentDefinitionServices]:
+        """Lease the live tool catalog used by AgentDefinition management."""
+
+        if self.agent_definitions is None:
+            raise RuntimeError("Agent definition management is unavailable")
+        if self.plugin_runtime is None:
+            yield LocalAgentDefinitionServices(
+                definitions=self.agent_definitions,
+                tools=self.runtime.tools,
+            )
+            return
+        with self.plugin_runtime.snapshot() as catalog:
+            yield LocalAgentDefinitionServices(
+                definitions=self.agent_definitions,
+                tools=catalog.tools,
+            )
 
     async def __aexit__(self, *_: object) -> None:
         await self.close()

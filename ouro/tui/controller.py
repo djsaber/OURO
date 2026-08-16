@@ -8,10 +8,16 @@ from typing import Literal, cast, get_args
 
 from pydantic import JsonValue
 
-from ouro.application.agent_models import AgentInteractionView
+from ouro.application.agent_models import (
+    AgentDefinitionCatalogView,
+    AgentDefinitionDetail,
+    AgentInteractionView,
+    AgentToolOptionView,
+)
 from ouro.application.agents import AgentService
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import (
+    AgentRuntimeConfigView,
     CompactionConfigInput,
     CompactionConfigView,
     MCPConnectionCheckView,
@@ -52,6 +58,7 @@ from ouro.application.session_models import (
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageSummary, UsageTotals
 from ouro.config import ProviderType
+from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
     SessionApprovalMode,
@@ -235,6 +242,28 @@ class TuiToolExecutionConfiguration:
     max_concurrency: int
     workspace_only: bool
     max_output_chars: int
+
+
+@dataclass(frozen=True)
+class TuiAgentRuntimeConfiguration:
+    expected_revision: int
+    allowed_agent_id_patterns: tuple[str, ...]
+    allowed_model_patterns: tuple[str, ...]
+    allowed_execution_modes: tuple[ExecutionMode, ...]
+    allow_write: bool
+    allow_network: bool
+    allow_mcp: bool
+    allow_external_paths: bool
+
+
+@dataclass(frozen=True)
+class TuiAgentDefinitionConfiguration:
+    agent_id: str
+    name: str
+    description: str
+    system_prompt: str
+    tool_selection: ToolSelection
+    model: str | None
 
 
 @dataclass(frozen=True)
@@ -932,6 +961,130 @@ class TuiController:
             workspace_only=draft.workspace_only,
             max_output_chars=draft.max_output_chars,
         )
+
+    async def agent_runtime_configuration(self) -> AgentRuntimeConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.agent_runtime_config)
+
+    async def update_agent_runtime(
+        self,
+        draft: TuiAgentRuntimeConfiguration,
+    ) -> AgentRuntimeConfigView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(
+            configuration.update_agent_runtime,
+            expected_revision=draft.expected_revision,
+            allowed_agent_id_patterns=draft.allowed_agent_id_patterns,
+            allowed_model_patterns=draft.allowed_model_patterns,
+            allowed_execution_modes=draft.allowed_execution_modes,
+            allow_write=draft.allow_write,
+            allow_network=draft.allow_network,
+            allow_mcp=draft.allow_mcp,
+            allow_external_paths=draft.allow_external_paths,
+        )
+
+    async def agent_definition_catalog(self) -> AgentDefinitionCatalogView:
+        return await asyncio.to_thread(self._agent_definition_catalog)
+
+    def _agent_definition_catalog(self) -> AgentDefinitionCatalogView:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            return services.definitions.list(tools=services.tools)
+
+    async def agent_definition(
+        self,
+        agent_id: str,
+    ) -> AgentDefinitionDetail:
+        return await asyncio.to_thread(self._agent_definition, agent_id)
+
+    def _agent_definition(self, agent_id: str) -> AgentDefinitionDetail:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            return services.definitions.get(agent_id, tools=services.tools)
+
+    async def agent_definition_tools(self) -> tuple[AgentToolOptionView, ...]:
+        return await asyncio.to_thread(self._agent_definition_tools)
+
+    def _agent_definition_tools(self) -> tuple[AgentToolOptionView, ...]:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            return services.definitions.tool_options(services.tools)
+
+    async def create_agent_definition(
+        self,
+        draft: TuiAgentDefinitionConfiguration,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionCatalogView:
+        return await asyncio.to_thread(
+            self._save_agent_definition,
+            draft,
+            expected_revision,
+            True,
+        )
+
+    async def update_agent_definition(
+        self,
+        draft: TuiAgentDefinitionConfiguration,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionCatalogView:
+        return await asyncio.to_thread(
+            self._save_agent_definition,
+            draft,
+            expected_revision,
+            False,
+        )
+
+    def _save_agent_definition(
+        self,
+        draft: TuiAgentDefinitionConfiguration,
+        expected_revision: int,
+        create: bool,
+    ) -> AgentDefinitionCatalogView:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            operation = services.definitions.create if create else services.definitions.update
+            return operation(
+                agent_id=draft.agent_id,
+                name=draft.name,
+                description=draft.description,
+                system_prompt=draft.system_prompt,
+                tool_selection=draft.tool_selection,
+                model=draft.model,
+                tools=services.tools,
+                expected_revision=expected_revision,
+            )
+
+    async def delete_agent_definition(
+        self,
+        agent_id: str,
+        *,
+        expected_revision: int,
+    ) -> AgentDefinitionCatalogView:
+        return await asyncio.to_thread(
+            self._delete_agent_definition,
+            agent_id,
+            expected_revision,
+        )
+
+    def _delete_agent_definition(
+        self,
+        agent_id: str,
+        expected_revision: int,
+    ) -> AgentDefinitionCatalogView:
+        self._runtime()
+        assert self._application is not None
+        with self._application.agent_definition_services() as services:
+            return services.definitions.delete(
+                agent_id,
+                expected_revision=expected_revision,
+                tools=services.tools,
+            )
 
     async def mcp_configurations(self) -> tuple[MCPServerConfigView, ...]:
         configuration = self._require_configuration()

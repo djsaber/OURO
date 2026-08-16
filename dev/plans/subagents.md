@@ -7,7 +7,7 @@
 按照[子智能体规格](../specs/subagents.md)实现一等、可恢复、Host 中立的 OURO 子智能体能力。首版形成以下闭环：
 
 - 不可编辑 builtin general 与用户可管理 AgentDefinition；
-- AgentDefinition name/description/system_prompt/tool selection 配置及 SpawnAgent agent_id schema 自动联动；
+- AgentDefinition name/description/system_prompt/model/tool selection 配置及 SpawnAgent agent_id schema 自动联动；
 - durable DelegationRecord；
 - 单层 child Session/Run；
 - Host API 与模型内置控制工具；
@@ -174,8 +174,8 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 
 ### A1. Agent 领域类型
 
-- [x] 新增单一不可变 AgentDefinition 值对象，包含稳定 agent_id、name、description、system_prompt、ToolSelection、
-  继承策略和 contract hash；builtin/user 与 Delegation 冻结副本使用同一类型。
+- [x] 新增单一按值替换的 AgentDefinition 领域对象，包含稳定 agent_id、name、description、system_prompt、
+  ToolSelection、继承策略和 contract hash；配置更新创建新值，builtin/user 与 Delegation 冻结副本使用同一类型。
 - [x] 新增 ToolSelection(mode=all|selected, ToolRegistry public names)，selected 空集表示无工具。
 - [x] 新增 EffectiveToolRef(public name、canonical identity/owner、execution contract hash)。
 - [x] 新增有界 AgentCatalogSnapshot、definition compatibility、missing_tool_names 和 catalog contract hash。
@@ -711,7 +711,19 @@ general/custom child。child 在独立 Session/Run 中流式工作，Host 可查
 - active Run 冻结旧 catalog，next Run 自动取得新 SpawnAgent schema；
 - 删除 custom 后旧 Delegation resume，新的 Run 不再显示；
 - builtin/user 相同 spawn/permission/HITL/recovery parameterized tests；
-- product count/length/tool-count limits 与 schema/context size budget。
+- definition count/文本长度上限在完整配置写入前校验；selected tool 不设固定数量上限。
+
+### Definition 管理补强（2026-08-16）
+
+- [x] Agent runtime Application API 覆盖完整 AgentSpawnPolicy，CLI/TUI 可按产品需要只暴露部分字段。
+- [x] definition 数量上限成为配置模型写入不变量，第 33 个 definition 在写盘前失败且不改变 revision。
+- [x] TUI Actions 复用现有配置页面提供目录列表、派遣策略及 create/edit/delete definition。
+- [x] TUI definition 工具选择不设硬上限，继续复用 live Tool catalog 与 AgentDefinitionService 校验。
+- [x] TUI Actions 按 Dispatch policy、List、Create、Edit、Delete 排列；List 可导航到 user Edit/Delete，所有管理入口均
+  保留 disabled builtin 分组。
+- [x] TUI definition model 复用当前 model catalog 单选并默认继承 Session model；工具选择只用 marker 表达状态。
+- [x] TUI 派遣策略把当前 agent/model catalog 投影为多选项；Application API 继续保留完整 pattern 语义。
+- [x] TUI Subagents 正常导航与成功 mutation 保持静默，仅 warning/error 进入 notice/notification。
 
 ### 并发
 

@@ -85,6 +85,7 @@ class AgentDefinitionService:
         description: str,
         system_prompt: str,
         tool_selection: ToolSelection,
+        model: str | None = None,
         tools: ToolRegistry,
         expected_revision: int,
     ) -> AgentDefinitionCatalogView:
@@ -95,6 +96,7 @@ class AgentDefinitionService:
             description=description,
             system_prompt=system_prompt,
             tool_selection=tool_selection,
+            model=model,
         )
         self.config.create(definition, expected_revision=expected_revision)
         return self.list(tools=tools)
@@ -107,6 +109,7 @@ class AgentDefinitionService:
         description: str,
         system_prompt: str,
         tool_selection: ToolSelection,
+        model: str | None,
         tools: ToolRegistry,
         expected_revision: int,
     ) -> AgentDefinitionCatalogView:
@@ -125,7 +128,7 @@ class AgentDefinitionService:
             description=description,
             system_prompt=system_prompt,
             tool_selection=tool_selection,
-            model=current.model,
+            model=model,
             can_spawn=current.can_spawn,
             default_budget=current.default_budget,
         )
@@ -336,6 +339,7 @@ class AgentDefinitionService:
             name=entry.definition.name,
             description=entry.definition.description,
             tool_selection=entry.definition.tool_selection,
+            model=entry.definition.model,
             source="builtin" if source == "builtin" else "user",
             editable=source == "user",
             compatibility="available" if entry.available else "unavailable",

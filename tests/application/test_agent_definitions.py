@@ -98,6 +98,35 @@ def test_missing_selected_tool_keeps_definition_but_excludes_it_from_resolution(
         service.catalog_snapshot(empty_registry).resolve("reader")
 
 
+def test_definition_model_can_be_set_and_cleared_atomically(tmp_path) -> None:
+    service = AgentDefinitionService(AgentDefinitionsConfigManager(tmp_path))
+    created = service.create(
+        agent_id="reader",
+        name="Reader",
+        description="Read evidence.",
+        system_prompt="Read carefully.",
+        tool_selection=ToolSelection(mode="all"),
+        model="faux/reviewer",
+        tools=_registry(),
+        expected_revision=0,
+    )
+
+    assert service.get("reader", tools=_registry()).model == "faux/reviewer"
+
+    updated = service.update(
+        agent_id="reader",
+        name="Reader",
+        description="Read evidence.",
+        system_prompt="Read carefully.",
+        tool_selection=ToolSelection(mode="all"),
+        model=None,
+        tools=_registry(),
+        expected_revision=created.revision,
+    )
+
+    assert next(item for item in updated.definitions if item.agent_id == "reader").model is None
+
+
 @pytest.mark.parametrize("selection_mode", ["all", "selected"])
 def test_catalog_excludes_hard_denied_tools_and_freezes_approval_floor(
     tmp_path,

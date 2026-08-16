@@ -58,16 +58,19 @@ async def _definition_command(args: argparse.Namespace) -> tuple[dict[str, Any],
                 description=args.description,
                 system_prompt=args.system_prompt,
                 tool_selection=_tool_selection(args),
+                model=None,
                 tools=tools,
                 expected_revision=args.expected_revision,
             )
         elif command == "update":
+            current = definitions.get(args.agent_id, tools=tools)
             catalog = definitions.update(
                 agent_id=args.agent_id,
                 name=args.name,
                 description=args.description,
                 system_prompt=args.system_prompt,
                 tool_selection=_tool_selection(args),
+                model=current.model,
                 tools=tools,
                 expected_revision=args.expected_revision,
             )

@@ -5,12 +5,15 @@ from typing import cast
 
 from textual import work
 
+from ouro.application.agent_models import AgentDefinitionCatalogView, AgentDefinitionView
 from ouro.application.configuration_models import (
     MCPServerConfigView,
     SkillView,
 )
 from ouro.core.tools import PermissionMode
 from ouro.tui.configuration_screens import (
+    AgentDefinitionConfigurationScreen,
+    AgentDispatchPolicyScreen,
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
     SkillInstallScreen,
@@ -18,6 +21,8 @@ from ouro.tui.configuration_screens import (
 )
 from ouro.tui.controller import (
     McpServerStatus,
+    TuiAgentDefinitionConfiguration,
+    TuiAgentRuntimeConfiguration,
     TuiCompactionConfiguration,
     TuiController,
     TuiMCPServerConfiguration,
@@ -61,6 +66,11 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("plugins.remove", "Remove plugin", "Plugins"),
     SystemSettingAction("tools.permissions", "Tool permissions", "Tools"),
     SystemSettingAction("tools.execution", "Execution & path access", "Tools"),
+    SystemSettingAction("agents.policy", "Dispatch policy", "Subagents"),
+    SystemSettingAction("agents.list", "List subagents", "Subagents"),
+    SystemSettingAction("agents.create", "Create subagent", "Subagents"),
+    SystemSettingAction("agents.edit", "Edit subagent", "Subagents"),
+    SystemSettingAction("agents.delete", "Delete subagent", "Subagents"),
     SystemSettingAction("mcp.list", "List MCP servers", "MCP"),
     SystemSettingAction("mcp.add", "Add MCP server", "MCP"),
     SystemSettingAction("mcp.connect", "Connect MCP server", "MCP"),
@@ -110,6 +120,17 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             self._choose_tools(menu=menu)
         elif action_id == "tools.execution":
             await self._configure_tool_execution(menu=menu)
+        elif action_id == "agents.list":
+            await self._choose_agent_definitions(menu=menu)
+        elif action_id == "agents.policy":
+            await self._configure_agent_policy(menu=menu)
+        elif action_id == "agents.create":
+            await self._create_agent_definition(menu=menu)
+        elif action_id in {"agents.edit", "agents.delete"}:
+            await self._choose_agent_definition_action(
+                action_id.removeprefix("agents."),
+                menu=menu,
+            )
         elif action_id == "providers.list":
             await self._choose_providers(menu=menu)
         elif action_id == "providers.add":
@@ -304,6 +325,253 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         scope = "workspace only" if updated.workspace_only else "external paths allowed"
         self.notify(f"Tool execution saved: {updated.mode}, {scope} (next restart)")
+
+    async def _configure_agent_policy(self, *, menu: ChoiceScreen | None = None) -> None:
+        try:
+            current = await self._controller.agent_runtime_configuration()
+            catalog = await self._controller.agent_definition_catalog()
+            models = await self._controller.models()
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        screen = AgentDispatchPolicyScreen(
+            current,
+            definitions=catalog.definitions,
+            models=models,
+        )
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
+        if draft is None:
+            return
+        try:
+            await self._controller.update_agent_runtime(cast(TuiAgentRuntimeConfiguration, draft))
+        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+    async def _choose_agent_definitions(
+        self,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            catalog = await self._controller.agent_definition_catalog()
+        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        screen: ChoiceScreen
+
+        async def select_definition(agent_id: str) -> tuple[Choice, ...] | None:
+            try:
+                current = await self._controller.agent_definition_catalog()
+            except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            definition = next(
+                (item for item in current.definitions if item.agent_id == agent_id),
+                None,
+            )
+            if definition is None or not definition.editable:
+                return None
+            await self._manage_agent_definition(
+                definition,
+                expected_revision=current.revision,
+                menu=screen,
+            )
+            return None
+
+        if menu is not None:
+            screen = menu
+            screen.push_page(
+                title="SUBAGENTS",
+                placeholder="Filter subagents…",
+                choices=_agent_definition_choices(catalog.definitions),
+                on_select=select_definition,
+            )
+            return
+        screen = ChoiceScreen(
+            title="SUBAGENTS",
+            placeholder="Filter subagents…",
+            choices=_agent_definition_choices(catalog.definitions),
+            on_select=select_definition,
+        )
+        await self.push_screen_wait(screen)
+
+    async def _manage_agent_definition(
+        self,
+        definition: AgentDefinitionView,
+        *,
+        expected_revision: int,
+        menu: ChoiceScreen,
+    ) -> None:
+        async def select_action(action: str) -> tuple[Choice, ...] | None:
+            if action == "edit":
+                saved = await self._edit_agent_definition(
+                    definition.agent_id,
+                    expected_revision=expected_revision,
+                    menu=menu,
+                )
+            else:
+                saved = await self._delete_agent_definition(
+                    definition.agent_id,
+                    expected_revision=expected_revision,
+                    menu=menu,
+                )
+            if saved is not None:
+                menu.pop_page(
+                    choices=_agent_definition_choices(saved.definitions),
+                    initial_value=definition.agent_id,
+                )
+            return None
+
+        menu.push_page(
+            title=f"SUBAGENT · {definition.name}",
+            placeholder="Choose an action…",
+            choices=(
+                Choice("edit", "Edit subagent"),
+                Choice("delete", "Delete subagent"),
+            ),
+            on_select=select_action,
+        )
+
+    async def _create_agent_definition(self, *, menu: ChoiceScreen | None = None) -> None:
+        try:
+            catalog = await self._controller.agent_definition_catalog()
+            tools = await self._controller.agent_definition_tools()
+            models = await self._controller.models()
+        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        screen = AgentDefinitionConfigurationScreen(tools, models)
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
+        if draft is None:
+            return
+        definition = cast(TuiAgentDefinitionConfiguration, draft)
+        try:
+            await self._controller.create_agent_definition(
+                definition,
+                expected_revision=catalog.revision,
+            )
+        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+    async def _choose_agent_definition_action(
+        self,
+        action: str,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            catalog = await self._controller.agent_definition_catalog()
+        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+        choices = _agent_definition_choices(catalog.definitions)
+
+        async def select_agent(agent_id: str) -> tuple[Choice, ...] | None:
+            nonlocal catalog
+            if action == "edit":
+                saved = await self._edit_agent_definition(
+                    agent_id,
+                    expected_revision=catalog.revision,
+                    menu=menu,
+                )
+            else:
+                saved = await self._delete_agent_definition(
+                    agent_id,
+                    expected_revision=catalog.revision,
+                    menu=menu,
+                )
+            if saved is None:
+                return None
+            catalog = saved
+            if menu is not None:
+                menu.pop_page()
+                return None
+            return _agent_definition_choices(saved.definitions)
+
+        title = "EDIT SUBAGENT" if action == "edit" else "DELETE SUBAGENT"
+        if menu is not None:
+            menu.push_page(
+                title=title,
+                placeholder="Filter subagents…",
+                choices=choices,
+                on_select=select_agent,
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title=title,
+                placeholder="Filter subagents…",
+                choices=choices,
+                on_select=select_agent,
+            )
+        )
+
+    async def _edit_agent_definition(
+        self,
+        agent_id: str,
+        *,
+        expected_revision: int,
+        menu: ChoiceScreen | None = None,
+    ) -> AgentDefinitionCatalogView | None:
+        try:
+            existing = await self._controller.agent_definition(agent_id)
+            tools = await self._controller.agent_definition_tools()
+            models = await self._controller.models()
+        except Exception as exc:  # noqa: BLE001 - catalog errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return None
+        screen = AgentDefinitionConfigurationScreen(tools, models, existing)
+        draft = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
+        if draft is None:
+            return None
+        definition = cast(TuiAgentDefinitionConfiguration, draft)
+        try:
+            saved = await self._controller.update_agent_definition(
+                definition,
+                expected_revision=expected_revision,
+            )
+        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return None
+        return saved
+
+    async def _delete_agent_definition(
+        self,
+        agent_id: str,
+        *,
+        expected_revision: int,
+        menu: ChoiceScreen | None = None,
+    ) -> AgentDefinitionCatalogView | None:
+        screen = ConfirmationScreen(
+            title="DELETE SUBAGENT",
+            message=(
+                f"Delete {agent_id}? Existing Runs keep their frozen definition; "
+                "new Runs will no longer see it."
+            ),
+            confirm_label="Delete",
+        )
+        selected = await (
+            menu.open_child(screen) if menu is not None else self.push_screen_wait(screen)
+        )
+        if not ConfirmationScreen.confirmed(selected):
+            return None
+        try:
+            saved = await self._controller.delete_agent_definition(
+                agent_id,
+                expected_revision=expected_revision,
+            )
+        except Exception as exc:  # noqa: BLE001 - application validation is user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return None
+        return saved
 
     @work(exclusive=True, group="configuration")
     async def _choose_mcp(
@@ -1048,6 +1316,21 @@ def _tool_choices(
             )
         )
     return tuple(choices)
+
+
+def _agent_definition_choices(
+    definitions: tuple[AgentDefinitionView, ...],
+) -> tuple[Choice, ...]:
+    return tuple(
+        Choice(
+            definition.agent_id,
+            definition.name,
+            group="BUILT-IN" if definition.source == "builtin" else "USER",
+            trailing=f"{definition.agent_id} · {definition.compatibility}",
+            disabled=not definition.editable,
+        )
+        for definition in sorted(definitions, key=lambda item: item.name.casefold())
+    )
 
 
 def _tool_permission_choices(

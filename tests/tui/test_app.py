@@ -18,6 +18,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from textual.widgets.markdown import MarkdownFence
 
 from ouro import __version__
+from ouro.application.agent_models import AgentToolOptionView
 from ouro.application.configuration import ConfigurationFacade
 from ouro.application.configuration_models import SkillView
 from ouro.application.models import AvailableModel
@@ -32,6 +33,7 @@ from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
+from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import PersistenceError
@@ -76,6 +78,8 @@ from ouro.tools import (
 from ouro.tui.app import OuroTuiApp, _session_choices
 from ouro.tui.commands import TUI_COMMANDS, TuiCommand
 from ouro.tui.configuration_screens import (
+    AgentDefinitionConfigurationScreen,
+    AgentDispatchPolicyScreen,
     CompactionConfigurationScreen,
     MCPConfigurationScreen,
     PluginInstallScreen,
@@ -4332,6 +4336,11 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Remove plugin",
             "Tool permissions",
             "Execution & path access",
+            "Dispatch policy",
+            "List subagents",
+            "Create subagent",
+            "Edit subagent",
+            "Delete subagent",
             "List MCP servers",
             "Add MCP server",
             "Connect MCP server",
@@ -4353,6 +4362,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Providers",) * 9,
             *("Plugins",) * 3,
             *("Tools",) * 2,
+            *("Subagents",) * 5,
             *("MCP",) * 6,
             *("Skills",) * 5,
             "Compaction",
@@ -4375,6 +4385,207 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         await pilot.press("enter", "enter")
         await pilot.pause(0.2)
         assert isinstance(app.screen, CompactionConfigurationScreen)
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_actions_opens_subagent_dispatch_policy(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await pilot.pause()
+
+        app.screen.query_one("#choice-filter", Input).value = "Dispatch policy"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            AgentDispatchPolicyScreen,
+            title="SUBAGENT DISPATCH POLICY",
+        )
+        screen = app.screen
+        assert isinstance(screen, AgentDispatchPolicyScreen)
+        screen._replace_choices(
+            screen._policy_choices(),
+            selected="agent-policy-save",
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert not list(app.query("Toast"))
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    assert application.agent_definitions is not None
+    application.agent_definitions.create(
+        agent_id="review-code",
+        name="Code reviewer",
+        description="Review a bounded code change.",
+        system_prompt="Review the change.",
+        tool_selection=ToolSelection(mode="all"),
+        tools=application.runtime.tools,
+        expected_revision=0,
+    )
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "List subagents"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENTS")
+
+        general = next(choice for choice in app.screen._choices if choice.value == "general")
+        assert general.group == "BUILT-IN"
+        assert general.trailing == "general · available"
+        assert general.disabled is True
+        custom = next(choice for choice in app.screen._choices if choice.value == "review-code")
+        assert custom.group == "USER"
+        assert custom.disabled is False
+
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("review-code")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT · Code reviewer")
+        assert [choice.label for choice in app.screen._choices] == [
+            "Edit subagent",
+            "Delete subagent",
+        ]
+        assert not list(app.query("Toast"))
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENTS")
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_subagent_edit_and_delete_menus_show_disabled_builtin_group(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+
+        for label, title in (
+            ("Edit subagent", "EDIT SUBAGENT"),
+            ("Delete subagent", "DELETE SUBAGENT"),
+        ):
+            app.screen.query_one("#choice-filter", Input).value = label
+            await pilot.pause()
+            await pilot.press("enter")
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+            general = next(
+                choice for choice in app.screen._choices if choice.value == "general"
+            )
+            assert general.group == "BUILT-IN"
+            assert general.disabled is True
+            assert not list(app.query("Toast"))
+            await pilot.press("escape")
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path) -> None:
+    application = _application(tmp_path)
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Create subagent"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            AgentDefinitionConfigurationScreen,
+            title="CREATE SUBAGENT",
+        )
+
+        screen = app.screen
+        assert isinstance(screen, AgentDefinitionConfigurationScreen)
+        screen._values.update(
+            {
+                "agent-definition-id": "review-code",
+                "agent-definition-name": "Code reviewer",
+                "agent-definition-description": "Review a bounded code change.",
+                "agent-definition-prompt": "Review the change.",
+            }
+        )
+        screen._replace_choices(
+            screen._definition_choices(),
+            selected="agent-definition-save",
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+
+        assert application.agent_definitions is not None
+        assert [
+            item.agent_id for item in application.agent_definitions.config.snapshot().definitions
+        ] == ["review-code"]
+        assert not list(app.query("Toast"))
+
+        app.screen.query_one("#choice-filter", Input).value = "Edit subagent"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="EDIT SUBAGENT")
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("review-code")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            AgentDefinitionConfigurationScreen,
+            title="EDIT SUBAGENT",
+        )
+        screen = app.screen
+        assert isinstance(screen, AgentDefinitionConfigurationScreen)
+        screen._values["agent-definition-name"] = "Senior code reviewer"
+        screen._replace_choices(
+            screen._definition_choices(),
+            selected="agent-definition-save",
+        )
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert (
+            application.agent_definitions.config.snapshot().definitions[0].name
+            == "Senior code reviewer"
+        )
+        assert not list(app.query("Toast"))
+
+        app.screen.query_one("#choice-filter", Input).value = "Delete subagent"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="DELETE SUBAGENT")
+        options = app.screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("review-code")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            ConfirmationScreen,
+            title="CONFIRM DELETE SUBAGENT",
+        )
+        await pilot.press("down", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert not application.agent_definitions.config.snapshot().definitions
+        assert not list(app.query("Toast"))
         await pilot.press("escape")
 
 
@@ -5977,6 +6188,169 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
         assert len(results) == 1
         assert results[0].mode != current.mode
         assert results[0].workspace_only is not current.workspace_only
+
+
+@pytest.mark.asyncio
+async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    results = []
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        current = await app._controller.agent_runtime_configuration()
+        catalog = await app._controller.agent_definition_catalog()
+        models = await app._controller.models()
+        screen = AgentDispatchPolicyScreen(
+            current,
+            definitions=catalog.definitions,
+            models=models,
+        )
+        app.push_screen(screen, callback=results.append)
+        await pilot.pause()
+
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        assert {choice.group for choice in screen._choices} == {
+            "ALLOWLISTS",
+            "EXECUTION",
+            "CAPABILITIES",
+            "ACTIONS",
+        }
+        assert next(
+            choice for choice in screen._choices if choice.value == "agent-policy-agents"
+        ).edit_value is None
+
+        options = screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("agent-policy-agents")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENTS")
+        general = next(choice for choice in app.screen._choices if choice.value == "general")
+        assert general.marker == SELECTED_CHOICE_MARKER
+        await pilot.press("enter")
+        await pilot.pause()
+        general = next(choice for choice in app.screen._choices if choice.value == "general")
+        assert general.marker == ""
+        await pilot.press("enter", "escape")
+        await _wait_for_screen(
+            app,
+            AgentDispatchPolicyScreen,
+            title="SUBAGENT DISPATCH POLICY",
+        )
+
+        options = screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("agent-policy-models")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="ALLOWED SUBAGENT MODELS")
+        assert next(
+            choice for choice in app.screen._choices if choice.value == models[0].key
+        ).marker == SELECTED_CHOICE_MARKER
+        await pilot.press("escape")
+        await _wait_for_screen(
+            app,
+            AgentDispatchPolicyScreen,
+            title="SUBAGENT DISPATCH POLICY",
+        )
+
+        await screen._select_choice("agent-policy-write")
+        screen._replace_choices(
+            screen._policy_choices(),
+            selected="agent-policy-save",
+        )
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert len(results) == 1
+        assert results[0].allowed_agent_id_patterns == ("general",)
+        assert results[0].allowed_model_patterns == (models[0].key,)
+        assert results[0].allow_write is False
+
+
+@pytest.mark.asyncio
+async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    tools = tuple(
+        AgentToolOptionView(
+            name=f"tool_{index}",
+            description=f"Tool {index}",
+            effect="read_only",
+            owner_id="ouro.host",
+            execution_contract_hash=f"sha256:{index}",
+        )
+        for index in range(40)
+    )
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        models = await app._controller.models()
+        screen = AgentDefinitionConfigurationScreen(tools, models)
+        app.push_screen(screen)
+        await pilot.pause()
+
+        assert isinstance(screen, EditableChoiceScreen)
+        assert not list(screen.query("Button"))
+        assert not list(screen.query("Checkbox"))
+        assert not list(screen.query("Select"))
+        save = next(
+            choice for choice in screen._choices if choice.value == "agent-definition-save"
+        )
+        assert save.trailing == "Agent ID is required"
+        model_choice = next(
+            choice for choice in screen._choices if choice.value == "agent-definition-model"
+        )
+        assert model_choice.trailing == "Inherit session model"
+
+        options = screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("agent-definition-model")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SUBAGENT MODEL")
+        assert next(
+            choice for choice in app.screen._choices if choice.value == "__ouro_runtime_model__"
+        ).marker == SELECTED_CHOICE_MARKER
+        model_options = app.screen.query_one("#choice-list", OptionList)
+        model_options.highlighted = model_options.get_option_index(models[0].key)
+        model_options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(
+            app,
+            AgentDefinitionConfigurationScreen,
+            title="CREATE SUBAGENT",
+        )
+        screen._values.update(
+            {
+                "agent-definition-id": "Invalid ID",
+                "agent-definition-name": "Tool reviewer",
+                "agent-definition-description": "Review tool contracts.",
+                "agent-definition-prompt": "Review every selected tool contract.",
+            }
+        )
+        error = screen._validation_error()
+        assert "lowercase stable identifier" in error
+        assert "pydantic.dev" not in error
+        assert "validation error" not in error
+        screen._values["agent-definition-id"] = "tool-reviewer"
+        screen._tool_mode = "selected"
+        screen._selected_tools = set(screen._tools)
+
+        draft = screen._draft()
+        tool_choices = tuple(
+            choice
+            for choice in screen._definition_choices()
+            if choice.value.startswith("agent-definition-tool:")
+        )
+
+        assert draft.model == models[0].key
+        assert draft.tool_selection.mode == "selected"
+        assert len(draft.tool_selection.names) == 40
+        assert all(choice.trailing == "read only" for choice in tool_choices)
+        assert all("selected" not in choice.trailing for choice in tool_choices)
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio

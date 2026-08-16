@@ -94,7 +94,10 @@ Bash 工作目录默认限制在 Session workspace，工具输出由统一边界
 ### 子智能体
 
 OURO 提供一等、可恢复的单层子智能体能力。系统始终包含不可编辑/删除的 builtin `general`，用户可通过
-AgentDefinitionService/CLI 管理具有 name、description、system prompt 和 all/selected tools 的自定义 definition。
+AgentDefinitionService、CLI 和 TUI Actions 管理具有 name、description、system prompt、model 和 all/selected tools 的
+自定义 definition；model 为空时继承 Session model。TUI Actions 提供可导航的统一目录列表与全局派遣策略配置，builtin
+在管理入口中可见但不可编辑；agent/model allowlist 使用当前目录多选，不要求手输标识。Application API 完整表达
+AgentSpawnPolicy，具体 Host 只展示其需要的字段。
 每个 parent Run 冻结 Agent 目录；模型 `SpawnAgent` schema 与执行解析使用同一快照，active Run 不受后续配置编辑
 影响。标准 LocalApplication 默认装配 Agent control tools；allowlist 无可用 definition 时只省略 SpawnAgent，不生成
 无效工具 schema。

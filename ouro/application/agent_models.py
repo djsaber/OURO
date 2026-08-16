@@ -23,6 +23,7 @@ class AgentDefinitionView(ApplicationDTO):
     name: str
     description: str
     tool_selection: ToolSelection
+    model: str | None = None
     source: Literal["builtin", "user"]
     editable: bool
     compatibility: Literal["available", "unavailable"]

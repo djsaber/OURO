@@ -72,6 +72,7 @@ from ouro.config import (
     provider_templates as available_provider_templates,
 )
 from ouro.config.skills import SkillInstallScope
+from ouro.core.agents import ExecutionMode, LifecycleBinding
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
 from ouro.core.provider import ProviderRetryPolicy
@@ -791,13 +792,32 @@ class ConfigurationFacade:
         expected_revision: int,
         max_depth: int | None = None,
         allowed_agent_id_patterns: tuple[str, ...] | None = None,
+        allowed_model_patterns: tuple[str, ...] | None = None,
+        allowed_execution_modes: tuple[ExecutionMode, ...] | None = None,
+        allowed_lifecycle_bindings: tuple[LifecycleBinding, ...] | None = None,
+        allow_write: bool | None = None,
+        allow_network: bool | None = None,
+        allow_mcp: bool | None = None,
+        allow_external_paths: bool | None = None,
     ) -> AgentRuntimeConfigView:
         current = self.agents.snapshot()
         policy = current.runtime.spawn_policy
-        if allowed_agent_id_patterns is not None:
-            policy = policy.model_copy(
-                update={"allowed_agent_id_patterns": allowed_agent_id_patterns}
+        policy_updates = {
+            name: value
+            for name, value in (
+                ("allowed_agent_id_patterns", allowed_agent_id_patterns),
+                ("allowed_model_patterns", allowed_model_patterns),
+                ("allowed_execution_modes", allowed_execution_modes),
+                ("allowed_lifecycle_bindings", allowed_lifecycle_bindings),
+                ("allow_write", allow_write),
+                ("allow_network", allow_network),
+                ("allow_mcp", allow_mcp),
+                ("allow_external_paths", allow_external_paths),
             )
+            if value is not None
+        }
+        if policy_updates:
+            policy = policy.model_copy(update=policy_updates)
         updates: dict[str, object] = {"spawn_policy": policy}
         if max_depth is not None:
             updates["max_depth"] = max_depth
