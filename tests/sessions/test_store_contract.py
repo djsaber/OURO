@@ -115,6 +115,40 @@ def test_session_store_round_trip_and_pages(session_store: SessionStore) -> None
     assert has_more is True
 
 
+def test_session_store_ignores_unknown_record_fields(session_store: SessionStore) -> None:
+    session = SessionRecord(title="Historical message")
+    message = MessageRecord.text(
+        session_id=session.session_id,
+        role="user",
+        text="legacy",
+        sequence=1,
+    )
+    session_store.create_session_snapshot(session, [message])
+    payload = message.model_dump(mode="json")
+    payload["synthetic"] = False
+
+    if isinstance(session_store, LocalSessionStore):
+        journal = session_store.sessions_dir / session.session_id / "messages.jsonl"
+        journal.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    else:
+        assert isinstance(session_store, SQLiteSessionStore)
+        connection = sqlite3.connect(session_store.database)
+        try:
+            connection.execute(
+                "UPDATE messages SET payload = ? WHERE session_id = ?",
+                (json.dumps(payload), session.session_id),
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+    messages, next_cursor = session_store.load_messages_page(session.session_id)
+
+    assert [item.text_content for item in messages] == ["legacy"]
+    assert "synthetic" not in messages[0].model_dump()
+    assert next_cursor is None
+
+
 def test_event_pages_filter_by_run_before_materializing_records(
     session_store: SessionStore,
 ) -> None:

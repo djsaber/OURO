@@ -19,7 +19,7 @@ def new_id(prefix: str) -> str:
 
 
 class OuroModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
 
 
 class VersionedOuroModel(OuroModel):

@@ -1054,9 +1054,13 @@ async def test_controller_does_not_replay_events_for_completed_session(
     try:
         result = await controller.submit("open completed conversation")
 
+        async def unexpected_reconciliation(_session_id: str) -> None:
+            raise AssertionError("opening history must not reconcile Runtime execution state")
+
         def unexpected_event_page(*_args, **_kwargs):
             raise AssertionError("completed Sessions must not replay the event journal")
 
+        monkeypatch.setattr(application.runtime, "reconcile_session", unexpected_reconciliation)
         monkeypatch.setattr(application.runtime.sessions, "event_page", unexpected_event_page)
 
         loaded = await controller.load_session(result.session.session_id)

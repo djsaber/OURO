@@ -45,6 +45,35 @@ class TuiCommand:
         return f"{self.name} {self.argument_hint}" if self.argument_hint else self.name
 
     @property
+    def input_hint(self) -> str | None:
+        """Return syntax that is not already represented by the argument menu."""
+
+        if not self.argument_hint:
+            return None
+        option_values = {
+            option.value.casefold() for option in self.argument_options if option.value
+        }
+        if not option_values:
+            return self.argument_hint
+
+        remaining: list[str] = []
+        for branch in _split_usage_branches(self.argument_hint):
+            bracket_choices = _bracket_choices(branch)
+            if bracket_choices is not None:
+                choices = [
+                    choice
+                    for choice in bracket_choices
+                    if choice.casefold() not in option_values
+                ]
+                if choices:
+                    remaining.append("[" + "|".join(choices) + "]")
+                continue
+            head, _separator, _tail = branch.partition(" ")
+            if head.casefold() not in option_values:
+                remaining.append(branch)
+        return " | ".join(remaining) or None
+
+    @property
     def takes_arguments(self) -> bool:
         return self.argument_hint is not None or bool(self.argument_options)
 
@@ -198,8 +227,8 @@ def argument_suggestion(
     selected: TuiCommandArgument | None,
 ) -> str:
     normalized = argument.lstrip()
-    if not normalized and command.argument_hint:
-        return command.argument_hint
+    if not normalized:
+        return command.input_hint or ""
     query, separator, remainder = normalized.partition(" ")
     if (
         selected is not None
@@ -214,6 +243,36 @@ def argument_suggestion(
             return selected.argument_hint
         return ""
     return ""
+
+
+def _split_usage_branches(usage: str) -> tuple[str, ...]:
+    """Split a display grammar on top-level alternatives."""
+
+    pairs = {"[": "]", "(": ")", "{": "}", "<": ">"}
+    closing = set(pairs.values())
+    stack: list[str] = []
+    branches: list[str] = []
+    start = 0
+    for index, character in enumerate(usage):
+        if character in pairs:
+            stack.append(pairs[character])
+        elif character in closing:
+            if stack and stack[-1] == character:
+                stack.pop()
+        elif character == "|" and not stack:
+            branches.append(usage[start:index].strip())
+            start = index + 1
+    branches.append(usage[start:].strip())
+    return tuple(branch for branch in branches if branch)
+
+
+def _bracket_choices(branch: str) -> tuple[str, ...] | None:
+    if not (branch.startswith("[") and branch.endswith("]")):
+        return None
+    choices = tuple(choice.strip() for choice in branch[1:-1].split("|"))
+    if len(choices) < 2 or any(not choice or " " in choice for choice in choices):
+        return None
+    return choices
 
 
 def slash_command_help() -> str:

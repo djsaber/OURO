@@ -81,8 +81,13 @@ reasoning 区域，不能混入最终回答；首次可见增量创建该 turn �
 
 - Enter 提交，Shift+Enter 换行，单行边界的 Up/Down 浏览提交历史；
 - Composer 以 `/` 开头时自动打开命令窗并实时过滤；Up/Down 选择、Enter 执行、Escape 关闭，命令窗、帮助和
-  dispatch 共用 `ouro.tui.commands` 的单一目录；
+  dispatch 共用 `ouro.tui.commands` 的单一目录。命令完整 `usage` 继续用于帮助和错误提示；Composer 的行内提示
+  只显示参数菜单未覆盖、仍需用户键入的语法，选中菜单项后再显示该项自己的后续参数；
 - Ctrl+N 新会话，Ctrl+S 会话选择，Ctrl+M 模型选择，Ctrl+P 动作面板，`?` 帮助；
+- 打开会话是只读展示操作，只在线程中读取指定会话，不隐式执行 Runtime/Agent 恢复；恢复仍由后续运行入口负责。
+  执行入口恢复未完成 Run 时按 `run_id` 分页读取恢复所需事件，不加载与该 Run 无关的完整历史事件日志。单个会话因
+  版本不兼容或持久化损坏而无法加载时，TUI 复用现有选择视窗显示错误并保持 Host 运行。会话选择 Modal 必须先结束，
+  再向主会话视图加载历史，避免主视图的刷新等待被发起加载的 Modal 阻塞；
 - 运行中普通提交沿用 Runtime 的 follow-up 排队语义，Host 不复制队列规则；
 - 审批选择面板接管焦点并禁用 Composer，使用 Up/Down 或 Left/Right 移动、Enter 确认，Y/N 保留为直接快捷键；
   当前选项必须用可见 marker 标识，决议提交期间禁止重复输入，失败时保留选择并恢复面板。工具输入请求投影为

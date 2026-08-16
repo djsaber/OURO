@@ -924,7 +924,7 @@ CLI 的 completed-parent spawn 固定 notify-only；会启动 parent next-bounda
 当前契约由以下自动化证据约束：
 
 - domain 模型与 schema 验证测试；
-- agents config 分区的原子 CRUD、expected revision、严格字段和产品上限测试；
+- agents config 分区的原子 CRUD、expected revision、已声明字段校验和产品上限测试；
 - builtin general 永远存在、不可覆盖/编辑/删除，copy 生成新 user agent_id 测试；
 - builtin/user definition 经过相同 validator、contract hash、spawn、权限、HITL 与恢复路径测试；
 - name 修改不改变 agent_id，旧 Run/Delegation 不从 name 重新解析测试；

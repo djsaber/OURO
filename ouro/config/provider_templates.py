@@ -21,7 +21,7 @@ from ouro.core.reasoning import ReasoningRequest
 class ProviderTemplate(OuroModel):
     """A reviewed provider configuration preset with callable model endpoints."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(frozen=True)
 
     template_id: str
     display_name: str

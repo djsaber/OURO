@@ -78,7 +78,7 @@ def test_compaction_manager_rejects_invalid_persisted_shape(tmp_path) -> None:
         CompactionConfigManager(tmp_path).snapshot()
 
 
-def test_compaction_manager_rejects_removed_global_summary_output_override(tmp_path) -> None:
+def test_compaction_manager_ignores_removed_global_summary_output_override(tmp_path) -> None:
     config_dir = tmp_path / "config"
     config_dir.mkdir()
     (config_dir / "config.json").write_text(
@@ -94,8 +94,9 @@ def test_compaction_manager_rejects_removed_global_summary_output_override(tmp_p
         encoding="utf-8",
     )
 
-    with pytest.raises(ConfigError, match="summary_output_tokens"):
-        CompactionConfigManager(tmp_path).snapshot()
+    snapshot = CompactionConfigManager(tmp_path).snapshot()
+
+    assert "summary_output_tokens" not in snapshot.policy.model_dump()
 
 
 def test_runtime_endpoint_clears_dedicated_route_and_all_request_overrides(tmp_path) -> None:

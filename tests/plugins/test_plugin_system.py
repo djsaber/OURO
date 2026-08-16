@@ -276,13 +276,12 @@ class _CatalogGenerationLease:
         return None
 
 
-def test_native_manifest_is_strict_and_paths_cannot_escape(tmp_path) -> None:
+def test_native_manifest_ignores_unknown_fields_and_paths_cannot_escape(tmp_path) -> None:
     plugin = tmp_path / "plugin"
     plugin.mkdir()
     _write_native_plugin(plugin, extra={"official": True})
 
-    with pytest.raises(ValueError, match="official"):
-        validate_plugin_package(plugin)
+    validate_plugin_package(plugin)
 
     raw = json.loads((plugin / ".ouro-plugin" / "plugin.json").read_text(encoding="utf-8"))
     raw.pop("official")
@@ -364,7 +363,9 @@ def test_host_tool_effect_and_batch_behavior_participate_in_catalog_contract_has
     assert compatible_read != exclusive_read
 
 
-def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tmp_path) -> None:
+def test_development_schema_versions_remain_strict_and_removed_fields_are_ignored(
+    tmp_path,
+) -> None:
     plugin = tmp_path / "plugin"
     plugin.mkdir()
     _write_native_plugin(plugin)
@@ -392,8 +393,8 @@ def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tm
         ]
     }
     manifest_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="optional_feature"):
-        validate_plugin_package(plugin)
+    manifest = PluginManifest.model_validate(raw)
+    assert "optional_feature" not in manifest.dependencies.plugins[0].model_dump()
 
     raw["dependencies"] = {"plugins": []}
     raw["contributes"] = {
@@ -406,8 +407,8 @@ def test_development_schema_versions_and_removed_fields_are_strictly_rejected(tm
         ]
     }
     manifest_path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="auto_start"):
-        validate_plugin_package(plugin)
+    manifest = PluginManifest.model_validate(raw)
+    assert "auto_start" not in manifest.contributes.mcp_servers[0].model_dump()
 
     store = PluginPackageStore(tmp_path / "home")
     store.initialize()
@@ -3946,19 +3947,20 @@ def test_community_report_discovers_root_mcp_descriptor(tmp_path) -> None:
     assert report.required_permissions == ["network.outbound", "process.spawn"]
 
 
-def test_native_manifest_model_rejects_unknown_security_fields() -> None:
-    with pytest.raises(ValueError, match="verified"):
-        PluginManifest.model_validate(
-            {
-                "schema_version": 3,
-                "plugin_id": "dev.ouro.strict",
-                "name": "Strict",
-                "version": "1.0.0",
-                "namespace": "strict",
-                "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
-                "verified": True,
-            }
-        )
+def test_native_manifest_model_ignores_unknown_fields() -> None:
+    manifest = PluginManifest.model_validate(
+        {
+            "schema_version": 3,
+            "plugin_id": "dev.ouro.strict",
+            "name": "Strict",
+            "version": "1.0.0",
+            "namespace": "strict",
+            "engines": {"ouro": "^0.1.0", "plugin_api": "^2.0.0"},
+            "verified": True,
+        }
+    )
+
+    assert "verified" not in manifest.model_dump()
 
 
 def test_native_manifest_rejects_tool_controlled_approval_permission() -> None:

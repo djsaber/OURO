@@ -1580,7 +1580,6 @@ class TuiController:
         return await asyncio.to_thread(runtime.session_reasoning, session_id)
 
     async def load_session(self, session_id: str) -> LoadedSession:
-        await self._runtime().reconcile_session(session_id)
         loaded = await asyncio.to_thread(self._read_session, session_id)
         self._session_id = session_id
         self._session_archived = loaded.detail.session.archived

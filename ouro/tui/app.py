@@ -1009,6 +1009,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.workers.cancel_all()
 
     async def _start(self) -> None:
+        session_load_error: tuple[str, Exception] | None = None
         try:
             bootstrap = await self._controller.start()
         except Exception as exc:  # noqa: BLE001 - surface boundary failures in the Host.
@@ -1022,8 +1023,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             try:
                 await self._open_session(self._resume_session_id)
             except Exception as exc:  # noqa: BLE001 - invalid persisted selection is recoverable.
-                self.notify(f"Could not open session: {exc}", severity="error", markup=False)
                 await self._show_welcome(refresh_status=False)
+                session_load_error = (self._resume_session_id, exc)
         else:
             await self._show_welcome(refresh_status=False)
         await self._refresh_approval_indicator()
@@ -1034,6 +1035,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             composer.display = True
             composer.disabled = False
             composer.focus()
+        if session_load_error is not None:
+            self._show_session_load_error(*session_load_error)
 
     def _apply_bootstrap(self, bootstrap: TuiBootstrap) -> None:
         self._models = bootstrap.models
@@ -2080,8 +2083,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         session_menu: ChoiceScreen
 
         async def select_session(session_id: str) -> tuple[Choice, ...] | None:
+            # History rendering waits for the main Screen to refresh. Close the
+            # modal before loading so the destination view can participate in
+            # that refresh instead of waiting behind the picker that initiated it.
             session_menu.dismiss(None)
-            await self._open_session(session_id)
+            try:
+                await self._open_session(session_id)
+            except Exception as exc:  # noqa: BLE001 - one invalid Session must not exit TUI.
+                self._show_session_load_error(session_id, exc)
+                return None
             return None
 
         if menu is not None:
@@ -2239,6 +2249,24 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self.query_one(StatusLine).set_model(self._active_model)
         await self._refresh_approval_indicator()
         await self._refresh_reasoning_indicator()
+
+    def _show_session_load_error(
+        self,
+        session_id: str,
+        error: Exception,
+    ) -> None:
+        screen = ChoiceScreen(
+            title="SESSION LOAD FAILED",
+            placeholder="Press Enter to close…",
+            choices=(
+                Choice(
+                    "close",
+                    "Close",
+                    description=f"Could not open {session_id}:\n{error}",
+                ),
+            ),
+        )
+        self.push_screen(screen)
 
     @work(exclusive=True, group="navigation")
     async def _fork_session(

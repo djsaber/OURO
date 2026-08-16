@@ -73,6 +73,75 @@ def test_runtime_snapshot_never_reads_replay_event_journal(monkeypatch, tmp_path
     assert "events.jsonl" not in read_paths
 
 
+def test_runtime_recovery_reads_events_only_for_incomplete_runs(monkeypatch, tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    completed = RunRecord(
+        run_id="run_completed",
+        session_id="session_recovery_scope",
+        status="completed",
+        ended_at=utc_now(),
+    )
+    interrupted = RunRecord(
+        run_id="run_interrupted",
+        session_id=completed.session_id,
+        status="running",
+    )
+    session = SessionRecord(
+        session_id=completed.session_id,
+        title="Scoped runtime recovery",
+        status="running",
+        active_run_id=interrupted.run_id,
+        last_run_id=interrupted.run_id,
+    )
+    store.create_session(session)
+    store.save_run(completed)
+    store.save_run(interrupted)
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=completed.run_id,
+            event_type="run_completed",
+        )
+    )
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=interrupted.run_id,
+            turn_id="turn_interrupted",
+            event_type="model_request_started",
+        )
+    )
+    store.append_ordered_event(
+        EventRecord(
+            session_id=session.session_id,
+            run_id=interrupted.run_id,
+            turn_id="turn_interrupted",
+            event_type="model_text_delta",
+            payload={"text": "partial"},
+        )
+    )
+    queried_run_ids: list[str | None] = []
+    original_load_events_page = store.load_events_page
+
+    def load_events_page(*args, **kwargs):
+        queried_run_ids.append(kwargs.get("run_id"))
+        return original_load_events_page(*args, **kwargs)
+
+    def reject_full_session_load(_session_id: str):
+        raise AssertionError("runtime recovery must not load the complete event journal")
+
+    monkeypatch.setattr(store, "load_events_page", load_events_page)
+    monkeypatch.setattr(store, "load_session", reject_full_session_load)
+
+    recovered = SessionRecoveryService(store).recover_runtime(session.session_id)
+
+    assert queried_run_ids == [interrupted.run_id]
+    assert recovered.runs[-1].status == "recoverable"
+    assert recovered.messages[-1].text_content == "partial"
+    assert recovered.messages[-1].metadata["recovered_from_event_journal"] is True
+
+
 def test_latest_event_sequence_reads_only_ordered_journal_tail(monkeypatch, tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()

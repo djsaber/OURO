@@ -252,8 +252,8 @@ calendar-plugin/
 
 ### 6.2 Schema 规则
 
-- 所有规范对象 `extra=forbid`；
-- 未知 security、runtime、contribution 和 permission 字段严格拒绝；
+- 规范对象只消费已声明字段；未知字段由统一 OURO 模型边界忽略，不能进入授权、运行决策或再次序列化；
+- 已声明的 security、runtime、contribution 和 permission 字段仍按类型、必填项与领域约束严格校验；
 - `metadata` 只保存 namespaced 非规范元数据，不参与授权和运行决策；
 - Manifest 不包含 credential 值、用户授权结果、source trust 或 plugin class；
 - contribution identity 和简要契约必须在执行前静态可见；

@@ -31,14 +31,15 @@ class SessionRecoveryService:
     def recover_runtime(self, session_id: str) -> RuntimeSessionSnapshot:
         with self.store.session_mutation(session_id):
             runtime = self.store.load_runtime_session(session_id)
-            needs_event_journal = not self.store.is_session_locked(session_id) and any(
-                run.status in _INCOMPLETE_RUN_STATUSES for run in runtime.runs
+            incomplete_run_ids = tuple(
+                run.run_id for run in runtime.runs if run.status in _INCOMPLETE_RUN_STATUSES
             )
-            snapshot = (
-                self.store.load_session(session_id)
-                if needs_event_journal
-                else SessionSnapshot(**runtime.model_dump(), events=[])
+            events = (
+                self._load_run_events(session_id, incomplete_run_ids)
+                if incomplete_run_ids and not self.store.is_session_locked(session_id)
+                else []
             )
+            snapshot = SessionSnapshot(**runtime.model_dump(), events=events)
             recovered, changed = self._recover_snapshot(snapshot)
         recovered_runtime = RuntimeSessionSnapshot(
             session=recovered.session,
@@ -49,6 +50,33 @@ class SessionRecoveryService:
         if changed:
             self.store.refresh_catalog(session_id)
         return recovered_runtime
+
+    def _load_run_events(
+        self,
+        session_id: str,
+        run_ids: tuple[str, ...],
+    ) -> list[EventRecord]:
+        """Read only the event histories required to recover interrupted Runs."""
+
+        events: list[EventRecord] = []
+        for run_id in run_ids:
+            cursor = 0
+            while True:
+                page, next_cursor = self.store.load_events_page(
+                    session_id,
+                    cursor=cursor,
+                    limit=1000,
+                    run_id=run_id,
+                )
+                events.extend(page)
+                if next_cursor is None:
+                    break
+                if next_cursor <= cursor:
+                    raise PersistenceError(
+                        f"event journal cursor did not advance for session {session_id}"
+                    )
+                cursor = next_cursor
+        return events
 
     def _recover_snapshot(self, snapshot: SessionSnapshot) -> tuple[SessionSnapshot, bool]:
         session = snapshot.session

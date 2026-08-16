@@ -76,13 +76,40 @@ def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
 
     assert [item.value for item in matching_arguments(command, "pau")] == ["pause"]
     assert [item.value for item in matching_arguments(command, "replace new goal")] == ["replace"]
-    assert argument_suggestion(command, "", command.argument_options[0]) == (
-        "[status|pause|replace] | <request>"
-    )
+    assert command.input_hint == "<request>"
+    assert argument_suggestion(command, "", command.argument_options[0]) == "<request>"
     assert argument_suggestion(command, "pau", command.argument_options[1]) == "se"
     assert argument_suggestion(command, "replace ", command.argument_options[2]) == (
         "[--token-budget N] <request>"
     )
+
+
+def test_input_hint_preserves_full_usage_but_omits_menu_owned_branches() -> None:
+    full_hint = (
+        "[--token-budget N] <objective> | status | pause | "
+        "resume [--token-budget N] | cancel | "
+        "replace [--token-budget N] <objective>"
+    )
+    command = TuiCommand(
+        "/goal",
+        "Goal",
+        "Control the current Goal",
+        full_hint,
+        argument_options=(
+            TuiCommandArgument("status", "Show the current Goal"),
+            TuiCommandArgument("pause", "Pause the active Goal"),
+            TuiCommandArgument("resume", "Resume a paused Goal", "[--token-budget N]"),
+            TuiCommandArgument("cancel", "Cancel the current Goal"),
+            TuiCommandArgument(
+                "replace",
+                "Replace the current Goal",
+                "[--token-budget N] <objective>",
+            ),
+        ),
+    )
+
+    assert command.usage == f"/goal {full_hint}"
+    assert command.input_hint == "[--token-budget N] <objective>"
 
 
 def test_argument_display_metadata_filters_without_changing_completion_value() -> None:

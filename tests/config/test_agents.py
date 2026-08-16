@@ -44,7 +44,9 @@ def test_agent_definition_config_crud_uses_expected_revision(tmp_path) -> None:
     assert deleted.definitions == ()
 
 
-def test_agent_definition_config_rejects_builtin_override_and_unknown_fields(tmp_path) -> None:
+def test_agent_definition_config_rejects_builtin_override_and_ignores_unknown_fields(
+    tmp_path,
+) -> None:
     manager = AgentDefinitionsConfigManager(tmp_path)
 
     with pytest.raises(ConfigError, match="reserved"):
@@ -63,8 +65,10 @@ def test_agent_definition_config_rejects_builtin_override_and_unknown_fields(tmp
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ConfigError, match="invalid agents config"):
-        manager.snapshot()
+    snapshot = manager.snapshot()
+
+    assert [item.agent_id for item in snapshot.definitions] == ["reviewer"]
+    assert "extra" not in snapshot.definitions[0].model_dump()
 
 
 def test_agent_definition_mutation_preserves_other_config_sections(tmp_path) -> None:

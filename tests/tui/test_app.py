@@ -34,6 +34,7 @@ from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
 from ouro.core.context import ContextMetrics
+from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.messages import (
     MessageRecord,
@@ -3621,6 +3622,105 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
 
 
 @pytest.mark.asyncio
+async def test_session_picker_closes_modal_before_rendering_selected_history(
+    tmp_path: Path,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Readable session").session
+    application.runtime.store.append_message(
+        MessageRecord.text(
+            session_id=session.session_id,
+            role="user",
+            text="Persisted user message",
+            sequence=1,
+        )
+    )
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        session_menu = app.screen
+
+        await asyncio.wait_for(pilot.press("enter"), timeout=2)
+        await pilot.pause()
+
+        assert session_menu not in app.screen_stack
+        assert app._controller.session_id == session.session_id
+        assert app.query_one(ConversationHistory).user_turns == ("Persisted user message",)
+
+
+@pytest.mark.asyncio
+async def test_session_picker_contains_load_failure_in_choice_dialog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Damaged session").session
+    app = OuroTuiApp(application=application)
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+
+        async def fail_load(_session_id: str) -> None:
+            raise PersistenceError("message journal is invalid")
+
+        monkeypatch.setattr(app._controller, "load_session", fail_load)
+        await pilot.press("ctrl+s")
+        await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
+        session_menu = app.screen
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen is not session_menu
+        assert app.screen._title == "SESSION LOAD FAILED"
+        error = app.screen._choices[0].description
+        assert session.session_id in error
+        assert "message journal is invalid" in error
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert session_menu not in app.screen_stack
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert app.is_running is True
+
+
+@pytest.mark.asyncio
+async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = _application(tmp_path)
+    session = application.runtime.sessions.create(title="Damaged startup session").session
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=session.session_id,
+    )
+
+    async def fail_load(_session_id: str) -> None:
+        raise PersistenceError("session payload is incompatible")
+
+    monkeypatch.setattr(app._controller, "load_session", fail_load)
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+
+        assert isinstance(app.screen, ChoiceScreen)
+        assert app.screen._title == "SESSION LOAD FAILED"
+        error = app.screen._choices[0].description
+        assert session.session_id in error
+        assert "session payload is incompatible" in error
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert app.query_one(Composer).disabled is False
+        assert app.is_running is True
+
+
+@pytest.mark.asyncio
 async def test_session_picker_and_archive_menu_project_and_toggle_archived_group(
     tmp_path: Path,
 ) -> None:
@@ -6591,7 +6691,7 @@ async def test_command_selection_executes_complete_argument(
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.text == "/plan "
-        assert composer.suggestion == "[on|off|status]"
+        assert composer.suggestion == ""
         assert popup.argument_command is not None
         assert popup.argument_command.name == "/plan"
         assert popup.selected_argument is not None
@@ -6629,7 +6729,11 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
                     plugin_id="dev.ouro.goal_mode",
                     name="goal",
                     description="Control a Goal",
-                    usage="[status|pause|resume|cancel|replace] | <request>",
+                    usage=(
+                        "[--token-budget N] <objective> | status | pause | "
+                        "resume [--token-budget N] | cancel | "
+                        "replace [--token-budget N] <objective>"
+                    ),
                     argument_options=(
                         PluginCommandArgumentView(
                             value="status", description="Show the current Goal"
@@ -6639,6 +6743,14 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
                         ),
                         PluginCommandArgumentView(
                             value="resume", description="Resume a paused Goal"
+                        ),
+                        PluginCommandArgumentView(
+                            value="cancel", description="Cancel the current Goal"
+                        ),
+                        PluginCommandArgumentView(
+                            value="replace",
+                            description="Replace the current Goal",
+                            usage="[--token-budget N] <objective>",
                         ),
                     ),
                 ),
@@ -6652,7 +6764,7 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.text == "/goal "
-        assert composer.suggestion == "[status|pause|resume|cancel|replace] | <request>"
+        assert composer.suggestion == "[--token-budget N] <objective>"
         assert popup.argument_command is not None
 
         await pilot.press("p", "a", "u")

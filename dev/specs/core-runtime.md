@@ -11,7 +11,8 @@
 
 Session、Run、Message、Event 等可独立持久化的核心记录继承同一版本化记录契约。新记录默认写入当前版本，
 但持久化读取必须经过 versioned decoder 并要求 payload 显式包含当前 `schema_version`；普通 Pydantic 字段默认值
-不能作为旧数据迁移。嵌套值对象随其根记录版本演进，只有独立写入的 artifact 才建立独立解码边界。
+不能作为旧数据迁移。OURO 模型忽略未声明字段，但仍严格校验已声明字段、必填字段和领域约束；未知字段不会进入
+规范对象或再次持久化。嵌套值对象随其根记录版本演进，只有独立写入的 artifact 才建立独立解码边界。
 
 ### Session
 
@@ -79,7 +80,8 @@ application 用例仍负责取得 mutation lock、准备业务字段、先保存
 ## 运行流程
 
 1. Host 调用 `RuntimeService.run`。
-2. 新会话被创建，或现有会话通过不含 replay events 的运行态快照执行恢复检查。
+2. 新会话被创建，或现有会话通过运行态快照执行恢复检查；仅当存在中断 Run 时，按 `run_id` 分页读取该 Run 的
+   event 以固化未提交的部分输出，不加载其他 Run 的 replay events。
 3. 取得 session run lock；锁竞争失败时返回 active Run 或明确的 `SessionBusyError`。
 4. `RunLifecycle.start` 持久化 active Session/Run。
 5. 输入消息按提供方给出的 role、scaffold、semantic tag 和 provenance 原样持久化并产生事件。
@@ -182,8 +184,8 @@ application 的 durable Delegation 编排，core 不递归调用 RuntimeService�
 
 `RuntimeSupervisor` 在 RuntimeService 外管理跨 Session FIFO 队列、全局并发上限、状态快照和 Host 订阅。
 它不复制本节的 durable Run 状态机。Host detach 只关闭订阅；explicit abort 通过 RuntimeService 先持久化
-aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次打开、运行或提交所属 Session 时
-由 SessionStore 定点恢复；进程启动本身不扫描历史 Session。
+aborted；shutdown 在有限时间内 wait 或显式 abort。未在超时内完成的 Run 在下次运行或提交所属 Session 时由
+SessionStore 定点恢复；Host 的历史展示读取不触发恢复，进程启动本身也不扫描历史 Session。
 `waiting_child` 与其他 durable waiting 状态不占 execution permit；child 或恢复后的 parent 作为独立工作重新进入
 既有 FIFO，不增加第二个 worker pool。
 

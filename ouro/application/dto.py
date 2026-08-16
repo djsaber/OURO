@@ -13,7 +13,7 @@ DiagnosticSeverity = Literal["info", "warning", "error"]
 class ApplicationDTO(OuroModel):
     """Base class for immutable values exposed to OURO hosts."""
 
-    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+    model_config = ConfigDict(frozen=True)
 
 
 class Diagnostic(ApplicationDTO):
