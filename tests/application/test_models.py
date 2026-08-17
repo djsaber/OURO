@@ -71,6 +71,64 @@ def test_configured_model_catalog_reflects_config_changes_without_restart(tmp_pa
     assert [model.key for model in catalog.list_models()] == ["local/coder"]
 
 
+def test_configured_model_catalog_default_model_follows_default_route_changes(
+    tmp_path,
+) -> None:
+    configs = ProviderConfigManager(tmp_path)
+    configs.create_provider(
+        "openai",
+        provider_type="openai",
+        base_url="https://configured.example/v1",
+    )
+    configs.upsert_endpoint("openai", "first", model_id="gpt-first", make_default=True)
+    configs.upsert_endpoint("openai", "second", model_id="gpt-second")
+    configs.set_default_route("openai", "first")
+    runtime_adapter = RuntimeAdapter(
+        FauxProvider(),
+        ModelMetadata(model_id="gpt-first", provider_id="openai", endpoint_id="first"),
+    )
+    catalog = ConfiguredModelCatalog(
+        configs,
+        runtime_adapter,
+        adapter_builder=build_runtime_adapter,
+    )
+
+    assert catalog.default_model().key == "openai/first"
+
+    configs.set_default_route("openai", "second")
+
+    assert catalog.default_model().key == "openai/second"
+
+
+def test_configured_model_catalog_pins_default_route_composed_outside_config(
+    tmp_path,
+) -> None:
+    configs = ProviderConfigManager(tmp_path)
+    configs.create_provider(
+        "openai",
+        provider_type="openai",
+        base_url="https://configured.example/v1",
+    )
+    configs.upsert_endpoint("openai", "first", model_id="gpt-first", make_default=True)
+    configs.upsert_endpoint("openai", "second", model_id="gpt-second")
+    configs.set_default_route("openai", "first")
+    runtime_adapter = RuntimeAdapter(
+        FauxProvider(),
+        ModelMetadata(model_id="ad-hoc", provider_id="custom", endpoint_id="route"),
+    )
+    catalog = ConfiguredModelCatalog(
+        configs,
+        runtime_adapter,
+        adapter_builder=build_runtime_adapter,
+    )
+
+    assert catalog.default_model().key == "custom/route"
+
+    configs.set_default_route("openai", "second")
+
+    assert catalog.default_model().key == "custom/route"
+
+
 def test_configured_model_catalog_preserves_runtime_overrides_for_default_route(
     tmp_path,
 ) -> None:

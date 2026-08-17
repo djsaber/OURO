@@ -97,6 +97,13 @@ class ConfiguredModelCatalog:
         self._adapter_builder = adapter_builder
         self._configured_adapters: dict[str, tuple[str, RuntimeAdapter]] = {}
         self._retired_adapters: list[RuntimeAdapter] = []
+        # A startup composition for a route outside the configured default
+        # (CLI provider/endpoint flags) owns the process default; otherwise the
+        # configured default route stays live so default-route changes apply to
+        # the next request without rebuilding the runtime.
+        self._default_route_pinned = (
+            model_route_key(default_adapter.model) != self._configured_default_route()
+        )
 
     def list_models(self) -> list[AvailableModel]:
         models: list[AvailableModel] = []
@@ -120,11 +127,31 @@ class ConfiguredModelCatalog:
         return sorted(models, key=lambda item: item.key)
 
     def default_model(self) -> AvailableModel:
-        default_key = model_route_key(self._default_adapter.model)
+        """Resolve the default route from current configuration.
+
+        Follows the configured default provider/endpoint route so runtime
+        default-route changes apply without a restart. A startup composition
+        for a different route stays pinned, and unresolvable configuration
+        falls back to the last known startup route.
+        """
+
+        if not self._default_route_pinned:
+            route = self._configured_default_route()
+            if route is not None:
+                try:
+                    return self.resolve(route)
+                except ConfigError:
+                    pass
+        return _available_model(self._default_adapter.model)
+
+    def _configured_default_route(self) -> str | None:
         try:
-            return self.resolve(default_key)
+            provider = self._configs.default_provider()
         except ConfigError:
-            return _available_model(self._default_adapter.model)
+            return None
+        if provider.default_endpoint is None:
+            return None
+        return f"{provider.provider_id}/{provider.default_endpoint}"
 
     def resolve(self, selector: str) -> AvailableModel:
         normalized = selector.strip()

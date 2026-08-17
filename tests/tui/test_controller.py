@@ -37,6 +37,7 @@ from ouro.tui.controller import (
     TuiProviderConfiguration,
     TuiToolExecutionConfiguration,
 )
+from tests.tui.helpers import two_route_application
 
 
 def _reasoning_application(tmp_path: Path) -> LocalApplication:
@@ -72,6 +73,61 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
         environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
     )
     return LocalApplication.from_runtime(runtime)
+
+
+@pytest.mark.asyncio
+async def test_controller_new_session_reuses_previous_session_model(
+    tmp_path: Path,
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        first = await controller.submit("first session")
+        assert first.session.current_model == "faux/default"
+        assert first.run.model == "default-model"
+
+        await controller.select_model("faux/recent")
+        draft = await controller.new_session()
+
+        assert draft.key == "faux/recent"
+
+        second = await controller.submit("second session")
+        assert second.session.current_model == "faux/recent"
+        assert second.run.model == "recent-model"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_new_session_keeps_welcome_model_selection(
+    tmp_path: Path,
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        await controller.new_session()
+        await controller.select_model("faux/recent")
+
+        draft = await controller.new_session()
+        assert draft.key == "faux/recent"
+
+        result = await controller.submit("drafted session")
+        assert result.session.current_model == "faux/recent"
+        assert result.run.model == "recent-model"
+    finally:
+        await controller.close()
 
 
 @pytest.mark.asyncio
@@ -1296,7 +1352,7 @@ async def test_controller_applies_draft_settings_and_persists_existing_session(
         assert record.reasoning_request.mode == "disabled"
         assert persisted_reasoning.effective.mode == "disabled"
 
-        controller.new_session()
+        await controller.new_session()
         assert await controller.session_approval_preset() == "inherit"
         assert (await controller.session_reasoning()).requested == ReasoningRequest()
     finally:

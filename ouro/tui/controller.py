@@ -598,13 +598,52 @@ class TuiController:
         session = self._runtime().sessions.open(session_id, recover=False).session
         return self._application.agents.list_agent_interactions(session.agent_root_session_id)
 
-    def new_session(self) -> None:
+    async def new_session(self) -> AvailableModel:
+        """Reset the visible Session and return the next Session's model.
+
+        A new Session keeps the most recently used route so the welcome page
+        label and the first request agree. Leaving no Session preserves an
+        explicit welcome-page selection; a route that no longer resolves falls
+        back to the Runtime default.
+        """
+
+        runtime = self._runtime()
+        previous_route = await self._leaving_session_route()
         self._session_id = None
         self._session_archived = False
-        self._initial_model = None
+        if previous_route is not None:
+            self._initial_model = previous_route
         self._approval_mode = self._default_approval_mode
         self._interaction_mode = self._default_interaction_mode
         self._reasoning_request = ReasoningRequest()
+
+        initial_model = self._initial_model
+        draft: AvailableModel | None = None
+        if initial_model is not None:
+            try:
+                draft = await asyncio.to_thread(runtime.resolve_model, initial_model)
+            except ConfigError:
+                draft = None
+        if draft is None:
+            draft = await asyncio.to_thread(runtime.current_model)
+            self._initial_model = None
+        return draft
+
+    async def _leaving_session_route(self) -> str | None:
+        session_id = self._session_id
+        if session_id is None:
+            return None
+        runtime = self._runtime()
+
+        def read() -> str | None:
+            try:
+                return runtime.current_model(session_id).key
+            except ConfigError:
+                # A route removed from configuration cannot seed a new Session;
+                # the Runtime default takes over instead of failing navigation.
+                return None
+
+        return await asyncio.to_thread(read)
 
     async def sessions(self) -> tuple[SessionCatalogEntry, ...]:
         runtime = self._runtime()

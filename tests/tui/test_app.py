@@ -128,6 +128,7 @@ from ouro.tui.widgets import (
     StatusLine,
     WelcomePanel,
 )
+from tests.tui.helpers import two_route_application
 
 
 async def _wait_for_screen(
@@ -1824,6 +1825,29 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
         await app._select_model("supplier/chat-endpoint")
 
         assert "Ready • inherit • chat-endpoint" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_new_session_label_matches_first_request_model(tmp_path: Path) -> None:
+    application = two_route_application(tmp_path)
+    result = await application.runtime.run("seed session")
+    app = OuroTuiApp(
+        application=application,
+        resume_session_id=result.session.session_id,
+    )
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
+
+        await app._select_model("faux/recent")
+        await app._new_session()
+
+        assert "Ready • inherit • recent" in indicator.render().plain
+
+        submitted = await app._controller.submit("from welcome")
+        assert submitted.session.current_model == "faux/recent"
+        assert submitted.run.model == "recent-model"
 
 
 @pytest.mark.asyncio

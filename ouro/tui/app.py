@@ -1999,15 +1999,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._has_active_run():
             self.notify("Abort the active run before starting a new session", severity="warning")
             return
-        self._controller.new_session()
+        try:
+            model = await self._controller.new_session()
+        except Exception as exc:  # noqa: BLE001 - keep the current view on failure.
+            self.notify(str(exc), severity="error", markup=False)
+            return
         self._projection = None
         self._interaction = None
         self._active_title = "New session"
         self.query_one(BrandHeader).set_context(session_title=self._active_title)
-        self.query_one(StatusLine).set_activity("idle")
-        self.query_one(StatusLine).set_context(None)
+        status_line = self.query_one(StatusLine)
+        self._active_model = model.endpoint_id
+        status_line.set_model(self._active_model)
+        status_line.set_activity("idle")
+        status_line.set_context(None)
         self._sync_interaction(None)
         await self._refresh_approval_indicator()
+        await self._refresh_reasoning_indicator()
         self.query_one(QueuedInputPanel).set_inputs(())
         await self._show_welcome()
 
