@@ -503,6 +503,7 @@ _OURO_TUI_CSS = """
     }
 
     .assistant-markdown {
+        width: 100%;
         height: auto;
         background: transparent;
         padding: 0;
@@ -530,17 +531,6 @@ _OURO_TUI_CSS = """
         text-style: dim italic;
         background: transparent;
         border-left: solid #505967;
-    }
-
-    Markdown, MarkdownBlock, MarkdownTable {
-        background: transparent;
-    }
-
-    /* Keep fenced code on the same quiet surface as user turns and the
-       composer. The fence selector must come after the generic Markdown
-       rules so Textual's built-in translucent black does not leak through. */
-    MarkdownFence {
-        background: $ouro-panel;
     }
 
     .tool-row {
@@ -1197,7 +1187,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             or event.event_type in _AGENT_INTERACTION_EVENTS
             for event in events
         )
-        assistant_visible = bool(projection.assistant_text)
         conversation = self.query_one(ConversationView)
         stream_kind: str | None = None
         stream_parts: list[str] = []
@@ -1236,8 +1225,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if update is None:
                 continue
             latest_update = update
-            if event.event_type == "run_started":
-                assistant_visible = False
             if event.event_type == "model_request_started":
                 await flush_stream()
                 await conversation.finish_assistant()
@@ -1249,7 +1236,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     input_message = await self._controller.message(event.session_id, message_id)
                     if input_message.role == "user" and not input_message.scaffold:
                         await conversation.add_user_message(input_message)
-                        assistant_visible = False
             if event.event_type == "compaction_completed":
                 await flush_stream()
                 covered = event.payload.get("covered_message_count")
@@ -1274,9 +1260,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 conversation.finish_reasoning(update.reasoning_duration_seconds)
             if update.assistant_delta:
                 await append_stream("assistant", update.assistant_delta)
-                assistant_visible = True
-            if update.round_break and assistant_visible:
-                await append_stream("assistant", "\n\n")
             if update.activity.tool_calls != previous_tools:
                 await flush_stream()
                 await conversation.sync_tools(update.activity.tool_calls)

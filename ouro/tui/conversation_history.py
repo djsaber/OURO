@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterable
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any, Literal, Protocol
 
+from markdown_it import MarkdownIt
 from rich.console import Console, ConsoleOptions, Group, RenderableType, RenderResult
 from rich.markdown import Markdown as RichMarkdown
 from rich.padding import Padding
@@ -13,6 +16,7 @@ from rich.syntax import Syntax, SyntaxTheme
 from rich.text import Text
 from textual import events
 from textual.events import Resize
+from textual.geometry import Size
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widgets import RichLog
@@ -53,6 +57,110 @@ class _PanelCodeTheme(SyntaxTheme):
 
 
 _PANEL_CODE_THEME = _PanelCodeTheme()
+
+# Rich's Markdown renders through this same parser configuration, so block
+# boundaries detected for freezing always agree with the rendered structure.
+_MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
+
+_ATOMIC_BLOCKS = frozenset({"fence", "hr", "code_block", "html_block"})
+
+
+def assistant_markdown(text: str) -> RichMarkdown:
+    """The one assistant markdown rendering definition.
+
+    Streamed tails, frozen blocks, and reloaded history all pass through this
+    factory, so the three paths cannot drift apart stylistically.
+    """
+    return RichMarkdown(text, code_theme=_PANEL_CODE_THEME)  # type: ignore[arg-type]
+
+
+def _block_starts(source: str) -> list[int]:
+    """Line indexes where complete top-level markdown blocks begin."""
+    return [
+        token.map[0]
+        for token in _MARKDOWN_PARSER.parse(source)
+        if token.level == 0
+        and token.map is not None
+        and (token.type.endswith("_open") or token.type in _ATOMIC_BLOCKS)
+    ]
+
+
+class AssistantMarkdownStream:
+    """Incremental markdown splitting for one streaming answer.
+
+    Completed top-level blocks are returned for immutable rendering as soon as
+    a following block starts. The trailing block always stays live: later
+    fragments can still extend or re-type it (setext underlines, table
+    delimiter rows), so freezing it early could lock in a stale structure.
+    """
+
+    def __init__(self) -> None:
+        self._lines: list[str] = []
+        self._frozen = 0
+
+    @property
+    def source(self) -> str:
+        return "".join(self._lines)
+
+    def feed(self, text: str) -> tuple[tuple[str, ...], str]:
+        """Accumulate a fragment; return newly completed blocks and the live tail."""
+        if not text:
+            return (), self._unfrozen()
+        # Re-split the whole accumulated text: fragments can end mid-line, so
+        # per-fragment splits would drift out of sync with markdown-it's line
+        # numbering. The full text is bounded by one answer, so this stays cheap.
+        self._lines = _split_logical_lines(self.source + text)
+        unfrozen = self._unfrozen()
+        starts = _block_starts(unfrozen)
+        if len(starts) < 2:
+            return (), unfrozen
+        blocks = tuple(
+            "".join(self._lines[self._frozen + start : self._frozen + end])
+            for start, end in pairwise(starts)
+        )
+        self._frozen += starts[-1]
+        return tuple(block for block in blocks if block.strip()), self._unfrozen()
+
+    def close(self) -> tuple[str, ...]:
+        """Freeze everything, including the trailing block."""
+        starts = _block_starts(self._unfrozen())
+        boundaries = [*starts, len(self._lines) - self._frozen]
+        blocks = (
+            "".join(self._lines[self._frozen + start : self._frozen + end])
+            for start, end in pairwise(boundaries)
+        )
+        return tuple(block for block in blocks if block.strip())
+
+    def _unfrozen(self) -> str:
+        return "".join(self._lines[self._frozen :])
+
+
+def _split_logical_lines(text: str) -> list[str]:
+    """Split text the way markdown-it counts lines.
+
+    Every entry ends with a newline except possibly the last, which is the
+    still-growing partial line of an in-flight stream.
+    """
+    *complete, last = text.split("\n")
+    lines = [line + "\n" for line in complete]
+    if last:
+        lines.append(last)
+    return lines
+
+
+def split_markdown_blocks(text: str) -> tuple[str, ...]:
+    """Split a complete markdown document into top-level block slices."""
+    stream = AssistantMarkdownStream()
+    blocks = list(stream.feed(text)[0])
+    blocks.extend(stream.close())
+    return tuple(blocks)
+
+
+def _thought_label(reasoning_seconds: float | None) -> Text:
+    label = "THOUGHT"
+    if reasoning_seconds is not None:
+        label += f" · {format_duration(reasoning_seconds)}"
+    return Text(label, style="bold #aeb5bf")
 
 
 @dataclass(frozen=True)
@@ -184,13 +292,56 @@ def _apply_selection_style(
     return Strip(segments, strip.cell_length)
 
 
+_PieceTag = Literal["body", "user", "reasoning"]
+
+_LOAD_CHUNK_ENTRIES = 50
+
+
+@dataclass
+class _Piece:
+    """One immutable render unit.
+
+    Reasoning pieces carry their entry index: toggling visibility re-renders
+    exactly those pieces (a plain-text render bounded by each block) while
+    every other piece's strips are reused verbatim.
+    """
+
+    strips: list[Strip]
+    tag: _PieceTag = "body"
+    entry_index: int = -1
+
+
+def _reasoning_area(
+    entry: TranscriptEntry,
+    *,
+    expanded: bool,
+    top: int,
+) -> tuple[RenderableType, _PieceTag]:
+    """The reasoning area of one entry: label plus the togglable body.
+
+    The area always ends in exactly one blank line — the gap belongs between
+    reasoning and its answer whether or not an answer follows.
+    """
+    label = _thought_label(entry.reasoning_seconds)
+    if expanded:
+        area: RenderableType = Group(
+            label,
+            Padding(_ReasoningContent(entry.reasoning), (1, 0, 0, 1)),
+        )
+    else:
+        area = label
+    return Padding(area, (top, 2, 1, 2)), "reasoning"
+
+
 class ConversationHistory(RichLog, can_focus=False):
     """Line-buffered rendering for immutable persisted conversation history.
 
-    A Textual widget owns a message pump even when it is off-screen. Persisted
-    turns therefore belong in one line-oriented widget rather than a permanent
-    DOM subtree per message and per Markdown block. Live output remains in
-    regular widgets below this buffer because it is still mutable.
+    Every entry renders into ``_Piece`` strip spans exactly once — blocks
+    frozen mid-stream and whole reloaded messages share the same buffer, so
+    streaming and finished output cannot drift apart. Toggling reasoning
+    visibility only filters which pieces contribute lines; completed content is
+    never re-rendered for a visibility change. Live output remains in regular
+    widgets below this buffer because it is still mutable.
     """
 
     def __init__(
@@ -208,6 +359,7 @@ class ConversationHistory(RichLog, can_focus=False):
         self.display = False
         self._render_tool = render_tool
         self._entries: list[TranscriptEntry] = []
+        self._pieces: list[_Piece] = []
         self._user_lines: tuple[int, ...] = ()
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
@@ -237,7 +389,6 @@ class ConversationHistory(RichLog, can_focus=False):
         RichLog emits styled line segments without Textual's source-offset metadata,
         so the Screen cannot otherwise translate a drag gesture into text offsets.
         """
-
         line = super().render_line(y)
         source_y = self.scroll_offset.y + y
         selection = self.text_selection
@@ -254,28 +405,62 @@ class ConversationHistory(RichLog, can_focus=False):
             self.app.open_url(event.style.link)
 
     def replace(self, entries: Iterable[TranscriptEntry]) -> None:
-        self._entries = list(entries)
-        self._user_lines = ()
-        self._render_width = 0
-        super().clear()
-        self.display = bool(self._entries)
-        if self.display and self.scrollable_content_region.width > 0:
+        if self._reset_buffer(list(entries)):
             self._render_entries()
-        elif self.display:
+        elif self._entries:
             self.call_after_refresh(self._render_entries)
+
+    async def load(self, entries: Iterable[TranscriptEntry]) -> None:
+        """Replace the transcript in chunks so loading never blocks the UI thread.
+
+        The status line keeps animating its loading activity while chunks mount;
+        each chunk yields one frame in between. Returns only once the entries
+        are rendered, preserving the ``load_messages`` contract that callers
+        rely on before anchoring the scroll position.
+        """
+        if not self._reset_buffer(list(entries)):
+            if self._entries:
+                # Width is unknown (the log was hidden while empty); render as
+                # soon as layout provides one instead of leaving callers racing
+                # an async mount.
+                self.call_after_refresh(self._render_entries)
+                for _ in range(3):
+                    if self.lines:
+                        return
+                    await self.wait_for_refresh()
+            return
+        rendered = 0
+        try:
+            for start in range(0, len(self._entries), _LOAD_CHUNK_ENTRIES):
+                rendered = self._write_entries(
+                    start, min(start + _LOAD_CHUNK_ENTRIES, len(self._entries))
+                )
+                await self.wait_for_refresh()
+        except asyncio.CancelledError:
+            # Exclusive workers supersede an in-flight session load; finish the
+            # remaining entries synchronously so the buffer never rests
+            # half-rendered before the cancellation propagates.
+            self._write_entries(rendered, len(self._entries))
+            raise
+        self._render_width = self.scrollable_content_region.width
+
+    def _write_entries(self, start: int, stop: int) -> int:
+        """Render entries[start:stop] into pieces; returns the next index."""
+        for index in range(start, stop):
+            entry = self._entries[index]
+            previous_kind = self._entries[index - 1].kind if index > 0 else None
+            self._write_entry(entry, previous_kind=previous_kind, entry_index=index)
+        return stop
 
     def append(self, entry: TranscriptEntry) -> None:
         self._entries.append(entry)
         self.display = True
         if self._size_known and self.scrollable_content_region.width > 0:
-            if entry.kind == "user":
-                self._user_lines = (*self._user_lines, len(self.lines))
             previous_kind = self._entries[-2].kind if len(self._entries) > 1 else None
-            super().write(
-                self._render_entry(entry, previous_kind=previous_kind),
-                expand=True,
-                shrink=True,
-                scroll_end=False,
+            self._write_entry(
+                entry,
+                previous_kind=previous_kind,
+                entry_index=len(self._entries) - 1,
             )
         else:
             self.call_after_refresh(self._render_entries)
@@ -315,12 +500,35 @@ class ConversationHistory(RichLog, can_focus=False):
         if self._entries:
             self._render_entries()
 
-    def set_reasoning_expanded(self, expanded: bool) -> None:
+    def set_reasoning_expanded(self, expanded: bool, *, above_line: int) -> int:
+        """Switch reasoning pieces between their collapsed and expanded variants.
+
+        Only reasoning pieces re-render — a plain-text render bounded by each
+        block; every other piece's strips are reused verbatim. Returns the net
+        line delta at indexes below ``above_line`` so the caller can keep the
+        viewport anchored over unchanged content.
+        """
         if self._reasoning_expanded == expanded:
-            return
+            return 0
         self._reasoning_expanded = expanded
-        if self._entries:
-            self._render_entries()
+        delta = 0
+        position = 0
+        changed = False
+        for piece in self._pieces:
+            if piece.tag == "reasoning":
+                index = piece.entry_index
+                entry = self._entries[index]
+                top = 1 if (index > 0 and self._entries[index - 1].kind == "tool") else 0
+                renderable, _tag = _reasoning_area(entry, expanded=expanded, top=top)
+                new_strips = self._render_strips(renderable)
+                if position < above_line:
+                    delta += len(new_strips) - len(piece.strips)
+                piece.strips = new_strips
+                changed = True
+            position += len(piece.strips)
+        if changed:
+            self._rebuild_lines()
+        return delta
 
     def on_resize(self, event: Resize) -> None:
         size_was_known = self._size_known
@@ -329,48 +537,75 @@ class ConversationHistory(RichLog, can_focus=False):
         if self._entries and width > 0 and (not size_was_known or width != self._render_width):
             self._render_entries()
 
+    def _reset_buffer(self, entries: list[TranscriptEntry]) -> bool:
+        """Reset the strip buffer for a full replacement; True when width is known."""
+        self._entries = entries
+        self._pieces.clear()
+        self._user_lines = ()
+        self._widest_line_width = 0
+        self._line_cache.clear()
+        self.lines.clear()
+        self.display = bool(entries)
+        self.virtual_size = Size(0, 0)
+        return self._size_known and self.scrollable_content_region.width > 0
+
     def _render_entries(self) -> None:
         width = self.scrollable_content_region.width
         if width <= 0 or not self._size_known:
             return
-        super().clear()
-        user_lines: list[int] = []
-        previous_kind: TranscriptEntryKind | None = None
-        for entry in self._entries:
-            if entry.kind == "user":
-                user_lines.append(len(self.lines))
-            super().write(
-                self._render_entry(entry, previous_kind=previous_kind),
-                expand=True,
-                shrink=True,
-                scroll_end=False,
-            )
-            previous_kind = entry.kind
-        self._user_lines = tuple(user_lines)
+        self._reset_buffer(self._entries)
+        self._write_entries(0, len(self._entries))
         self._render_width = width
 
-    def _render_entry(
+    def _write_entry(
         self,
         entry: TranscriptEntry,
         *,
-        previous_kind: TranscriptEntryKind | None = None,
-    ) -> RenderableType:
+        previous_kind: TranscriptEntryKind | None,
+        entry_index: int,
+    ) -> None:
+        for renderable, tag in self._entry_pieces(entry, previous_kind=previous_kind):
+            strips = self._render_strips(renderable)
+            if tag == "user":
+                self._user_lines = (*self._user_lines, len(self.lines))
+            self._append_strips(strips)
+            self._pieces.append(
+                _Piece(
+                    strips=strips,
+                    tag=tag,
+                    entry_index=entry_index if tag == "reasoning" else -1,
+                )
+            )
+
+    def _entry_pieces(
+        self,
+        entry: TranscriptEntry,
+        *,
+        previous_kind: TranscriptEntryKind | None,
+    ) -> list[tuple[RenderableType, _PieceTag]]:
         theme = theme_for(self)
         if entry.kind == "user":
-            return Padding(
-                _UserMessageContent(entry.text, theme.accent),
-                (1, 2, 2, 2),
-            )
+            return [
+                (
+                    Padding(_UserMessageContent(entry.text, theme.accent), (1, 2, 2, 2)),
+                    "user",
+                )
+            ]
         if entry.kind == "tool":
             assert entry.tool is not None
-            return Padding(
-                self._render_tool(entry.tool, frame=0, theme=theme),
-                (0, 0, 0, 2),
-            )
+            return [
+                (
+                    Padding(
+                        self._render_tool(entry.tool, frame=0, theme=theme),
+                        (0, 0, 0, 2),
+                    ),
+                    "body",
+                )
+            ]
         if entry.kind == "notice":
             tone = "#e08a8a" if entry.error else theme.accent
             top = 1 if previous_kind == "tool" else 0
-            return Padding(Text(entry.text, style=tone), (top, 1, 1, 1))
+            return [(Padding(Text(entry.text, style=tone), (top, 1, 1, 1)), "body")]
         if entry.kind == "run":
             assert entry.run is not None
             tone = theme.accent if entry.run.status == "completed" else "#8f9aa8"
@@ -386,31 +621,55 @@ class ConversationHistory(RichLog, can_focus=False):
             if entry.run.status != "completed":
                 summary.append(" • ", style="#4d5560")
                 summary.append(entry.run.status, style="#777f8b")
-            return Padding(summary, (0, 1, 1, 2))
+            return [(Padding(summary, (0, 1, 1, 2)), "body")]
 
-        blocks: list[RenderableType] = []
+        pieces: list[tuple[RenderableType, _PieceTag]] = []
+        top = 1 if previous_kind == "tool" else 0
         if entry.reasoning:
-            label = "THOUGHT"
-            if entry.reasoning_seconds is not None:
-                label += f" · {format_duration(entry.reasoning_seconds)}"
-            thought_content: RenderableType = Text(label, style="bold #aeb5bf")
-            if self._reasoning_expanded:
-                thought_content = Group(
-                    thought_content,
-                    Padding(
-                        _ReasoningContent(entry.reasoning),
-                        (1, 0, 0, 1),
-                    ),
-                )
-            # This gap belongs between reasoning and its answer, not after the
-            # assistant message. The outer padding below owns message spacing.
-            blocks.append(Padding(thought_content, (0, 0, 1 if entry.text else 0, 0)))
+            pieces.append(_reasoning_area(entry, expanded=self._reasoning_expanded, top=top))
         if entry.text:
-            blocks.append(
-                RichMarkdown(
-                    entry.text,
-                    code_theme=_PANEL_CODE_THEME,  # type: ignore[arg-type]
+            text_top = 0 if entry.reasoning else top
+            pieces.append(
+                (
+                    Padding(assistant_markdown(entry.text), (text_top, 2, 1, 2)),
+                    "body",
                 )
             )
-        top = 1 if previous_kind == "tool" else 0
-        return Padding(Group(*blocks), (top, 2, 1, 2))
+        return pieces
+
+    def _render_strips(self, renderable: RenderableType) -> list[Strip]:
+        """Render one piece at the content width, mirroring ``RichLog.write``."""
+        console = self.app.console
+        render_width = max(self.scrollable_content_region.width, self.min_width)
+        options = console.options.update_width(render_width)
+        segments = console.render(renderable, options)
+        strips = [
+            strip.adjust_cell_length(render_width)
+            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+        ]
+        return strips or [Strip.blank(render_width)]
+
+    def _append_strips(self, strips: list[Strip]) -> None:
+        self.lines.extend(strips)
+        self._widest_line_width = max(
+            self._widest_line_width,
+            max(strip.cell_length for strip in strips),
+        )
+        self.virtual_size = Size(self._widest_line_width, len(self.lines))
+
+    def _rebuild_lines(self) -> None:
+        """Rebuild the visible line space from pieces; strips are reused as-is."""
+        self._line_cache.clear()
+        lines: list[Strip] = []
+        user_lines: list[int] = []
+        widest = 0
+        for piece in self._pieces:
+            if piece.tag == "user":
+                user_lines.append(len(lines))
+            widest = max(widest, max(strip.cell_length for strip in piece.strips))
+            lines.extend(piece.strips)
+        self.lines = lines
+        self._user_lines = tuple(user_lines)
+        self._widest_line_width = widest
+        self.virtual_size = Size(widest, len(lines))
+        self.refresh()

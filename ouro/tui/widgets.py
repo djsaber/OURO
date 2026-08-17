@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from math import ceil
 from time import monotonic
-from typing import Literal, Protocol
+from typing import Literal
 
 from pydantic import JsonValue
 from rich.text import Text
@@ -18,7 +18,7 @@ from textual.geometry import Region, Size
 from textual.layout import DockArrangeResult
 from textual.message import Message
 from textual.timer import Timer
-from textual.widgets import Label, Markdown, Static, TextArea
+from textual.widgets import Label, Static, TextArea
 
 from ouro import __version__
 from ouro.application.queued_inputs import (
@@ -38,7 +38,13 @@ from ouro.core.messages import MessageRecord
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
-from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.conversation_history import (
+    AssistantMarkdownStream,
+    ConversationHistory,
+    TranscriptEntry,
+    assistant_markdown,
+    split_markdown_blocks,
+)
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.text_inputs import TuiTextArea
@@ -117,12 +123,6 @@ def _compact_count(value: int) -> str:
             precision = 0 if scaled >= 100 else 1
             return f"{scaled:.{precision}f}{suffix}"
     return str(value)
-
-
-class _MarkdownWriter(Protocol):
-    async def write(self, markdown_fragment: str) -> None: ...
-
-    async def stop(self) -> None: ...
 
 
 class BrandHeader(Static):
@@ -327,12 +327,16 @@ class ReasoningView(Vertical):
 
 
 class AssistantTurn(Vertical):
+    """Live region for one model round: reasoning plus the trailing markdown block.
+
+    Completed top-level blocks freeze into the history buffer as soon as they
+    terminate; this widget re-renders only the trailing block, so per-flush
+    cost stays bounded by one block instead of the whole answer.
+    """
+
     def __init__(
         self,
         *,
-        initial: str = "",
-        reasoning: str = "",
-        reasoning_seconds: float | None = None,
         run_id: str | None = None,
         after_tool: bool = False,
         reasoning_expanded: bool = True,
@@ -340,33 +344,47 @@ class AssistantTurn(Vertical):
         classes = "turn assistant-turn after-tool" if after_tool else "turn assistant-turn"
         super().__init__(classes=classes)
         self.run_id = run_id
-        self.reasoning = ReasoningView(
-            initial=reasoning,
-            duration_seconds=reasoning_seconds,
-            expanded=reasoning_expanded,
-        )
-        self.markdown = Markdown(initial, classes="assistant-markdown")
-        self._stream: _MarkdownWriter | None = None
+        self.reasoning = ReasoningView(expanded=reasoning_expanded)
+        self.tail = Static(classes="assistant-markdown")
+        self._stream = AssistantMarkdownStream()
+        self._reasoning_pending = True
 
     def compose(self) -> ComposeResult:
         yield self.reasoning
-        yield self.markdown
+        yield self.tail
 
-    async def on_unmount(self) -> None:
-        await self.finish()
+    @property
+    def source(self) -> str:
+        return self._stream.source
 
-    async def append(self, text: str) -> None:
+    @property
+    def has_text(self) -> bool:
+        return bool(self._stream.source)
+
+    @property
+    def reasoning_pending(self) -> bool:
+        return self._reasoning_pending
+
+    def feed(self, text: str) -> tuple[str, ...]:
+        """Accumulate streamed markdown; return blocks ready to freeze."""
         if not text:
-            return
+            return ()
         self.reasoning.finish()
-        if self._stream is None:
-            self._stream = Markdown.get_stream(self.markdown)
-        await self._stream.write(text)
+        blocks, tail = self._stream.feed(text)
+        self._render_tail(tail)
+        return blocks
 
-    async def finish(self) -> None:
-        if self._stream is not None:
-            await self._stream.stop()
-            self._stream = None
+    def close(self) -> tuple[str, ...]:
+        """Freeze the trailing block along with the round."""
+        blocks = self._stream.close()
+        self._render_tail("")
+        return blocks
+
+    def take_reasoning(self) -> tuple[str, float | None]:
+        """Detach the live reasoning block for immutable rendering."""
+        self._reasoning_pending = False
+        self.reasoning.display = False
+        return self.reasoning.text, self.reasoning.duration_seconds
 
     async def append_reasoning(self, text: str, *, started_at: datetime | None = None) -> None:
         await self.reasoning.append(text, started_at=started_at)
@@ -376,6 +394,11 @@ class AssistantTurn(Vertical):
 
     def set_reasoning_expanded(self, expanded: bool) -> None:
         self.reasoning.set_expanded(expanded)
+
+    def _render_tail(self, text: str) -> None:
+        self.tail.display = bool(text)
+        if text:
+            self.tail.update(assistant_markdown(text))
 
 
 def _completed_reasoning_label(duration_seconds: float | None) -> str:
@@ -941,9 +964,11 @@ class ConversationView(VerticalScroll):
         if self._reasoning_expanded == expanded:
             return
         self._reasoning_expanded = expanded
-        self._history.set_reasoning_expanded(expanded)
+        delta = self._history.set_reasoning_expanded(expanded, above_line=round(self.scroll_y))
         if self._assistant is not None:
             self._assistant.set_reasoning_expanded(expanded)
+        if delta and not self._follow_tail:
+            self.scroll_to(y=max(0.0, self.scroll_y + delta), animate=False, immediate=True)
 
     async def load_messages(
         self,
@@ -987,17 +1012,27 @@ class ConversationView(VerticalScroll):
             elif message.role == "assistant":
                 text = message.text_content
                 request = requests.get(message.message_id)
-                if text or message.reasoning_content:
+                if message.reasoning_content:
                     append_entry(
                         message_index,
                         TranscriptEntry(
                             kind="assistant",
-                            text=text,
                             reasoning=message.reasoning_content,
                             run_id=message.run_id,
                             reasoning_seconds=(
                                 request.reasoning_seconds if request is not None else None
                             ),
+                        ),
+                    )
+                # Reloaded messages split into the same top-level blocks that
+                # streaming froze, so live and reloaded rendering stay identical.
+                for block in split_markdown_blocks(text):
+                    append_entry(
+                        message_index,
+                        TranscriptEntry(
+                            kind="assistant",
+                            text=block,
+                            run_id=message.run_id,
                         ),
                     )
                 for call in message.tool_calls:
@@ -1049,9 +1084,8 @@ class ConversationView(VerticalScroll):
             self.anchor()
             return
 
-        self._history.replace(transcript)
         self._set_showing_welcome(False)
-        await self._history.wait_until_rendered()
+        await self._history.load(transcript)
         self.anchor()
 
     async def _clear_live_transcript(self) -> None:
@@ -1101,17 +1135,9 @@ class ConversationView(VerticalScroll):
 
     async def append_assistant(self, text: str) -> None:
         await self._dismiss_welcome()
-        if self._assistant is None:
-            self._assistant = AssistantTurn(
-                run_id=self._current_run_id,
-                after_tool=self._history_ends_with_tool,
-                reasoning_expanded=self._reasoning_expanded,
-            )
-            await self._transcript.mount(self._assistant)
-        await self._assistant.append(text)
-
-    def begin_model_request(self, *, run_id: str | None) -> None:
-        self._current_run_id = run_id
+        turn = await self._ensure_turn()
+        for block in turn.feed(text):
+            await self._freeze_block(turn, block)
 
     async def append_reasoning(
         self,
@@ -1120,6 +1146,14 @@ class ConversationView(VerticalScroll):
         started_at: datetime | None = None,
     ) -> None:
         await self._dismiss_welcome()
+        if self._assistant is not None and self._assistant.has_text:
+            # Reasoning after answer text starts a new model round; the previous
+            # round must freeze before the new one renders below it.
+            await self.finish_assistant()
+        turn = await self._ensure_turn()
+        await turn.append_reasoning(text, started_at=started_at)
+
+    async def _ensure_turn(self) -> AssistantTurn:
         if self._assistant is None:
             self._assistant = AssistantTurn(
                 run_id=self._current_run_id,
@@ -1127,7 +1161,45 @@ class ConversationView(VerticalScroll):
                 reasoning_expanded=self._reasoning_expanded,
             )
             await self._transcript.mount(self._assistant)
-        await self._assistant.append_reasoning(text, started_at=started_at)
+        return self._assistant
+
+    async def _freeze_block(self, turn: AssistantTurn, block: str) -> None:
+        """Freeze one completed block, promoting pending reasoning ahead of it."""
+        if not block.strip():
+            return
+        if turn.reasoning_pending:
+            reasoning, seconds = turn.take_reasoning()
+            if reasoning:
+                self._history.append(
+                    TranscriptEntry(
+                        kind="assistant",
+                        reasoning=reasoning,
+                        reasoning_seconds=seconds,
+                        run_id=turn.run_id,
+                    )
+                )
+        self._history.append(TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id))
+
+    async def finish_assistant(self) -> None:
+        """Freeze the live round into the immutable history."""
+        turn = self._assistant
+        if turn is None:
+            return
+        for block in turn.close():
+            await self._freeze_block(turn, block)
+        if turn.reasoning_pending:
+            reasoning, seconds = turn.take_reasoning()
+            if reasoning:
+                self._history.append(
+                    TranscriptEntry(
+                        kind="assistant",
+                        reasoning=reasoning,
+                        reasoning_seconds=seconds,
+                        run_id=turn.run_id,
+                    )
+                )
+        self._assistant = None
+        await turn.remove()
 
     @property
     def _history_ends_with_tool(self) -> bool:
@@ -1138,25 +1210,8 @@ class ConversationView(VerticalScroll):
         if self._assistant is not None:
             self._assistant.finish_reasoning(duration_seconds)
 
-    async def finish_assistant(self) -> None:
-        assistant = self._assistant
-        if assistant is None:
-            return
-        await assistant.finish()
-        text = assistant.markdown.source
-        reasoning = assistant.reasoning.text
-        if text or reasoning:
-            self._history.append(
-                TranscriptEntry(
-                    kind="assistant",
-                    text=text,
-                    reasoning=reasoning,
-                    run_id=assistant.run_id,
-                    reasoning_seconds=assistant.reasoning.duration_seconds,
-                )
-            )
-        self._assistant = None
-        await assistant.remove()
+    def begin_model_request(self, *, run_id: str | None) -> None:
+        self._current_run_id = run_id
 
     async def add_run_summary(self, run: RunPresentation) -> None:
         if run.duration_seconds is None or run.run_id in self._presented_run_ids:

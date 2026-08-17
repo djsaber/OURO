@@ -15,7 +15,6 @@ from textual.color import Color
 from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Region
 from textual.widgets import Input, OptionList, Static, TextArea
-from textual.widgets.markdown import MarkdownFence
 
 from ouro import __version__
 from ouro.application.agent_models import AgentToolOptionView
@@ -1490,9 +1489,26 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
         assert header.render().plain == " ▣ OURO New session"
         assert f"v{__version__}" not in header.render().plain
-        code_fence = conversation.query_one(MarkdownFence)
-        assert code_fence.styles.background == composer.styles.background
         await conversation.add_notice("Status changed")
+        # Fenced code keeps the shared panel surface (#171717) through the same
+        # code theme in both the live tail and the frozen history buffer.
+        history = conversation.query_one(ConversationHistory)
+        panel_triplet = (23, 23, 23)
+        code_strips = [strip for strip in history.lines if "print" in strip.text]
+        assert code_strips
+        assert all(
+            segment.style is not None
+            and segment.style.bgcolor is not None
+            and (
+                segment.style.bgcolor.triplet.red,
+                segment.style.bgcolor.triplet.green,
+                segment.style.bgcolor.triplet.blue,
+            )
+            == panel_triplet
+            for strip in code_strips
+            for segment in strip
+            if segment.text.strip()
+        )
         assert not welcome.has_class("welcome-page")
         assert header.display
         assert composer.region.x == conversation.content_region.x
@@ -2448,7 +2464,7 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
             assert app._projection is not None
             assert app._projection.assistant_text == "first "
             assert app._projection.activity.status != "completed"
-            assert app.query_one(AssistantTurn).markdown.source == "first "
+            assert app.query_one(AssistantTurn).source == "first "
         finally:
             provider.release.set()
         await pilot.pause(0.5)
@@ -2743,22 +2759,31 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
             assert turn.reasoning.text == "Inspecting "
             assert turn.reasoning.label.render().plain.startswith("THINKING · ")
             assert turn.reasoning.label.render().plain.endswith("s")
-            assert turn.markdown.source == ""
+            assert turn.source == ""
         finally:
             provider.release.set()
         await pilot.pause(0.5)
 
         history = app.query_one(ConversationHistory)
-        answer = next(entry for entry in reversed(history.entries) if entry.kind == "assistant")
-        assert answer.reasoning == "Inspecting the event path."
+        thought = next(
+            entry
+            for entry in reversed(history.entries)
+            if entry.kind == "assistant" and entry.reasoning
+        )
+        answer = next(
+            entry
+            for entry in reversed(history.entries)
+            if entry.kind == "assistant" and entry.text
+        )
+        assert thought.reasoning == "Inspecting the event path."
         assert answer.text == "Done."
         assert "│ Inspecting the event path." in history.rendered_text
-        assert answer.reasoning_seconds is not None and answer.reasoning_seconds > 0
+        assert thought.reasoning_seconds is not None and thought.reasoning_seconds > 0
         summary = next(entry for entry in reversed(history.entries) if entry.kind == "run")
         assert summary.run is not None
         assert summary.run.model == "blocking"
         assert summary.run.duration_seconds is not None
-        assert summary.run.duration_seconds >= answer.reasoning_seconds
+        assert summary.run.duration_seconds >= thought.reasoning_seconds
         assert "THOUGHT · " in history.rendered_text
         assert "blocking" in history.rendered_text
         assert app._projection is not None
@@ -2770,14 +2795,16 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
         await pilot.pause()
 
         restored = app.query_one(ConversationHistory)
-        restored_answer = next(
-            entry for entry in reversed(restored.entries) if entry.kind == "assistant"
+        restored_thought = next(
+            entry
+            for entry in reversed(restored.entries)
+            if entry.kind == "assistant" and entry.reasoning
         )
         restored_summary = next(
             entry for entry in reversed(restored.entries) if entry.kind == "run"
         )
-        assert restored_answer.reasoning_seconds == pytest.approx(
-            answer.reasoning_seconds,
+        assert restored_thought.reasoning_seconds == pytest.approx(
+            thought.reasoning_seconds,
             abs=0.02,
         )
         assert restored_summary.run is not None
@@ -2810,11 +2837,12 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         await pilot.pause()
 
         history = app.query_one(ConversationHistory)
-        assert len(history.entries) == 1
-        entry = history.entries[0]
-        assert entry.kind == "assistant"
-        assert entry.reasoning == reasoning_text
-        assert entry.text == "Final answer"
+        assert len(history.entries) == 2
+        thought, answer = history.entries
+        assert thought.kind == "assistant"
+        assert thought.reasoning == reasoning_text
+        assert answer.kind == "assistant"
+        assert answer.text == "Final answer"
         rendered_lines = history.rendered_text.splitlines()
         thought_line = next(
             index for index, line in enumerate(rendered_lines) if line.strip() == "THOUGHT"
@@ -2890,7 +2918,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await conversation.append_assistant("Live final answer")
         await pilot.pause()
         live_turn = app.query_one(AssistantTurn)
-        assert live_turn.markdown.region.y == live_reasoning.label.region.bottom + 1
+        assert live_turn.tail.region.y == live_reasoning.label.region.bottom + 1
 
         await app._set_tui_theme("harbor")
         assert preferences.load() == TuiPreferences(
@@ -2953,7 +2981,9 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
-        thoughts = [entry for entry in history.entries if entry.kind == "assistant"]
+        thoughts = [
+            entry for entry in history.entries if entry.kind == "assistant" and entry.reasoning
+        ]
         summaries = [entry for entry in history.entries if entry.kind == "run"]
         assert [entry.reasoning_seconds for entry in thoughts] == [0.5, 0.5]
         assert len(summaries) == 1
@@ -2963,6 +2993,53 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert history.rendered_text.count("THOUGHT · 500ms") == 2
         assert "chat-endpoint" in history.rendered_text
         assert "3.0s" in history.rendered_text
+
+
+@pytest.mark.asyncio
+async def test_reloaded_history_renders_identically_to_streamed_output(
+    tmp_path: Path,
+) -> None:
+    answer = (
+        "Here is the plan:\n\n- step one\n- step two\n\n## Details\n\n"
+        "```python\nx = 1\n```\n\n| col | val |\n| --- | --- |\n| a | 1 |\n\n"
+        "> quoted\n\nSetext Title\n============\n\nFinal paragraph.\n"
+    )
+    fragments = answer.split("\n\n")
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 40)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("Question")
+        for index, fragment in enumerate(fragments):
+            separator = "\n\n" if index < len(fragments) - 1 else ""
+            await conversation.append_assistant(fragment + separator)
+            await pilot.pause()
+        await conversation.finish_assistant()
+        await pilot.pause()
+        streamed = conversation.query_one(ConversationHistory).rendered_text
+        assert "step one" in streamed
+        assert "Setext Title" in streamed
+        assert "Final paragraph." in streamed
+
+        messages = (
+            MessageRecord(
+                session_id="ses_consistency",
+                role="user",
+                content=[TextContent(text="Question")],
+            ),
+            MessageRecord(
+                session_id="ses_consistency",
+                role="assistant",
+                content=[TextContent(text=answer)],
+                run_id="run_consistency",
+            ),
+        )
+        await conversation.load_messages(messages)
+        await pilot.pause()
+        reloaded = conversation.query_one(ConversationHistory).rendered_text
+
+        assert reloaded == streamed
 
 
 @pytest.mark.asyncio
@@ -3127,7 +3204,9 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
         await pilot.pause()
 
         history = conversation.query_one(ConversationHistory)
-        assert len(history.entries) == len(messages)
+        # Assistant messages with reasoning split into a reasoning entry plus
+        # one entry per markdown block: 200 user + 200 reasoning + 200 text.
+        assert len(history.entries) == 600
         assert len(list(conversation.query("*"))) == 2
 
 
@@ -3583,7 +3662,7 @@ async def test_reasoning_burst_cannot_starve_live_text_rendering(tmp_path: Path)
             projection_text = app._projection.assistant_text
             activity_status = app._projection.activity.status
             turns = app.query(AssistantTurn)
-            markdown_source = turns.last().markdown.source if turns else ""
+            markdown_source = turns.last().source if turns else ""
             events = application.runtime.sessions.event_page(
                 app._projection.session_id,
                 cursor=0,

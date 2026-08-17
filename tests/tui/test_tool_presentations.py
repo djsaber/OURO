@@ -186,7 +186,7 @@ async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> No
     app = _HistoryApp()
 
     async with app.run_test(size=(100, 30)):
-        app.history.set_reasoning_expanded(False)
+        app.history.set_reasoning_expanded(False, above_line=0)
         app.history.append(TranscriptEntry(kind="assistant", reasoning="Inspect the target first."))
         app.history.append(TranscriptEntry(kind="tool", tool=tool))
         await app.history.wait_until_rendered()

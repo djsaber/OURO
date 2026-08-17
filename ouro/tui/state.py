@@ -136,7 +136,6 @@ class ProjectionUpdate:
     reasoning_delta: str = ""
     reasoning_started_at: datetime | None = None
     reasoning_duration_seconds: float | None = None
-    round_break: bool = False
     pending_interaction: PendingInteraction | None = None
     interaction_changed: bool = False
     diagnostic: str | None = None
@@ -211,7 +210,6 @@ class TuiSessionProjection:
         reasoning_delta = ""
         reasoning_started_at = None
         reasoning_duration_seconds = None
-        round_break = False
         interaction_changed = False
         diagnostic = None
 
@@ -243,7 +241,6 @@ class TuiSessionProjection:
             reasoning_duration_seconds = self._finish_reasoning(event.created_at)
         elif event.event_type == "model_message_completed":
             reasoning_duration_seconds = self._finish_reasoning(event.created_at)
-            round_break = _positive_int(payload.get("tool_call_count"))
         elif event.event_type == "approval_requested" and event.run_id is not None:
             tool_call_id = _string(payload.get("tool_call_id"))
             approval_id = _string(payload.get("approval_id"))
@@ -308,7 +305,6 @@ class TuiSessionProjection:
             reasoning_delta=reasoning_delta,
             reasoning_started_at=reasoning_started_at,
             reasoning_duration_seconds=reasoning_duration_seconds,
-            round_break=round_break,
             pending_interaction=self.pending_interaction,
             interaction_changed=interaction_changed,
             diagnostic=diagnostic,
@@ -358,10 +354,6 @@ def project_agent_interaction(interaction: AgentInteractionView) -> PendingInter
 
 def _string(value: object) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _positive_int(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 def _plugin_class(value: object) -> Literal["builtin", "user"] | None:
