@@ -4403,6 +4403,75 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_status_line_shows_thinking_when_enabled_without_effort(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(ActivityIndicator)
+        # The endpoint default resolves to enabled + low, shown as "low".
+        assert indicator._reasoning == "low"
+
+        # Switching to enabled without an effort shows the generic "thinking".
+        await pilot.press("slash", *"thinking", "enter", *"enabled", "enter")
+        await pilot.pause()
+        assert indicator._reasoning == "thinking"
+        assert indicator._reasoning_peak is False
+        assert "thinking" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_status_line_hides_thinking_when_disabled(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(ActivityIndicator)
+        active_separator_count = indicator.render().plain.count(" • ")
+
+        await pilot.press("slash", *"thinking", "enter", *"disabled", "enter")
+        await pilot.pause()
+        assert indicator._reasoning is None
+        # Disabling reasoning removes the trailing separator so the status line
+        # shows only the activity, approval mode, and model endpoint.
+        assert indicator.render().plain.count(" • ") == active_separator_count - 1
+
+
+@pytest.mark.asyncio
+async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> None:
+    # An endpoint whose default is disabled shows nothing under a default intent.
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(),
+            ModelMetadata(
+                model_id="thinking-model",
+                provider_id="faux",
+                reasoning=ReasoningCapability(
+                    activation="toggle",
+                    supported_efforts=("low", "high"),
+                    default=ReasoningRequest(mode="disabled"),
+                    output="summary",
+                ),
+            ),
+        ),
+        tools=ToolRegistry(),
+        default_workspace=tmp_path,
+        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
+    )
+    app = OuroTuiApp(application=LocalApplication.from_runtime(runtime))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        indicator = app.query_one(ActivityIndicator)
+        # The default intent resolves to the endpoint's disabled default, so the
+        # thinking indicator stays hidden.
+        assert indicator._reasoning is None
+
+
+@pytest.mark.asyncio
 async def test_actions_groups_granular_settings_by_function_without_descriptions(
     tmp_path: Path,
 ) -> None:

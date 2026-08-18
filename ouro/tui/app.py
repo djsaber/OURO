@@ -1037,12 +1037,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         status_line.set_activity("idle")
 
     def _apply_reasoning_state(self, state: ModelReasoningState) -> None:
-        """Project the effective thinking level onto the status line."""
+        """Project the effective thinking level onto the status line.
+
+        The label appears only when reasoning is effectively on. An enabled
+        intent without an effort is shown as ``thinking``; ``disabled`` and
+        unresolved ``default`` intents hide the indicator so the status line
+        falls back to the model endpoint alone.
+        """
         self._reasoning_state = state
-        if state.capability.activation == "unsupported":
+        if state.capability.activation == "unsupported" or state.effective.mode != "enabled":
             value, peak = None, False
         else:
-            value = _reasoning_value(state.effective)
+            value = state.effective.effort or "thinking"
             peak = _reasoning_peak(state)
         self.query_one(StatusLine).set_reasoning(value, peak=peak)
 
