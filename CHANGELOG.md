@@ -18,6 +18,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- OpenAI-compatible reasoning decoding now accepts both DeepSeek-style `reasoning_content` and the
+  bare `reasoning` response field used by OpenRouter-style vendors, for streaming deltas and
+  non-streaming messages alike (string or block-array shapes, `reasoning_content` first), with
+  tool-call continuation replay still canonicalized to `reasoning_content`.
 - Ten restrained, persistent TUI accent palettes selectable and keyboard-previewable from the
   Actions menu, with live synchronization across CSS chrome and Rich-text status content in a
   frontend-owned preference file.

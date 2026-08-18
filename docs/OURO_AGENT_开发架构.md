@@ -318,7 +318,10 @@ Endpoint capability gate 约束，重试计划通过 durable runtime event 暴�
 
 模型思考使用四段式边界：core 的 `ReasoningRequest` 表达统一意图，Endpoint 的 `ReasoningCapability` 表达
 真实能力，config 的 `ReasoningProfileConfig` 声明解析后 variant 对应的原生请求片段，provider encoder 只负责编码。
-解析严格拒绝不支持的开关和 effort，不在厂商等级之间近似。可展示 reasoning 与工具续接状态分开建模；
+解析严格拒绝不支持的开关和 effort，不在厂商等级之间近似。OpenAI 协议解码思考文本时同时接受
+DeepSeek 风格 `reasoning_content` 与 OpenRouter 风格裸 `reasoning` 两种响应字段（流式 delta 与非流式
+message 一致，`reasoning_content` 优先），续接回放统一规范化为 `reasoning_content`。可展示 reasoning
+与工具续接状态分开建模；
 续接状态使用路由绑定的 `ProviderContinuationArtifact`，OpenAI-compatible 只回放声明过的
 `reasoning_content` 文本，Anthropic 只在工具续接时原样回放同 provider/protocol/model 的签名 thinking blocks。
 

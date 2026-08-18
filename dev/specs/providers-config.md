@@ -211,7 +211,9 @@ OpenAI-compatible 实现负责：
 
 - system message、普通内容、vision、tool history 和声明式 reasoning profile 编码；
 - 普通 JSON 与 SSE transport；
-- usage、tool call、reasoning 和错误响应解码；
+- usage、tool call、reasoning 和错误响应解码；思考文本同时接受 DeepSeek 风格 `reasoning_content` 与
+  OpenRouter 风格裸 `reasoning` 两种响应字段（流式 delta 与非流式 message 一致，`reasoning_content` 优先，
+  两者均支持字符串或 block 数组形态），continuation 回放统一规范化为 `reasoning_content`；
 - 外部流缺失 tool index 时按块位置处理；
 - 不符合 Endpoint 能力的 image/tool response 明确报错。
 

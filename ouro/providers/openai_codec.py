@@ -145,8 +145,26 @@ def _content_to_text(content: object) -> str:
     return "".join(parts)
 
 
+_REASONING_FIELDS = ("reasoning_content", "reasoning")
+
+
+def _reasoning_field_value(payload: Mapping[str, Any]) -> object | None:
+    """Pick the reasoning payload from an OpenAI-protocol message or delta.
+
+    OpenAI-compatible vendors split across two field conventions: DeepSeek-style
+    `reasoning_content` and the bare `reasoning` used by OpenRouter and others.
+    Both accept the string-or-blocks shapes of _reasoning_content_to_text(); the
+    first field that yields non-empty text wins.
+    """
+    for field in _REASONING_FIELDS:
+        value = payload.get(field)
+        if _reasoning_content_to_text(value):
+            return value
+    return None
+
+
 def _reasoning_content_to_text(reasoning_content: object) -> str:
-    """Extract reasoning text from a message/delta reasoning_content field.
+    """Extract reasoning text from a message/delta reasoning field value.
 
     Providers such as DeepSeek return reasoning_content as either a plain string
     or an array of content blocks. This helper mirrors _content_to_text() so

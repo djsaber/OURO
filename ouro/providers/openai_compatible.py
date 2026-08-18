@@ -23,6 +23,7 @@ from ouro.providers.openai_codec import (
     _first_choice,
     _message_to_openai,
     _reasoning_content_to_text,
+    _reasoning_field_value,
     _tool_call_deltas,
     _tool_calls_from_message,
     _tool_to_openai,
@@ -258,7 +259,7 @@ class OpenAICompatibleProvider:
             yield ProviderStreamEvent(type="error", error="provider response message is invalid")
             return
 
-        raw_reasoning = message.get("reasoning_content")
+        raw_reasoning = _reasoning_field_value(message)
         reasoning = _reasoning_content_to_text(raw_reasoning)
         if model.reasoning.output not in {"summary", "text"}:
             reasoning = ""
@@ -341,7 +342,7 @@ class OpenAICompatibleProvider:
             if not isinstance(delta, Mapping):
                 continue
 
-            reasoning = _reasoning_content_to_text(delta.get("reasoning_content"))
+            reasoning = _reasoning_content_to_text(_reasoning_field_value(delta))
             if reasoning:
                 if model.reasoning.continuation == "text":
                     continuation_reasoning.append(reasoning)
