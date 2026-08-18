@@ -19,6 +19,7 @@
 | [核心运行时](core-runtime.md) | Session/Run/turn、inner loop、状态转换、取消与排队输入 | `ouro/core`、`ouro/application/runtime.py` |
 | [会话与持久化](sessions-persistence.md) | SessionStore、本地布局、索引、锁、恢复、分支与回收站 | `ouro/sessions`、`ouro/application/sessions.py` |
 | [Provider 与配置](providers-config.md) | Provider/Endpoint、模型路由、凭据、配置结构与覆盖规则 | `ouro/config`、`ouro/providers` |
+| [供应商模板本地化](provider-templates-local.md) | 本地模板文件、结构/修订双维版本、指纹修改感知、自动升级与结构迁移 | `ouro/config/provider_template_store.py`、`ouro/config/provider_templates.py` |
 | [供应商类型与协议类型拆分](provider-type-protocol.md) | 集成厂商/通用配置类型、线协议、实例 id 与冲突策略 | `ouro/config`、`ouro/providers`、`ouro/cli` |
 | [工具与人机协同](tools-hitl.md) | 工具契约、权限、批执行、审批、AskUser 和进程取消 | `ouro/tools`、`ouro/application/tool_calls.py` |
 | [上下文与压缩](context-compaction.md) | ContextView、原子帧、预算、摘要、投影与 lineage | `ouro/core/context.py`、`ouro/application/compaction.py` |

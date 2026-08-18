@@ -42,6 +42,7 @@ from ouro.cli.provider_commands import (
     mutate_provider_config,
     remove_provider_config,
     remove_provider_endpoint,
+    restore_provider_template,
     set_provider_endpoint,
     show_provider_config,
     show_provider_endpoint,
@@ -528,6 +529,8 @@ def _provider_command(args: argparse.Namespace) -> int:
         return show_provider_config(args.provider_id, home=home, json_mode=args.json)
     if args.provider_command == "templates":
         return list_provider_templates(args.template_id, home=home, json_mode=args.json)
+    if args.provider_command == "restore-template":
+        return restore_provider_template(args.template_id, home=home, json_mode=args.json)
     if args.provider_command in {"add", "update", "replace"}:
         return mutate_provider_config(
             args.provider_command,

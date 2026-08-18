@@ -43,6 +43,11 @@ from ouro.config.provider_templates import (
     get_provider_template,
     provider_templates,
 )
+from ouro.config.provider_template_store import (
+    ProviderTemplateCatalogSnapshot,
+    ProviderTemplateEntry,
+    ProviderTemplateStore,
+)
 from ouro.config.providers import ProviderConfigManager
 from ouro.config.queued_inputs import (
     QueuedInputConfig,
@@ -95,6 +100,9 @@ __all__ = [
     "ReasoningProfileConfig",
     "REASONING_PRESETS",
     "ProviderTemplate",
+    "ProviderTemplateCatalogSnapshot",
+    "ProviderTemplateEntry",
+    "ProviderTemplateStore",
     "BUILTIN_FAUX_PROVIDER_ID",
     "INTEGRATED_PROVIDER_TYPES",
     "PromptConfigManager",

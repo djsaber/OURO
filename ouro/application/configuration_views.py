@@ -103,7 +103,11 @@ def endpoint_catalog_view(
     )
 
 
-def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
+def provider_template_view(
+    template: ProviderTemplate,
+    *,
+    deprecated: bool = False,
+) -> ProviderTemplateView:
     return ProviderTemplateView(
         template_id=template.template_id,
         display_name=template.display_name,
@@ -121,6 +125,7 @@ def provider_template_view(template: ProviderTemplate) -> ProviderTemplateView:
         ],
         documentation_url=template.documentation_url,
         verified_on=template.verified_on,
+        deprecated=deprecated,
     )
 
 

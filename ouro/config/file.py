@@ -14,13 +14,13 @@ from ouro.local_locks import FileMutationLock
 
 
 class JsonConfigFile:
-    """Read and atomically replace Ouro's shared JSON configuration file."""
+    """Read and atomically replace one of Ouro's JSON configuration files."""
 
-    def __init__(self, root: str | Path | None = None) -> None:
+    def __init__(self, root: str | Path | None = None, *, name: str = "config.json") -> None:
         root_value = root if root is not None else os.environ.get("OURO_HOME")
         self.root = Path(root_value) if root_value is not None else Path.home() / ".ouro"
-        self.path = self.root / "config" / "config.json"
-        self._lock_path = self.root / "locks" / "config-mutations.lock"
+        self.path = self.root / "config" / name
+        self._lock_path = self.root / "locks" / f"{Path(name).stem}-mutations.lock"
 
     def read(self) -> dict[str, Any]:
         if not self.path.exists():

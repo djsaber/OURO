@@ -61,15 +61,12 @@ from ouro.config import (
     PromptConfigManager,
     ProviderConfig,
     ProviderConfigManager,
+    ProviderTemplateStore,
     ProviderType,
     QueuedInputConfigManager,
     QueuedInputConsumptionMode,
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
-    get_provider_template,
-)
-from ouro.config import (
-    provider_templates as available_provider_templates,
 )
 from ouro.config.skills import SkillInstallScope
 from ouro.core.agents import ExecutionMode, LifecycleBinding
@@ -98,6 +95,7 @@ class ConfigurationFacade:
     """Typed configuration use cases shared by CLI and future hosts."""
 
     def __init__(self, root: str | Path | None = None) -> None:
+        self.provider_templates = ProviderTemplateStore(root)
         self.providers = ProviderConfigManager(root)
         self.prompts = PromptConfigManager(root)
         self.permissions = PermissionConfigManager(root)
@@ -239,14 +237,22 @@ class ConfigurationFacade:
         )
 
     def provider_template_catalog(self) -> ProviderTemplateCatalogView:
+        snapshot = self.provider_templates.catalog()
         return ProviderTemplateCatalogView(
             templates=[
-                provider_template_view(template) for template in available_provider_templates()
-            ]
+                provider_template_view(entry.template, deprecated=entry.deprecated)
+                for entry in snapshot.entries
+                if entry.enabled
+            ],
+            notices=list(snapshot.notices),
         )
 
     def provider_template(self, template_id: str) -> ProviderTemplateView:
-        return provider_template_view(get_provider_template(template_id))
+        entry = self.provider_templates.get_entry(template_id)
+        return provider_template_view(entry.template, deprecated=entry.deprecated)
+
+    def restore_provider_template(self, template_id: str) -> ProviderTemplateView:
+        return provider_template_view(self.provider_templates.restore(template_id))
 
     def add_provider(
         self,
@@ -279,7 +285,7 @@ class ConfigurationFacade:
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
             self.providers.create_from_template(
-                get_provider_template(provider_type),
+                self.provider_templates.get(provider_type),
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,
@@ -345,7 +351,7 @@ class ConfigurationFacade:
         current = self._require_provider(provider_id)
         if current.provider_type in INTEGRATED_PROVIDER_TYPES:
             self.providers.update_from_template(
-                get_provider_template(current.provider_type),
+                self.provider_templates.get(current.provider_type),
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,
@@ -452,7 +458,7 @@ class ConfigurationFacade:
         )
         if provider_type in INTEGRATED_PROVIDER_TYPES:
             self.providers.replace_from_template(
-                get_provider_template(provider_type),
+                self.provider_templates.get(provider_type),
                 provider_id=provider_id,
                 endpoint_id=endpoint_id,
                 model_id=model,

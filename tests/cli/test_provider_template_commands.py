@@ -31,6 +31,43 @@ def test_provider_templates_command_lists_builtin_catalog(capsys) -> None:
     assert kimi["endpoint_count"] == 4
 
 
+def test_provider_templates_command_reports_template_file_notices(
+    tmp_path,
+    capsys,
+) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "provider-templates.json").write_text("{ broken", encoding="utf-8")
+
+    code = main(["provider", "templates", "--home", str(tmp_path), "--json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert {item["template_id"] for item in payload["templates"]} >= {"openai"}
+    assert any("failed to load" in notice for notice in payload["notices"])
+
+
+def test_restore_template_command_drops_local_modifications(tmp_path, capsys) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    assert main(["provider", "templates", "--home", str(tmp_path), "--json"]) == 0
+    capsys.readouterr()
+    path = config_dir / "provider-templates.json"
+    root = json.loads(path.read_text(encoding="utf-8"))
+    root["templates"]["glm"]["display_name"] = "My GLM"
+    path.write_text(json.dumps(root), encoding="utf-8")
+
+    code = main(["provider", "restore-template", "glm", "--home", str(tmp_path), "--json"])
+
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "ok"
+    assert payload["template"]["display_name"] == "Zhipu GLM"
+    restored = json.loads(path.read_text(encoding="utf-8"))
+    assert restored["templates"]["glm"]["display_name"] == "Zhipu GLM"
+
+
 def test_provider_add_integrated_type_persists_complete_default_route(
     tmp_path,
     capsys,

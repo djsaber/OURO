@@ -115,10 +115,11 @@ def list_provider_templates(
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
+        catalog = facade.provider_template_catalog()
         templates = (
             [facade.provider_template(template_id)]
             if template_id is not None
-            else facade.provider_template_catalog().templates
+            else catalog.templates
         )
     except OuroError as exc:
         _print_provider_error(exc, json_mode=json_mode)
@@ -126,20 +127,56 @@ def list_provider_templates(
 
     public = [_template_to_public(template) for template in templates]
     if json_mode:
-        print(json.dumps({"status": "ok", "templates": public}, ensure_ascii=False))
+        print(
+            json.dumps(
+                {"status": "ok", "templates": public, "notices": catalog.notices},
+                ensure_ascii=False,
+            )
+        )
         return 0
 
     lines = ["Provider templates:"]
     for template in public:
         models = ",".join(endpoint["model_id"] for endpoint in template["endpoints"])
+        deprecated = " deprecated" if template.get("deprecated") else ""
         lines.append(
-            f"- {template['template_id']} ({template['display_name']}) "
+            f"- {template['template_id']} ({template['display_name']}){deprecated} "
             f"type={template['provider_type']} protocol={template['protocol']} "
             f"default={template['default_endpoint']} "
             f"endpoints={len(template['endpoints'])} models={models} "
             f"credential=env:{template['credential_env']}"
         )
+    lines.extend(f"! {notice}" for notice in catalog.notices)
     print("\n".join(lines))
+    return 0
+
+
+def restore_provider_template(
+    template_id: str,
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        facade = ConfigurationFacade(home)
+        template = facade.restore_provider_template(template_id)
+    except OuroError as exc:
+        _print_provider_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "template": _template_to_public(template)},
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    print(
+        f"Restored provider template {template.template_id} "
+        f"({template.display_name}) to the inline catalog version."
+    )
     return 0
 
 

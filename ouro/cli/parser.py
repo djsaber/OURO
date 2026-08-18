@@ -955,6 +955,18 @@ then create its model route with 'ouro provider endpoint set'.""",
     provider_templates_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     provider_templates_parser.add_argument("--json", action="store_true", help="Print JSON")
 
+    provider_restore_template_parser = provider_subparsers.add_parser(
+        "restore-template",
+        help="Restore a provider template to the inline catalog version",
+        description=(
+            "Drop local modifications for one provider template in"
+            " provider-templates.json and re-apply the reviewed inline content."
+        ),
+    )
+    provider_restore_template_parser.add_argument("template_id", help="Template id")
+    provider_restore_template_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    provider_restore_template_parser.add_argument("--json", action="store_true", help="Print JSON")
+
     provider_add_parser = provider_subparsers.add_parser(
         "add",
         help="Add a provider; integrated types include preset endpoints",

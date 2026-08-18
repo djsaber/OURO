@@ -120,6 +120,7 @@ class ProviderTemplateView(ApplicationDTO):
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)
     documentation_url: str
     verified_on: str
+    deprecated: bool = False
 
     @property
     def endpoint_count(self) -> int:
@@ -128,6 +129,7 @@ class ProviderTemplateView(ApplicationDTO):
 
 class ProviderTemplateCatalogView(ApplicationDTO):
     templates: list[ProviderTemplateView] = Field(default_factory=list)
+    notices: list[str] = Field(default_factory=list)
 
 
 class SystemPromptConfigView(ApplicationDTO):

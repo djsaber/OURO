@@ -305,6 +305,60 @@ def test_invalid_configuration_mutation_does_not_change_persisted_state(tmp_path
     assert json.loads(config_path.read_text(encoding="utf-8")) == before
 
 
+def test_provider_template_catalog_exposes_deprecated_and_filters_disabled(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import ouro.config.provider_template_store as store_module
+    from ouro.config.provider_templates import provider_templates
+
+    facade = ConfigurationFacade(tmp_path)
+    facade.provider_template_catalog()
+    template_path = tmp_path / "config" / "provider-templates.json"
+    without_mistral = tuple(
+        template for template in provider_templates() if template.template_id != "mistral"
+    )
+    monkeypatch.setattr(
+        store_module, "inline_provider_templates", lambda: without_mistral
+    )
+
+    deprecated = facade.provider_template_catalog()
+    mistral = next(
+        template for template in deprecated.templates if template.template_id == "mistral"
+    )
+    assert mistral.deprecated is True
+    assert any("no longer in the inline" in notice for notice in deprecated.notices)
+
+    monkeypatch.undo()
+    root = json.loads(template_path.read_text(encoding="utf-8"))
+    root["templates"]["openai"]["meta"]["enabled"] = False
+    template_path.write_text(json.dumps(root), encoding="utf-8")
+
+    catalog = facade.provider_template_catalog()
+
+    listed_ids = [template.template_id for template in catalog.templates]
+    assert "openai" not in listed_ids
+    mistral = next(
+        template for template in catalog.templates if template.template_id == "mistral"
+    )
+    assert mistral.deprecated is False
+
+
+def test_restore_provider_template_returns_inline_view(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+    template_path = tmp_path / "config" / "provider-templates.json"
+    facade.provider_template_catalog()
+    root = json.loads(template_path.read_text(encoding="utf-8"))
+    root["templates"]["glm"]["display_name"] = "My GLM"
+    template_path.write_text(json.dumps(root), encoding="utf-8")
+
+    view = facade.restore_provider_template("glm")
+
+    assert view.display_name == "Zhipu GLM"
+    restored = json.loads(template_path.read_text(encoding="utf-8"))
+    assert restored["templates"]["glm"]["display_name"] == "Zhipu GLM"
+
+
 def test_provider_templates_are_typed_and_apply_provider_endpoint_atomically(
     tmp_path,
 ) -> None:

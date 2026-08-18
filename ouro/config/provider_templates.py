@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import ConfigDict, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ouro.config.endpoints import ProviderEndpointConfig
 from ouro.config.provider_models import (
@@ -36,6 +36,7 @@ class ProviderTemplate(OuroModel):
     endpoints: tuple[ProviderEndpointConfig, ...]
     documentation_url: str
     verified_on: str
+    revision: int = Field(default=1, ge=1)
 
     @field_validator("template_id", "provider_id", "credential_env", "default_endpoint")
     @classmethod

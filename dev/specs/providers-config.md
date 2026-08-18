@@ -163,6 +163,11 @@ Mistral 模板暂不声明 reasoning capability。其 reasoning 响应使用嵌�
 当前 OpenAI-compatible continuation 只声明可验证的 `reasoning_content` 文本；Mistral 的嵌套
 `ThinkChunk` 尚未进入该协议契约，因此模板不会默认开启一个只能首轮工作、后续退化的能力。
 
+模板目录以本地文件形式提供：内联目录是唯一真源，首次使用时物化为
+`config/provider-templates.json`，用户可在该文件上修改、新增模板并随内联目录自动升级。
+本地文件化、版本管理、修改感知与自动升级的完整契约见
+[供应商模板本地化](provider-templates-local.md)。
+
 类型与协议的设计约束、组合和 CLI 冲突语义见 [`provider-type-protocol.md`](provider-type-protocol.md)。
 
 ## 模型路由
@@ -235,6 +240,7 @@ timeout/HTTP 状态执行有界退避；一旦已经向上游发出任何模型�
 
 - `tests/config/test_credentials_config.py`
 - `tests/config/test_provider_templates.py`
+- `tests/config/test_provider_template_store.py`
 - `tests/config/test_reasoning_config.py`
 - `tests/core/test_reasoning.py`
 - `tests/providers/test_factory.py`
