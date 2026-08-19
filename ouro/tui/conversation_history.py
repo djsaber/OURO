@@ -19,6 +19,7 @@ from textual.events import Resize
 from textual.geometry import Size
 from textual.selection import Selection
 from textual.strip import Strip
+from textual.widget import Widget
 from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
@@ -290,6 +291,126 @@ def _apply_selection_style(
                 segments.append(Segment(text[local_end:], segment.style))
         position = segment_end
     return Strip(segments, strip.cell_length)
+
+
+class ReasoningLines(Widget):
+    """Append-only strip buffer for one streaming reasoning block.
+
+    Completed source lines render exactly once through the shared reasoning
+    renderable — the same definition the immutable history freezes with — so
+    live and frozen reasoning cannot drift apart. Only the trailing partial
+    line re-renders while it grows, bounding per-flush cost to one line
+    instead of the whole block.
+    """
+
+    can_focus = False
+
+    def __init__(self) -> None:
+        super().__init__(classes="reasoning-lines")
+        self._lines: list[str] = []
+        self._pending = ""
+        self._line_strips: list[Strip] = []
+        self._pending_strips: list[Strip] = []
+        self._rendered_lines = 0
+        self._render_width = 0
+        self._deferred_render = False
+
+    @property
+    def text(self) -> str:
+        """The verbatim stream, including the trailing partial line."""
+        return "".join(f"{line}\n" for line in self._lines) + self._pending
+
+    @property
+    def rendered_text(self) -> str:
+        return "\n".join(
+            strip.text.rstrip() for strip in (*self._line_strips, *self._pending_strips)
+        )
+
+    def append(self, fragment: str) -> None:
+        if not fragment:
+            return
+        self._pending += fragment
+        *completed, self._pending = self._pending.split("\n")
+        self._lines.extend(completed)
+        self._render_updates()
+
+    def on_resize(self, event: Resize) -> None:
+        self._render_updates()
+
+    def get_content_height(self, container: Size, viewport: Size, width: int) -> int:
+        # Strips are counted, not measured: auto height stays O(1) while the
+        # block grows, so sizing the widget never renders its content.
+        if not width:
+            return 0
+        return len(self._line_strips) + len(self._pending_strips)
+
+    def render_line(self, y: int) -> Strip:
+        committed = len(self._line_strips)
+        if y < committed:
+            line = self._line_strips[y]
+        elif y - committed < len(self._pending_strips):
+            line = self._pending_strips[y - committed]
+        else:
+            return Strip.blank(self.size.width or 1)
+        # Pre-rendered strips carry neither selection styling nor Textual's
+        # source-offset metadata, so both are attached per line here.
+        selection = self.text_selection
+        if selection is not None and (span := selection.get_span(y)) is not None:
+            line = _apply_selection_style(
+                line,
+                *span,
+                self.screen.get_component_rich_style("screen--selection", partial=True),
+            )
+        return line.apply_offsets(0, y)
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        return selection.extract(self.rendered_text), "\n"
+
+    def _render_updates(self) -> None:
+        """Render buffered source into strips at the current content width.
+
+        A width change rebuilds every strip (rare); otherwise only newly
+        completed lines and the trailing partial line render, so per-flush
+        work stays proportional to the new text.
+        """
+        width = self.content_region.width
+        if width <= 0:
+            # Not laid out yet (or collapsed): render once layout provides a
+            # width instead of depending on the resize event's timing.
+            if not self._deferred_render and (self._lines or self._pending):
+                self._deferred_render = True
+                self.call_after_refresh(self._render_deferred_updates)
+            return
+        rebuild = width != self._render_width
+        if rebuild:
+            self._render_width = width
+            self._line_strips.clear()
+            self._rendered_lines = 0
+        if not (rebuild or self._rendered_lines < len(self._lines) or self._pending):
+            return
+        for line in self._lines[self._rendered_lines :]:
+            self._line_strips.extend(self._render_source_line(line))
+        self._rendered_lines = len(self._lines)
+        self._pending_strips = self._render_source_line(self._pending) if self._pending else []
+        self.refresh(layout=True)
+
+    def _render_deferred_updates(self) -> None:
+        self._deferred_render = False
+        self._render_updates()
+
+    def _render_source_line(self, line: str) -> list[Strip]:
+        """Render one source line the way the frozen history renders blocks.
+
+        Newline-delimited lines wrap independently, so a per-line render is
+        identical to slicing a whole-block render at the same width.
+        """
+        console = self.app.console
+        options = console.options.update_width(self._render_width)
+        segments = console.render(_ReasoningContent(line), options)
+        return [
+            strip.adjust_cell_length(self._render_width)
+            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+        ]
 
 
 _PieceTag = Literal["body", "user", "reasoning"]

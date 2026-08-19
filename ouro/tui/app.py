@@ -523,14 +523,15 @@ _OURO_TUI_CSS = """
         text-style: bold;
     }
 
-    .reasoning-content {
+    /* The reasoning body carries its │ border inside its strips, matching
+       the immutable history's frozen rendering cell for cell. */
+    .reasoning-lines {
+        width: 1fr;
         height: auto;
-        margin: 1 0 0 1;
-        padding: 0 1;
+        margin: 1 0 0 0;
+        padding: 0 1 0 0;
         color: #8f9aa8;
-        text-style: dim italic;
         background: transparent;
-        border-left: solid #505967;
     }
 
     .tool-row {

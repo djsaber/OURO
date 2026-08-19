@@ -9,11 +9,13 @@ from pathlib import Path
 
 import pytest
 from rich.console import Console
+from rich.segment import Segment
 from rich.text import Text
 from textual import events
 from textual.color import Color
 from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Region
+from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
 from ouro import __version__
@@ -97,6 +99,7 @@ from ouro.tui.controller import (
     TuiProviderConfiguration,
     TuiSystemStatus,
 )
+from ouro.tui.conversation_history import ReasoningLines, _ReasoningContent
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
@@ -2286,13 +2289,134 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         turn = app.query_one(AssistantTurn)
         reasoning = turn.reasoning
         assert reasoning.text == expected
-        assert reasoning._content.render().plain == expected
+        # Strip rendering lands a frame after the mount, so wait for it
+        # rather than asserting against an empty buffer.
+        for _ in range(10):
+            if reasoning._content.rendered_text:
+                break
+            await pilot.pause(0.05)
+        # The live body renders through the same │-prefixed definition the
+        # immutable history freezes with, so markup stays literal text.
+        assert reasoning._content.rendered_text == f"│ {expected}"
         assert reasoning.label.render().plain.startswith("THINKING · ")
         assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
-        assert reasoning._content.region.x > reasoning.label.region.x
+        assert reasoning._content.region.x == reasoning.label.region.x
         assert reasoning._content.region.y == reasoning.label.region.bottom + 1
         assert not turn.query(".assistant-label")
+
+
+def _reasoning_delta_events(
+    session_id: str,
+    run_id: str,
+    fragments: tuple[str, ...],
+) -> tuple[EventRecord, ...]:
+    return (
+        EventRecord(
+            session_id=session_id,
+            run_id=run_id,
+            event_type="run_started",
+            sequence=1,
+            payload={"trigger": "user"},
+        ),
+        *(
+            EventRecord(
+                session_id=session_id,
+                run_id=run_id,
+                event_type="model_reasoning_delta",
+                sequence=sequence,
+                payload={"reasoning_content": fragment},
+            )
+            for sequence, fragment in enumerate(fragments, start=2)
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_renders_each_completed_line_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        app.query_one(ConversationView).set_reasoning_expanded(True)
+        session_id = "ses_reasoning_bounded_work"
+        app._projection = TuiSessionProjection(session_id)
+        fragments = tuple(f"thought {number}\n" for number in range(40))
+        events = _reasoning_delta_events(session_id, "run_reasoning_bounded", fragments)
+
+        rendered: list[str] = []
+        original_render = ReasoningLines._render_source_line
+
+        def counting_render(self: ReasoningLines, line: str) -> list[Strip]:
+            rendered.append(line)
+            return original_render(self, line)
+
+        monkeypatch.setattr(ReasoningLines, "_render_source_line", counting_render)
+        # One batch per fragment exercises the append path fragment by
+        # fragment, the way runtime event batches arrive while thinking.
+        for event in events:
+            await app._apply_runtime_events((event,))
+        await pilot.pause()
+
+        expected_lines = [f"thought {number}" for number in range(40)]
+        body = app.query_one(AssistantTurn).reasoning._content
+        for _ in range(10):
+            if body.rendered_text:
+                break
+            await pilot.pause(0.05)
+        # A completed line renders exactly once no matter how much more
+        # thinking follows; quadratic re-rendering would total N*(N+1)/2.
+        assert rendered == expected_lines
+        assert body.text == "".join(f"{line}\n" for line in expected_lines)
+        assert body.rendered_text.splitlines() == [f"│ {line}" for line in expected_lines]
+
+
+@pytest.mark.asyncio
+async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        app.query_one(ConversationView).set_reasoning_expanded(True)
+        session_id = "ses_reasoning_parity"
+        app._projection = TuiSessionProjection(session_id)
+        long_line = " ".join(f"word{number}" for number in range(40))
+        text = (
+            "first thought\n\n"
+            f"{long_line}\n"
+            'markup [data-theme=" stays literal\n'
+            "trailing partial"
+        )
+        # Fragments split mid-word and mid-line so line completion and tail
+        # growth are exercised separately from the source structure.
+        fragments = tuple(text[index : index + 7] for index in range(0, len(text), 7))
+        events = _reasoning_delta_events(session_id, "run_reasoning_parity", fragments)
+
+        for event in events:
+            await app._apply_runtime_events((event,))
+        await pilot.pause()
+
+        body = app.query_one(AssistantTurn).reasoning._content
+        assert body.text == text
+        for _ in range(10):
+            if body.rendered_text:
+                break
+            await pilot.pause(0.05)
+        # Incremental per-line rendering must equal one whole-block render at
+        # the same width: that equality is what freezing later preserves.
+        console = app.console
+        options = console.options.update_width(body._render_width)
+        segments = console.render(_ReasoningContent(text), options)
+        whole_block = [
+            strip.text.rstrip()
+            for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+        ]
+        assert body.rendered_text.splitlines() == whole_block
+        assert body.rendered_text.splitlines()[0] == "│ first thought"
+        assert any("word39" in line for line in body.rendered_text.splitlines())
 
 
 @pytest.mark.asyncio

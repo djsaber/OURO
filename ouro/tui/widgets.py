@@ -41,6 +41,7 @@ from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     ConversationHistory,
+    ReasoningLines,
     TranscriptEntry,
     assistant_markdown,
     split_markdown_blocks,
@@ -232,32 +233,22 @@ class ReasoningView(Vertical):
 
     Thinking output is shown verbatim rather than parsed as Markdown, so code fences and
     markup inside reasoning are never reformatted into blocks or syntax highlighting.
+    Completed lines render once into the strip buffer; only the trailing partial line
+    re-renders while thinking continues.
     """
 
-    def __init__(
-        self,
-        *,
-        initial: str = "",
-        duration_seconds: float | None = None,
-        expanded: bool = True,
-    ) -> None:
+    def __init__(self, *, expanded: bool = True) -> None:
         super().__init__(classes="reasoning-view")
-        self.display = bool(initial)
+        self.display = False
         self.label = Label(
-            _completed_reasoning_label(duration_seconds),
+            _completed_reasoning_label(None),
             classes="reasoning-label",
         )
-        self._text_parts = [initial] if initial else []
-        self._text_cache: str | None = initial
         self._timer: Timer | None = None
         self._elapsed_at_start = 0.0
         self._clock_started_at: float | None = None
-        self._completed_seconds = duration_seconds
-        self._content = Static(
-            initial,
-            classes="reasoning-content",
-            markup=False,
-        )
+        self._completed_seconds: float | None = None
+        self._content = ReasoningLines()
         self._content.display = expanded
 
     def compose(self) -> ComposeResult:
@@ -269,9 +260,7 @@ class ReasoningView(Vertical):
 
     @property
     def text(self) -> str:
-        if self._text_cache is None:
-            self._text_cache = "".join(self._text_parts)
-        return self._text_cache
+        return self._content.text
 
     @property
     def duration_seconds(self) -> float | None:
@@ -292,9 +281,7 @@ class ReasoningView(Vertical):
             self._clock_started_at = monotonic()
             self._timer = self.set_interval(0.1, self._tick)
         self._render_live_label()
-        self._text_parts.append(text)
-        self._text_cache = None
-        self._content.update(self.text)
+        self._content.append(text)
 
     def finish(self, duration_seconds: float | None = None) -> None:
         if self.display:

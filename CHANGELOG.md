@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Streaming reasoning now renders through an append-only strip buffer: completed thinking lines
+  render exactly once through the same │-bordered definition the immutable history freezes with
+  (live and frozen reasoning are now cell-identical), and only the trailing partial line
+  re-renders per flush, so long unbounded thinking no longer slows streaming quadratically.
 - Decouple LocalApplication, RuntimeSupervisor, AgentService, CLI, and TUI startup from persisted
   Session history. Recovery now runs on the explicitly opened Session and its bounded Agent root;
   primary forks own independent Agent trees even when their lineage root was trashed, while the
