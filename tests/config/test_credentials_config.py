@@ -834,6 +834,25 @@ def test_provider_retry_policy_round_trips_into_runtime_options(tmp_path) -> Non
     assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 3
 
 
+def test_provider_retry_opt_out_survives_round_trip(tmp_path) -> None:
+    # max_attempts=1 disables retries; it diverges from the default policy and
+    # must be persisted, otherwise a reload would silently re-enable retries.
+    manager = ProviderConfigManager(tmp_path)
+    manager.create_provider(
+        "glm",
+        provider_type="openai-compatible",
+        base_url="https://chat.example.test/v1",
+        retry_policy=ProviderRetryPolicy(max_attempts=1),
+    )
+    manager.upsert_endpoint("glm", "chat", model_id="glm-chat", make_default=True)
+
+    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    assert raw["providers"]["items"]["glm"]["retry_policy"]["max_attempts"] == 1
+
+    restored = ProviderConfigManager(tmp_path).get_provider("glm")
+    assert restored is not None and restored.retry_policy.max_attempts == 1
+
+
 def test_invalid_provider_retry_policy_is_rejected_without_rewriting_config(tmp_path) -> None:
     config_path = tmp_path / "config" / "config.json"
     config_path.parent.mkdir(parents=True)

@@ -87,7 +87,7 @@ class HttpxProviderHTTPTransport:
             ) from exc
         except httpx.RequestError as exc:
             raise ProviderTransportError(
-                f"provider connection failed: {exc}",
+                f"provider connection failed: {_describe_request_error(exc)}",
                 retryable=True,
             ) from exc
 
@@ -143,13 +143,26 @@ class HttpxProviderHTTPTransport:
             ) from exc
         except httpx.RequestError as exc:
             raise ProviderTransportError(
-                f"provider connection failed: {exc}",
+                f"provider connection failed: {_describe_request_error(exc)}",
                 retryable=True,
             ) from exc
 
 
 def _compact_body(body: str) -> str:
     return " ".join(body.split())[:500]
+
+
+def _describe_request_error(exc: httpx.RequestError) -> str:
+    """Render an httpx transport failure whose meaning lives in its type.
+
+    Connection-drop errors (``ReadError``, ``ConnectError``, ``RemoteProtocolError``,
+    ...) frequently stringify to an empty message, which would otherwise erase the
+    failure detail. Fall back to the exception type so the boundary always yields a
+    diagnosable reason.
+    """
+
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 async def _stream_sse_json(response: httpx.Response) -> AsyncIterator[Mapping[str, Any]]:

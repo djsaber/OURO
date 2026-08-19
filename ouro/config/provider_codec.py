@@ -128,7 +128,10 @@ def provider_config_to_raw(provider: ProviderConfig) -> dict[str, Any]:
         raw["base_url"] = provider.base_url
     if provider.api_path:
         raw["api_path"] = provider.api_path
-    if provider.retry_policy.max_attempts > 1:
+    # Persist only when the policy diverges from the default, so an explicit
+    # opt-out (e.g. max_attempts=1) survives a round-trip instead of silently
+    # reverting to the default on reload.
+    if provider.retry_policy != ProviderRetryPolicy():
         raw["retry_policy"] = provider.retry_policy.model_dump(mode="json")
     if provider.extra:
         raw["provider_options"] = provider.extra

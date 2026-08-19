@@ -200,6 +200,49 @@ async def test_httpx_transport_reports_http_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_httpx_transport_streaming_connection_drop_reports_error_type() -> None:
+    # A dropped keep-alive connection surfaces as an httpx.RequestError whose
+    # message is empty; the boundary must still yield a diagnosable reason.
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise httpx.ReadError("")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = HttpxProviderHTTPTransport(client)
+        with pytest.raises(
+            ProviderTransportError, match=r"provider connection failed: ReadError$"
+        ) as exc_info:
+            async for _ in transport.stream_json(
+                url="https://example.test/v1/chat/completions",
+                headers={},
+                payload={"model": "glm-test", "stream": True},
+                timeout=12,
+            ):
+                pass
+
+    assert exc_info.value.retryable is True
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_post_connection_drop_reports_error_type() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise httpx.ConnectError("")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        transport = HttpxProviderHTTPTransport(client)
+        with pytest.raises(
+            ProviderTransportError, match=r"provider connection failed: ConnectError$"
+        ):
+            await transport.post_json(
+                url="https://example.test/v1/chat/completions",
+                headers={},
+                payload={"model": "glm-test"},
+                timeout=12,
+            )
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_provider_streams_text_response() -> None:
     transport = FakeTransport(
         {
