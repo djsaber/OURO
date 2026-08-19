@@ -495,7 +495,7 @@ _OURO_TUI_CSS = """
     }
 
     .assistant-turn {
-        padding: 0 2;
+        padding: 0 $conversation-right-gutter;
     }
 
     .assistant-turn.after-tool {
@@ -544,7 +544,7 @@ _OURO_TUI_CSS = """
     #interaction-bar {
         height: auto;
         max-height: 10;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: #d6d9df;
         background: $ouro-panel;
@@ -562,7 +562,7 @@ _OURO_TUI_CSS = """
     #ask-user-panel {
         height: auto;
         max-height: 18;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: #d6d9df;
         background: $ouro-panel;
@@ -580,7 +580,7 @@ _OURO_TUI_CSS = """
     #plan-confirmation-panel {
         height: auto;
         max-height: 24;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: #d6d9df;
         background: $ouro-panel;
@@ -624,7 +624,7 @@ _OURO_TUI_CSS = """
     #command-popup {
         height: auto;
         max-height: 14;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2;
         color: #d6d9df;
         background: $ouro-panel;
@@ -674,7 +674,7 @@ _OURO_TUI_CSS = """
     #queued-input-panel {
         height: auto;
         max-height: 8;
-        margin: 0 2;
+        margin: 0 $conversation-right-gutter 0 $conversation-left-gutter;
         padding: 1 2 0 2;
         color: #d6d9df;
         background: $ouro-panel;
