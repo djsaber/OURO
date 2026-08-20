@@ -902,6 +902,10 @@ async def test_runtime_persists_tool_call_deltas_before_model_response_completes
     run_task = asyncio.create_task(runtime.run("Write a file"))
     session = await _wait_for_active_session(store)
     await asyncio.wait_for(provider.waiting_after_first_delta.wait(), timeout=1)
+    # The provider reader is deliberately independent from persistence, so
+    # reaching the provider-side gate no longer implies that the consumer has
+    # already committed the preceding delta.
+    await _wait_for_event(store, session.session_id, "model_tool_call_delta")
 
     streaming_snapshot = store.load_session(session.session_id)
     delta_events = [

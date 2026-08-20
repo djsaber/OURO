@@ -1,3 +1,4 @@
+import ouro.tui.conversation_history as conversation_history
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
     split_markdown_blocks,
@@ -80,3 +81,40 @@ def test_stream_does_not_freeze_paragraph_before_setext_underline_arrives() -> N
 
     blocks, _tail = stream.feed("\nBody text\n")
     assert blocks == ("Title\n=====\n\n",)
+
+
+def test_stream_accumulates_fragmented_lines_without_rebuilding_source() -> None:
+    stream = AssistantMarkdownStream()
+    fragments = ("alpha", " beta\n", "\nsecond", " line\n", "third")
+    blocks: list[str] = []
+
+    for fragment in fragments:
+        completed, _ = stream.append(fragment)
+        blocks.extend(completed)
+
+    assert stream.source == "".join(fragments)
+    blocks.extend(stream.close())
+    assert "".join(blocks) == "".join(fragments)
+
+
+def test_long_open_block_stops_reparsing_after_bounded_prefix(monkeypatch) -> None:
+    stream = AssistantMarkdownStream()
+    parse_calls: list[int] = []
+    real_block_starts = conversation_history._block_starts
+
+    def counting_block_starts(source: str) -> list[int]:
+        parse_calls.append(len(source))
+        return real_block_starts(source)
+
+    monkeypatch.setattr(conversation_history, "_block_starts", counting_block_starts)
+
+    stream.append("```text\n")
+    for _ in range(64):
+        stream.append("x" * 1024 + "\n")
+
+    assert parse_calls
+    assert max(parse_calls) <= conversation_history._LIVE_MARKDOWN_BOUNDARY_MAX_CHARS
+    calls_before_close = len(parse_calls)
+    blocks = stream.close()
+    assert len(parse_calls) == calls_before_close + 1
+    assert "".join(blocks) == stream.source

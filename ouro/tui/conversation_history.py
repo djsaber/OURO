@@ -64,6 +64,7 @@ _PANEL_CODE_THEME = _PanelCodeTheme()
 _MARKDOWN_PARSER = MarkdownIt().enable("strikethrough").enable("table")
 
 _ATOMIC_BLOCKS = frozenset({"fence", "hr", "code_block", "html_block"})
+_LIVE_MARKDOWN_BOUNDARY_MAX_CHARS = 8 * 1024
 
 
 def assistant_markdown(text: str) -> RichMarkdown:
@@ -96,57 +97,87 @@ class AssistantMarkdownStream:
     """
 
     def __init__(self) -> None:
+        self._source_parts: list[str] = []
         self._lines: list[str] = []
+        self._pending_parts: list[str] = []
         self._frozen = 0
+        self._tail_chars = 0
 
     @property
     def source(self) -> str:
-        return "".join(self._lines)
+        return "".join(self._source_parts)
+
+    @property
+    def has_source(self) -> bool:
+        return bool(self._source_parts)
+
+    @property
+    def tail(self) -> str:
+        return self._unfrozen()
 
     def feed(self, text: str) -> tuple[tuple[str, ...], str]:
         """Accumulate a fragment; return newly completed blocks and the live tail."""
+        blocks, _ = self.append(text)
+        return blocks, self._unfrozen()
+
+    def append(self, text: str) -> tuple[tuple[str, ...], bool]:
+        """Append a fragment without materializing the whole live tail.
+
+        The boolean reports whether completed blocks were removed from the
+        live tail, allowing its append-only presentation to reset only at a
+        structural Markdown boundary.
+        """
         if not text:
-            return (), self._unfrozen()
-        # Re-split the whole accumulated text: fragments can end mid-line, so
-        # per-fragment splits would drift out of sync with markdown-it's line
-        # numbering. The full text is bounded by one answer, so this stays cheap.
-        self._lines = _split_logical_lines(self.source + text)
-        unfrozen = self._unfrozen()
-        starts = _block_starts(unfrozen)
+            return (), False
+        self._source_parts.append(text)
+        self._tail_chars += len(text)
+        completed_line = self._append_logical_lines(text)
+        if not completed_line or self._tail_chars > _LIVE_MARKDOWN_BOUNDARY_MAX_CHARS:
+            return (), False
+
+        tail_lines = self._tail_lines()
+        starts = _block_starts("".join(tail_lines))
         if len(starts) < 2:
-            return (), unfrozen
+            return (), False
         blocks = tuple(
-            "".join(self._lines[self._frozen + start : self._frozen + end])
-            for start, end in pairwise(starts)
+            "".join(tail_lines[start:end]) for start, end in pairwise(starts)
         )
+        frozen_chars = sum(len(line) for line in tail_lines[: starts[-1]])
         self._frozen += starts[-1]
-        return tuple(block for block in blocks if block.strip()), self._unfrozen()
+        self._tail_chars -= frozen_chars
+        return tuple(block for block in blocks if block.strip()), True
 
     def close(self) -> tuple[str, ...]:
         """Freeze everything, including the trailing block."""
-        starts = _block_starts(self._unfrozen())
-        boundaries = [*starts, len(self._lines) - self._frozen]
+        tail_lines = self._tail_lines()
+        starts = _block_starts("".join(tail_lines))
+        boundaries = [*starts, len(tail_lines)]
         blocks = (
-            "".join(self._lines[self._frozen + start : self._frozen + end])
-            for start, end in pairwise(boundaries)
+            "".join(tail_lines[start:end]) for start, end in pairwise(boundaries)
         )
         return tuple(block for block in blocks if block.strip())
 
     def _unfrozen(self) -> str:
-        return "".join(self._lines[self._frozen :])
+        return "".join(self._tail_lines())
 
+    def _tail_lines(self) -> list[str]:
+        lines = list(self._lines[self._frozen :])
+        if self._pending_parts:
+            lines.append("".join(self._pending_parts))
+        return lines
 
-def _split_logical_lines(text: str) -> list[str]:
-    """Split text the way markdown-it counts lines.
+    def _append_logical_lines(self, text: str) -> bool:
+        """Append source using markdown-it line coordinates in O(new text)."""
+        fragments = text.split("\n")
+        if len(fragments) == 1:
+            self._pending_parts.append(text)
+            return False
 
-    Every entry ends with a newline except possibly the last, which is the
-    still-growing partial line of an in-flight stream.
-    """
-    *complete, last = text.split("\n")
-    lines = [line + "\n" for line in complete]
-    if last:
-        lines.append(last)
-    return lines
+        first = "".join((*self._pending_parts, fragments[0]))
+        self._lines.append(first + "\n")
+        self._lines.extend(fragment + "\n" for fragment in fragments[1:-1])
+        self._pending_parts = [fragments[-1]] if fragments[-1] else []
+        return True
 
 
 def split_markdown_blocks(text: str) -> tuple[str, ...]:
@@ -294,31 +325,28 @@ def _apply_selection_style(
 
 
 class ReasoningLines(Widget):
-    """Append-only strip buffer for one streaming reasoning block.
+    """Append-only strip buffer for one streaming plain-text block.
 
-    Completed source lines render exactly once through the shared reasoning
-    renderable — the same definition the immutable history freezes with — so
-    live and frozen reasoning cannot drift apart. Only the trailing partial
-    line re-renders while it grows, bounding per-flush cost to one line
-    instead of the whole block.
+    Completed visual lines render exactly once through the shared reasoning
+    renderable. Only the final, not-yet-full visual line re-renders while it
+    grows, so even a source line without newlines has bounded per-flush cost.
     """
 
     can_focus = False
 
-    def __init__(self) -> None:
-        super().__init__(classes="reasoning-lines")
-        self._lines: list[str] = []
-        self._pending = ""
+    def __init__(self, *, classes: str = "reasoning-lines") -> None:
+        super().__init__(classes=classes)
+        self._source_parts: list[str] = []
+        self._pending_parts: list[str] = []
         self._line_strips: list[Strip] = []
         self._pending_strips: list[Strip] = []
-        self._rendered_lines = 0
         self._render_width = 0
         self._deferred_render = False
 
     @property
     def text(self) -> str:
-        """The verbatim stream, including the trailing partial line."""
-        return "".join(f"{line}\n" for line in self._lines) + self._pending
+        """The exact stream source, independent from visual wrapping."""
+        return "".join(self._source_parts)
 
     @property
     def rendered_text(self) -> str:
@@ -329,10 +357,19 @@ class ReasoningLines(Widget):
     def append(self, fragment: str) -> None:
         if not fragment:
             return
-        self._pending += fragment
-        *completed, self._pending = self._pending.split("\n")
-        self._lines.extend(completed)
+        self._source_parts.append(fragment)
+        self._pending_parts.append(fragment)
         self._render_updates()
+
+    def replace(self, text: str) -> None:
+        """Replace the source after an infrequent structural boundary."""
+        self._source_parts = [text] if text else []
+        self._pending_parts = [text] if text else []
+        self._line_strips.clear()
+        self._pending_strips.clear()
+        self._render_updates()
+        if not text:
+            self.refresh(layout=True)
 
     def on_resize(self, event: Resize) -> None:
         self._render_updates()
@@ -370,14 +407,14 @@ class ReasoningLines(Widget):
         """Render buffered source into strips at the current content width.
 
         A width change rebuilds every strip (rare); otherwise only newly
-        completed lines and the trailing partial line render, so per-flush
-        work stays proportional to the new text.
+        completed visual lines and the trailing partial visual line render, so
+        per-flush work stays proportional to the new text.
         """
         width = self.content_region.width
         if width <= 0:
             # Not laid out yet (or collapsed): render once layout provides a
             # width instead of depending on the resize event's timing.
-            if not self._deferred_render and (self._lines or self._pending):
+            if not self._deferred_render and self._source_parts:
                 self._deferred_render = True
                 self.call_after_refresh(self._render_deferred_updates)
             return
@@ -385,24 +422,41 @@ class ReasoningLines(Widget):
         if rebuild:
             self._render_width = width
             self._line_strips.clear()
-            self._rendered_lines = 0
-        if not (rebuild or self._rendered_lines < len(self._lines) or self._pending):
+            source = self.text
+            self._pending_parts = [source] if source else []
+        if not self._pending_parts:
             return
-        for line in self._lines[self._rendered_lines :]:
+
+        pending = "".join(self._pending_parts)
+        wrapped = self._wrap_source(pending)
+        for line in wrapped[:-1]:
             self._line_strips.extend(self._render_source_line(line))
-        self._rendered_lines = len(self._lines)
-        self._pending_strips = self._render_source_line(self._pending) if self._pending else []
+        trailing = wrapped[-1] if wrapped else ""
+        self._pending_parts = [trailing] if trailing else []
+        self._pending_strips = self._render_source_line(trailing) if trailing else []
         self.refresh(layout=True)
 
     def _render_deferred_updates(self) -> None:
         self._deferred_render = False
         self._render_updates()
 
-    def _render_source_line(self, line: str) -> list[Strip]:
-        """Render one source line the way the frozen history renders blocks.
+    def _wrap_source(self, source: str) -> list[str]:
+        lines = Text(source).wrap(
+            self.app.console,
+            self._source_wrap_width(),
+            overflow="fold",
+            no_wrap=False,
+        )
+        return [line.plain for line in lines]
 
-        Newline-delimited lines wrap independently, so a per-line render is
-        identical to slicing a whole-block render at the same width.
+    def _source_wrap_width(self) -> int:
+        return max(1, self._render_width - 2)
+
+    def _render_source_line(self, line: str) -> list[Strip]:
+        """Render one pre-wrapped line the way frozen reasoning renders it.
+
+        The line already fits reasoning's content width, so rendering it as a
+        separate bordered row matches the equivalent whole-block row.
         """
         console = self.app.console
         options = console.options.update_width(self._render_width)
@@ -410,6 +464,32 @@ class ReasoningLines(Widget):
         return [
             strip.adjust_cell_length(self._render_width)
             for strip in Strip.from_lines(list(Segment.split_lines(segments)))
+        ]
+
+
+class AssistantTailLines(ReasoningLines):
+    """Append-only plain-text presentation for the mutable Markdown tail.
+
+    Markdown syntax remains visible while its structure can still change.
+    Once a following block establishes the boundary, immutable history renders
+    the completed source exactly once through ``assistant_markdown``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(classes="assistant-markdown")
+
+    def _source_wrap_width(self) -> int:
+        return self._render_width
+
+    def _render_source_line(self, line: str) -> list[Strip]:
+        console = self.app.console
+        options = console.options.update_width(self._render_width)
+        rendered_lines = console.render_lines(Text(line), options, pad=False)
+        if not rendered_lines:
+            return [Strip.blank(self._render_width)]
+        return [
+            Strip(segments).adjust_cell_length(self._render_width)
+            for segments in rendered_lines
         ]
 
 

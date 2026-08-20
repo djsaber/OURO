@@ -62,8 +62,8 @@ stdin/stdout Interactive；TUI 达到资源附件、子智能体交互、MCP 状
 
 TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Runtime event sink 接收事实；业务运行状态
 必须复用 application 的 `reduce_runtime_activity` 投影。Textual 控件只持有视觉状态、焦点和草稿，不解析 Session
-文件、SQLite 或工具业务规则。高频 Markdown 使用 Textual `Markdown.get_stream` 合并增量，流对象随 assistant
-控件卸载显式关闭。
+文件、SQLite 或工具业务规则。高频 Runtime event 先按固定帧间隔合并连续同类增量，再交给当前 assistant turn；
+TUI 不为每个 provider chunk 创建渲染任务。
 
 Actions 的 Subagents 分组通过同一可复用菜单和配置表单依次提供 Dispatch policy、List、Create、Edit 和 Delete。List
 是 builtin/user 统一 definition 目录及 compatibility 的可导航页面；builtin 以 disabled 样式保留，user 可进入 Edit/Delete
@@ -82,8 +82,8 @@ producer provenance，不能决定是否显示；实时链收到任一输入事�
 其 `role/scaffold`。语义标签只影响模型包络，不参与 TUI 可见性。会话选择器只调用 Catalog 投影查询，不能在打开
 具体 Session 之前触发 canonical history 扫描或数据质量维修。
 
-每个 assistant turn 分别拥有 reasoning 与 answer 两个 Markdown stream。`model_reasoning_delta` 只追加到 dim
-reasoning 区域，不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
+每个 assistant turn 分别拥有 reasoning 纯文本行缓冲与 answer 源流。`model_reasoning_delta` 只追加到 dim
+reasoning 区域，不能按 Markdown 解释，也不能混入最终回答；首次可见增量创建该 turn 并标记 `THINKING`，activity 离开
 `streaming_reasoning` 后收敛为 `THOUGHT`。后续模型轮次再次产生 reasoning 时复用同一区域并恢复 live 状态。
 历史恢复读取 canonical `MessageRecord.reasoning_content`，不从展示文本或事件 payload 反推第二份历史状态；没有
 可见 reasoning 时不创建空白过程块。
@@ -130,8 +130,14 @@ Conversation 是按事件序列增长的时间线，而不是一个可永久回�
 assistant segment 必须封口；下一轮 `model_reasoning_delta` 或 `model_text_delta` 创建位于工具行之后的新 segment。
 高频 delta 可以合并，但只能合并连续且不跨工具状态边界的前缀，不得为减少刷新而重排事件。
 
+answer 活动尾部在 Markdown 结构仍可能变化时按源文本展示：完成视觉行只渲染一次，只有末尾未完成视觉行随新增文本重绘。
+短尾部可在新增换行时用共享 Markdown parser 识别并冻结已经完成的顶层块；边界检测受固定字符上限约束，超过上限的
+长未闭合块保持纯文本增量展示，直到 turn 结束后再解析一次。冻结块、最终尾块和重载历史统一通过
+`assistant_markdown` 渲染。正常帧不得重复拼接完整 answer、构造完整 Rich Markdown，或执行与无界活动块长度成比例
+的解析/渲染工作；宽度变化允许显式重建一次 strip 缓冲。
+
 实时渲染的回归用例必须分别让 Provider 在首个 `model_text_delta` 和首个 `model_reasoning_delta` 后保持阻塞，
-并在 `runtime.run()` 尚未返回时验证对应 Markdown 已更新。只用立即返回的 Faux Provider 或只断言最终
+并在 `runtime.run()` 尚未返回时验证对应活动源流已更新。只用立即返回的 Faux Provider 或只断言最终
 `RunResult`，不能作为实时流证据。
 
 Runtime event sink 使用独立有界队列，不能假设入队等于已交付。sink mailbox 必须先完整注册，再创建消费任务；
@@ -142,9 +148,9 @@ Runtime event sink 使用独立有界队列，不能假设入队等于已交付�
 message，并在跨入 Textual message pump 后让出一次调度，不为每个事件执行线程跳转。
 
 ready message 每次原子取走当前事件前缀：投影仍按 sequence 逐事件执行，文本增量合并为一次
-`MarkdownStream.write`，工具列表、activity 和 pending interaction 只按该前缀的最终规范快照刷新。该合并只减少
+`AssistantTurn.feed`，工具列表、activity 和 pending interaction 只按该前缀的最终规范快照刷新。该合并只减少
 展示工作，不丢弃投影事实；`RunResult.events` 仍通过 sequence 幂等补齐未交付尾部。流式验收还必须覆盖超过 sink
-容量的 reasoning burst，并直接断言 Run 完成前 `Markdown.source` 已包含可见文本且没有
+容量的 reasoning burst，并直接断言 Run 完成前 `AssistantTurn.source` 已包含可见文本且没有
 `event_sink_failed`。该用例必须走 Textual 的 production `run_async` 路径，不能只用不会安装 eager task factory
 的 `run_test` 测试循环。
 

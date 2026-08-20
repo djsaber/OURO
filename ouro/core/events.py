@@ -64,6 +64,17 @@ EventType = Literal[
     "diagnostic",
 ]
 
+# These high-frequency facts may be committed with group durability: each
+# record remains transactionally visible and ordered, while the next
+# non-delta event establishes the durable storage boundary for the group.
+MODEL_STREAM_DELTA_EVENT_TYPES = frozenset(
+    {
+        "model_text_delta",
+        "model_reasoning_delta",
+        "model_tool_call_delta",
+    }
+)
+
 
 class EventRecord(VersionedOuroModel):
     event_id: str = Field(default_factory=lambda: new_id("evt"))

@@ -82,6 +82,12 @@ Canonical mutation 成功后，adapter 在独立 catalog 边界只重算受影�
 - JSONL 追加后执行 flush/fsync。
 - `append_messages` 是有序消息批次的持久化边界：SQLite 在当前 mutation transaction 中插入整批；文件后端把
   完整批次编码后以一次 JSONL append/flush/fsync 写入。调用方只在批次成功后推进 Session 投影和确认队列。
+- `model_text_delta`、`model_reasoning_delta` 和 `model_tool_call_delta` 使用分组耐久性：每条记录在返回前必须完成
+  原子、有序且对其他读取连接可见的提交，但不为每个分片单独执行存储同步。文件后端追加后由下一非 delta 边界
+  flush/fsync；SQLite WAL 对 delta transaction 使用 `synchronous=NORMAL`，下一非 delta transaction 保持
+  `synchronous=FULL`，其提交同步此前已提交的 WAL 前缀。不得把 NORMAL 扩展到 Run、消息、工具或其他业务边界。
+- 进程异常退出后已提交的 delta 仍由 WAL/JSONL 恢复；机器掉电可能丢失最后一个尚未遇到 durable boundary 的 delta
+  分组，因此恢复逻辑必须继续把未完成模型轮次视为可恢复前缀，不能伪造 `model_message_completed`。
 - 临时文件和 staging 失败必须清理；无法安全回滚时错误中必须包含保留数据位置。
 - record id 在参与路径拼接前限制为安全字符和长度。
 

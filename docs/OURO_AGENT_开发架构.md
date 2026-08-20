@@ -448,7 +448,10 @@ OURO_HOME/
 ```
 
 `SQLiteSessionStore` 是同一契约的第二实现，默认数据库位置为 `OURO_HOME/sessions.sqlite3`。它使用标准
-`sqlite3`、WAL、外键和显式事务，事件 after-sequence 查询由索引支持；表结构只存在于 adapter 内。
+`sqlite3`、WAL、外键和显式事务，事件 after-sequence 查询由索引支持；表结构只存在于 adapter 内。高频模型 delta
+保持逐事件原子提交和跨连接可见性，但使用 WAL `synchronous=NORMAL` 避免每个分片独立同步；下一非 delta 事件以
+`FULL` 提交并建立该前缀的 durable boundary。该策略与文件事件日志的分组 fsync 语义一致，不影响其他 canonical
+mutation 的 FULL durability。
 `LocalApplication.build(..., session_backend="sqlite")` 可选择该实现。Host 的选择规则集中在
 `ouro.deployment.resolve_session_backend`：显式参数优先于 `OURO_SESSION_BACKEND`，默认使用 `files`。CLI 的
 交互、run、session、resource 与审批入口都接受 `--session-backend files|sqlite`，命令层只透传选择值，不包含

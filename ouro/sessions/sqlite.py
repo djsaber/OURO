@@ -22,7 +22,7 @@ from ouro.core.errors import (
     PersistenceError,
     ResourceNotFoundError,
 )
-from ouro.core.events import EventRecord
+from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference
@@ -502,7 +502,9 @@ class SQLiteSessionStore:
                 raise PersistenceError(f"could not append event {event.event_id}: {exc}") from exc
 
     def append_ordered_event(self, event: EventRecord) -> EventRecord:
-        with self.session_mutation(event.session_id):
+        _validated_record_id(event.session_id, kind="session")
+        durable = event.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES
+        with _SQLiteMutation(self, durable=durable):
             connection = self._transaction_connection()
             row = connection.execute(
                 "SELECT COALESCE(MAX(sequence), 0) FROM events WHERE session_id = ?",
@@ -1236,8 +1238,14 @@ class _TransactionState:
 
 
 class _SQLiteMutation(AbstractContextManager[object, None]):
-    def __init__(self, store: SQLiteSessionStore) -> None:
+    def __init__(
+        self,
+        store: SQLiteSessionStore,
+        *,
+        durable: bool = True,
+    ) -> None:
         self.store = store
+        self.durable = durable
         self._outermost = False
 
     def __enter__(self) -> Self:
@@ -1247,6 +1255,16 @@ class _SQLiteMutation(AbstractContextManager[object, None]):
             return self
         connection = self.store._connect()
         try:
+            if self.durable:
+                # synchronous is connection-local. Set FULL explicitly rather
+                # than relying on the sqlite build's default for canonical
+                # mutation boundaries.
+                connection.execute("PRAGMA synchronous = FULL")
+            else:
+                # WAL NORMAL keeps each delta transaction atomic and visible
+                # without syncing the WAL for every fragment. The next FULL
+                # non-delta transaction syncs this committed prefix.
+                connection.execute("PRAGMA synchronous = NORMAL")
             connection.execute("BEGIN IMMEDIATE")
         except sqlite3.Error as exc:
             connection.close()

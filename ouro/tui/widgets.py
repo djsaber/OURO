@@ -41,10 +41,10 @@ from ouro.tui.commands import TuiCommand, TuiCommandArgument
 from ouro.tui.controller import TuiApprovalPreset, TuiSystemStatus
 from ouro.tui.conversation_history import (
     AssistantMarkdownStream,
+    AssistantTailLines,
     ConversationHistory,
     ReasoningLines,
     TranscriptEntry,
-    assistant_markdown,
     split_markdown_blocks,
 )
 from ouro.tui.question_forms import QuestionField, QuestionForm
@@ -391,11 +391,12 @@ class ReasoningView(Vertical):
 
 
 class AssistantTurn(Vertical):
-    """Live region for one model round: reasoning plus the trailing markdown block.
+    """Live region for one model round: reasoning plus its mutable answer tail.
 
     Completed top-level blocks freeze into the history buffer as soon as they
-    terminate; this widget re-renders only the trailing block, so per-flush
-    cost stays bounded by one block instead of the whole answer.
+    terminate. The mutable tail is shown verbatim through an append-only line
+    buffer; this avoids repeatedly parsing and rendering a block whose final
+    Markdown structure is not known yet.
     """
 
     def __init__(
@@ -409,7 +410,8 @@ class AssistantTurn(Vertical):
         super().__init__(classes=classes)
         self.run_id = run_id
         self.reasoning = ReasoningView(expanded=reasoning_expanded)
-        self.tail = Static(classes="assistant-markdown")
+        self.tail = AssistantTailLines()
+        self.tail.display = False
         self._stream = AssistantMarkdownStream()
         self._reasoning_pending = True
 
@@ -423,7 +425,7 @@ class AssistantTurn(Vertical):
 
     @property
     def has_text(self) -> bool:
-        return bool(self._stream.source)
+        return self._stream.has_source
 
     @property
     def reasoning_pending(self) -> bool:
@@ -434,14 +436,21 @@ class AssistantTurn(Vertical):
         if not text:
             return ()
         self.reasoning.finish()
-        blocks, tail = self._stream.feed(text)
-        self._render_tail(tail)
+        blocks, tail_reset = self._stream.append(text)
+        if tail_reset:
+            tail = self._stream.tail
+            self.tail.display = bool(tail)
+            self.tail.replace(tail)
+        else:
+            self.tail.display = True
+            self.tail.append(text)
         return blocks
 
     def close(self) -> tuple[str, ...]:
         """Freeze the trailing block along with the round."""
         blocks = self._stream.close()
-        self._render_tail("")
+        self.tail.replace("")
+        self.tail.display = False
         return blocks
 
     def take_reasoning(self) -> tuple[str, float | None]:
@@ -458,11 +467,6 @@ class AssistantTurn(Vertical):
 
     def set_reasoning_expanded(self, expanded: bool) -> None:
         self.reasoning.set_expanded(expanded)
-
-    def _render_tail(self, text: str) -> None:
-        self.tail.display = bool(text)
-        if text:
-            self.tail.update(assistant_markdown(text))
 
 
 def _completed_reasoning_label(duration_seconds: float | None) -> str:

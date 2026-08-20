@@ -101,7 +101,11 @@ from ouro.tui.controller import (
     TuiProviderConfiguration,
     TuiSystemStatus,
 )
-from ouro.tui.conversation_history import ReasoningLines, _ReasoningContent
+from ouro.tui.conversation_history import (
+    AssistantTailLines,
+    ReasoningLines,
+    _ReasoningContent,
+)
 from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
 from ouro.tui.provider_screens import (
     EndpointConfigurationScreen,
@@ -1677,6 +1681,59 @@ async def test_streaming_assistant_uses_frozen_history_content_width(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_streaming_assistant_renders_completed_source_lines_once(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    rendered_source: list[str] = []
+    real_render = AssistantTailLines._render_source_line
+
+    def counting_render(self: AssistantTailLines, line: str):
+        rendered_source.append(line)
+        return real_render(self, line)
+
+    monkeypatch.setattr(AssistantTailLines, "_render_source_line", counting_render)
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.append_assistant("first")
+        await conversation.append_assistant("\n")
+        for _ in range(20):
+            await pilot.pause(0.05)
+            if "first" in rendered_source:
+                break
+
+        live_turn = conversation.query_one(AssistantTurn)
+        completed_renders = rendered_source.count("first")
+        assert completed_renders >= 1
+
+        await conversation.append_assistant("second")
+        await conversation.append_assistant(" grows")
+        await pilot.pause()
+
+        assert live_turn.tail.text == "first\nsecond grows"
+        assert rendered_source.count("first") == completed_renders
+        assert "first" in live_turn.tail.rendered_text
+        assert "second grows" in live_turn.tail.rendered_text
+
+        rendered_source.clear()
+        fragments = ("x" * 1024,) * 32
+        for fragment in fragments:
+            await conversation.append_assistant(fragment)
+        await pilot.pause()
+
+        width = live_turn.tail.content_region.width
+        assert width > 0
+        assert rendered_source
+        assert max(len(line) for line in rendered_source) <= width
+        assert sum(len(line) for line in rendered_source) <= len("".join(fragments)) + (
+            len(fragments) * width * 2
+        )
+
+
+@pytest.mark.asyncio
 async def test_failed_run_summary_colors_status_and_error_but_not_separators(
     tmp_path: Path,
 ) -> None:
@@ -2794,7 +2851,13 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert history.user_turns == ("first",)
 
         provider.release.set()
-        await pilot.pause(1)
+        for _ in range(20):
+            await pilot.pause(0.1)
+            assistant_count = sum(
+                entry.kind == "assistant" for entry in history.entries
+            )
+            if assistant_count == 2:
+                break
 
         assert queue_panel.display is False
         assert history.user_turns == (

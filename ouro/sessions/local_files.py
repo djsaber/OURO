@@ -21,7 +21,7 @@ from ouro.core.errors import (
     PersistenceError,
     ResourceNotFoundError,
 )
-from ouro.core.events import EventRecord
+from ouro.core.events import MODEL_STREAM_DELTA_EVENT_TYPES, EventRecord
 from ouro.core.messages import MessageRecord
 from ouro.core.persistence import decode_versioned_record_json
 from ouro.core.resources import SessionResourceReference, SessionResourceReferences
@@ -38,11 +38,6 @@ from ouro.sessions.layout import DATA_LAYOUT_VERSION, DataLayoutManifest
 from ouro.sessions.local_index import LocalSessionIndex
 from ouro.sessions.locks import SessionMutationLock, SessionRunLock
 
-_STREAM_DELTA_EVENT_TYPES = {
-    "model_text_delta",
-    "model_reasoning_delta",
-    "model_tool_call_delta",
-}
 _RECORD_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 _JournalRecord = TypeVar("_JournalRecord", MessageRecord, EventRecord)
 
@@ -380,7 +375,7 @@ class LocalSessionStore:
             self._append_jsonl(
                 path,
                 ordered,
-                durable=ordered.event_type not in _STREAM_DELTA_EVENT_TYPES,
+                durable=ordered.event_type not in MODEL_STREAM_DELTA_EVENT_TYPES,
             )
             self._event_sequence_cache[event.session_id] = (path.stat().st_size, sequence)
             return ordered
