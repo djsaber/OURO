@@ -106,7 +106,6 @@ class LifecycleStatusReceived(Message):
         self.status = status
 
 
-_RUNTIME_RENDER_INTERVAL_SECONDS = 0.05
 _MCP_STATUS_SYNC_INTERVAL_SECONDS = 0.25
 _SESSION_TITLE_MAX_CELLS = 56
 _RUNTIME_RENDER_BOUNDARY_EVENTS = {
@@ -937,7 +936,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._dismissed_command_text: str | None = None
         self._pending_runtime_events: list[EventRecord] = []
         self._runtime_events_ready_posted = False
-        self._runtime_events_timer: Timer | None = None
+        self._runtime_events_frame_scheduled = False
         self._runtime_event_apply_lock = asyncio.Lock()
         self._mcp_status_timer: Timer | None = None
 
@@ -997,9 +996,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._host_closing:
             return
         self._host_closing = True
-        if self._runtime_events_timer is not None:
-            self._runtime_events_timer.stop()
-            self._runtime_events_timer = None
+        self._runtime_events_frame_scheduled = False
         if self._mcp_status_timer is not None:
             self._mcp_status_timer.stop()
             self._mcp_status_timer = None
@@ -1074,19 +1071,18 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._pending_runtime_events.append(event)
         if event.event_type in _RUNTIME_RENDER_BOUNDARY_EVENTS:
-            if self._runtime_events_timer is not None:
-                self._runtime_events_timer.stop()
-                self._runtime_events_timer = None
             self._post_runtime_events_ready()
             return
-        if not self._runtime_events_ready_posted and self._runtime_events_timer is None:
-            self._runtime_events_timer = self.set_timer(
-                _RUNTIME_RENDER_INTERVAL_SECONDS,
+        if not self._runtime_events_ready_posted and not self._runtime_events_frame_scheduled:
+            # The compositor already owns the display cadence. Schedule one
+            # prefix per native frame instead of undersampling it with a
+            # second fixed-period timer.
+            self._runtime_events_frame_scheduled = self.call_after_refresh(
                 self._post_runtime_events_ready,
             )
 
     def _post_runtime_events_ready(self) -> None:
-        self._runtime_events_timer = None
+        self._runtime_events_frame_scheduled = False
         if self._host_closing or not self._pending_runtime_events:
             return
         if not self._runtime_events_ready_posted:
@@ -1156,9 +1152,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._flush_pending_runtime_events()
 
     async def _flush_pending_runtime_events(self) -> None:
-        if self._runtime_events_timer is not None:
-            self._runtime_events_timer.stop()
-            self._runtime_events_timer = None
         if not self._pending_runtime_events:
             return
         events = tuple(self._pending_runtime_events)

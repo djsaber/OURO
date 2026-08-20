@@ -62,8 +62,9 @@ stdin/stdout Interactive；TUI 达到资源附件、子智能体交互、MCP 状
 
 TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Runtime event sink 接收事实；业务运行状态
 必须复用 application 的 `reduce_runtime_activity` 投影。Textual 控件只持有视觉状态、焦点和草稿，不解析 Session
-文件、SQLite 或工具业务规则。高频 Runtime event 先按固定帧间隔合并连续同类增量，再交给当前 assistant turn；
-TUI 不为每个 provider chunk 创建渲染任务。
+文件、SQLite 或工具业务规则。高频 Runtime event 由 Textual 下一显示帧原子取走当前前缀并合并连续同类增量，
+每帧至多发布一个 ready message；不得叠加固定周期渲染定时器而降低 compositor 的原生刷新率。结构和完成边界
+立即发布，再交给当前 assistant turn；TUI 不为每个 provider chunk 创建渲染任务。
 
 Actions 的 Subagents 分组通过同一可复用菜单和配置表单依次提供 Dispatch policy、List、Create、Edit 和 Delete。List
 是 builtin/user 统一 definition 目录及 compatibility 的可导航页面；builtin 以 disabled 样式保留，user 可进入 Edit/Delete

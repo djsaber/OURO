@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -2361,6 +2361,52 @@ async def test_user_message_frame_spans_every_content_line(tmp_path: Path) -> No
         assert all(line.index("│") == 2 for line in framed_lines)
         assert framed_lines[1].index("First line") == 5
         assert framed_lines[2].index("Second line") == 5
+
+
+@pytest.mark.asyncio
+async def test_runtime_stream_schedules_one_flush_for_the_next_display_frame(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        session_id = "ses_frame_flush"
+        app._projection = TuiSessionProjection(session_id)
+        callbacks: list[Callable[[], object]] = []
+
+        def capture_after_refresh(
+            callback: Callable[..., object],
+            *args: object,
+            **kwargs: object,
+        ) -> bool:
+            callbacks.append(lambda: callback(*args, **kwargs))
+            return True
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app, "call_after_refresh", capture_after_refresh)
+            for sequence, text in enumerate(("one", "two", "three"), start=1):
+                app._publish_runtime_event(
+                    EventRecord(
+                        session_id=session_id,
+                        run_id="run_frame_flush",
+                        event_type="model_text_delta",
+                        sequence=sequence,
+                        payload={"text": text},
+                    )
+                )
+
+            assert len(callbacks) == 1
+            assert app._runtime_events_frame_scheduled is True
+            callbacks[0]()
+            assert app._runtime_events_frame_scheduled is False
+            assert app._runtime_events_ready_posted is True
+
+        await pilot.pause(0.1)
+
+        assert app.query_one(AssistantTurn).source == "onetwothree"
+        assert app._pending_runtime_events == []
 
 
 @pytest.mark.asyncio

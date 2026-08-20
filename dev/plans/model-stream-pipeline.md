@@ -14,7 +14,7 @@ HTTP/SSE socket
   -> RuntimeAdapter 按事件拉取
   -> InnerAgentLoop 按 delta 持久化
   -> RuntimeEventRecorder 非阻塞分发
-  -> TUI 50 ms 合帧
+  -> TUI 下一显示帧合帧
   -> AssistantMarkdownStream / Rich / Textual
 ```
 
@@ -81,6 +81,13 @@ socket reader/pump
 - 下一非 delta 事件保持 `synchronous=FULL`，同步此前 WAL 前缀；外层 FULL mutation 中的嵌套 delta 不得降低事务等级。
 - 不引入后台 write-behind、提交定时器、长期事务或进程内无限缓冲。
 
+### 阶段 E：TUI 原生帧同步
+
+- 删除独立的 50 ms Runtime event 渲染定时器，避免把 Textual 默认 60 FPS compositor 人为限制到约 20 FPS。
+- 第一个非边界事件只安排一次 `call_after_refresh`；回调原子取走届时的有序事件前缀，同一显示帧内的后续事件自然合并。
+- Run 完成、失败、暂停等结构边界继续立即发布 ready message，不等待下一显示帧。
+- 不增加动画插值、字符打字机、第二级队列或自适应时间窗口；展示速率继续由真实事件到达速度与终端刷新能力决定。
+
 ## 4. 明确不做
 
 - 不把 `httpx` 的无限流式读取改成普通 read timeout。
@@ -107,12 +114,15 @@ socket reader/pump
 - [x] 实施积压感知的相邻 delta 合并
 - [x] 实施增量 Markdown 分块与活动纯文本尾部
 - [x] 对齐 SQLite 与文件后端的模型 delta 分组耐久语义
+- [x] 将 TUI 固定 50 ms 合帧改为 Textual 原生显示帧同步
 - [x] 完成测试、基准、规范更新与最终审计
 
 验证记录：核心、provider、application 与 Markdown 相关测试 126 项通过；新增 reader/背压/取消/合并及长流测试
-通过；完整 TUI 文件 191 项中 190 项通过。唯一失败为既有 fork-compaction 测试对 `ContextMetrics` 的原始值做全量
+通过；当前完整 TUI 文件 192 项中 191 项通过。唯一失败为既有 fork-compaction 测试对 `ContextMetrics` 的原始值做全量
 相等断言，而当前 TUI 会按所选模型补齐 context window 与 output reserve；该路径与本计划修改的文件和流式链路无关。
 SQLite 最终实现的同步等级、即时可见性、嵌套事务与 store contract 定向测试 34 项通过；sessions、迁移、恢复、运行时、
 续接与后端选择广域回归 305 项通过。600 条 delta 加完成边界的旧/新路径对照将每轮 601 个 FULL transaction boundary
 降为 1 个 FULL boundary 加 600 个 NORMAL atomic commit；本机临时 SSD 的连接开销占主导，因此不据此引入长期 writer
 连接或新的 store 生命周期契约。
+TUI 帧调度探针按 10 ms 输入 40 个 delta：固定 50 ms timer 的稳态显示间隔中位数约 59 ms、每批 4–6 个字符；改为
+compositor 帧同步后中位数 16.45 ms、P90 18.48 ms、平均每批 1.21 个字符，单批应用中位数 0.137 ms。
