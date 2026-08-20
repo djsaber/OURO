@@ -3214,8 +3214,14 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
             line for line in rendered_lines[thought_line + 1 : answer_line] if line.strip()
         ]
         assert len(reasoning_lines) > 1
+        thought_indent = len(rendered_lines[thought_line]) - len(
+            rendered_lines[thought_line].lstrip()
+        )
         assert all(
-            line.lstrip().startswith("\N{BOX DRAWINGS LIGHT VERTICAL} ") for line in reasoning_lines
+            line.startswith(
+                " " * thought_indent + "\N{BOX DRAWINGS LIGHT VERTICAL} "
+            )
+            for line in reasoning_lines
         )
         assert not app.query(AssistantTurn)
 

@@ -527,7 +527,10 @@ def _reasoning_area(
     if expanded:
         area: RenderableType = Group(
             label,
-            Padding(_ReasoningContent(entry.reasoning), (1, 0, 0, 1)),
+            # Keep the border in the label's column. The trailing cell mirrors
+            # ReasoningLines' right padding, so live and frozen thoughts retain
+            # the same content width and wrapping when the stream is promoted.
+            Padding(_ReasoningContent(entry.reasoning), (1, 1, 0, 0)),
         )
     else:
         area = label
