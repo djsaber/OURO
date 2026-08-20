@@ -984,42 +984,19 @@ class RuntimeService:
         session_id: str,
         reasoning_request: ReasoningRequest,
     ) -> SessionRecord:
-        """Validate and persist the reasoning intent used by future Session Runs."""
+        """Persist reasoning intent for the next model request boundary."""
 
-        return self._update_session_reasoning(session_id, reasoning_request)
+        def validate(session: SessionRecord) -> None:
+            model = self.models.resolve(
+                session.current_model or self.models.default_model().key
+            )
+            self._model_reasoning_state(model, reasoning_request)
 
-    def _update_session_reasoning(
-        self,
-        session_id: str,
-        reasoning_request: ReasoningRequest,
-    ) -> SessionRecord:
-        """Atomically keep an idle Session's reasoning intent executable."""
-
-        lock = self.run_ownership.acquire(session_id, new_id("model"))
-        if lock is None:
-            raise SessionBusyError(f"session already has an active run: {session_id}")
-        try:
-            with self.store.session_mutation(session_id):
-                session = self.store.load_session_record(session_id)
-                if maybe_active_run(self.store.load_runs(session_id)) is not None:
-                    raise SessionBusyError(f"session already has an active run: {session_id}")
-                model = self.models.resolve(
-                    session.current_model or self.models.default_model().key
-                )
-                self._model_reasoning_state(model, reasoning_request)
-                now = utc_now()
-                session = session.model_copy(
-                    update={
-                        "reasoning_request": reasoning_request,
-                        "updated_at": now,
-                        "last_activity_at": now,
-                    }
-                )
-                self.store.save_session(session)
-            self.store.refresh_catalog(session.session_id)
-            return session
-        finally:
-            self.run_ownership.release(lock)
+        return self._update_live_session_settings(
+            session_id,
+            {"reasoning_request": reasoning_request},
+            validate=validate,
+        )
 
     def _model_reasoning_state(
         self,

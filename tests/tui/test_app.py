@@ -2712,12 +2712,11 @@ async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
         assert recent_run is not None
         assert recent_run.kind == "compaction"
         assert recent_run.status == "completed"
-        toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
-        assert "No complete older turn is eligible" in toast.render().plain
+        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
-async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
+async def test_fork_command_directly_branches_current_session(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -2729,11 +2728,9 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
         await pilot.pause(0.8)
         source_session_id = app._controller.session_id
         assert source_session_id is not None
+        source = application.runtime.store.load_session(source_session_id)
 
-        await pilot.press("slash", *"fork", "enter", "enter")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
-        await pilot.press("down", "up", "enter")
+        await pilot.press("slash", *"fork", "enter")
         await pilot.pause(0.8)
 
         branch_session_id = app._controller.session_id
@@ -2741,15 +2738,17 @@ async def test_fork_command_selects_boundary_with_keyboard_and_opens_branch(
         assert branch_session_id != source_session_id
         branch = application.runtime.store.load_session(branch_session_id)
         assert branch.session.parent_session_id == source_session_id
-        assert branch.session.forked_from_message_id is None
-        assert branch.messages == []
-        assert app.query_one(Composer).text == "fork"
-        assert app.query_one(Composer).has_focus is True
+        assert branch.session.forked_from_message_id == source.messages[-1].message_id
+        assert [message.text_content for message in branch.messages] == [
+            message.text_content for message in source.messages
+        ]
+        assert app.query_one(Composer).text == ""
+        assert not isinstance(app.screen, ChoiceScreen)
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
-async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
+async def test_fork_current_session_restores_complete_history_and_compaction(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -2803,21 +2802,7 @@ async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
         await pilot.pause(0.5)
         await app._open_session(source.session_id)
         app._fork_session()
-        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
-
-        assert isinstance(app.screen, ChoiceScreen)
-        choices = app.screen._choices
-        assert [choice.label for choice in choices] == ["First request", "Second request"]
-        assert [choice.trailing for choice in choices] == [
-            messages[0].created_at.astimezone().strftime("%H:%M"),
-            messages[2].created_at.astimezone().strftime("%H:%M"),
-        ]
-        assert all(choice.description == "" for choice in choices)
-        assert all(choice.group == "" for choice in choices)
-        assert all("msg_" not in choice.label for choice in choices)
-
-        await pilot.press("down", "enter")
-        await pilot.pause(0.5)
+        await pilot.pause(0.8)
 
         branch_session_id = app._controller.session_id
         assert branch_session_id is not None and branch_session_id != source.session_id
@@ -2825,17 +2810,27 @@ async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
         assert [message.text_content for message in branch.messages] == [
             "First request",
             "First answer",
+            "Second request",
+            "Second answer",
         ]
-        assert branch.session.forked_from_message_id == messages[1].message_id
+        assert branch.session.forked_from_message_id == messages[-1].message_id
         assert len(branch.compactions) == 1
         assert branch.session.active_compaction_id == branch.compactions[0].compaction_id
-        assert app.query_one(Composer).text == "Second request"
-        assert app.query_one(StatusLine)._context_metrics == metrics
+        assert app.query_one(Composer).text == ""
+        status_metrics = app.query_one(StatusLine)._context_metrics
+        effective_metrics = application.runtime.sessions.effective_context_metrics(
+            branch_session_id
+        )
+        assert status_metrics is not None and effective_metrics is not None
+        assert status_metrics.estimated_input_tokens == effective_metrics.estimated_input_tokens
+        assert status_metrics.estimated_fixed_tokens == effective_metrics.estimated_fixed_tokens
         history = app.query_one(ConversationHistory)
         assert [(entry.kind, entry.text) for entry in history.entries] == [
             ("user", "First request"),
             ("assistant", "First answer"),
             ("notice", "Context compacted · 1 message summarized"),
+            ("user", "Second request"),
+            ("assistant", "Second answer"),
         ]
 
 
@@ -2856,11 +2851,11 @@ async def test_fork_command_refuses_active_tui_session(
         assert app._projection is not None
         app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
 
-        def unexpected_branch(_message_id: str) -> None:
+        def unexpected_branch() -> None:
             raise AssertionError("active TUI session reached the branch service")
 
         monkeypatch.setattr(app._controller, "branch_session", unexpected_branch)
-        app._fork_session("msg_not_reached")
+        app._fork_session()
         await pilot.pause()
 
         assert app._controller.session_id == source_session_id
@@ -4778,6 +4773,27 @@ async def test_thinking_completion_and_modal_share_supported_choices(
 
 
 @pytest.mark.asyncio
+async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press(*"start", "enter")
+        await pilot.pause(0.8)
+        assert app._projection is not None
+        app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
+
+        app.action_thinking_settings()
+        await _wait_for_screen(app, ChoiceScreen, title="MODEL THINKING")
+        app.screen.query_one("#choice-filter", Input).value = "high"
+        await pilot.press("enter")
+        await pilot.pause()
+
+        reasoning = await app._controller.session_reasoning()
+        assert reasoning.requested.effort == "high"
+
+
+@pytest.mark.asyncio
 async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
@@ -4935,7 +4951,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Update skill",
             "Remove skill",
             "Compaction policy",
-            "Abort run",
             "Keyboard help",
         ]
         assert [choice.group for choice in action_choices] == [
@@ -4948,7 +4963,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("MCP",) * 6,
             *("Skills",) * 5,
             "Compaction",
-            "Runtime",
             "Support",
         ]
         assert "Configuration" not in {choice.group for choice in action_choices}
@@ -4958,7 +4972,6 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "New session": "Ctrl+N",
             "Open session": "Ctrl+S",
             "List plugins": "Alt+P",
-            "Abort run": "Ctrl+C",
             "Keyboard help": "Ctrl+H",
         }
 

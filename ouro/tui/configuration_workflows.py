@@ -215,7 +215,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if not tools:
-            self.notify("No configurable tools are available", severity="warning")
             return
         tool_catalog = {tool.name: tool for tool in tools}
         active_tool: TuiToolConfiguration | None = None
@@ -590,7 +589,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         if selected is None:
             choices = _mcp_choices(configs, runtime)
             if not choices:
-                self.notify("No MCP servers are configured", severity="warning")
                 return
             if menu is not None:
                 servers = {config.server_id: config for config in configs}
@@ -668,7 +666,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             "remove": "REMOVE",
         }[action]
         if not candidates:
-            self.notify(f"No MCP servers are available to {action}", severity="warning")
             return
         choices = tuple(
             Choice(
@@ -978,7 +975,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         if selected is None:
             choices = tuple(_skill_choice(skill) for skill in catalog.skills)
             if not choices:
-                self.notify("No skills are installed or discovered", severity="warning")
                 return
             if menu is not None:
                 skills = {skill.name: skill for skill in catalog.skills}
@@ -1032,8 +1028,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             else catalog.skills
         )
         if not candidates:
-            qualifier = "managed " if action in {"update", "remove"} else ""
-            self.notify(f"No {qualifier}skills are available to {action}", severity="warning")
             return
         action_label = {
             "toggle": "ENABLE OR DISABLE",

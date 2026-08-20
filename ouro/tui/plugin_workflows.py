@@ -35,7 +35,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if not plugins:
-            self.notify("No plugins are installed or available", severity="warning")
             return
         choices = _plugin_choices(plugins)
         plugin_menu: ChoiceScreen
@@ -85,7 +84,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             plugin for plugin in plugins if action != "remove" or plugin.plugin_class == "user"
         )
         if not candidates:
-            self.notify(f"No plugins are available to {action}", severity="warning")
             return
         plugin_catalog = {plugin.plugin_id: plugin for plugin in candidates}
 
@@ -163,7 +161,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             elif selected == "check":
                 await self._check_plugin(plugin_id)
             elif selected == "restart":
-                await self._run_plugin_operation("restart", plugin_id)
+                await self._restart_plugin(plugin_id)
             elif selected == "configure":
                 await self._configure_plugin(plugin_id, menu=menu)
             elif selected in {"authorize", "trust-code", "revoke", "revoke-code-trust"}:
@@ -244,7 +242,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         values, credential_refs = cast(tuple[dict[str, object], dict[str, str]], draft)
         try:
-            result = await self._controller.configure_plugin(
+            await self._controller.configure_plugin(
                 plugin_id,
                 values,
                 credential_refs,
@@ -253,17 +251,15 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
-        self.notify(f"Plugin configured: {plugin_id} · {result.status}")
 
     async def _set_plugin_enabled(self, plugin_id: str, *, enabled: bool) -> bool:
         operation = self._controller.enable_plugin if enabled else self._controller.disable_plugin
         try:
-            result = await operation(plugin_id)
+            await operation(plugin_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
         self._refresh_plugin_system_status()
-        self.notify(f"Plugin {result.status}: {plugin_id}")
         return True
 
     async def _check_plugin(self, plugin_id: str) -> None:
@@ -281,14 +277,13 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             error=result.status in {"invalid", "incompatible", "blocked", "failed"},
         )
 
-    async def _run_plugin_operation(self, action: str, plugin_id: str) -> None:
+    async def _restart_plugin(self, plugin_id: str) -> None:
         try:
-            result = await self._controller.restart_plugin(plugin_id)
+            await self._controller.restart_plugin(plugin_id)
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
-        self.notify(f"Plugin {action}: {plugin_id} · {result.status}")
 
     async def _change_plugin_grants(
         self,
@@ -333,11 +328,11 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             return
         try:
             if action == "authorize":
-                result = await self._controller.authorize_plugin(plugin_id)
+                await self._controller.authorize_plugin(plugin_id)
             elif action == "trust-code":
-                result = await self._controller.trust_plugin_code(plugin_id)
+                await self._controller.trust_plugin_code(plugin_id)
             else:
-                result = await self._controller.revoke_plugin_grants(
+                await self._controller.revoke_plugin_grants(
                     plugin_id,
                     code_trust=action == "revoke-code-trust",
                 )
@@ -345,7 +340,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
-        self.notify(f"Plugin grants updated: {plugin_id} · {result.status}")
 
     async def _choose_plugin_install(
         self,
@@ -374,7 +368,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 await self.query_one(ConversationView).add_notice(str(exc), error=True)
                 return None
             self._refresh_plugin_system_status()
-            self.notify(f"Plugin version selected: {plugin_id} · {result.status}")
             return tuple(
                 replace(
                     choice,
@@ -435,7 +428,6 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         self._refresh_plugin_system_status()
-        self.notify(f"Plugin removed: {plugin_id}")
         if menu is not None:
             if return_to_catalog:
                 menu.pop_page(

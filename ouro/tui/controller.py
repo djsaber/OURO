@@ -687,50 +687,13 @@ class TuiController:
             remaining.difference_update(result.session_ids)
         return tuple(dict.fromkeys(removed))
 
-    async def branch_points(self) -> tuple[MessageRecord, ...]:
-        """Return user requests that can become an editable branch draft."""
-
+    async def branch_session(self) -> SessionBranchResult:
         session_id = self._require_session()
-        return await asyncio.to_thread(
-            lambda: tuple(
-                message
-                for message in self._session_messages(session_id)
-                if message.role == "user" and not message.scaffold
-            )
-        )
+        return await asyncio.to_thread(self._branch_current_session, session_id)
 
-    async def branch_session(self, message_id: str) -> SessionBranchResult:
-        session_id = self._require_session()
-        return await asyncio.to_thread(
-            self._branch_at_user_message,
-            session_id,
-            message_id,
-        )
-
-    def _branch_at_user_message(
-        self,
-        session_id: str,
-        message_id: str,
-    ) -> SessionBranchResult:
-        messages = self._session_messages(session_id)
-        selected_index = next(
-            (
-                index
-                for index, message in enumerate(messages)
-                if (
-                    message.message_id == message_id
-                    and message.role == "user"
-                    and not message.scaffold
-                )
-            ),
-            None,
-        )
-        if selected_index is None:
-            raise ValueError(f"user message is not a fork point in this session: {message_id}")
-        boundary_message_id = (
-            messages[selected_index - 1].message_id if selected_index > 0 else None
-        )
-        return self._runtime().sessions.branch(session_id, boundary_message_id)
+    def _branch_current_session(self, session_id: str) -> SessionBranchResult:
+        session = self._runtime().store.load_session_record(session_id)
+        return self._runtime().sessions.branch(session_id, session.last_message_id)
 
     async def queued_user_inputs(
         self,

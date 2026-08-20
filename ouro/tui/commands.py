@@ -100,8 +100,7 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand(
         "/fork",
         "Fork session",
-        "Create an independent branch at a canonical message",
-        "[message-id]",
+        "Create an independent branch of the current session",
         aliases=("/branch",),
     ),
     TuiCommand(

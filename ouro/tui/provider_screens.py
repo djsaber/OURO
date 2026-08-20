@@ -127,8 +127,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -301,8 +300,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 

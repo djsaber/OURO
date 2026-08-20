@@ -34,7 +34,6 @@ class ProviderConfigurationWorkflows(App[int]):
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return
         if not catalog.providers:
-            self.notify("No providers are configured", severity="warning")
             return
         choices = tuple(_provider_choice(provider) for provider in catalog.providers)
         if menu is not None:
@@ -165,7 +164,6 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         candidates = tuple(catalog.providers)
         if not candidates:
-            self.notify(f"No providers are available to {action}", severity="warning")
             return
         choices = tuple(
             _provider_choice(
@@ -399,7 +397,6 @@ class ProviderConfigurationWorkflows(App[int]):
         if action == "add":
             providers = tuple(catalog.providers)
             if not providers:
-                self.notify("No providers are configured", severity="warning")
                 return
             if menu is not None:
                 providers_by_id = {provider.provider_id: provider for provider in providers}
@@ -438,10 +435,6 @@ class ProviderConfigurationWorkflows(App[int]):
             for endpoint in provider.endpoints
         }
         if not routes:
-            self.notify(
-                "No provider endpoints are configured",
-                severity="warning",
-            )
             return
         choices = tuple(
             _endpoint_route_choice(provider, endpoint) for provider, endpoint in routes.values()
@@ -555,10 +548,6 @@ class ProviderConfigurationWorkflows(App[int]):
             endpoint for endpoint in catalog.endpoints if action != "use" or not endpoint.default
         )
         if not candidates:
-            self.notify(
-                f"No endpoints are available to {'set as default' if action == 'use' else action}",
-                severity="warning",
-            )
             return
         choices = tuple(
             _endpoint_choice(

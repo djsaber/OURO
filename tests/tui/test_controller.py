@@ -1028,7 +1028,7 @@ async def test_controller_submits_plugin_input_batch_as_one_run(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_controller_forks_before_user_draft_without_mutating_source(
+async def test_controller_forks_current_session_without_mutating_source(
     tmp_path: Path,
 ) -> None:
     application = _reasoning_application(tmp_path)
@@ -1042,19 +1042,19 @@ async def test_controller_forks_before_user_draft_without_mutating_source(
     try:
         source_result = await controller.submit("fork this conversation")
         source_session_id = source_result.session.session_id
-        points = await controller.branch_points()
-        assert [message.role for message in points] == ["user"]
         source_before = application.runtime.store.load_session(source_session_id)
 
-        branch = await controller.branch_session(points[0].message_id)
+        branch = await controller.branch_session()
         source_after = application.runtime.store.load_session(source_session_id)
         loaded = await controller.load_session(branch.session.session_id)
 
         assert branch.session.parent_session_id == source_session_id
-        assert loaded.messages == ()
+        assert [message.text_content for message in loaded.messages] == [
+            message.text_content for message in source_before.messages
+        ]
         assert source_after == source_before
-        assert branch.source_message_id is None
-        assert branch.session.forked_from_message_id is None
+        assert branch.source_message_id == source_before.messages[-1].message_id
+        assert branch.session.forked_from_message_id == source_before.messages[-1].message_id
     finally:
         await controller.close()
 

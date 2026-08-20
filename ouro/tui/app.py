@@ -32,7 +32,6 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
-from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
@@ -90,7 +89,6 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
-    user_message_text,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -1750,12 +1748,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/actions":
             self.action_actions()
         elif command.name == "/fork":
-            self._fork_session(argument or None)
+            self._fork_session()
         elif command.name == "/model":
             if argument:
                 await self._select_model(argument)
-            else:
-                await self._command_usage(command)
         elif command.name == "/approval":
             if argument:
                 await self._set_approval_mode(argument.casefold())
@@ -1769,20 +1765,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         elif command.name == "/thoughts":
             if argument:
                 self._set_reasoning_expanded(argument.casefold())
-            else:
-                await self._command_usage(command)
         elif command.name == "/compact":
-            if argument:
-                self.notify("Usage: /compact", severity="warning", markup=False)
-            else:
+            if not argument:
                 self._compact_session()
         elif command.name == "/skill":
             await self._submit_skill(argument)
         elif command.name == "/unqueue":
             if argument:
                 await self._unqueue_message(argument)
-            else:
-                await self._command_usage(command)
         elif command.name == "/clear":
             await self._show_welcome()
         elif command.name == "/navigate":
@@ -1855,9 +1845,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _submit_skill(self, argument: str) -> None:
         name, separator, task = argument.lstrip().partition(" ")
         if not name:
-            command = resolve_command("/skill")[0]
-            if command is not None:
-                await self._command_usage(command)
             return
         try:
             invocation = SkillInvocationRequest(
@@ -1892,9 +1879,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             )
             return
         self._edit_draft(_queued_input_draft(cancelled))
-
-    async def _command_usage(self, command: TuiCommand) -> None:
-        self.notify(f"Usage: {command.usage}", severity="warning", markup=False)
 
     def _navigate_options(self) -> tuple[TuiCommandArgument, ...]:
         """Build /navigate argument options from the live dialogue state."""
@@ -1992,7 +1976,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.notify("Abort the active run before compacting context", severity="warning")
             return
         if self._controller.session_id is None:
-            self.notify("No active session to compact")
             return
         composer = self.query_one(Composer)
         composer.disabled = True
@@ -2002,8 +1985,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._flush_pending_runtime_events()
             await self._apply_runtime_events(result.events)
             await self._refresh_usage_status()
-            if result.skipped or result.compaction is None:
-                self.notify("No complete older turn is eligible for compaction")
         except Exception as exc:  # noqa: BLE001 - compaction errors are user-visible.
             self.query_one(StatusLine).set_activity("failed")
             self.notify(str(exc), severity="error", markup=False)
@@ -2085,7 +2066,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not await self._refresh_sessions():
             return
         if not self._sessions:
-            self.notify("No saved sessions yet")
             return
         choices = _session_choices(self._sessions)
         session_menu: ChoiceScreen
@@ -2126,7 +2106,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if not await self._refresh_sessions():
             return
         if not self._sessions:
-            self.notify("No saved sessions yet")
             return
         sessions = {session.session_id: session for session in self._sessions}
 
@@ -2160,7 +2139,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         active = tuple(session for session in self._sessions if not session.archived)
         if not active:
-            self.notify("No active sessions are available to rename")
             return
 
         async def rename_session(
@@ -2193,7 +2171,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         archived = tuple(session for session in self._sessions if session.archived)
         if not archived:
-            self.notify("No archived sessions are available to delete")
             return
 
         async def delete_selected(
@@ -2293,56 +2270,17 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _fork_session(
         self,
-        message_id: str | None = None,
     ) -> None:
         if self._has_active_run():
             self.notify("Abort the active run before forking the session", severity="warning")
             return
         if self._controller.session_id is None:
-            self.notify("No active session to fork")
             return
         try:
-            points = await self._controller.branch_points()
-        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
-            self.notify(str(exc), severity="error", markup=False)
-            return
-        if not points:
-            self.notify("No user messages are available as fork points")
-            return
-        points_by_id = {point.message_id: point for point in points}
-        selected = message_id
-        if selected is None:
-            selected = await self.push_screen_wait(
-                ChoiceScreen(
-                    title="FORK SESSION",
-                    placeholder="Filter user messages…",
-                    choices=_branch_point_choices(points),
-                )
-            )
-        if selected is None:
-            return
-        await self._fork_from_message(selected, points_by_id)
-
-    async def _fork_from_message(
-        self,
-        message_id: str,
-        points_by_id: dict[str, MessageRecord],
-    ) -> None:
-        selected_message = points_by_id.get(message_id)
-        if selected_message is None:
-            self.notify(
-                f"user message is not a fork point in this session: {message_id}",
-                severity="error",
-                markup=False,
-            )
-            return
-        try:
-            result = await self._controller.branch_session(message_id)
+            result = await self._controller.branch_session()
             await self._open_session(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             self.notify(str(exc), severity="error", markup=False)
-            return
-        self._edit_draft(user_message_text(selected_message))
 
     async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
@@ -2425,8 +2363,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     async def _set_approval_mode(self, value: str) -> None:
         if value not in TUI_APPROVAL_PRESETS:
-            available = "|".join(TUI_APPROVAL_PRESETS)
-            self.notify(f"Usage: /approval <{available}>", severity="warning", markup=False)
             return
         applies_to_next_approval = self._has_active_run()
         try:
@@ -2453,12 +2389,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         await self._edit_reasoning()
 
     async def _edit_reasoning(self) -> None:
-        if self._has_active_run():
-            self.notify(
-                "Abort the active run before changing thinking settings",
-                severity="warning",
-            )
-            return
         try:
             state = await self._controller.session_reasoning()
         except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
@@ -2488,8 +2418,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def _set_reasoning(self, value: str) -> None:
         request = _REASONING_REQUESTS.get(value)
         if request is None:
-            available = "|".join(_REASONING_REQUESTS)
-            self.notify(f"Usage: /thinking <{available}>", severity="warning", markup=False)
             return
         try:
             state = await self._controller.set_session_reasoning(request)
@@ -2579,7 +2507,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 )
                 for action in SYSTEM_SETTING_ACTIONS
             ),
-            self._command_action_choice("/abort", "Runtime", "abort"),
             self._command_action_choice("/help", "Support", "help"),
         )
         choices = (*self._recent_action_choices(actions), *actions)
@@ -2816,11 +2743,6 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def _set_reasoning_expanded(self, value: str) -> bool:
         expanded = _THOUGHT_DISPLAY_OPTIONS.get(value)
         if expanded is None:
-            self.notify(
-                "Usage: /thoughts <expand|collapse>",
-                severity="warning",
-                markup=False,
-            )
             return False
         preferences = self._preferences.model_copy(update={"reasoning_expanded": expanded})
         try:
@@ -2989,26 +2911,6 @@ def _session_date_group(activity_at: datetime, *, today: date) -> str:
     if age < 30:
         return "Previous 30 days"
     return f"{month_name[activity_date.month]} {activity_date.year}"
-
-
-def _branch_point_label(message: MessageRecord) -> str:
-    preview = " ".join(message.text_content.split())
-    if not preview:
-        preview = "empty message"
-    return _truncate_session_title(preview)
-
-
-def _branch_point_choices(
-    points: tuple[MessageRecord, ...],
-) -> tuple[Choice, ...]:
-    return tuple(
-        Choice(
-            value=message.message_id,
-            label=_branch_point_label(message),
-            trailing=message.created_at.astimezone().strftime("%H:%M"),
-        )
-        for message in points
-    )
 
 
 def _queued_input_draft(item: QueuedUserInputView) -> str:

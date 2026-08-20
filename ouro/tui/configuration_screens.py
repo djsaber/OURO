@@ -115,8 +115,7 @@ class ToolExecutionConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -267,8 +266,7 @@ class AgentDispatchPolicyScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -489,8 +487,7 @@ class AgentDefinitionConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -789,8 +786,7 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -1043,8 +1039,7 @@ class MCPConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -1310,7 +1305,6 @@ class PluginInstallScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         source = self._values["source"]
         if not source:
-            self.notify("Source is required", severity="warning", markup=False)
             return
         draft = TuiPluginInstallConfiguration(
             source=source,
@@ -1410,8 +1404,7 @@ class PluginConfigurationScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 
@@ -1486,8 +1479,7 @@ class SkillInstallScreen(EditableChoiceScreen):
     def _submit(self) -> None:
         try:
             draft = self._draft()
-        except ValueError as exc:
-            self.notify(str(exc), severity="warning", markup=False)
+        except ValueError:
             return
         self.dismiss(draft)  # type: ignore[arg-type]
 

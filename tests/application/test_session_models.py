@@ -8,7 +8,7 @@ from ouro.application.models import AvailableModel
 from ouro.application.runtime import RuntimeService
 from ouro.cli.interactive import run_interactive
 from ouro.core.adapter import RuntimeAdapter
-from ouro.core.errors import ConfigError, SessionBusyError
+from ouro.core.errors import ConfigError
 from ouro.core.provider import ModelMetadata, ProviderStreamEvent
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
 from ouro.sessions import LocalSessionStore
@@ -37,10 +37,16 @@ class _BlockingToolProvider:
         self.request_started = asyncio.Event()
         self.release = asyncio.Event()
         self.models: list[str] = []
+        self.reasoning_requests: list[ReasoningRequest] = []
 
     async def stream(self, *, model, system_prompt="", messages, tools=None):
         del system_prompt, messages, tools
         self.models.append(model.model_id)
+        self.reasoning_requests.append(model.reasoning_request)
+        if len(self.models) > 1:
+            yield ProviderStreamEvent(type="text_delta", text="alpha-response")
+            yield ProviderStreamEvent(type="done")
+            return
         self.request_started.set()
         await self.release.wait()
         yield ProviderStreamEvent.from_tool_call(
@@ -238,6 +244,59 @@ async def test_active_session_model_switch_applies_to_the_next_model_request(tmp
 
 
 @pytest.mark.asyncio
+async def test_active_session_reasoning_switch_applies_to_the_next_model_request(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = _BlockingToolProvider()
+    adapter = RuntimeAdapter(
+        provider,
+        ModelMetadata(
+            model_id="alpha-model",
+            provider_id="alpha",
+            endpoint_id="default",
+            reasoning=ReasoningCapability(
+                activation="toggle",
+                supported_efforts=("low", "high"),
+                default=ReasoningRequest(mode="enabled", effort="low"),
+            ),
+        ),
+    )
+    tools = ToolRegistry()
+    tools.register(
+        Tool(
+            definition=ToolDefinition(
+                name="Continue",
+                description="Continue to the next model round.",
+            ),
+            handler=lambda invocation: ToolResult(
+                tool_call_id=invocation.tool_call_id,
+                tool_name=invocation.tool_name,
+                content="continued",
+            ),
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=adapter,
+        model_catalog=_StaticCatalog({"alpha/default": adapter}, "alpha/default"),
+        tools=tools,
+    )
+
+    running = asyncio.create_task(runtime.run("start"))
+    await asyncio.wait_for(provider.request_started.wait(), timeout=2)
+    session_id = next(entry.session_id for entry in runtime.sessions.catalog().entries)
+    high = ReasoningRequest(mode="enabled", effort="high")
+
+    switched = runtime.set_session_reasoning(session_id, high)
+    provider.release.set()
+    result = await asyncio.wait_for(running, timeout=2)
+
+    assert switched.reasoning_request == high
+    assert provider.reasoning_requests == [ReasoningRequest(), high]
+    assert result.final_text == "alpha-response"
+
+
+@pytest.mark.asyncio
 async def test_initial_model_creates_first_session_on_selected_route(tmp_path) -> None:
     runtime, _, providers = _runtime(tmp_path)
 
@@ -408,7 +467,7 @@ async def test_session_reasoning_is_persisted_and_bound_per_model_request(tmp_pa
     assert restarted.session_reasoning(second.session_id).requested == low
 
 
-def test_model_and_reasoning_changes_reject_incompatible_or_busy_sessions(tmp_path) -> None:
+def test_model_and_reasoning_changes_reject_incompatible_sessions(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
     high = ReasoningRequest(mode="enabled", effort="high")
     session = runtime.create_session(title="Strict", reasoning_request=high)
@@ -430,11 +489,11 @@ def test_model_and_reasoning_changes_reject_incompatible_or_busy_sessions(tmp_pa
     lock = runtime.store.acquire_session_lock(session.session_id, "run_busy")
     assert lock is not None
     try:
-        with pytest.raises(SessionBusyError, match="active run"):
-            runtime.set_session_reasoning(
-                session.session_id,
-                ReasoningRequest(mode="disabled"),
-            )
+        updated = runtime.set_session_reasoning(
+            session.session_id,
+            ReasoningRequest(mode="disabled"),
+        )
+        assert updated.reasoning_request == ReasoningRequest(mode="disabled")
     finally:
         lock.release()
 
