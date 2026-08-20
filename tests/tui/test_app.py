@@ -1681,6 +1681,74 @@ async def test_streaming_assistant_uses_frozen_history_content_width(tmp_path: P
 
 
 @pytest.mark.asyncio
+async def test_streaming_turn_after_tool_keeps_frozen_history_geometry(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    reasoning_text = " ".join(f"thought{index}" for index in range(40))
+    answer_text = "A plain answer that stays aligned after the tool boundary."
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        conversation.set_reasoning_expanded(True)
+        await conversation.sync_tools(
+            (
+                RuntimeToolCallActivity(
+                    tool_call_id="call_before_reasoning",
+                    tool_name="Read",
+                    status="completed",
+                    source_index=0,
+                ),
+            )
+        )
+        for index in range(0, len(reasoning_text), 7):
+            await conversation.append_reasoning(reasoning_text[index : index + 7])
+        await pilot.pause()
+
+        transcript = conversation.query_one("#conversation-transcript", Vertical)
+        live_turn = conversation.query_one(AssistantTurn)
+        live_reasoning = live_turn.reasoning
+        reasoning_body = live_reasoning._content
+        for _ in range(10):
+            if reasoning_body.rendered_text:
+                break
+            await pilot.pause(0.05)
+
+        expected_turn_width = transcript.content_region.width - 4
+        assert live_turn.content_region.width == expected_turn_width
+        assert live_reasoning.label.region.x == live_turn.content_region.x
+        assert reasoning_body.region.x == live_turn.content_region.x
+        assert reasoning_body.content_region.width == expected_turn_width - 1
+        live_border_x = reasoning_body.region.x
+        live_reasoning_lines = reasoning_body.rendered_text.splitlines()
+
+        await conversation.append_assistant(answer_text)
+        await pilot.pause()
+        assert live_turn.tail.content_region.width == expected_turn_width
+        await conversation.finish_assistant()
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        rendered_lines = history.rendered_text.splitlines()
+        thought_line = next(
+            index
+            for index, line in enumerate(rendered_lines)
+            if line.strip().startswith("THOUGHT")
+        )
+        answer_line = next(
+            index for index, line in enumerate(rendered_lines) if answer_text in line
+        )
+        frozen_reasoning_lines = [
+            line[line.index("\N{BOX DRAWINGS LIGHT VERTICAL}") :]
+            for line in rendered_lines[thought_line + 1 : answer_line]
+            if "\N{BOX DRAWINGS LIGHT VERTICAL}" in line
+        ]
+        assert frozen_reasoning_lines == live_reasoning_lines
+        stable_indent = rendered_lines[thought_line].index("THOUGHT")
+        stable_border_x = transcript.content_region.x + stable_indent
+        assert stable_border_x == live_border_x
+
+
+@pytest.mark.asyncio
 async def test_streaming_assistant_renders_completed_source_lines_once(
     tmp_path: Path,
     monkeypatch,

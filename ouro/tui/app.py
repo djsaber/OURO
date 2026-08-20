@@ -500,7 +500,10 @@ _OURO_TUI_CSS = """
     }
 
     .assistant-turn.after-tool {
-        padding-top: 1;
+        /* Textual stores padding as one Spacing value: overriding only the
+           top side clears the inline padding declared above. Restate all four
+           sides so post-tool live turns keep the history content width. */
+        padding: 1 2 0 2;
     }
 
     .assistant-markdown {
