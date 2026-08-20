@@ -38,6 +38,7 @@ class RunPresentation:
     status: RunStatus
     model: str
     duration_seconds: float | None
+    error: str | None = None
     requests: tuple[ModelRequestPresentation, ...] = ()
 
 
@@ -70,6 +71,7 @@ def project_run_presentation(
         status=run.status,
         model=model,
         duration_seconds=duration,
+        error=run.error,
         requests=requests,
     )
 

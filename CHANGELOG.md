@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- TUI conversation chrome now keeps the active workspace right-aligned in the header while
+  truncating the Session title first, preserves identical wrapping when streamed assistant blocks
+  freeze into history, and renders failed Run status and failure details with one semantic tone.
 - Streaming reasoning now renders through an append-only strip buffer: completed thinking lines
   render exactly once through the same │-bordered definition the immutable history freezes with
   (live and frozen reasoning are now cell-identical), and only the trailing partial line

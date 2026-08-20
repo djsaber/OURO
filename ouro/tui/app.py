@@ -495,7 +495,9 @@ _OURO_TUI_CSS = """
     }
 
     .assistant-turn {
-        padding: 0 $conversation-right-gutter;
+        /* Match ConversationHistory's two-cell assistant Padding so the live
+           tail and its frozen replacement wrap at the same content width. */
+        padding: 0 2;
     }
 
     .assistant-turn.after-tool {
@@ -927,6 +929,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._sessions: tuple[SessionCatalogEntry, ...] = ()
         self._active_model = "starting"
         self._active_title = "New session"
+        self._active_workspace: str | None = None
         self._reasoning_state: ModelReasoningState | None = None
         self._system_status = TuiSystemStatus()
         self._host_closing = False
@@ -946,7 +949,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return {**super().get_css_variables(), "ouro-theme": self._tui_theme.accent}
 
     def compose(self) -> ComposeResult:
-        header = BrandHeader(initial_context=self._active_title)
+        header = BrandHeader(
+            initial_context=self._active_title,
+            initial_workspace=self._active_workspace,
+        )
         header.display = False
         yield header
         with Vertical(id="main"):
@@ -1095,6 +1101,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def _apply_system_status(self, bootstrap: TuiBootstrap) -> None:
         self._system_status = bootstrap.system_status
+        if self._active_workspace is None and bootstrap.system_status.workspace is not None:
+            self._active_workspace = bootstrap.system_status.workspace
+            self.query_one(BrandHeader).set_context(workspace=self._active_workspace)
         self.query_one(ConversationView).set_system_status(self._system_status)
 
     async def _refresh_system_status(self) -> bool:
@@ -1382,7 +1391,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 presentation = replace(presentation, model=self._projection.model)
             await self.query_one(ConversationView).add_run_summary(presentation)
         self._active_title = result.session.title
-        self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self._active_workspace = result.session.workspace or self._system_status.workspace
+        self.query_one(BrandHeader).set_context(
+            session_title=self._active_title,
+            workspace=self._active_workspace,
+        )
         await self._refresh_usage_status()
         await self._refresh_interaction()
 
@@ -2014,7 +2027,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._projection = None
         self._interaction = None
         self._active_title = "New session"
-        self.query_one(BrandHeader).set_context(session_title=self._active_title)
+        self._active_workspace = self._system_status.workspace
+        self.query_one(BrandHeader).set_context(
+            session_title=self._active_title,
+            workspace=self._active_workspace,
+        )
         status_line = self.query_one(StatusLine)
         self._active_model = model.endpoint_id
         status_line.set_model(self._active_model)
@@ -2242,9 +2259,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self._restore_projection(loaded)
             session = loaded.detail.session
             self._active_title = session.title
+            self._active_workspace = session.workspace or self._system_status.workspace
             if session.current_model is not None:
                 self._active_model = _model_endpoint_name(session.current_model)
-            self.query_one(BrandHeader).set_context(session_title=self._active_title)
+            self.query_one(BrandHeader).set_context(
+                session_title=self._active_title,
+                workspace=self._active_workspace,
+            )
             status_line.set_model(self._active_model)
             await self._refresh_approval_indicator()
             await self._refresh_reasoning_indicator()

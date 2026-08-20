@@ -8,6 +8,8 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from rich.cells import cell_len
+from rich.color import Color as RichColor
 from rich.console import Console
 from rich.segment import Segment
 from rich.text import Text
@@ -114,8 +116,13 @@ from ouro.tui.screens import (
     HelpScreen,
     MultiChoiceScreen,
 )
-from ouro.tui.state import PendingInteraction, TuiSessionProjection, project_run_presentation
-from ouro.tui.theme import SELECTED_CHOICE_MARKER, TUI_THEMES
+from ouro.tui.state import (
+    PendingInteraction,
+    RunPresentation,
+    TuiSessionProjection,
+    project_run_presentation,
+)
+from ouro.tui.theme import FAILURE_TONE, SELECTED_CHOICE_MARKER, TUI_THEMES
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -130,6 +137,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    _brand_header_content,
 )
 from tests.tui.helpers import two_route_application
 
@@ -211,6 +219,42 @@ def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
     time_start = rendered.rindex("18:00")
     rendered_message = rendered[:time_start].rstrip()
     assert len(rendered_message) <= 40 * 2 // 3
+
+
+def test_brand_header_prioritizes_full_workspace_and_truncates_title() -> None:
+    console = Console(force_terminal=False, color_system="truecolor")
+    workspace = r"C:\Users\artur\Data\project\open\Ouro Agent GPT"
+    header = _brand_header_content(
+        "ProviderRetryPolicy的各项参数实际意义是什么？ · 分支 · 分支",
+        workspace,
+        width=80,
+        accent="#6083ae",
+    )
+
+    assert header.cell_len == 80
+    assert header.plain.endswith(workspace)
+    assert "…" in header.plain[: -len(workspace)]
+    workspace_offset = header.plain.index(workspace)
+    preceding_title = header.plain[:workspace_offset].rstrip()
+    assert workspace_offset - len(preceding_title) >= 3
+    workspace_style = header.get_style_at_offset(console, workspace_offset)
+    assert workspace_style.color == RichColor.parse("#6083ae")
+    assert not workspace_style.bold
+
+
+def test_brand_header_omits_title_before_shortening_workspace() -> None:
+    workspace = r"C:\work\ouro"
+    width = cell_len(" ▣ OURO ") + cell_len(workspace) + 1
+
+    header = _brand_header_content(
+        "A title that cannot fit",
+        workspace,
+        width=width,
+        accent="#6083ae",
+    )
+
+    assert header.plain.endswith(workspace)
+    assert "A title" not in header.plain
 
 
 def test_choice_screen_renders_marker_with_theme_accent() -> None:
@@ -1491,7 +1535,10 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await conversation.add_user("Hello")
         await conversation.append_assistant("```python\nprint('Hi')\n```")
         await pilot.pause()
-        assert header.render().plain == " ▣ OURO New session"
+        rendered_header = header.render().plain
+        assert rendered_header.startswith(f" ▣ OURO  {str(tmp_path)[:20]}")
+        assert rendered_header.endswith("…")
+        assert "New session" not in rendered_header
         assert f"v{__version__}" not in header.render().plain
         await conversation.add_notice("Status changed")
         # Fenced code keeps the shared panel surface (#171717) through the same
@@ -1612,6 +1659,61 @@ async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
         await pilot.pause()
         assert conversation.region.right == app.screen.region.right
         assert conversation.vertical_scrollbar.region.width == 0
+
+
+@pytest.mark.asyncio
+async def test_streaming_assistant_uses_frozen_history_content_width(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.append_assistant("A live paragraph that remains mutable.")
+        await pilot.pause()
+
+        transcript = conversation.query_one("#conversation-transcript", Vertical)
+        live_turn = conversation.query_one(AssistantTurn)
+        assert live_turn.tail.content_region.width == transcript.content_region.width - 4
+
+
+@pytest.mark.asyncio
+async def test_failed_run_summary_colors_status_and_error_but_not_separators(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 24)) as pilot:
+        await pilot.pause(0.5)
+        conversation = app.query_one(ConversationView)
+        await conversation.add_run_summary(
+            RunPresentation(
+                run_id="run_failed",
+                status="failed",
+                model="ecom-coder",
+                duration_seconds=4.2,
+                error="provider\nrequest failed",
+            )
+        )
+        await pilot.pause()
+
+        history = conversation.query_one(ConversationHistory)
+        summary_strip = next(line for line in history.lines if "failed" in line.text)
+        summary = Text()
+        for segment in summary_strip:
+            if not segment.control:
+                summary.append(segment.text, style=segment.style)
+        console = app.console
+        failure_color = RichColor.parse(FAILURE_TONE)
+        separator_color = RichColor.parse("#4d5560")
+        assert "failed • provider request failed" in summary.plain
+        assert summary.get_style_at_offset(console, summary.plain.index("failed")).color == (
+            failure_color
+        )
+        assert summary.get_style_at_offset(console, summary.plain.index("provider")).color == (
+            failure_color
+        )
+        error_separator = summary.plain.index("•", summary.plain.index("failed"))
+        assert summary.get_style_at_offset(console, error_separator).color == separator_color
 
 
 @pytest.mark.parametrize(
@@ -4352,7 +4454,8 @@ async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: P
 
         assert app._projection is not None
         assert app._projection.session_id == destination.session_id
-        assert app.query_one(BrandHeader).render().plain == " ▣ OURO Destination"
+        assert app._active_title == "Destination"
+        assert str(tmp_path)[:20] in app.query_one(BrandHeader).render().plain
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
 

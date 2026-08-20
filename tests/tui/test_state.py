@@ -5,7 +5,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from ouro.core.events import EventRecord
-from ouro.tui.state import TuiSessionProjection, question_text
+from ouro.core.state import RunRecord
+from ouro.tui.state import TuiSessionProjection, project_run_presentation, question_text
 
 
 def _event(sequence: int, event_type: str, **payload: object) -> EventRecord:
@@ -24,6 +25,20 @@ def test_projection_without_run_is_idle() -> None:
     assert projection.activity.status == "idle"
     assert projection.activity.activity == "idle"
     assert projection.activity.run_id is None
+
+
+def test_run_presentation_preserves_failure_information() -> None:
+    run = RunRecord(
+        session_id="ses_test",
+        status="failed",
+        model="ecom-coder",
+        error="provider request failed",
+    )
+
+    presentation = project_run_presentation(run)
+
+    assert presentation.status == "failed"
+    assert presentation.error == "provider request failed"
 
 
 def test_projection_accumulates_stream_and_ignores_duplicate_events() -> None:

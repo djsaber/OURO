@@ -24,7 +24,7 @@ from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.state import RunPresentation, format_duration
-from ouro.tui.theme import TuiTheme, theme_for
+from ouro.tui.theme import FAILURE_TONE, TuiTheme, theme_for
 
 
 class ToolActivityRenderer(Protocol):
@@ -741,7 +741,11 @@ class ConversationHistory(RichLog, can_focus=False):
                 )
             if entry.run.status != "completed":
                 summary.append(" • ", style="#4d5560")
-                summary.append(entry.run.status, style="#777f8b")
+                status_tone = FAILURE_TONE if entry.run.status == "failed" else "#777f8b"
+                summary.append(entry.run.status, style=status_tone)
+            if entry.run.status == "failed" and entry.run.error:
+                summary.append(" • ", style="#4d5560")
+                summary.append(" ".join(entry.run.error.split()), style=FAILURE_TONE)
             return [(Padding(summary, (0, 1, 1, 2)), "body")]
 
         pieces: list[tuple[RenderableType, _PieceTag]] = []

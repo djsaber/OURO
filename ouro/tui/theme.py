@@ -9,6 +9,7 @@ from typing import Any, cast
 SELECTED_CHOICE_MARKER = "●"
 WELCOME_BULLET = "•"
 WELCOME_SEPARATOR = f" {WELCOME_BULLET} "
+FAILURE_TONE = "#d87575"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +119,7 @@ def theme_for(node: object) -> TuiTheme:
 
 __all__ = [
     "DEFAULT_TUI_THEME",
+    "FAILURE_TONE",
     "SELECTED_CHOICE_MARKER",
     "TUI_THEMES",
     "TuiTheme",

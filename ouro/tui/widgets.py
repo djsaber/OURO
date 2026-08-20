@@ -9,6 +9,7 @@ from time import monotonic
 from typing import Literal
 
 from pydantic import JsonValue
+from rich.cells import cell_len
 from rich.text import Text
 from textual import events, work
 from textual.app import ComposeResult
@@ -49,7 +50,13 @@ from ouro.tui.conversation_history import (
 from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.text_inputs import TuiTextArea
-from ouro.tui.theme import WELCOME_BULLET, WELCOME_SEPARATOR, TuiTheme, theme_for
+from ouro.tui.theme import (
+    FAILURE_TONE,
+    WELCOME_BULLET,
+    WELCOME_SEPARATOR,
+    TuiTheme,
+    theme_for,
+)
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
 
 _SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -106,6 +113,7 @@ _ACTIVITY_LABELS = {
 _CONTEXT_PROGRESS_WIDTH = 11
 _MUTED_TONE = "#6f7a87"
 _WARNING_TONE = "#968264"
+_HEADER_MIN_GAP = 3
 
 
 def _compact_names(names: tuple[str, ...], *, limit: int = 3) -> str:
@@ -129,27 +137,96 @@ def _compact_count(value: int) -> str:
 class BrandHeader(Static):
     """Static brand identity and session title docked at the top of the screen."""
 
-    def __init__(self, *, initial_context: str = "New session") -> None:
+    def __init__(
+        self,
+        *,
+        initial_context: str = "New session",
+        initial_workspace: str | None = None,
+    ) -> None:
         super().__init__(id="brand-header")
         self._session_title = initial_context
+        self._workspace = initial_workspace
 
     def on_mount(self) -> None:
         self._render_header()
 
-    def set_context(self, *, session_title: str | None = None) -> None:
+    def on_resize(self, event: events.Resize) -> None:
+        self._render_header(width=event.size.width)
+
+    def set_context(
+        self,
+        *,
+        session_title: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
         if session_title is not None:
             self._session_title = session_title
+        if workspace is not None:
+            self._workspace = workspace
         self._render_header()
 
     def refresh_theme(self) -> None:
         self._render_header()
 
-    def _render_header(self) -> None:
+    def _render_header(self, *, width: int | None = None) -> None:
         accent = theme_for(self).accent
-        content = Text()
-        content.append(" ▣ OURO ", style=f"bold {accent}")
-        content.append(self._session_title, style="bold")
-        self.update(content)
+        available_width = self.size.width if width is None else width
+        self.update(
+            _brand_header_content(
+                self._session_title,
+                self._workspace,
+                width=available_width,
+                accent=accent,
+            )
+        )
+
+
+def _brand_header_content(
+    session_title: str,
+    workspace: str | None,
+    *,
+    width: int,
+    accent: str,
+) -> Text:
+    """Lay out the title and right-aligned workspace with workspace priority."""
+
+    content = Text()
+    content.append(" ▣ OURO ", style=f"bold {accent}")
+    if width <= 0:
+        content.append(session_title, style="bold")
+        if workspace:
+            content.append(" " * _HEADER_MIN_GAP)
+            content.append(workspace, style=accent)
+        return content
+
+    content.truncate(width, overflow="ellipsis")
+    remaining = width - content.cell_len
+    if remaining <= 0:
+        return content
+
+    if not workspace:
+        title = Text(session_title, style="bold")
+        title.truncate(remaining, overflow="ellipsis")
+        content.append_text(title)
+        return content
+
+    workspace_width = cell_len(workspace)
+    title_width = remaining - workspace_width - _HEADER_MIN_GAP
+    if title_width > 0:
+        title = Text(session_title, style="bold")
+        title.truncate(title_width, overflow="ellipsis")
+        content.append_text(title)
+        content.append(" " * (width - content.cell_len - workspace_width))
+        content.append(workspace, style=accent)
+        return content
+
+    # When both fields cannot fit, omit the title before shortening the workspace.
+    workspace_gap = min(_HEADER_MIN_GAP, max(1, remaining - workspace_width))
+    workspace_text = Text(workspace, style=accent)
+    workspace_text.truncate(max(0, remaining - workspace_gap), overflow="ellipsis")
+    content.append(" " * workspace_gap)
+    content.append_text(workspace_text)
+    return content
 
 
 class ActivityIndicator(Static):
@@ -478,9 +555,9 @@ def _tool_activity_text(
     mark = _SPINNER[frame] if active else marks.get(tool.status, "·")
     state_styles = {
         "completed": "#77b083",
-        "failed": "#d87575",
-        "rejected": "#d87575",
-        "aborted": "#d87575",
+        "failed": FAILURE_TONE,
+        "rejected": FAILURE_TONE,
+        "aborted": FAILURE_TONE,
         "unknown_outcome": theme.accent,
         "awaiting_approval": theme.accent,
         "waiting_user": theme.accent,

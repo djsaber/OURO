@@ -452,7 +452,7 @@ class TuiController:
         return project_plugin_system_status(
             project_mcp_system_status(
                 TuiSystemStatus(
-                    workspace=runtime.default_workspace,
+                    workspace=str(runtime.default_workspace),
                     provider_ids=tuple(sorted({model.provider_id for model in models})),
                     model_count=len(models),
                     skill_count=len(skills),
