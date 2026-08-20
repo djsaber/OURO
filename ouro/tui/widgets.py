@@ -238,6 +238,8 @@ class ActivityIndicator(Static):
         self._activity = "idle"
         self._approval_mode: TuiApprovalPreset = "inherit"
         self._model = "starting"
+        self._model_attempt: int | None = None
+        self._model_max_attempts: int | None = None
         self._reasoning: str | None = None
         self._reasoning_peak = False
         self._timer: Timer | None = None
@@ -246,8 +248,16 @@ class ActivityIndicator(Static):
         self._timer = self.set_interval(0.12, self._tick, pause=True)
         self._render_indicator()
 
-    def set_activity(self, activity: str) -> None:
+    def set_activity(
+        self,
+        activity: str,
+        *,
+        model_attempt: int | None = None,
+        model_max_attempts: int | None = None,
+    ) -> None:
         self._activity = activity
+        self._model_attempt = model_attempt
+        self._model_max_attempts = model_max_attempts
         if self._timer is not None:
             if activity in _BUSY_ACTIVITIES:
                 self._timer.resume()
@@ -287,6 +297,13 @@ class ActivityIndicator(Static):
         ready = self._activity in {"idle", "completed"}
         mark = _SPINNER[self._frame] if busy else "▣"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
+        if (
+            self._activity == "waiting_model"
+            and self._model_attempt is not None
+            and self._model_max_attempts is not None
+            and 2 <= self._model_attempt <= self._model_max_attempts
+        ):
+            label = f"{label} {self._model_attempt}/{self._model_max_attempts}"
         content = Text()
         content.append(
             f" {mark} ",
@@ -2310,8 +2327,18 @@ class StatusLine(Horizontal):
         yield ActivityIndicator()
         yield Static("", id="context-detail")
 
-    def set_activity(self, activity: str) -> None:
-        self.query_one(ActivityIndicator).set_activity(activity)
+    def set_activity(
+        self,
+        activity: str,
+        *,
+        model_attempt: int | None = None,
+        model_max_attempts: int | None = None,
+    ) -> None:
+        self.query_one(ActivityIndicator).set_activity(
+            activity,
+            model_attempt=model_attempt,
+            model_max_attempts=model_max_attempts,
+        )
 
     def set_model(self, model: str) -> None:
         self.query_one(ActivityIndicator).set_model(model)

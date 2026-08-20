@@ -170,13 +170,31 @@ def reduce_runtime_activity(
             status="running",
             run_phase="model_streaming",
             compaction_id=None,
+            model_attempt=None,
+            model_max_attempts=None,
         )
         context_status = _context_status_from_request(event)
         if context_status is not None:
             updates["context_status"] = context_status
             updates["effective_context_metrics"] = context_status.metrics
     elif event_type == "run_retry_scheduled":
-        updates.update(activity="waiting_model", status="running")
+        attempt = payload.get("attempt")
+        max_attempts = payload.get("max_attempts")
+        updates.update(
+            activity="waiting_model",
+            status="running",
+            model_attempt=None,
+            model_max_attempts=None,
+        )
+        if (
+            isinstance(attempt, int)
+            and isinstance(max_attempts, int)
+            and 2 <= attempt <= max_attempts
+        ):
+            updates.update(
+                model_attempt=attempt,
+                model_max_attempts=max_attempts,
+            )
     elif event_type == "model_reasoning_delta":
         updates.update(activity="streaming_reasoning", status="running")
     elif event_type == "model_text_delta":
@@ -413,6 +431,8 @@ def _run_reset(status: SupervisorRunStatus, activity: RuntimeActivity) -> dict[s
         "batch_phase": None,
         "tool_calls": (),
         "compaction_id": None,
+        "model_attempt": None,
+        "model_max_attempts": None,
     }
 
 

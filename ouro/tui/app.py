@@ -1646,8 +1646,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         composer.focus()
 
     def _sync_activity(self, activity: RuntimeActivitySnapshot) -> None:
-        self.query_one(StatusLine).set_activity(activity.activity)
         status_line = self.query_one(StatusLine)
+        status_line.set_activity(
+            activity.activity,
+            model_attempt=activity.model_attempt,
+            model_max_attempts=activity.model_max_attempts,
+        )
         status_line.set_context_metrics(activity.effective_context_metrics)
         self._sync_composer_placeholder()
 

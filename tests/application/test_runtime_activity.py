@@ -171,6 +171,47 @@ def test_runtime_activity_reduces_model_interaction_and_tool_execution() -> None
     assert activity.batch_id is None
 
 
+def test_runtime_activity_tracks_provider_retry_attempts_per_model_request() -> None:
+    activity = reduce_runtime_activity(
+        queued_runtime_activity("ses_1"),
+        _event(1, "model_request_started", {"turn_id": "turn_1"}),
+    )
+
+    assert activity.activity == "waiting_model"
+    assert activity.model_attempt is None
+    assert activity.model_max_attempts is None
+
+    second_attempt = reduce_runtime_activity(
+        activity,
+        _event(
+            2,
+            "run_retry_scheduled",
+            {"turn_id": "turn_1", "attempt": 2, "max_attempts": 5},
+        ),
+    )
+    third_attempt = reduce_runtime_activity(
+        second_attempt,
+        _event(
+            3,
+            "run_retry_scheduled",
+            {"turn_id": "turn_1", "attempt": 3, "max_attempts": 5},
+        ),
+    )
+
+    assert second_attempt.model_attempt == 2
+    assert second_attempt.model_max_attempts == 5
+    assert third_attempt.model_attempt == 3
+    assert third_attempt.model_max_attempts == 5
+    assert runtime_activity_changed(second_attempt, third_attempt) is True
+
+    next_request = reduce_runtime_activity(
+        third_attempt,
+        _event(4, "model_request_started", {"turn_id": "turn_2"}),
+    )
+    assert next_request.model_attempt is None
+    assert next_request.model_max_attempts is None
+
+
 def test_runtime_activity_projection_overlays_authoritative_durable_tool_state() -> None:
     session = SessionRecord(session_id="ses_1", status="running", active_run_id="run_1")
     batch = ToolCallBatchRecord(

@@ -97,6 +97,8 @@ class RuntimeActivitySnapshot(ApplicationDTO):
     batch_phase: ToolBatchPhase | None = None
     tool_calls: tuple[RuntimeToolCallActivity, ...] = ()
     compaction_id: str | None = None
+    model_attempt: int | None = Field(default=None, ge=2)
+    model_max_attempts: int | None = Field(default=None, ge=2)
     context_status: SessionContextStatus | None = None
     effective_context_metrics: ContextMetrics | None = None
     sequence: int = Field(default=0, ge=0)

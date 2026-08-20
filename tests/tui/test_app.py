@@ -34,7 +34,7 @@ from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
-from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
@@ -51,6 +51,7 @@ from ouro.core.messages import (
 from ouro.core.provider import (
     ModelMetadata,
     ProviderCheckResult,
+    ProviderRetryNotice,
     ProviderStreamEvent,
 )
 from ouro.core.reasoning import ReasoningCapability, ReasoningRequest
@@ -674,6 +675,37 @@ class BlockingStreamProvider:
         )
 
 
+class RetryThenBlockProvider:
+    provider_id = "retry-then-block"
+
+    def __init__(self) -> None:
+        self.retry_observed = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def stream(
+        self,
+        *,
+        model: ModelMetadata,
+        system_prompt: str = "",
+        messages: list[ModelMessage],
+        tools: list[dict[str, object]] | None = None,
+    ) -> AsyncIterator[ProviderStreamEvent]:
+        del model, system_prompt, messages, tools
+        yield ProviderStreamEvent(
+            type="retry_scheduled",
+            retry=ProviderRetryNotice(
+                attempt=3,
+                max_attempts=5,
+                delay_seconds=0,
+                reason="temporary transport failure",
+            ),
+        )
+        self.retry_observed.set()
+        await self.release.wait()
+        yield ProviderStreamEvent(type="text_delta", text="Recovered.")
+        yield ProviderStreamEvent(type="done")
+
+
 class BlockingReasoningProvider:
     provider_id = "blocking-reasoning"
 
@@ -1215,7 +1247,10 @@ def _multi_approval_application(tmp_path: Path, targets: tuple[Path, Path]) -> L
 def _blocking_application(
     tmp_path: Path,
     provider: (
-        BlockingStreamProvider | BlockingReasoningProvider | ReasoningBurstThenBlockProvider
+        BlockingStreamProvider
+        | RetryThenBlockProvider
+        | BlockingReasoningProvider
+        | ReasoningBurstThenBlockProvider
     ),
 ) -> LocalApplication:
     store = LocalSessionStore(tmp_path)
@@ -2032,6 +2067,60 @@ async def test_status_line_projects_approval_presets_with_muted_risk_color(
         await app._new_session()
         assert "Ready • inherit • faux" in indicator.render().plain
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
+
+
+@pytest.mark.asyncio
+async def test_status_line_shows_model_retry_attempts_after_the_first_attempt(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        first_attempt = RuntimeActivitySnapshot(
+            session_id="ses_retry",
+            run_id="run_retry",
+            status="running",
+            activity="waiting_model",
+        )
+        app._sync_activity(first_attempt)
+        indicator = app.query_one(ActivityIndicator)
+
+        assert "Waiting for model •" in indicator.render().plain
+        assert "/5" not in indicator.render().plain
+
+        app._sync_activity(
+            first_attempt.model_copy(
+                update={"model_attempt": 2, "model_max_attempts": 5}
+            )
+        )
+        assert "Waiting for model 2/5" in indicator.render().plain
+
+        app._sync_activity(
+            first_attempt.model_copy(
+                update={"model_attempt": 3, "model_max_attempts": 5}
+            )
+        )
+        assert "Waiting for model 3/5" in indicator.render().plain
+
+
+@pytest.mark.asyncio
+async def test_status_line_updates_while_a_model_retry_is_waiting(tmp_path: Path) -> None:
+    provider = RetryThenBlockProvider()
+    app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press(*"retry", "enter")
+        try:
+            await asyncio.wait_for(provider.retry_observed.wait(), timeout=2)
+            await pilot.pause(0.2)
+
+            assert "Waiting for model 3/5" in app.query_one(ActivityIndicator).render().plain
+        finally:
+            provider.release.set()
+        await pilot.pause(0.5)
+        assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
 
 @pytest.mark.asyncio
