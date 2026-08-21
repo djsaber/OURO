@@ -1005,6 +1005,9 @@ class ConversationView(VerticalScroll):
     def compose(self) -> ComposeResult:
         yield self._transcript
 
+    def text_select_all(self) -> None:
+        """Keep range selection without selecting the entire conversation."""
+
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
         """Resolve the scroll position from the viewport used by this layout pass.
 

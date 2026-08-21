@@ -603,6 +603,9 @@ class ConversationHistory(RichLog, can_focus=False):
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         return selection.extract(self.rendered_text), "\n"
 
+    def text_select_all(self) -> None:
+        """Keep range selection without double-clicking the entire transcript."""
+
     def render_line(self, y: int) -> Strip:
         """Render one line with source offsets and any active selection.
 
