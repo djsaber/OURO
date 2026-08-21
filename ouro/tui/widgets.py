@@ -322,6 +322,16 @@ class ActivityIndicator(Static):
         self.update(content)
 
 
+class ReasoningLabel(Label):
+    class ToggleRequested(Message):
+        pass
+
+    def on_click(self, event: events.Click) -> None:
+        if event.button == 1:
+            self.post_message(self.ToggleRequested())
+            event.stop()
+
+
 class ReasoningView(Vertical):
     """A plain-text reasoning stream with presentation state independent from the answer.
 
@@ -334,7 +344,7 @@ class ReasoningView(Vertical):
     def __init__(self, *, expanded: bool = True) -> None:
         super().__init__(classes="reasoning-view")
         self.display = False
-        self.label = Label(
+        self.label = ReasoningLabel(
             _completed_reasoning_label(None),
             classes="reasoning-label",
         )
@@ -343,7 +353,7 @@ class ReasoningView(Vertical):
         self._clock_started_at: float | None = None
         self._completed_seconds: float | None = None
         self._content = ReasoningLines()
-        self._content.display = expanded
+        self._content.set_class(not expanded, "collapsed")
 
     def compose(self) -> ComposeResult:
         yield self.label
@@ -360,8 +370,12 @@ class ReasoningView(Vertical):
     def duration_seconds(self) -> float | None:
         return self._completed_seconds
 
+    @property
+    def expanded(self) -> bool:
+        return not self._content.has_class("collapsed")
+
     def set_expanded(self, expanded: bool) -> None:
-        self._content.display = expanded
+        self._content.set_class(not expanded, "collapsed")
 
     async def append(self, text: str, *, started_at: datetime | None = None) -> None:
         if not text:
@@ -484,6 +498,10 @@ class AssistantTurn(Vertical):
 
     def set_reasoning_expanded(self, expanded: bool) -> None:
         self.reasoning.set_expanded(expanded)
+
+    @property
+    def reasoning_expanded(self) -> bool:
+        return self.reasoning.expanded
 
 
 def _completed_reasoning_label(duration_seconds: float | None) -> str:
@@ -998,7 +1016,6 @@ class ConversationView(VerticalScroll):
         arrangement = super().arrange(size, optimal)
         if not optimal:
             max_scroll_y = max(0, arrangement.total_region.bottom - size.height)
-            self._follow_tail = self._follow_tail or self.scroll_y >= max_scroll_y
             scroll_y = max_scroll_y if self._follow_tail else self.scroll_y
             self.set_scroll(None, scroll_y)
             self.scroll_target_y = scroll_y
@@ -1046,14 +1063,39 @@ class ConversationView(VerticalScroll):
             self._welcome_state_changed(showing)
 
     def set_reasoning_expanded(self, expanded: bool) -> None:
-        if self._reasoning_expanded == expanded:
-            return
-        self._reasoning_expanded = expanded
-        delta = self._history.set_reasoning_expanded(expanded, above_line=round(self.scroll_y))
-        if self._assistant is not None:
-            self._assistant.set_reasoning_expanded(expanded)
-        if delta and not self._follow_tail:
-            self.scroll_to(y=max(0.0, self.scroll_y + delta), animate=False, immediate=True)
+        with self.app.batch_update():
+            self._reasoning_expanded = expanded
+            delta = self._history.set_reasoning_expanded(
+                expanded,
+                above_line=round(self.scroll_y),
+            )
+            if self._assistant is not None:
+                self._assistant.set_reasoning_expanded(expanded)
+            if delta and not self._follow_tail:
+                self.scroll_to(y=max(0.0, self.scroll_y + delta), animate=False, immediate=True)
+
+    def on_reasoning_label_toggle_requested(
+        self,
+        message: ReasoningLabel.ToggleRequested,
+    ) -> None:
+        turn = self._assistant
+        if turn is not None:
+            with self.app.batch_update():
+                expanding = not turn.reasoning_expanded
+                if expanding:
+                    self.release_anchor()
+                turn.set_reasoning_expanded(expanding)
+        message.stop()
+
+    def on_conversation_history_toggle_reasoning_requested(
+        self,
+        message: ConversationHistory.ToggleReasoningRequested,
+    ) -> None:
+        with self.app.batch_update():
+            if not self._history.is_reasoning_expanded(message.entry_index):
+                self.release_anchor()
+            self._history.toggle_reasoning(message.entry_index)
+        message.stop()
 
     async def load_messages(
         self,
@@ -1253,6 +1295,7 @@ class ConversationView(VerticalScroll):
         if not block.strip():
             return
         if turn.reasoning_pending:
+            reasoning_expanded = turn.reasoning_expanded
             reasoning, seconds = turn.take_reasoning()
             if reasoning:
                 self._history.append(
@@ -1261,7 +1304,8 @@ class ConversationView(VerticalScroll):
                         reasoning=reasoning,
                         reasoning_seconds=seconds,
                         run_id=turn.run_id,
-                    )
+                    ),
+                    reasoning_expanded=reasoning_expanded,
                 )
         self._history.append(TranscriptEntry(kind="assistant", text=block, run_id=turn.run_id))
 
@@ -1273,6 +1317,7 @@ class ConversationView(VerticalScroll):
         for block in turn.close():
             await self._freeze_block(turn, block)
         if turn.reasoning_pending:
+            reasoning_expanded = turn.reasoning_expanded
             reasoning, seconds = turn.take_reasoning()
             if reasoning:
                 self._history.append(
@@ -1281,7 +1326,8 @@ class ConversationView(VerticalScroll):
                         reasoning=reasoning,
                         reasoning_seconds=seconds,
                         run_id=turn.run_id,
-                    )
+                    ),
+                    reasoning_expanded=reasoning_expanded,
                 )
         self._assistant = None
         await turn.remove()

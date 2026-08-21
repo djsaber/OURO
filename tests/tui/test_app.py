@@ -3425,12 +3425,12 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         await conversation.append_reasoning("Live private thought")
         live_reasoning = app.query_one(AssistantTurn).reasoning
         assert live_reasoning.text == "Live private thought"
-        assert live_reasoning._content.display is True
+        assert live_reasoning.expanded is True
 
         await app._dispatch_command("/thoughts collapse")
         await pilot.pause()
         assert "Historical private thought" not in history.rendered_text
-        assert live_reasoning._content.display is False
+        assert live_reasoning.expanded is False
 
         await conversation.append_assistant("Live final answer")
         await pilot.pause()

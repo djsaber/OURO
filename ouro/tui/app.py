@@ -536,6 +536,11 @@ _OURO_TUI_CSS = """
         background: transparent;
     }
 
+    .reasoning-lines.collapsed {
+        height: 0;
+        margin-top: 0;
+    }
+
     .tool-row {
         height: auto;
         margin: 0 0 0 2;

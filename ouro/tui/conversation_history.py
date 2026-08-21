@@ -17,6 +17,7 @@ from rich.text import Text
 from textual import events
 from textual.events import Resize
 from textual.geometry import Size
+from textual.message import Message
 from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
@@ -40,6 +41,7 @@ class ToolActivityRenderer(Protocol):
 TranscriptEntryKind = Literal["user", "assistant", "tool", "notice", "run"]
 
 _PANEL_BACKGROUND = "#171717"
+_REASONING_ENTRY_META = "ouro_reasoning_entry"
 
 
 class _PanelCodeTheme(SyntaxTheme):
@@ -188,11 +190,18 @@ def split_markdown_blocks(text: str) -> tuple[str, ...]:
     return tuple(blocks)
 
 
-def _thought_label(reasoning_seconds: float | None) -> Text:
+def _thought_label(reasoning_seconds: float | None, *, entry_index: int) -> Text:
     label = "THOUGHT"
     if reasoning_seconds is not None:
         label += f" · {format_duration(reasoning_seconds)}"
-    return Text(label, style="bold #aeb5bf")
+    return Text(
+        label,
+        style=Style(
+            color="#aeb5bf",
+            bold=True,
+            meta={_REASONING_ENTRY_META: entry_index},
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -515,6 +524,7 @@ class _Piece:
 def _reasoning_area(
     entry: TranscriptEntry,
     *,
+    entry_index: int,
     expanded: bool,
     top: int,
 ) -> tuple[RenderableType, _PieceTag]:
@@ -523,7 +533,7 @@ def _reasoning_area(
     The area always ends in exactly one blank line — the gap belongs between
     reasoning and its answer whether or not an answer follows.
     """
-    label = _thought_label(entry.reasoning_seconds)
+    label = _thought_label(entry.reasoning_seconds, entry_index=entry_index)
     if expanded:
         area: RenderableType = Group(
             label,
@@ -548,6 +558,11 @@ class ConversationHistory(RichLog, can_focus=False):
     widgets below this buffer because it is still mutable.
     """
 
+    class ToggleReasoningRequested(Message):
+        def __init__(self, entry_index: int) -> None:
+            super().__init__()
+            self.entry_index = entry_index
+
     def __init__(
         self,
         render_tool: ToolActivityRenderer,
@@ -567,6 +582,7 @@ class ConversationHistory(RichLog, can_focus=False):
         self._user_lines: tuple[int, ...] = ()
         self._render_width = 0
         self._reasoning_expanded = reasoning_expanded
+        self._reasoning_expanded_by_entry: dict[int, bool] = {}
 
     @property
     def entries(self) -> tuple[TranscriptEntry, ...]:
@@ -605,10 +621,17 @@ class ConversationHistory(RichLog, can_focus=False):
         return line.apply_offsets(0, source_y)
 
     def on_click(self, event: events.Click) -> None:
-        if event.button == 1 and event.style is not None and event.style.link:
+        if event.button != 1 or event.style is None:
+            return
+        entry_index = event.style.meta.get(_REASONING_ENTRY_META)
+        if isinstance(entry_index, int):
+            self.post_message(self.ToggleReasoningRequested(entry_index))
+            event.stop()
+        elif event.style.link:
             self.app.open_url(event.style.link)
 
     def replace(self, entries: Iterable[TranscriptEntry]) -> None:
+        self._reasoning_expanded_by_entry.clear()
         if self._reset_buffer(list(entries)):
             self._render_entries()
         elif self._entries:
@@ -622,6 +645,7 @@ class ConversationHistory(RichLog, can_focus=False):
         are rendered, preserving the ``load_messages`` contract that callers
         rely on before anchoring the scroll position.
         """
+        self._reasoning_expanded_by_entry.clear()
         if not self._reset_buffer(list(entries)):
             if self._entries:
                 # Width is unknown (the log was hidden while empty); render as
@@ -656,15 +680,27 @@ class ConversationHistory(RichLog, can_focus=False):
             self._write_entry(entry, previous_kind=previous_kind, entry_index=index)
         return stop
 
-    def append(self, entry: TranscriptEntry) -> None:
+    def append(
+        self,
+        entry: TranscriptEntry,
+        *,
+        reasoning_expanded: bool | None = None,
+    ) -> None:
+        entry_index = len(self._entries)
         self._entries.append(entry)
+        if (
+            entry.reasoning
+            and reasoning_expanded is not None
+            and reasoning_expanded != self._reasoning_expanded
+        ):
+            self._reasoning_expanded_by_entry[entry_index] = reasoning_expanded
         self.display = True
         if self._size_known and self.scrollable_content_region.width > 0:
             previous_kind = self._entries[-2].kind if len(self._entries) > 1 else None
             self._write_entry(
                 entry,
                 previous_kind=previous_kind,
-                entry_index=len(self._entries) - 1,
+                entry_index=entry_index,
             )
         else:
             self.call_after_refresh(self._render_entries)
@@ -712,19 +748,16 @@ class ConversationHistory(RichLog, can_focus=False):
         line delta at indexes below ``above_line`` so the caller can keep the
         viewport anchored over unchanged content.
         """
-        if self._reasoning_expanded == expanded:
+        if self._reasoning_expanded == expanded and not self._reasoning_expanded_by_entry:
             return 0
         self._reasoning_expanded = expanded
+        self._reasoning_expanded_by_entry.clear()
         delta = 0
         position = 0
         changed = False
         for piece in self._pieces:
             if piece.tag == "reasoning":
-                index = piece.entry_index
-                entry = self._entries[index]
-                top = 1 if (index > 0 and self._entries[index - 1].kind == "tool") else 0
-                renderable, _tag = _reasoning_area(entry, expanded=expanded, top=top)
-                new_strips = self._render_strips(renderable)
+                new_strips = self._render_reasoning_piece(piece, expanded=expanded)
                 if position < above_line:
                     delta += len(new_strips) - len(piece.strips)
                 piece.strips = new_strips
@@ -733,6 +766,44 @@ class ConversationHistory(RichLog, can_focus=False):
         if changed:
             self._rebuild_lines()
         return delta
+
+    def toggle_reasoning(self, entry_index: int) -> None:
+        """Toggle one reasoning entry without changing the global display default."""
+        if not (0 <= entry_index < len(self._entries)):
+            return
+        entry = self._entries[entry_index]
+        if not entry.reasoning:
+            return
+        expanded = not self.is_reasoning_expanded(entry_index)
+        if expanded == self._reasoning_expanded:
+            self._reasoning_expanded_by_entry.pop(entry_index, None)
+        else:
+            self._reasoning_expanded_by_entry[entry_index] = expanded
+        for piece in self._pieces:
+            if piece.tag != "reasoning" or piece.entry_index != entry_index:
+                continue
+            piece.strips = self._render_reasoning_piece(piece, expanded=expanded)
+            self._rebuild_lines()
+            return
+
+    def is_reasoning_expanded(self, entry_index: int) -> bool:
+        """Return whether a reasoning entry is currently expanded."""
+        return self._reasoning_expanded_by_entry.get(
+            entry_index,
+            self._reasoning_expanded,
+        )
+
+    def _render_reasoning_piece(self, piece: _Piece, *, expanded: bool) -> list[Strip]:
+        entry_index = piece.entry_index
+        entry = self._entries[entry_index]
+        top = 1 if (entry_index > 0 and self._entries[entry_index - 1].kind == "tool") else 0
+        renderable, _tag = _reasoning_area(
+            entry,
+            entry_index=entry_index,
+            expanded=expanded,
+            top=top,
+        )
+        return self._render_strips(renderable)
 
     def on_resize(self, event: Resize) -> None:
         size_was_known = self._size_known
@@ -768,7 +839,11 @@ class ConversationHistory(RichLog, can_focus=False):
         previous_kind: TranscriptEntryKind | None,
         entry_index: int,
     ) -> None:
-        for renderable, tag in self._entry_pieces(entry, previous_kind=previous_kind):
+        for renderable, tag in self._entry_pieces(
+            entry,
+            previous_kind=previous_kind,
+            entry_index=entry_index,
+        ):
             strips = self._render_strips(renderable)
             if tag == "user":
                 self._user_lines = (*self._user_lines, len(self.lines))
@@ -786,6 +861,7 @@ class ConversationHistory(RichLog, can_focus=False):
         entry: TranscriptEntry,
         *,
         previous_kind: TranscriptEntryKind | None,
+        entry_index: int,
     ) -> list[tuple[RenderableType, _PieceTag]]:
         theme = theme_for(self)
         if entry.kind == "user":
@@ -834,7 +910,14 @@ class ConversationHistory(RichLog, can_focus=False):
         pieces: list[tuple[RenderableType, _PieceTag]] = []
         top = 1 if previous_kind == "tool" else 0
         if entry.reasoning:
-            pieces.append(_reasoning_area(entry, expanded=self._reasoning_expanded, top=top))
+            pieces.append(
+                _reasoning_area(
+                    entry,
+                    entry_index=entry_index,
+                    expanded=self.is_reasoning_expanded(entry_index),
+                    top=top,
+                )
+            )
         if entry.text:
             text_top = 0 if entry.reasoning else top
             pieces.append(
