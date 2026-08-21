@@ -361,6 +361,14 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             return
         screen: ChoiceScreen
 
+        async def refresh_definitions() -> tuple[Choice, ...] | None:
+            try:
+                refreshed = await self._controller.agent_definition_catalog()
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            return _agent_definition_choices(refreshed.definitions)
+
         async def select_definition(agent_id: str) -> tuple[Choice, ...] | None:
             try:
                 current = await self._controller.agent_definition_catalog()
@@ -387,6 +395,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 placeholder="Filter subagents…",
                 choices=_agent_definition_choices(catalog.definitions),
                 on_select=select_definition,
+                on_refresh=refresh_definitions,
             )
             return
         screen = ChoiceScreen(
@@ -394,6 +403,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             placeholder="Filter subagents…",
             choices=_agent_definition_choices(catalog.definitions),
             on_select=select_definition,
+            on_refresh=refresh_definitions,
         )
         await self.push_screen_wait(screen)
 
@@ -593,6 +603,19 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             if menu is not None:
                 servers = {config.server_id: config for config in configs}
 
+                async def refresh_servers() -> tuple[Choice, ...] | None:
+                    try:
+                        refreshed = await self._controller.mcp_configurations()
+                        refreshed_runtime = {
+                            item.server_id: item for item in self._controller.mcp_servers()
+                        }
+                    except Exception as exc:  # noqa: BLE001
+                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                        return None
+                    servers.clear()
+                    servers.update({config.server_id: config for config in refreshed})
+                    return _mcp_choices(refreshed, refreshed_runtime)
+
                 async def select_server(server_id: str) -> tuple[Choice, ...] | None:
                     if server_id not in servers:
                         return None
@@ -604,6 +627,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     placeholder="Filter servers…",
                     choices=choices,
                     on_select=select_server,
+                    on_refresh=refresh_servers,
                 )
                 return
             selected = await self.push_screen_wait(
@@ -735,6 +759,54 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         if menu is not None:
             servers = {config.server_id: config for config in candidates}
 
+            async def refresh_action_candidates() -> tuple[Choice, ...] | None:
+                try:
+                    refreshed_configs = await self._controller.mcp_configurations()
+                    refreshed_runtime = {
+                        item.server_id: item for item in self._controller.mcp_servers()
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                if action == "connect":
+                    refreshed_candidates = tuple(
+                        config
+                        for config in refreshed_configs
+                        if config.enabled
+                        and (
+                            (status := refreshed_runtime.get(config.server_id)) is not None
+                            and status.status not in {"connected", "starting", "reconnecting"}
+                        )
+                    )
+                elif action == "disconnect":
+                    refreshed_candidates = tuple(
+                        config
+                        for config in refreshed_configs
+                        if (status := refreshed_runtime.get(config.server_id)) is not None
+                        and status.status in {"connected", "starting", "reconnecting"}
+                    )
+                else:
+                    refreshed_candidates = refreshed_configs
+                servers.clear()
+                servers.update(
+                    {config.server_id: config for config in refreshed_candidates}
+                )
+                return tuple(
+                    Choice(
+                        config.server_id,
+                        config.name,
+                        group=config.transport.upper(),
+                        trailing=_mcp_labels(
+                            config,
+                            refreshed_runtime.get(config.server_id),
+                        ),
+                    )
+                    for config in sorted(
+                        refreshed_candidates,
+                        key=lambda item: (item.transport, item.name.casefold()),
+                    )
+                )
+
             async def select_server(server_id: str) -> tuple[Choice, ...] | None:
                 config = servers[server_id]
                 if action == "edit":
@@ -753,6 +825,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 placeholder="Filter servers…",
                 choices=choices,
                 on_select=select_server,
+                on_refresh=refresh_action_candidates,
             )
             return
         selected = await self.push_screen_wait(
@@ -794,6 +867,23 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         actions = _mcp_management_choices(config, status)
 
         if menu is not None:
+
+            async def refresh_mcp_actions() -> tuple[Choice, ...] | None:
+                nonlocal config, status
+                try:
+                    config = await self._controller.mcp_configuration(server_id)
+                    status = next(
+                        (
+                            item
+                            for item in self._controller.mcp_servers()
+                            if item.server_id == server_id
+                        ),
+                        None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                return _mcp_management_choices(config, status)
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal config, status
@@ -841,6 +931,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
+                on_refresh=refresh_mcp_actions,
             )
             return
         selected = await self.push_screen_wait(
@@ -979,6 +1070,16 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             if menu is not None:
                 skills = {skill.name: skill for skill in catalog.skills}
 
+                async def refresh_skills() -> tuple[Choice, ...] | None:
+                    try:
+                        refreshed = await self._controller.skill_catalog()
+                    except Exception as exc:  # noqa: BLE001
+                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                        return None
+                    skills.clear()
+                    skills.update({skill.name: skill for skill in refreshed.skills})
+                    return tuple(_skill_choice(skill) for skill in refreshed.skills)
+
                 async def select_skill(name: str) -> tuple[Choice, ...] | None:
                     if name not in skills:
                         return None
@@ -990,6 +1091,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     placeholder="Filter skills…",
                     choices=choices,
                     on_select=select_skill,
+                    on_refresh=refresh_skills,
                 )
                 return
             selected = await self.push_screen_wait(
@@ -1075,6 +1177,21 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         if menu is not None:
             skills = {skill.name: skill for skill in candidates}
 
+            async def refresh_skill_candidates() -> tuple[Choice, ...] | None:
+                try:
+                    refreshed = await self._controller.skill_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                refreshed_candidates = (
+                    tuple(skill for skill in refreshed.skills if skill.managed)
+                    if action in {"update", "remove"}
+                    else refreshed.skills
+                )
+                skills.clear()
+                skills.update({skill.name: skill for skill in refreshed_candidates})
+                return tuple(_skill_choice(skill) for skill in refreshed_candidates)
+
             async def select_skill(name: str) -> tuple[Choice, ...] | None:
                 skill = skills[name]
                 if action == "validate":
@@ -1090,6 +1207,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 placeholder="Filter skills…",
                 choices=choices,
                 on_select=select_skill,
+                on_refresh=refresh_skill_candidates,
             )
             return
         selected = await self.push_screen_wait(
@@ -1138,6 +1256,22 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         actions = _skill_management_choices(skill)
         if menu is not None:
 
+            async def refresh_skill_actions() -> tuple[Choice, ...] | None:
+                nonlocal skill
+                try:
+                    catalog = await self._controller.skill_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                refreshed = next(
+                    (item for item in catalog.skills if item.name == name),
+                    None,
+                )
+                if refreshed is None:
+                    return ()
+                skill = refreshed
+                return _skill_management_choices(skill)
+
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal skill
                 if selected in {"enable", "disable"}:
@@ -1176,6 +1310,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                 placeholder="Choose an action…",
                 choices=actions,
                 on_select=select_action,
+                on_refresh=refresh_skill_actions,
             )
             return
         selected = await self.push_screen_wait(

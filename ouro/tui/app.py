@@ -32,6 +32,7 @@ from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import OuroError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
+from ouro.core.messages import MessageRecord
 from ouro.core.reasoning import REASONING_EFFORTS, ReasoningRequest
 from ouro.core.results import RunResult
 from ouro.deployment import SessionBackend
@@ -89,6 +90,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
+    user_message_text,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -2279,6 +2281,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     @work(exclusive=True, group="navigation")
     async def _fork_session(
         self,
+        message_id: str | None = None,
     ) -> None:
         if self._has_active_run():
             self.notify("Abort the active run before forking the session", severity="warning")
@@ -2286,10 +2289,46 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if self._controller.session_id is None:
             return
         try:
-            result = await self._controller.branch_session()
+            points = await self._controller.branch_points()
+        except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        if not points:
+            return
+        points_by_id = {point.message_id: point for point in points}
+        selected = message_id
+        if selected is None:
+            selected = await self.push_screen_wait(
+                ChoiceScreen(
+                    title="FORK SESSION",
+                    placeholder="Filter user messages…",
+                    choices=_branch_point_choices(points),
+                )
+            )
+        if selected is None:
+            return
+        await self._fork_from_message(selected, points_by_id)
+
+    async def _fork_from_message(
+        self,
+        message_id: str,
+        points_by_id: dict[str, MessageRecord],
+    ) -> None:
+        selected_message = points_by_id.get(message_id)
+        if selected_message is None:
+            self.notify(
+                f"user message is not a fork point in this session: {message_id}",
+                severity="error",
+                markup=False,
+            )
+            return
+        try:
+            result = await self._controller.branch_session(message_id)
             await self._open_session(result.session.session_id)
         except Exception as exc:  # noqa: BLE001 - branch validation is user-visible.
             self.notify(str(exc), severity="error", markup=False)
+            return
+        self._edit_draft(user_message_text(selected_message))
 
     async def _restore_projection(self, loaded: LoadedSession) -> None:
         projection = TuiSessionProjection(loaded.detail.session.session_id)
@@ -2486,40 +2525,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         menu: ChoiceScreen | None = None,
         switch: bool = False,
     ) -> None:
-        actions = (
-            Choice(
-                _THEME_ACTION,
-                "Theme color",
-                accent=self._tui_theme.accent,
-                group="Appearance",
-            ),
-            Choice(
-                _THOUGHT_DISPLAY_ACTION,
-                "Model thought display",
-                group="Appearance",
-            ),
-            self._command_action_choice("/new", "Session", "new_session"),
-            self._command_action_choice("/sessions", "Session", "sessions"),
-            Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
-            Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
-            Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
-            *(
-                Choice(
-                    f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
-                    action.label,
-                    trailing=(
-                        self._shortcut_for_action("plugins")
-                        if action.action_id == "plugins.list"
-                        else ""
-                    ),
-                    group=action.group,
-                )
-                for action in SYSTEM_SETTING_ACTIONS
-            ),
-            self._command_action_choice("/help", "Support", "help"),
-        )
-        choices = (*self._recent_action_choices(actions), *actions)
+        choices = self._action_choices()
         action_screen: ChoiceScreen
+
+        async def refresh_actions() -> tuple[Choice, ...]:
+            return self._action_choices()
 
         async def select_action(selected: str) -> tuple[Choice, ...] | None:
             action_id = selected.removeprefix(_RECENT_ACTION_PREFIX)
@@ -2565,6 +2575,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 placeholder="Type an action…",
                 choices=choices,
                 on_select=select_action,
+                on_refresh=refresh_actions,
             )
             return
         action_screen = ChoiceScreen(
@@ -2574,8 +2585,46 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             placeholder="Type an action…",
             choices=choices,
             on_select=select_action,
+            on_refresh=refresh_actions,
         )
         self.push_screen(action_screen)
+
+    def _action_choices(self) -> tuple[Choice, ...]:
+        """Project Actions from the current preferences and visual theme."""
+
+        actions = (
+            Choice(
+                _THEME_ACTION,
+                "Theme color",
+                accent=self._tui_theme.accent,
+                group="Appearance",
+            ),
+            Choice(
+                _THOUGHT_DISPLAY_ACTION,
+                "Model thought display",
+                group="Appearance",
+            ),
+            self._command_action_choice("/new", "Session", "new_session"),
+            self._command_action_choice("/sessions", "Session", "sessions"),
+            Choice(_RENAME_SESSION_ACTION, "Rename session", group="Session"),
+            Choice(_ARCHIVE_SESSION_ACTION, "Archive session", group="Session"),
+            Choice(_DELETE_SESSION_ACTION, "Delete session", group="Session"),
+            *(
+                Choice(
+                    f"{_SYSTEM_SETTING_ACTION_PREFIX}{action.action_id}",
+                    action.label,
+                    trailing=(
+                        self._shortcut_for_action("plugins")
+                        if action.action_id == "plugins.list"
+                        else ""
+                    ),
+                    group=action.group,
+                )
+                for action in SYSTEM_SETTING_ACTIONS
+            ),
+            self._command_action_choice("/help", "Support", "help"),
+        )
+        return (*self._recent_action_choices(actions), *actions)
 
     def _command_action_choice(
         self,
@@ -2920,6 +2969,26 @@ def _session_date_group(activity_at: datetime, *, today: date) -> str:
     if age < 30:
         return "Previous 30 days"
     return f"{month_name[activity_date.month]} {activity_date.year}"
+
+
+def _branch_point_label(message: MessageRecord) -> str:
+    preview = " ".join(message.text_content.split())
+    if not preview:
+        preview = "empty message"
+    return _truncate_session_title(preview)
+
+
+def _branch_point_choices(
+    points: tuple[MessageRecord, ...],
+) -> tuple[Choice, ...]:
+    return tuple(
+        Choice(
+            value=message.message_id,
+            label=_branch_point_label(message),
+            trailing=message.created_at.astimezone().strftime("%H:%M"),
+        )
+        for message in points
+    )
 
 
 def _queued_input_draft(item: QueuedUserInputView) -> str:

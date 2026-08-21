@@ -38,6 +38,7 @@ class Choice:
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
+ChoiceRefreshHandler = Callable[[], Awaitable[tuple[Choice, ...] | None]]
 ChoiceCancelHandler = Callable[[], bool]
 MultiChoiceConfirmationHandler = Callable[
     [tuple[str, ...]],
@@ -59,6 +60,7 @@ class _ChoicePage:
     filter_value: str
     on_highlight: Callable[[str], None] | None
     on_select: ChoiceSelectionHandler | None
+    on_refresh: ChoiceRefreshHandler | None
     on_cancel: ChoiceCancelHandler | None
     retain_focus_position_on_select: bool
 
@@ -147,6 +149,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
+        on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
@@ -159,12 +162,14 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._initial_value = initial_value
         self._on_highlight = on_highlight
         self._on_select = on_select
+        self._on_refresh = on_refresh
         self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
         self._page_stack: list[_ChoicePage] = []
         self._child_background: Color | None = None
+        self._page_revision = 0
 
     @property
     def navigation_id(self) -> MenuDestination | None:
@@ -213,6 +218,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
+        on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
@@ -220,11 +226,13 @@ class ChoiceScreen(ModalScreen[str | None]):
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
+        self._page_revision += 1
         self._title = title
         self._placeholder = placeholder
         self._choices = choices
         self._on_highlight = on_highlight
         self._on_select = on_select
+        self._on_refresh = on_refresh
         self._on_cancel = on_cancel
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
@@ -246,6 +254,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
+        on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
         retain_for_switching: bool = False,
@@ -270,6 +279,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             initial_value=initial_value,
             on_highlight=on_highlight,
             on_select=on_select,
+            on_refresh=on_refresh,
             on_cancel=on_cancel,
             retain_focus_position_on_select=retain_focus_position_on_select,
             retain_for_switching=(
@@ -286,6 +296,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
+        on_refresh: ChoiceRefreshHandler | None = None,
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
@@ -301,6 +312,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             initial_value=initial_value,
             on_highlight=on_highlight,
             on_select=on_select,
+            on_refresh=on_refresh,
             on_cancel=on_cancel,
             retain_focus_position_on_select=retain_focus_position_on_select,
             navigation_id=navigation_id,
@@ -325,14 +337,24 @@ class ChoiceScreen(ModalScreen[str | None]):
             initial_value=initial_value if initial_value is not None else page.initial_value,
             on_highlight=page.on_highlight,
             on_select=page.on_select,
+            on_refresh=page.on_refresh,
             on_cancel=page.on_cancel,
             retain_focus_position_on_select=page.retain_focus_position_on_select,
             navigation_id=page.navigation_id,
             retain_for_switching=page.retain_for_switching,
         )
-        if choices is None and initial_value is None and page.filter_value:
+        if initial_value is None and page.filter_value:
             self.query_one("#choice-filter", Input).value = page.filter_value
         return True
+
+    async def pop_page_refreshed(self) -> bool:
+        """Return to a parent page using its latest application projection."""
+
+        if not self._page_stack:
+            return False
+        page = self._page_stack[-1]
+        choices = await page.on_refresh() if page.on_refresh is not None else None
+        return self.pop_page(choices=choices)
 
     def update_parent_choices(
         self,
@@ -401,6 +423,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             filter_value=self.query_one("#choice-filter", Input).value,
             on_highlight=self._on_highlight,
             on_select=self._on_select,
+            on_refresh=self._on_refresh,
             on_cancel=self._on_cancel,
             retain_focus_position_on_select=self._retain_focus_position_on_select,
         )
@@ -458,8 +481,16 @@ class ChoiceScreen(ModalScreen[str | None]):
         if self._on_select is None:
             self.dismiss(selected)
             return
+        page_revision = self._page_revision
         focus_position = self._highlight_position()
         choices = await self._on_select(selected)
+        if (
+            choices is None
+            and self._page_revision == page_revision
+            and self.is_mounted
+            and self._on_refresh is not None
+        ):
+            choices = await self._on_refresh()
         if choices is None:
             return
         self._choices = choices
@@ -480,10 +511,10 @@ class ChoiceScreen(ModalScreen[str | None]):
         if self._on_highlight is not None and event.option.id is not None:
             self._on_highlight(str(event.option.id))
 
-    def action_cancel(self) -> None:
+    async def action_cancel(self) -> None:
         if self._on_cancel is not None and self._on_cancel():
             return
-        if self.pop_page():
+        if await self.pop_page_refreshed():
             return
         self.dismiss(None)
 
@@ -771,9 +802,9 @@ class EditableChoiceScreen(ChoiceScreen):
         )
         self._render_editor()
 
-    def action_cancel(self) -> None:
+    async def action_cancel(self) -> None:
         if self._editing_value is None:
-            super().action_cancel()
+            await super().action_cancel()
             return
         selected = self._editing_value
         self._finish_edit(self._choices, selected=selected)
@@ -961,11 +992,11 @@ class MultiChoiceScreen(ChoiceScreen):
         ) or (highlighted,)
         self._enter_confirmation(selected)
 
-    def action_cancel(self) -> None:
+    async def action_cancel(self) -> None:
         if self._confirmation_values:
             self._leave_confirmation(self._catalog_choices)
             return
-        super().action_cancel()
+        await super().action_cancel()
 
     def _enter_confirmation(self, selected: tuple[str, ...]) -> None:
         self._confirmation_values = selected

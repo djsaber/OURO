@@ -37,6 +37,14 @@ class ProviderConfigurationWorkflows(App[int]):
             return
         choices = tuple(_provider_choice(provider) for provider in catalog.providers)
         if menu is not None:
+            async def refresh_providers() -> tuple[Choice, ...] | None:
+                try:
+                    refreshed = await self._controller.provider_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                return tuple(_provider_choice(provider) for provider in refreshed.providers)
+
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                 refreshed = await self._controller.provider_catalog()
                 provider = next(
@@ -50,6 +58,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Filter providers…",
                 choices=choices,
                 on_select=select_provider,
+                on_refresh=refresh_providers,
             )
             return
         selected = await self.push_screen_wait(
@@ -222,6 +231,18 @@ class ProviderConfigurationWorkflows(App[int]):
         if menu is not None:
             providers = {provider.provider_id: provider for provider in candidates}
 
+            async def refresh_candidates() -> tuple[Choice, ...] | None:
+                try:
+                    refreshed = await self._controller.provider_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                providers.clear()
+                providers.update(
+                    {provider.provider_id: provider for provider in refreshed.providers}
+                )
+                return tuple(_provider_choice(provider) for provider in providers.values())
+
             async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                 provider = providers[provider_id]
                 if action == "edit":
@@ -235,6 +256,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Filter providers…",
                 choices=choices,
                 on_select=select_provider,
+                on_refresh=refresh_candidates,
             )
             return
         selected = await self.push_screen_wait(
@@ -260,6 +282,26 @@ class ProviderConfigurationWorkflows(App[int]):
     ) -> None:
         choices = _provider_management_choices(provider)
         if menu is not None:
+
+            async def refresh_provider_actions() -> tuple[Choice, ...] | None:
+                nonlocal provider
+                try:
+                    catalog = await self._controller.provider_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                refreshed = next(
+                    (
+                        item
+                        for item in catalog.providers
+                        if item.provider_id == provider.provider_id
+                    ),
+                    None,
+                )
+                if refreshed is None:
+                    return ()
+                provider = refreshed
+                return _provider_management_choices(provider)
 
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 nonlocal provider
@@ -292,6 +334,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
+                on_refresh=refresh_provider_actions,
             )
             return
         selected = await self.push_screen_wait(
@@ -401,6 +444,20 @@ class ProviderConfigurationWorkflows(App[int]):
             if menu is not None:
                 providers_by_id = {provider.provider_id: provider for provider in providers}
 
+                async def refresh_provider_choices() -> tuple[Choice, ...] | None:
+                    try:
+                        refreshed = await self._controller.provider_catalog()
+                    except Exception as exc:  # noqa: BLE001
+                        await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                        return None
+                    providers_by_id.clear()
+                    providers_by_id.update(
+                        {provider.provider_id: provider for provider in refreshed.providers}
+                    )
+                    return tuple(
+                        _provider_choice(provider) for provider in providers_by_id.values()
+                    )
+
                 async def select_provider(provider_id: str) -> tuple[Choice, ...] | None:
                     await self._edit_endpoint(
                         providers_by_id[provider_id],
@@ -414,6 +471,7 @@ class ProviderConfigurationWorkflows(App[int]):
                     placeholder="Choose a provider…",
                     choices=tuple(_provider_choice(provider) for provider in providers),
                     on_select=select_provider,
+                    on_refresh=refresh_provider_choices,
                 )
                 return
             provider_id = await self.push_screen_wait(
@@ -439,6 +497,24 @@ class ProviderConfigurationWorkflows(App[int]):
         choices = tuple(
             _endpoint_route_choice(provider, endpoint) for provider, endpoint in routes.values()
         )
+
+        async def refresh_routes() -> tuple[Choice, ...] | None:
+            try:
+                refreshed = await self._controller.provider_catalog()
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            routes.clear()
+            routes.update(
+                {
+                    f"{item.provider_id}/{candidate.endpoint_id}": (item, candidate)
+                    for item in refreshed.providers
+                    for candidate in item.endpoints
+                }
+            )
+            return tuple(
+                _endpoint_route_choice(item, candidate) for item, candidate in routes.values()
+            )
         if action == "use":
 
             async def set_default_route(route: str) -> tuple[Choice, ...] | None:
@@ -504,6 +580,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_route,
+                on_refresh=refresh_routes,
             )
             return
 
@@ -560,6 +637,42 @@ class ProviderConfigurationWorkflows(App[int]):
         if menu is not None:
             endpoints = {endpoint.endpoint_id: endpoint for endpoint in candidates}
 
+            async def refresh_endpoints() -> tuple[Choice, ...] | None:
+                nonlocal provider
+                try:
+                    refreshed = await self._controller.provider_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                current_provider = next(
+                    (
+                        item
+                        for item in refreshed.providers
+                        if item.provider_id == provider.provider_id
+                    ),
+                    None,
+                )
+                if current_provider is None:
+                    return ()
+                provider = current_provider
+                refreshed_candidates = tuple(
+                    endpoint
+                    for endpoint in provider.endpoints
+                    if action != "use" or not endpoint.default
+                )
+                endpoints.clear()
+                endpoints.update(
+                    {endpoint.endpoint_id: endpoint for endpoint in refreshed_candidates}
+                )
+                return tuple(
+                    _endpoint_choice(
+                        endpoint,
+                        available=provider.enabled,
+                        default=provider.default and endpoint.default,
+                    )
+                    for endpoint in refreshed_candidates
+                )
+
             async def select_endpoint(endpoint_id: str) -> tuple[Choice, ...] | None:
                 endpoint = endpoints[endpoint_id]
                 if action == "manage":
@@ -581,6 +694,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Filter endpoints…",
                 choices=choices,
                 on_select=select_endpoint,
+                on_refresh=refresh_endpoints,
             )
             return
         selected = await self.push_screen_wait(
@@ -615,6 +729,41 @@ class ProviderConfigurationWorkflows(App[int]):
         choices.append(Choice("remove", "Remove endpoint"))
         if menu is not None:
 
+            async def refresh_endpoint_actions() -> tuple[Choice, ...] | None:
+                nonlocal provider, endpoint
+                try:
+                    catalog = await self._controller.provider_catalog()
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+                refreshed_provider = next(
+                    (
+                        item
+                        for item in catalog.providers
+                        if item.provider_id == provider.provider_id
+                    ),
+                    None,
+                )
+                if refreshed_provider is None:
+                    return ()
+                refreshed_endpoint = next(
+                    (
+                        item
+                        for item in refreshed_provider.endpoints
+                        if item.endpoint_id == endpoint.endpoint_id
+                    ),
+                    None,
+                )
+                if refreshed_endpoint is None:
+                    return ()
+                provider = refreshed_provider
+                endpoint = refreshed_endpoint
+                refreshed_choices = [Choice("edit", "Edit endpoint")]
+                if not endpoint.default:
+                    refreshed_choices.append(Choice("use", "Set as default endpoint"))
+                refreshed_choices.append(Choice("remove", "Remove endpoint"))
+                return tuple(refreshed_choices)
+
             async def select_action(selected: str) -> tuple[Choice, ...] | None:
                 if selected == "edit":
                     await self._edit_endpoint(provider, endpoint, menu=menu)
@@ -633,6 +782,7 @@ class ProviderConfigurationWorkflows(App[int]):
                 placeholder="Choose an action…",
                 choices=tuple(choices),
                 on_select=select_action,
+                on_refresh=refresh_endpoint_actions,
             )
             return
         selected = await self.push_screen_wait(

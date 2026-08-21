@@ -39,6 +39,13 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         choices = _plugin_choices(plugins)
         plugin_menu: ChoiceScreen
 
+        async def refresh_plugins() -> tuple[Choice, ...] | None:
+            try:
+                return _plugin_choices(self._controller.plugins())
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+
         async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
             await self._manage_plugin(plugin_id, menu=plugin_menu)
             return None
@@ -52,6 +59,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 placeholder="Filter plugins…",
                 choices=choices,
                 on_select=select_plugin,
+                on_refresh=refresh_plugins,
             )
             return
         plugin_menu = ChoiceScreen(
@@ -60,6 +68,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
             placeholder="Filter plugins…",
             choices=choices,
             on_select=select_plugin,
+            on_refresh=refresh_plugins,
         )
         self.push_screen(plugin_menu)
 
@@ -86,6 +95,23 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
         if not candidates:
             return
         plugin_catalog = {plugin.plugin_id: plugin for plugin in candidates}
+
+        async def refresh_candidates() -> tuple[Choice, ...] | None:
+            try:
+                refreshed = self._controller.plugins()
+            except Exception as exc:  # noqa: BLE001
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            refreshed_candidates = tuple(
+                plugin
+                for plugin in refreshed
+                if action != "remove" or plugin.plugin_class == "user"
+            )
+            plugin_catalog.clear()
+            plugin_catalog.update(
+                {plugin.plugin_id: plugin for plugin in refreshed_candidates}
+            )
+            return _plugin_choices(refreshed_candidates)
 
         async def select_plugin(plugin_id: str) -> tuple[Choice, ...] | None:
             plugin = plugin_catalog[plugin_id]
@@ -121,6 +147,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 placeholder="Filter plugins…",
                 choices=choices,
                 on_select=select_plugin,
+                on_refresh=refresh_candidates,
                 retain_focus_position_on_select=action == "toggle",
             )
             return
@@ -130,6 +157,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 placeholder="Filter plugins…",
                 choices=choices,
                 on_select=select_plugin,
+                on_refresh=refresh_candidates,
                 retain_focus_position_on_select=action == "toggle",
             )
         )
@@ -186,11 +214,19 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
 
         choices = _plugin_action_choices(plugin)
         if menu is not None:
+            async def refresh_plugin_actions() -> tuple[Choice, ...] | None:
+                try:
+                    return _plugin_action_choices(self._controller.plugin(plugin_id))
+                except Exception as exc:  # noqa: BLE001
+                    await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                    return None
+
             menu.push_page(
                 title=f"PLUGIN · {plugin.name}",
                 placeholder="Choose an action…",
                 choices=choices,
                 on_select=select_action,
+                on_refresh=refresh_plugin_actions,
                 on_cancel=cancel_plugin,
             )
             return

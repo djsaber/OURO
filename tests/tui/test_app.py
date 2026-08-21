@@ -521,6 +521,80 @@ async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
 
 
 @pytest.mark.asyncio
+async def test_choice_page_refreshes_in_place_after_a_child_operation(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    label = "Before"
+
+    async def refresh_choices() -> tuple[Choice, ...]:
+        return (Choice("item", label),)
+
+    async def update_item(_selected: str) -> tuple[Choice, ...] | None:
+        nonlocal label
+        label = "After"
+        return None
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        app.push_screen(
+            ChoiceScreen(
+                title="ITEMS",
+                placeholder="Filter items…",
+                choices=(Choice("item", label),),
+                on_select=update_item,
+                on_refresh=refresh_choices,
+            )
+        )
+        await pilot.pause()
+        options = app.screen.query_one(OptionList)
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert app.screen.query_one(OptionList) is options
+        assert app.screen._choices == (Choice("item", "After"),)
+
+
+@pytest.mark.asyncio
+async def test_choice_page_refreshes_parent_before_in_place_back_navigation(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    label = "Before"
+
+    async def refresh_parent() -> tuple[Choice, ...]:
+        return (Choice("item", label),)
+
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause(0.5)
+        screen = ChoiceScreen(
+            title="ITEMS",
+            placeholder="Filter items…",
+            choices=(Choice("item", label),),
+            on_refresh=refresh_parent,
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+        options = screen.query_one(OptionList)
+        screen.push_page(
+            title="ITEM",
+            placeholder="Choose an action…",
+            choices=(Choice("edit", "Edit"),),
+        )
+        label = "After"
+
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert app.screen is screen
+        assert screen.query_one(OptionList) is options
+        assert screen._title == "ITEMS"
+        assert screen._choices == (Choice("item", "After"),)
+        assert screen._page_stack == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "navigation",
     (("down",) * 20, ("right",)),
@@ -2805,7 +2879,7 @@ async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
 
 
 @pytest.mark.asyncio
-async def test_fork_command_directly_branches_current_session(
+async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_selection(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -2817,9 +2891,11 @@ async def test_fork_command_directly_branches_current_session(
         await pilot.pause(0.8)
         source_session_id = app._controller.session_id
         assert source_session_id is not None
-        source = application.runtime.store.load_session(source_session_id)
-
         await pilot.press("slash", *"fork", "enter")
+        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
+        assert app._controller.session_id == source_session_id
+
+        await pilot.press("enter")
         await pilot.pause(0.8)
 
         branch_session_id = app._controller.session_id
@@ -2827,17 +2903,15 @@ async def test_fork_command_directly_branches_current_session(
         assert branch_session_id != source_session_id
         branch = application.runtime.store.load_session(branch_session_id)
         assert branch.session.parent_session_id == source_session_id
-        assert branch.session.forked_from_message_id == source.messages[-1].message_id
-        assert [message.text_content for message in branch.messages] == [
-            message.text_content for message in source.messages
-        ]
-        assert app.query_one(Composer).text == ""
-        assert not isinstance(app.screen, ChoiceScreen)
+        assert branch.session.forked_from_message_id is None
+        assert branch.messages == []
+        assert app.query_one(Composer).text == "fork"
+        assert app.query_one(Composer).has_focus is True
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
 
 @pytest.mark.asyncio
-async def test_fork_current_session_restores_complete_history_and_compaction(
+async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
     tmp_path: Path,
 ) -> None:
     application = _application(tmp_path)
@@ -2891,7 +2965,21 @@ async def test_fork_current_session_restores_complete_history_and_compaction(
         await pilot.pause(0.5)
         await app._open_session(source.session_id)
         app._fork_session()
-        await pilot.pause(0.8)
+        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
+
+        assert isinstance(app.screen, ChoiceScreen)
+        choices = app.screen._choices
+        assert [choice.label for choice in choices] == ["First request", "Second request"]
+        assert [choice.trailing for choice in choices] == [
+            messages[0].created_at.astimezone().strftime("%H:%M"),
+            messages[2].created_at.astimezone().strftime("%H:%M"),
+        ]
+        assert all(choice.description == "" for choice in choices)
+        assert all(choice.group == "" for choice in choices)
+        assert all("msg_" not in choice.label for choice in choices)
+
+        await pilot.press("down", "enter")
+        await pilot.pause(0.5)
 
         branch_session_id = app._controller.session_id
         assert branch_session_id is not None and branch_session_id != source.session_id
@@ -2899,13 +2987,11 @@ async def test_fork_current_session_restores_complete_history_and_compaction(
         assert [message.text_content for message in branch.messages] == [
             "First request",
             "First answer",
-            "Second request",
-            "Second answer",
         ]
-        assert branch.session.forked_from_message_id == messages[-1].message_id
+        assert branch.session.forked_from_message_id == messages[1].message_id
         assert len(branch.compactions) == 1
         assert branch.session.active_compaction_id == branch.compactions[0].compaction_id
-        assert app.query_one(Composer).text == ""
+        assert app.query_one(Composer).text == "Second request"
         status_metrics = app.query_one(StatusLine)._context_metrics
         effective_metrics = application.runtime.sessions.effective_context_metrics(
             branch_session_id
@@ -2918,8 +3004,6 @@ async def test_fork_current_session_restores_complete_history_and_compaction(
             ("user", "First request"),
             ("assistant", "First answer"),
             ("notice", "Context compacted · 1 message summarized"),
-            ("user", "Second request"),
-            ("assistant", "Second answer"),
         ]
 
 
@@ -2940,7 +3024,7 @@ async def test_fork_command_refuses_active_tui_session(
         assert app._projection is not None
         app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
 
-        def unexpected_branch() -> None:
+        def unexpected_branch(_message_id: str) -> None:
             raise AssertionError("active TUI session reached the branch service")
 
         monkeypatch.setattr(app._controller, "branch_session", unexpected_branch)
@@ -5363,6 +5447,52 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
         assert next(
             choice for choice in app.screen._choices if choice.value == "secondary"
         ).trailing.endswith("· disabled")
+        await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_provider_catalog_refreshes_before_returning_from_submenu(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://example.invalid/v1",
+    )
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "List providers"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+        menu = app.screen
+        options = menu.query_one(OptionList)
+        options.highlighted = options.get_option_index("custom")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDER · custom")
+
+        await app._controller.add_endpoint(
+            TuiEndpointConfiguration(
+                provider_id="custom",
+                endpoint_id="new-model",
+                model_id="provider-model-id",
+                context_window=128_000,
+                max_output_tokens=8192,
+            )
+        )
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="PROVIDERS")
+
+        assert app.screen is menu
+        assert menu.query_one(OptionList) is options
+        refreshed = next(choice for choice in menu._choices if choice.value == "custom")
+        assert "· 1 ·" in refreshed.trailing
         await pilot.press("escape")
 
 
@@ -8536,6 +8666,13 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
         await pilot.press("escape")
         await pilot.pause()
         assert app.tui_theme == sage
+        assert app.screen.query_one("#choice-title", Static).render().plain == "ACTIONS"
+        theme_action = next(
+            choice for choice in app.screen._choices if choice.label == "Theme color"
+        )
+        assert theme_action.accent == sage.accent
+        theme_prompt = app.screen.query_one(OptionList).get_option(theme_action.value).prompt
+        assert theme_prompt.spans[0].style == sage.accent
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
 
     stored = (tmp_path / "config" / "tui.json").read_text(encoding="utf-8")
@@ -8608,6 +8745,10 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
         assert app.query_one(Composer).styles.border_left[1] == Color.parse(
             TUI_THEMES["iris"].accent
         )
+        theme_action = next(
+            choice for choice in app.screen._choices if choice.label == "Theme color"
+        )
+        assert theme_action.accent == TUI_THEMES["iris"].accent
         assert preferences.load() == TuiPreferences(
             theme="iris",
             recent_actions=("__ouro_theme__",),
