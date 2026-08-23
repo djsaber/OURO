@@ -1,3 +1,4 @@
+import asyncio
 import os
 import shlex
 import subprocess
@@ -8,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import ouro.tools.base as tool_base
 from ouro.core.cancellation import AbortSignal
 from ouro.tools import (
     ToolExecutionContext,
@@ -219,6 +221,43 @@ def test_bash_and_sh_commands_bind_the_selected_executable() -> None:
     assert bash_command.startswith("BASH_ENV= ENV= /opt/bin/bash")
     assert "--noprofile --norc -o pipefail -c" in bash_command
     assert sh_command.startswith("ENV= /opt/bin/sh -c")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ("run_shell", "run_process"))
+async def test_non_interactive_processes_do_not_inherit_terminal_input(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+) -> None:
+    captured: dict[str, object] = {}
+    process = object()
+
+    async def fake_create(*_arguments: object, **kwargs: object) -> object:
+        captured.update(kwargs)
+        return process
+
+    class RecordingContext(ToolExecutionContext):
+        async def _collect_process(
+            self,
+            created_process: object,
+            *,
+            timeout_seconds: float,
+        ) -> ToolProcessResult:
+            assert created_process is process
+            assert timeout_seconds == 3
+            return ToolProcessResult(stdout="", stderr="", returncode=0)
+
+    if method == "run_shell":
+        monkeypatch.setattr(tool_base.asyncio, "create_subprocess_shell", fake_create)
+        result = await RecordingContext().run_shell("ignored", timeout_seconds=3)
+    else:
+        monkeypatch.setattr(tool_base.asyncio, "create_subprocess_exec", fake_create)
+        result = await RecordingContext().run_process(("ignored",), timeout_seconds=3)
+
+    assert result.returncode == 0
+    assert captured["stdin"] is asyncio.subprocess.DEVNULL
+    assert captured["stdout"] is asyncio.subprocess.PIPE
+    assert captured["stderr"] is asyncio.subprocess.PIPE
 
 
 @pytest.mark.asyncio

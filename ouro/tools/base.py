@@ -209,6 +209,7 @@ class ToolExecutionContext:
             process = await asyncio.create_subprocess_shell(
                 command,
                 cwd=cwd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0),
@@ -217,6 +218,7 @@ class ToolExecutionContext:
             process = await asyncio.create_subprocess_shell(
                 command,
                 cwd=cwd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 start_new_session=True,
@@ -247,6 +249,7 @@ class ToolExecutionContext:
             process = await asyncio.create_subprocess_exec(
                 *arguments,
                 cwd=cwd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=process_environment,
@@ -256,6 +259,7 @@ class ToolExecutionContext:
             process = await asyncio.create_subprocess_exec(
                 *arguments,
                 cwd=cwd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=process_environment,
@@ -381,6 +385,7 @@ async def _kill_process_tree(process: asyncio.subprocess.Process) -> None:
                 str(process.pid),
                 "/T",
                 "/F",
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )

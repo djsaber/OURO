@@ -1024,6 +1024,7 @@ async def _terminate_process_tree(
                 str(process.pid),
                 "/T",
                 "/F",
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 creationflags=subprocess.CREATE_NO_WINDOW,

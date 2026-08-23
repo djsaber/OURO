@@ -268,6 +268,7 @@ def _run_git(arguments: list[str]) -> str:
     try:
         completed = subprocess.run(
             ["git", *arguments],
+            stdin=subprocess.DEVNULL,
             check=True,
             capture_output=True,
             text=True,

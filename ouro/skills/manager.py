@@ -333,7 +333,13 @@ class SkillManager:
             if ref:
                 command.extend(["--branch", ref])
             command.extend([url, str(clone)])
-            completed = subprocess.run(command, capture_output=True, text=True, check=False)
+            completed = subprocess.run(
+                command,
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
             if completed.returncode != 0:
                 detail = completed.stderr.strip() or completed.stdout.strip()
                 raise SkillManagementError(f"failed to clone skill source: {detail}")
