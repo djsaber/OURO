@@ -6243,10 +6243,14 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         menu = app.screen
 
         await pilot.press("ctrl+h")
-        await pilot.pause()
-        assert isinstance(app.screen, HelpScreen)
-        assert menu in app.screen_stack
-        assert menu.query_one("#choice-panel", Vertical).display is False
+        await _wait_for_screen(app, ChoiceScreen, title="KEYBOARD HELP")
+        assert app.screen is menu
+        assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+        assert menu.query_one("#choice-panel", Vertical).display is True
+        assert {choice.group for choice in menu._choices} == {
+            "SHORTCUTS",
+            "BUILT-IN SLASH COMMANDS",
+        }
 
         await pilot.press("ctrl+h")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -6910,6 +6914,7 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
             ("Theme color", "THEME COLOR"),
             ("Open session", "SESSIONS"),
             ("Archive session", "ARCHIVE SESSIONS"),
+            ("Keyboard help", "KEYBOARD HELP"),
         ):
             await pilot.press("ctrl+p")
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
@@ -6927,6 +6932,78 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
             await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
             assert app.screen is action_screen
             await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://example.invalid/v1",
+    )
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n",
+        encoding="utf-8",
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        menu = app.screen
+        options = menu.query_one(OptionList)
+
+        for action_label, title in (
+            ("List providers", "PROVIDERS"),
+            ("List skills", "SKILLS"),
+            ("Keyboard help", "KEYBOARD HELP"),
+        ):
+            menu.query_one("#choice-filter", Input).value = action_label
+            await pilot.pause()
+            rendered_titles: list[str] = []
+            refresh_options = menu._refresh_options
+
+            def track_refresh(
+                *,
+                needle: str,
+                preferred_value: str | None,
+                preferred_position: int | None = None,
+                _rendered_titles: list[str] = rendered_titles,
+                _refresh_options: Callable[..., None] = refresh_options,
+            ) -> None:
+                _rendered_titles.append(menu.page_title)
+                _refresh_options(
+                    needle=needle,
+                    preferred_value=preferred_value,
+                    preferred_position=preferred_position,
+                )
+
+            monkeypatch.setattr(menu, "_refresh_options", track_refresh)
+            await pilot.press("enter")
+            await _wait_for_screen(app, ChoiceScreen, title=title)
+            monkeypatch.setattr(menu, "_refresh_options", refresh_options)
+
+            assert app.screen is menu
+            assert menu.query_one(OptionList) is options
+            assert rendered_titles == [title]
+            assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
+
+            await pilot.press("escape")
+            await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+
+        assert [choice.label for choice in menu._choices if choice.group == "Recent"] == [
+            "Keyboard help",
+            "List skills",
+            "List providers",
+        ]
+        await pilot.press("escape")
 
 
 @pytest.mark.asyncio

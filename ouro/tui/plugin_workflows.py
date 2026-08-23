@@ -196,6 +196,7 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 await self._change_plugin_grants(selected, plugin_id, menu=menu)
             elif selected == "select-install":
                 await self._choose_plugin_install(plugin_id, menu=menu)
+                return None
             elif selected == "remove":
                 await self._remove_plugin(
                     plugin_id,
@@ -417,16 +418,22 @@ class PluginManagementWorkflows(ProviderConfigurationWorkflows):
                 for choice in choices
             )
 
-        screen = ChoiceScreen(
-            title=f"PLUGIN VERSIONS · {plugin.name}",
-            placeholder="Filter versions…",
-            choices=choices,
-            on_select=select_install,
-        )
         if menu is not None:
-            await menu.open_child(screen)
-        else:
-            await self.push_screen_wait(screen)
+            menu.push_page(
+                title=f"PLUGIN VERSIONS · {plugin.name}",
+                placeholder="Filter versions…",
+                choices=choices,
+                on_select=select_install,
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title=f"PLUGIN VERSIONS · {plugin.name}",
+                placeholder="Filter versions…",
+                choices=choices,
+                on_select=select_install,
+            )
+        )
 
     async def _remove_plugin(
         self,

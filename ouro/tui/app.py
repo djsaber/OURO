@@ -70,6 +70,7 @@ from ouro.tui.screens import (
     HelpScreen,
     MenuDestination,
     MultiChoiceScreen,
+    help_choices,
 )
 from ouro.tui.state import (
     PendingInteraction,
@@ -2559,7 +2560,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                 await self._choose_session_delete(menu=action_screen)
                 return None
             if action_id == "/help":
-                action_screen.show_child(HelpScreen())
+                self._show_help_page(action_screen)
                 return None
             action_screen.dismiss(None)
             await self._dispatch_command(action_id)
@@ -2834,7 +2835,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             if len(self.screen_stack) == 1:
                 self.push_screen(HelpScreen())
             return
-        menu.show_child(HelpScreen())
+        if menu.page_title == "KEYBOARD HELP":
+            self.run_worker(menu.action_cancel(), exclusive=True, group="navigation")
+            return
+        self._show_help_page(menu)
+
+    def _show_help_page(self, menu: ChoiceScreen) -> None:
+        choices = help_choices()
+
+        async def keep_help_open(_selected: str) -> tuple[Choice, ...]:
+            return choices
+
+        menu.push_page(
+            title="KEYBOARD HELP",
+            placeholder="Filter shortcuts and commands…",
+            choices=choices,
+            on_select=keep_help_open,
+        )
 
     def action_abort(self) -> None:
         if not self._has_active_run():

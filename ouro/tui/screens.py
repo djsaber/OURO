@@ -18,7 +18,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.commands import slash_command_help
+from ouro.tui.commands import TUI_COMMANDS, slash_command_help
 from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import ASCII_SPINNER_FRAMES, theme_for
 
@@ -37,6 +37,43 @@ class Choice:
     edit_value: str | None = None
     edit_placeholder: str = ""
     loading: bool = False
+
+
+_HELP_SHORTCUTS = (
+    ("Enter", "send / queue", "Shift+Enter", "new line"),
+    ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
+    ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
+    ("Alt+P", "plugins", "Ctrl+P", "actions"),
+    ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
+    ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),
+    ("Ctrl+→", "next user message", "Ctrl+C", "abort run"),
+    ("Ctrl+Q", "quit", "Esc", "close menu"),
+)
+
+
+def help_choices() -> tuple[Choice, ...]:
+    """Project help onto the shared searchable menu surface."""
+
+    shortcuts = tuple(
+        Choice(
+            f"shortcut:{row}:{side}",
+            key,
+            trailing=description,
+            group="SHORTCUTS",
+        )
+        for row, pair in enumerate(_HELP_SHORTCUTS)
+        for side, (key, description) in enumerate((pair[:2], pair[2:]))
+    )
+    commands = tuple(
+        Choice(
+            f"command:{command.name}",
+            command.usage,
+            trailing=command.description,
+            group="BUILT-IN SLASH COMMANDS",
+        )
+        for command in TUI_COMMANDS
+    )
+    return (*shortcuts, *commands)
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
@@ -206,6 +243,12 @@ class ChoiceScreen(ModalScreen[str | None]):
 
         return self._page_revision
 
+    @property
+    def page_title(self) -> str:
+        """Return the title of the page currently rendered on this menu surface."""
+
+        return self._title
+
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
             yield Static(self._title, id="choice-title")
@@ -245,6 +288,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         placeholder: str,
         choices: tuple[Choice, ...],
         initial_value: str | None = None,
+        filter_value: str = "",
         on_highlight: Callable[[str], None] | None = None,
         on_select: ChoiceSelectionHandler | None = None,
         on_refresh: ChoiceRefreshHandler | None = None,
@@ -269,8 +313,9 @@ class ChoiceScreen(ModalScreen[str | None]):
         self.query_one("#choice-title", Static).update(title)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
-        filter_input.value = ""
-        self._refresh_options(needle="", preferred_value=initial_value)
+        with self.prevent(Input.Changed):
+            filter_input.value = filter_value
+        self._refresh_options(needle=filter_value, preferred_value=initial_value)
         filter_input.focus()
 
     def switch_page(
@@ -364,6 +409,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             placeholder=page.placeholder,
             choices=choices if choices is not None else page.choices,
             initial_value=initial_value if initial_value is not None else page.initial_value,
+            filter_value=page.filter_value if initial_value is None else "",
             on_highlight=page.on_highlight,
             on_select=page.on_select,
             on_refresh=page.on_refresh,
@@ -372,8 +418,6 @@ class ChoiceScreen(ModalScreen[str | None]):
             navigation_id=page.navigation_id,
             retain_for_switching=page.retain_for_switching,
         )
-        if initial_value is None and page.filter_value:
-            self.query_one("#choice-filter", Input).value = page.filter_value
         return True
 
     async def pop_page_refreshed(self) -> bool:
@@ -589,10 +633,13 @@ class ChoiceScreen(ModalScreen[str | None]):
             choices is None
             and self._page_revision == page_revision
             and self.is_mounted
+            # Navigation roots dispatch the destination asynchronously. Redrawing
+            # them here would briefly render the old page before that page arrives.
+            and self._navigation_id is None
             and self._on_refresh is not None
         ):
             choices = await self._on_refresh()
-        if choices is None:
+        if choices is None or choices is self._choices:
             return
         self._choices = choices
         self._refresh_options(
@@ -1199,17 +1246,7 @@ class HelpScreen(ModalScreen[None]):
         text = Text()
         accent = theme_for(self).accent
         text.append("OURO shortcuts\n\n", style=f"bold {accent}")
-        pairs = (
-            ("Enter", "send / queue", "Shift+Enter", "new line"),
-            ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
-            ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
-            ("Alt+P", "plugins", "Ctrl+P", "actions"),
-            ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
-            ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),
-            ("Ctrl+→", "next user message", "Ctrl+C", "abort run"),
-            ("Ctrl+Q", "quit", "Esc", "close menu"),
-        )
-        for left_key, left_desc, right_key, right_desc in pairs:
+        for left_key, left_desc, right_key, right_desc in _HELP_SHORTCUTS:
             text.append(left_key, style="bold")
             text.append(f" {left_desc}")
             text.append(" " * max(0, 40 - len(left_key) - len(left_desc) - 1))
