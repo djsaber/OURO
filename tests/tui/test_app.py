@@ -127,7 +127,12 @@ from ouro.tui.state import (
     TuiSessionProjection,
     project_run_presentation,
 )
-from ouro.tui.theme import FAILURE_TONE, SELECTED_CHOICE_MARKER, TUI_THEMES
+from ouro.tui.theme import (
+    ASCII_SPINNER_FRAMES,
+    FAILURE_TONE,
+    SELECTED_CHOICE_MARKER,
+    TUI_THEMES,
+)
 from ouro.tui.widgets import (
     ActivityIndicator,
     AskUserPanel,
@@ -2346,6 +2351,14 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
 
     async with app.run_test(size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
+        mcp_label = welcome.query_one("#welcome-mcp-label", Static)
+        first_frame = mcp_label.render().plain
+        assert first_frame.endswith(" MCP")
+        assert first_frame[0] in ASCII_SPINNER_FRAMES
+        await pilot.pause(0.15)
+        second_frame = mcp_label.render().plain
+        assert second_frame != first_frame
+        assert second_frame[0] in ASCII_SPINNER_FRAMES
         starting_status = welcome._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
@@ -2355,6 +2368,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         session.initialize_gate.set()
         await pilot.pause(0.6)
         connected_status = welcome._system._mcp.render()
+        assert mcp_label.render().plain == "MCP"
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
         assert connected_status.get_style_at_offset(
             connected_status.plain.index("connected"),
@@ -2370,6 +2384,7 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         factory.connection_lost("connection lost")
         await pilot.pause(0.6)
         assert "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain
+        assert mcp_label.render().plain == "MCP"
         assert "live__search" not in application.runtime.tools.names()
 
     assert app._mcp_status_timer is None
@@ -6341,6 +6356,154 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_mcp_connect_runs_in_background_animates_and_contains_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    operation_started = asyncio.Event()
+    release_operation = asyncio.Event()
+    runtime_status = "configured"
+
+    def runtime_servers() -> tuple[McpServerStatus, ...]:
+        return (
+            McpServerStatus(
+                server_id="local",
+                name="local",
+                transport="stdio",
+                status=runtime_status,
+            ),
+        )
+
+    async def failing_start(_server_id: str) -> McpServerStatus:
+        nonlocal runtime_status
+        runtime_status = "starting"
+        operation_started.set()
+        await release_operation.wait()
+        runtime_status = "failed"
+        raise RuntimeError("controlled MCP connection failure")
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
+        monkeypatch.setattr(app._controller, "start_mcp_server", failing_start)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Connect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
+        menu = app.screen
+        options = menu.query_one(OptionList)
+        options.focus()
+
+        await pilot.press("enter")
+        await asyncio.wait_for(operation_started.wait(), timeout=1)
+
+        assert app.screen is menu
+        assert next(choice for choice in menu._choices if choice.value == "local").loading
+        first_frame = menu._spinner_frame
+        first_prompt = options.get_option("local").prompt
+        menu.query_one("#choice-filter", Input).value = "local"
+        await pilot.pause(0.15)
+        assert menu.query_one("#choice-filter", Input).value == "local"
+        assert menu._spinner_frame != first_frame
+        assert options.get_option("local").prompt is not first_prompt
+
+        release_operation.set()
+        deadline = asyncio.get_running_loop().time() + 2
+        while next(choice for choice in menu._choices if choice.value == "local").loading:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("MCP failure did not clear the menu loading state")
+            await pilot.pause(0.05)
+
+        failed = next(choice for choice in menu._choices if choice.value == "local")
+        assert failed.trailing == "enabled · failed"
+        assert app.screen is menu
+
+        # A runtime refresh may invalidate the backing candidate map before an
+        # already-rendered row delivers its selection event. Treat it as stale
+        # input instead of letting a KeyError escape through Textual.
+        runtime_status = "connected"
+        assert menu._on_refresh is not None
+        assert await menu._on_refresh() == ()
+        options.highlighted = options.get_option_index("local")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert menu._choices == ()
+
+
+@pytest.mark.asyncio
+async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    operation_started = asyncio.Event()
+    release_operation = asyncio.Event()
+    runtime_status = "connected"
+
+    def runtime_servers() -> tuple[McpServerStatus, ...]:
+        return (
+            McpServerStatus(
+                server_id="local",
+                name="local",
+                transport="stdio",
+                status=runtime_status,
+            ),
+        )
+
+    async def controlled_stop(_server_id: str) -> McpServerStatus:
+        nonlocal runtime_status
+        runtime_status = "stopping"
+        operation_started.set()
+        await release_operation.wait()
+        runtime_status = "stopped"
+        return runtime_servers()[0]
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
+        monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Disconnect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
+        menu = app.screen
+        options = menu.query_one(OptionList)
+        options.focus()
+
+        await pilot.press("enter")
+        await asyncio.wait_for(operation_started.wait(), timeout=1)
+        assert next(choice for choice in menu._choices if choice.value == "local").loading
+        menu.query_one("#choice-filter", Input).value = "local"
+        await pilot.pause()
+        assert menu.query_one("#choice-filter", Input).value == "local"
+
+        release_operation.set()
+        deadline = asyncio.get_running_loop().time() + 2
+        while next(choice for choice in menu._choices if choice.value == "local").loading:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("MCP stop did not clear the menu loading state")
+            await pilot.pause(0.05)
+
+        stopped = next(choice for choice in menu._choices if choice.value == "local")
+        assert stopped.trailing == "enabled · stopped"
+        assert stopped.disabled is True
+        assert app.screen is menu
+
+
+@pytest.mark.asyncio
 async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> None:
     ConfigurationFacade(tmp_path).set_tool_permission("UnavailableTest", "deny")
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
@@ -6636,11 +6799,39 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
 
         options = action_screen.query_one("#choice-list", OptionList)
         assert options.get_option("start").disabled is False
-        session.initialize_gate.set()
         options.highlighted = options.get_option_index("start")
         options.focus()
         await pilot.press("enter")
-        await pilot.pause()
+
+        assert action_screen is app.screen
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "start"
+        ).loading is True
+        action_screen.query_one("#choice-filter", Input).value = "runtime"
+        await pilot.pause(0.15)
+        assert action_screen.query_one("#choice-filter", Input).value == "runtime"
+
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP SERVERS")
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "local"
+        ).loading is True
+
+        session.initialize_gate.set()
+        deadline = asyncio.get_running_loop().time() + 2
+        while next(
+            choice for choice in action_screen._choices if choice.value == "local"
+        ).loading:
+            if asyncio.get_running_loop().time() >= deadline:
+                raise AssertionError("MCP start did not refresh the parent menu")
+            await pilot.pause(0.05)
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "local"
+        ).trailing == "enabled · connected"
+
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="MCP · local")
+        options = action_screen.query_one("#choice-list", OptionList)
 
         assert action_screen is app.screen
         assert options.get_option("start").disabled is True
@@ -6672,6 +6863,9 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
         assert next(
             choice for choice in action_screen._choices if choice.value == "local"
         ).trailing == "enabled · stopped"
+        await pilot.press("escape")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        assert any(choice.value.endswith(":mcp.list") for choice in action_screen._choices)
 
 
 @pytest.mark.asyncio

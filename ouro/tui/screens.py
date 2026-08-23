@@ -13,13 +13,14 @@ from textual.binding import Binding
 from textual.color import Color
 from textual.containers import Vertical
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
 from ouro.tui.commands import slash_command_help
 from ouro.tui.text_inputs import TuiInput
-from ouro.tui.theme import theme_for
+from ouro.tui.theme import ASCII_SPINNER_FRAMES, theme_for
 
 
 @dataclass(frozen=True)
@@ -35,6 +36,7 @@ class Choice:
     marker: str = ""
     edit_value: str | None = None
     edit_placeholder: str = ""
+    loading: bool = False
 
 
 ChoiceSelectionHandler = Callable[[str], Awaitable[tuple[Choice, ...] | None]]
@@ -73,12 +75,18 @@ class _ChoiceGroupHeaderText(Text):
     """Marks a text-backed group heading without conflating it with disabled rows."""
 
 
-def _choice_option(choice: Choice, *, group_accent: str) -> Option:
+def _choice_option(
+    choice: Choice,
+    *,
+    group_accent: str,
+    spinner_frame: int = 0,
+) -> Option:
     """Render one selectable row independently from its surrounding group chrome."""
 
     label = Text(overflow="ellipsis", no_wrap=True)
-    if choice.marker:
-        label.append(f"{choice.marker} ", style=f"bold {group_accent}")
+    marker = ASCII_SPINNER_FRAMES[spinner_frame] if choice.loading else choice.marker
+    if marker:
+        label.append(f"{marker} ", style=f"bold {group_accent}")
     label.append(choice.label, style=choice.accent or "")
     if choice.trailing:
         row = Table.grid(expand=True, padding=0)
@@ -97,6 +105,7 @@ def grouped_choice_options(
     choices: tuple[Choice, ...],
     *,
     group_accent: str = "#7d8794",
+    spinner_frame: int = 0,
 ) -> list[Option]:
     """Render choices with the shared TUI group headers and row treatment."""
 
@@ -126,7 +135,13 @@ def grouped_choice_options(
                     )
                 options.append(Option(group_header, disabled=True))
             previous_group = choice.group
-        options.append(_choice_option(choice, group_accent=group_accent))
+        options.append(
+            _choice_option(
+                choice,
+                group_accent=group_accent,
+                spinner_frame=spinner_frame,
+            )
+        )
     return options
 
 
@@ -170,6 +185,8 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._page_stack: list[_ChoicePage] = []
         self._child_background: Color | None = None
         self._page_revision = 0
+        self._spinner_frame = 0
+        self._spinner_timer: Timer | None = None
 
     @property
     def navigation_id(self) -> MenuDestination | None:
@@ -182,6 +199,12 @@ class ChoiceScreen(ModalScreen[str | None]):
         """Identify the root that owns this menu's in-place page history."""
 
         return self._page_stack[0].navigation_id if self._page_stack else self._navigation_id
+
+    @property
+    def page_revision(self) -> int:
+        """Identify the visible page so background work cannot update a replacement page."""
+
+        return self._page_revision
 
     def compose(self) -> ComposeResult:
         with Vertical(id="choice-panel"):
@@ -201,6 +224,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         return TuiInput(placeholder=self._placeholder, id="choice-filter")
 
     def on_mount(self) -> None:
+        self._sync_loading_timer()
         self.query_one("#choice-filter", Input).focus()
         options = self.query_one("#choice-list", OptionList)
         if options.option_count:
@@ -208,6 +232,11 @@ class ChoiceScreen(ModalScreen[str | None]):
                 options,
                 preferred_value=self._initial_value,
             )
+
+    def on_unmount(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
 
     def replace_page(
         self,
@@ -374,6 +403,38 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         return True
 
+    def update_choices(
+        self,
+        choices: tuple[Choice, ...],
+        *,
+        expected_revision: int | None = None,
+        preferred_value: str | None = None,
+    ) -> bool:
+        """Update the visible page when it still owns a background operation."""
+
+        if (
+            not self.is_mounted
+            or (expected_revision is not None and self._page_revision != expected_revision)
+        ):
+            return False
+        self._choices = choices
+        self._refresh_options(
+            needle=self.query_one("#choice-filter", Input).value,
+            preferred_value=preferred_value,
+        )
+        return True
+
+    async def refresh_choices(self) -> bool:
+        """Refresh whichever page is still visible after background work completes."""
+
+        if not self.is_mounted or self._on_refresh is None:
+            return False
+        page_revision = self._page_revision
+        choices = await self._on_refresh()
+        if choices is None:
+            return False
+        return self.update_choices(choices, expected_revision=page_revision)
+
     async def open_child(self, screen: ModalScreen[ScreenResult]) -> ScreenResult | None:
         """Replace this menu visually with a child and restore it on return.
 
@@ -452,7 +513,13 @@ class ChoiceScreen(ModalScreen[str | None]):
         )
         options = self.query_one("#choice-list", OptionList)
         options.clear_options()
-        options.add_options(self._options(choices, group_accent=theme_for(self).accent))
+        options.add_options(
+            self._options(
+                choices,
+                group_accent=theme_for(self).accent,
+                spinner_frame=self._spinner_frame,
+            )
+        )
         options.highlighted = (
             self._highlight_index(
                 options,
@@ -462,6 +529,40 @@ class ChoiceScreen(ModalScreen[str | None]):
             if choices
             else None
         )
+        self._sync_loading_timer()
+
+    def _sync_loading_timer(self) -> None:
+        if any(choice.loading for choice in self._choices):
+            if self._spinner_timer is None:
+                self._spinner_timer = self.set_interval(
+                    0.12,
+                    self._advance_loading_animation,
+                )
+        else:
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            self._spinner_frame = 0
+
+    def _advance_loading_animation(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(ASCII_SPINNER_FRAMES)
+        loading = {choice.value: choice for choice in self._choices if choice.loading}
+        if not loading:
+            self._sync_loading_timer()
+            return
+        options = self.query_one("#choice-list", OptionList)
+        accent = theme_for(self).accent
+        for index in range(options.option_count):
+            option = options.get_option_at_index(index)
+            choice = loading.get(str(option.id)) if option.id is not None else None
+            if choice is None:
+                continue
+            prompt = _choice_option(
+                choice,
+                group_accent=accent,
+                spinner_frame=self._spinner_frame,
+            ).prompt
+            options.replace_option_prompt_at_index(index, prompt)
 
     def on_input_submitted(self, _event: Input.Submitted) -> None:
         options = self.query_one("#choice-list", OptionList)
@@ -605,8 +706,13 @@ class ChoiceScreen(ModalScreen[str | None]):
         choices: tuple[Choice, ...],
         *,
         group_accent: str = "#7d8794",
+        spinner_frame: int = 0,
     ) -> list[Option]:
-        return grouped_choice_options(choices, group_accent=group_accent)
+        return grouped_choice_options(
+            choices,
+            group_accent=group_accent,
+            spinner_frame=spinner_frame,
+        )
 
     @staticmethod
     def _highlight_index(

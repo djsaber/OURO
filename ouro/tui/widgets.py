@@ -51,6 +51,7 @@ from ouro.tui.question_forms import QuestionField, QuestionForm
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
+    ASCII_SPINNER_FRAMES,
     FAILURE_TONE,
     WELCOME_BULLET,
     WELCOME_SEPARATOR,
@@ -58,8 +59,6 @@ from ouro.tui.theme import (
     theme_for,
 )
 from ouro.tui.tool_presentations import ToolLineState, ToolTextTone, present_tool
-
-_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
 _OURO_LOGO = """
  ██████╗ ▒▒╗   ▒▒╗██████╗  ▒▒▒▒▒▒╗
@@ -288,14 +287,14 @@ class ActivityIndicator(Static):
         self._render_indicator()
 
     def _tick(self) -> None:
-        self._frame = (self._frame + 1) % len(_SPINNER)
+        self._frame = (self._frame + 1) % len(ASCII_SPINNER_FRAMES)
         self._render_indicator()
 
     def _render_indicator(self) -> None:
         accent = theme_for(self).accent
         busy = self._activity in _BUSY_ACTIVITIES
         ready = self._activity in {"idle", "completed"}
-        mark = _SPINNER[self._frame] if busy else "▣"
+        mark = ASCII_SPINNER_FRAMES[self._frame] if busy else "▣"
         label = _ACTIVITY_LABELS.get(self._activity, self._activity.replace("_", " ").title())
         if (
             self._activity == "waiting_model"
@@ -557,7 +556,7 @@ class ToolActivityRow(Static):
         }
 
     def _tick(self) -> None:
-        self._frame = (self._frame + 1) % len(_SPINNER)
+        self._frame = (self._frame + 1) % len(ASCII_SPINNER_FRAMES)
         self._render_tool()
 
     def refresh_theme(self) -> None:
@@ -591,7 +590,7 @@ def _tool_activity_text(
         "aborted": "×",
         "unknown_outcome": "!",
     }
-    mark = _SPINNER[frame] if active else marks.get(tool.status, "·")
+    mark = ASCII_SPINNER_FRAMES[frame] if active else marks.get(tool.status, "·")
     state_styles = {
         "completed": "#77b083",
         "failed": FAILURE_TONE,
@@ -712,10 +711,13 @@ class _WelcomeSystemBlock(Vertical):
     def __init__(self, status: TuiSystemStatus | None = None) -> None:
         super().__init__(classes="welcome-section welcome-system")
         self._status = status or TuiSystemStatus()
+        self._spinner_frame = 0
+        self._spinner_timer: Timer | None = None
         self._workspace = Static(classes="welcome-value")
         self._providers = Static(classes="welcome-value")
         self._skills = Static(classes="welcome-value")
         self._plugins = Static(classes="welcome-value")
+        self._mcp_label = Static("MCP", id="welcome-mcp-label", classes="welcome-label")
         self._mcp = Static(classes="welcome-value")
         self._version = Static(f"v{__version__}", classes="welcome-version")
         self._render_values()
@@ -734,17 +736,54 @@ class _WelcomeSystemBlock(Vertical):
             ("MCP", self._mcp),
         ):
             yield Horizontal(
-                Static(label, classes="welcome-label"),
+                self._mcp_label if label == "MCP" else Static(label, classes="welcome-label"),
                 value,
                 classes="welcome-row",
             )
 
+    def on_mount(self) -> None:
+        self._sync_mcp_spinner()
+
+    def on_unmount(self) -> None:
+        if self._spinner_timer is not None:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+
     def set_system_status(self, status: TuiSystemStatus) -> None:
         self._status = status
+        self._sync_mcp_spinner()
         self._render_values()
+
+    def _sync_mcp_spinner(self) -> None:
+        if self._status.mcp_connecting_count:
+            if self._spinner_timer is None:
+                self._spinner_timer = self.set_interval(
+                    0.12,
+                    self._advance_mcp_spinner,
+                )
+        else:
+            if self._spinner_timer is not None:
+                self._spinner_timer.stop()
+                self._spinner_timer = None
+            self._spinner_frame = 0
+
+    def _advance_mcp_spinner(self) -> None:
+        self._spinner_frame = (self._spinner_frame + 1) % len(ASCII_SPINNER_FRAMES)
+        self._render_mcp_label()
+
+    def _render_mcp_label(self) -> None:
+        label = Text()
+        if self._status.mcp_connecting_count:
+            label.append(
+                f"{ASCII_SPINNER_FRAMES[self._spinner_frame]} ",
+                style=f"bold {theme_for(self).accent}",
+            )
+        label.append("MCP")
+        self._mcp_label.update(label)
 
     def _render_values(self) -> None:
         status = self._status
+        self._render_mcp_label()
         self._workspace.update(Text(status.workspace or "not set", style="#d6d9df"))
 
         providers = Text(_compact_names(status.provider_ids) or "none configured", style="#d6d9df")

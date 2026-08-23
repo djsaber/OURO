@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 SELECTED_CHOICE_MARKER = "●"
+ASCII_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 WELCOME_BULLET = "•"
 WELCOME_SEPARATOR = f" {WELCOME_BULLET} "
 FAILURE_TONE = "#d87575"
@@ -118,6 +119,7 @@ def theme_for(node: object) -> TuiTheme:
 
 
 __all__ = [
+    "ASCII_SPINNER_FRAMES",
     "DEFAULT_TUI_THEME",
     "FAILURE_TONE",
     "SELECTED_CHOICE_MARKER",
