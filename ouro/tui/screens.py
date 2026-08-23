@@ -457,7 +457,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         """Update the visible page when it still owns a background operation."""
 
         if (
-            not self.is_mounted
+            not self._accepts_choice_updates()
             or (expected_revision is not None and self._page_revision != expected_revision)
         ):
             return False
@@ -471,13 +471,18 @@ class ChoiceScreen(ModalScreen[str | None]):
     async def refresh_choices(self) -> bool:
         """Refresh whichever page is still visible after background work completes."""
 
-        if not self.is_mounted or self._on_refresh is None:
+        if not self._accepts_choice_updates() or self._on_refresh is None:
             return False
         page_revision = self._page_revision
         choices = await self._on_refresh()
         if choices is None:
             return False
         return self.update_choices(choices, expected_revision=page_revision)
+
+    def _accepts_choice_updates(self) -> bool:
+        """Return whether this menu still owns a live render surface."""
+
+        return self.is_mounted and self.is_attached and self.is_running and self.display
 
     async def open_child(self, screen: ModalScreen[ScreenResult]) -> ScreenResult | None:
         """Replace this menu visually with a child and restore it on return.

@@ -6508,6 +6508,99 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
 
 
 @pytest.mark.asyncio
+async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ConfigurationFacade(tmp_path).save_mcp_server(
+        "local",
+        MCPServerConfigUpdate(command="unused-in-test", auto_start=False),
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+    runtime_status = "connected"
+    stop_started = asyncio.Event()
+    stop_release = asyncio.Event()
+    stop_finished = asyncio.Event()
+    start_started = asyncio.Event()
+    start_release = asyncio.Event()
+    start_finished = asyncio.Event()
+
+    def runtime_servers() -> tuple[McpServerStatus, ...]:
+        return (
+            McpServerStatus(
+                server_id="local",
+                name="local",
+                transport="stdio",
+                status=runtime_status,
+                tool_count=1 if runtime_status == "connected" else 0,
+            ),
+        )
+
+    async def controlled_stop(_server_id: str) -> McpServerStatus:
+        nonlocal runtime_status
+        runtime_status = "stopping"
+        stop_started.set()
+        await stop_release.wait()
+        runtime_status = "stopped"
+        stop_finished.set()
+        return runtime_servers()[0]
+
+    async def controlled_start(_server_id: str) -> McpServerStatus:
+        nonlocal runtime_status
+        runtime_status = "starting"
+        start_started.set()
+        await start_release.wait()
+        runtime_status = "connected"
+        start_finished.set()
+        return runtime_servers()[0]
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause(0.5)
+        monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
+        monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
+        monkeypatch.setattr(app._controller, "start_mcp_server", controlled_start)
+
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Disconnect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="DISCONNECT MCP SERVER")
+        disconnected_menu = app.screen
+        await pilot.press("enter")
+        await asyncio.wait_for(stop_started.wait(), timeout=1)
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert disconnected_menu.is_attached is False
+
+        stop_release.set()
+        await asyncio.wait_for(stop_finished.wait(), timeout=1)
+        await pilot.pause()
+        assert app.is_running is True
+
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        app.screen.query_one("#choice-filter", Input).value = "Connect MCP server"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="CONNECT MCP SERVER")
+        connected_menu = app.screen
+        await pilot.press("enter")
+        await asyncio.wait_for(start_started.wait(), timeout=1)
+        await pilot.press("escape", "escape")
+        await pilot.pause()
+        assert connected_menu.is_attached is False
+
+        start_release.set()
+        await asyncio.wait_for(start_finished.wait(), timeout=1)
+        await pilot.pause()
+
+        assert app.is_running is True
+        assert not isinstance(app.screen, ChoiceScreen)
+        assert app._system_status.mcp_connected_count == 1
+
+
+@pytest.mark.asyncio
 async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> None:
     ConfigurationFacade(tmp_path).set_tool_permission("UnavailableTest", "deny")
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
