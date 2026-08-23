@@ -19,6 +19,12 @@ class TuiCommandArgument:
         return f"{self.value} {self.argument_hint}" if self.argument_hint else self.value
 
     @property
+    def input_hint(self) -> str:
+        """Return the argument suffix in directly insertable form."""
+
+        return _input_format(self.argument_hint)
+
+    @property
     def requires_value(self) -> bool:
         return self.argument_hint is not None and "<" in self.argument_hint
 
@@ -54,7 +60,7 @@ class TuiCommand:
             option.value.casefold() for option in self.argument_options if option.value
         }
         if not option_values:
-            return self.argument_hint
+            return _input_format(self.argument_hint)
 
         remaining: list[str] = []
         for branch in _split_usage_branches(self.argument_hint):
@@ -71,7 +77,7 @@ class TuiCommand:
             head, _separator, _tail = branch.partition(" ")
             if head.casefold() not in option_values:
                 remaining.append(branch)
-        return " | ".join(remaining) or None
+        return _input_format(" | ".join(remaining)) or None
 
     @property
     def takes_arguments(self) -> bool:
@@ -235,13 +241,19 @@ def argument_suggestion(
         and selected.value.casefold().startswith(query.casefold())
     ):
         completion = selected.value[len(query) :]
-        suffix = f" {selected.argument_hint}" if selected.argument_hint else ""
+        suffix = f" {selected.input_hint}" if selected.input_hint else ""
         return completion + suffix
     if selected is not None and separator and selected.value.casefold() == query.casefold():
         if selected.argument_hint and not remainder:
-            return selected.argument_hint
+            return selected.input_hint
         return ""
     return ""
+
+
+def _input_format(hint: str | None) -> str:
+    """Project display grammar onto text that may be inserted into the composer."""
+
+    return hint.translate(str.maketrans("", "", "[]")).strip() if hint else ""
 
 
 def _split_usage_branches(usage: str) -> tuple[str, ...]:

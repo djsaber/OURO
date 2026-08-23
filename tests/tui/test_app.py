@@ -8471,9 +8471,27 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         assert composer.text == "/goal "
-        assert composer.suggestion == "[--token-budget N] <objective>"
+        assert composer.suggestion == "--token-budget N <objective>"
         assert popup.argument_command is not None
 
+        await pilot.press("left")
+        await pilot.pause()
+        assert composer.cursor_location == (0, len("/goal"))
+        assert composer.suggestion == ""
+
+        await pilot.press("right")
+        await pilot.pause()
+        assert composer.text == "/goal "
+        assert composer.suggestion == "--token-budget N <objective>"
+
+        await pilot.press("right")
+        await pilot.pause()
+        assert composer.text == "/goal --token-budget N <objective>"
+        assert "[" not in composer.text
+        assert "]" not in composer.text
+
+        composer.load_command("/goal ")
+        await pilot.pause()
         await pilot.press("p", "a", "u")
         await pilot.pause()
         assert popup.selected_argument is not None

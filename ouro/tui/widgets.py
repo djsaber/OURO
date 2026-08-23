@@ -2364,6 +2364,20 @@ class Composer(TuiTextArea):
             return self.text, ""
         return None
 
+    def command_cursor_at_end(self) -> bool:
+        """Return whether a suggestion may be inserted at the command boundary."""
+
+        context = self.command_context()
+        return bool(
+            context is not None
+            and self.selection.is_empty
+            and self.cursor_location == (0, len(context[0]))
+        )
+
+    def on_text_area_selection_changed(self, message: TextArea.SelectionChanged) -> None:
+        if message.text_area is self and not self.command_cursor_at_end():
+            self.suggestion = ""
+
     def load_command(self, command_text: str, *, draft: str = "") -> None:
         """Edit a command while keeping an existing user draft intact."""
 
@@ -2433,6 +2447,11 @@ class Composer(TuiTextArea):
 
     def action_newline(self) -> None:
         self.insert("\n")
+
+    def action_cursor_right(self, select: bool = False) -> None:
+        if self.suggestion and not self.command_cursor_at_end():
+            self.suggestion = ""
+        super().action_cursor_right(select)
 
     def action_history_previous(self) -> None:
         if self.command_context() is not None:

@@ -1489,7 +1489,23 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         arguments = matching_arguments(command, argument)
         popup.show_arguments(command, arguments)
-        message.text_area.suggestion = argument_suggestion(
+        self._sync_command_suggestion(composer, popup)
+
+    def on_text_area_selection_changed(self, message: TextArea.SelectionChanged) -> None:
+        composer = self.query_one(Composer)
+        if message.text_area is composer:
+            self._sync_command_suggestion(composer, self.query_one(CommandPopup))
+
+    @staticmethod
+    def _sync_command_suggestion(composer: Composer, popup: CommandPopup) -> None:
+        composer.suggestion = ""
+        command = popup.argument_command
+        context = composer.command_context()
+        if command is None or context is None or not composer.command_cursor_at_end():
+            return
+        command_text, _draft = context
+        _command_name, _separator, argument = command_text.partition(" ")
+        composer.suggestion = argument_suggestion(
             command,
             argument,
             popup.selected_argument,
@@ -1553,20 +1569,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def on_composer_command_navigated(self, message: Composer.CommandNavigated) -> None:
         popup = self.query_one(CommandPopup)
         popup.navigate(message.offset)
-        command = popup.argument_command
-        if command is None:
-            return
         composer = self.query_one(Composer)
-        context = composer.command_context()
-        if context is None:
-            return
-        command_text, _draft = context
-        _command_text, _separator, argument = command_text.partition(" ")
-        composer.suggestion = argument_suggestion(
-            command,
-            argument,
-            popup.selected_argument,
-        )
+        self._sync_command_suggestion(composer, popup)
 
     def on_composer_command_dismissed(self, _message: Composer.CommandDismissed) -> None:
         composer = self.query_one(Composer)

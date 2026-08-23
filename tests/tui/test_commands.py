@@ -80,7 +80,7 @@ def test_parameter_options_filter_and_drive_inline_suggestions() -> None:
     assert argument_suggestion(command, "", command.argument_options[0]) == "<request>"
     assert argument_suggestion(command, "pau", command.argument_options[1]) == "se"
     assert argument_suggestion(command, "replace ", command.argument_options[2]) == (
-        "[--token-budget N] <request>"
+        "--token-budget N <request>"
     )
 
 
@@ -109,7 +109,7 @@ def test_input_hint_preserves_full_usage_but_omits_menu_owned_branches() -> None
     )
 
     assert command.usage == f"/goal {full_hint}"
-    assert command.input_hint == "[--token-budget N] <objective>"
+    assert command.input_hint == "--token-budget N <objective>"
 
 
 def test_argument_display_metadata_filters_without_changing_completion_value() -> None:
