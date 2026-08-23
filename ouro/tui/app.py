@@ -1436,7 +1436,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     async def on_text_area_changed(self, message: TextArea.Changed) -> None:
         if message.text_area is not self.query_one(Composer):
             return
-        value = message.text_area.text
+        composer = message.text_area
+        value = composer.text
+        command_context = composer.observe_command_change()
         message.text_area.suggestion = ""
         popup = self.query_one(CommandPopup)
         ask_user = self.query_one(AskUserPanel)
@@ -1449,12 +1451,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if value == self._dismissed_command_text:
             return
         self._dismissed_command_text = None
-        if not value.startswith("/") or "\n" in value:
+        if command_context is None:
             popup.hide()
             return
-        _command_text, separator, argument = value.partition(" ")
+        command_value, _draft = command_context
+        _command_text, separator, argument = command_value.partition(" ")
         if not separator:
-            commands = matching_commands(value, self._command_catalog())
+            commands = matching_commands(command_value, self._command_catalog())
             popup.show_commands(tuple(sorted(commands, key=lambda item: item.name)))
             return
         static_command, _normalized_argument = resolve_command(_command_text, TUI_COMMANDS)
@@ -1477,7 +1480,10 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     markup=False,
                 )
                 return
-        command, _normalized_argument = resolve_command(value, self._command_catalog())
+        command, _normalized_argument = resolve_command(
+            command_value,
+            self._command_catalog(),
+        )
         if command is None or not command.takes_arguments:
             popup.hide()
             return
@@ -1517,15 +1523,15 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._dismissed_command_text = None
             ask_user.accept_freeform(message.text)
             return
-        value = message.text
+        value = message.command_text
         selected = popup.selected_command
         if selected is not None and selected.takes_arguments:
-            self._edit_command(f"{selected.name} ")
+            self._edit_command(f"{selected.name} ", draft=message.draft)
             return
         argument_command = popup.argument_command
         selected_argument = popup.selected_argument
         if argument_command is not None and selected_argument is not None:
-            _command_text, _separator, argument = message.text.partition(" ")
+            _command_text, _separator, argument = message.command_text.partition(" ")
             head, head_separator, remainder = argument.strip().partition(" ")
             option_is_complete = head.casefold() == selected_argument.value.casefold()
             if not option_is_complete or (
@@ -1533,11 +1539,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             ):
                 selected_value = f"{argument_command.name} {selected_argument.value}"
                 if selected_argument.requires_value:
-                    self._edit_command(f"{selected_value} ")
+                    self._edit_command(f"{selected_value} ", draft=message.draft)
                     return
                 value = selected_value
         value = selected.name if selected is not None else value
-        composer.clear()
+        composer.restore_command_draft(message.draft)
         popup.hide()
         self._dismissed_command_text = None
         await self._dispatch_command(value)
@@ -1551,7 +1557,11 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         if command is None:
             return
         composer = self.query_one(Composer)
-        _command_text, _separator, argument = composer.text.partition(" ")
+        context = composer.command_context()
+        if context is None:
+            return
+        command_text, _draft = context
+        _command_text, _separator, argument = command_text.partition(" ")
         composer.suggestion = argument_suggestion(
             command,
             argument,
@@ -1560,6 +1570,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def on_composer_command_dismissed(self, _message: Composer.CommandDismissed) -> None:
         composer = self.query_one(Composer)
+        context = composer.command_context()
+        if context is not None and context[1]:
+            composer.restore_command_draft(context[1])
+            self._dismissed_command_text = None
+            composer.suggestion = ""
+            self.query_one(CommandPopup).hide()
+            return
         self._dismissed_command_text = composer.text
         composer.suggestion = ""
         self.query_one(CommandPopup).hide()
@@ -1734,10 +1751,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             placeholder = Composer.DEFAULT_PLACEHOLDER
         self.query_one(Composer).placeholder = placeholder
 
-    def _edit_command(self, value: str) -> None:
+    def _edit_command(self, value: str, *, draft: str = "") -> None:
         composer = self.query_one(Composer)
-        composer.load_text(value)
-        composer.move_cursor((0, len(value)))
+        composer.load_command(value, draft=draft)
         composer.focus()
 
     def _edit_draft(self, value: str) -> None:

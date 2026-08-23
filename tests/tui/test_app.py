@@ -7956,6 +7956,73 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        composer = app.query_one(Composer)
+        popup = app.query_one(CommandPopup)
+        draft = "Compare these two implementations"
+        composer.load_text(draft)
+        composer.move_cursor((0, 0))
+        await pilot.pause()
+
+        await pilot.press("slash")
+        await pilot.pause()
+
+        assert composer.text == f"/{draft}"
+        assert popup.display is True
+        assert len(popup._commands) == len(app._command_catalog())
+
+        await pilot.press(*"model")
+        await pilot.pause()
+
+        assert popup.selected_command is not None
+        assert popup.selected_command.name == "/model"
+        assert composer.text == f"/model{draft}"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/model"
+        assert composer.text == f"/model {draft}"
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert popup.display is False
+        assert composer.text == draft
+
+        composer.move_cursor((0, 0))
+        await pilot.press("slash", *"not-a-command")
+        await pilot.pause()
+        assert popup.display is False
+
+        await pilot.press("escape")
+        await pilot.pause()
+        assert composer.text == draft
+
+
+@pytest.mark.asyncio
+async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause(0.5)
+        await pilot.press("slash", *"not-a-command")
+        await pilot.pause()
+
+        popup = app.query_one(CommandPopup)
+        assert popup.display is False
+        assert popup.selected_command is None
+        assert "No matching commands" not in app.export_screenshot()
+
+
+@pytest.mark.asyncio
 async def test_command_popup_truncates_long_rows_on_first_open(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 

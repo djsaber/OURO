@@ -2067,6 +2067,9 @@ class CommandPopup(VerticalScroll):
         return self._arguments[self._selected]
 
     def show_commands(self, commands: tuple[TuiCommand, ...]) -> None:
+        if not commands:
+            self.hide()
+            return
         with self.app.batch_update():
             selected_name = (
                 self.selected_command.name if self.selected_command is not None else None
@@ -2134,7 +2137,6 @@ class CommandPopup(VerticalScroll):
 
     def _render_commands(self) -> None:
         if not self._commands:
-            self._content.update(Text("  No matching commands", style="#8f9aa8"))
             return
         theme = theme_for(self)
         name_width = max(len(command.name) for command in self._commands)
@@ -2302,9 +2304,11 @@ class Composer(TuiTextArea):
             self.mode = mode
 
     class CommandSubmitted(Message):
-        def __init__(self, text: str) -> None:
+        def __init__(self, text: str, *, command_text: str, draft: str) -> None:
             super().__init__()
             self.text = text
+            self.command_text = command_text
+            self.draft = draft
 
     class CommandNavigated(Message):
         def __init__(self, offset: int) -> None:
@@ -2329,6 +2333,53 @@ class Composer(TuiTextArea):
         self._history: list[str] = []
         self._history_index = 0
         self._clipboard_reader = clipboard_reader
+        self._observed_text = ""
+        self._command_draft: str | None = None
+
+    def observe_command_change(self) -> tuple[str, str] | None:
+        """Return the active command fragment and the draft behind it."""
+
+        value = self.text
+        previous = self._observed_text
+        draft = self._command_draft
+        if draft is None and previous and value.endswith(previous):
+            inserted = value[: len(value) - len(previous)]
+            if inserted.startswith("/") and "\n" not in inserted:
+                draft = previous
+                self._command_draft = draft
+        self._observed_text = value
+        return self.command_context()
+
+    def command_context(self) -> tuple[str, str] | None:
+        """Return command text separately from any pre-existing draft."""
+
+        draft = self._command_draft
+        if draft is not None:
+            if self.text.endswith(draft):
+                command_text = self.text[: len(self.text) - len(draft)]
+                if command_text.startswith("/") and "\n" not in command_text:
+                    return command_text, draft
+            self._command_draft = None
+        if self.text.startswith("/") and "\n" not in self.text:
+            return self.text, ""
+        return None
+
+    def load_command(self, command_text: str, *, draft: str = "") -> None:
+        """Edit a command while keeping an existing user draft intact."""
+
+        value = f"{command_text}{draft}"
+        self._command_draft = draft or None
+        self._observed_text = value
+        self.load_text(value)
+        self.move_cursor((0, len(command_text)))
+
+    def restore_command_draft(self, draft: str) -> None:
+        """Finish a transient command and restore its original user draft."""
+
+        self._command_draft = None
+        self._observed_text = draft
+        self.load_text(draft)
+        self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def on_mouse_down(self, event: events.MouseDown) -> None:
         if event.button != 3:
@@ -2364,8 +2415,16 @@ class Composer(TuiTextArea):
         value = self.text.strip()
         if not value:
             return
-        if value.startswith("/"):
-            self.post_message(self.CommandSubmitted(value))
+        context = self.command_context()
+        if context is not None:
+            command_text, draft = context
+            self.post_message(
+                self.CommandSubmitted(
+                    value,
+                    command_text=command_text.strip(),
+                    draft=draft,
+                )
+            )
             return
         self._history.append(value)
         self._history_index = len(self._history)
@@ -2376,7 +2435,7 @@ class Composer(TuiTextArea):
         self.insert("\n")
 
     def action_history_previous(self) -> None:
-        if self.text.startswith("/") and "\n" not in self.text:
+        if self.command_context() is not None:
             self.post_message(self.CommandNavigated(-1))
             return
         if "\n" in self.text or self.cursor_location[0] > 0:
@@ -2388,7 +2447,7 @@ class Composer(TuiTextArea):
             self.move_cursor((self.document.line_count - 1, len(self.document.lines[-1])))
 
     def action_history_next(self) -> None:
-        if self.text.startswith("/") and "\n" not in self.text:
+        if self.command_context() is not None:
             self.post_message(self.CommandNavigated(1))
             return
         if "\n" in self.text or self.cursor_location[0] < self.document.line_count - 1:
@@ -2402,7 +2461,7 @@ class Composer(TuiTextArea):
             self.clear()
 
     def action_dismiss_command(self) -> None:
-        if self.text.startswith("/"):
+        if self.command_context() is not None:
             self.post_message(self.CommandDismissed())
 
 
