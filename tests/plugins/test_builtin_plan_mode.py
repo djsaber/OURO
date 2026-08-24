@@ -452,7 +452,7 @@ async def test_interactive_cli_collects_builtin_plan_approval_as_structured_answ
     runtime, store = _runtime(home, workspace, provider)
     application = LocalApplication.from_runtime(runtime, home=home)
     await _enable_plan_mode(application)
-    inputs = iter(["Design the implementation", "accept", "/exit"])
+    inputs = iter(["Design the implementation", "accept", "/quit"])
     prompts: list[str] = []
     outputs: list[str] = []
 

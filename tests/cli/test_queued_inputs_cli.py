@@ -15,10 +15,28 @@ from ouro.sessions import LocalSessionStore
 from ouro.tools import ToolRegistry
 
 
-def test_run_parser_accepts_queue_submission_mode() -> None:
-    args = build_parser().parse_args(["run", "--queue-mode", "steer", "redirect"])
+@pytest.mark.parametrize(
+    ("cli_value", "expected"),
+    (("follow-up", "follow_up"), ("steer", "steer")),
+)
+def test_run_parser_maps_canonical_queue_submission_modes(cli_value, expected) -> None:
+    args = build_parser().parse_args(["run", "--queue-mode", cli_value, "redirect"])
 
-    assert args.queue_mode == "steer"
+    assert args.queue_mode == expected
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["run", "--queue-mode", "follow_up", "redirect"],
+        ["config", "queued-inputs", "--consumption-mode", "all_at_once"],
+    ),
+)
+def test_cli_rejects_internal_underscore_enum_values(args) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        build_parser().parse_args(args)
+
+    assert exc_info.value.code == 2
 
 
 def test_queued_input_config_command_persists_consumption_mode(tmp_path, capsys) -> None:
@@ -29,7 +47,7 @@ def test_queued_input_config_command_persists_consumption_mode(tmp_path, capsys)
             "--home",
             str(tmp_path),
             "--consumption-mode",
-            "all_at_once",
+            "all-at-once",
             "--json",
         ]
     )
@@ -65,7 +83,7 @@ async def test_interactive_steer_prefix_selects_steering_mode(tmp_path) -> None:
         return await original_run(prompt, **kwargs)
 
     runtime.run = recording_run  # type: ignore[method-assign]
-    inputs = iter(["/steer redirect", "/exit"])
+    inputs = iter(["/steer redirect", "/quit"])
 
     code = await run_interactive(
         runtime=runtime,

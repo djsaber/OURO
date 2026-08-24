@@ -5,7 +5,7 @@ OURO 是一个本地优先的个人智能体运行时。它以可恢复会话为
 
 ## 当前能力
 
-- stdin/stdout 交互模式、Textual 全屏 TUI，以及 `run --print`、`run --json` 两种非交互模式。
+- 默认 Textual 全屏 TUI、独立的 stdin/stdout 交互模式，以及 `run --print`、`run --json` 两种非交互模式。
 - 基于 `provider/endpoint` 的模型配置、主流厂商模板、连接检查和会话级模型选择，以及共享安全重试契约的 OpenAI-compatible / Anthropic-compatible 适配。
 - 多轮模型/工具循环，支持顺序或并行工具批次、审批、结构化用户输入请求、协作式中止，以及 run 级 follow-up / turn 级 steer 排队输入。
 - 会话级 AFK 预设：自动批准可批准的工具，并以 provenance-bearing 无人值守 resolution 处理工具提问，不伪造用户回答。
@@ -58,14 +58,16 @@ uv run mypy ouro
 ## 快速开始
 
 ```bash
-# 交互模式
+# 默认全屏 TUI
 uv run ouro --home ./.ouro-dev
 uv run ouro --home ./.ouro-dev --approval-mode auto
 uv run ouro --home ./.ouro-dev --afk
+uv run ouro --home ./.ouro-dev --session <session_id>
 
-# 全屏 TUI（迁移阶段使用显式子命令）
-uv run ouro --home ./.ouro-dev tui
-uv run ouro --home ./.ouro-dev tui --session <session_id>
+# 行式 stdin/stdout 交互模式
+uv run ouro interactive --home ./.ouro-dev
+uv run ouro interactive --home ./.ouro-dev --approval-mode auto
+uv run ouro interactive --home ./.ouro-dev --afk
 
 # 单次运行
 uv run ouro run --print --home ./.ouro-dev "hello"
@@ -84,6 +86,9 @@ uv run ouro session list --home ./.ouro-dev --session-backend sqlite
 uv run ouro agent definition list --home ./.ouro-dev
 uv run ouro agent definition tools --home ./.ouro-dev
 uv run ouro config agents --home ./.ouro-dev
+uv run ouro config agents --home ./.ouro-dev --expected-revision 0 \
+  --allow-agent general --allow-model 'openai/*' \
+  --execution-mode sync --execution-mode async --no-network
 
 # 基于上面一次 completed Run 返回的 session_id/run_id 派遣无人值守 child
 uv run ouro agent spawn <session_id> <run_id> general "inspect one bounded task" \
@@ -289,6 +294,7 @@ uv run ouro session show <session_id> --home ./.ouro-dev
 uv run ouro session context <session_id> --home ./.ouro-dev
 uv run ouro session context <session_id> --home ./.ouro-dev --content --json
 uv run ouro session rename <session_id> "Auth refactor" --home ./.ouro-dev
+uv run ouro session tags <session_id> auth review --home ./.ouro-dev
 uv run ouro session approval-mode <session_id> auto --home ./.ouro-dev
 uv run ouro session afk <session_id> on --home ./.ouro-dev
 uv run ouro session branch <session_id> <message_id> --home ./.ouro-dev
@@ -342,7 +348,7 @@ Run。
 `config permissions` 的结果，`auto` 自动执行，`approval` 要求审批，`deny` 拒绝调用（`AskUser` 在可执行时
 仍按用户问答流程处理，而不是转成普通工具审批）。单次运行可使用
 `--approval-mode` 创建或更新空闲会话；Interactive 可在首条消息前或会话中使用
-`/approval-mode <inherit|auto|approval|deny>`，TUI 也可在活动 Run 中通过命令或审批选择器切换；已经产生的
+`/approval <inherit|auto|approval|deny>`，TUI 也可在活动 Run 中通过命令或审批选择器切换；已经产生的
 审批保持原状态，下一次工具审批边界读取新模式。会话分支继承源会话的批准模式。
 
 AFK 是应用层预设，不是新的权限枚举：`AFK = approval_mode:auto + interaction_mode:unattended`。可用
@@ -461,9 +467,10 @@ TUI 会在自身生命周期内同步该内存快照，实时更新连接中、�
 uv run ouro config prompt --home ./.ouro-dev --set "Custom system prompt"
 uv run ouro config permissions --home ./.ouro-dev --tool Bash --mode approval
 uv run ouro config permissions --home ./.ouro-dev --tool Write --mode deny
+uv run ouro config permissions --home ./.ouro-dev --plugin dev.example.plugin --mode approval
 uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concurrency 4 \
   --workspace-only --max-output-chars 100000
-uv run ouro config queued-inputs --home ./.ouro-dev --consumption-mode all_at_once
+uv run ouro config queued-inputs --home ./.ouro-dev --consumption-mode all-at-once
 uv run ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
 uv run ouro config compaction --home ./.ouro-dev --provider glm --endpoint reasoning
 

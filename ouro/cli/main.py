@@ -5,6 +5,7 @@ import asyncio
 import json
 import sys
 from collections.abc import Sequence
+from typing import cast
 
 from ouro.cli.agent_commands import run_agent_command
 from ouro.cli.approval_commands import (
@@ -75,6 +76,7 @@ from ouro.cli.session_commands import (
     replay_session,
     set_session_afk_mode,
     set_session_approval_mode,
+    set_session_tags,
     show_session,
     show_session_context,
 )
@@ -98,6 +100,7 @@ from ouro.cli.usage_commands import (
     show_usage_entry,
     summarize_usage,
 )
+from ouro.core.approvals import SessionApprovalMode
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.deployment import SessionBackend
@@ -126,7 +129,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _dispatch(args: argparse.Namespace) -> int:
-    if args.command == "tui":
+    if args.command is not None and (
+        args.resume_session_id is not None
+        or args.interactive_afk
+        or args.interactive_approval_mode != "inherit"
+    ):
+        raise ConfigError(
+            "--session, --approval-mode, and --afk before a command are TUI options; "
+            "place interactive Host options after 'ouro interactive'"
+        )
+    if args.command is None:
         from ouro.tui.entry import run_tui
 
         return run_tui(
@@ -135,7 +147,19 @@ def _dispatch(args: argparse.Namespace) -> int:
             session_backend=args.session_backend,
             approval_mode="auto" if args.interactive_afk else args.interactive_approval_mode,
             interaction_mode="unattended" if args.interactive_afk else "interactive",
-            resume_session_id=args.tui_session_id,
+            resume_session_id=args.resume_session_id,
+        )
+    if args.command == "interactive":
+        afk = args.command_afk
+        approval_mode = cast(SessionApprovalMode, args.command_approval_mode or "inherit")
+        return asyncio.run(
+            run_interactive(
+                home=args.interactive_home or args.home,
+                system_prompt=args.interactive_system_prompt or args.system_prompt,
+                approval_mode="auto" if afk else approval_mode,
+                interaction_mode="unattended" if afk else "interactive",
+                session_backend=args.interactive_session_backend or args.session_backend,
+            )
         )
     if args.command == "run":
         return _run_command(args)
@@ -159,32 +183,7 @@ def _dispatch(args: argparse.Namespace) -> int:
         return _skills_command(args)
     if args.command == "usage":
         return _usage_command(args)
-    if args.interactive_afk:
-        return asyncio.run(
-            run_interactive(
-                home=args.home,
-                system_prompt=args.system_prompt,
-                approval_mode="auto",
-                interaction_mode="unattended",
-                session_backend=args.session_backend,
-            )
-        )
-    if args.interactive_approval_mode != "inherit":
-        return asyncio.run(
-            run_interactive(
-                home=args.home,
-                system_prompt=args.system_prompt,
-                approval_mode=args.interactive_approval_mode,
-                session_backend=args.session_backend,
-            )
-        )
-    return asyncio.run(
-        run_interactive(
-            home=args.home,
-            system_prompt=args.system_prompt,
-            session_backend=args.session_backend,
-        )
-    )
+    raise AssertionError(f"unknown command: {args.command}")
 
 
 def _run_command(args: argparse.Namespace) -> int:
@@ -251,6 +250,14 @@ def _session_command(args: argparse.Namespace) -> int:
         return rename_session(
             args.session_id,
             args.title,
+            home=home,
+            json_mode=args.json,
+            session_backend=session_backend,
+        )
+    if command == "tags":
+        return set_session_tags(
+            args.session_id,
+            args.tags,
             home=home,
             json_mode=args.json,
             session_backend=session_backend,
@@ -462,6 +469,7 @@ def _config_command(args: argparse.Namespace) -> int:
         return show_permissions_config(
             home=home,
             tool_name=args.tool,
+            plugin_id=args.plugin,
             mode=args.mode,
             json_mode=args.json,
         )
@@ -511,8 +519,13 @@ def _config_command(args: argparse.Namespace) -> int:
         return show_agent_runtime_config(
             home=home,
             expected_revision=args.expected_revision,
-            max_depth=args.max_depth,
             allowed_agent_id_patterns=args.allowed_agent_id_patterns,
+            allowed_model_patterns=args.allowed_model_patterns,
+            allowed_execution_modes=args.allowed_execution_modes,
+            allow_write=args.allow_write,
+            allow_network=args.allow_network,
+            allow_mcp=args.allow_mcp,
+            allow_external_paths=args.allow_external_paths,
             json_mode=args.json,
         )
 

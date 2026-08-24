@@ -71,7 +71,7 @@ async def handle_command(
 
     if command == "/help":
         return CommandResult(session_id=session_id, output=_help_text(plugins))
-    if command == "/exit":
+    if command == "/quit":
         return CommandResult(session_id=session_id, should_exit=True)
     if command == "/new":
         return CommandResult(
@@ -104,7 +104,7 @@ async def handle_command(
             reasoning_request or ReasoningRequest(),
             argument,
         )
-    if command == "/approval-mode":
+    if command == "/approval":
         return _approval_mode_command(runtime, session_id, approval_mode, argument)
     if command == "/afk":
         return _afk_command(
@@ -180,8 +180,8 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/model <provider/endpoint> - Select the active or next-session model.",
         "/thinking - Show the Session reasoning setting and endpoint choices.",
         f"/thinking <{_THINKING_CHOICE_TEXT}> - Set reasoning for this Session.",
-        "/approval-mode - Show the current session approval mode.",
-        f"/approval-mode <{_APPROVAL_MODE_CHOICES}> - Set the session approval mode.",
+        "/approval - Show the current session approval mode.",
+        f"/approval <{_APPROVAL_MODE_CHOICES}> - Set the session approval mode.",
         "/afk [on|off] - Show or change the unattended AFK policy preset.",
         "/config - Show active local config path.",
         "/export - Show active session data path.",
@@ -200,7 +200,7 @@ def _help_text(plugins: PluginService | None = None) -> str:
         "/control [status] - Show active Session controllers.",
         "/control release <activation-id|controller-id> [--force] - Release control.",
         "/control release --all [--force] - Release every active controller.",
-        "/exit - Quit.",
+        "/quit - Quit.",
     ]
     if plugins is not None:
         commands = plugins.list_commands()
@@ -506,7 +506,7 @@ def _approval_mode_command(
     if value not in SESSION_APPROVAL_MODES:
         return CommandResult(
             session_id=session_id,
-            output=f"Usage: /approval-mode <{_APPROVAL_MODE_CHOICES}>",
+            output=f"Usage: /approval <{_APPROVAL_MODE_CHOICES}>",
         )
     mode = cast(SessionApprovalMode, value)
     if session_id is not None:

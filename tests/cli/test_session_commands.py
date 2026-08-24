@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ouro.application.runtime import RuntimeService
 from ouro.cli.main import main
+from ouro.cli.parser import build_parser
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentDefinition, DelegationRecord
@@ -199,6 +200,8 @@ def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:
 
     assert main(["session", "rename", session_id, "Focused work", "--home", str(tmp_path)]) == 0
     capsys.readouterr()
+    assert main(["session", "tags", session_id, "review", "urgent", "--home", str(tmp_path)]) == 0
+    capsys.readouterr()
     assert main(["session", "pin", session_id, "--home", str(tmp_path)]) == 0
     capsys.readouterr()
     assert main(["session", "archive", session_id, "--home", str(tmp_path)]) == 0
@@ -215,6 +218,8 @@ def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:
             "focused",
             "--archived",
             "--pinned",
+            "--tag",
+            "review",
         ]
     )
     payload = json.loads(capsys.readouterr().out)
@@ -223,6 +228,23 @@ def test_session_rename_archive_pin_and_filtered_list(tmp_path, capsys) -> None:
     assert [entry["session_id"] for entry in payload["sessions"]] == [session_id]
     assert payload["sessions"][0]["title_source"] == "user"
     assert payload["sessions"][0]["title_locked"] is True
+    assert payload["sessions"][0]["tags"] == ["review", "urgent"]
+
+
+def test_session_list_maps_shell_friendly_status_and_sort_values() -> None:
+    args = build_parser().parse_args(
+        [
+            "session",
+            "list",
+            "--status",
+            "waiting-approval",
+            "--sort",
+            "created-desc",
+        ]
+    )
+
+    assert args.statuses == ["waiting_approval"]
+    assert args.sort == "created_desc"
 
 
 def test_session_branch_and_replay_commands_use_application_facade(tmp_path, capsys) -> None:

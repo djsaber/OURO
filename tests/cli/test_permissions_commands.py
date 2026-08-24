@@ -44,6 +44,60 @@ def test_config_permissions_set_tool(tmp_path, capsys) -> None:
     assert snapshot.tools == {"Write": "approval"}
 
 
+def test_config_permissions_sets_and_clears_plugin_default(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "config",
+            "permissions",
+            "--plugin",
+            "dev.ouro.deploy",
+            "--mode",
+            "deny",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["plugins"] == {"dev.ouro.deploy": "deny"}
+
+    code = main(
+        [
+            "config",
+            "permissions",
+            "--plugin",
+            "dev.ouro.deploy",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 0
+    assert payload["plugins"] == {}
+
+
+def test_config_permissions_rejects_mode_without_target(tmp_path, capsys) -> None:
+    code = main(
+        [
+            "config",
+            "permissions",
+            "--mode",
+            "deny",
+            "--home",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+
+    assert code == 2
+    assert payload["error_type"] == "ConfigError"
+
+
 def test_config_permissions_invalid_mode(tmp_path, capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
         main(

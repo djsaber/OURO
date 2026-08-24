@@ -347,7 +347,7 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
         [
             "/dev.ouro.goal:goal target",
             "/dev.ouro.goal:goal guide",
-            "/exit",
+            "/quit",
         ]
     )
 
@@ -355,7 +355,7 @@ async def test_interactive_plugin_run_accepts_commands_while_model_is_running(tm
         command = next(commands)
         if command == "/dev.ouro.goal:goal guide":
             assert provider.started.wait(timeout=2)
-        if command == "/exit":
+        if command == "/quit":
             provider.release.set()
         return command
 

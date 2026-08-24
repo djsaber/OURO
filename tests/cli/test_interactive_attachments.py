@@ -68,7 +68,7 @@ async def test_interactive_attachment_uses_canonical_resource_projection(tmp_pat
             f'/attach "{image}"',
             "/attachments",
             "Reverse-engineer an image generation prompt.",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -103,7 +103,7 @@ async def test_interactive_attachment_uses_canonical_resource_projection(tmp_pat
 async def test_failed_first_attachment_keeps_created_session_reachable(tmp_path) -> None:
     runtime, provider = _runtime(tmp_path, supports_vision=True)
     missing = tmp_path / "missing.png"
-    inputs = iter([f"/attach {missing}", "Continue after the error.", "/exit"])
+    inputs = iter([f"/attach {missing}", "Continue after the error.", "/quit"])
     outputs: list[str] = []
 
     try:
@@ -136,7 +136,7 @@ async def test_interactive_keeps_attachment_when_endpoint_rejects_vision(tmp_pat
             f"/attach {image}",
             "Describe this image.",
             "/attachments",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -167,7 +167,7 @@ async def test_interactive_detach_only_changes_next_message_draft(tmp_path) -> N
             f"/attach {image}",
             "/detach 1",
             "Continue without the image.",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -207,7 +207,7 @@ async def test_interactive_new_session_clears_previous_attachment_draft(tmp_path
             "/new",
             "/attachments",
             "Start clean.",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []

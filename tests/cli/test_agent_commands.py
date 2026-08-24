@@ -208,7 +208,7 @@ def test_agent_runtime_cli_uses_application_services_and_stable_dtos(tmp_path, c
             delegation_id,
             "Continue once.",
             "--mode",
-            "follow_up",
+            "follow-up",
             "--request-id",
             "cli/follow-up-1",
             "--home",
@@ -293,6 +293,14 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
             "general",
             "--allow-agent",
             "review-*",
+            "--allow-model",
+            "openai/*",
+            "--execution-mode",
+            "sync",
+            "--no-write",
+            "--no-network",
+            "--no-mcp",
+            "--no-external-paths",
             "--home",
             home,
             "--json",
@@ -305,21 +313,11 @@ def test_agent_runtime_config_cli_is_revisioned_and_typed(tmp_path, capsys) -> N
         "general",
         "review-*",
     ]
+    policy = updated["agents"]["spawn_policy"]  # type: ignore[index]
+    assert policy["allowed_model_patterns"] == ["openai/*"]  # type: ignore[index]
+    assert policy["allowed_execution_modes"] == ["sync"]  # type: ignore[index]
+    assert policy["allow_write"] is False  # type: ignore[index]
+    assert policy["allow_network"] is False  # type: ignore[index]
+    assert policy["allow_mcp"] is False  # type: ignore[index]
+    assert policy["allow_external_paths"] is False  # type: ignore[index]
     assert updated["change"]["effective_from"] == "next_runtime"  # type: ignore[index]
-
-    code, unsupported = _json_command(
-        [
-            "config",
-            "agents",
-            "--expected-revision",
-            "1",
-            "--max-depth",
-            "2",
-            "--home",
-            home,
-            "--json",
-        ],
-        capsys,
-    )
-    assert code == 2
-    assert unsupported["error_type"] == "ConfigError"

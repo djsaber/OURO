@@ -390,7 +390,7 @@ async def test_interactive_lists_switches_and_reports_session_model(tmp_path) ->
             "/model beta/fast",
             "again",
             "/model",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -419,7 +419,7 @@ async def test_interactive_selects_model_before_creating_first_session(tmp_path)
             "/models",
             "/model",
             "hello",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -527,7 +527,7 @@ async def test_interactive_thinking_command_keeps_new_sessions_independent(tmp_p
             "/thinking low",
             "second",
             "/thinking",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []

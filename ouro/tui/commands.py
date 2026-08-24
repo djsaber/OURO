@@ -67,9 +67,7 @@ class TuiCommand:
             bracket_choices = _bracket_choices(branch)
             if bracket_choices is not None:
                 choices = [
-                    choice
-                    for choice in bracket_choices
-                    if choice.casefold() not in option_values
+                    choice for choice in bracket_choices if choice.casefold() not in option_values
                 ]
                 if choices:
                     remaining.append("[" + "|".join(choices) + "]")
@@ -120,7 +118,6 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "Session approval",
         "Set tool approval policy for this session",
         "[inherit|auto|approval|deny|afk]",
-        aliases=("/approval-mode",),
         argument_options=tuple(
             TuiCommandArgument(value, description)
             for value, description in (
@@ -161,7 +158,6 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
         "/compact",
         "Compact context",
         "Compact eligible older turns in the current session",
-        aliases=("/compaction",),
     ),
     TuiCommand(
         "/skill",
@@ -184,7 +180,7 @@ TUI_COMMANDS: tuple[TuiCommand, ...] = (
     ),
     TuiCommand("/abort", "Abort run", "Stop the active run"),
     TuiCommand("/help", "Keyboard help", "Show shortcuts and commands"),
-    TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit", "/quite")),
+    TuiCommand("/quit", "Quit OURO", "Close the TUI", aliases=("/exit",)),
 )
 
 

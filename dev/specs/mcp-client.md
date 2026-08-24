@@ -78,7 +78,7 @@ configured/disabled
 server 配置交给 Manager，并把发现工具投影到 RuntimeService 正在使用的同一个 ToolRegistry。
 
 - CLI `run --print` / `run --json` 在单次 Run 外持有 MCP resource context；
-- Interactive 在整个输入循环期间持有 context，`/exit` 和 EOF 都进入 finally close；
+- Interactive 在整个输入循环期间持有 context，`/quit` 和 EOF 都进入 finally close；
 - `approve` 在恢复 durable MCP 工具批次前重新装配并连接 server；
 - RuntimeSupervisor Host 把 MCPRuntimeResource 作为 `RuntimeManagedResource` 注入；
 - 单个 auto-start server 连接失败保留 failed record 并输出脱敏 warning，不阻止其他 server 或普通 Run；

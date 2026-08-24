@@ -6617,7 +6617,7 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
         assert aborted is True
         assert app.is_running is True
 
-        await app._dispatch_command("/quite")
+        await app._dispatch_command("/quit")
         await pilot.pause()
         assert app.is_running is False
 

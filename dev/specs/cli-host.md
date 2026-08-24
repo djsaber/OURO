@@ -10,24 +10,29 @@ CLI 是组合根和终端界面适配器。它解析参数、构建 application 
 ## 顶层命令
 
 ```text
-ouro [interactive]
-ouro tui
+ouro
+ouro interactive
 ouro run
 ouro session
+ouro resource
 ouro agent
 ouro approve | reject | abort
 ouro config
 ouro provider
+ouro mcp
+ouro plugin
 ouro skills
+ouro usage
 ```
 
-命令名只有当前权威形式，不保留同义 alias。
+顶层命令名只有当前权威形式，不保留同义 alias。TUI slash command 可保留与正式名互不构成前缀关系的
+有意义别名；前缀重复别名和拼写错误兼容不进入命令目录。
 
 ## 帮助契约
 
 `--help` 是 CLI 公共接口的一部分，不只是 argparse 自动生成的参数清单：
 
-- 顶层帮助说明无子命令时进入 Interactive，并给出最短可执行的 Provider 与 Run 入门路径；
+- 顶层帮助说明无子命令时进入 TUI，并给出独立 Interactive、最短 Provider 与 Run 入门路径；
 - 工作流父命令说明资源层级和下一条命令，避免要求用户先阅读外部文档才能发现子命令；
 - 有状态差异或破坏性差异的命令必须说明边界，例如 `add/update/replace`、`--runtime-endpoint/--clear`；
 - 枚举意图显示合法值；继承、持久化、互斥、严格失败等非显然语义在对应参数或命令说明中表达；
@@ -37,7 +42,7 @@ ouro skills
 
 ### Interactive
 
-无子命令时启动持续 stdin/stdout Host。支持 prompt、session 切换、新建、模型查看/切换、历史、导出、
+`ouro interactive` 启动持续 stdin/stdout Host。支持 prompt、session 切换、新建、模型查看/切换、历史、导出、
 Skills 和退出等 slash command。流式文本、reasoning、工具调用、审批和 AskUser 使用独立 I/O 适配器。
 Interactive 直接消费 `model_tool_call_delta`：参数分片只更新该工具的单行动态状态，不逐片打印参数；模型
 响应完成后仍不展示参数。只有工具进入等待审批状态时，才在工具行及审批提示中显示有界参数摘要，供用户查看和
@@ -56,9 +61,8 @@ Run 结束、异常、EOF 和 Host 退出时必须清理。
 
 ### TUI
 
-`ouro tui [--session <session_id>]` 启动 Textual full-screen Host。迁移期间，无子命令入口继续指向已稳定的
-stdin/stdout Interactive；TUI 达到资源附件、子智能体交互、MCP 状态和恢复/重同步等价后，才单独评审默认入口
-切换，不能让入口迁移与功能迁移互相掩盖。
+无子命令的 `ouro [--session <session_id>]` 启动 Textual full-screen Host。行式 Host 只通过显式
+`ouro interactive` 进入，启动后提示 `/help`、`/quit` 以及默认 TUI 入口。
 
 TUI 通过 `TuiController` 调用 `LocalApplication` 的公开服务，通过 Runtime event sink 接收事实；业务运行状态
 必须复用 application 的 `reduce_runtime_activity` 投影。Textual 控件只持有视觉状态、焦点和草稿，不解析 Session
@@ -200,6 +204,7 @@ AskUser 的空行不是有效答案，Host 必须继续等待明确输入。决�
 - `agent definition ...` 管理 builtin/user AgentDefinition 与工具兼容性；
 - `agent list|show|spawn|wait|send|interrupt|close|tree|interactions` 查询和控制 durable subagent；
 - `config prompt|permissions|tool-execution|queued-inputs|run-budget|agents|compaction` 管理独立配置分区；
+  permissions 同时支持 tool 与 plugin 默认权限，agents 覆盖完整的可配置 AgentSpawnPolicy；
 - `skills ...` 管理 Agent Skills；
 - `approve/reject/abort` 恢复或终止 active Run。
 
@@ -215,8 +220,9 @@ definition list/show/tools/create/update/delete/copy 通过 provider-independent
 `AgentDefinitionService` 与同一 live Tool catalog；CLI 不读取或修改 config JSON。mutation 使用 expected revision，
 builtin general 只可查询或复制，不可编辑、删除或覆盖；目录变更从 next Run 生效。
 
-Application 的 Agent runtime 配置接口覆盖完整 AgentSpawnPolicy。CLI 当前只开放 max depth 和 agent-id patterns；TUI
-开放常用派遣与能力字段。两者都是 Host 投影，未展示字段继续由同一 Application API 管理，入口不另建 policy。
+Application 的 Agent runtime 配置接口覆盖完整 AgentSpawnPolicy。CLI 开放 agent/model pattern、sync/async 执行模式
+及 write/network/MCP/external-paths 能力开关；固定的 depth=1 与 bound lifecycle 只展示，不提供无效修改参数。
+TUI 通过选择界面投影相同配置，两个入口不另建 policy。
 
 运行命令统一构建 `LocalApplication` 并调用 `AgentService`。短生命周期 CLI 只能基于 completed parent Run 的冻结
 Agent catalog 发起 Host delegation，child 固定使用 unattended interaction mode；spawn 与 follow-up 在命令进程内
@@ -246,7 +252,8 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 `session messages/events` 使用 byte cursor 和 limit 增量读取 JSONL；响应返回 `next_cursor`。`run --resource`
 可重复指定当前 Session 已导入资源，资源解析与模型投影由 application 完成。
 
-`run --queue-mode follow_up|steer` 在目标 Session 已有 active Run 时选择交付边界。Interactive 中普通 prompt
+`run --queue-mode follow-up|steer` 在目标 Session 已有 active Run 时选择交付边界；CLI adapter 将连字符形式映射为
+application 的类型值。Interactive 中普通 prompt
 默认 follow-up，`/follow <prompt>` 与 `/steer <prompt>` 可显式选择。消费批量由配置而不是 Host 决定。
 
 ## 输出与安全
@@ -271,6 +278,7 @@ Home 解析优先级：子命令 `--home`、顶层 `--home`、`OURO_HOME`、`~/.
 
 ## 验收证据
 
+- `tests/cli/test_entry.py`
 - `tests/cli/test_run_cli.py`
 - `tests/cli/test_session_commands.py`
 - `tests/cli/test_approval_commands.py`

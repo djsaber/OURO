@@ -135,7 +135,10 @@ async def _run_interactive_session(
         prompt_func=prompt_func,
         agents=agents,
     )
-    output_func("OURO interactive. Type /help for commands, /attach to add resources.")
+    output_func(
+        "OURO interactive mode. Type /help for commands or /quit to exit. "
+        "Run 'ouro' without a command to use the TUI."
+    )
 
     try:
         while True:

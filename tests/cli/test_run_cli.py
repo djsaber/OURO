@@ -582,7 +582,7 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
             "/context full",
             "/export",
             "/new",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -602,6 +602,7 @@ async def test_interactive_runs_prompts_and_commands(tmp_path) -> None:
     assert any("Provider context:" in output for output in outputs)
     assert any(str(tmp_path) in output for output in outputs)
     assert "Started a new session." in outputs
+    assert any("Run 'ouro' without a command to use the TUI." in output for output in outputs)
 
 
 async def test_interactive_composes_mcp_for_process_lifetime(
@@ -645,7 +646,7 @@ async def test_interactive_composes_mcp_for_process_lifetime(
         return runtime
 
     monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
-    inputs = iter(["use MCP", "/exit"])
+    inputs = iter(["use MCP", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -679,7 +680,7 @@ async def test_interactive_reports_runtime_error_and_keeps_prompt_alive(tmp_path
         ),
         tools=ToolRegistry(),
     )
-    inputs = iter(["hello", "/exit"])
+    inputs = iter(["hello", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -692,7 +693,7 @@ async def test_interactive_reports_runtime_error_and_keeps_prompt_alive(tmp_path
     assert "Error: disk unavailable" in outputs
 
 
-async def test_interactive_streams_model_text_deltas(tmp_path) -> None:
+async def test_interactive_renders_model_text(tmp_path) -> None:
     runtime = _runtime(
         tmp_path,
         [
@@ -703,7 +704,7 @@ async def test_interactive_streams_model_text_deltas(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["hello", "/exit"])
+    inputs = iter(["hello", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -713,9 +714,7 @@ async def test_interactive_streams_model_text_deltas(tmp_path) -> None:
     )
 
     assert code == 0
-    assert "Hel" in outputs
-    assert "lo" in outputs
-    assert "Hello" not in outputs
+    assert outputs.count("Hello") == 1
 
 
 async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
@@ -739,7 +738,7 @@ async def test_interactive_approves_tool_and_continues_run(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["write file", "y", "/exit"])
+    inputs = iter(["write file", "y", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -760,18 +759,25 @@ async def test_interactive_streams_before_approval_continuation_returns(tmp_path
     target = tmp_path / "approval-streamed.txt"
     provider = ApprovalStreamingProvider(target)
     runtime = _agent_runtime(tmp_path, store, provider)
-    inputs = iter(["write file", "y", "/exit"])
+    inputs = iter(["write file", "y", "/quit"])
     outputs: list[str] = []
+    continuation_rendered = asyncio.Event()
+
+    def capture_output(text: str) -> None:
+        outputs.append(text)
+        if "Streaming after approval" in text:
+            continuation_rendered.set()
 
     interactive = asyncio.create_task(
         run_interactive(
             runtime=runtime,
             input_func=lambda _prompt: next(inputs),
-            output_func=outputs.append,
+            output_func=capture_output,
         )
     )
     try:
         await asyncio.wait_for(provider.first_continuation_delta_consumed.wait(), timeout=5)
+        await asyncio.wait_for(continuation_rendered.wait(), timeout=5)
         assert "Streaming after approval" in outputs
         assert interactive.done() is False
     finally:
@@ -807,7 +813,7 @@ async def test_interactive_modifies_tool_arguments_before_approval(tmp_path) -> 
             "write file",
             "m",
             json.dumps({"path": str(target), "content": "modified"}),
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -840,7 +846,7 @@ async def test_interactive_aborts_waiting_approval(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["write file", "/abort", "/exit"])
+    inputs = iter(["write file", "/abort", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -891,7 +897,7 @@ async def test_interactive_keeps_running_when_approval_resume_fails(
         raise PersistenceError("approval resume failed")
 
     monkeypatch.setattr(runtime, "approve_tool", fail_approval_resume)
-    inputs = iter(["write file", "n", "", "/exit"])
+    inputs = iter(["write file", "n", "", "/quit"])
     outputs: list[str] = []
     drains_before_error: list[int] = []
 
@@ -948,7 +954,7 @@ async def test_interactive_open_waiting_session_drains_follow_up_after_rejection
             "hi",
             "n",
             "",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []
@@ -998,7 +1004,7 @@ async def test_interactive_answers_ask_user_and_continues_run(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["need info", "notes.md", "/exit"])
+    inputs = iter(["need info", "notes.md", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -1029,7 +1035,7 @@ async def test_interactive_approves_sync_subagent_tool_and_resumes_parent(
         return runtime
 
     monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
-    inputs = iter(["test subagent approval", "y", "/exit"])
+    inputs = iter(["test subagent approval", "y", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -1068,7 +1074,7 @@ async def test_interactive_answers_sync_subagent_question_and_resumes_parent(
         return runtime
 
     monkeypatch.setattr("ouro.cli.interactive.build_default_runtime", fake_runtime)
-    inputs = iter(["test subagent question", "A", "/exit"])
+    inputs = iter(["test subagent question", "A", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -1152,7 +1158,7 @@ async def test_interactive_routes_async_subagent_hitl_without_rendering_trajecto
             return answer
         if input_count == 3:
             assert result_rendered.wait(timeout=5)
-            return "/exit"
+            return "/quit"
         raise EOFError
 
     code = await run_interactive(
@@ -1217,7 +1223,7 @@ async def test_interactive_does_not_submit_empty_async_subagent_answer(
             return "A"
         if input_count == 4:
             assert result_rendered.wait(timeout=5)
-            return "/exit"
+            return "/quit"
         raise EOFError
 
     code = await run_interactive(
@@ -1289,7 +1295,7 @@ async def test_interactive_resolves_concurrent_async_subagent_questions_once(
                 if roots:
                     relations = store.list_delegations(roots[0].session_id)
                     if len(relations) == 2 and all(item.result is not None for item in relations):
-                        return "/exit"
+                        return "/quit"
                 time.sleep(0.01)
             raise AssertionError("concurrent subagent results were not finalized")
         raise EOFError
@@ -1341,7 +1347,7 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["need info", "/abort", "/exit"])
+    inputs = iter(["need info", "/abort", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -1353,22 +1359,6 @@ async def test_interactive_aborts_waiting_user(tmp_path) -> None:
     assert code == 0
     assert any("Question · File\nWhich file?" in output for output in outputs)
     assert "Run aborted: User aborted" in outputs
-
-
-def test_main_without_subcommand_enters_interactive(monkeypatch, tmp_path) -> None:
-    calls = []
-
-    async def fake_interactive(*, home, system_prompt, session_backend=None):
-        assert session_backend is None
-        calls.append((home, system_prompt))
-        return 0
-
-    monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
-
-    code = main(["--home", str(tmp_path), "--system-prompt", "Custom"])
-
-    assert code == 0
-    assert calls == [(str(tmp_path), "Custom")]
 
 
 def test_run_mode_passes_system_prompt_override(monkeypatch) -> None:
@@ -2075,7 +2065,7 @@ async def test_interactive_streams_model_reasoning_deltas_in_italics(tmp_path) -
             ],
         ],
     )
-    inputs = iter(["hello", "/exit"])
+    inputs = iter(["hello", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -2113,7 +2103,7 @@ async def test_interactive_prints_tool_calls(tmp_path) -> None:
             ],
         ],
     )
-    inputs = iter(["write", "y", "/exit"])
+    inputs = iter(["write", "y", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(

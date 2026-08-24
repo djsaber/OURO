@@ -7,6 +7,7 @@ from pathlib import Path
 from ouro.application.configuration import ConfigurationFacade
 from ouro.cli.errors import error_exit_code
 from ouro.config import QueuedInputConsumptionMode
+from ouro.core.agents import ExecutionMode
 from ouro.core.errors import ConfigError, OuroError
 from ouro.core.reasoning import ReasoningRequest
 from ouro.core.tool_batches import ToolExecutionMode
@@ -111,15 +112,24 @@ def show_permissions_config(
     *,
     home: str | Path | None = None,
     tool_name: str | None = None,
+    plugin_id: str | None = None,
     mode: PermissionMode | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
         facade = ConfigurationFacade(home)
+        if tool_name is not None and plugin_id is not None:
+            raise ConfigError("--tool and --plugin are mutually exclusive")
+        if mode is not None and tool_name is None and plugin_id is None:
+            raise ConfigError("--mode requires --tool or --plugin")
         if tool_name is not None and mode is not None:
             config = facade.set_tool_permission(tool_name, mode)
         elif tool_name is not None and mode is None:
             config = facade.clear_tool_permission(tool_name)
+        elif plugin_id is not None and mode is not None:
+            config = facade.set_plugin_permission(plugin_id, mode)
+        elif plugin_id is not None:
+            config = facade.clear_plugin_permission(plugin_id)
         else:
             config = facade.permission_config()
     except OuroError as exc:
@@ -405,8 +415,13 @@ def show_agent_runtime_config(
     *,
     home: str | Path | None = None,
     expected_revision: int | None = None,
-    max_depth: int | None = None,
     allowed_agent_id_patterns: list[str] | None = None,
+    allowed_model_patterns: list[str] | None = None,
+    allowed_execution_modes: list[ExecutionMode] | None = None,
+    allow_write: bool | None = None,
+    allow_network: bool | None = None,
+    allow_mcp: bool | None = None,
+    allow_external_paths: bool | None = None,
     json_mode: bool = False,
 ) -> int:
     try:
@@ -414,8 +429,13 @@ def show_agent_runtime_config(
         has_update = any(
             value is not None
             for value in (
-                max_depth,
                 allowed_agent_id_patterns,
+                allowed_model_patterns,
+                allowed_execution_modes,
+                allow_write,
+                allow_network,
+                allow_mcp,
+                allow_external_paths,
             )
         )
         if has_update and expected_revision is None:
@@ -423,12 +443,21 @@ def show_agent_runtime_config(
         config = (
             facade.update_agent_runtime(
                 expected_revision=expected_revision,
-                max_depth=max_depth,
                 allowed_agent_id_patterns=(
                     tuple(allowed_agent_id_patterns)
                     if allowed_agent_id_patterns is not None
                     else None
                 ),
+                allowed_model_patterns=(
+                    tuple(allowed_model_patterns) if allowed_model_patterns is not None else None
+                ),
+                allowed_execution_modes=(
+                    tuple(allowed_execution_modes) if allowed_execution_modes is not None else None
+                ),
+                allow_write=allow_write,
+                allow_network=allow_network,
+                allow_mcp=allow_mcp,
+                allow_external_paths=allow_external_paths,
             )
             if has_update and expected_revision is not None
             else facade.agent_runtime_config()
@@ -457,8 +486,14 @@ def show_agent_runtime_config(
         "\n".join(
             [
                 f"Agent config revision: {config.revision}",
-                f"Max depth: {config.max_depth}",
+                f"Max depth: {config.max_depth} (fixed)",
                 "Allowed agent ids: " + ", ".join(config.spawn_policy.allowed_agent_id_patterns),
+                "Allowed models: " + ", ".join(config.spawn_policy.allowed_model_patterns),
+                "Execution modes: " + ", ".join(config.spawn_policy.allowed_execution_modes),
+                f"Allow write: {config.spawn_policy.allow_write}",
+                f"Allow network: {config.spawn_policy.allow_network}",
+                f"Allow MCP: {config.spawn_policy.allow_mcp}",
+                f"Allow external paths: {config.spawn_policy.allow_external_paths}",
                 "Root budget: inherited from config run-budget and frozen parent Run.",
                 f"Config: {config.config_path}",
             ]

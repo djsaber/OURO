@@ -28,7 +28,7 @@ def test_run_parser_accepts_afk_preset() -> None:
     assert args.approval_mode is None
 
 
-def test_interactive_afk_flag_passes_policy_pair_to_host(monkeypatch, tmp_path) -> None:
+def test_interactive_command_afk_flag_passes_policy_pair_to_host(monkeypatch, tmp_path) -> None:
     calls: list[tuple[str, str]] = []
 
     async def fake_interactive(
@@ -45,7 +45,7 @@ def test_interactive_afk_flag_passes_policy_pair_to_host(monkeypatch, tmp_path) 
 
     monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
 
-    code = main(["--home", str(tmp_path), "--afk"])
+    code = main(["interactive", "--home", str(tmp_path), "--afk"])
 
     assert code == 0
     assert calls == [("auto", "unattended")]
@@ -162,7 +162,7 @@ async def test_interactive_command_sets_mode_before_first_session(tmp_path) -> N
         tools=registry,
         default_workspace=tmp_path,
     )
-    inputs = iter(["/approval-mode auto", "write", "/exit"])
+    inputs = iter(["/approval auto", "write", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -197,7 +197,7 @@ async def test_interactive_afk_command_sets_both_policies_before_first_session(t
         ),
         tools=ToolRegistry(),
     )
-    inputs = iter(["/afk on", "continue", "/exit"])
+    inputs = iter(["/afk on", "continue", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(

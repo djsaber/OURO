@@ -61,7 +61,7 @@ async def test_interactive_lists_and_invokes_skill_through_the_normal_user_run_p
     tmp_path,
 ) -> None:
     runtime, provider = _runtime(tmp_path)
-    inputs = iter(["/skills", "/skill   reviewer   inspect app.py", "/history", "/exit"])
+    inputs = iter(["/skills", "/skill   reviewer   inspect app.py", "/history", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(
@@ -84,7 +84,7 @@ async def test_interactive_lists_and_invokes_skill_through_the_normal_user_run_p
 @pytest.mark.asyncio
 async def test_interactive_rejects_skill_steering_before_starting_a_run(tmp_path) -> None:
     runtime, provider = _runtime(tmp_path)
-    inputs = iter(["/steer /skill reviewer inspect app.py", "/exit"])
+    inputs = iter(["/steer /skill reviewer inspect app.py", "/quit"])
     outputs: list[str] = []
 
     code = await run_interactive(

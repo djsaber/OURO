@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from ouro.tui.commands import (
+    TUI_COMMANDS,
     TuiCommand,
     TuiCommandArgument,
     argument_suggestion,
@@ -10,7 +11,16 @@ from ouro.tui.commands import (
 )
 
 
-def test_matching_commands_filters_prefixes_and_aliases() -> None:
+def test_aliases_are_distinct_from_canonical_command_prefixes() -> None:
+    for command in TUI_COMMANDS:
+        for alias in command.aliases:
+            canonical = command.name.casefold()
+            normalized_alias = alias.casefold()
+            assert not canonical.startswith(normalized_alias)
+            assert not normalized_alias.startswith(canonical)
+
+
+def test_matching_commands_filters_canonical_prefixes_and_distinct_aliases() -> None:
     assert [command.name for command in matching_commands("/m")] == ["/actions", "/model"]
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
     assert [command.name for command in matching_commands("/ski")] == ["/skill"]
@@ -25,14 +35,21 @@ def test_matching_commands_filters_prefixes_and_aliases() -> None:
 
 def test_resolve_command_returns_canonical_command_and_argument() -> None:
     command, argument = resolve_command("/model provider/endpoint")
-    approval, approval_argument = resolve_command("/approval-mode deny")
+    approval, approval_argument = resolve_command("/approval deny")
     thinking, thinking_argument = resolve_command("/reasoning high")
-    compact, compact_argument = resolve_command("/compaction")
+    compact, compact_argument = resolve_command("/compact")
     skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
     fork, fork_argument = resolve_command("/branch msg_123")
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
-    alias, alias_argument = resolve_command("/exit")
-    typo_alias, _ = resolve_command("/quite")
+    quit_command, quit_argument = resolve_command("/exit")
+    removed_aliases = tuple(
+        resolve_command(value)[0]
+        for value in (
+            "/approval-mode",
+            "/compaction",
+            "/quite",
+        )
+    )
     removed_help_alias, _ = resolve_command("/?")
     unknown, _ = resolve_command("/missing")
 
@@ -50,9 +67,9 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert fork_argument == "msg_123"
     assert unqueue is not None and unqueue.name == "/unqueue"
     assert unqueue_argument == "queued_123"
-    assert alias is not None and alias.name == "/quit"
-    assert typo_alias is not None and typo_alias.name == "/quit"
-    assert alias_argument == ""
+    assert quit_command is not None and quit_command.name == "/quit"
+    assert quit_argument == ""
+    assert removed_aliases == (None,) * 3
     assert removed_help_alias is None
     assert unknown is None
 

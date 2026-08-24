@@ -6,6 +6,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- The no-command `ouro` entry point now starts the full-screen TUI; the line-oriented Host moved
+  to `ouro interactive` and reports the available help, quit, and default-TUI entry points at
+  startup. The transitional `ouro tui` command was removed.
+- CLI enum arguments now use shell-native hyphenated values, fixed Agent runtime constraints are
+  no longer exposed as mutable options, and TUI aliases remain available only when they provide a
+  prefix-distinct alternative; the erroneous `/quite` alias was removed.
 - All TUI menu pages now share one title, filter, grouped-list, and interaction-footer
   structure. Root help uses the same searchable menu as contextual help, and editable and
   multi-select menus keep state-specific bottom key reminders without duplicating menu chrome.
@@ -32,6 +38,8 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- CLI coverage for Session tag replacement, plugin default permissions, and the complete mutable
+  Agent dispatch policy (agent/model allowlists, execution modes, and capability ceilings).
 - OpenAI-compatible reasoning decoding now accepts both DeepSeek-style `reasoning_content` and the
   bare `reasoning` response field used by OpenRouter-style vendors, for streaming deltas and
   non-streaming messages alike (string or block-array shapes, `reasoning_content` first), with
@@ -39,7 +47,8 @@ This project records user-visible and framework-contract changes in this file.
 - Ten restrained, persistent TUI accent palettes selectable and keyboard-previewable from the
   Actions menu, with live synchronization across CSS chrome and Rich-text status content in a
   frontend-owned preference file.
-- Textual 8.2 / Rich 15 full-screen TUI foundation behind `ouro tui`, with terminal-native styling,
+- Textual 8.2 / Rich 15 full-screen TUI foundation behind the default `ouro` entry point, with
+  terminal-native styling,
   coalesced streaming Markdown, canonical Runtime activity/tool projection, session and model
   pickers, queued running input, approvals, AskUser answers, MCP startup status, abort, command
   palette, shortcuts, and explicit application resource cleanup.

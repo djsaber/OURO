@@ -166,7 +166,7 @@ def test_interactive_host_receives_selected_backend(monkeypatch) -> None:
 
     monkeypatch.setattr("ouro.cli.main.run_interactive", fake_interactive)
 
-    assert main(["--session-backend", "sqlite"]) == 0
+    assert main(["interactive", "--session-backend", "sqlite"]) == 0
     assert captured["session_backend"] == "sqlite"
 
 

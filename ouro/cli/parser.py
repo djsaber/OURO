@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
+from ouro import __version__
 from ouro.config.provider_models import CONFIGURABLE_PROVIDER_TYPES
 from ouro.config.reasoning import (
     REASONING_PRESETS,
@@ -37,47 +38,61 @@ def _add_session_backend_arg(
     )
 
 
+def _canonical_choice(values: dict[str, str]) -> Callable[[str], str]:
+    def parse(value: str) -> str:
+        try:
+            return values[value]
+        except KeyError as exc:
+            choices = ", ".join(values)
+            raise argparse.ArgumentTypeError(f"choose one of: {choices}") from exc
+
+    return parse
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = OuroArgumentParser(
         prog="ouro",
         description=(
             "Local-first agent runtime for interactive work, one-shot runs, and durable "
-            "Session management.\nRun without a command to start the interactive Host."
+            "Session management.\nRun without a command to start the full-screen TUI."
         ),
         epilog="""Getting started:
+  ouro
+  ouro interactive
   ouro provider templates
   ouro provider add openai --type openai --api-key-env OPENAI_API_KEY --default
   ouro run "Explain this repository"
 
 Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     )
-    parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for interactive mode")
+    parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME for the TUI")
     _add_session_backend_arg(parser, dest="session_backend")
     parser.add_argument("--system-prompt", help="Override the default system prompt")
+    parser.add_argument("--session", dest="resume_session_id", help="Resume a durable Session")
     interactive_policy = parser.add_mutually_exclusive_group()
     interactive_policy.add_argument(
         "--approval-mode",
         dest="interactive_approval_mode",
         choices=SESSION_APPROVAL_MODES,
         default="inherit",
-        help="Initial approval mode for a new interactive session",
+        help="Initial approval mode for a new TUI Session",
     )
     interactive_policy.add_argument(
         "--afk",
         dest="interactive_afk",
         action="store_true",
-        help="Start new interactive sessions in unattended AFK mode",
+        help="Start new TUI Sessions in unattended AFK mode",
     )
     parser.add_argument(
         "--version",
-        "-v",
+        "-V",
         action="version",
-        version="%(prog)s 0.1.0",
+        version=f"%(prog)s {__version__}",
         help="Show version and exit",
     )
     subparsers = parser.add_subparsers(dest="command")
 
-    _add_tui_parser(subparsers)
+    _add_interactive_parser(subparsers)
     _add_run_parser(subparsers)
     _add_agent_parser(subparsers)
     _add_session_parser(subparsers)
@@ -93,13 +108,38 @@ Use 'ouro COMMAND --help' to inspect a workflow and its examples.""",
     return parser
 
 
-def _add_tui_parser(subparsers: argparse._SubParsersAction) -> None:
-    tui = subparsers.add_parser(
-        "tui",
-        help="Start the full-screen terminal interface",
-        description="Start the Textual-based OURO terminal interface.",
+def _add_interactive_parser(subparsers: argparse._SubParsersAction) -> None:
+    interactive = subparsers.add_parser(
+        "interactive",
+        help="Start the stdin/stdout interactive Host",
+        description="Start OURO's line-oriented stdin/stdout Host.",
     )
-    tui.add_argument("--session", dest="tui_session_id", help="Resume a durable Session")
+    interactive.add_argument(
+        "--home",
+        dest="interactive_home",
+        metavar="HOME",
+        help="Override OURO_HOME",
+    )
+    _add_session_backend_arg(interactive, dest="interactive_session_backend")
+    interactive.add_argument(
+        "--system-prompt",
+        dest="interactive_system_prompt",
+        help="Override the default system prompt",
+    )
+    policy = interactive.add_mutually_exclusive_group()
+    policy.add_argument(
+        "--approval-mode",
+        dest="command_approval_mode",
+        choices=SESSION_APPROVAL_MODES,
+        default=None,
+        help="Initial approval mode for a new interactive Session",
+    )
+    policy.add_argument(
+        "--afk",
+        dest="command_afk",
+        action="store_true",
+        help="Start new interactive Sessions in unattended AFK mode",
+    )
 
 
 def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -168,7 +208,7 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     spawn.add_argument("--description", required=True)
     spawn.add_argument("--request-id", required=True)
     spawn.add_argument("--nickname")
-    spawn.add_argument("--resource-id", dest="resource_ids", action="append", default=[])
+    spawn.add_argument("--resource", dest="resource_ids", action="append", default=[])
     _add_agent_output_args(spawn)
 
     wait = commands.add_parser("wait", help="Wait for durable subagent results")
@@ -179,7 +219,13 @@ def _add_agent_parser(subparsers: argparse._SubParsersAction) -> None:
     send.add_argument("delegation_id")
     send.add_argument("message")
     send.add_argument("--request-id", required=True)
-    send.add_argument("--mode", choices=("steer", "follow_up"), default="steer")
+    send.add_argument(
+        "--mode",
+        type=_canonical_choice({"steer": "steer", "follow-up": "follow_up"}),
+        choices=("steer", "follow_up"),
+        default="steer",
+        metavar="{steer,follow-up}",
+    )
     _add_agent_output_args(send)
 
     interrupt = commands.add_parser("interrupt", help="Interrupt a subagent Run")
@@ -240,7 +286,7 @@ def _add_plugin_parser(subparsers: argparse._SubParsersAction) -> None:
     run_command = commands.add_parser("run-command", help="Run an active plugin command")
     run_command.add_argument("command_id")
     run_command.add_argument("argument", nargs="?", default="")
-    run_command.add_argument("--session-id")
+    run_command.add_argument("--session", dest="session_id")
     run_command.add_argument("--workspace")
     _add_plugin_output(run_command)
 
@@ -515,8 +561,10 @@ them exactly; unsupported requests fail before an HTTP request is sent.""",
     )
     run_parser.add_argument(
         "--queue-mode",
-        choices=["follow_up", "steer"],
-        default="follow_up",
+        type=_canonical_choice({"follow-up": "follow_up", "steer": "steer"}),
+        choices=("follow_up", "steer"),
+        default="follow-up",
+        metavar="{follow-up,steer}",
         help="Delivery mode if the target session already has an active run",
     )
     run_parser.add_argument(
@@ -549,6 +597,18 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
         "--status",
         dest="statuses",
         action="append",
+        type=_canonical_choice(
+            {
+                "idle": "idle",
+                "active": "active",
+                "waiting-approval": "waiting_approval",
+                "waiting-user": "waiting_user",
+                "failed": "failed",
+                "paused": "paused",
+                "recoverable": "recoverable",
+                "completed": "completed",
+            }
+        ),
         choices=(
             "idle",
             "active",
@@ -559,6 +619,7 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
             "recoverable",
             "completed",
         ),
+        metavar="STATUS",
         help="Filter by catalog status; repeat to select multiple statuses",
     )
     list_parser.add_argument(
@@ -578,8 +639,12 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     list_parser.add_argument("--tag", dest="tags", action="append", help="Require a tag")
     list_parser.add_argument(
         "--sort",
+        type=_canonical_choice(
+            {"updated-desc": "updated_desc", "created-desc": "created_desc", "title": "title"}
+        ),
         choices=("updated_desc", "created_desc", "title"),
-        default="updated_desc",
+        default="updated-desc",
+        metavar="{updated-desc,created-desc,title}",
     )
 
     show_parser = session_subparsers.add_parser("show", help="Show session details")
@@ -608,6 +673,16 @@ def _add_session_parser(subparsers: argparse._SubParsersAction) -> None:
     rename_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     _add_session_backend_arg(rename_parser)
     rename_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    tags_parser = session_subparsers.add_parser(
+        "tags",
+        help="Replace a session's tags; omit TAG to clear them",
+    )
+    tags_parser.add_argument("session_id", help="Session id")
+    tags_parser.add_argument("tags", nargs="*", metavar="TAG", help="Complete replacement tag set")
+    tags_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    _add_session_backend_arg(tags_parser)
+    tags_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     approval_mode_parser = session_subparsers.add_parser(
         "approval-mode",
@@ -743,7 +818,7 @@ def _add_approval_parsers(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
-    config_parser = subparsers.add_parser("config", help="Inspect configuration")
+    config_parser = subparsers.add_parser("config", help="Inspect or update configuration")
     config_subparsers = config_parser.add_subparsers(dest="config_command", required=True)
 
     prompt_parser = config_subparsers.add_parser("prompt", help="Inspect or set prompts")
@@ -764,14 +839,16 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
 
     permissions_parser = config_subparsers.add_parser(
         "permissions",
-        help="Inspect or set tool permission modes",
+        help="Inspect or set tool and plugin permission modes",
     )
     permissions_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
-    permissions_parser.add_argument("--tool", help="Tool name")
+    permission_target = permissions_parser.add_mutually_exclusive_group()
+    permission_target.add_argument("--tool", help="Tool name")
+    permission_target.add_argument("--plugin", help="Plugin id")
     permissions_parser.add_argument(
         "--mode",
         choices=["auto", "approval", "deny"],
-        help="Permission mode for the tool",
+        help="Permission mode; omit it to clear the selected override",
     )
     permissions_parser.add_argument("--json", action="store_true", help="Print JSON")
 
@@ -812,7 +889,9 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     queued_inputs_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     queued_inputs_parser.add_argument(
         "--consumption-mode",
-        choices=["one_by_one", "all_at_once"],
+        type=_canonical_choice({"one-by-one": "one_by_one", "all-at-once": "all_at_once"}),
+        choices=("one_by_one", "all_at_once"),
+        metavar="{one-by-one,all-at-once}",
         help="Send one eligible input per model request or all eligible inputs together",
     )
     queued_inputs_parser.add_argument("--json", action="store_true", help="Print JSON")
@@ -839,7 +918,6 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     agents_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
     agents_parser.add_argument("--expected-revision", type=int)
-    agents_parser.add_argument("--max-depth", type=int)
     agents_parser.add_argument(
         "--allow-agent",
         dest="allowed_agent_id_patterns",
@@ -847,6 +925,34 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Allowed Agent id or glob pattern (repeatable)",
     )
+    agents_parser.add_argument(
+        "--allow-model",
+        dest="allowed_model_patterns",
+        action="append",
+        default=None,
+        help="Allowed provider/endpoint key or glob pattern (repeatable)",
+    )
+    agents_parser.add_argument(
+        "--execution-mode",
+        dest="allowed_execution_modes",
+        action="append",
+        choices=("sync", "async"),
+        default=None,
+        help="Allowed subagent execution mode (repeatable)",
+    )
+    for flag, dest, help_text in (
+        ("--write", "allow_write", "Allow state-changing tools"),
+        ("--network", "allow_network", "Allow tools that require network access"),
+        ("--mcp", "allow_mcp", "Allow MCP tools"),
+        ("--external-paths", "allow_external_paths", "Allow tools to use external paths"),
+    ):
+        agents_parser.add_argument(
+            flag,
+            dest=dest,
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help=help_text,
+        )
     agents_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     compaction_parser = config_subparsers.add_parser(
@@ -964,7 +1070,9 @@ then create its model route with 'ouro provider endpoint set'.""",
         ),
     )
     provider_restore_template_parser.add_argument("template_id", help="Template id")
-    provider_restore_template_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    provider_restore_template_parser.add_argument(
+        "--home", metavar="HOME", help="Override OURO_HOME"
+    )
     provider_restore_template_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     provider_add_parser = provider_subparsers.add_parser(

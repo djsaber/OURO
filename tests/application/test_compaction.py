@@ -895,7 +895,7 @@ async def test_interactive_compact_command_displays_progress_and_completion(tmp_
             "/compact",
             "/context",
             "/context full",
-            "/exit",
+            "/quit",
         ]
     )
     outputs: list[str] = []

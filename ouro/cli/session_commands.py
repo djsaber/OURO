@@ -108,6 +108,32 @@ def rename_session(
     return 0
 
 
+def set_session_tags(
+    session_id: str,
+    tags: list[str],
+    *,
+    home: str | Path | None = None,
+    json_mode: bool = False,
+    session_backend: SessionBackend | None = None,
+) -> int:
+    try:
+        result = _sessions(home, session_backend).set_tags(session_id, tags)
+    except (OuroError, FileNotFoundError, ValueError) as exc:
+        _print_error(exc, json_mode=json_mode)
+        return error_exit_code(exc) if isinstance(exc, OuroError) else 1
+    if json_mode:
+        print(
+            json.dumps(
+                {"status": "ok", "session": result.session.model_dump(mode="json")},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        rendered = ", ".join(result.session.tags) or "none"
+        print(f"Session tags: {session_id} -> {rendered}")
+    return 0
+
+
 def set_session_approval_mode(
     session_id: str,
     approval_mode: SessionApprovalMode,
@@ -300,6 +326,7 @@ def show_session(
                 f"Model: {session.current_model or '-'}",
                 f"Approval mode: {session.approval_mode}",
                 f"Interaction mode: {session.interaction_mode}",
+                f"Tags: {', '.join(session.tags) or '-'}",
                 f"Workspace: {session.workspace or '-'}",
                 f"Messages: {session.message_count}",
                 f"Updated: {session.updated_at}",
