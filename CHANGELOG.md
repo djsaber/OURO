@@ -6,6 +6,12 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- All TUI menu pages now share one title, filter, grouped-list, and interaction-footer
+  structure. Root help uses the same searchable menu as contextual help, and editable and
+  multi-select menus keep state-specific bottom key reminders without duplicating menu chrome.
+- Conversation text now consistently permits drag-range selection but rejects full-message
+  selection from both double-click and triple-click across historical and live content.
+- Live and completed message reasoning labels now use sentence case (`Thinking` / `Thought`).
 - TUI conversation chrome now keeps the active workspace right-aligned in the header while
   truncating the Session title first, preserves identical geometry and wrapping when streamed
   assistant blocks freeze into history (including after tool rows), and renders failed Run status

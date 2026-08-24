@@ -19,9 +19,13 @@ from ouro.tui.clipboard import (
     read_system_clipboard,
     write_system_clipboard,
 )
-from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
+from ouro.tui.conversation_history import (
+    AssistantTailLines,
+    ConversationHistory,
+    TranscriptEntry,
+)
 from ouro.tui.theme import TuiTheme
-from ouro.tui.widgets import Composer
+from ouro.tui.widgets import Composer, ConversationView
 
 
 def _unused_tool_renderer(
@@ -66,6 +70,17 @@ class HistorySelectionApp(PageSelectionApp):
 
     def compose(self) -> ComposeResult:
         yield ConversationHistory(_unused_tool_renderer)
+
+
+class ConversationSelectionApp(PageSelectionApp):
+    CSS = """
+    ConversationView { width: 100%; height: 8; }
+    #conversation-transcript { width: 100%; height: auto; }
+    ConversationHistory, AssistantTailLines { width: 100%; height: auto; }
+    """
+
+    def compose(self) -> ComposeResult:
+        yield ConversationView()
 
 
 @pytest.mark.asyncio
@@ -174,6 +189,29 @@ async def test_history_right_click_copies_only_the_dragged_text() -> None:
         await pilot.mouse_down(history, offset=(7, 0), button=3)
         await pilot.pause()
         assert copied == ["only"]
+        assert app.screen.get_selected_text() is None
+
+
+@pytest.mark.parametrize("clicks", (2, 3))
+@pytest.mark.asyncio
+async def test_conversation_chained_clicks_never_select_complete_messages(clicks: int) -> None:
+    app = ConversationSelectionApp(lambda _text: None)
+
+    async with app.run_test(size=(50, 10)) as pilot:
+        conversation = app.query_one(ConversationView)
+        await conversation.add_user("historical message must remain range-selectable only")
+        history = app.query_one(ConversationHistory)
+
+        await pilot.click(history, offset=(4, 0), times=clicks)
+        await pilot.pause()
+
+        assert app.screen.get_selected_text() is None
+
+        await conversation.append_assistant("live response must also reject select-all")
+        tail = app.query_one(AssistantTailLines)
+        await pilot.click(tail, offset=(4, 0), times=clicks)
+        await pilot.pause()
+
         assert app.screen.get_selected_text() is None
 
 

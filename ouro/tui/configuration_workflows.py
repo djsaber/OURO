@@ -257,6 +257,7 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
                     initial_value=current,
                     on_select=select_tool_or_permission,
                     on_cancel=cancel_submenu,
+                    interaction_hint=ChoiceScreen.BACK_HINT,
                 )
                 return None
 

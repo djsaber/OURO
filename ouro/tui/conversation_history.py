@@ -24,6 +24,7 @@ from textual.widget import Widget
 from textual.widgets import RichLog
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
+from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import RunPresentation, format_duration
 from ouro.tui.theme import FAILURE_TONE, TuiTheme, theme_for
 
@@ -191,7 +192,7 @@ def split_markdown_blocks(text: str) -> tuple[str, ...]:
 
 
 def _thought_label(reasoning_seconds: float | None, *, entry_index: int) -> Text:
-    label = "THOUGHT"
+    label = "Thought"
     if reasoning_seconds is not None:
         label += f" · {format_duration(reasoning_seconds)}"
     return Text(
@@ -333,7 +334,7 @@ def _apply_selection_style(
     return Strip(segments, strip.cell_length)
 
 
-class ReasoningLines(Widget):
+class ReasoningLines(RangeSelectionOnly, Widget):
     """Append-only strip buffer for one streaming plain-text block.
 
     Completed visual lines render exactly once through the shared reasoning
@@ -547,7 +548,7 @@ def _reasoning_area(
     return Padding(area, (top, 2, 1, 2)), "reasoning"
 
 
-class ConversationHistory(RichLog, can_focus=False):
+class ConversationHistory(RangeSelectionOnly, RichLog, can_focus=False):
     """Line-buffered rendering for immutable persisted conversation history.
 
     Every entry renders into ``_Piece`` strip spans exactly once — blocks
@@ -602,9 +603,6 @@ class ConversationHistory(RichLog, can_focus=False):
 
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         return selection.extract(self.rendered_text), "\n"
-
-    def text_select_all(self) -> None:
-        """Keep range selection without double-clicking the entire transcript."""
 
     def render_line(self, y: int) -> Strip:
         """Render one line with source offsets and any active selection.

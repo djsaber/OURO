@@ -1846,7 +1846,7 @@ async def test_streaming_turn_after_tool_keeps_frozen_history_geometry(tmp_path:
         thought_line = next(
             index
             for index, line in enumerate(rendered_lines)
-            if line.strip().startswith("THOUGHT")
+            if line.strip().startswith("Thought")
         )
         answer_line = next(
             index for index, line in enumerate(rendered_lines) if answer_text in line
@@ -1857,7 +1857,7 @@ async def test_streaming_turn_after_tool_keeps_frozen_history_geometry(tmp_path:
             if "\N{BOX DRAWINGS LIGHT VERTICAL}" in line
         ]
         assert frozen_reasoning_lines == live_reasoning_lines
-        stable_indent = rendered_lines[thought_line].index("THOUGHT")
+        stable_indent = rendered_lines[thought_line].index("Thought")
         stable_border_x = transcript.content_region.x + stable_indent
         assert stable_border_x == live_border_x
 
@@ -2749,7 +2749,7 @@ async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Pa
         # The live body renders through the same │-prefixed definition the
         # immutable history freezes with, so markup stays literal text.
         assert reasoning._content.rendered_text == f"│ {expected}"
-        assert reasoning.label.render().plain.startswith("THINKING · ")
+        assert reasoning.label.render().plain.startswith("Thinking · ")
         assert reasoning.label.render().plain.endswith("s")
         assert reasoning.label.region.x == turn.content_region.x
         assert reasoning._content.region.x == reasoning.label.region.x
@@ -3367,7 +3367,7 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
             assert app._projection.activity.activity == "streaming_reasoning"
             turn = app.query_one(AssistantTurn)
             assert turn.reasoning.text == "Inspecting "
-            assert turn.reasoning.label.render().plain.startswith("THINKING · ")
+            assert turn.reasoning.label.render().plain.startswith("Thinking · ")
             assert turn.reasoning.label.render().plain.endswith("s")
             assert turn.source == ""
         finally:
@@ -3394,7 +3394,7 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
         assert summary.run.model == "blocking"
         assert summary.run.duration_seconds is not None
         assert summary.run.duration_seconds >= thought.reasoning_seconds
-        assert "THOUGHT · " in history.rendered_text
+        assert "Thought · " in history.rendered_text
         assert "blocking" in history.rendered_text
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
@@ -3421,7 +3421,7 @@ async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path)
         assert restored_summary.run.run_id == summary.run.run_id
         assert restored_summary.run.model == summary.run.model
         assert restored_summary.run.duration_seconds == summary.run.duration_seconds
-        assert "THOUGHT · " in restored.rendered_text
+        assert "Thought · " in restored.rendered_text
         assert not app.query(AssistantTurn)
 
 
@@ -3455,7 +3455,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
         assert answer.text == "Final answer"
         rendered_lines = history.rendered_text.splitlines()
         thought_line = next(
-            index for index, line in enumerate(rendered_lines) if line.strip() == "THOUGHT"
+            index for index, line in enumerate(rendered_lines) if line.strip() == "Thought"
         )
         answer_line = next(
             index for index, line in enumerate(rendered_lines) if line.strip() == "Final answer"
@@ -3495,11 +3495,11 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((message,))
         history = conversation.query_one(ConversationHistory)
-        assert "THOUGHT" in history.rendered_text
+        assert "Thought" in history.rendered_text
         assert "Historical private thought" not in history.rendered_text
         collapsed_lines = history.rendered_text.splitlines()
         collapsed_thought = next(
-            index for index, line in enumerate(collapsed_lines) if line.strip() == "THOUGHT"
+            index for index, line in enumerate(collapsed_lines) if line.strip() == "Thought"
         )
         collapsed_answer = next(
             index for index, line in enumerate(collapsed_lines) if line.strip() == "Final answer"
@@ -3606,7 +3606,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
         assert summaries[0].run == presentation
         assert presentation.model == "chat-endpoint"
         assert presentation.duration_seconds == 3
-        assert history.rendered_text.count("THOUGHT · 500ms") == 2
+        assert history.rendered_text.count("Thought · 500ms") == 2
         assert "chat-endpoint" in history.rendered_text
         assert "3.0s" in history.rendered_text
 
@@ -4591,6 +4591,9 @@ async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
         delete_screen = app.screen
         assert isinstance(delete_screen, MultiChoiceScreen)
         assert {choice.group for choice in delete_screen._choices} == {"Archived"}
+        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
+            MultiChoiceScreen.DEFAULT_HINT
+        )
 
         for title in ("Delete 0", "Delete 1"):
             delete_screen.query_one("#choice-filter", Input).value = title
@@ -4614,12 +4617,18 @@ async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
             "Cancel",
             "Delete 2 selected",
         ]
+        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
+            MultiChoiceScreen.CONFIRM_HINT
+        )
         await pilot.press("enter")
         await pilot.pause()
         assert app.screen is delete_screen
         assert len(delete_screen._choices) == 3
         assert delete_screen.query_one("#choice-title", Static).render().plain == (
             "DELETE SESSIONS"
+        )
+        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
+            MultiChoiceScreen.DEFAULT_HINT
         )
 
         await pilot.press("enter")
@@ -4728,6 +4737,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
 
         rename_screen = app.screen
         assert isinstance(rename_screen, EditableChoiceScreen)
+        assert rename_screen.query_one("#choice-hint", Static).render().plain == (
+            EditableChoiceScreen.DEFAULT_HINT
+        )
         assert action_screen.query_one("#choice-panel", Vertical).display is False
         assert action_screen.styles.background.a == 0
         assert rename_screen.styles.background.a == 0.45
@@ -4741,6 +4753,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert app.screen is rename_screen
         assert rename_screen._editing_value == active.session_id
         assert rename_screen.query_one("#choice-filter", Input).disabled is True
+        assert rename_screen.query_one("#choice-hint", Static).render().plain == (
+            EditableChoiceScreen.EDIT_HINT
+        )
         options = rename_screen.query_one(OptionList)
         assert options.highlighted is not None
         assert isinstance(options.get_option_at_index(options.highlighted).prompt, Text)
@@ -4761,6 +4776,9 @@ async def test_rename_session_menu_edits_active_session_inline_and_stays_open(
         assert app.screen is rename_screen
         assert rename_screen._editing_value is None
         assert rename_screen.query_one("#choice-filter", Input).disabled is False
+        assert rename_screen.query_one("#choice-hint", Static).render().plain == (
+            EditableChoiceScreen.DEFAULT_HINT
+        )
         assert rename_screen.query_one("#choice-filter", Input).value == ""
         assert rename_screen._choices[0].edit_value == "Renamed title"
         assert application.runtime.sessions.open(active.session_id).session.title == (
@@ -6247,6 +6265,9 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         assert app.screen is menu
         assert sum(isinstance(screen, ChoiceScreen) for screen in app.screen_stack) == 1
         assert menu.query_one("#choice-panel", Vertical).display is True
+        assert menu.query_one("#choice-hint", Static).render().plain == (
+            HelpScreen.BACK_HINT
+        )
         assert {choice.group for choice in menu._choices} == {
             "SHORTCUTS",
             "BUILT-IN SLASH COMMANDS",
@@ -6255,6 +6276,9 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
         await pilot.press("ctrl+h")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         assert app.screen is menu
+        assert menu.query_one("#choice-hint", Static).render().plain == (
+            ChoiceScreen.DEFAULT_HINT
+        )
 
         await pilot.press("ctrl+n")
         await pilot.pause()
@@ -8942,19 +8966,23 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         await pilot.press("escape")
         await pilot.pause()
 
-        # /help opens the HelpScreen with the same flat chrome.
+        # /help opens root help on the same searchable ChoiceScreen chrome.
         await pilot.press("slash", *"help", "enter")
         await pilot.pause()
         assert isinstance(app.screen, HelpScreen)
-        help_panel = app.screen.query_one("#help-panel")
+        help_panel = app.screen.query_one("#choice-panel")
         assert help_panel.styles.background == composer.styles.background
-        assert help_panel.styles.border_left[0] == "solid"
+        assert help_panel.styles.border_left[0] == ""
         assert help_panel.styles.border_right[0] == "solid"
         assert help_panel.styles.border_top[0] == ""
         assert help_panel.styles.border_bottom[0] == ""
-        # The help text still surfaces the shortcuts and slash commands.
-        rendered = help_panel.render().plain
-        assert "OURO shortcuts" in rendered
+        help_hint = app.screen.query_one("#choice-hint", Static).render().plain
+        assert help_hint == "↑/↓ move · ←/→ group · Esc close"
+        # The shared help catalog still surfaces the shortcuts and slash commands.
+        rendered = "\n".join(
+            f"{choice.group} {choice.label} {choice.trailing}"
+            for choice in app.screen._choices
+        )
         assert "Ctrl+Enter / Ctrl+J" in rendered
         assert "↑ / ↓" in rendered
         assert "Alt+M" not in rendered
@@ -8967,7 +8995,7 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "Ctrl+↓" in rendered
         assert "Ctrl+←" in rendered
         assert "Ctrl+→" in rendered
-        assert "Built-in slash commands" in rendered
+        assert "BUILT-IN SLASH COMMANDS" in rendered
         assert "/actions" in rendered
         assert "/skill <skill> [task]" in rendered
         assert "/thoughts [expand|collapse]" in rendered
@@ -8977,6 +9005,18 @@ async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: P
         assert "/tools" not in rendered
         assert "/mcp" not in rendered
         assert "/skills" not in rendered
+
+        help_filter = app.screen.query_one("#choice-filter", Input)
+        help_filter.value = "thoughts"
+        await pilot.pause()
+        help_options = app.screen.query_one("#choice-list", OptionList)
+        assert any(
+            option.id == "command:/thoughts"
+            for option in (
+                help_options.get_option_at_index(index)
+                for index in range(help_options.option_count)
+            )
+        )
 
 
 @pytest.mark.asyncio

@@ -192,7 +192,7 @@ async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> No
         await app.history.wait_until_rendered()
 
         lines = [line.strip() for line in app.history.rendered_text.splitlines()]
-        reasoning = lines.index("THOUGHT")
+        reasoning = lines.index("Thought")
         tool_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
 
         assert lines[reasoning + 1 : tool_header] == [""]

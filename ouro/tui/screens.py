@@ -18,7 +18,7 @@ from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
 from ouro.tui.clipboard import ClipboardReadError, read_system_clipboard
-from ouro.tui.commands import TUI_COMMANDS, slash_command_help
+from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.text_inputs import TuiInput
 from ouro.tui.theme import ASCII_SPINNER_FRAMES, theme_for
 
@@ -102,6 +102,7 @@ class _ChoicePage:
     on_refresh: ChoiceRefreshHandler | None
     on_cancel: ChoiceCancelHandler | None
     retain_focus_position_on_select: bool
+    interaction_hint: str | None
 
 
 class _ChoiceGroupHeader(Table):
@@ -183,6 +184,9 @@ def grouped_choice_options(
 
 
 class ChoiceScreen(ModalScreen[str | None]):
+    DEFAULT_HINT = "↑/↓ move · ←/→ group · Enter select · Esc close"
+    BACK_HINT = "↑/↓ move · ←/→ group · Enter select · Esc back"
+
     BINDINGS = [
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
@@ -206,6 +210,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
+        interaction_hint: str | None = None,
     ) -> None:
         super().__init__()
         self._title = title
@@ -219,6 +224,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
+        self._interaction_hint = interaction_hint
         self._page_stack: list[_ChoicePage] = []
         self._child_background: Color | None = None
         self._page_revision = 0
@@ -253,18 +259,34 @@ class ChoiceScreen(ModalScreen[str | None]):
         with Vertical(id="choice-panel"):
             yield Static(self._title, id="choice-title")
             yield self._filter_input()
-            yield OptionList(
-                *self._options(self._choices, group_accent=theme_for(self).accent),
-                id="choice-list",
-                classes="grouped-menu-list",
-            )
-            yield Static(
-                "↑/↓ move · ←/→ group · Enter select · Esc cancel",
-                id="choice-hint",
-            )
+            yield self._choice_list()
+            yield Static(self._resolved_hint(), id="choice-hint")
 
     def _filter_input(self) -> Input:
         return TuiInput(placeholder=self._placeholder, id="choice-filter")
+
+    def _choice_list(self) -> OptionList:
+        """Build the menu body; specialized screens can replace it without copying the frame."""
+
+        return OptionList(
+            *self._options(self._choices, group_accent=theme_for(self).accent),
+            id="choice-list",
+            classes="grouped-menu-list",
+        )
+
+    def _show_hint(self, hint: str | None = None) -> None:
+        """Render the current interaction contract in the shared menu footer."""
+
+        self.query_one("#choice-hint", Static).update(self._resolved_hint(hint))
+
+    def _resolved_hint(self, hint: str | None = None) -> str:
+        """Resolve page customization before the screen's navigation-aware default."""
+
+        return (
+            hint
+            or self._interaction_hint
+            or (self.BACK_HINT if self._page_stack else self.DEFAULT_HINT)
+        )
 
     def on_mount(self) -> None:
         self._sync_loading_timer()
@@ -296,6 +318,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
+        interaction_hint: str | None = None,
     ) -> None:
         """Replace one menu level without stacking another modal screen."""
 
@@ -310,12 +333,14 @@ class ChoiceScreen(ModalScreen[str | None]):
         self._retain_focus_position_on_select = retain_focus_position_on_select
         self._navigation_id = navigation_id
         self._retain_for_switching = retain_for_switching
+        self._interaction_hint = interaction_hint
         self.query_one("#choice-title", Static).update(title)
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.placeholder = placeholder
         with self.prevent(Input.Changed):
             filter_input.value = filter_value
         self._refresh_options(needle=filter_value, preferred_value=initial_value)
+        self._show_hint(interaction_hint)
         filter_input.focus()
 
     def switch_page(
@@ -332,6 +357,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         on_cancel: ChoiceCancelHandler | None = None,
         retain_focus_position_on_select: bool = False,
         retain_for_switching: bool = False,
+        interaction_hint: str | None = None,
     ) -> None:
         """Switch keyboard menu destinations without creating another modal.
 
@@ -359,6 +385,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             retain_for_switching=(
                 root.retain_for_switching if returning_to_root else retain_for_switching
             ),
+            interaction_hint=interaction_hint,
         )
 
     def push_page(
@@ -375,6 +402,7 @@ class ChoiceScreen(ModalScreen[str | None]):
         retain_focus_position_on_select: bool = False,
         navigation_id: MenuDestination | None = None,
         retain_for_switching: bool = False,
+        interaction_hint: str | None = None,
     ) -> None:
         """Navigate to a grouped submenu while retaining the current page for Esc."""
 
@@ -391,6 +419,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             retain_focus_position_on_select=retain_focus_position_on_select,
             navigation_id=navigation_id,
             retain_for_switching=retain_for_switching,
+            interaction_hint=interaction_hint,
         )
 
     def pop_page(
@@ -417,6 +446,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             retain_focus_position_on_select=page.retain_focus_position_on_select,
             navigation_id=page.navigation_id,
             retain_for_switching=page.retain_for_switching,
+            interaction_hint=page.interaction_hint,
         )
         return True
 
@@ -536,6 +566,7 @@ class ChoiceScreen(ModalScreen[str | None]):
             on_refresh=self._on_refresh,
             on_cancel=self._on_cancel,
             retain_focus_position_on_select=self._retain_focus_position_on_select,
+            interaction_hint=self._interaction_hint,
         )
 
     def _selected_value(self) -> str | None:
@@ -823,6 +854,10 @@ class _EditableChoiceList(OptionList):
 class EditableChoiceScreen(ChoiceScreen):
     """Edit the selected choice label in place without opening another screen."""
 
+    DEFAULT_HINT = "↑/↓ move · ←/→ group · Enter edit · Esc close"
+    BACK_HINT = "↑/↓ move · ←/→ group · Enter edit · Esc back"
+    EDIT_HINT = "Type edit · ←/→ cursor · Enter save · Esc cancel"
+
     BINDINGS = [
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
@@ -851,19 +886,12 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = ""
         self._edit_cursor = 0
 
-    def compose(self) -> ComposeResult:
-        with Vertical(id="choice-panel"):
-            yield Static(self._title, id="choice-title")
-            yield self._filter_input()
-            yield _EditableChoiceList(
-                *self._options(self._choices, group_accent=theme_for(self).accent),
-                id="choice-list",
-                classes="grouped-menu-list",
-            )
-            yield Static(
-                "↑/↓ move · ←/→ group · Enter edit · Esc cancel",
-                id="choice-hint",
-            )
+    def _choice_list(self) -> OptionList:
+        return _EditableChoiceList(
+            *self._options(self._choices, group_accent=theme_for(self).accent),
+            id="choice-list",
+            classes="grouped-menu-list",
+        )
 
     async def _select_choice(self, selected: str) -> None:
         if self._editing_value is None:
@@ -975,9 +1003,7 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = choice.edit_value if choice.edit_value is not None else choice.label
         self._edit_cursor = len(self._edit_text)
         self.query_one("#choice-filter", Input).disabled = True
-        self.query_one("#choice-hint", Static).update(
-            "Type edit · ←/→ move · Enter save · Esc cancel"
-        )
+        self._show_hint(self.EDIT_HINT)
         self._render_editor()
 
     def _finish_edit(self, choices: tuple[Choice, ...], *, selected: str) -> None:
@@ -998,9 +1024,7 @@ class EditableChoiceScreen(ChoiceScreen):
         ):
             filter_input.value = ""
             needle = ""
-        self.query_one("#choice-hint", Static).update(
-            "↑/↓ move · ←/→ group · Enter edit · Esc cancel"
-        )
+        self._show_hint()
         self._refresh_options(needle=needle, preferred_value=selected)
         self.query_one("#choice-list", OptionList).focus()
 
@@ -1071,6 +1095,10 @@ class EditableChoiceScreen(ChoiceScreen):
 class MultiChoiceScreen(ChoiceScreen):
     """Keep a filtered selection set while Enter confirms one or many choices."""
 
+    DEFAULT_HINT = "↑/↓ move · ←/→ group · Space toggle · Enter confirm · Esc close"
+    BACK_HINT = "↑/↓ move · ←/→ group · Space toggle · Enter confirm · Esc back"
+    CONFIRM_HINT = "↑/↓ move · Enter select · Esc back"
+
     BINDINGS = [
         Binding("up", "previous_choice", "Previous", show=False, priority=True),
         Binding("down", "next_choice", "Next", show=False, priority=True),
@@ -1099,12 +1127,6 @@ class MultiChoiceScreen(ChoiceScreen):
         self._confirmation_values: tuple[str, ...] = ()
         self._catalog_choices: tuple[Choice, ...] = ()
         self._catalog_filter = ""
-
-    def on_mount(self) -> None:
-        super().on_mount()
-        self.query_one("#choice-hint", Static).update(
-            "↑/↓ move · Space select · Enter confirm · Esc cancel"
-        )
 
     def _filter_input(self) -> Input:
         return _MultiChoiceFilterInput(
@@ -1169,7 +1191,7 @@ class MultiChoiceScreen(ChoiceScreen):
             ),
         )
         self.query_one("#choice-title", Static).update(f"CONFIRM {self._title}")
-        self.query_one("#choice-hint", Static).update("↑/↓ choose · Enter select · Esc back")
+        self._show_hint(self.CONFIRM_HINT)
         filter_input.value = ""
         self._refresh_options(needle="", preferred_value="__multi_cancel__")
 
@@ -1179,9 +1201,7 @@ class MultiChoiceScreen(ChoiceScreen):
         self._selected.intersection_update(remaining)
         self._choices = self._project_markers(choices)
         self.query_one("#choice-title", Static).update(self._title)
-        self.query_one("#choice-hint", Static).update(
-            "↑/↓ move · Space select · Enter confirm · Esc cancel"
-        )
+        self._show_hint()
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.value = self._catalog_filter
         self._refresh_options(
@@ -1240,31 +1260,19 @@ class ConfirmationScreen(ChoiceScreen):
         return selected == cls.CONFIRM_VALUE
 
 
-class HelpScreen(ModalScreen[None]):
-    BINDINGS = [
-        Binding("escape", "close", "Close", show=False, priority=True),
-    ]
+class HelpScreen(ChoiceScreen):
+    """Expose root-level help through the same searchable menu as in-menu help."""
 
-    def compose(self) -> ComposeResult:
-        # Build the panel from a Text so padding tracks visible width, not
-        # markup length — keeping the shortcut columns aligned in the flat panel.
-        text = Text()
-        accent = theme_for(self).accent
-        text.append("OURO shortcuts\n\n", style=f"bold {accent}")
-        for left_key, left_desc, right_key, right_desc in _HELP_SHORTCUTS:
-            text.append(left_key, style="bold")
-            text.append(f" {left_desc}")
-            text.append(" " * max(0, 40 - len(left_key) - len(left_desc) - 1))
-            text.append(right_key, style="bold")
-            text.append(f" {right_desc}\n")
-        text.append("\nBuilt-in slash commands\n\n", style=f"bold {accent}")
-        text.append(slash_command_help(), style="#aeb5bf")
-        text.append(
-            "\n\nType / to search built-in and active plugin commands. Unique plugin "
-            "commands use the short form; ambiguous names use /plugin.id:command.",
-            style="#8f9aa8",
+    DEFAULT_HINT = "↑/↓ move · ←/→ group · Esc close"
+    BACK_HINT = "↑/↓ move · ←/→ group · Esc back"
+
+    def __init__(self) -> None:
+        super().__init__(
+            title="KEYBOARD HELP",
+            placeholder="Filter shortcuts and commands…",
+            choices=help_choices(),
         )
-        yield Static(text, id="help-panel")
 
-    def action_close(self) -> None:
-        self.dismiss(None)
+    async def _select_choice(self, selected: str) -> None:
+        # Help rows describe interactions; selecting one has no second meaning.
+        return None

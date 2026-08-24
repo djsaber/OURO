@@ -799,17 +799,6 @@ _OURO_TUI_CSS = """
         border-left: solid $ouro-border-left;
     }
 
-    #help-panel {
-        width: 72;
-        max-width: 90%;
-        height: auto;
-        padding: 1 2;
-        background: $ouro-panel;
-        border-top: none;
-        border-right: solid $ouro-border-right;
-        border-bottom: none;
-        border-left: solid $ouro-border-left;
-    }
 """
 
 
@@ -2871,6 +2860,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             placeholder="Filter shortcuts and commands…",
             choices=choices,
             on_select=keep_help_open,
+            interaction_hint=HelpScreen.BACK_HINT,
         )
 
     def action_abort(self) -> None:

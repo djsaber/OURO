@@ -48,6 +48,7 @@ from ouro.tui.conversation_history import (
     split_markdown_blocks,
 )
 from ouro.tui.question_forms import QuestionField, QuestionForm
+from ouro.tui.selection import RangeSelectionOnly
 from ouro.tui.state import PendingInteraction, RunPresentation, format_duration
 from ouro.tui.text_inputs import TuiTextArea
 from ouro.tui.theme import (
@@ -321,7 +322,7 @@ class ActivityIndicator(Static):
         self.update(content)
 
 
-class ReasoningLabel(Label):
+class ReasoningLabel(RangeSelectionOnly, Label):
     class ToggleRequested(Message):
         pass
 
@@ -331,7 +332,7 @@ class ReasoningLabel(Label):
             event.stop()
 
 
-class ReasoningView(Vertical):
+class ReasoningView(RangeSelectionOnly, Vertical):
     """A plain-text reasoning stream with presentation state independent from the answer.
 
     Thinking output is shown verbatim rather than parsed as Markdown, so code fences and
@@ -406,7 +407,7 @@ class ReasoningView(Vertical):
         self._render_live_label()
 
     def _render_live_label(self) -> None:
-        self.label.update(f"THINKING · {self._elapsed_seconds():.1f}s")
+        self.label.update(f"Thinking · {self._elapsed_seconds():.1f}s")
 
     def _elapsed_seconds(self) -> float:
         if self._clock_started_at is None:
@@ -420,7 +421,7 @@ class ReasoningView(Vertical):
         self._clock_started_at = None
 
 
-class AssistantTurn(Vertical):
+class AssistantTurn(RangeSelectionOnly, Vertical):
     """Live region for one model round: reasoning plus its mutable answer tail.
 
     Completed top-level blocks freeze into the history buffer as soon as they
@@ -505,11 +506,11 @@ class AssistantTurn(Vertical):
 
 def _completed_reasoning_label(duration_seconds: float | None) -> str:
     if duration_seconds is None:
-        return "THOUGHT"
-    return f"THOUGHT · {format_duration(duration_seconds)}"
+        return "Thought"
+    return f"Thought · {format_duration(duration_seconds)}"
 
 
-class ToolActivityRow(Static):
+class ToolActivityRow(RangeSelectionOnly, Static):
     def __init__(self, tool: RuntimeToolCallActivity) -> None:
         super().__init__(classes="tool-row")
         self.tool_call_id = tool.tool_call_id
@@ -1016,7 +1017,11 @@ def _compaction_notice(compaction: CompactionRecord | int) -> str:
     return f"Context compacted · {covered} {noun} summarized"
 
 
-class ConversationView(VerticalScroll):
+class _ConversationTranscript(RangeSelectionOnly, Vertical):
+    """Own transcript layout without turning triple-click into select-all."""
+
+
+class ConversationView(RangeSelectionOnly, VerticalScroll):
     def __init__(
         self,
         *,
@@ -1033,7 +1038,10 @@ class ConversationView(VerticalScroll):
             _tool_activity_text,
             reasoning_expanded=reasoning_expanded,
         )
-        self._transcript = Vertical(self._history, id="conversation-transcript")
+        self._transcript = _ConversationTranscript(
+            self._history,
+            id="conversation-transcript",
+        )
         self._system_status = TuiSystemStatus()
         self._showing_welcome = False
         self._assistant: AssistantTurn | None = None
@@ -1043,9 +1051,6 @@ class ConversationView(VerticalScroll):
 
     def compose(self) -> ComposeResult:
         yield self._transcript
-
-    def text_select_all(self) -> None:
-        """Keep range selection without selecting the entire conversation."""
 
     def arrange(self, size: Size, optimal: bool = False) -> DockArrangeResult:
         """Resolve the scroll position from the viewport used by this layout pass.
