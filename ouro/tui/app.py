@@ -839,6 +839,22 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             priority=True,
         ),
         Binding(
+            "alt+t",
+            "cycle_thinking",
+            "Cycle model thinking",
+            show=False,
+            key_display="Alt+T",
+            priority=True,
+        ),
+        Binding(
+            "alt+a",
+            "cycle_approval",
+            "Cycle session approval",
+            show=False,
+            key_display="Alt+A",
+            priority=True,
+        ),
+        Binding(
             "ctrl+p",
             "actions",
             "Actions",
@@ -2398,6 +2414,14 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
     def action_approval_settings(self) -> None:
         self._choose_approval_mode()
 
+    async def action_cycle_approval(self) -> None:
+        try:
+            current = await self._controller.session_approval_preset()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        await self._set_approval_mode(_next_cycle_value(TUI_APPROVAL_PRESETS, current))
+
     @work(exclusive=True, group="navigation")
     async def _choose_approval_mode(self) -> None:
         try:
@@ -2446,6 +2470,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 
     def action_thinking_settings(self) -> None:
         self._choose_reasoning()
+
+    async def action_cycle_thinking(self) -> None:
+        try:
+            state = await self._controller.session_reasoning()
+        except Exception as exc:  # noqa: BLE001 - application errors are user-visible.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        values = _available_reasoning_values(state)
+        if len(values) < 2:
+            return
+        await self._set_reasoning(
+            _next_cycle_value(values, _reasoning_value(state.requested))
+        )
 
     @work(exclusive=True, group="navigation")
     async def _choose_reasoning(self) -> None:
@@ -2896,6 +2933,12 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
 def _model_endpoint_name(route: str) -> str:
     _provider_id, separator, endpoint_id = route.partition("/")
     return endpoint_id if separator else route
+
+
+def _next_cycle_value(values: Sequence[str], current: str) -> str:
+    """Return the next canonical option, wrapping back to the first."""
+
+    return values[(values.index(current) + 1) % len(values)] if current in values else values[0]
 
 
 def _reasoning_value(request: ReasoningRequest) -> str:

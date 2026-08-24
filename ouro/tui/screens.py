@@ -44,6 +44,7 @@ _HELP_SHORTCUTS = (
     ("Enter", "send / queue", "Shift+Enter", "new line"),
     ("Ctrl+Enter / Ctrl+J", "guide active run", "↑ / ↓", "input history"),
     ("Ctrl+N", "new session", "Ctrl+S", "sessions"),
+    ("Alt+T", "cycle model thinking", "Alt+A", "cycle session approval"),
     ("Alt+P", "plugins", "Ctrl+P", "actions"),
     ("Ctrl+H", "help", "Ctrl+↑", "conversation top"),
     ("Ctrl+↓", "conversation bottom", "Ctrl+←", "previous user message"),

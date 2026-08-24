@@ -3834,6 +3834,34 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
 
 
 @pytest.mark.asyncio
+async def test_session_setting_shortcuts_cycle_and_wrap_available_values(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_thinking_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+
+        for expected in (
+            ReasoningRequest(mode="enabled"),
+            ReasoningRequest(mode="disabled"),
+            ReasoningRequest(mode="enabled", effort="low"),
+            ReasoningRequest(mode="enabled", effort="high"),
+            ReasoningRequest(),
+        ):
+            await pilot.press("alt+t")
+            await pilot.pause()
+            assert (await app._controller.session_reasoning()).requested == expected
+
+        for expected in ("auto", "approval", "deny", "afk", "inherit"):
+            await pilot.press("alt+a")
+            await pilot.pause()
+            assert await app._controller.session_approval_preset() == expected
+
+        assert app.query_one(Composer).text == ""
+
+
+@pytest.mark.asyncio
 async def test_thinking_completion_and_modal_share_supported_choices(
     tmp_path: Path,
 ) -> None:
@@ -5253,6 +5281,13 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
             "SHORTCUTS",
             "BUILT-IN SLASH COMMANDS",
         }
+        shortcuts = {
+            choice.label: choice.trailing
+            for choice in menu._choices
+            if choice.group == "SHORTCUTS"
+        }
+        assert shortcuts["Alt+T"] == "cycle model thinking"
+        assert shortcuts["Alt+A"] == "cycle session approval"
 
         await pilot.press("ctrl+h")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
