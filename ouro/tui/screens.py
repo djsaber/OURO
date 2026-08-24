@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
 from typing import Literal, TypeVar
 
+from rich.cells import cell_len
 from rich.table import Table
 from rich.text import Text
 from textual import events, work
@@ -901,12 +902,18 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = ""
         self._edit_original_text = ""
         self._edit_cursor = 0
+        self._edit_view_start = 0
         self._edit_cursor_visible = True
         self._edit_cursor_timer: Timer | None = None
 
     def on_unmount(self) -> None:
         self._stop_edit_cursor()
         super().on_unmount()
+
+    def on_resize(self, event: events.Resize) -> None:
+        super().on_resize(event)
+        if self._editing_value is not None:
+            self.call_after_refresh(self._render_editor)
 
     def _choice_list(self) -> OptionList:
         return _EditableChoiceList(
@@ -1028,6 +1035,7 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = choice.edit_value if choice.edit_value is not None else choice.label
         self._edit_original_text = self._edit_text
         self._edit_cursor = len(self._edit_text)
+        self._edit_view_start = 0
         self.query_one("#choice-filter", Input).disabled = True
         self._show_hint(self.EDIT_HINT)
         self._start_edit_cursor()
@@ -1039,6 +1047,7 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = ""
         self._edit_original_text = ""
         self._edit_cursor = 0
+        self._edit_view_start = 0
         self._choices = choices
         filter_input = self.query_one("#choice-filter", Input)
         filter_input.disabled = False
@@ -1120,7 +1129,7 @@ class EditableChoiceScreen(ChoiceScreen):
             return
         accent = theme_for(self).accent
         display_text = self._editor_display_text(self._edit_text)
-        prompt = Text(overflow="ellipsis", no_wrap=True)
+        prompt = Text(no_wrap=True)
         cursor_style = (
             f"not bold reverse {accent}" if self._edit_cursor_visible else "not bold"
         )
@@ -1134,16 +1143,54 @@ class EditableChoiceScreen(ChoiceScreen):
                 prompt.append(choice.edit_placeholder, style="not bold #7d8794 italic")
             options.replace_option_prompt_at_index(option_index, prompt)
             return
-        prompt.append(display_text[: self._edit_cursor], style="not bold")
+        editor_width = max(
+            1,
+            options.scrollable_content_region.width
+            - options.get_component_styles("option-list--option").padding.width,
+        )
+        view_start, view_end = self._editor_view_bounds(display_text, editor_width)
+        if view_start:
+            prompt.append("…", style="not bold #7d8794")
+        prompt.append(display_text[view_start : self._edit_cursor], style="not bold")
         if self._edit_cursor < len(display_text):
             prompt.append(
                 display_text[self._edit_cursor],
                 style=cursor_style,
             )
-            prompt.append(display_text[self._edit_cursor + 1 :], style="not bold")
+            prompt.append(
+                display_text[self._edit_cursor + 1 : view_end],
+                style="not bold",
+            )
         else:
             prompt.append(" ", style=cursor_style)
+        if view_end < len(display_text):
+            prompt.append("…", style="not bold #7d8794")
         options.replace_option_prompt_at_index(option_index, prompt)
+
+    def _editor_view_bounds(self, display_text: str, width: int) -> tuple[int, int]:
+        """Return a stable single-line window that always contains the edit cursor."""
+
+        cursor = min(self._edit_cursor, len(display_text))
+        start = min(self._edit_view_start, cursor)
+        end = cursor + 1 if cursor < len(display_text) else len(display_text)
+
+        def view_width(candidate_start: int, candidate_end: int) -> int:
+            return (
+                (1 if candidate_start else 0)
+                + cell_len(display_text[candidate_start:candidate_end])
+                + (1 if candidate_end < len(display_text) else 0)
+                + (1 if cursor == len(display_text) else 0)
+            )
+
+        while start < cursor and view_width(start, end) > width:
+            start += 1
+        while end < len(display_text) and view_width(start, end + 1) <= width:
+            end += 1
+        while start > 0 and view_width(start - 1, end) <= width:
+            start -= 1
+
+        self._edit_view_start = start
+        return start, end
 
     def _editor_display_text(self, value: str) -> str:
         """Return the visible editor text; subclasses may mask sensitive values."""

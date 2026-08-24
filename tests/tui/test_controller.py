@@ -12,6 +12,7 @@ from ouro.application.models import AvailableModel
 from ouro.application.plugin_models import PluginCommandExecutionView, PluginCommandView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
+from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord, compaction_source_digest
@@ -227,6 +228,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         max_output_tokens=16_000,
         supports_tools=True,
         supports_vision=True,
+        reasoning=reasoning_preset("thinking-toggle"),
         request_options={"seed": 7},
     )
 
@@ -240,6 +242,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
         assert saved.supports_vision is True
+        assert saved.reasoning == reasoning_preset("thinking-toggle")
         assert saved.request_options == {"seed": 7}
         assert "custom/new" in {model.key for model in await controller.models()}
         with pytest.raises(ConfigError, match="already exists"):
@@ -251,12 +254,14 @@ async def test_controller_configures_provider_endpoint_through_application_facad
                     **draft.__dict__,
                     "model_id": "new-model-v2",
                     "supports_structured_output": True,
+                    "reasoning": reasoning_preset("none"),
                     "request_options": {"seed": 9},
                 }
             )
         )
         assert changed.model_id == "new-model-v2"
         assert changed.supports_structured_output is True
+        assert changed.reasoning == reasoning_preset("none")
         assert changed.request_options == {"seed": 9}
         assert (await controller.use_endpoint("custom", "new")).default is True
         await controller.remove_endpoint("custom", "new")
@@ -300,6 +305,34 @@ async def test_controller_configures_preset_and_compatible_providers(
         assert preset.endpoint_count == 3
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
         assert preset.provider_options == {"service_tier": "flex"}
+
+        target = next(item for item in preset.endpoints if item.endpoint_id == "gpt-5.6")
+        untouched_reasoning = configuration.endpoint(
+            "primary",
+            "gpt-5.6-terra",
+        ).reasoning
+        overridden = await controller.update_endpoint(
+            TuiEndpointConfiguration(
+                provider_id="primary",
+                endpoint_id=target.endpoint_id,
+                model_id=target.model_id,
+                context_window=target.context_window,
+                max_output_tokens=target.max_output_tokens,
+                supports_tools=target.supports_tools,
+                supports_vision=target.supports_vision,
+                supports_streaming=target.supports_streaming,
+                supports_structured_output=target.supports_structured_output,
+                reasoning=reasoning_preset("none"),
+            )
+        )
+        assert overridden.reasoning == reasoning_preset("none")
+        assert (
+            configuration.endpoint(
+                "primary",
+                "gpt-5.6-terra",
+            ).reasoning
+            == untouched_reasoning
+        )
 
         compatible = await controller.add_provider(
             TuiProviderConfiguration(

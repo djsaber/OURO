@@ -8,9 +8,25 @@ from ouro.application.configuration_models import (
     ProviderTemplateView,
     ProviderView,
 )
-from ouro.config import ProviderType
+from ouro.config import (
+    REASONING_PRESETS,
+    EndpointReasoningConfig,
+    ProviderType,
+    reasoning_preset,
+)
+from ouro.config.provider_models import validate_reasoning_protocol_compatibility
 from ouro.tui.controller import TuiEndpointConfiguration, TuiProviderConfiguration
-from ouro.tui.screens import Choice, EditableChoiceScreen
+from ouro.tui.screens import Choice, ChoiceScreen, EditableChoiceScreen
+from ouro.tui.theme import SELECTED_CHOICE_MARKER
+
+_REASONING_PRESET_LABELS = {
+    "none": "None",
+    "openai-effort": "OpenAI effort",
+    "reasoning-content-effort": "Reasoning content effort",
+    "thinking-toggle": "Thinking object toggle",
+    "enable-thinking-toggle": "Enable thinking toggle",
+    "anthropic-adaptive-effort": "Anthropic adaptive effort",
+}
 
 
 @dataclass(frozen=True)
@@ -276,6 +292,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         self._provider = provider
         self._existing = existing
         request_options = _json_text(existing.request_options if existing is not None else {})
+        reasoning = existing.reasoning if existing is not None else EndpointReasoningConfig()
         self._values = {
             "endpoint-id": existing.endpoint_id if existing is not None else "",
             "endpoint-model-id": existing.model_id if existing is not None else "",
@@ -285,6 +302,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-max-output": str(
                 existing.max_output_tokens if existing is not None else 8192
             ),
+            "endpoint-reasoning-config": _reasoning_text(reasoning),
             "endpoint-request-options": request_options,
         }
         self._capabilities = {
@@ -309,10 +327,81 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             self._capabilities[selected] = not self._capabilities[selected]
             self._replace_choices(self._endpoint_choices(), selected=selected)
             return
+        if self._editing_value is None and selected == "endpoint-reasoning-preset":
+            await self._select_reasoning_preset()
+            return
         if selected == "endpoint-save" and self._editing_value is None:
             self._submit()
             return
         await super()._select_choice(selected)
+
+    async def _select_reasoning_preset(self) -> None:
+        selected = await self.open_child(
+            ChoiceScreen(
+                title="REASONING PRESET",
+                placeholder="Filter reasoning presets…",
+                choices=self._reasoning_preset_choices(),
+                initial_value=self._reasoning_preset_name(),
+            )
+        )
+        if selected not in REASONING_PRESETS:
+            return
+        self._values["endpoint-reasoning-config"] = _reasoning_text(reasoning_preset(selected))
+        self._replace_choices(
+            self._endpoint_choices(),
+            selected="endpoint-reasoning-preset",
+        )
+
+    def _reasoning_preset_name(self) -> str | None:
+        try:
+            current = _reasoning_config(self._values["endpoint-reasoning-config"])
+        except ValueError:
+            return None
+        return next(
+            (name for name in REASONING_PRESETS if reasoning_preset(name) == current),
+            None,
+        )
+
+    def _reasoning_preset_choices(self) -> tuple[Choice, ...]:
+        current_name = self._reasoning_preset_name()
+        choices: list[Choice] = []
+        if current_name is None:
+            choices.append(
+                Choice(
+                    "custom-reasoning-config",
+                    "Custom configuration",
+                    trailing=_reasoning_summary(self._values["endpoint-reasoning-config"]),
+                    group="CURRENT",
+                    disabled=True,
+                    marker=SELECTED_CHOICE_MARKER,
+                )
+            )
+        for name in REASONING_PRESETS:
+            reasoning = reasoning_preset(name)
+            try:
+                validate_reasoning_protocol_compatibility(
+                    self._provider.protocol,
+                    reasoning,
+                )
+            except ValueError:
+                incompatible = True
+            else:
+                incompatible = False
+            choices.append(
+                Choice(
+                    name,
+                    _REASONING_PRESET_LABELS[name],
+                    trailing=(
+                        "Protocol incompatible"
+                        if incompatible
+                        else _reasoning_capability_summary(reasoning)
+                    ),
+                    group="PRESETS",
+                    disabled=incompatible,
+                    marker=(SELECTED_CHOICE_MARKER if name == current_name else ""),
+                )
+            )
+        return tuple(choices)
 
     async def _save_field(
         self,
@@ -350,6 +439,17 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             self._values["endpoint-request-options"],
             "Request options",
         )
+        reasoning = _reasoning_config(self._values["endpoint-reasoning-config"])
+        try:
+            validate_reasoning_protocol_compatibility(
+                self._provider.protocol,
+                reasoning,
+            )
+            reasoning.validate_request_options(
+                {**self._provider.provider_options, **request_options}
+            )
+        except ValueError as exc:
+            raise ValueError(f"Reasoning config is incompatible: {exc}") from exc
         return TuiEndpointConfiguration(
             provider_id=self._provider.provider_id,
             endpoint_id=endpoint_id,
@@ -360,6 +460,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             supports_vision=self._capabilities["endpoint-vision"],
             supports_streaming=self._capabilities["endpoint-streaming"],
             supports_structured_output=self._capabilities["endpoint-structured-output"],
+            reasoning=(
+                None
+                if self._existing is not None and reasoning == self._existing.reasoning
+                else reasoning
+            ),
             request_options=(
                 None
                 if self._existing is not None and request_options == self._existing.request_options
@@ -433,6 +538,25 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 "Structured output",
                 trailing=state("endpoint-structured-output"),
                 group="CAPABILITIES",
+            ),
+            Choice(
+                "endpoint-reasoning-preset",
+                "Reasoning preset",
+                trailing=(
+                    _REASONING_PRESET_LABELS.get(
+                        self._reasoning_preset_name() or "",
+                        "Custom",
+                    )
+                ),
+                group="REASONING",
+            ),
+            Choice(
+                "endpoint-reasoning-config",
+                "Reasoning config",
+                trailing=_reasoning_summary(self._values["endpoint-reasoning-config"]),
+                group="REASONING",
+                edit_value=self._values["endpoint-reasoning-config"],
+                edit_placeholder="Enter a reasoning JSON object",
             ),
             Choice(
                 "endpoint-request-options",
@@ -511,6 +635,34 @@ def _json_summary(raw: str) -> str:
     except ValueError:
         return "Invalid JSON"
     return "None" if not value else f"{len(value)} fields"
+
+
+def _reasoning_text(value: EndpointReasoningConfig) -> str:
+    return _json_text(dict(value.model_dump(mode="json", exclude_none=True)))
+
+
+def _reasoning_config(raw: str) -> EndpointReasoningConfig:
+    value = _json_object(raw, "Reasoning config")
+    try:
+        return EndpointReasoningConfig.model_validate(value)
+    except ValueError as exc:
+        raise ValueError(f"Reasoning config is invalid: {exc}") from exc
+
+
+def _reasoning_summary(raw: str) -> str:
+    try:
+        return _reasoning_capability_summary(_reasoning_config(raw))
+    except ValueError:
+        return "Invalid config"
+
+
+def _reasoning_capability_summary(value: EndpointReasoningConfig) -> str:
+    capability = value.capability
+    if capability.activation == "unsupported":
+        return "Unsupported"
+    activation = "Always on" if capability.activation == "always_on" else "Toggle"
+    effort_count = len(capability.supported_efforts)
+    return activation if not effort_count else f"{activation} · {effort_count} efforts"
 
 
 def _positive_int(raw: str, label: str) -> int:

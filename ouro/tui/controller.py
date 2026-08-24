@@ -58,7 +58,7 @@ from ouro.application.session_models import (
 )
 from ouro.application.skill_activations import SkillInvocationRequest
 from ouro.application.usage_models import UsageSummary, UsageTotals
-from ouro.config import ProviderType
+from ouro.config import EndpointReasoningConfig, ProviderType
 from ouro.core.agents import ExecutionMode, ToolSelection
 from ouro.core.approvals import (
     SESSION_APPROVAL_MODES,
@@ -209,6 +209,7 @@ class TuiEndpointConfiguration:
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
+    reasoning: EndpointReasoningConfig | None = None
     request_options: dict[str, object] | None = None
 
 
@@ -887,6 +888,7 @@ class TuiController:
             supports_vision=draft.supports_vision,
             supports_streaming=draft.supports_streaming,
             supports_structured_output=draft.supports_structured_output,
+            reasoning=draft.reasoning,
             request_options=draft.request_options,
         )
         return next(

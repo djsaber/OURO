@@ -31,6 +31,7 @@ from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
+from ouro.config import reasoning_preset
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
 from ouro.core.compaction import CompactionRecord
@@ -3698,6 +3699,8 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "CAPABILITIES",
             "CAPABILITIES",
             "CAPABILITIES",
+            "REASONING",
+            "REASONING",
             "REQUEST",
             "ACTIONS",
         ]
@@ -3736,6 +3739,50 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert screen._capabilities["endpoint-vision"] is True
         assert screen._capabilities["endpoint-streaming"] is True
 
+        screen._values["endpoint-reasoning-config"] = "[]"
+        screen._choices = screen._endpoint_choices()
+        screen._refresh_options(needle="", preferred_value="endpoint-reasoning-config")
+        assert options.get_option("endpoint-save").disabled is True
+        save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
+        assert "JSON object" in save_choice.trailing
+
+        options.highlighted = options.get_option_index("endpoint-reasoning-preset")
+        options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="REASONING PRESET")
+        preset_options = app.screen.query_one("#choice-list", OptionList)
+        assert preset_options.get_option("anthropic-adaptive-effort").disabled is True
+        incompatible = next(
+            choice
+            for choice in app.screen._choices
+            if choice.value == "anthropic-adaptive-effort"
+        )
+        assert incompatible.trailing == "Protocol incompatible"
+        preset_options.highlighted = preset_options.get_option_index("thinking-toggle")
+        preset_options.focus()
+        await pilot.press("enter")
+        await _wait_for_screen(app, EndpointConfigurationScreen, title="ADD ENDPOINT")
+        assert screen._reasoning_preset_name() == "thinking-toggle"
+        assert screen._draft().reasoning == reasoning_preset("thinking-toggle")
+        assert options.get_option("endpoint-save").disabled is False
+
+        screen._values["endpoint-reasoning-config"] = (
+            '{"capability":{"activation":"toggle","default":{"mode":"enabled"}},'
+            '"profile":{"name":"vendor-thinking","variants":'
+            '{"enabled":{"thinking":true},"disabled":{"thinking":false}}}}'
+        )
+        screen._choices = screen._endpoint_choices()
+        screen._refresh_options(needle="", preferred_value="endpoint-reasoning-config")
+        assert screen._reasoning_preset_name() is None
+        assert options.get_option("endpoint-save").disabled is False
+
+        screen._values["endpoint-request-options"] = '{"thinking":true}'
+        screen._choices = screen._endpoint_choices()
+        screen._refresh_options(needle="", preferred_value="endpoint-request-options")
+        assert options.get_option("endpoint-save").disabled is True
+        save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
+        assert "reasoning-owned fields: thinking" in save_choice.trailing
+
         screen._values["endpoint-request-options"] = "[]"
         screen._choices = screen._endpoint_choices()
         screen._refresh_options(needle="", preferred_value="endpoint-request-options")
@@ -3763,6 +3810,9 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert draft.supports_tools is False
         assert draft.supports_vision is True
         assert draft.supports_streaming is True
+        assert draft.reasoning is not None
+        assert draft.reasoning.profile is not None
+        assert draft.reasoning.profile.name == "vendor-thinking"
         assert draft.request_options == {"seed": 7}
 
 
@@ -4817,6 +4867,7 @@ def test_provider_editors_preserve_redacted_request_options_when_unchanged(
     assert provider.provider_options == {"api_key": "***", "top_p": 0.8}
     assert endpoint.request_options == {"nested": {"password": "***"}, "seed": 7}
     assert provider_draft.provider_options is None
+    assert endpoint_draft.reasoning is None
     assert endpoint_draft.request_options is None
 
 
@@ -6421,6 +6472,76 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
         assert len(results) == 1
         assert results[0].mode != current.mode
         assert results[0].workspace_only is not current.workspace_only
+
+
+@pytest.mark.asyncio
+async def test_shared_inline_editor_keeps_cursor_in_horizontal_viewport(
+    tmp_path: Path,
+) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+    long_value = "begin-" + "思考" * 80 + "-end"
+
+    async def save_value(_field_id: str, _value: str) -> tuple[Choice, ...]:
+        return ()
+
+    async with app.run_test(size=(64, 24)) as pilot:
+        await pilot.pause()
+        screen = EditableChoiceScreen(
+            title="INLINE EDIT",
+            placeholder="Filter values…",
+            choices=(
+                Choice(
+                    "long-value",
+                    "Long value",
+                    group="VALUE",
+                    edit_value=long_value,
+                ),
+            ),
+            on_save=save_value,
+        )
+        app.push_screen(screen)
+        await pilot.pause()
+
+        options = screen.query_one("#choice-list", OptionList)
+        options.highlighted = options.get_option_index("long-value")
+        options.focus()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        def rendered_prompt() -> Text:
+            screen._edit_cursor_visible = True
+            screen._render_editor()
+            prompt = options.get_option("long-value").prompt
+            assert isinstance(prompt, Text)
+            assert any("reverse" in str(span.style) for span in prompt.spans)
+            editor_width = (
+                options.scrollable_content_region.width
+                - options.get_component_styles("option-list--option").padding.width
+            )
+            assert prompt.cell_len <= editor_width
+            return prompt
+
+        prompt = rendered_prompt()
+        assert prompt.plain.startswith("…")
+        assert prompt.plain.endswith(" ")
+
+        screen.action_edit_home()
+        prompt = rendered_prompt()
+        assert prompt.plain.startswith("begin-")
+        assert prompt.plain.endswith("…")
+
+        screen._edit_cursor = len(long_value) // 2
+        screen._reset_edit_cursor()
+        prompt = rendered_prompt()
+        assert prompt.plain.startswith("…")
+        assert prompt.plain.endswith("…")
+
+        screen.action_edit_end()
+        await pilot.resize_terminal(42, 18)
+        await pilot.pause()
+        prompt = rendered_prompt()
+        assert prompt.plain.startswith("…")
+        assert prompt.plain.endswith(" ")
 
 
 @pytest.mark.asyncio
