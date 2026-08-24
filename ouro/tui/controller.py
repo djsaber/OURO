@@ -69,7 +69,7 @@ from ouro.core.base import Metadata
 from ouro.core.billing import UsageFilter
 from ouro.core.compaction import CompactionCommandResult, CompactionRecord
 from ouro.core.context import ContextMetrics
-from ouro.core.errors import ConfigError
+from ouro.core.errors import ConfigError, PersistenceError
 from ouro.core.events import EventRecord
 from ouro.core.interactions import SessionInteractionMode
 from ouro.core.messages import MessageRecord
@@ -642,9 +642,9 @@ class TuiController:
         def read() -> str | None:
             try:
                 return runtime.current_model(session_id).key
-            except ConfigError:
-                # A route removed from configuration cannot seed a new Session;
-                # the Runtime default takes over instead of failing navigation.
+            except (ConfigError, PersistenceError, FileNotFoundError):
+                # Inheriting a route is optional. An invalid route or unreadable
+                # previous Session must not prevent navigation to a fresh draft.
                 return None
 
         return await asyncio.to_thread(read)
@@ -668,7 +668,11 @@ class TuiController:
         self,
         session_ids: tuple[str, ...],
     ) -> tuple[str, ...]:
-        return await asyncio.to_thread(self._delete_archived_sessions, session_ids)
+        removed = await asyncio.to_thread(self._delete_archived_sessions, session_ids)
+        if self._session_id in removed:
+            self._session_id = None
+            self._session_archived = False
+        return removed
 
     def _delete_archived_sessions(self, session_ids: tuple[str, ...]) -> tuple[str, ...]:
         sessions = self._runtime().sessions

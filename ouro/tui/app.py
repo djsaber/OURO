@@ -2218,12 +2218,13 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         async def delete_selected(
             session_ids: tuple[str, ...],
         ) -> tuple[Choice, ...] | None:
+            current_session_id = self._controller.session_id
             try:
                 removed = await self._controller.delete_archived_sessions(session_ids)
             except Exception as exc:  # noqa: BLE001
                 self.notify(str(exc), severity="error", markup=False)
                 return None
-            if self._controller.session_id in removed:
+            if current_session_id in removed:
                 await self._new_session()
             if not await self._refresh_sessions():
                 return None

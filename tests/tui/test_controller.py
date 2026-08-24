@@ -132,6 +132,64 @@ async def test_controller_new_session_keeps_welcome_model_selection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("damaged_payload", [None, "not valid session json"])
+async def test_controller_new_session_ignores_unreadable_previous_session(
+    tmp_path: Path,
+    damaged_payload: str | None,
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        result = await controller.submit("session that becomes unreadable")
+        session_id = result.session.session_id
+        session_path = tmp_path / "sessions" / session_id / "session.json"
+        if damaged_payload is None:
+            session_path.unlink()
+        else:
+            session_path.write_text(damaged_payload, encoding="utf-8")
+
+        draft = await controller.new_session()
+
+        assert controller.session_id is None
+        assert draft.key == "faux/default"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_deleting_current_session_invalidates_current_pointer(
+    tmp_path: Path,
+) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    await controller.start()
+
+    try:
+        result = await controller.submit("session to delete")
+        session_id = result.session.session_id
+        await controller.set_session_archived(session_id, archived=True)
+
+        removed = await controller.delete_archived_sessions((session_id,))
+        draft = await controller.new_session()
+
+        assert removed == (session_id,)
+        assert controller.session_id is None
+        assert draft.key == "faux/default"
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_start_defers_session_catalog_until_requested(
     tmp_path: Path,
     monkeypatch,
