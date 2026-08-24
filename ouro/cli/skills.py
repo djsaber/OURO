@@ -59,7 +59,8 @@ def list_skills(
         return 0
     lines = ["Skills:"]
     for skill in catalog.skills:
-        source = f"[{skill.source}]"
+        source_id = "plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"
+        source = f"[{source_id}]"
         state = "[enabled]" if skill.enabled else "[disabled]"
         managed = "[managed]" if skill.managed else "[external]"
         location = f"[file: {skill.location}]"
@@ -99,7 +100,8 @@ def show_skill(
     skill = loaded.skill
     lines = [
         f"Skill: {skill.name}",
-        f"Source: {skill.source}",
+        "Source: "
+        + ("plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"),
         f"Enabled: {'yes' if skill.enabled else 'no'}",
         f"Location: {skill.location}",
     ]
@@ -141,7 +143,8 @@ def show_skill_roots(
     lines = ["Skill roots:"]
     for root in roots:
         exists = "exists" if root.exists else "missing"
-        lines.append(f"- {root.source}: {root.path} ({exists})")
+        enabled = "enabled" if root.enabled else "disabled"
+        lines.append(f"- {root.source_id}: {root.path} ({enabled}, {exists})")
     print("\n".join(lines))
     return 0
 
@@ -276,6 +279,9 @@ def _skill_root_to_dict(root: SkillRootView) -> dict[str, str | bool]:
     return {
         "path": root.path,
         "source": root.source,
+        "source_id": root.source_id,
+        "origin": root.origin,
+        "enabled": root.enabled,
         "exists": root.exists,
     }
 

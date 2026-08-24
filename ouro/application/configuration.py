@@ -28,6 +28,7 @@ from ouro.application.configuration_models import (
     SkillManagementView,
     SkillPolicyView,
     SkillRootView,
+    SkillSourcePolicyView,
     SkillsPromptView,
     SkillValidationView,
     SystemPromptConfigView,
@@ -68,7 +69,7 @@ from ouro.config import (
     RunBudgetConfigManager,
     ToolExecutionConfigManager,
 )
-from ouro.config.skills import SkillInstallScope
+from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS, SkillInstallScope
 from ouro.core.agents import ExecutionMode, LifecycleBinding
 from ouro.core.compaction import CompactionPolicy
 from ouro.core.errors import ConfigError
@@ -939,12 +940,17 @@ class ConfigurationFacade:
             config_path=str(snapshot.config_path),
             enabled=config.enabled,
             disabled=sorted(config.disabled),
+            disabled_sources=sorted(config.disabled_sources),
+            sources=[
+                SkillSourcePolicyView(
+                    source_id=source_id,
+                    origin=source_id.rsplit(".", 1)[0],
+                    scope="user" if source_id.endswith(".user") else "workspace",
+                    enabled=source_id not in config.disabled_sources,
+                )
+                for source_id in SKILL_DISCOVERY_SOURCE_IDS
+            ],
             paths=[item.model_dump(mode="json") for item in config.paths],
-            scan_agents=config.scan_agents,
-            scan_claude=config.scan_claude,
-            scan_copilot=config.scan_copilot,
-            scan_codex=config.scan_codex,
-            scan_github=config.scan_github,
             max_depth=config.max_depth,
             max_directories=config.max_directories,
             installed=[
@@ -968,7 +974,9 @@ class ConfigurationFacade:
             SkillRootView(
                 path=str(root.path),
                 source=root.source,
+                source_id=root.source_id,
                 origin=root.origin,
+                enabled=root.enabled,
                 exists=root.path.exists(),
             )
             for root in default_skill_roots(home=self.root)
@@ -982,6 +990,7 @@ class ConfigurationFacade:
         loader = SkillLoader(
             Path(metadata.location).parent,
             default_source=metadata.source,
+            default_origin=metadata.origin,
         )
         loaded = loader.load_content(name)
         loaded = loaded.model_copy(
@@ -1043,6 +1052,20 @@ class ConfigurationFacade:
 
     def set_skill_enabled(self, name: str, *, enabled: bool) -> SkillManagementView:
         return skill_management_view(self.skills.set_enabled(name, enabled=enabled))
+
+    def update_skill_discovery(
+        self,
+        *,
+        enabled: bool | None = None,
+        source_updates: Mapping[str, bool] | None = None,
+    ) -> SkillPolicyView:
+        self._skill_policy.update_discovery(
+            enabled=enabled,
+            source_updates=source_updates,
+        )
+        return self.skill_policy(
+            change=configuration_change("skills", "discovery_updated", "next_runtime")
+        )
 
     def _require_provider(self, provider_id: str) -> ProviderConfig:
         provider = self.providers.get_provider(provider_id, include_builtin=False)

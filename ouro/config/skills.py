@@ -12,10 +12,47 @@ from ouro.config.file import JsonConfigFile, atomic_config_update
 from ouro.core.base import OuroModel
 from ouro.core.errors import ConfigError
 
+SkillDiscoverySourceId = Literal[
+    "agents.user",
+    "claude.user",
+    "copilot.user",
+    "codex.user",
+    "ouro.user",
+    "agents.workspace",
+    "claude.workspace",
+    "github.workspace",
+    "codex.workspace",
+    "ouro.workspace",
+]
+
+SKILL_DISCOVERY_SOURCE_IDS: tuple[SkillDiscoverySourceId, ...] = (
+    "agents.user",
+    "claude.user",
+    "copilot.user",
+    "codex.user",
+    "ouro.user",
+    "agents.workspace",
+    "claude.workspace",
+    "github.workspace",
+    "codex.workspace",
+    "ouro.workspace",
+)
+_SKILL_DISCOVERY_SOURCE_ID_SET = frozenset(SKILL_DISCOVERY_SOURCE_IDS)
+_REMOVED_SCAN_FIELDS = frozenset(
+    {
+        "scan_agents",
+        "scan_claude",
+        "scan_copilot",
+        "scan_codex",
+        "scan_github",
+    }
+)
+
 
 class SkillPathConfig(OuroModel):
     path: str
-    source: Literal["user", "workspace", "plugin"] = "user"
+    source: Literal["user", "workspace"] = "user"
+    enabled: bool = True
 
 
 SkillInstallScope = Literal["user", "workspace"]
@@ -33,11 +70,7 @@ class SkillConfig(OuroModel):
     enabled: bool = True
     paths: list[SkillPathConfig] = Field(default_factory=list)
     disabled: set[str] = Field(default_factory=set)
-    scan_agents: bool = True
-    scan_claude: bool = True
-    scan_copilot: bool = True
-    scan_codex: bool = True
-    scan_github: bool = True
+    disabled_sources: set[SkillDiscoverySourceId] = Field(default_factory=set)
     max_depth: int = Field(default=6, ge=0, le=12)
     max_directories: int = Field(default=2000, ge=1, le=100_000)
     installed: dict[str, ManagedSkillRecord] = Field(default_factory=dict)
@@ -65,6 +98,13 @@ class SkillConfigManager:
         if not isinstance(section, Mapping):
             raise ConfigError("skills config must be an object")
         normalized = dict(section)
+        removed_fields = sorted(_REMOVED_SCAN_FIELDS & normalized.keys())
+        if removed_fields:
+            fields = ", ".join(removed_fields)
+            raise ConfigError(
+                "skills config uses removed scan fields "
+                f"({fields}); use disabled_sources with scoped source ids instead"
+            )
         paths = normalized.get("paths")
         if isinstance(paths, list):
             normalized["paths"] = [
@@ -92,6 +132,39 @@ class SkillConfigManager:
         else:
             disabled.add(name)
         skills["disabled"] = sorted(disabled)
+        self._write_skills(raw, skills)
+        return self.snapshot()
+
+    @atomic_config_update
+    def update_discovery(
+        self,
+        *,
+        enabled: bool | None = None,
+        source_updates: Mapping[str, bool] | None = None,
+    ) -> SkillConfigSnapshot:
+        """Atomically update Host directory discovery without touching plugin state."""
+
+        current = self.snapshot().config
+        updates = dict(source_updates or {})
+        unknown = sorted(set(updates) - _SKILL_DISCOVERY_SOURCE_ID_SET)
+        if unknown:
+            raise ConfigError(f"unknown skill discovery source: {', '.join(unknown)}")
+
+        disabled_sources: set[str] = set(current.disabled_sources)
+        for source_id, source_enabled in updates.items():
+            if source_enabled:
+                disabled_sources.discard(source_id)
+            else:
+                disabled_sources.add(source_id)
+
+        raw = self.load_raw()
+        skills = self._skills_section(raw)
+        if enabled is not None:
+            skills["enabled"] = enabled
+        if disabled_sources:
+            skills["disabled_sources"] = sorted(disabled_sources)
+        else:
+            skills.pop("disabled_sources", None)
         self._write_skills(raw, skills)
         return self.snapshot()
 

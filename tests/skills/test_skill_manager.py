@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from ouro.config.skills import SkillConfigManager
-from ouro.core.errors import SkillManagementError
+from ouro.core.errors import ConfigError, SkillManagementError
 from ouro.skills import SkillManager, discover_skill_catalog
 
 
@@ -102,6 +102,33 @@ def test_disable_and_enable_are_central_config_overrides(tmp_path) -> None:
     manager.set_enabled("pdf", enabled=True)
 
     assert discover_skill_catalog(home=home, cwd=manager.cwd).skills[0].enabled is True
+
+
+def test_discovery_source_updates_are_sparse_and_atomic(tmp_path) -> None:
+    manager = SkillConfigManager(tmp_path)
+
+    disabled = manager.update_discovery(
+        enabled=True,
+        source_updates={"ouro.user": False, "codex.user": False},
+    ).config
+
+    assert disabled.enabled is True
+    assert disabled.disabled_sources == {"ouro.user", "codex.user"}
+    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    assert raw["skills"]["disabled_sources"] == ["codex.user", "ouro.user"]
+
+    enabled = manager.update_discovery(
+        source_updates={"ouro.user": True, "codex.user": True}
+    ).config
+
+    assert enabled.disabled_sources == set()
+    raw = json.loads((tmp_path / "config" / "config.json").read_text(encoding="utf-8"))
+    assert "disabled_sources" not in raw["skills"]
+
+    before = (tmp_path / "config" / "config.json").read_text(encoding="utf-8")
+    with pytest.raises(ConfigError, match="unknown skill discovery source"):
+        manager.update_discovery(source_updates={"unknown.user": False})
+    assert (tmp_path / "config" / "config.json").read_text(encoding="utf-8") == before
 
 
 def test_validate_reports_invalid_skill_without_installing_it(tmp_path) -> None:

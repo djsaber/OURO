@@ -586,9 +586,28 @@ def test_skill_queries_and_management_use_application_dtos(tmp_path) -> None:
     disabled = facade.set_skill_enabled("echo", enabled=False)
 
     assert [skill.name for skill in catalog.skills] == ["echo"]
+    assert catalog.skills[0].origin == "ouro"
+    assert next(root for root in catalog.roots if root.source_id == "ouro.user").enabled is True
     assert loaded.skill.name == "echo"
     assert "Use echo carefully" in loaded.content
     assert disabled.change.section == "skills"
     assert facade.skill_policy().disabled == ["echo"]
     assert facade.skill_catalog().skills == []
     assert facade.skill_catalog(include_disabled=True).skills[0].enabled is False
+
+
+def test_skill_discovery_policy_updates_application_view(tmp_path) -> None:
+    facade = ConfigurationFacade(tmp_path)
+
+    policy = facade.update_skill_discovery(
+        source_updates={"ouro.user": False, "claude.workspace": False}
+    )
+
+    assert policy.change is not None
+    assert policy.change.effective_from == "next_runtime"
+    assert policy.disabled_sources == ["claude.workspace", "ouro.user"]
+    states = {source.source_id: source.enabled for source in policy.sources}
+    assert states["ouro.user"] is False
+    assert states["ouro.workspace"] is True
+    assert states["claude.user"] is True
+    assert states["claude.workspace"] is False

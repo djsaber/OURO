@@ -1128,6 +1128,8 @@ async def test_declarative_skill_is_projected_into_immutable_catalog(tmp_path) -
     assert [skill.name for skill in snapshot.skills] == ["calendar"]
     skill = snapshot.skills[0]
     assert skill.description == "Manage a calendar."
+    assert skill.source == "plugin"
+    assert skill.origin == "plugin"
     assert Path(skill.location).read_text(encoding="utf-8").endswith("Instructions.\n")
     assert skill.extensions["ouro"] == {
         "plugin_id": "dev.ouro.echo",

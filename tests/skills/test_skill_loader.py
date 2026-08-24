@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from ouro.core.errors import ConfigError
 from ouro.prompts import render_agent_skills_prompt
 from ouro.skills import (
     SkillLoader,
@@ -154,7 +157,7 @@ def test_central_config_controls_paths_and_disabled_skills(tmp_path) -> None:
                 "skills": {
                     "paths": ["shared-skills"],
                     "disabled": ["disabled-skill"],
-                    "scan_claude": False,
+                    "disabled_sources": ["claude.user", "claude.workspace"],
                 }
             }
         ),
@@ -164,6 +167,78 @@ def test_central_config_controls_paths_and_disabled_skills(tmp_path) -> None:
     skills = discover_available_skills(home=home, cwd=workspace)
 
     assert [skill.name for skill in skills] == ["shared"]
+
+
+def test_scoped_sources_distinguish_ouro_from_other_hosts(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_skill(home / "skills" / "ouro-skill", "ouro-skill", "OURO guidance.")
+    _write_skill(home / ".codex" / "skills" / "codex-skill", "codex-skill", "Codex guidance.")
+    _write_skill(
+        workspace / ".codex" / "skills" / "workspace-skill",
+        "workspace-skill",
+        "Workspace Codex guidance.",
+    )
+    config_dir = home / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"skills": {"disabled_sources": ["ouro.user", "codex.workspace"]}}),
+        encoding="utf-8",
+    )
+
+    catalog = discover_skill_catalog(home=home, cwd=workspace)
+    roots = default_skill_roots(home=home, cwd=workspace)
+
+    assert [(skill.name, skill.origin, skill.source) for skill in catalog.skills] == [
+        ("codex-skill", "codex", "user")
+    ]
+    states = {root.source_id: root.enabled for root in roots}
+    assert states["ouro.user"] is False
+    assert states["ouro.workspace"] is True
+    assert states["codex.user"] is True
+    assert states["codex.workspace"] is False
+
+
+def test_configured_skill_paths_can_be_disabled_individually(tmp_path) -> None:
+    home = tmp_path / "home"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    _write_skill(home / "shared-skills" / "shared", "shared", "Shared guidance.")
+    config_dir = home / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps(
+            {
+                "skills": {
+                    "paths": [
+                        {"path": "shared-skills", "source": "user", "enabled": False}
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert discover_skill_catalog(home=home, cwd=workspace).skills == []
+    configured = next(
+        root
+        for root in default_skill_roots(home=home, cwd=workspace)
+        if root.origin == "configured"
+    )
+    assert configured.enabled is False
+
+
+def test_removed_coarse_scan_fields_fail_with_migration_guidance(tmp_path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.json").write_text(
+        json.dumps({"skills": {"scan_codex": False}}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ConfigError, match="use disabled_sources"):
+        discover_skill_catalog(home=tmp_path)
 
 
 def test_discovery_scans_cross_client_locations_and_renders_standard_catalog(
@@ -215,6 +290,19 @@ def test_default_roots_include_native_and_community_conventions(tmp_path) -> Non
     assert (workspace / ".github" / "skills").resolve() in paths
     assert (workspace / ".codex" / "skills").resolve() in paths
     assert (workspace / ".ouro" / "skills").resolve() in paths
+    assert {root.source_id for root in roots} == {
+        "agents.user",
+        "claude.user",
+        "copilot.user",
+        "codex.user",
+        "ouro.user",
+        "agents.workspace",
+        "claude.workspace",
+        "github.workspace",
+        "codex.workspace",
+        "ouro.workspace",
+    }
+    assert all(root.enabled for root in roots)
 
 
 def test_default_skill_roots_follow_ouro_home_env(tmp_path, monkeypatch) -> None:

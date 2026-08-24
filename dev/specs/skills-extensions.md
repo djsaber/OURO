@@ -28,6 +28,21 @@
 - `.agents`、`.claude`、`.github`、`.codex` 的 skills 目录；
 - 当前配置中显式 paths。
 
+固定目录来源同时记录 Host origin 与 scope，并使用 `<origin>.<scope>` 稳定 id。当前 id 为：
+
+- OURO：`ouro.user`、`ouro.workspace`；
+- 开放/兼容 Host：`agents.user`、`agents.workspace`、`claude.user`、`claude.workspace`、
+  `copilot.user`、`github.workspace`、`codex.user`、`codex.workspace`。
+
+所有固定来源默认启用；`skills.disabled_sources` 只保存关闭项，因此可分别关闭 OURO 原生目录、其他 Host
+目录以及 user/workspace scope。`skills.enabled=false` 是 Host 目录发现总开关。显式 `skills.paths` 各自使用
+`enabled`，默认同样为 true。CLI 与 TUI Actions 复用同一应用层策略；TUI 切换后同步刷新当前 Runtime。
+旧的 `scan_*` 粗粒度字段不再接受，避免一个开关同时改变多个 scope。
+
+插件 Skill 不属于目录发现源。它是启用插件 Generation 的 snapshot-bound contribution，由插件授权、启停、
+依赖和 execution contract 共同管理；若插件被关闭，其 Skill 与其他贡献在同一 Catalog 事务中撤销。Skill
+目录策略不得只过滤插件包的一部分贡献，否则会制造与插件生命周期不一致的第二控制平面。
+
 后扫描 root 以同名覆盖前项并产生 shadow diagnostic。扫描受 depth 和 directory count 限制，忽略常见依赖
 和缓存目录。catalog 阶段只读取 metadata；完整正文和资源在激活时加载。
 

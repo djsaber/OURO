@@ -8,6 +8,7 @@ from textual import work
 from ouro.application.agent_models import AgentDefinitionCatalogView, AgentDefinitionView
 from ouro.application.configuration_models import (
     MCPServerConfigView,
+    SkillPolicyView,
     SkillView,
 )
 from ouro.core.tools import PermissionMode
@@ -77,6 +78,7 @@ SYSTEM_SETTING_ACTIONS = (
     SystemSettingAction("mcp.disconnect", "Disconnect MCP server", "MCP"),
     SystemSettingAction("mcp.edit", "Edit MCP server", "MCP"),
     SystemSettingAction("mcp.remove", "Remove MCP server", "MCP"),
+    SystemSettingAction("skills.sources", "Skill sources", "Skills"),
     SystemSettingAction("skills.list", "List skills", "Skills"),
     SystemSettingAction("skills.install", "Install skill", "Skills"),
     SystemSettingAction("skills.validate", "Validate skill", "Skills"),
@@ -164,6 +166,8 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             self._choose_skills(menu=menu)
         elif action_id == "skills.install":
             await self._install_skill(menu=menu)
+        elif action_id == "skills.sources":
+            await self._configure_skill_sources(menu=menu)
         elif action_id.startswith("skills."):
             await self._choose_skill_action(action_id.removeprefix("skills."), menu=menu)
         elif action_id == "compaction.policy":
@@ -1085,6 +1089,69 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         self._refresh_mcp_system_status()
         return True
 
+    async def _configure_skill_sources(
+        self,
+        *,
+        menu: ChoiceScreen | None = None,
+    ) -> None:
+        try:
+            policy = await self._controller.skill_policy()
+        except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+            await self.query_one(ConversationView).add_notice(str(exc), error=True)
+            return
+
+        async def refresh_sources() -> tuple[Choice, ...] | None:
+            nonlocal policy
+            try:
+                policy = await self._controller.skill_policy()
+            except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            return _skill_source_choices(policy)
+
+        async def toggle_source(source_id: str) -> tuple[Choice, ...] | None:
+            nonlocal policy
+            try:
+                if source_id == "discovery":
+                    policy = await self._controller.update_skill_discovery(
+                        enabled=not policy.enabled
+                    )
+                else:
+                    source = next(
+                        (item for item in policy.sources if item.source_id == source_id),
+                        None,
+                    )
+                    if source is None:
+                        return None
+                    policy = await self._controller.update_skill_discovery(
+                        source_updates={source_id: not source.enabled}
+                    )
+            except Exception as exc:  # noqa: BLE001 - configuration errors are user-visible.
+                await self.query_one(ConversationView).add_notice(str(exc), error=True)
+                return None
+            self._refresh_skill_system_status()
+            return _skill_source_choices(policy)
+
+        choices = _skill_source_choices(policy)
+        if menu is not None:
+            menu.push_page(
+                title="SKILL SOURCES",
+                placeholder="Filter skill sources…",
+                choices=choices,
+                on_select=toggle_source,
+                on_refresh=refresh_sources,
+            )
+            return
+        await self.push_screen_wait(
+            ChoiceScreen(
+                title="SKILL SOURCES",
+                placeholder="Filter skill sources…",
+                choices=choices,
+                on_select=toggle_source,
+                on_refresh=refresh_sources,
+            )
+        )
+
     @work(exclusive=True, group="configuration")
     async def _choose_skills(
         self,
@@ -1386,6 +1453,10 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
         except Exception as exc:  # noqa: BLE001
             await self.query_one(ConversationView).add_notice(str(exc), error=True)
             return False
+        self._refresh_skill_system_status()
+        return True
+
+    def _refresh_skill_system_status(self) -> None:
         skill_names = self._controller.runtime_skill_names()
         self._system_status = replace(
             self._system_status,
@@ -1393,7 +1464,6 @@ class ConfigurationWorkflowsApp(PluginManagementWorkflows):
             skill_names=skill_names,
         )
         self.query_one(ConversationView).set_system_status(self._system_status)
-        return True
 
     async def _validate_skill(self, name: str) -> None:
         try:
@@ -1675,12 +1745,36 @@ def _mcp_status_is_loading(status: McpServerStatus | None) -> bool:
 
 def _skill_choice(skill: SkillView) -> Choice:
     plugin_id = _plugin_skill_owner(skill)
+    source_label = (
+        "plugin" if skill.source == "plugin" else f"{skill.origin} · {skill.source}"
+    )
     return Choice(
         skill.name,
         skill.name,
-        trailing=f"{skill.source} · {'enabled' if skill.enabled else 'disabled'}",
+        trailing=f"{source_label} · {'enabled' if skill.enabled else 'disabled'}",
         disabled=plugin_id is not None,
     )
+
+
+def _skill_source_choices(policy: SkillPolicyView) -> tuple[Choice, ...]:
+    choices = [
+        Choice(
+            "discovery",
+            "Skill directory discovery",
+            trailing="enabled" if policy.enabled else "disabled",
+            group="DISCOVERY",
+        )
+    ]
+    choices.extend(
+        Choice(
+            source.source_id,
+            f"{source.origin} · {source.scope}",
+            trailing="enabled" if source.enabled else "disabled",
+            group=f"{source.scope.upper()} DIRECTORIES",
+        )
+        for source in policy.sources
+    )
+    return tuple(choices)
 
 
 def _skill_management_choices(skill: SkillView) -> tuple[Choice, ...]:

@@ -1428,6 +1428,7 @@ def test_plugin_skill_choice_is_visible_but_not_selectable() -> None:
             description="Manage calendars.",
             location="C:/plugins/calendar/SKILL.md",
             source="plugin",
+            origin="plugin",
             enabled=True,
             extensions={"ouro": {"plugin_id": "dev.ouro.calendar"}},
         )
@@ -3973,6 +3974,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             "Disconnect MCP server",
             "Edit MCP server",
             "Remove MCP server",
+            "Skill sources",
             "List skills",
             "Install skill",
             "Validate skill",
@@ -3989,7 +3991,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
             *("Tools",) * 2,
             *("Subagents",) * 5,
             *("MCP",) * 6,
-            *("Skills",) * 5,
+            *("Skills",) * 6,
             "Compaction",
             "Support",
         ]
@@ -4009,6 +4011,48 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
         await pilot.pause(0.2)
         assert isinstance(app.screen, CompactionConfigurationScreen)
         await pilot.press("escape")
+
+
+@pytest.mark.asyncio
+async def test_shared_menu_height_tracks_terminal_with_bounded_layout(tmp_path: Path) -> None:
+    app = OuroTuiApp(application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 60)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+
+        panel = app.screen.query_one("#choice-panel", Vertical)
+        choices = app.screen.query_one("#choice-list", OptionList)
+        hint = app.screen.query_one("#choice-hint", Static)
+        assert app.screen.styles.overflow_y == "hidden"
+        assert panel.region.height == 27
+        assert panel.region.x == app.screen.region.width - panel.region.right
+        assert panel.region.bottom <= app.screen.region.height
+        assert choices.region.bottom <= panel.region.bottom
+        assert hint.region.bottom <= panel.region.bottom
+
+        app.screen.query_one("#choice-filter", Input).value = "Keyboard help"
+        await pilot.pause()
+        assert panel.region.height == 12
+        app.screen.query_one("#choice-filter", Input).value = ""
+        await pilot.pause()
+
+        await pilot.resize_terminal(48, 18)
+        await pilot.pause()
+        assert 12 <= panel.region.height < 27
+        assert panel.region.x == app.screen.region.width - panel.region.right
+        assert choices.region.height >= 5
+        assert panel.region.bottom <= app.screen.region.height
+        assert hint.region.bottom <= panel.region.bottom
+
+        await pilot.resize_terminal(48, 12)
+        await pilot.pause()
+        assert panel.region.height == 12
+        assert panel.region.x == app.screen.region.width - panel.region.right
+        assert choices.region.height == 5
+        assert panel.region.bottom <= app.screen.region.height
+        assert hint.region.bottom <= panel.region.bottom
 
 
 @pytest.mark.asyncio
@@ -6010,7 +6054,86 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
         assert app.screen.query_one("#choice-title", Static).render().plain == "VALIDATE SKILL"
         assert [choice.value for choice in app.screen._choices] == ["demo"]
         assert app.screen._choices[0].description == ""
-        assert app.screen._choices[0].trailing == "user · enabled"
+        assert app.screen._choices[0].trailing == "ouro · user · enabled"
+
+
+@pytest.mark.asyncio
+async def test_skill_directory_sources_use_shared_menu_and_persist_toggles(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: demo\ndescription: Demo skill.\n---\n",
+        encoding="utf-8",
+    )
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 34)) as pilot:
+        await pilot.pause()
+        await pilot.press("ctrl+p")
+        await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
+        action_screen = app.screen
+        action_screen.query_one("#choice-filter", Input).value = "Skill sources"
+        await pilot.pause()
+        await pilot.press("enter")
+        await _wait_for_screen(app, ChoiceScreen, title="SKILL SOURCES")
+
+        assert app.screen is action_screen
+        assert [choice.value for choice in action_screen._choices] == [
+            "discovery",
+            "agents.user",
+            "claude.user",
+            "copilot.user",
+            "codex.user",
+            "ouro.user",
+            "agents.workspace",
+            "claude.workspace",
+            "github.workspace",
+            "codex.workspace",
+            "ouro.workspace",
+        ]
+        assert [choice.group for choice in action_screen._choices] == [
+            "DISCOVERY",
+            *("USER DIRECTORIES",) * 5,
+            *("WORKSPACE DIRECTORIES",) * 5,
+        ]
+        assert [choice.label for choice in action_screen._choices[1:]] == [
+            "agents · user",
+            "claude · user",
+            "copilot · user",
+            "codex · user",
+            "ouro · user",
+            "agents · workspace",
+            "claude · workspace",
+            "github · workspace",
+            "codex · workspace",
+            "ouro · workspace",
+        ]
+        assert all(choice.trailing == "enabled" for choice in action_screen._choices)
+        assert "plugin" not in {choice.value for choice in action_screen._choices}
+
+        action_screen.query_one("#choice-filter", Input).value = "ouro · user"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        policy = ConfigurationFacade(tmp_path).skill_policy()
+        assert policy.disabled_sources == ["ouro.user"]
+        assert app._controller.runtime_skill_names() == ()
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "ouro.user"
+        ).trailing == "disabled"
+
+        action_screen.query_one("#choice-filter", Input).value = "Skill directory discovery"
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+
+        policy = ConfigurationFacade(tmp_path).skill_policy()
+        assert policy.enabled is False
+        assert policy.disabled_sources == ["ouro.user"]
+        assert next(
+            choice for choice in action_screen._choices if choice.value == "discovery"
+        ).trailing == "disabled"
 
 
 @pytest.mark.asyncio
@@ -6074,7 +6197,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         assert next(
             choice for choice in app.screen._choices if choice.value == "demo"
-        ).trailing == "user · disabled"
+        ).trailing == "ouro · user · disabled"
         await pilot.press("enter")
         await pilot.pause()
         options = app.screen.query_one("#choice-list", OptionList)
@@ -6087,7 +6210,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
         await pilot.pause()
         assert next(
             choice for choice in app.screen._choices if choice.value == "demo"
-        ).trailing == "user · enabled"
+        ).trailing == "ouro · user · enabled"
         await pilot.press("escape")
 
 
@@ -6191,6 +6314,32 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
             "PATH ACCESS",
             "ACTIONS",
         ]
+
+        options = screen.query_one("#choice-list", OptionList)
+        save_calls: list[tuple[str, str]] = []
+        save_field = screen._on_save
+
+        async def track_save(field_id: str, value: str) -> tuple[Choice, ...] | None:
+            save_calls.append((field_id, value))
+            return await save_field(field_id, value)
+
+        screen._on_save = track_save
+        await pilot.click(options, offset=(4, 2))
+        await pilot.pause()
+        assert screen._editing_value == "tool-max-concurrency"
+        assert screen._edit_cursor_timer is not None
+        assert screen._edit_cursor_visible is True
+
+        screen._toggle_edit_cursor()
+        assert screen._edit_cursor_visible is False
+        screen.action_edit_home()
+        assert screen._edit_cursor_visible is True
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert screen._editing_value is None
+        assert screen._edit_cursor_timer is None
+        assert save_calls == []
 
         screen._refresh("tool-execution-mode")
         await pilot.press("enter")
@@ -6466,6 +6615,8 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
         ]
 
         choices = {choice.value: choice for choice in screen._choices}
+        assert choices["compaction-strategy"].disabled is True
+        assert choices["compaction-fallback"].disabled is True
         assert choices["compaction-temperature"].disabled is True
         assert choices["compaction-max-output"].disabled is True
         assert choices["compaction-reasoning"].disabled is True

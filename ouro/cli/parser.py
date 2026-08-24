@@ -12,6 +12,7 @@ from ouro.config.reasoning import (
     EndpointReasoningConfig,
     reasoning_preset,
 )
+from ouro.config.skills import SKILL_DISCOVERY_SOURCE_IDS
 from ouro.core.approvals import SESSION_APPROVAL_MODES
 from ouro.deployment import SESSION_BACKENDS
 
@@ -851,6 +852,35 @@ def _add_config_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Permission mode; omit it to clear the selected override",
     )
     permissions_parser.add_argument("--json", action="store_true", help="Print JSON")
+
+    skills_parser = config_subparsers.add_parser(
+        "skills",
+        help="Inspect or update Host skill directory discovery",
+    )
+    skills_parser.add_argument("--home", metavar="HOME", help="Override OURO_HOME")
+    skills_parser.add_argument(
+        "--discovery-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Enable or disable all Host directory skill discovery",
+    )
+    skills_parser.add_argument(
+        "--enable-source",
+        action="append",
+        choices=SKILL_DISCOVERY_SOURCE_IDS,
+        default=None,
+        metavar="SOURCE",
+        help="Enable one scoped Host directory source (repeatable)",
+    )
+    skills_parser.add_argument(
+        "--disable-source",
+        action="append",
+        choices=SKILL_DISCOVERY_SOURCE_IDS,
+        default=None,
+        metavar="SOURCE",
+        help="Disable one scoped Host directory source (repeatable)",
+    )
+    skills_parser.add_argument("--json", action="store_true", help="Print JSON")
 
     tool_execution_parser = config_subparsers.add_parser(
         "tool-execution",

@@ -473,6 +473,7 @@ uv run ouro config tool-execution --home ./.ouro-dev --mode parallel --max-concu
 uv run ouro config queued-inputs --home ./.ouro-dev --consumption-mode all-at-once
 uv run ouro config run-budget --home ./.ouro-dev --max-model-rounds 50
 uv run ouro config compaction --home ./.ouro-dev --provider glm --endpoint reasoning
+uv run ouro config skills --home ./.ouro-dev --disable-source codex.user
 
 uv run ouro skills list --home ./.ouro-dev
 uv run ouro skills show pdf --home ./.ouro-dev
@@ -494,7 +495,11 @@ workspace 外继续搜索。该机制只接受 `AGENTS.md`，不会把产品私�
 
 Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO_HOME/skills`，工作区原生目录是
 `./.ouro/skills`；也可扫描 `.agents`、`.claude`、`.github`、`.copilot` 和 `.codex` 的 Skills 目录。
-格式错误会产生明确诊断，OURO 不会猜测或修复无效 frontmatter。
+目录来源按 Host 与作用域使用稳定 id，例如 `ouro.user`、`ouro.workspace`、`codex.user` 和
+`codex.workspace`。所有来源默认启用，可通过 `ouro config skills --disable-source <id>` 独立关闭；
+TUI 的 `Actions > Skill sources` 提供相同的总开关与逐源开关，并即时刷新当前 Runtime；
+自定义 `skills.paths` 条目使用自身的 `enabled` 字段。插件 Skill 属于插件贡献契约，继续通过所属插件启停，
+不受目录发现源开关影响。格式错误会产生明确诊断，OURO 不会猜测或修复无效 frontmatter。
 
 ## 配置示例
 
@@ -521,8 +526,14 @@ Skills 使用标准 `SKILL.md` YAML frontmatter。用户级原生目录是 `OURO
   "skills": {
     "enabled": true,
     "disabled": ["unsafe-community-skill"],
-    "scan_agents": true,
-    "scan_claude": true
+    "disabled_sources": ["claude.user"],
+    "paths": [
+      {
+        "path": "shared-skills",
+        "source": "user",
+        "enabled": true
+      }
+    ]
   },
   "mcp": {
     "servers": {}

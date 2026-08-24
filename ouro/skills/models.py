@@ -7,6 +7,16 @@ from pydantic import Field
 from ouro.core.base import OuroModel
 
 SkillSource = Literal["user", "workspace", "plugin"]
+SkillOrigin = Literal[
+    "ouro",
+    "agents",
+    "claude",
+    "copilot",
+    "codex",
+    "github",
+    "configured",
+    "plugin",
+]
 DiagnosticLevel = Literal["warning", "error"]
 
 
@@ -24,6 +34,7 @@ class SkillMetadata(OuroModel):
     description: str
     location: str
     source: SkillSource = "user"
+    origin: SkillOrigin = "configured"
     enabled: bool = True
     license: str | None = None
     compatibility: str | None = None

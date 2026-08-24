@@ -626,8 +626,9 @@ def _available_skills(runtime: RuntimeService, session_id: str | None) -> Comman
     for skill in catalog:
         state = "enabled" if skill.enabled else "disabled"
         invocation = "user-invocable" if skill.user_invocable else "not-user-invocable"
+        source_id = "plugin" if skill.source == "plugin" else f"{skill.origin}.{skill.source}"
         lines.append(
-            f"- {skill.name} [{skill.source}] [{state}] [{invocation}] {skill.description}"
+            f"- {skill.name} [{source_id}] [{state}] [{invocation}] {skill.description}"
         )
         hint = f" {skill.argument_hint}" if skill.argument_hint else ""
         lines.append(f"  /skill {skill.name}{hint}")

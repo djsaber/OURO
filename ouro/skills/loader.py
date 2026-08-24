@@ -7,6 +7,7 @@ from ouro.skills.models import (
     SkillCatalog,
     SkillDiagnostic,
     SkillMetadata,
+    SkillOrigin,
     SkillSource,
 )
 from ouro.skills.parser import SkillDocumentParser
@@ -30,12 +31,14 @@ class SkillLoader:
         root: str | Path,
         *,
         default_source: SkillSource = "user",
+        default_origin: SkillOrigin = "configured",
         max_depth: int = 6,
         max_directories: int = 2000,
         parser: SkillDocumentParser | None = None,
     ) -> None:
         self.root = Path(root).expanduser().resolve()
         self.default_source = default_source
+        self.default_origin = default_origin
         self.max_depth = max(0, max_depth)
         self.max_directories = max(1, max_directories)
         self.parser = parser or SkillDocumentParser()
@@ -50,7 +53,11 @@ class SkillLoader:
         self._metadata = {}
         self._diagnostics = []
         for location in self._skill_paths():
-            result = self.parser.parse(location, source=self.default_source)
+            result = self.parser.parse(
+                location,
+                source=self.default_source,
+                origin=self.default_origin,
+            )
             self._diagnostics.extend(result.diagnostics)
             if result.skill is None:
                 continue
@@ -147,7 +154,11 @@ def load_skill_from_metadata(
     """Load exactly the catalog-selected skill without repeating root discovery."""
 
     active_parser = parser or SkillDocumentParser()
-    result = active_parser.parse(metadata.location, source=metadata.source)
+    result = active_parser.parse(
+        metadata.location,
+        source=metadata.source,
+        origin=metadata.origin,
+    )
     if result.skill is None:
         messages = "; ".join(item.message for item in result.diagnostics)
         raise ValueError(f"skill is no longer loadable: {metadata.name}: {messages}")

@@ -163,6 +163,67 @@ def show_permissions_config(
     return 0
 
 
+def show_skill_discovery_config(
+    *,
+    home: str | Path | None = None,
+    enabled: bool | None = None,
+    enable_sources: list[str] | None = None,
+    disable_sources: list[str] | None = None,
+    json_mode: bool = False,
+) -> int:
+    try:
+        enabled_sources = set(enable_sources or ())
+        disabled_sources = set(disable_sources or ())
+        conflicts = sorted(enabled_sources & disabled_sources)
+        if conflicts:
+            raise ConfigError(
+                "skill sources cannot be enabled and disabled together: "
+                + ", ".join(conflicts)
+            )
+        source_updates = {
+            **{source_id: True for source_id in enabled_sources},
+            **{source_id: False for source_id in disabled_sources},
+        }
+        facade = ConfigurationFacade(home)
+        config = (
+            facade.update_skill_discovery(
+                enabled=enabled,
+                source_updates=source_updates,
+            )
+            if enabled is not None or source_updates
+            else facade.skill_policy()
+        )
+    except OuroError as exc:
+        _print_config_error(exc, json_mode=json_mode)
+        return error_exit_code(exc)
+
+    public = config.model_dump(exclude={"config_path", "change"})
+    if json_mode:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "config_path": config.config_path,
+                    "skills": public,
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0
+
+    print(f"Host skill directory discovery: {'enabled' if config.enabled else 'disabled'}")
+    for source in config.sources:
+        state = "enabled" if source.enabled else "disabled"
+        print(f"- {source.source_id}: {state}")
+    if config.paths:
+        print("Configured skill paths:")
+        for path in config.paths:
+            state = "enabled" if path.get("enabled", True) else "disabled"
+            print(f"- {path['source']}: {path['path']} ({state})")
+    print(f"Config: {config.config_path}")
+    return 0
+
+
 def show_compaction_config(
     *,
     home: str | Path | None = None,

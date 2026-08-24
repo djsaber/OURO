@@ -8,7 +8,7 @@ from typing import Any
 
 import yaml
 
-from ouro.skills.models import SkillDiagnostic, SkillMetadata, SkillSource
+from ouro.skills.models import SkillDiagnostic, SkillMetadata, SkillOrigin, SkillSource
 
 _VALID_NAME = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FRONTMATTER_BOUNDARY = re.compile(r"^---[ \t]*$", re.MULTILINE)
@@ -41,7 +41,13 @@ class SkillParseResult:
 class SkillDocumentParser:
     """Parse the standard Agent Skills frontmatter contract without repairing input."""
 
-    def parse(self, location: str | Path, *, source: SkillSource = "user") -> SkillParseResult:
+    def parse(
+        self,
+        location: str | Path,
+        *,
+        source: SkillSource = "user",
+        origin: SkillOrigin = "configured",
+    ) -> SkillParseResult:
         path = Path(location).expanduser().resolve()
         diagnostics: list[SkillDiagnostic] = []
         try:
@@ -134,6 +140,7 @@ class SkillDocumentParser:
                 description=description,
                 location=str(path),
                 source=source,
+                origin=origin,
                 license=self._optional_text(frontmatter.get("license")),
                 compatibility=compatibility,
                 metadata=metadata_map,

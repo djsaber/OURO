@@ -4,16 +4,31 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from ouro.config.skills import SkillConfig, SkillConfigManager
+from ouro.config.skills import (
+    SKILL_DISCOVERY_SOURCE_IDS,
+    SkillConfig,
+    SkillConfigManager,
+)
 from ouro.skills.loader import SkillLoader
-from ouro.skills.models import SkillCatalog, SkillDiagnostic, SkillMetadata, SkillSource
+from ouro.skills.models import (
+    SkillCatalog,
+    SkillDiagnostic,
+    SkillMetadata,
+    SkillOrigin,
+    SkillSource,
+)
 
 
 @dataclass(frozen=True)
 class SkillRoot:
     path: Path
     source: SkillSource
-    origin: str = "configured"
+    origin: SkillOrigin = "configured"
+    enabled: bool = True
+
+    @property
+    def source_id(self) -> str:
+        return f"{self.origin}.{self.source}"
 
 
 def discover_skill_catalog(
@@ -66,9 +81,12 @@ def skill_catalog_from_roots(
     merged: dict[str, SkillMetadata] = {}
     diagnostics: list[SkillDiagnostic] = []
     for root in roots:
+        if not root.enabled:
+            continue
         loader = SkillLoader(
             root.path,
             default_source=root.source,
+            default_origin=root.origin,
             max_depth=max_depth,
             max_directories=max_directories,
         )
@@ -110,34 +128,33 @@ def default_skill_roots(
     profile_home = _profile_home(home=home, ouro_home=ouro_home, user_home=user_home)
     config = config or SkillConfigManager(ouro_home).snapshot().config
 
-    user_roots: list[SkillRoot] = []
-    workspace_roots: list[SkillRoot] = []
-    if config.scan_agents:
-        user_roots.append(SkillRoot(profile_home / ".agents" / "skills", "user", "agents"))
-    if config.scan_claude:
-        user_roots.append(SkillRoot(profile_home / ".claude" / "skills", "user", "claude"))
-    if config.scan_copilot:
-        user_roots.append(SkillRoot(profile_home / ".copilot" / "skills", "user", "copilot"))
-    if config.scan_codex:
-        user_roots.append(SkillRoot(profile_home / ".codex" / "skills", "user", "codex"))
-    user_roots.append(SkillRoot(ouro_home / "skills", "user", "ouro"))
+    user_roots = [
+        _native_root(profile_home / ".agents" / "skills", "user", "agents", config),
+        _native_root(profile_home / ".claude" / "skills", "user", "claude", config),
+        _native_root(profile_home / ".copilot" / "skills", "user", "copilot", config),
+        _native_root(profile_home / ".codex" / "skills", "user", "codex", config),
+        _native_root(ouro_home / "skills", "user", "ouro", config),
+    ]
 
-    if config.scan_agents:
-        workspace_roots.append(SkillRoot(workspace / ".agents" / "skills", "workspace", "agents"))
-    if config.scan_claude:
-        workspace_roots.append(SkillRoot(workspace / ".claude" / "skills", "workspace", "claude"))
-    if config.scan_github:
-        workspace_roots.append(SkillRoot(workspace / ".github" / "skills", "workspace", "github"))
-    if config.scan_codex:
-        workspace_roots.append(SkillRoot(workspace / ".codex" / "skills", "workspace", "codex"))
-    workspace_roots.append(SkillRoot(workspace / ".ouro" / "skills", "workspace", "ouro"))
+    workspace_roots = [
+        _native_root(workspace / ".agents" / "skills", "workspace", "agents", config),
+        _native_root(workspace / ".claude" / "skills", "workspace", "claude", config),
+        _native_root(workspace / ".github" / "skills", "workspace", "github", config),
+        _native_root(workspace / ".codex" / "skills", "workspace", "codex", config),
+        _native_root(workspace / ".ouro" / "skills", "workspace", "ouro", config),
+    ]
 
     for item in config.paths:
         base = workspace if item.source == "workspace" else ouro_home
         path = Path(item.path).expanduser()
         if not path.is_absolute():
             path = base / path
-        root = SkillRoot(path, item.source, "configured")
+        root = SkillRoot(
+            path,
+            item.source,
+            "configured",
+            enabled=config.enabled and item.enabled,
+        )
         if item.source == "workspace":
             workspace_roots.append(root)
         else:
@@ -173,7 +190,12 @@ def _dedupe_roots(candidates: list[SkillRoot]) -> list[SkillRoot]:
     positions: dict[Path, int] = {}
     for candidate in candidates:
         resolved = candidate.path.expanduser().resolve()
-        normalized = SkillRoot(resolved, candidate.source, candidate.origin)
+        normalized = SkillRoot(
+            resolved,
+            candidate.source,
+            candidate.origin,
+            enabled=candidate.enabled,
+        )
         previous = positions.get(resolved)
         if previous is not None:
             roots.pop(previous)
@@ -181,3 +203,20 @@ def _dedupe_roots(candidates: list[SkillRoot]) -> list[SkillRoot]:
         positions[resolved] = len(roots)
         roots.append(normalized)
     return roots
+
+
+def _native_root(
+    path: Path,
+    source: SkillSource,
+    origin: SkillOrigin,
+    config: SkillConfig,
+) -> SkillRoot:
+    source_id = f"{origin}.{source}"
+    if source_id not in SKILL_DISCOVERY_SOURCE_IDS:
+        raise ValueError(f"unsupported native skill source: {source_id}")
+    return SkillRoot(
+        path,
+        source,
+        origin,
+        enabled=config.enabled and source_id not in config.disabled_sources,
+    )

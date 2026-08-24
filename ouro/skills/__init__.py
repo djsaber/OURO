@@ -15,7 +15,14 @@ from ouro.skills.manager import (
     SkillManager,
     SkillValidationResult,
 )
-from ouro.skills.models import LoadedSkill, SkillCatalog, SkillDiagnostic, SkillMetadata
+from ouro.skills.models import (
+    LoadedSkill,
+    SkillCatalog,
+    SkillDiagnostic,
+    SkillMetadata,
+    SkillOrigin,
+    SkillSource,
+)
 from ouro.skills.parser import SkillDocumentParser
 
 __all__ = [
@@ -28,7 +35,9 @@ __all__ = [
     "SkillManagementResult",
     "SkillManager",
     "SkillMetadata",
+    "SkillOrigin",
     "SkillRoot",
+    "SkillSource",
     "SkillValidationResult",
     "available_skills_from_roots",
     "default_skill_roots",

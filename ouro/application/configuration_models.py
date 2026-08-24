@@ -298,16 +298,20 @@ class ManagedSkillView(ApplicationDTO):
     ref: str | None = None
 
 
+class SkillSourcePolicyView(ApplicationDTO):
+    source_id: str
+    origin: str
+    scope: Literal["user", "workspace"]
+    enabled: bool
+
+
 class SkillPolicyView(ApplicationDTO):
     config_path: str
     enabled: bool
     disabled: list[str] = Field(default_factory=list)
-    paths: list[dict[str, str]] = Field(default_factory=list)
-    scan_agents: bool
-    scan_claude: bool
-    scan_copilot: bool
-    scan_codex: bool
-    scan_github: bool
+    disabled_sources: list[str] = Field(default_factory=list)
+    sources: list[SkillSourcePolicyView] = Field(default_factory=list)
+    paths: list[dict[str, str | bool]] = Field(default_factory=list)
     max_depth: int
     max_directories: int
     installed: list[ManagedSkillView] = Field(default_factory=list)
@@ -317,7 +321,9 @@ class SkillPolicyView(ApplicationDTO):
 class SkillRootView(ApplicationDTO):
     path: str
     source: Literal["user", "workspace", "plugin"]
+    source_id: str
     origin: str
+    enabled: bool
     exists: bool
 
 
@@ -333,6 +339,7 @@ class SkillView(ApplicationDTO):
     description: str
     location: str
     source: Literal["user", "workspace", "plugin"]
+    origin: str
     enabled: bool
     managed: bool = False
     install: ManagedSkillView | None = None

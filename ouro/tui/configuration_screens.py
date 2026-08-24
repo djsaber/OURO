@@ -868,12 +868,14 @@ class CompactionConfigurationScreen(EditableChoiceScreen):
                 "Primary strategy",
                 trailing=self._values["compaction-strategy"],
                 group="STRATEGY",
+                disabled=True,
             ),
             Choice(
                 "compaction-fallback",
                 "Fallback strategy",
                 trailing="None" if fallback == _NO_FALLBACK else fallback,
                 group="STRATEGY",
+                disabled=True,
             ),
             Choice(
                 "compaction-auto",

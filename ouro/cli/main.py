@@ -21,6 +21,7 @@ from ouro.cli.config_commands import (
     show_permissions_config,
     show_queued_input_config,
     show_run_budget_config,
+    show_skill_discovery_config,
     show_system_prompt_config,
     show_tool_execution_config,
 )
@@ -471,6 +472,15 @@ def _config_command(args: argparse.Namespace) -> int:
             tool_name=args.tool,
             plugin_id=args.plugin,
             mode=args.mode,
+            json_mode=args.json,
+        )
+
+    if args.config_command == "skills":
+        return show_skill_discovery_config(
+            home=home,
+            enabled=args.discovery_enabled,
+            enable_sources=args.enable_source,
+            disable_sources=args.disable_source,
             json_mode=args.json,
         )
 

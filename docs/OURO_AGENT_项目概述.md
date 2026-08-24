@@ -121,7 +121,9 @@ identity 精确路由，并覆盖决议提交与 canonical inbox 投影收敛之
 ### Skills 与扩展框架
 
 OURO 发现标准 `SKILL.md`，只在目录阶段读取元数据，在使用时按需加载完整内容和资源。当前支持本地发现、
-集中启停、校验、安装、更新和安全移除。
+集中启停、校验、安装、更新和安全移除。固定目录源使用 Host 与作用域组成的稳定 id，并可独立关闭，例如
+`ouro.user`、`ouro.workspace`、`codex.user`、`codex.workspace`；默认全部启用。插件 Skill 仍随所属插件的
+Generation 原子发布和撤销，不进入目录来源开关。
 
 Interactive 终端支持 `/skills` 查询当前扩展目录，以及 `/skill <name> [task]` 对一次 Run 显式激活技能。
 CLI 只解析命令；Runtime 在该 Run 的冻结目录中完成可调用性校验和精确加载，并把技能正文固化为用户角色的

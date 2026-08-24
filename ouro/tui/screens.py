@@ -184,6 +184,10 @@ def grouped_choice_options(
 
 
 class ChoiceScreen(ModalScreen[str | None]):
+    MIN_LIST_HEIGHT = 5
+    MAX_LIST_HEIGHT = 20
+    # Fixed title, filter, and hint rows surrounding the scrollable list.
+    MENU_CHROME_HEIGHT = 7
     DEFAULT_HINT = "↑/↓ move · ←/→ group · Enter select · Esc close"
     BACK_HINT = "↑/↓ move · ←/→ group · Enter select · Esc back"
 
@@ -297,6 +301,16 @@ class ChoiceScreen(ModalScreen[str | None]):
                 options,
                 preferred_value=self._initial_value,
             )
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Keep the scrollable menu body within a bounded share of the terminal."""
+
+        responsive_panel_height = event.size.height * 4 // 5
+        list_height = responsive_panel_height - self.MENU_CHROME_HEIGHT
+        self.query_one("#choice-list", OptionList).styles.max_height = max(
+            self.MIN_LIST_HEIGHT,
+            min(self.MAX_LIST_HEIGHT, list_height),
+        )
 
     def on_unmount(self) -> None:
         if self._spinner_timer is not None:
@@ -841,19 +855,20 @@ class _MultiChoiceFilterInput(TuiInput):
 
 
 class _EditableChoiceList(OptionList):
-    """Keep right-click reserved for the screen's inline-editor paste action."""
+    """Reserve right-click for paste without duplicating OptionList activation."""
 
     async def _on_click(self, event: events.Click) -> None:
         if event.button == 3:
             event.prevent_default()
             event.stop()
-            return
-        await super()._on_click(event)
+        # Textual also dispatches OptionList._on_click through the MRO.
+        # Calling super here would activate one left-click twice.
 
 
 class EditableChoiceScreen(ChoiceScreen):
     """Edit the selected choice label in place without opening another screen."""
 
+    CURSOR_BLINK_INTERVAL = 0.5
     DEFAULT_HINT = "↑/↓ move · ←/→ group · Enter edit · Esc close"
     BACK_HINT = "↑/↓ move · ←/→ group · Enter edit · Esc back"
     EDIT_HINT = "Type edit · ←/→ cursor · Enter save · Esc cancel"
@@ -884,7 +899,14 @@ class EditableChoiceScreen(ChoiceScreen):
         self._on_save = on_save
         self._editing_value: str | None = None
         self._edit_text = ""
+        self._edit_original_text = ""
         self._edit_cursor = 0
+        self._edit_cursor_visible = True
+        self._edit_cursor_timer: Timer | None = None
+
+    def on_unmount(self) -> None:
+        self._stop_edit_cursor()
+        super().on_unmount()
 
     def _choice_list(self) -> OptionList:
         return _EditableChoiceList(
@@ -898,6 +920,9 @@ class EditableChoiceScreen(ChoiceScreen):
             self._begin_edit(selected)
             return
         if selected != self._editing_value:
+            return
+        if self._edit_text == self._edit_original_text:
+            self._finish_edit(self._choices, selected=selected)
             return
         choices = await self._on_save(selected, self._edit_text)
         if choices is not None:
@@ -946,30 +971,30 @@ class EditableChoiceScreen(ChoiceScreen):
             super().action_previous_group()
             return
         self._edit_cursor = max(0, self._edit_cursor - 1)
-        self._render_editor()
+        self._reset_edit_cursor()
 
     def action_next_group(self) -> None:
         if self._editing_value is None:
             super().action_next_group()
             return
         self._edit_cursor = min(len(self._edit_text), self._edit_cursor + 1)
-        self._render_editor()
+        self._reset_edit_cursor()
 
     def action_edit_home(self) -> None:
         if self._editing_value is not None:
             self._edit_cursor = 0
-            self._render_editor()
+            self._reset_edit_cursor()
 
     def action_edit_end(self) -> None:
         if self._editing_value is not None:
             self._edit_cursor = len(self._edit_text)
-            self._render_editor()
+            self._reset_edit_cursor()
 
     def action_edit_clear(self) -> None:
         if self._editing_value is not None:
             self._edit_text = ""
             self._edit_cursor = 0
-            self._render_editor()
+            self._reset_edit_cursor()
 
     def action_edit_backspace(self) -> None:
         if self._editing_value is None or self._edit_cursor == 0:
@@ -978,7 +1003,7 @@ class EditableChoiceScreen(ChoiceScreen):
             self._edit_text[: self._edit_cursor - 1] + self._edit_text[self._edit_cursor :]
         )
         self._edit_cursor -= 1
-        self._render_editor()
+        self._reset_edit_cursor()
 
     def action_edit_delete(self) -> None:
         if self._editing_value is None or self._edit_cursor >= len(self._edit_text):
@@ -986,7 +1011,7 @@ class EditableChoiceScreen(ChoiceScreen):
         self._edit_text = (
             self._edit_text[: self._edit_cursor] + self._edit_text[self._edit_cursor + 1 :]
         )
-        self._render_editor()
+        self._reset_edit_cursor()
 
     async def action_cancel(self) -> None:
         if self._editing_value is None:
@@ -1001,14 +1026,18 @@ class EditableChoiceScreen(ChoiceScreen):
             return
         self._editing_value = selected
         self._edit_text = choice.edit_value if choice.edit_value is not None else choice.label
+        self._edit_original_text = self._edit_text
         self._edit_cursor = len(self._edit_text)
         self.query_one("#choice-filter", Input).disabled = True
         self._show_hint(self.EDIT_HINT)
+        self._start_edit_cursor()
         self._render_editor()
 
     def _finish_edit(self, choices: tuple[Choice, ...], *, selected: str) -> None:
+        self._stop_edit_cursor()
         self._editing_value = None
         self._edit_text = ""
+        self._edit_original_text = ""
         self._edit_cursor = 0
         self._choices = choices
         filter_input = self.query_one("#choice-filter", Input)
@@ -1045,6 +1074,33 @@ class EditableChoiceScreen(ChoiceScreen):
             self._edit_text[: self._edit_cursor] + value + self._edit_text[self._edit_cursor :]
         )
         self._edit_cursor += len(value)
+        self._reset_edit_cursor()
+
+    def _start_edit_cursor(self) -> None:
+        self._stop_edit_cursor()
+        self._edit_cursor_visible = True
+        self._edit_cursor_timer = self.set_interval(
+            self.CURSOR_BLINK_INTERVAL,
+            self._toggle_edit_cursor,
+        )
+
+    def _stop_edit_cursor(self) -> None:
+        if self._edit_cursor_timer is not None:
+            self._edit_cursor_timer.stop()
+            self._edit_cursor_timer = None
+        self._edit_cursor_visible = True
+
+    def _reset_edit_cursor(self) -> None:
+        self._edit_cursor_visible = True
+        if self._edit_cursor_timer is not None:
+            self._edit_cursor_timer.reset()
+        self._render_editor()
+
+    def _toggle_edit_cursor(self) -> None:
+        if self._editing_value is None:
+            self._stop_edit_cursor()
+            return
+        self._edit_cursor_visible = not self._edit_cursor_visible
         self._render_editor()
 
     def _render_editor(self) -> None:
@@ -1065,8 +1121,11 @@ class EditableChoiceScreen(ChoiceScreen):
         accent = theme_for(self).accent
         display_text = self._editor_display_text(self._edit_text)
         prompt = Text(overflow="ellipsis", no_wrap=True)
+        cursor_style = (
+            f"not bold reverse {accent}" if self._edit_cursor_visible else "not bold"
+        )
         if not display_text:
-            prompt.append(" ", style=f"not bold reverse {accent}")
+            prompt.append(" ", style=cursor_style)
             choice = next(
                 (choice for choice in self._choices if choice.value == editing_value),
                 None,
@@ -1079,11 +1138,11 @@ class EditableChoiceScreen(ChoiceScreen):
         if self._edit_cursor < len(display_text):
             prompt.append(
                 display_text[self._edit_cursor],
-                style=f"not bold reverse {accent}",
+                style=cursor_style,
             )
             prompt.append(display_text[self._edit_cursor + 1 :], style="not bold")
         else:
-            prompt.append(" ", style=f"not bold reverse {accent}")
+            prompt.append(" ", style=cursor_style)
         options.replace_option_prompt_at_index(option_index, prompt)
 
     def _editor_display_text(self, value: str) -> str:

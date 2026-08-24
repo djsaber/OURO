@@ -712,6 +712,7 @@ _OURO_TUI_CSS = """
 
     ModalScreen {
         align: center middle;
+        overflow: hidden;
         /* Exactly one visible menu owns the focus backdrop. Parent menu panels
            become fully transparent while a child page is active, preventing
            nested darkening without losing the menu's visual focus. */
@@ -725,10 +726,12 @@ _OURO_TUI_CSS = """
        as structure, matching the "quiet frame + bright header" contrast of
        the input box. */
     #choice-panel {
-        width: 72;
-        max-width: 90%;
+        width: 1fr;
+        max-width: 72;
+        margin: 0 2;
         height: auto;
-        max-height: 80%;
+        min-height: 12;
+        max-height: 27;
         background: $ouro-panel;
         border-top: none;
         border-right: solid $ouro-border-right;
@@ -758,6 +761,8 @@ _OURO_TUI_CSS = """
 
     #choice-list {
         width: 100%;
+        height: auto;
+        min-height: 5;
         max-height: 20;
         padding: 0 1 1 1;
     }

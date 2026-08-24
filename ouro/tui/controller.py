@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, cast, get_args
@@ -33,6 +33,7 @@ from ouro.application.configuration_models import (
     SkillCatalogView,
     SkillInstallScopeInput,
     SkillManagementView,
+    SkillPolicyView,
     SkillValidationView,
     SkillView,
     ToolExecutionConfigView,
@@ -1291,6 +1292,40 @@ class TuiController:
         return configured.model_copy(
             update={"skills": [skills[name] for name in sorted(skills)]}
         )
+
+    async def skill_policy(self) -> SkillPolicyView:
+        configuration = self._require_configuration()
+        return await asyncio.to_thread(configuration.skill_policy)
+
+    async def update_skill_discovery(
+        self,
+        *,
+        enabled: bool | None = None,
+        source_updates: Mapping[str, bool] | None = None,
+    ) -> SkillPolicyView:
+        configuration = self._require_configuration()
+        updates = dict(source_updates or {})
+        previous = await asyncio.to_thread(configuration.skill_policy)
+        if enabled is None and not updates:
+            return previous
+        saved = await asyncio.to_thread(
+            configuration.update_skill_discovery,
+            enabled=enabled,
+            source_updates=updates,
+        )
+        try:
+            await self._refresh_runtime_skills(configuration)
+        except Exception:
+            previous_sources = {source.source_id: source.enabled for source in previous.sources}
+            await asyncio.to_thread(
+                configuration.update_skill_discovery,
+                enabled=previous.enabled if enabled is not None else None,
+                source_updates={
+                    source_id: previous_sources[source_id] for source_id in updates
+                },
+            )
+            raise
+        return saved
 
     async def install_skills(
         self,

@@ -762,7 +762,90 @@ async def test_controller_manages_discovered_skill_policy_and_validation(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_controller_updates_skill_directory_sources_and_live_runtime(tmp_path: Path) -> None:
+    ouro_skill = tmp_path / "skills" / "ouro-skill"
+    codex_skill = tmp_path / ".codex" / "skills" / "codex-skill"
+    ouro_skill.mkdir(parents=True)
+    codex_skill.mkdir(parents=True)
+    (ouro_skill / "SKILL.md").write_text(
+        "---\nname: ouro-skill\ndescription: OURO skill.\n---\n",
+        encoding="utf-8",
+    )
+    (codex_skill / "SKILL.md").write_text(
+        "---\nname: codex-skill\ndescription: Codex skill.\n---\n",
+        encoding="utf-8",
+    )
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    try:
+        default_policy = await controller.skill_policy()
+        assert default_policy.enabled is True
+        assert all(source.enabled for source in default_policy.sources)
+
+        disabled_codex = await controller.update_skill_discovery(
+            source_updates={"codex.user": False}
+        )
+        assert disabled_codex.disabled_sources == ["codex.user"]
+        assert controller.runtime_skill_names() == ("ouro-skill",)
+
+        discovery_off = await controller.update_skill_discovery(enabled=False)
+        assert discovery_off.enabled is False
+        assert controller.runtime_skill_names() == ()
+
+        discovery_on = await controller.update_skill_discovery(enabled=True)
+        assert discovery_on.enabled is True
+        assert discovery_on.disabled_sources == ["codex.user"]
+        assert controller.runtime_skill_names() == ("ouro-skill",)
+
+        await controller.update_skill_discovery(source_updates={"codex.user": True})
+        assert controller.runtime_skill_names() == ("codex-skill", "ouro-skill")
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_rolls_back_skill_source_when_runtime_refresh_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=_reasoning_application(tmp_path),
+        configuration=configuration,
+    )
+    await controller.start()
+
+    async def fail_refresh(_configuration: ConfigurationFacade) -> None:
+        raise RuntimeError("refresh failed")
+
+    monkeypatch.setattr(controller, "_refresh_runtime_skills", fail_refresh)
+    try:
+        with pytest.raises(RuntimeError, match="refresh failed"):
+            await controller.update_skill_discovery(
+                source_updates={"ouro.user": False}
+            )
+        assert configuration.skill_policy().disabled_sources == []
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path) -> None:
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "config.json").write_text(
+        json.dumps({"skills": {"enabled": False}}),
+        encoding="utf-8",
+    )
     source = tmp_path / "skill-plugin"
     manifest_dir = source / ".ouro-plugin"
     skill_dir = source / "skills" / "calendar"
@@ -810,6 +893,7 @@ async def test_controller_skill_catalog_tracks_live_plugin_skills(tmp_path: Path
         enabled_catalog = await controller.skill_catalog()
         plugin_skill = next(skill for skill in enabled_catalog.skills if skill.name == "calendar")
         assert plugin_skill.source == "plugin"
+        assert plugin_skill.origin == "plugin"
         assert plugin_skill.extensions["ouro"]["plugin_id"] == installed.plugin_id
         assert (await controller.system_status()).skill_names == ("calendar",)
 

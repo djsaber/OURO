@@ -79,7 +79,11 @@ class PluginSkillResourceAdapter:
                 allow_directory=True,
             )
             root = declared_path.parent if declared_path.is_file() else declared_path
-            catalog = SkillLoader(root, default_source="plugin").load_catalog()
+            catalog = SkillLoader(
+                root,
+                default_source="plugin",
+                default_origin="plugin",
+            ).load_catalog()
             if not catalog.skills:
                 if declaration.optional:
                     continue
