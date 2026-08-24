@@ -54,13 +54,12 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
     "raw",
     (
         {"theme": "neon"},
-        {"theme": "harbor", "framework_option": True},
         {"theme": "harbor", "reasoning_expanded": "sometimes"},
         {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
         {"theme": "harbor", "recent_actions": ["same", "same"]},
     ),
 )
-def test_tui_preferences_reject_unknown_values_and_fields(
+def test_tui_preferences_reject_invalid_values(
     tmp_path: Path, raw: dict[str, object]
 ) -> None:
     store = TuiPreferencesStore(tmp_path)

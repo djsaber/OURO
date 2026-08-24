@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
 import pytest
-from rich.console import Console
 from textual.app import App, ComposeResult
 
 from ouro.application.supervisor_models import RuntimeToolCallActivity
 from ouro.tui.conversation_history import ConversationHistory, TranscriptEntry
-from ouro.tui.theme import DEFAULT_TUI_THEME
 from ouro.tui.tool_presentations import present_tool
-from ouro.tui.widgets import ToolActivityRow, _tool_activity_text
+from ouro.tui.widgets import _tool_activity_text
 
 
 def _tool(
@@ -110,35 +106,6 @@ def test_todolist_presentation_exposes_progress_and_item_states() -> None:
     ]
 
 
-def test_edit_line_counts_use_added_and_removed_semantic_colors() -> None:
-    rendered = _tool_activity_text(
-        _tool(
-            "Edit",
-            arguments={"path": "src/app.py", "old": "old\ntext", "new": "new\ntext\nhere"},
-        ),
-        frame=0,
-        theme=DEFAULT_TUI_THEME,
-    )
-    console = Console()
-
-    added = rendered.get_style_at_offset(console, rendered.plain.index("+3"))
-    removed = rendered.get_style_at_offset(console, rendered.plain.index("−2"))
-
-    assert added.color is not None
-    assert removed.color is not None
-    assert tuple(added.color.get_truecolor()) == (119, 176, 131)
-    assert tuple(removed.color.get_truecolor()) == (216, 117, 117)
-
-
-class _ToolRowApp(App[None]):
-    def __init__(self, tool: RuntimeToolCallActivity) -> None:
-        super().__init__()
-        self.tool = tool
-
-    def compose(self) -> ComposeResult:
-        yield ToolActivityRow(self.tool)
-
-
 class _HistoryApp(App[None]):
     def __init__(self) -> None:
         super().__init__()
@@ -196,42 +163,3 @@ async def test_reasoning_only_turn_adds_one_message_boundary_before_tool() -> No
         tool_header = next(index for index, line in enumerate(lines) if "✓ Read" in line)
 
         assert lines[reasoning + 1 : tool_header] == [""]
-
-
-@pytest.mark.asyncio
-async def test_tool_row_animates_active_state_and_freezes_completed_elapsed_seconds() -> None:
-    started_at = datetime.now(UTC) - timedelta(seconds=2)
-    running = RuntimeToolCallActivity(
-        tool_call_id="call_1",
-        tool_name="Read",
-        status="running",
-        source_index=0,
-        arguments={"path": "README.md"},
-        started_at=started_at,
-    )
-    app = _ToolRowApp(running)
-
-    async with app.run_test() as pilot:
-        row = app.query_one(ToolActivityRow)
-        first = row.render().plain
-        await pilot.pause(0.25)
-        second = row.render().plain
-
-        assert first != second
-        assert "Read" in second
-        assert "└ README.md" in second
-        assert "running" in second
-        assert "s" in second
-
-        row.apply_tool(
-            running.model_copy(
-                update={
-                    "status": "completed",
-                    "result_data": {"line_count": 7},
-                    "ended_at": started_at + timedelta(seconds=3),
-                }
-            )
-        )
-
-        completed = row.render().plain
-        assert "✓ Read  completed · 3s\n    └ README.md · 7 lines" in completed

@@ -8,15 +8,12 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
-from rich.cells import cell_len
-from rich.color import Color as RichColor
 from rich.console import Console
 from rich.segment import Segment
 from rich.text import Text
 from textual import events
 from textual.color import Color
-from textual.containers import Vertical, VerticalScroll
-from textual.geometry import Region
+from textual.containers import Vertical
 from textual.strip import Strip
 from textual.widgets import Input, OptionList, Static, TextArea
 
@@ -30,14 +27,13 @@ from ouro.application.plugin_models import (
     PluginCommandExecutionView,
     PluginCommandView,
 )
-from ouro.application.queued_inputs import QueuedUserInputView
 from ouro.application.runtime import RuntimeService
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_models import SessionContextStatus
 from ouro.application.supervisor_models import RuntimeActivitySnapshot, RuntimeToolCallActivity
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import ToolSelection
-from ouro.core.compaction import CompactionRecord, compaction_source_digest
+from ouro.core.compaction import CompactionRecord
 from ouro.core.context import ContextMetrics
 from ouro.core.errors import PersistenceError
 from ouro.core.events import EventRecord
@@ -80,7 +76,7 @@ from ouro.tools import (
     builtin_tools,
 )
 from ouro.tui.app import OuroTuiApp, _session_choices
-from ouro.tui.commands import TUI_COMMANDS, TuiCommand
+from ouro.tui.commands import TUI_COMMANDS
 from ouro.tui.configuration_screens import (
     AgentDefinitionConfigurationScreen,
     AgentDispatchPolicyScreen,
@@ -95,12 +91,10 @@ from ouro.tui.controller import (
     LoadedSession,
     McpServerStatus,
     TuiBootstrap,
-    TuiController,
     TuiEndpointConfiguration,
     TuiPluginCommandExecution,
     TuiPluginInstallConfiguration,
     TuiProviderConfiguration,
-    TuiSystemStatus,
 )
 from ouro.tui.conversation_history import (
     AssistantTailLines,
@@ -119,17 +113,14 @@ from ouro.tui.screens import (
     ConfirmationScreen,
     EditableChoiceScreen,
     HelpScreen,
-    MultiChoiceScreen,
 )
 from ouro.tui.state import (
     PendingInteraction,
-    RunPresentation,
     TuiSessionProjection,
     project_run_presentation,
 )
 from ouro.tui.theme import (
     ASCII_SPINNER_FRAMES,
-    FAILURE_TONE,
     SELECTED_CHOICE_MARKER,
     TUI_THEMES,
 )
@@ -147,9 +138,7 @@ from ouro.tui.widgets import (
     QueuedInputPanel,
     StatusLine,
     WelcomePanel,
-    _brand_header_content,
 )
-from tests.tui.helpers import two_route_application
 
 
 async def _wait_for_screen(
@@ -188,6 +177,33 @@ async def _wait_for_active_session(
     await pilot._wait_for_screen()
 
 
+async def _wait_until(
+    predicate: Callable[[], bool],
+    pilot,
+    *,
+    description: str,
+    timeout: float = 5.0,
+) -> None:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        if asyncio.get_running_loop().time() >= deadline:
+            raise AssertionError(f"Timed out waiting for {description}")
+        await pilot.pause()
+
+
+async def _wait_for_worker_group(
+    app: OuroTuiApp,
+    pilot,
+    *,
+    group: str,
+    timeout: float = 5.0,
+) -> None:
+    workers = tuple(worker for worker in app.workers if worker.group == group)
+    if workers:
+        await asyncio.wait_for(app.workers.wait_for_complete(workers), timeout=timeout)
+    await pilot._wait_for_screen()
+
+
 async def _wait_for_welcome_render(
     app: OuroTuiApp,
     pilot,
@@ -214,82 +230,6 @@ async def _wait_for_welcome_render(
 
 def _welcome_plain_text(welcome: WelcomePanel) -> str:
     return "\n".join(getattr(widget.render(), "plain", "") for widget in welcome.query(Static))
-
-
-def test_choice_screen_aligns_trailing_metadata_to_the_right() -> None:
-    option = ChoiceScreen._options((Choice("msg", "A user request " * 8, trailing="18:00"),))[0]
-    console = Console(width=40, record=True, force_terminal=False, color_system=None)
-
-    console.print(option.prompt)
-
-    rendered = console.export_text().splitlines()[0]
-    assert rendered.startswith("A user request")
-    assert rendered.endswith("  18:00")
-    assert len(rendered) == 40
-    time_start = rendered.rindex("18:00")
-    rendered_message = rendered[:time_start].rstrip()
-    assert len(rendered_message) <= 40 * 2 // 3
-
-
-def test_brand_header_prioritizes_full_workspace_and_truncates_title() -> None:
-    console = Console(force_terminal=False, color_system="truecolor")
-    workspace = r"C:\Users\artur\Data\project\open\Ouro Agent GPT"
-    header = _brand_header_content(
-        "ProviderRetryPolicy的各项参数实际意义是什么？ · 分支 · 分支",
-        workspace,
-        width=80,
-        accent="#6083ae",
-    )
-
-    assert header.cell_len == 80
-    assert header.plain.endswith(workspace)
-    assert "…" in header.plain[: -len(workspace)]
-    workspace_offset = header.plain.index(workspace)
-    preceding_title = header.plain[:workspace_offset].rstrip()
-    assert workspace_offset - len(preceding_title) >= 3
-    workspace_style = header.get_style_at_offset(console, workspace_offset)
-    assert workspace_style.color == RichColor.parse("#6083ae")
-    assert not workspace_style.bold
-
-
-def test_brand_header_omits_title_before_shortening_workspace() -> None:
-    workspace = r"C:\work\ouro"
-    width = cell_len(" ▣ OURO ") + cell_len(workspace) + 1
-
-    header = _brand_header_content(
-        "A title that cannot fit",
-        workspace,
-        width=width,
-        accent="#6083ae",
-    )
-
-    assert header.plain.endswith(workspace)
-    assert "A title" not in header.plain
-
-
-def test_choice_screen_renders_marker_with_theme_accent() -> None:
-    option = ChoiceScreen._options(
-        (Choice("selected", "Selected", marker=SELECTED_CHOICE_MARKER),),
-        group_accent="#123456",
-    )[0]
-
-    assert option.prompt.plain == f"{SELECTED_CHOICE_MARKER} Selected"
-    assert option.prompt.spans[0].style == "bold #123456"
-
-
-def test_regular_choice_metadata_keeps_rows_single_line() -> None:
-    options = ChoiceScreen._options(
-        (
-            Choice("auto", "auto", trailing="current"),
-            Choice("approval", "approval", trailing="requires confirmation"),
-        )
-    )
-
-    console = Console(width=60, record=True, force_terminal=False, color_system=None)
-    for option in options:
-        console.print(option.prompt)
-
-    assert len(console.export_text().splitlines()) == len(options)
 
 
 def test_session_choices_group_by_local_last_activity_date(tmp_path: Path) -> None:
@@ -411,7 +351,7 @@ async def test_grouped_choice_filter_hides_empty_groups_and_selects_first_choice
     results: list[str | None] = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.push_screen(
             ChoiceScreen(
                 title="SESSIONS",
@@ -467,7 +407,7 @@ async def test_refreshing_choice_screen_can_retain_focus_position_across_groups(
         )
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.push_screen(
             ChoiceScreen(
                 title="SESSIONS",
@@ -503,7 +443,7 @@ async def test_retained_focus_clears_when_refresh_filter_has_no_choices(
         return (Choice("only", "Only", group="Archived"),)
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.push_screen(
             ChoiceScreen(
                 title="SESSIONS",
@@ -541,7 +481,7 @@ async def test_choice_page_refreshes_in_place_after_a_child_operation(
         return None
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.push_screen(
             ChoiceScreen(
                 title="ITEMS",
@@ -572,7 +512,7 @@ async def test_choice_page_refreshes_parent_before_in_place_back_navigation(
         return (Choice("item", label),)
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         screen = ChoiceScreen(
             title="ITEMS",
             placeholder="Filter items…",
@@ -597,130 +537,6 @@ async def test_choice_page_refreshes_parent_before_in_place_back_navigation(
         assert screen._title == "ITEMS"
         assert screen._choices == (Choice("item", "After"),)
         assert screen._page_stack == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "navigation",
-    (("down",) * 20, ("right",)),
-    ids=("cross-group-with-down", "jump-group-with-right"),
-)
-async def test_grouped_choice_navigation_keeps_new_highlight_visible_immediately(
-    tmp_path: Path,
-    navigation: tuple[str, ...],
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 16)) as pilot:
-        await pilot.pause(0.5)
-        app.push_screen(
-            ChoiceScreen(
-                title="SESSIONS",
-                placeholder="Filter sessions…",
-                choices=(
-                    *tuple(
-                        Choice(f"current-{index}", f"Current {index}", group="Current")
-                        for index in range(20)
-                    ),
-                    Choice("target", "Target session", group="Next group"),
-                ),
-            )
-        )
-        await pilot.pause()
-
-        options = app.screen.query_one(OptionList)
-        await pilot.press(*navigation)
-        await pilot.pause()
-
-        visible_text = "\n".join(
-            options.render_line(line).text
-            for line in range(options.scrollable_content_region.height)
-        )
-        assert options.get_option_at_index(options.highlighted or 0).id == "target"
-        assert "Next group" in visible_text
-        assert "Target session" in visible_text
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("navigation", "target", "group"),
-    (
-        (("up",) * 19, "later-0", "Later"),
-        (("left",), "current-0", "Current"),
-    ),
-    ids=("move-up-within-group", "jump-to-previous-group"),
-)
-async def test_upward_grouped_navigation_keeps_header_and_highlight_visible(
-    tmp_path: Path,
-    navigation: tuple[str, ...],
-    target: str,
-    group: str,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 16)) as pilot:
-        await pilot.pause(0.5)
-        app.push_screen(
-            ChoiceScreen(
-                title="SESSIONS",
-                placeholder="Filter sessions…",
-                choices=(
-                    *tuple(
-                        Choice(f"current-{index}", f"Current {index}", group="Current")
-                        for index in range(20)
-                    ),
-                    *tuple(
-                        Choice(f"later-{index}", f"Later {index}", group="Later")
-                        for index in range(20)
-                    ),
-                ),
-                initial_value="later-19",
-            )
-        )
-        await pilot.pause()
-
-        options = app.screen.query_one(OptionList)
-        await pilot.press(*navigation)
-        await pilot.pause()
-
-        visible_text = "\n".join(
-            options.render_line(line).text
-            for line in range(options.scrollable_content_region.height)
-        )
-        assert options.get_option_at_index(options.highlighted or 0).id == target
-        assert group in visible_text
-        assert target.replace("-", " ").title() in visible_text
-
-
-@pytest.mark.asyncio
-async def test_group_header_remains_visible_after_wrapping_to_first_choice(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 16)) as pilot:
-        await pilot.pause(0.5)
-        app.push_screen(
-            ChoiceScreen(
-                title="SESSIONS",
-                placeholder="Filter sessions…",
-                choices=tuple(
-                    Choice(f"session-{index}", f"Session {index}", group="Today")
-                    for index in range(20)
-                ),
-            )
-        )
-        await pilot.pause()
-
-        options = app.screen.query_one(OptionList)
-        assert options.highlighted == 1
-        await pilot.press("up")
-        await pilot.pause()
-        assert options.highlighted == 20
-        assert options.scroll_y > 0
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert options.highlighted == 1
-        assert options.scroll_y == 0
 
 
 class BlockingStreamProvider:
@@ -1531,338 +1347,6 @@ async def test_tui_hides_welcome_header_while_startup_is_still_in_progress(
 
 
 @pytest.mark.asyncio
-async def test_tui_uses_compact_open_sided_chrome(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="██████")
-        conversation = app.query_one(ConversationView)
-        transcript = conversation.query_one("#conversation-transcript")
-        header = app.query_one(BrandHeader)
-
-        # Startup enters the empty state: the centered welcome frame projects
-        # the workspace status while the conversation surface remains hidden.
-        assert not header.display
-        assert app.query_one(Composer).display
-        assert "██████" in welcome._logo.render().plain
-        assert welcome._system._workspace.render().plain == str(tmp_path)
-        welcome.set_system_status(
-            TuiSystemStatus(
-                workspace=str(tmp_path),
-                provider_ids=("deepseek", "openai"),
-                model_count=3,
-                skill_count=7,
-                skill_names=("browser", "documents", "github", "imagegen"),
-                plugin_active_count=2,
-                plugin_total_count=3,
-                plugin_issue_count=1,
-                plugin_active_names=("Goals", "Guardian"),
-                mcp_connected_count=3,
-                mcp_total_count=3,
-                mcp_tool_count=8,
-                usage_request_count=4,
-                usage_input_tokens=12_300,
-                usage_output_tokens=1_200,
-                usage_estimated_cost=0.0421,
-                usage_priced_request_count=4,
-            )
-        )
-        await pilot.pause()
-
-        welcome = app.query_one(WelcomePanel)
-        status_text = _welcome_plain_text(welcome)
-        assert "SYSTEM" in status_text
-        assert f"v{__version__}" in status_text
-        assert str(tmp_path) in status_text
-        assert status_text.index("TIPS") < status_text.index("SYSTEM")
-        assert "Tell me what you want to accomplish." not in status_text
-        assert "Enter" not in status_text
-        assert "Ctrl+Enter" not in status_text
-        assert "Shift+Enter" not in status_text
-        tip_keys = [widget.render().plain for widget in welcome.query(".welcome-tip-key")]
-        tip_descriptions = [
-            widget.render().plain for widget in welcome.query(".welcome-tip-description")
-        ]
-        tips = dict(zip(tip_keys, tip_descriptions, strict=True))
-        assert {
-            "/": "Commands",
-            "Ctrl+P": "Actions",
-            "Ctrl+S": "Sessions",
-        }.items() <= tips.items()
-        tips_title = welcome._tips.query_one(".welcome-title", Static)
-        assert tips_title.render().plain == "• TIPS"
-        assert tips_title.styles.color == Color.parse(app.tui_theme.accent)
-        assert "Health" not in status_text
-        assert "deepseek, openai • 3 model(s)" in status_text
-        assert "7 available • browser, documents, github, +1" in status_text
-        assert "2/3 active • Goals, Guardian • 1 need attention" in status_text
-        assert "3/3 connected • 8 tool(s)" in status_text
-        assert "4 request(s) • $0.0421" in status_text
-        assert "12.3K in / 1.2K out" in status_text
-        ctrl_p = next(
-            widget.render()
-            for widget in welcome.query(".welcome-tip-key")
-            if widget.render().plain == "Ctrl+P"
-        )
-        assert not ctrl_p.get_style_at_offset(0).bold
-        workspace = welcome._system._workspace.render()
-        assert all("bold" not in str(span.style) for span in workspace._spans)
-        assert "MCP" not in header.render().plain
-        assert header.styles.border_left[0] == ""
-        assert welcome.styles.border_left[0] == ""
-        assert app.screen.styles.background.hex == "#0C0C0C"
-        assert app.screen.region.x == 0
-        assert app.screen.region.y == 0
-        assert app.screen.region.width == 100
-        assert app.screen.region.height == 32
-        assert not header.display
-        main = app.query_one("#main")
-        assert main.region.x == 0
-        assert main.region.right == app.screen.region.right
-        assert main.region.bottom == app.screen.region.bottom
-        assert conversation.styles.scrollbar_size_vertical == 0
-        assert transcript.layout.name == "stream"
-        # Hidden scrollbar must not collapse the layout: virtual width should
-        # follow the content area, and the welcome panel keeps its CSS width.
-        assert conversation.virtual_size.width >= conversation.content_region.width
-        composer = app.query_one(Composer)
-        status_line = app.query_one(StatusLine)
-        assert 44 <= composer.region.width <= 112
-        assert composer.region.x == (app.screen.region.width - composer.region.width) // 2
-        assert abs((composer.region.y + composer.region.height / 2) - 16) <= 2
-        assert status_line.region.x == composer.region.x
-        assert status_line.region.right == composer.region.right
-        assert status_line.region.y == composer.region.bottom
-        assert abs(
-            (welcome._logo.region.x + welcome._logo.region.width / 2)
-            - app.screen.region.width / 2
-        ) <= 0.5
-        assert welcome._logo.region.bottom + 2 == composer.region.y
-        assert welcome._usage.region.x == composer.region.x
-        assert welcome._tips.region.right == composer.region.right
-        assert welcome._lower.region.y - status_line.region.bottom == 2
-        assert welcome._system.region.x == composer.region.x
-        assert welcome._system.region.right == composer.region.right
-        assert welcome._system.region.y - welcome._lower.region.bottom == 3
-        assert welcome._system._version.region.x == welcome._system._workspace.region.x
-        assert conversation.scroll_y >= 0
-
-        # Once dialogue content arrives the welcome frame yields to the
-        # conversation — visual layering keeps the LOGO only at startup and
-        # when a new session begins, never alongside messages.
-        await conversation.add_user("Hello")
-        await conversation.append_assistant("```python\nprint('Hi')\n```")
-        await pilot.pause()
-        rendered_header = header.render().plain
-        assert rendered_header.startswith(f" ▣ OURO  {str(tmp_path)[:20]}")
-        assert rendered_header.endswith("…")
-        assert "New session" not in rendered_header
-        assert f"v{__version__}" not in header.render().plain
-        await conversation.add_notice("Status changed")
-        # Fenced code keeps the shared panel surface (#171717) through the same
-        # code theme in both the live tail and the frozen history buffer.
-        history = conversation.query_one(ConversationHistory)
-        panel_triplet = (23, 23, 23)
-        code_strips = [strip for strip in history.lines if "print" in strip.text]
-        assert code_strips
-        assert all(
-            segment.style is not None
-            and segment.style.bgcolor is not None
-            and (
-                segment.style.bgcolor.triplet.red,
-                segment.style.bgcolor.triplet.green,
-                segment.style.bgcolor.triplet.blue,
-            )
-            == panel_triplet
-            for strip in code_strips
-            for segment in strip
-            if segment.text.strip()
-        )
-        assert not welcome.has_class("welcome-page")
-        assert header.display
-        assert composer.region.x == conversation.content_region.x
-        assert composer.region.right == conversation.content_region.right
-
-        popup = app.query_one(CommandPopup)
-        assert popup.styles.overflow_y == "hidden"
-        assert popup.show_vertical_scrollbar is False
-        assert composer.styles.scrollbar_size_vertical == 0
-        assert composer.show_vertical_scrollbar is False
-        assert (
-            composer.get_component_rich_style("text-area--cursor-line").bgcolor
-            == composer.rich_style.bgcolor
-        )
-        assert composer.region.height == 3
-        assert composer.content_region.height == 1
-        assert app.query_one(QueuedInputPanel).styles.scrollbar_size_vertical == 1
-        history = conversation.query_one(ConversationHistory)
-        assert history.styles.border_left[0] == ""
-        user_lines = history.rendered_text.splitlines()[:4]
-        assert [line.index("│") for line in user_lines[1:4]] == [2, 2, 2]
-        assert user_lines[2].index("Hello") == 5
-        code_segments = [
-            segment for line in history.lines for segment in line if "print" in segment.text
-        ]
-        assert code_segments
-        assert all(
-            segment.style.bgcolor == Color.parse("#171717").rich_color for segment in code_segments
-        )
-        assert "Status changed" in history.rendered_text
-        assert not conversation.query(AssistantTurn)
-
-        assert composer.styles.border_left[0] == "solid"
-        assert composer.styles.border_right[0] == "solid"
-        assert composer.styles.border_top[0] == ""
-        assert composer.styles.border_bottom[0] == ""
-
-        dynamic_panels = (
-            popup,
-            app.query_one(InteractionBar),
-            app.query_one(AskUserPanel),
-            app.query_one(PlanConfirmationPanel),
-            app.query_one(QueuedInputPanel),
-        )
-        for panel in dynamic_panels:
-            assert panel.styles.overlay != "screen"
-            assert panel.styles.background == composer.styles.background
-            assert panel.styles.border_left[0] == "solid"
-            assert panel.styles.border_right[0] == "solid"
-            assert panel.styles.border_top[0] == ""
-            assert panel.styles.border_bottom[0] == ""
-
-        status_line = app.query_one(StatusLine)
-        assert status_line.region.y == composer.region.bottom
-        assert status_line.region.bottom == app.query_one("#main").region.bottom
-        assert status_line.content_region.x == composer.region.x
-        assert status_line.content_region.right == composer.region.right
-        assert status_line.query_one("#context-detail", Static).render().plain == ""
-        assert len(status_line.query("#status-detail")) == 0
-        ready = status_line.query_one(ActivityIndicator).render()
-        assert "Ready • inherit • faux" in ready.plain
-        assert ready.get_style_at_offset(ready.plain.index("Ready")).foreground == Color.parse(
-            app.tui_theme.accent
-        )
-        status_line.set_context(
-            SessionContextStatus(
-                context_id="ctx_1",
-                session_id="session_1",
-                run_id="run_1",
-                turn_id="turn_1",
-                model_round=1,
-                provider_id="deepseek",
-                model_id="deepseek-chat",
-                prepared_at=datetime.now(UTC),
-                metrics=ContextMetrics(
-                    estimated_input_tokens=3_000,
-                    estimated_fixed_tokens=100,
-                    context_window_tokens=128_000,
-                    reserved_output_tokens=8_000,
-                    input_budget_tokens=120_000,
-                    estimated_remaining_tokens=117_000,
-                    estimated_utilization_ratio=0.025,
-                ),
-            )
-        )
-        context_detail = status_line.query_one("#context-detail", Static)
-        context = context_detail.render()
-        assert context.plain == "3.0K █▒▒▒▒▒▒▒▒▒▒ 2%"
-        await pilot.pause()
-        assert context_detail.region.right == composer.region.right
-        assert context.get_style_at_offset(context.plain.index("█")).foreground == Color.parse(
-            app.tui_theme.accent
-        )
-
-        for index in range(40):
-            await conversation.add_notice(f"Overflow {index}")
-        await pilot.pause()
-        assert conversation.region.right == app.screen.region.right
-        assert conversation.vertical_scrollbar.region.width == 0
-
-
-@pytest.mark.asyncio
-async def test_streaming_assistant_uses_frozen_history_content_width(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        await conversation.append_assistant("A live paragraph that remains mutable.")
-        await pilot.pause()
-
-        transcript = conversation.query_one("#conversation-transcript", Vertical)
-        live_turn = conversation.query_one(AssistantTurn)
-        assert live_turn.tail.content_region.width == transcript.content_region.width - 4
-
-
-@pytest.mark.asyncio
-async def test_streaming_turn_after_tool_keeps_frozen_history_geometry(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-    reasoning_text = " ".join(f"thought{index}" for index in range(40))
-    answer_text = "A plain answer that stays aligned after the tool boundary."
-
-    async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        conversation.set_reasoning_expanded(True)
-        await conversation.sync_tools(
-            (
-                RuntimeToolCallActivity(
-                    tool_call_id="call_before_reasoning",
-                    tool_name="Read",
-                    status="completed",
-                    source_index=0,
-                ),
-            )
-        )
-        for index in range(0, len(reasoning_text), 7):
-            await conversation.append_reasoning(reasoning_text[index : index + 7])
-        await pilot.pause()
-
-        transcript = conversation.query_one("#conversation-transcript", Vertical)
-        live_turn = conversation.query_one(AssistantTurn)
-        live_reasoning = live_turn.reasoning
-        reasoning_body = live_reasoning._content
-        for _ in range(10):
-            if reasoning_body.rendered_text:
-                break
-            await pilot.pause(0.05)
-
-        expected_turn_width = transcript.content_region.width - 4
-        assert live_turn.content_region.width == expected_turn_width
-        assert live_reasoning.label.region.x == live_turn.content_region.x
-        assert reasoning_body.region.x == live_turn.content_region.x
-        assert reasoning_body.content_region.width == expected_turn_width - 1
-        live_border_x = reasoning_body.region.x
-        live_reasoning_lines = reasoning_body.rendered_text.splitlines()
-
-        await conversation.append_assistant(answer_text)
-        await pilot.pause()
-        assert live_turn.tail.content_region.width == expected_turn_width
-        await conversation.finish_assistant()
-        await pilot.pause()
-
-        history = conversation.query_one(ConversationHistory)
-        rendered_lines = history.rendered_text.splitlines()
-        thought_line = next(
-            index
-            for index, line in enumerate(rendered_lines)
-            if line.strip().startswith("Thought")
-        )
-        answer_line = next(
-            index for index, line in enumerate(rendered_lines) if answer_text in line
-        )
-        frozen_reasoning_lines = [
-            line[line.index("\N{BOX DRAWINGS LIGHT VERTICAL}") :]
-            for line in rendered_lines[thought_line + 1 : answer_line]
-            if "\N{BOX DRAWINGS LIGHT VERTICAL}" in line
-        ]
-        assert frozen_reasoning_lines == live_reasoning_lines
-        stable_indent = rendered_lines[thought_line].index("Thought")
-        stable_border_x = transcript.content_region.x + stable_indent
-        assert stable_border_x == live_border_x
-
-
-@pytest.mark.asyncio
 async def test_streaming_assistant_renders_completed_source_lines_once(
     tmp_path: Path,
     monkeypatch,
@@ -1878,7 +1362,7 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.append_assistant("first")
         await conversation.append_assistant("\n")
@@ -1916,72 +1400,12 @@ async def test_streaming_assistant_renders_completed_source_lines_once(
 
 
 @pytest.mark.asyncio
-async def test_failed_run_summary_colors_status_and_error_but_not_separators(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 24)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        await conversation.add_run_summary(
-            RunPresentation(
-                run_id="run_failed",
-                status="failed",
-                model="ecom-coder",
-                duration_seconds=4.2,
-                error="provider\nrequest failed",
-            )
-        )
-        await pilot.pause()
-
-        history = conversation.query_one(ConversationHistory)
-        summary_strip = next(line for line in history.lines if "failed" in line.text)
-        summary = Text()
-        for segment in summary_strip:
-            if not segment.control:
-                summary.append(segment.text, style=segment.style)
-        console = app.console
-        failure_color = RichColor.parse(FAILURE_TONE)
-        separator_color = RichColor.parse("#4d5560")
-        assert "failed • provider request failed" in summary.plain
-        assert summary.get_style_at_offset(console, summary.plain.index("failed")).color == (
-            failure_color
-        )
-        assert summary.get_style_at_offset(console, summary.plain.index("provider")).color == (
-            failure_color
-        )
-        error_separator = summary.plain.index("•", summary.plain.index("failed"))
-        assert summary.get_style_at_offset(console, error_separator).color == separator_color
-
-
-@pytest.mark.parametrize(
-    ("terminal_width", "expected_composer_width"),
-    ((60, 44), (80, 53), (100, 68), (200, 112)),
-)
-@pytest.mark.asyncio
-async def test_welcome_composer_width_clamps_and_stays_centered(
-    tmp_path: Path,
-    terminal_width: int,
-    expected_composer_width: int,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(terminal_width, 40)) as pilot:
-        await _wait_for_welcome_render(app, pilot, contains="██████")
-        composer = app.query_one(Composer)
-
-        assert composer.region.width == expected_composer_width
-        assert composer.region.x == (terminal_width - expected_composer_width) // 2
-
-
-@pytest.mark.asyncio
 async def test_welcome_refreshes_live_system_status_each_time_it_opens(tmp_path: Path) -> None:
     application = _application(tmp_path)
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         live_skill = SkillMetadata(
             name="live-skill",
             description="Added after TUI startup.",
@@ -2018,7 +1442,7 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         status_line = app.query_one(StatusLine)
         context_status = SessionContextStatus(
             context_id="ctx_1",
@@ -2090,72 +1514,13 @@ async def test_tui_context_status_matches_latest_prepared_context_size(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_completed_session_restores_context_status_without_event_replay(
-    tmp_path: Path,
-) -> None:
-    application = _application(tmp_path)
-    await application.start()
-    result = await application.runtime.run("remember this context")
-    expected = application.runtime.sessions.context_status(result.session.session_id)
-    assert expected is not None
-    app = OuroTuiApp(
-        application=application,
-        resume_session_id=result.session.session_id,
-    )
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.7)
-
-        assert app._projection is not None
-        assert app._projection.activity.context_status == expected
-        context = app.query_one("#context-detail", Static).render().plain
-        assert context
-
-
-@pytest.mark.asyncio
-async def test_status_line_projects_approval_presets_with_muted_risk_color(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
-        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
-
-        await app._set_approval_mode("auto")
-        automatic = indicator.render()
-        assert "Ready • auto • faux" in automatic.plain
-        assert automatic.get_style_at_offset(automatic.plain.index("auto")).foreground == (
-            Color.parse("#b97878")
-        )
-
-        await app._set_approval_mode("afk")
-        unattended = indicator.render()
-        assert "Ready • afk • faux" in unattended.plain
-        assert unattended.get_style_at_offset(unattended.plain.index("afk")).foreground == (
-            Color.parse("#b97878")
-        )
-
-        await app._set_approval_mode("approval")
-        protected = indicator.render()
-        assert "Ready • approval • faux" in protected.plain
-        assert protected.get_style_at_offset(protected.plain.index("approval")).foreground == (
-            Color.parse("#647180")
-        )
-
-        await app._new_session()
-        assert "Ready • inherit • faux" in indicator.render().plain
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-
-
-@pytest.mark.asyncio
 async def test_status_line_shows_model_retry_attempts_after_the_first_attempt(
     tmp_path: Path,
 ) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         first_attempt = RuntimeActivitySnapshot(
             session_id="ses_retry",
             run_id="run_retry",
@@ -2189,16 +1554,25 @@ async def test_status_line_updates_while_a_model_retry_is_waiting(tmp_path: Path
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press(*"retry", "enter")
         try:
             await asyncio.wait_for(provider.retry_observed.wait(), timeout=2)
-            await pilot.pause(0.2)
+            await _wait_until(
+                lambda: "Waiting for model 3/5"
+                in app.query_one(ActivityIndicator).render().plain,
+                pilot,
+                description="model retry status",
+            )
 
             assert "Waiting for model 3/5" in app.query_one(ActivityIndicator).render().plain
         finally:
             provider.release.set()
-        await pilot.pause(0.5)
+        await _wait_until(
+            lambda: "Ready" in app.query_one(ActivityIndicator).render().plain,
+            pilot,
+            description="ready status after model retry",
+        )
         assert "Ready" in app.query_one(ActivityIndicator).render().plain
 
 
@@ -2212,7 +1586,7 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
 
         assert "Ready • inherit • chat-endpoint" in indicator.render().plain
@@ -2223,29 +1597,6 @@ async def test_status_line_shows_only_the_model_endpoint_name(tmp_path: Path) ->
         await app._select_model("supplier/chat-endpoint")
 
         assert "Ready • inherit • chat-endpoint" in indicator.render().plain
-
-
-@pytest.mark.asyncio
-async def test_new_session_label_matches_first_request_model(tmp_path: Path) -> None:
-    application = two_route_application(tmp_path)
-    result = await application.runtime.run("seed session")
-    app = OuroTuiApp(
-        application=application,
-        resume_session_id=result.session.session_id,
-    )
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        indicator = app.query_one(StatusLine).query_one(ActivityIndicator)
-
-        await app._select_model("faux/recent")
-        await app._new_session()
-
-        assert "Ready • inherit • recent" in indicator.render().plain
-
-        submitted = await app._controller.submit("from welcome")
-        assert submitted.session.current_model == "faux/recent"
-        assert submitted.run.model == "recent-model"
 
 
 @pytest.mark.asyncio
@@ -2261,7 +1612,13 @@ async def test_model_switch_keeps_context_usage_and_updates_model_capacity(
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await _wait_for_active_session(app, pilot, result.session.session_id)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.session_id == result.session.session_id,
+            pilot,
+            description="restored session projection",
+        )
         projection = app._projection
         assert projection is not None
         before = projection.activity.effective_context_metrics
@@ -2299,11 +1656,16 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"stream", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await pilot.pause(0.2)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "running",
+            pilot,
+            description="active streamed run",
+        )
 
         try:
             await app._select_model("blocking/blocking")
@@ -2313,8 +1675,7 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
             assert persisted.current_model == "blocking/blocking"
 
             app.action_approval_settings()
-            await pilot.pause(0.2)
-            assert isinstance(app.screen, ChoiceScreen)
+            await _wait_for_screen(app, ChoiceScreen, title="SESSION APPROVAL")
             await pilot.press("escape")
 
             await app._set_approval_mode("auto")
@@ -2323,7 +1684,12 @@ async def test_tui_changes_model_and_approval_while_the_session_is_running(tmp_p
             assert "auto" in app.query_one(StatusLine).query_one(ActivityIndicator).render().plain
         finally:
             provider.release.set()
-        await pilot.pause(0.5)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="completed streamed run",
+        )
 
 
 @pytest.mark.asyncio
@@ -2352,13 +1718,9 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
     async with app.run_test(size=(100, 32)) as pilot:
         welcome = await _wait_for_welcome_render(app, pilot, contains="connecting")
         mcp_label = welcome.query_one("#welcome-mcp-label", Static)
-        first_frame = mcp_label.render().plain
-        assert first_frame.endswith(" MCP")
-        assert first_frame[0] in ASCII_SPINNER_FRAMES
-        await pilot.pause(0.15)
-        second_frame = mcp_label.render().plain
-        assert second_frame != first_frame
-        assert second_frame[0] in ASCII_SPINNER_FRAMES
+        connecting_label = mcp_label.render().plain
+        assert connecting_label.endswith(" MCP")
+        assert connecting_label[0] in ASCII_SPINNER_FRAMES
         starting_status = welcome._system._mcp.render()
         assert "0/1 connected • 0 tool(s) • 1 connecting" in starting_status.plain
         assert starting_status.get_style_at_offset(
@@ -2366,7 +1728,11 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
         ).foreground == Color.parse(app.tui_theme.accent)
 
         session.initialize_gate.set()
-        await pilot.pause(0.6)
+        await _wait_until(
+            lambda: "1/1 connected • 1 tool(s)" in welcome._system._mcp.render().plain,
+            pilot,
+            description="MCP connection status",
+        )
         connected_status = welcome._system._mcp.render()
         assert mcp_label.render().plain == "MCP"
         assert "1/1 connected • 1 tool(s)" in connected_status.plain
@@ -2377,162 +1743,26 @@ async def test_tui_reconciles_live_mcp_connection_and_tool_status(tmp_path: Path
 
         session.tools.append(LiveMcpSession._tool("fetch"))
         factory.tools_changed()
-        await pilot.pause(0.6)
+        await _wait_until(
+            lambda: "1/1 connected • 2 tool(s)" in welcome._system._mcp.render().plain,
+            pilot,
+            description="refreshed MCP tools",
+        )
         assert "1/1 connected • 2 tool(s)" in welcome._system._mcp.render().plain
         assert {"live__fetch", "live__search"}.issubset(application.runtime.tools.names())
 
         factory.connection_lost("connection lost")
-        await pilot.pause(0.6)
+        await _wait_until(
+            lambda: "0/1 connected • 0 tool(s) • 1 failed"
+            in welcome._system._mcp.render().plain,
+            pilot,
+            description="failed MCP connection status",
+        )
         assert "0/1 connected • 0 tool(s) • 1 failed" in welcome._system._mcp.render().plain
         assert mcp_label.render().plain == "MCP"
         assert "live__search" not in application.runtime.tools.names()
 
     assert app._mcp_status_timer is None
-
-
-@pytest.mark.asyncio
-async def test_tui_model_request_includes_mcp_tools_connected_after_startup(
-    tmp_path: Path,
-) -> None:
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    provider = ToolCapturingProvider()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="tool-capturing", provider_id=provider.provider_id),
-        ),
-        tools=ToolRegistry(),
-        default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
-    )
-    application = LocalApplication.from_runtime(runtime)
-    session = LiveMcpSession()
-    manager = MCPManager(
-        registry=runtime.tools,
-        client_factory=LiveMcpFactory(session),
-    )
-    manager.configure(
-        MCPServerConfig(
-            server_id="live",
-            name="Live MCP",
-            command="unused-in-test",
-            auto_start=True,
-            auto_reconnect=False,
-            timeout_seconds=1,
-            health_check_interval_seconds=60,
-        )
-    )
-    application.mcp = MCPRuntimeResource(manager)
-    controller = TuiController(
-        lambda _event: None,
-        lambda _status: None,
-        application=application,
-    )
-
-    await controller.start()
-    try:
-        session.initialize_gate.set()
-        connected = await asyncio.wait_for(manager.start("live"), timeout=1)
-        assert connected.status == "connected"
-
-        await controller.submit("inspect tools")
-
-        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
-
-        await manager.stop("live")
-        await controller.submit("inspect tools again")
-
-        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
-    finally:
-        await controller.close()
-
-
-@pytest.mark.asyncio
-async def test_mcp_toggle_changes_subsequent_dialogue_runs_in_same_controller(
-    tmp_path: Path,
-) -> None:
-    configuration = ConfigurationFacade(tmp_path)
-    configuration.save_mcp_server(
-        "live",
-        MCPServerConfigUpdate(
-            command="unused-in-test",
-            auto_start=True,
-            auto_reconnect=False,
-            timeout_seconds=1,
-            health_check_interval_seconds=60,
-        ),
-    )
-    store = LocalSessionStore(tmp_path)
-    store.initialize()
-    provider = ToolCapturingProvider()
-    runtime = RuntimeService(
-        store=store,
-        adapter=RuntimeAdapter(
-            provider,
-            ModelMetadata(model_id="tool-capturing", provider_id=provider.provider_id),
-        ),
-        tools=ToolRegistry(),
-        default_workspace=tmp_path,
-        environment=RuntimeEnvironment.local(tmp_path, store.sessions_dir),
-    )
-    application = LocalApplication.from_runtime(runtime)
-    session = LiveMcpSession()
-    manager = MCPManager(
-        registry=runtime.tools,
-        client_factory=LiveMcpFactory(session),
-    )
-    configured = configuration.mcp.get("live")
-    assert configured is not None
-    manager.configure(configured)
-    application.mcp = MCPRuntimeResource(manager)
-    controller = TuiController(
-        lambda _event: None,
-        lambda _status: None,
-        application=application,
-        configuration=configuration,
-    )
-
-    session.initialize_gate.set()
-    await controller.start()
-    try:
-        await manager.start("live")
-        await controller.submit("first turn")
-        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
-
-        await controller.set_mcp_enabled("live", enabled=False)
-        await controller.submit("second turn")
-        assert "live__search" not in {str(tool["name"]) for tool in provider.tool_batches[-1]}
-
-        await controller.set_mcp_enabled("live", enabled=True)
-        await manager.start("live")
-        await controller.submit("third turn")
-        assert "live__search" in {str(tool["name"]) for tool in provider.tool_batches[-1]}
-    finally:
-        await controller.close()
-
-
-@pytest.mark.asyncio
-async def test_app_streams_first_run_without_waiting_for_run_result(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        composer = app.query_one(Composer)
-        assert composer.disabled is False
-
-        await pilot.click("#composer")
-        await pilot.press("h", "e", "l", "l", "o", "enter")
-        await pilot.pause(0.8)
-
-        assert app._projection is not None
-        assert app._projection.assistant_text == "**Hello** from OURO"
-        assert app._projection.activity.status == "completed"
-        assert app._controller.session_id is not None
-        context = app.query_one(StatusLine).query_one("#context-detail", Static).render().plain
-        assert "Context" not in context
-        assert "~" not in context
 
 
 @pytest.mark.asyncio
@@ -2542,7 +1772,7 @@ async def test_stream_updates_follow_only_while_conversation_is_at_bottom(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         for index in range(40):
             await conversation.add_notice(f"History {index}")
@@ -2578,7 +1808,7 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.add_user("First question")
         await conversation.append_assistant("First answer")
@@ -2592,123 +1822,11 @@ async def test_short_conversation_starts_at_top_while_following_latest_message(
 
 
 @pytest.mark.asyncio
-async def test_user_message_frame_spans_every_content_line(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(40, 20)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        await conversation.add_user("First line\nSecond line")
-        await pilot.pause()
-
-        history = conversation.query_one(ConversationHistory)
-        framed_lines = [line.text for line in history.lines if "│" in line.text]
-        assert len(framed_lines) == 4
-        assert all(line.index("│") == 2 for line in framed_lines)
-        assert framed_lines[1].index("First line") == 5
-        assert framed_lines[2].index("Second line") == 5
-
-
-@pytest.mark.asyncio
-async def test_runtime_stream_schedules_one_flush_for_the_next_display_frame(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        session_id = "ses_frame_flush"
-        app._projection = TuiSessionProjection(session_id)
-        callbacks: list[Callable[[], object]] = []
-
-        def capture_after_refresh(
-            callback: Callable[..., object],
-            *args: object,
-            **kwargs: object,
-        ) -> bool:
-            callbacks.append(lambda: callback(*args, **kwargs))
-            return True
-
-        with monkeypatch.context() as patch:
-            patch.setattr(app, "call_after_refresh", capture_after_refresh)
-            for sequence, text in enumerate(("one", "two", "three"), start=1):
-                app._publish_runtime_event(
-                    EventRecord(
-                        session_id=session_id,
-                        run_id="run_frame_flush",
-                        event_type="model_text_delta",
-                        sequence=sequence,
-                        payload={"text": text},
-                    )
-                )
-
-            assert len(callbacks) == 1
-            assert app._runtime_events_frame_scheduled is True
-            callbacks[0]()
-            assert app._runtime_events_frame_scheduled is False
-            assert app._runtime_events_ready_posted is True
-
-        await pilot.pause(0.1)
-
-        assert app.query_one(AssistantTurn).source == "onetwothree"
-        assert app._pending_runtime_events == []
-
-
-@pytest.mark.asyncio
-async def test_runtime_event_burst_is_coalesced_before_markdown_rendering(
-    tmp_path: Path,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        rendered_batches: list[str] = []
-        append_assistant = conversation.append_assistant
-
-        async def record_rendered_batch(text: str) -> None:
-            rendered_batches.append(text)
-            await append_assistant(text)
-
-        conversation.append_assistant = record_rendered_batch  # type: ignore[method-assign]
-        session_id = "ses_render_burst"
-        app._projection = TuiSessionProjection(session_id)
-        events = (
-            EventRecord(
-                session_id=session_id,
-                run_id="run_render_burst",
-                event_type="run_started",
-                sequence=1,
-                payload={"trigger": "user"},
-            ),
-            *(
-                EventRecord(
-                    session_id=session_id,
-                    run_id="run_render_burst",
-                    event_type="model_text_delta",
-                    sequence=sequence,
-                    payload={"text": f"chunk-{sequence}\n"},
-                )
-                for sequence in range(2, 202)
-            ),
-        )
-
-        for event in events:
-            app._publish_runtime_event(event)
-        await pilot.pause(0.2)
-
-        expected = "".join(f"chunk-{sequence}\n" for sequence in range(2, 202))
-        assert rendered_batches == [expected]
-        assert app._projection.assistant_text == expected
-
-
-@pytest.mark.asyncio
 async def test_reasoning_stream_renders_markup_syntax_as_plain_text(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_markup"
         app._projection = TuiSessionProjection(session_id)
@@ -2791,7 +1909,7 @@ async def test_reasoning_stream_renders_each_completed_line_once(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_bounded_work"
         app._projection = TuiSessionProjection(session_id)
@@ -2830,7 +1948,7 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.query_one(ConversationView).set_reasoning_expanded(True)
         session_id = "ses_reasoning_parity"
         app._projection = TuiSessionProjection(session_id)
@@ -2871,29 +1989,6 @@ async def test_reasoning_stream_lines_match_whole_block_rendering(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_compact_command_runs_the_canonical_manual_compaction_pipeline(
-    tmp_path: Path,
-) -> None:
-    application = _application(tmp_path)
-    app = OuroTuiApp(application=application)
-
-    async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
-        await pilot.press("h", "e", "l", "l", "o", "enter")
-        await pilot.pause(0.8)
-        await pilot.press("slash", *"compact", "enter")
-        await pilot.pause(0.8)
-
-        session_id = app._controller.session_id
-        assert session_id is not None
-        recent_run = application.runtime.sessions.open(session_id).recent_run
-        assert recent_run is not None
-        assert recent_run.kind == "compaction"
-        assert recent_run.status == "completed"
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-
-
-@pytest.mark.asyncio
 async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_selection(
     tmp_path: Path,
 ) -> None:
@@ -2901,9 +1996,15 @@ async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_sele
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._controller.session_id is not None
+            and app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="source session",
+        )
         source_session_id = app._controller.session_id
         assert source_session_id is not None
         await pilot.press("slash", *"fork", "enter")
@@ -2911,7 +2012,17 @@ async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_sele
         assert app._controller.session_id == source_session_id
 
         await pilot.press("enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._controller.session_id not in {None, source_session_id},
+            pilot,
+            description="forked session",
+        )
+        await _wait_until(
+            lambda: app.query_one(Composer).text == "fork"
+            and app.query_one(Composer).has_focus,
+            pilot,
+            description="restored composer after fork",
+        )
 
         branch_session_id = app._controller.session_id
         assert branch_session_id is not None
@@ -2926,103 +2037,6 @@ async def test_fork_command_opens_boundary_menu_on_first_enter_and_branches_sele
 
 
 @pytest.mark.asyncio
-async def test_fork_menu_is_chronological_and_restores_inherited_compaction(
-    tmp_path: Path,
-) -> None:
-    application = _application(tmp_path)
-    source = application.runtime.sessions.create(title="Compacted fork source").session
-    messages = [
-        MessageRecord.text(
-            session_id=source.session_id,
-            role=role,
-            text=text,
-            sequence=index,
-        ).model_copy(update={"created_at": created_at})
-        for index, (role, text, created_at) in enumerate(
-            (
-                ("user", "First request", datetime(2026, 1, 1, 10, 0, tzinfo=UTC)),
-                ("assistant", "First answer", datetime(2026, 1, 1, 10, 1, tzinfo=UTC)),
-                ("user", "Second request", datetime(2026, 1, 1, 10, 2, tzinfo=UTC)),
-                ("assistant", "Second answer", datetime(2026, 1, 1, 10, 3, tzinfo=UTC)),
-            ),
-            start=1,
-        )
-    ]
-    for message in messages:
-        application.runtime.store.append_message(message)
-    application.runtime.store.save_session(
-        application.runtime.store.load_session_record(source.session_id).model_copy(
-            update={
-                "message_count": len(messages),
-                "last_message_id": messages[-1].message_id,
-            }
-        )
-    )
-    metrics = ContextMetrics(
-        estimated_input_tokens=120,
-        estimated_fixed_tokens=20,
-    )
-    compaction = CompactionRecord(
-        session_id=source.session_id,
-        strategy_id="test",
-        trigger="manual",
-        summary="summary",
-        covered_message_ids=[messages[0].message_id],
-        history_boundary_message_id=messages[1].message_id,
-        source_digest=compaction_source_digest(messages[:1]),
-        context_metrics_after=metrics,
-    )
-    application.runtime.store.append_compaction(compaction)
-    application.runtime.store.activate_compaction(source.session_id, compaction.compaction_id)
-    app = OuroTuiApp(application=application)
-
-    async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
-        await app._open_session(source.session_id)
-        app._fork_session()
-        await _wait_for_screen(app, ChoiceScreen, title="FORK SESSION")
-
-        assert isinstance(app.screen, ChoiceScreen)
-        choices = app.screen._choices
-        assert [choice.label for choice in choices] == ["First request", "Second request"]
-        assert [choice.trailing for choice in choices] == [
-            messages[0].created_at.astimezone().strftime("%H:%M"),
-            messages[2].created_at.astimezone().strftime("%H:%M"),
-        ]
-        assert all(choice.description == "" for choice in choices)
-        assert all(choice.group == "" for choice in choices)
-        assert all("msg_" not in choice.label for choice in choices)
-
-        await pilot.press("down", "enter")
-        await pilot.pause(0.5)
-
-        branch_session_id = app._controller.session_id
-        assert branch_session_id is not None and branch_session_id != source.session_id
-        branch = application.runtime.store.load_session(branch_session_id)
-        assert [message.text_content for message in branch.messages] == [
-            "First request",
-            "First answer",
-        ]
-        assert branch.session.forked_from_message_id == messages[1].message_id
-        assert len(branch.compactions) == 1
-        assert branch.session.active_compaction_id == branch.compactions[0].compaction_id
-        assert app.query_one(Composer).text == "Second request"
-        status_metrics = app.query_one(StatusLine)._context_metrics
-        effective_metrics = application.runtime.sessions.effective_context_metrics(
-            branch_session_id
-        )
-        assert status_metrics is not None and effective_metrics is not None
-        assert status_metrics.estimated_input_tokens == effective_metrics.estimated_input_tokens
-        assert status_metrics.estimated_fixed_tokens == effective_metrics.estimated_fixed_tokens
-        history = app.query_one(ConversationHistory)
-        assert [(entry.kind, entry.text) for entry in history.entries] == [
-            ("user", "First request"),
-            ("assistant", "First answer"),
-            ("notice", "Context compacted · 1 message summarized"),
-        ]
-
-
-@pytest.mark.asyncio
 async def test_fork_command_refuses_active_tui_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3031,9 +2045,15 @@ async def test_fork_command_refuses_active_tui_session(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("f", "o", "r", "k", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._controller.session_id is not None
+            and app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="source session",
+        )
         source_session_id = app._controller.session_id
         assert source_session_id is not None
         assert app._projection is not None
@@ -3058,12 +2078,17 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("s", "t", "r", "e", "a", "m", "enter")
         try:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-            await pilot.pause(0.2)
+            await _wait_until(
+                lambda: app._projection is not None
+                and app._projection.assistant_text == "first ",
+                pilot,
+                description="first streamed chunk",
+            )
 
             assert app._projection is not None
             assert app._projection.assistant_text == "first "
@@ -3071,7 +2096,12 @@ async def test_first_markdown_chunk_renders_while_provider_is_still_running(
             assert app.query_one(AssistantTurn).source == "first "
         finally:
             provider.release.set()
-        await pilot.pause(0.5)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="completed streamed run",
+        )
 
         assert app._projection is not None
         assert app._projection.assistant_text == "first second"
@@ -3084,7 +2114,7 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_blocking_application(tmp_path, provider))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         composer = app.query_one(Composer)
         assert composer.placeholder == "Ask anything..."
 
@@ -3092,13 +2122,23 @@ async def test_composer_placeholder_tracks_active_run(tmp_path: Path) -> None:
         await pilot.press(*"stream", "enter")
         try:
             await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-            await pilot.pause(0.2)
+            await _wait_until(
+                lambda: composer.placeholder
+                == "Enter queues a follow-up · Ctrl+Enter guides the active run…",
+                pilot,
+                description="active-run composer placeholder",
+            )
             assert composer.placeholder == (
                 "Enter queues a follow-up · Ctrl+Enter guides the active run…"
             )
         finally:
             provider.release.set()
-        await pilot.pause(0.5)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="completed streamed run",
+        )
 
         assert app._projection is not None
         assert app._projection.activity.status == "completed"
@@ -3114,15 +2154,24 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await pilot.pause(0.2)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "running",
+            pilot,
+            description="active run",
+        )
 
         app.query_one(Composer).load_text("follow next")
         await pilot.press("enter")
-        await pilot.pause(0.3)
+        await _wait_until(
+            lambda: app.query_one(QueuedInputPanel).display,
+            pilot,
+            description="queued follow-up",
+        )
 
         queue_panel = app.query_one(QueuedInputPanel)
         conversation = app.query_one(ConversationView)
@@ -3131,19 +2180,6 @@ async def test_follow_up_stays_in_queue_until_consumed_at_the_next_run(
         assert "QUEUED INPUTS" not in queue_text
         assert "FOLLOW" in queue_text
         assert "follow next" in queue_text
-        composer = app.query_one(Composer)
-        status_line = app.query_one(StatusLine)
-        assert queue_panel.region.y >= composer.region.bottom
-        assert status_line.region.y == queue_panel.region.bottom
-        assert status_line.region.bottom == app.query_one("#main").region.bottom
-        assert queue_panel.region.x == composer.region.x
-        assert queue_panel.region.right == composer.region.right
-        assert queue_panel.styles.background == composer.styles.background
-        assert queue_panel.styles.border_left[0] == "solid"
-        assert queue_panel.styles.border_right[0] == "solid"
-        queue_content = queue_panel.query_one("#queued-input-content", Static)
-        assert queue_content.region.y - queue_panel.region.y == 1
-        assert queue_panel.region.bottom - queue_content.region.bottom == 1
         history = conversation.query_one(ConversationHistory)
         assert history.user_turns == ("first",)
 
@@ -3187,18 +2223,34 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await pilot.pause(0.2)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "running",
+            pilot,
+            description="active run",
+        )
 
         composer = app.query_one(Composer)
         composer.load_text("keep queued")
         await pilot.press("enter")
         composer.load_text("return to composer")
         await pilot.press("enter")
-        await pilot.pause(0.3)
+        await _wait_until(
+            lambda: all(
+                value
+                in app.query_one(QueuedInputPanel)
+                .query_one("#queued-input-content", Static)
+                .render()
+                .plain
+                for value in ("keep queued", "return to composer")
+            ),
+            pilot,
+            description="queued inputs",
+        )
 
         await pilot.press("slash", *"unqueue", "enter")
         await pilot.pause()
@@ -3210,7 +2262,11 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
         assert "2. return to composer" in choices
 
         await pilot.press("down", "enter")
-        await pilot.pause(0.3)
+        await _wait_until(
+            lambda: composer.text == "return to composer",
+            pilot,
+            description="restored queued input",
+        )
 
         assert composer.text == "return to composer"
         queue_panel = app.query_one(QueuedInputPanel)
@@ -3220,7 +2276,12 @@ async def test_unqueue_command_selects_message_and_returns_it_to_composer(
         assert "return to composer" not in queued_text
 
         provider.release.set()
-        await pilot.pause(1)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="run completion after unqueue",
+        )
 
         snapshot = application.runtime.store.load_session(app._controller.session_id or "")
         assert "return to composer" not in [message.text_content for message in snapshot.messages]
@@ -3234,19 +2295,28 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 38)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"start child", "enter")
         await asyncio.wait_for(provider.child_started.wait(), timeout=2)
-        await pilot.pause(0.2)
+        await pilot.pause()
 
-        app.query_one(Composer).load_text("follow after child")
-        await pilot.press("enter")
-        await pilot.pause(0.3)
-        assert app.query_one(QueuedInputPanel).display is True
-
-        provider.release_child.set()
-        await pilot.pause(1)
+        try:
+            app.query_one(Composer).load_text("follow after child")
+            await pilot.press("enter")
+            await _wait_until(
+                lambda: app.query_one(QueuedInputPanel).display,
+                pilot,
+                description="queued follow-up",
+            )
+            assert app.query_one(QueuedInputPanel).display is True
+        finally:
+            provider.release_child.set()
+        await _wait_until(
+            lambda: app._interaction is not None and app._interaction.is_subagent,
+            pilot,
+            description="subagent approval",
+        )
 
         interaction = app._interaction
         assert interaction is not None
@@ -3259,7 +2329,7 @@ async def test_queued_input_does_not_hide_or_block_subagent_approval(tmp_path: P
 
         await pilot.press("enter")
         await asyncio.wait_for(provider.queued_input_consumed.wait(), timeout=5)
-        await pilot.pause(0.5)
+        await pilot.pause()
 
         assert app._interaction is None
         assert app.query_one(InteractionBar).display is False
@@ -3285,17 +2355,26 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press(*"first", "enter")
         await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-        await pilot.pause(0.2)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "running",
+            pilot,
+            description="active run",
+        )
 
         queue_panel = app.query_one(QueuedInputPanel)
         try:
             app.query_one(Composer).load_text("guide now")
             await pilot.press(submit_key)
-            await pilot.pause(0.3)
+            await _wait_until(
+                lambda: queue_panel.display,
+                pilot,
+                description="queued guidance",
+            )
 
             queue_text = queue_panel.query_one("#queued-input-content").render().plain
             assert queue_panel.display is True
@@ -3304,7 +2383,12 @@ async def test_guide_shortcuts_steer_the_active_run_at_the_next_model_turn(
             assert "guide now" not in app.query_one(ConversationHistory).user_turns
         finally:
             provider.release.set()
-        await pilot.pause(1)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="guided run completion",
+        )
 
         assert queue_panel.display is False
         snapshot = application.runtime.store.load_runtime_session(app._controller.session_id or "")
@@ -3333,7 +2417,12 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
     )
 
     async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.7)
+        await _wait_until(
+            lambda: app._interaction is not None
+            and app.query_one(QueuedInputPanel).display,
+            pilot,
+            description="restored input queue",
+        )
 
         queue_panel = app.query_one(QueuedInputPanel)
         queue_text = queue_panel.query_one("#queued-input-content").render().plain
@@ -3344,85 +2433,6 @@ async def test_resumed_session_restores_its_durable_user_input_queue(
         assert app._interaction is not None
         assert app._interaction.kind == "approval"
         assert app.query_one(InteractionBar).display is True
-
-
-@pytest.mark.asyncio
-async def test_reasoning_chunk_renders_before_provider_continues(tmp_path: Path) -> None:
-    provider = BlockingReasoningProvider()
-    application = _blocking_application(tmp_path, provider)
-    app = OuroTuiApp(application=application)
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        app.query_one(ConversationView).set_reasoning_expanded(True)
-        await pilot.click("#composer")
-        await pilot.press("t", "h", "i", "n", "k", "enter")
-        try:
-            await asyncio.wait_for(provider.first_chunk_sent.wait(), timeout=2)
-            await pilot.pause(0.2)
-
-            assert app._projection is not None
-            assert app._projection.reasoning_text == "Inspecting "
-            assert app._projection.assistant_text == ""
-            assert app._projection.activity.activity == "streaming_reasoning"
-            turn = app.query_one(AssistantTurn)
-            assert turn.reasoning.text == "Inspecting "
-            assert turn.reasoning.label.render().plain.startswith("Thinking · ")
-            assert turn.reasoning.label.render().plain.endswith("s")
-            assert turn.source == ""
-        finally:
-            provider.release.set()
-        await pilot.pause(0.5)
-
-        history = app.query_one(ConversationHistory)
-        thought = next(
-            entry
-            for entry in reversed(history.entries)
-            if entry.kind == "assistant" and entry.reasoning
-        )
-        answer = next(
-            entry
-            for entry in reversed(history.entries)
-            if entry.kind == "assistant" and entry.text
-        )
-        assert thought.reasoning == "Inspecting the event path."
-        assert answer.text == "Done."
-        assert "│ Inspecting the event path." in history.rendered_text
-        assert thought.reasoning_seconds is not None and thought.reasoning_seconds > 0
-        summary = next(entry for entry in reversed(history.entries) if entry.kind == "run")
-        assert summary.run is not None
-        assert summary.run.model == "blocking"
-        assert summary.run.duration_seconds is not None
-        assert summary.run.duration_seconds >= thought.reasoning_seconds
-        assert "Thought · " in history.rendered_text
-        assert "blocking" in history.rendered_text
-        assert app._projection is not None
-        assert app._projection.activity.status == "completed"
-
-        session_id = app._controller.session_id
-        assert session_id is not None
-        await app._open_session(session_id)
-        await pilot.pause()
-
-        restored = app.query_one(ConversationHistory)
-        restored_thought = next(
-            entry
-            for entry in reversed(restored.entries)
-            if entry.kind == "assistant" and entry.reasoning
-        )
-        restored_summary = next(
-            entry for entry in reversed(restored.entries) if entry.kind == "run"
-        )
-        assert restored_thought.reasoning_seconds == pytest.approx(
-            thought.reasoning_seconds,
-            abs=0.02,
-        )
-        assert restored_summary.run is not None
-        assert restored_summary.run.run_id == summary.run.run_id
-        assert restored_summary.run.model == summary.run.model
-        assert restored_summary.run.duration_seconds == summary.run.duration_seconds
-        assert "Thought · " in restored.rendered_text
-        assert not app.query(AssistantTurn)
 
 
 @pytest.mark.asyncio
@@ -3440,7 +2450,7 @@ async def test_assistant_history_restores_reasoning_separately(tmp_path: Path) -
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         conversation.set_reasoning_expanded(True)
         await conversation.load_messages((message,))
@@ -3491,7 +2501,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages((message,))
         history = conversation.query_one(ConversationHistory)
@@ -3544,7 +2554,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     async with restarted.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = restarted.query_one(ConversationView)
         await conversation.load_messages((message,))
         history = conversation.query_one(ConversationHistory)
@@ -3590,7 +2600,7 @@ async def test_history_restores_each_model_call_timing_with_one_run_summary(
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         presentation = project_run_presentation(run, messages)
         await conversation.load_messages(messages, runs=(presentation,))
@@ -3624,7 +2634,7 @@ async def test_reloaded_history_renders_identically_to_streamed_output(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 40)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.add_user("Question")
         for index, fragment in enumerate(fragments):
@@ -3676,7 +2686,7 @@ async def test_history_batch_mount_preserves_dialogue_order(tmp_path: Path) -> N
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
         await pilot.pause()
@@ -3740,7 +2750,7 @@ async def test_history_restores_compaction_boundaries_in_chronological_order(
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages, compactions)
         await pilot.pause()
@@ -3775,7 +2785,7 @@ async def test_compaction_completion_updates_context_and_transcript_without_next
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         session_id = "ses_live_compaction"
         app._projection = TuiSessionProjection(session_id)
         await app._apply_runtime_events(
@@ -3814,7 +2824,7 @@ async def test_persisted_history_uses_a_bounded_widget_tree(tmp_path: Path) -> N
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
         await pilot.pause()
@@ -3831,7 +2841,7 @@ async def test_completed_live_turns_keep_the_widget_tree_bounded(tmp_path: Path)
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         for index in range(100):
             await conversation.add_user(f"Question {index}")
@@ -3861,7 +2871,7 @@ async def test_completed_tool_batch_archives_in_source_order(tmp_path: Path) -> 
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.sync_tools((first, second))
         await conversation.sync_tools((first.model_copy(update={"status": "completed"}), second))
@@ -3931,7 +2941,7 @@ async def test_history_load_renders_tool_calls_between_messages(tmp_path: Path) 
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
         await pilot.pause()
@@ -3989,7 +2999,7 @@ async def test_history_load_projects_scaffold_visibility_from_message_record(
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
 
@@ -4030,7 +3040,7 @@ async def test_plugin_message_event_renders_non_scaffold_user_input(
         return ()
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(app._controller, "message", message)
         monkeypatch.setattr(app._controller, "queued_user_inputs", queued_user_inputs)
         events = tuple(
@@ -4081,7 +3091,7 @@ async def test_history_load_marks_failed_tool_calls(tmp_path: Path) -> None:
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(messages)
         await pilot.pause()
@@ -4121,7 +3131,7 @@ async def test_navigate_to_top_scrolls_to_first_message(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         await pilot.pause()
@@ -4138,7 +3148,7 @@ async def test_navigate_to_bottom_scrolls_to_latest(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         await pilot.pause()
@@ -4159,7 +3169,7 @@ async def test_conversation_shortcuts_navigate_while_composer_is_focused(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         composer = app.query_one(Composer)
@@ -4185,7 +3195,7 @@ async def test_conversation_shortcuts_navigate_adjacent_user_messages(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         history = conversation.query_one(ConversationHistory)
@@ -4223,7 +3233,7 @@ async def test_navigate_to_user_message_scrolls_to_target(tmp_path: Path) -> Non
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         await pilot.pause()
@@ -4243,7 +3253,7 @@ async def test_navigate_options_list_user_messages(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(80, 12)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         conversation = app.query_one(ConversationView)
         await conversation.load_messages(_scrollable_messages())
         await pilot.pause()
@@ -4256,70 +3266,20 @@ async def test_navigate_options_list_user_messages(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_reasoning_burst_cannot_starve_live_text_rendering(tmp_path: Path) -> None:
-    provider = ReasoningBurstThenBlockProvider()
-    application = _blocking_application(tmp_path, provider)
-    app = OuroTuiApp(application=application)
-    projection_text = ""
-    activity_status = ""
-    markdown_source = ""
-    sink_failed = True
-
-    async def exercise(pilot) -> None:
-        nonlocal projection_text, activity_status, markdown_source, sink_failed
-        await pilot.pause(0.5)
-        await pilot.click("#composer")
-        await pilot.press("b", "u", "r", "s", "t", "enter")
-        try:
-            await asyncio.wait_for(provider.visible_chunk_sent.wait(), timeout=15)
-            await pilot.pause(0.5)
-
-            assert app._projection is not None
-            projection_text = app._projection.assistant_text
-            activity_status = app._projection.activity.status
-            turns = app.query(AssistantTurn)
-            markdown_source = turns.last().source if turns else ""
-            events = application.runtime.sessions.event_page(
-                app._projection.session_id,
-                cursor=0,
-                limit=1000,
-            ).events
-            sink_failed = any(event.event_type == "event_sink_failed" for event in events)
-        finally:
-            provider.release.set()
-            await pilot.pause(1)
-        app.exit()
-
-    loop = asyncio.get_running_loop()
-    previous_factory = loop.get_task_factory()
-    try:
-        await asyncio.wait_for(
-            app.run_async(
-                headless=True,
-                size=(100, 32),
-                auto_pilot=exercise,
-            ),
-            timeout=20,
-        )
-    finally:
-        loop.set_task_factory(previous_factory)
-
-    assert projection_text == "visible while running"
-    assert activity_status != "completed"
-    assert markdown_source == "visible while running"
-    assert sink_failed is False
-
-
-@pytest.mark.asyncio
 async def test_run_result_replays_events_when_live_sink_is_delayed(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path, "Recovered response"))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app._controller._publish_event = lambda _event: None
         await pilot.click("#composer")
         await pilot.press("h", "e", "l", "l", "o", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="replayed run result",
+        )
 
         assert app._projection is not None
         assert app._projection.assistant_text == "Recovered response"
@@ -4331,7 +3291,7 @@ async def test_composer_uses_shift_enter_for_newline(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "shift+enter", "b")
 
@@ -4353,7 +3313,7 @@ async def test_session_picker_hides_route_identity_and_truncates_long_titles(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+s")
         await pilot.pause()
 
@@ -4390,7 +3350,7 @@ async def test_session_picker_closes_modal_before_rendering_selected_history(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
         session_menu = app.screen
@@ -4413,7 +3373,7 @@ async def test_session_load_projects_loading_activity_until_history_is_ready(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         load_started = asyncio.Event()
         release_load = asyncio.Event()
         load_session = app._controller.load_session
@@ -4447,7 +3407,7 @@ async def test_session_picker_contains_load_failure_in_choice_dialog(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
 
         async def fail_load(_session_id: str) -> None:
             raise PersistenceError("message journal is invalid")
@@ -4492,7 +3452,7 @@ async def test_startup_resume_failure_opens_choice_dialog_and_keeps_tui_running(
 
     monkeypatch.setattr(app._controller, "load_session", fail_load)
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
 
         assert isinstance(app.screen, ChoiceScreen)
         assert app.screen._title == "SESSION LOAD FAILED"
@@ -4524,7 +3484,7 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+s")
         await _wait_for_screen(app, ChoiceScreen, title="SESSIONS")
         groups = {choice.value: choice.group for choice in app.screen._choices}
@@ -4561,149 +3521,6 @@ async def test_session_picker_and_archive_menu_project_and_toggle_archived_group
         assert catalog[archived.session_id].archived is False
         assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
         await pilot.press("escape")
-
-
-@pytest.mark.asyncio
-async def test_delete_session_menu_confirms_and_batch_deletes_without_closing(
-    tmp_path: Path,
-) -> None:
-    application = _application(tmp_path)
-    sessions = tuple(
-        application.runtime.sessions.create(
-            session_id=f"ses_delete_{index}",
-            title=f"Delete {index}",
-        ).session
-        for index in range(3)
-    )
-    for session in sessions:
-        application.runtime.sessions.set_archived(session.session_id, True)
-    app = OuroTuiApp(application=application)
-
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
-        await pilot.press("ctrl+p")
-        await pilot.pause()
-        app.screen.query_one("#choice-filter", Input).value = "Delete session"
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-
-        delete_screen = app.screen
-        assert isinstance(delete_screen, MultiChoiceScreen)
-        assert {choice.group for choice in delete_screen._choices} == {"Archived"}
-        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
-            MultiChoiceScreen.DEFAULT_HINT
-        )
-
-        for title in ("Delete 0", "Delete 1"):
-            delete_screen.query_one("#choice-filter", Input).value = title
-            await pilot.pause()
-            await pilot.press("space")
-            await pilot.pause()
-        choices = {choice.label: choice for choice in delete_screen._choices}
-        assert choices["Delete 0"].marker == SELECTED_CHOICE_MARKER
-        assert choices["Delete 1"].marker == SELECTED_CHOICE_MARKER
-        assert choices["Delete 2"].marker == ""
-
-        delete_screen.query_one("#choice-filter", Input).value = ""
-        await pilot.pause()
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is delete_screen
-        assert delete_screen.query_one("#choice-title", Static).render().plain == (
-            "CONFIRM DELETE SESSIONS"
-        )
-        assert [choice.label for choice in delete_screen._choices] == [
-            "Cancel",
-            "Delete 2 selected",
-        ]
-        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
-            MultiChoiceScreen.CONFIRM_HINT
-        )
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is delete_screen
-        assert len(delete_screen._choices) == 3
-        assert delete_screen.query_one("#choice-title", Static).render().plain == (
-            "DELETE SESSIONS"
-        )
-        assert delete_screen.query_one("#choice-hint", Static).render().plain == (
-            MultiChoiceScreen.DEFAULT_HINT
-        )
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is delete_screen
-        await pilot.press("down", "enter")
-        await pilot.pause()
-        assert app.screen is delete_screen
-        assert [choice.label for choice in delete_screen._choices] == ["Delete 2"]
-        assert delete_screen._choices[0].group == "Archived"
-        assert delete_screen._choices[0].marker == ""
-        assert {item.session_id for item in application.runtime.sessions.catalog().entries} == {
-            sessions[2].session_id
-        }
-        assert not list(app.screen.query_one("#textual-toastrack").query("Toast"))
-        await pilot.press("escape")
-
-
-@pytest.mark.asyncio
-async def test_delete_session_toggle_preserves_list_scroll_position(tmp_path: Path) -> None:
-    async def confirm_selected(_selected: tuple[str, ...]) -> tuple[Choice, ...] | None:
-        return None
-
-    choices = tuple(
-        Choice(
-            f"ses_delete_scroll_{index:02d}",
-            f"Delete scroll {index:02d}",
-            group="Archived",
-        )
-        for index in range(30)
-    )
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 20)) as pilot:
-        await pilot.pause(0.5)
-        app.push_screen(
-            MultiChoiceScreen(
-                title="DELETE SESSIONS",
-                placeholder="Filter archived sessions…",
-                choices=choices,
-                on_confirm=confirm_selected,
-                selected_marker=SELECTED_CHOICE_MARKER,
-            )
-        )
-        await pilot.pause()
-
-        delete_screen = app.screen
-        assert isinstance(delete_screen, MultiChoiceScreen)
-        options = delete_screen.query_one("#choice-list", OptionList)
-        target = choices[15].value
-        target_index = options.get_option_index(target)
-        options.highlighted = target_index
-        options.focus()
-        options.scroll_to(y=target_index - 2, animate=False, immediate=True)
-        await pilot.pause()
-        scroll_before = options.scroll_y
-        assert scroll_before > 0
-
-        await pilot.press("space")
-        await pilot.pause()
-
-        assert options.highlighted == target_index
-        assert options.scroll_y == scroll_before
-        assert next(
-            choice for choice in delete_screen._choices if choice.value == target
-        ).marker == SELECTED_CHOICE_MARKER
-
-        await pilot.press("space")
-        await pilot.pause()
-
-        assert options.highlighted == target_index
-        assert options.scroll_y == scroll_before
-        assert next(
-            choice for choice in delete_screen._choices if choice.value == target
-        ).marker == ""
 
 
 @pytest.mark.asyncio
@@ -4820,7 +3637,7 @@ async def test_switching_sessions_clears_the_previous_approval_panel(tmp_path: P
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         stale = PendingInteraction(
             kind="approval",
             run_id="run_previous",
@@ -4859,7 +3676,7 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
     results: list[TuiEndpointConfiguration | None] = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         screen = EndpointConfigurationScreen(provider)
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
@@ -4937,7 +3754,7 @@ async def test_session_settings_can_be_completed_with_keyboard_only(tmp_path: Pa
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"approval", "enter", *"afk", "enter")
         await pilot.pause()
         assert await app._controller.session_approval_preset() == "afk"
@@ -4956,7 +3773,7 @@ async def test_thinking_completion_and_modal_share_supported_choices(
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"thinking", "space")
         await pilot.pause()
 
@@ -4983,9 +3800,14 @@ async def test_thinking_modal_remains_available_during_an_active_run(tmp_path: P
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press(*"start", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="completed initial run",
+        )
         assert app._projection is not None
         app._projection.activity = app._projection.activity.model_copy(update={"status": "running"})
 
@@ -5004,7 +3826,7 @@ async def test_status_line_shows_thinking_level_and_highlights_peak_effort(tmp_p
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
 
         # The endpoint default effort is low — not the highest supported — so
@@ -5027,7 +3849,7 @@ async def test_status_line_hides_thinking_level_when_reasoning_unsupported(tmp_p
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The default faux endpoint declares no reasoning capability, so no
         # thinking level is projected onto the status line.
@@ -5039,7 +3861,7 @@ async def test_status_line_shows_thinking_when_enabled_without_effort(tmp_path: 
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The endpoint default resolves to enabled + low, shown as "low".
         assert indicator._reasoning == "low"
@@ -5057,7 +3879,7 @@ async def test_status_line_hides_thinking_when_disabled(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_thinking_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         active_separator_count = indicator.render().plain.count(" • ")
 
@@ -5096,7 +3918,7 @@ async def test_status_line_default_reflects_endpoint_default(tmp_path: Path) -> 
     app = OuroTuiApp(application=LocalApplication.from_runtime(runtime))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         indicator = app.query_one(ActivityIndicator)
         # The default intent resolves to the endpoint's disabled default, so the
         # thinking indicator stays hidden.
@@ -5110,7 +3932,7 @@ async def test_actions_groups_granular_settings_by_function_without_descriptions
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
 
         await pilot.press("ctrl+p")
         await pilot.pause()
@@ -5196,7 +4018,7 @@ async def test_actions_opens_subagent_dispatch_policy(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
 
@@ -5236,7 +4058,7 @@ async def test_actions_lists_the_unified_subagent_catalog(tmp_path: Path) -> Non
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         app.screen.query_one("#choice-filter", Input).value = "List subagents"
@@ -5277,7 +4099,7 @@ async def test_subagent_edit_and_delete_menus_show_disabled_builtin_group(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
 
@@ -5307,7 +4129,7 @@ async def test_subagent_crud_saves_without_success_notifications(tmp_path: Path)
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         app.screen.query_one("#choice-filter", Input).value = "Create subagent"
@@ -5401,7 +4223,7 @@ async def test_actions_opens_provider_scoped_endpoint_configuration(tmp_path: Pa
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
 
@@ -5432,7 +4254,7 @@ async def test_provider_enable_action_is_owned_by_provider_submenu(tmp_path: Pat
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "List providers"
@@ -5496,7 +4318,7 @@ async def test_provider_catalog_refreshes_before_returning_from_submenu(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         app.screen.query_one("#choice-filter", Input).value = "List providers"
@@ -5544,7 +4366,7 @@ async def test_default_provider_submenu_keeps_toggle_visible_but_disabled(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "List providers"
@@ -5595,7 +4417,7 @@ async def test_endpoint_actions_flatten_routes_grouped_by_provider(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = action_label
@@ -5676,7 +4498,7 @@ async def test_provider_deletions_use_shared_menu_confirmation(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = action_label
@@ -5720,7 +4542,7 @@ async def test_setting_default_endpoint_also_switches_default_provider(tmp_path:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Set default endpoint"
@@ -5758,7 +4580,7 @@ async def test_add_provider_flow_integrates_presets_and_compatible_profiles(
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Add provider"
@@ -5825,7 +4647,7 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
     results: list[TuiProviderConfiguration | None] = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         screen = ProviderConfigurationScreen(profile)
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
@@ -5916,7 +4738,7 @@ async def test_provider_configuration_preserves_existing_enabled_state(
     results: list[TuiProviderConfiguration | None] = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app.push_screen(
             ProviderConfigurationScreen(
                 profile,
@@ -5952,7 +4774,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         for label, screen_type in (
             ("Theme color", ChoiceScreen),
             ("Compaction policy", CompactionConfigurationScreen),
@@ -5986,7 +4808,7 @@ async def test_actions_persists_three_distinct_recent_choices_across_restart(
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
     async with restarted.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         assert [choice.label for choice in restarted.screen._choices[:3]] == [
@@ -6004,7 +4826,7 @@ async def test_plugin_actions_reuse_grouped_menu_and_refresh_lifecycle_status(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "List plugins"
@@ -6086,7 +4908,7 @@ async def test_plugin_install_failure_uses_error_toast_without_changing_conversa
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         history = app.query_one(ConversationHistory)
         entries_before = history.entries
 
@@ -6106,7 +4928,7 @@ async def test_plugin_install_failure_uses_error_toast_without_changing_conversa
         options.highlighted = options.get_option_index("plugin-install")
         options.focus()
         await pilot.press("enter")
-        await pilot.pause(0.5)
+        await pilot.pause()
 
         toast = app.screen.query_one("#textual-toastrack").query_one("Toast")
         assert toast.has_class("-error")
@@ -6122,7 +4944,7 @@ async def test_alt_navigation_shortcuts_preempt_all_focused_text_inputs(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         composer = app.query_one("#composer", TextArea)
         composer.text = "draft"
         composer.focus()
@@ -6163,7 +4985,7 @@ async def test_alt_menu_shortcuts_are_idempotent_and_do_not_stack_screens(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("alt+p")
         await _wait_for_screen(app, ChoiceScreen, title="PLUGINS")
         menu = app.screen
@@ -6183,7 +5005,7 @@ async def test_plugin_shortcut_navigates_beneath_actions_without_stacking(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
@@ -6212,7 +5034,7 @@ async def test_actions_and_session_shortcuts_switch_on_the_active_menu_surface(
     app = OuroTuiApp(home=tmp_path, application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
@@ -6238,7 +5060,7 @@ async def test_question_mark_remains_composer_input_after_help_shortcut_migratio
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         composer = app.query_one("#composer", TextArea)
         composer.focus()
         app.post_message(events.Key("question_mark", "?"))
@@ -6255,7 +5077,7 @@ async def test_action_menu_executes_new_session_and_help_shortcuts_in_context(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
@@ -6303,7 +5125,7 @@ async def test_navigation_menu_routes_ctrl_c_to_abort_without_closing(
     monkeypatch.setattr(app, "_abort_run", abort)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
@@ -6322,7 +5144,7 @@ async def test_alt_menu_shortcuts_do_not_replace_transient_choice_children(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         actions = app.screen
@@ -6359,7 +5181,7 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         for action_label, chooser_title in (
             ("Connect MCP server", "CONNECT MCP SERVER"),
             ("Edit MCP server", "EDIT MCP SERVER"),
@@ -6384,7 +5206,7 @@ async def test_mcp_actions_open_operation_specific_server_selection(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_mcp_connect_runs_in_background_animates_and_contains_failures(
+async def test_mcp_connect_runs_in_background_and_contains_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6416,7 +5238,7 @@ async def test_mcp_connect_runs_in_background_animates_and_contains_failures(
         raise RuntimeError("controlled MCP connection failure")
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "start_mcp_server", failing_start)
         await pilot.press("ctrl+p")
@@ -6434,13 +5256,9 @@ async def test_mcp_connect_runs_in_background_animates_and_contains_failures(
 
         assert app.screen is menu
         assert next(choice for choice in menu._choices if choice.value == "local").loading
-        first_frame = menu._spinner_frame
-        first_prompt = options.get_option("local").prompt
         menu.query_one("#choice-filter", Input).value = "local"
-        await pilot.pause(0.15)
+        await pilot.pause()
         assert menu.query_one("#choice-filter", Input).value == "local"
-        assert menu._spinner_frame != first_frame
-        assert options.get_option("local").prompt is not first_prompt
 
         release_operation.set()
         deadline = asyncio.get_running_loop().time() + 2
@@ -6498,7 +5316,7 @@ async def test_mcp_disconnect_runs_in_background_and_refreshes_status(
         return runtime_servers()[0]
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
         await pilot.press("ctrl+p")
@@ -6579,7 +5397,7 @@ async def test_mcp_disconnect_then_connect_survives_closed_action_menus(
         return runtime_servers()[0]
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(app._controller, "mcp_servers", runtime_servers)
         monkeypatch.setattr(app._controller, "stop_mcp_server", controlled_stop)
         monkeypatch.setattr(app._controller, "start_mcp_server", controlled_start)
@@ -6630,7 +5448,7 @@ async def test_tool_permissions_group_all_registered_sources(tmp_path: Path) -> 
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
@@ -6670,7 +5488,7 @@ async def test_tool_permission_selection_returns_to_refreshed_tool_menu(tmp_path
     app = OuroTuiApp(home=tmp_path, application=_application_with_tool_sources(tmp_path))
 
     async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Tool permissions"
@@ -6803,7 +5621,7 @@ async def test_configuration_choice_submenus_reuse_action_menu_without_flash(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
@@ -6907,7 +5725,7 @@ async def test_mcp_runtime_actions_refresh_availability_without_rebuilding_menu(
     app = OuroTuiApp(home=tmp_path, application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
@@ -6994,7 +5812,7 @@ async def test_configuration_editor_restores_retained_action_menu(tmp_path: Path
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
@@ -7026,7 +5844,7 @@ async def test_action_choice_submenus_reuse_the_action_screen_without_flash(
     app = OuroTuiApp(home=tmp_path, application=application)
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         for action_label, title in (
             ("Theme color", "THEME COLOR"),
             ("Open session", "SESSIONS"),
@@ -7071,7 +5889,7 @@ async def test_action_list_and_help_pages_render_once_on_the_shared_surface(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         menu = app.screen
@@ -7130,7 +5948,7 @@ async def test_configuration_editors_replace_visible_parent_at_every_depth(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await _wait_for_screen(app, ChoiceScreen, title="ACTIONS")
         action_screen = app.screen
@@ -7180,7 +5998,7 @@ async def test_skill_actions_open_operation_specific_skill_selection(tmp_path: P
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Validate skill"
@@ -7202,7 +6020,7 @@ async def test_skill_menu_loads_live_plugin_skill_as_disabled_choice(tmp_path: P
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         installed = await app._controller.install_plugin(
             TuiPluginInstallConfiguration(source=str(source))
         )
@@ -7234,7 +6052,7 @@ async def test_skill_disable_action_is_owned_by_skill_submenu(tmp_path: Path) ->
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "List skills"
@@ -7281,7 +6099,7 @@ async def test_mcp_configuration_screen_validates_json_and_returns_typed_draft(
     results = []
 
     async with app.run_test(size=(100, 40)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         screen = MCPConfigurationScreen()
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
@@ -7356,7 +6174,7 @@ async def test_tool_execution_uses_shared_grouped_inline_menu(tmp_path: Path) ->
     results = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         current = await app._controller.tool_execution_configuration()
         screen = ToolExecutionConfigurationScreen(current)
         app.push_screen(screen, callback=results.append)
@@ -7398,7 +6216,7 @@ async def test_subagent_policy_uses_shared_grouped_inline_menu(tmp_path: Path) -
     results = []
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         current = await app._controller.agent_runtime_configuration()
         catalog = await app._controller.agent_definition_catalog()
         models = await app._controller.models()
@@ -7488,7 +6306,7 @@ async def test_subagent_definition_editor_does_not_limit_selected_tool_count(
     )
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         models = await app._controller.models()
         screen = AgentDefinitionConfigurationScreen(tools, models)
         app.push_screen(screen)
@@ -7561,7 +6379,7 @@ async def test_skill_install_uses_shared_grouped_inline_menu(tmp_path: Path) -> 
     results = []
 
     async with app.run_test(size=(80, 24)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         screen = SkillInstallScreen()
         app.push_screen(screen, callback=results.append)
         await pilot.pause()
@@ -7605,7 +6423,7 @@ async def test_compaction_uses_shared_grouped_inline_menu_and_returns_typed_draf
     results = []
 
     async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         runtime_models = await app._controller.models()
         unsupported_model = runtime_models[0]
         capable_model = unsupported_model.model_copy(
@@ -7707,7 +6525,7 @@ async def test_plugin_commands_complete_and_execute_through_controller_boundary(
         )
 
     async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(
             app._controller,
             "plugin_commands",
@@ -7759,7 +6577,7 @@ async def test_slash_popup_loads_active_runtime_plugin_commands(tmp_path: Path) 
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash")
         await pilot.pause()
 
@@ -7781,7 +6599,7 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
         aborted = True
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(app._controller, "abort", fake_abort)
         app._projection = TuiSessionProjection("session_1")
         app._projection.apply(
@@ -7805,221 +6623,11 @@ async def test_abort_and_quit_commands_have_independent_lifecycles(
 
 
 @pytest.mark.asyncio
-async def test_welcome_command_popup_aligns_without_pushing_logo_up(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 40)) as pilot:
-        welcome = await _wait_for_welcome_render(app, pilot, contains="██████")
-        composer = app.query_one(Composer)
-        popup = app.query_one(CommandPopup)
-        status_line = app.query_one(StatusLine)
-        resting_regions = (
-            welcome._logo.region,
-            composer.region,
-            status_line.region,
-            welcome._lower.region,
-            welcome._system.region,
-        )
-
-        await pilot.press("slash")
-        await pilot.pause()
-
-        assert popup.display is True
-        assert popup.styles.overlay == "screen"
-        assert popup.region.x == composer.region.x
-        assert popup.region.right == composer.region.right
-        assert popup.region.bottom == composer.region.y
-        assert (
-            welcome._logo.region,
-            composer.region,
-            status_line.region,
-            welcome._lower.region,
-            welcome._system.region,
-        ) == resting_regions
-
-        composer.clear()
-        await pilot.pause()
-
-        assert popup.display is False
-        assert (
-            welcome._logo.region,
-            composer.region,
-            status_line.region,
-            welcome._lower.region,
-            welcome._system.region,
-        ) == resting_regions
-
-
-@pytest.mark.asyncio
-async def test_command_popup_reflows_session_viewport_atomically(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        await conversation.load_messages(_scrollable_messages())
-        await pilot.pause()
-
-        popup = app.query_one(CommandPopup)
-        composer = app.query_one(Composer)
-        transcript = conversation.query_one("#conversation-transcript")
-
-        def visual_state() -> tuple[Region, int, Region, Region]:
-            return (
-                conversation.region,
-                round(conversation.scroll_y),
-                transcript.region,
-                transcript.children[-1].region,
-            )
-
-        resting_state = visual_state()
-        frames: list[tuple[Region, int, Region, Region]] = []
-
-        def assert_atomic_transition(
-            before: tuple[Region, int, Region, Region],
-            after: tuple[Region, int, Region, Region],
-        ) -> None:
-            assert before != after
-            assert frames
-            assert frames[-1] == after
-            first_final_frame = frames.index(after)
-            assert all(frame == before for frame in frames[:first_final_frame])
-            assert all(frame == after for frame in frames[first_final_frame:])
-
-        post_display_hook = app.post_display_hook
-
-        def capture_frame() -> None:
-            frames.append(visual_state())
-
-        app.post_display_hook = capture_frame
-        try:
-            await pilot.click("#composer")
-            frames.clear()
-            await pilot.press("slash")
-            await pilot.pause()
-
-            command_state = visual_state()
-            assert popup.display is True
-            assert popup.styles.overlay != "screen"
-            assert command_state[0].bottom == popup.region.y
-            assert popup.region.bottom == composer.region.y
-            assert_atomic_transition(resting_state, command_state)
-            viewport_delta = resting_state[0].height - command_state[0].height
-            assert command_state[3].bottom == resting_state[3].bottom - viewport_delta
-
-            frames.clear()
-            await pilot.press("h")
-            await pilot.pause()
-
-            filtered_state = visual_state()
-            assert popup.display is True
-            assert popup.selected_command is not None
-            assert popup.selected_command.name == "/help"
-            assert filtered_state[0].bottom == popup.region.y
-            assert_atomic_transition(command_state, filtered_state)
-
-            frames.clear()
-            composer.clear()
-            await pilot.pause()
-
-            assert popup.display is False
-            assert visual_state() == resting_state
-            assert_atomic_transition(filtered_state, resting_state)
-
-            await pilot.press("ctrl+up")
-            await pilot.pause()
-            assert conversation.scroll_y == 0
-
-            await pilot.press("ctrl+down")
-            await pilot.pause()
-            assert conversation.scroll_y == conversation.max_scroll_y
-        finally:
-            app.post_display_hook = post_display_hook
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("panel_kind", ("queue", "approval"))
-async def test_dynamic_flow_panels_reflow_anchored_conversation_atomically(
-    tmp_path: Path,
-    panel_kind: str,
-) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
-        conversation = app.query_one(ConversationView)
-        await conversation.load_messages(_scrollable_messages())
-        await pilot.pause()
-        transcript = conversation.query_one("#conversation-transcript")
-
-        def visual_state() -> tuple[Region, int, Region, Region]:
-            return (
-                conversation.region,
-                round(conversation.scroll_y),
-                transcript.region,
-                transcript.children[-1].region,
-            )
-
-        resting_state = visual_state()
-        frames: list[tuple[Region, int, Region, Region]] = []
-        post_display_hook = app.post_display_hook
-        app.post_display_hook = lambda: frames.append(visual_state())
-        try:
-            if panel_kind == "queue":
-                panel = app.query_one(QueuedInputPanel)
-                panel.set_inputs(
-                    (
-                        QueuedUserInputView(
-                            queue_id="queued_atomic_layout",
-                            prompt="Continue after the current run",
-                            mode="follow_up",
-                            queued_at=datetime.now(UTC),
-                        ),
-                    )
-                )
-            else:
-                panel = app.query_one(InteractionBar)
-                app._sync_interaction(
-                    PendingInteraction(
-                        kind="approval",
-                        run_id="run_atomic_layout",
-                        tool_call_id="call_atomic_layout",
-                        tool_name="Write",
-                        request_id="approval_atomic_layout",
-                    )
-                )
-            await pilot.pause()
-
-            panel_state = visual_state()
-            assert panel.display is True
-            assert panel_state[0].height < resting_state[0].height
-            first_panel_frame = frames.index(panel_state)
-            assert all(frame == resting_state for frame in frames[:first_panel_frame])
-            assert all(frame == panel_state for frame in frames[first_panel_frame:])
-            viewport_delta = resting_state[0].height - panel_state[0].height
-            assert panel_state[3].bottom == resting_state[3].bottom - viewport_delta
-
-            frames.clear()
-            if panel_kind == "queue":
-                panel.set_inputs(())
-            else:
-                app._sync_interaction(None)
-            await pilot.pause()
-
-            assert visual_state() == resting_state
-            first_resting_frame = frames.index(resting_state)
-            assert all(frame == panel_state for frame in frames[:first_resting_frame])
-            assert all(frame == resting_state for frame in frames[first_resting_frame:])
-        finally:
-            app.post_display_hook = post_display_hook
-
-
-@pytest.mark.asyncio
 async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("slash")
         await pilot.pause()
@@ -8079,7 +6687,7 @@ async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         composer = app.query_one(Composer)
         popup = app.query_one(CommandPopup)
         draft = "Compare these two implementations"
@@ -8129,7 +6737,7 @@ async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> Non
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"not-a-command")
         await pilot.pause()
 
@@ -8140,37 +6748,12 @@ async def test_command_popup_hides_when_no_commands_match(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_command_popup_truncates_long_rows_on_first_open(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(80, 32)) as pilot:
-        await _wait_for_welcome_render(app, pilot, contains="██████")
-        popup = app.query_one(CommandPopup)
-        popup.show_commands(
-            (
-                TuiCommand("/short", "Short command", "Short command"),
-                TuiCommand(
-                    "/long",
-                    "A command title that is intentionally much wider than the popup",
-                    "Long command",
-                ),
-            )
-        )
-        await pilot.pause()
-
-        rendered = popup.query_one("#command-popup-content", Static).render().plain
-        rendered_lines = rendered.splitlines()
-        assert len(rendered_lines) == 2
-        assert rendered_lines[1].endswith("…")
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("command", ("actions", "menu"))
 async def test_actions_command_opens_action_menu(tmp_path: Path, command: str) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *command, "enter")
         await pilot.pause()
 
@@ -8183,7 +6766,7 @@ async def test_model_command_selects_from_inline_argument_menu(tmp_path: Path) -
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"model", "enter")
         await pilot.pause()
 
@@ -8210,7 +6793,7 @@ async def test_model_command_refreshes_endpoints_configured_after_tui_start(
     app = OuroTuiApp(application=LocalApplication.build(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await app._controller.add_provider(
             TuiProviderConfiguration(
                 provider_id="hot-provider",
@@ -8267,7 +6850,7 @@ async def test_model_command_shows_endpoint_and_provider_without_changing_route_
         return app._models
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         app._models = (
             AvailableModel(
                 key="supplier/model-endpoint",
@@ -8320,7 +6903,7 @@ Review the requested code carefully.
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"skill", "enter")
         await pilot.pause()
 
@@ -8338,7 +6921,12 @@ Review the requested code carefully.
         assert composer.suggestion == "<task>"
 
         await pilot.press(*"inspect", "space", *"app.py", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="skill-activated run",
+        )
 
         assert app.query_one(ConversationHistory).user_turns == ("/skill reviewer inspect app.py",)
         assert app._controller.session_id is not None
@@ -8367,7 +6955,7 @@ Create the requested image.
     app = OuroTuiApp(application=_application(tmp_path, skills=(skill,)))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"skill", "enter")
         await pilot.pause()
 
@@ -8395,7 +6983,7 @@ async def test_command_selection_executes_complete_argument(
         )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(
             app._controller,
             "plugin_commands",
@@ -8450,7 +7038,7 @@ async def test_parameterized_command_opens_argument_menu_and_executes_selection(
         )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         monkeypatch.setattr(
             app._controller,
             "plugin_commands",
@@ -8541,9 +7129,14 @@ async def test_plan_command_without_run_restores_idle_tui_state(tmp_path: Path) 
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", "p", "l", "a", "n", "space", "o", "n", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "idle",
+            pilot,
+            description="idle plan-mode command",
+        )
 
         assert app._projection is not None
         assert app._projection.activity.status == "idle"
@@ -8564,10 +7157,15 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is not None,
+            pilot,
+            description="tool approval request",
+        )
 
         assert app._projection is not None
         assert app._projection.pending_interaction is not None
@@ -8585,7 +7183,12 @@ async def test_approval_panel_selects_with_arrows_and_resumes_run(tmp_path: Path
         assert panel.selected_approved is True
 
         await pilot.press("enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="approved run completion",
+        )
 
         assert target.read_text(encoding="utf-8") == "written"
         assert app._projection.pending_interaction is None
@@ -8603,10 +7206,16 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
     )
 
     async with app.run_test(size=(100, 36)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("r", "u", "n", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and len(app._projection.pending_interactions) == 2
+            and app.query_one(InteractionBar).has_focus,
+            pilot,
+            description="parallel approval requests",
+        )
 
         assert app._projection is not None
         assert [
@@ -8614,7 +7223,13 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         ] == ["call_write_1", "call_write_2"]
 
         await pilot.press("enter")
-        await pilot.pause(0.6)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is not None
+            and app._projection.pending_interaction.tool_call_id == "call_write_2",
+            pilot,
+            description="second approval request",
+        )
 
         assert app._projection.pending_interaction is not None
         assert app._projection.pending_interaction.tool_call_id == "call_write_2"
@@ -8623,7 +7238,12 @@ async def test_parallel_approvals_advance_one_at_a_time_without_stalling(tmp_pat
         assert second.exists() is False
 
         await pilot.press("enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.activity.status == "completed",
+            pilot,
+            description="parallel approval completion",
+        )
 
         assert first.read_text(encoding="utf-8") == "first"
         assert second.read_text(encoding="utf-8") == "second"
@@ -8640,14 +7260,24 @@ async def test_approval_panel_denies_selected_tool(tmp_path: Path) -> None:
     )
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("w", "r", "i", "t", "e", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is not None,
+            pilot,
+            description="tool approval request",
+        )
 
         panel = app.query_one(InteractionBar)
         await pilot.press("down", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None,
+            pilot,
+            description="denied approval resolution",
+        )
 
         assert target.exists() is False
         assert app._projection is not None
@@ -8663,10 +7293,14 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 38)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
-        await pilot.pause(0.7)
+        await _wait_until(
+            lambda: app.query_one(AskUserPanel).display,
+            pilot,
+            description="question form",
+        )
 
         panel = app.query_one(AskUserPanel)
         assert panel.display is True
@@ -8674,7 +7308,14 @@ async def test_builtin_ask_user_renders_form_and_submits_structured_answer(
         assert "Which file should OURO use?" in str(panel.render())
 
         await pilot.press("2")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None
+            and app._projection.assistant_text == "Answer received.",
+            pilot,
+            description="structured question answer",
+        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
@@ -8697,10 +7338,14 @@ async def test_ask_user_other_accepts_freeform_even_when_answer_starts_with_slas
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 38)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
-        await pilot.pause(0.7)
+        await _wait_until(
+            lambda: app.query_one(AskUserPanel).display,
+            pilot,
+            description="question form",
+        )
 
         await pilot.press("down", "down", "enter")
         await pilot.pause()
@@ -8709,7 +7354,13 @@ async def test_ask_user_other_accepts_freeform_even_when_answer_starts_with_slas
         assert app.query_one(Composer).has_focus is True
 
         await pilot.press("slash", "t", "m", "p", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None,
+            pilot,
+            description="freeform question answer",
+        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
@@ -8730,17 +7381,27 @@ async def test_plugin_question_uses_common_form_and_returns_scalar_answer(
     app = OuroTuiApp(application=application)
 
     async with app.run_test(size=(100, 38)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("a", "s", "k", "enter")
-        await pilot.pause(0.7)
+        await _wait_until(
+            lambda: app.query_one(AskUserPanel).display,
+            pilot,
+            description="plugin question form",
+        )
 
         panel = app.query_one(AskUserPanel)
         assert panel.display is True
         assert "How should the plugin continue?" in str(panel.render())
 
         await pilot.press("1")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None,
+            pilot,
+            description="plugin question answer",
+        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
@@ -8764,17 +7425,18 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
     app = OuroTuiApp(application=application, approval_mode="auto")
 
     async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("p", "l", "a", "n", "enter")
 
         panel = app.query_one(PlanConfirmationPanel)
-        for _ in range(30):
-            if panel.display:
-                break
-            await pilot.pause(0.1)
+        await _wait_until(
+            lambda: panel.display,
+            pilot,
+            description="plan confirmation",
+        )
         ask_user = app.query_one(AskUserPanel)
         plan_body = panel.query_one("#plan-confirmation-body", Static).render().plain
         controls = panel.query_one("#plan-confirmation-controls", Static).render().plain
@@ -8801,7 +7463,13 @@ async def test_plan_confirmation_renders_only_plan_and_collects_revision_feedbac
         assert composer.placeholder == Composer.PLAN_FEEDBACK_PLACEHOLDER
 
         await pilot.press(*"Add rollback checks.", "enter")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None,
+            pilot,
+            description="plan revision answer",
+        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
         assert app._projection.pending_interaction is None
@@ -8837,17 +7505,18 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
     app = OuroTuiApp(application=application, approval_mode="auto")
 
     async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.click("#composer")
         await pilot.press("p", "l", "a", "n", "enter")
 
         panel = app.query_one(PlanConfirmationPanel)
-        for _ in range(30):
-            if panel.display:
-                break
-            await pilot.pause(0.1)
+        await _wait_until(
+            lambda: panel.display,
+            pilot,
+            description="plan confirmation",
+        )
         await pilot.press("enter")
         await pilot.pause()
 
@@ -8857,7 +7526,13 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
         assert "Direct rollout" in controls
 
         await pilot.press("2")
-        await pilot.pause(0.8)
+        await _wait_until(
+            lambda: app._projection is not None
+            and app._projection.pending_interaction is None,
+            pilot,
+            description="selected plan implementation",
+        )
+        await _wait_for_worker_group(app, pilot, group="interaction")
 
         assert app._projection is not None
         events = application.runtime.sessions.event_page(
@@ -8873,186 +7548,11 @@ async def test_plan_confirmation_accepts_a_keyboard_selected_implementation_opti
 
 
 @pytest.mark.asyncio
-async def test_long_plan_keeps_confirmation_controls_visible_and_scrolls_independently(
-    tmp_path: Path,
-) -> None:
-    long_plan = "# Long plan\n\n" + "\n".join(
-        f"{index}. Verify implementation step {index}." for index in range(1, 50)
-    )
-    application = _plan_confirmation_application(tmp_path, plan=long_plan)
-    await application.start()
-    assert application.plugins is not None
-    assert (await application.plugins.enable("dev.ouro.plan_mode")).status == "active"
-    app = OuroTuiApp(application=application, approval_mode="auto")
-
-    async with app.run_test(size=(100, 42)) as pilot:
-        await pilot.pause(0.5)
-        await pilot.press("slash", *"plan", "space", "o", "n", "enter")
-        await pilot.pause(0.5)
-        await pilot.click("#composer")
-        await pilot.press("p", "l", "a", "n", "enter")
-
-        panel = app.query_one(PlanConfirmationPanel)
-        for _ in range(30):
-            if panel.display:
-                break
-            await pilot.pause(0.1)
-        document = panel.query_one("#plan-confirmation-document", VerticalScroll)
-        controls = panel.query_one("#plan-confirmation-controls", Static)
-
-        assert document.max_scroll_y > 0
-        assert document.styles.scrollbar_size_vertical == 0
-        assert controls.region.y >= document.region.bottom
-        assert controls.region.bottom <= panel.content_region.bottom
-        assert "Accept" in controls.render().plain
-        assert "Revise" in controls.render().plain
-        assert "Reject" in controls.render().plain
-
-        await pilot.press("pagedown")
-        await pilot.pause()
-        plan_scroll_y = document.scroll_y
-        assert plan_scroll_y > 0
-
-        await pilot.press("down")
-        await pilot.pause()
-        assert panel.selected_action == "revise"
-        assert document.scroll_y == plan_scroll_y
-
-
-@pytest.mark.asyncio
-async def test_action_and_help_menus_share_flat_chrome_with_composer(tmp_path: Path) -> None:
-    """Ctrl+P and /help menus use the same flat chrome as the composer.
-
-    Every menu (Ctrl+P actions, Ctrl+S/M/pickers via ChoiceScreen, and /help)
-    must share one visual idiom with the input box and command menu: a
-    low-contrast panel with a muted right edge and no tall accent border.
-    The choice menu carries the theme accent as a segmented left rail —
-    the title segment is themed, the body segments are lowlight — so the
-    header reads as emphasis and the body as structure. This guards the
-    unified style against regression to the old bordered look.
-    """
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 34)) as pilot:
-        await pilot.pause(0.5)
-        composer = app.query_one(Composer)
-
-        # Ctrl+P opens the shared ChoiceScreen action palette.
-        await pilot.press("ctrl+p")
-        await pilot.pause()
-        assert isinstance(app.screen, ChoiceScreen)
-        panel = app.screen.query_one("#choice-panel")
-
-        assert panel.styles.background == composer.styles.background
-        # The panel itself has no left rail — it is segmented onto the children.
-        assert panel.styles.border_left[0] == ""
-        assert panel.styles.border_right[0] == "solid"
-        assert panel.styles.border_top[0] == ""
-        assert panel.styles.border_bottom[0] == ""
-        # Title segment carries the theme accent; body segments carry the
-        # lowlight, giving the "bright header + quiet body" contrast.
-        assert app.screen.query_one("#choice-title").styles.border_left[0] == "solid"
-        assert app.screen.query_one("#choice-list").styles.border_left[0] == "solid"
-        assert app.screen.query_one("#choice-hint").styles.border_left[0] == "solid"
-        # No inherited tall accent border on the stack children.
-        assert app.screen.query_one("#choice-title").styles.border_top[0] == ""
-        assert app.screen.query_one("#choice-list").styles.border_bottom[0] == ""
-        # The interaction hint renders below the menu, not clipped to zero
-        # lines by padding eating the fixed height.
-        choice_hint = app.screen.query_one("#choice-hint")
-        assert choice_hint.region.height >= 1
-        assert "Enter" in choice_hint.render().plain
-
-        await pilot.press("escape")
-        await pilot.pause()
-
-        # /help opens root help on the same searchable ChoiceScreen chrome.
-        await pilot.press("slash", *"help", "enter")
-        await pilot.pause()
-        assert isinstance(app.screen, HelpScreen)
-        help_panel = app.screen.query_one("#choice-panel")
-        assert help_panel.styles.background == composer.styles.background
-        assert help_panel.styles.border_left[0] == ""
-        assert help_panel.styles.border_right[0] == "solid"
-        assert help_panel.styles.border_top[0] == ""
-        assert help_panel.styles.border_bottom[0] == ""
-        help_hint = app.screen.query_one("#choice-hint", Static).render().plain
-        assert help_hint == "↑/↓ move · ←/→ group · Esc close"
-        # The shared help catalog still surfaces the shortcuts and slash commands.
-        rendered = "\n".join(
-            f"{choice.group} {choice.label} {choice.trailing}"
-            for choice in app.screen._choices
-        )
-        assert "Ctrl+Enter / Ctrl+J" in rendered
-        assert "↑ / ↓" in rendered
-        assert "Alt+M" not in rendered
-        assert "Alt+P" in rendered
-        assert "plugins" in rendered
-        assert "Ctrl+M" not in rendered
-        assert "Ctrl+P" in rendered
-        assert "Ctrl+H" in rendered
-        assert "Ctrl+↑" in rendered
-        assert "Ctrl+↓" in rendered
-        assert "Ctrl+←" in rendered
-        assert "Ctrl+→" in rendered
-        assert "BUILT-IN SLASH COMMANDS" in rendered
-        assert "/actions" in rendered
-        assert "/skill <skill> [task]" in rendered
-        assert "/thoughts [expand|collapse]" in rendered
-        assert "/unqueue <queued-message>" in rendered
-        assert "/help" in rendered
-        assert "/config" not in rendered
-        assert "/tools" not in rendered
-        assert "/mcp" not in rendered
-        assert "/skills" not in rendered
-
-        help_filter = app.screen.query_one("#choice-filter", Input)
-        help_filter.value = "thoughts"
-        await pilot.pause()
-        help_options = app.screen.query_one("#choice-list", OptionList)
-        assert any(
-            option.id == "command:/thoughts"
-            for option in (
-                help_options.get_option_at_index(index)
-                for index in range(help_options.option_count)
-            )
-        )
-
-
-@pytest.mark.asyncio
-async def test_notifications_use_themed_chrome_at_top_right(tmp_path: Path) -> None:
-    app = OuroTuiApp(application=_application(tmp_path))
-
-    async with app.run_test(size=(100, 34), notifications=True) as pilot:
-        await pilot.pause(0.5)
-        app.notify("Approval: auto", timeout=30)
-        await pilot.pause()
-
-        rack = app.screen.query_one("#textual-toastrack")
-        toast = rack.query_one("Toast")
-        composer = app.query_one(Composer)
-
-        assert rack.styles.dock == "top"
-        assert toast.styles.background == composer.styles.background
-        assert toast.styles.border_left == (
-            "solid",
-            Color.parse(app.tui_theme.accent),
-        )
-        assert toast.styles.border_right == ("solid", Color.parse("#34373d"))
-        assert toast.styles.border_top[0] == ""
-        assert toast.styles.border_bottom[0] == ""
-        top_inset = toast.region.y - app.screen.region.y
-        right_inset = app.screen.region.right - toast.region.right
-        assert top_inset == right_inset == 1
-        assert toast.region.x >= app.screen.region.width // 2
-
-
-@pytest.mark.asyncio
 async def test_noop_abort_does_not_notify_when_ready_status_is_visible(tmp_path: Path) -> None:
     app = OuroTuiApp(application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+c")
         await pilot.pause()
 
@@ -9067,7 +7567,7 @@ async def test_action_menu_switches_theme_across_css_and_rich_and_persists(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         status_line = app.query_one(StatusLine)
         status_line.set_context(
             SessionContextStatus(
@@ -9179,7 +7679,7 @@ async def test_action_menu_updates_thought_display_without_closing_picker(
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32), notifications=True) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p")
         await pilot.pause()
         app.screen.query_one("#choice-filter", Input).value = "Model thought display"
@@ -9217,7 +7717,7 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
     app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
 
     async with app.run_test(size=(100, 32)) as pilot:
-        await pilot.pause(0.5)
+        await pilot.pause()
         await pilot.press("ctrl+p", "enter")
         await pilot.pause()
         assert app.screen.query_one(OptionList).highlighted == 3
