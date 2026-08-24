@@ -11,6 +11,7 @@ from ouro.config.provider_models import (
     default_api_path,
     provider_protocol_spec,
     validate_reasoning_protocol_compatibility,
+    validate_request_options,
 )
 from ouro.config.reasoning import EndpointReasoningConfig
 from ouro.core.adapter import RuntimeAdapter
@@ -157,8 +158,16 @@ def _model_metadata(
     if options.temperature is not None and not 0.0 <= options.temperature <= 2.0:
         raise ConfigError("temperature must be between 0 and 2")
 
+    supports_structured_output = (
+        False if options.supports_structured_output is None else options.supports_structured_output
+    )
     reasoning = options.reasoning or EndpointReasoningConfig()
     try:
+        validate_request_options(
+            protocol,
+            options.extra or {},
+            supports_structured_output=supports_structured_output,
+        )
         reasoning.validate_request_options(options.extra or {})
         validate_reasoning_protocol_compatibility(protocol, reasoning)
     except ValueError as exc:
@@ -178,9 +187,7 @@ def _model_metadata(
             supports_streaming=True
             if options.supports_streaming is None
             else options.supports_streaming,
-            supports_structured_output=False
-            if options.supports_structured_output is None
-            else options.supports_structured_output,
+            supports_structured_output=supports_structured_output,
             reasoning=reasoning.capability,
             reasoning_request=options.reasoning_request or ReasoningRequest(),
         )

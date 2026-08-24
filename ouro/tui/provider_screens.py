@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 from ouro.application.configuration_models import (
@@ -77,6 +78,9 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
     ) -> None:
         self._profile = profile
         self._existing = existing
+        provider_options = _json_text(
+            existing.provider_options if existing is not None else {}
+        )
         self._values = {
             "provider-api-key": "",
             "provider-api-key-env": _credential_environment(profile, existing),
@@ -92,6 +96,7 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             )
             or "",
             "provider-timeout": str(existing.timeout if existing is not None else 60.0),
+            "provider-options": provider_options,
         }
         super().__init__(
             title="EDIT PROVIDER" if existing is not None else "ADD PROVIDER",
@@ -147,6 +152,10 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             self._values["provider-timeout"],
             "Request timeout",
         )
+        provider_options = _json_object(
+            self._values["provider-options"],
+            "Request defaults",
+        )
         return TuiProviderConfiguration(
             provider_id=provider_id,
             provider_type=self._profile.provider_type,
@@ -155,6 +164,12 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
             api_key=api_key or None,
             api_key_env=api_key_env or None,
             timeout=timeout,
+            provider_options=(
+                None
+                if self._existing is not None
+                and provider_options == self._existing.provider_options
+                else provider_options
+            ),
             enabled=self._existing.enabled if self._existing is not None else True,
             make_default=False,
         )
@@ -224,6 +239,14 @@ class ProviderConfigurationScreen(EditableChoiceScreen):
                 edit_value=self._values["provider-timeout"],
             ),
             Choice(
+                "provider-options",
+                "Request defaults",
+                trailing=_json_summary(self._values["provider-options"]),
+                group="REQUEST",
+                edit_value=self._values["provider-options"],
+                edit_placeholder="Enter a JSON object",
+            ),
+            Choice(
                 "provider-save",
                 "Save",
                 trailing=error,
@@ -252,6 +275,7 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
     ) -> None:
         self._provider = provider
         self._existing = existing
+        request_options = _json_text(existing.request_options if existing is not None else {})
         self._values = {
             "endpoint-id": existing.endpoint_id if existing is not None else "",
             "endpoint-model-id": existing.model_id if existing is not None else "",
@@ -261,9 +285,10 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             "endpoint-max-output": str(
                 existing.max_output_tokens if existing is not None else 8192
             ),
+            "endpoint-request-options": request_options,
         }
         self._capabilities = {
-            "endpoint-tools": existing.supports_tools if existing is not None else True,
+            "endpoint-tools": existing.supports_tools if existing is not None else False,
             "endpoint-vision": existing.supports_vision if existing is not None else False,
             "endpoint-streaming": (
                 existing.supports_streaming if existing is not None else True
@@ -321,6 +346,10 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
         )
         if max_output_tokens > context_window:
             raise ValueError("Max output tokens cannot exceed the context window")
+        request_options = _json_object(
+            self._values["endpoint-request-options"],
+            "Request options",
+        )
         return TuiEndpointConfiguration(
             provider_id=self._provider.provider_id,
             endpoint_id=endpoint_id,
@@ -331,6 +360,11 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
             supports_vision=self._capabilities["endpoint-vision"],
             supports_streaming=self._capabilities["endpoint-streaming"],
             supports_structured_output=self._capabilities["endpoint-structured-output"],
+            request_options=(
+                None
+                if self._existing is not None and request_options == self._existing.request_options
+                else request_options
+            ),
         )
 
     def _validation_error(self) -> str:
@@ -401,6 +435,14 @@ class EndpointConfigurationScreen(EditableChoiceScreen):
                 group="CAPABILITIES",
             ),
             Choice(
+                "endpoint-request-options",
+                "Request options",
+                trailing=_json_summary(self._values["endpoint-request-options"]),
+                group="REQUEST",
+                edit_value=self._values["endpoint-request-options"],
+                edit_placeholder="Enter a JSON object",
+            ),
+            Choice(
                 "endpoint-save",
                 "Save",
                 trailing=error,
@@ -444,6 +486,31 @@ def _credential_environment(
         if reference != "none":
             return ""
     return profile.credential_env or ""
+
+
+def _json_text(value: dict[str, object]) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _json_object(raw: str, label: str) -> dict[str, object]:
+    normalized = raw.strip()
+    if not normalized:
+        return {}
+    try:
+        parsed = json.loads(normalized)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label} must be valid JSON") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{label} must be a JSON object")
+    return dict(parsed)
+
+
+def _json_summary(raw: str) -> str:
+    try:
+        value = _json_object(raw, "Request options")
+    except ValueError:
+        return "Invalid JSON"
+    return "None" if not value else f"{len(value)} fields"
 
 
 def _positive_int(raw: str, label: str) -> int:

@@ -3698,8 +3698,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
             "CAPABILITIES",
             "CAPABILITIES",
             "CAPABILITIES",
+            "REQUEST",
             "ACTIONS",
         ]
+        assert screen._capabilities["endpoint-tools"] is False
 
         options = screen.query_one("#choice-list", OptionList)
         for field_id, value in (
@@ -3734,6 +3736,18 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert screen._capabilities["endpoint-vision"] is True
         assert screen._capabilities["endpoint-streaming"] is True
 
+        screen._values["endpoint-request-options"] = "[]"
+        screen._choices = screen._endpoint_choices()
+        screen._refresh_options(needle="", preferred_value="endpoint-request-options")
+        assert options.get_option("endpoint-save").disabled is True
+        save_choice = next(choice for choice in screen._choices if choice.value == "endpoint-save")
+        assert "JSON object" in save_choice.trailing
+
+        screen._values["endpoint-request-options"] = '{"seed":7}'
+        screen._choices = screen._endpoint_choices()
+        screen._refresh_options(needle="", preferred_value="endpoint-save")
+        assert options.get_option("endpoint-save").disabled is False
+
         options.highlighted = options.get_option_index("endpoint-save")
         await pilot.press("enter")
         await pilot.pause()
@@ -3746,8 +3760,10 @@ async def test_endpoint_configuration_screen_is_provider_scoped_and_validates_dr
         assert draft.model_id == "provider-model"
         assert draft.context_window == 100
         assert draft.max_output_tokens == 50
+        assert draft.supports_tools is False
         assert draft.supports_vision is True
         assert draft.supports_streaming is True
+        assert draft.request_options == {"seed": 7}
 
 
 @pytest.mark.asyncio
@@ -4711,12 +4727,14 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
             "ADVANCED",
             "ADVANCED",
             "ADVANCED",
+            "REQUEST",
             "ACTIONS",
         ]
         assert screen._values["provider-api-key-env"] == "GATEWAY_API_KEY"
         assert screen._values["provider-base-url"] == "https://gateway.example.invalid/v1"
         assert screen._values["provider-api-path"] == "/chat/completions"
         assert screen._values["provider-timeout"] == "60.0"
+        assert screen._values["provider-options"] == "{}"
 
         options.highlighted = options.get_option_index("provider-api-key")
         options.focus()
@@ -4742,6 +4760,12 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         assert options.get_option("provider-save").disabled is True
 
         screen._values["provider-base-url"] = "https://gateway.invalid/v1"
+        screen._values["provider-options"] = "[]"
+        screen._choices = screen._provider_choices()
+        screen._refresh_options(needle="", preferred_value="provider-options")
+        assert options.get_option("provider-save").disabled is True
+
+        screen._values["provider-options"] = '{"tool_choice":"none","top_p":0.8}'
         screen._choices = screen._provider_choices()
         screen._refresh_options(needle="", preferred_value="provider-save")
         assert options.get_option("provider-save").disabled is False
@@ -4754,6 +4778,46 @@ async def test_provider_configuration_uses_shared_grouped_inline_menu(
         assert draft.api_key == "prpasted on two linese"
         assert draft.api_key_env is None
         assert draft.enabled is True
+        assert draft.provider_options == {"tool_choice": "none", "top_p": 0.8}
+
+
+def test_provider_editors_preserve_redacted_request_options_when_unchanged(
+    tmp_path: Path,
+) -> None:
+    configuration = ConfigurationFacade(tmp_path)
+    configuration.add_provider(
+        "gateway",
+        provider_type="openai-compatible",
+        base_url="https://gateway.example.invalid/v1",
+        provider_options={"api_key": "request-secret", "top_p": 0.8},
+    )
+    configuration.save_endpoint(
+        "gateway",
+        "chat",
+        model="gateway-model",
+        request_options={"nested": {"password": "endpoint-secret"}, "seed": 7},
+    )
+    provider = configuration.provider("gateway")
+    endpoint = configuration.endpoint("gateway", "chat")
+    profile = ProviderSetupProfile(
+        provider_type="openai-compatible",
+        default_provider_id="gateway",
+        display_name="Gateway",
+        description="Test gateway",
+        base_url="https://gateway.example.invalid/v1",
+        api_path="/chat/completions",
+        credential_env=None,
+        endpoint_count=1,
+        preset=False,
+    )
+
+    provider_draft = ProviderConfigurationScreen(profile, provider)._draft()
+    endpoint_draft = EndpointConfigurationScreen(provider, endpoint)._draft()
+
+    assert provider.provider_options == {"api_key": "***", "top_p": 0.8}
+    assert endpoint.request_options == {"nested": {"password": "***"}, "seed": 7}
+    assert provider_draft.provider_options is None
+    assert endpoint_draft.request_options is None
 
 
 @pytest.mark.asyncio

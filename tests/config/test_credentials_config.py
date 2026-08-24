@@ -13,6 +13,7 @@ from ouro.config import (
     endpoint_config_to_public_dict,
     mapped_reasoning,
     openai_effort_reasoning,
+    provider_config_to_public_dict,
 )
 from ouro.config.endpoints import endpoint_config_from_mapping
 from ouro.config.provider_models import default_api_path
@@ -66,6 +67,65 @@ def test_endpoint_public_output_redacts_sensitive_extension_values() -> None:
         "seed": 7,
     }
     assert public["reasoning"]["profile"]["variants"]["enabled"]["thinking"]["password"] == "***"
+
+
+def test_provider_options_are_redacted_in_public_output() -> None:
+    public = provider_config_to_public_dict(
+        ProviderConfig(
+            provider_id="custom",
+            provider_type="openai-compatible",
+            protocol="openai-chat-completions",
+            extra={
+                "api_key": "secret-value",
+                "nested": {"password": "password-value"},
+                "top_p": 0.8,
+            },
+        )
+    )
+
+    assert public["provider_options"] == {
+        "api_key": "***",
+        "nested": {"password": "***"},
+        "top_p": 0.8,
+    }
+
+
+def test_provider_options_are_replaceable_defaults_with_owned_field_validation(
+    tmp_path,
+) -> None:
+    manager = ProviderConfigManager(tmp_path)
+    created = manager.create_provider(
+        "custom",
+        provider_type="openai-compatible",
+        base_url="https://example.test/v1",
+        provider_options={"tool_choice": "none", "top_p": 0.8},
+    )
+
+    assert created.extra == {"tool_choice": "none", "top_p": 0.8}
+    assert manager.update_provider("custom", timeout_seconds=30).extra == created.extra
+
+    endpoint = manager.upsert_endpoint(
+        "custom",
+        "chat",
+        model_id="custom-model",
+    )
+    assert endpoint.supports_tools is False
+
+    updated = manager.update_provider(
+        "custom",
+        provider_options={"top_p": 0.9},
+    )
+    assert updated.extra == {"top_p": 0.9}
+    assert manager.update_provider("custom", provider_options={}).extra == {}
+
+    with pytest.raises(ConfigError, match="protocol-owned fields: model"):
+        manager.update_provider(
+            "custom",
+            provider_options={"model": "wrong-model"},
+        )
+    configured = manager.get_provider("custom")
+    assert configured is not None
+    assert configured.extra == {}
 
 
 def test_provider_config_manager_resolves_configured_default(tmp_path) -> None:

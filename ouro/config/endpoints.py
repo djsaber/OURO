@@ -49,7 +49,7 @@ class ProviderEndpointConfig(OuroModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     context_window: int = Field(default=128_000, ge=1)
     max_output_tokens: int = Field(default=8192, ge=1)
-    supports_tools: bool = True
+    supports_tools: bool = False
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
@@ -155,6 +155,17 @@ def endpoint_config_to_public_dict(endpoint: ProviderEndpointConfig) -> dict[str
     return public
 
 
+def redact_sensitive_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a recursively redacted copy suitable for public configuration views."""
+
+    return {
+        str(key): (
+            "***" if str(key).casefold() in _SENSITIVE_PUBLIC_KEYS else _redact_public_value(item)
+        )
+        for key, item in value.items()
+    }
+
+
 def _optional_str(value: object) -> str | None:
     if isinstance(value, str) and value.strip():
         return value.strip()
@@ -163,14 +174,7 @@ def _optional_str(value: object) -> str | None:
 
 def _redact_public_value(value: object) -> object:
     if isinstance(value, Mapping):
-        return {
-            str(key): (
-                "***"
-                if str(key).casefold() in _SENSITIVE_PUBLIC_KEYS
-                else _redact_public_value(item)
-            )
-            for key, item in value.items()
-        }
+        return redact_sensitive_mapping(value)
     if isinstance(value, list | tuple):
         return [_redact_public_value(item) for item in value]
     return value

@@ -268,6 +268,7 @@ class ConfigurationFacade:
         api_key_env: str | None = None,
         timeout: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         retry_max_attempts: int | None = None,
         retry_initial_backoff_seconds: float | None = None,
         retry_max_backoff_seconds: float | None = None,
@@ -296,6 +297,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
                 make_default=make_default,
             )
@@ -315,6 +317,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
             )
         return self.provider_catalog(
@@ -333,6 +336,7 @@ class ConfigurationFacade:
         api_key_env: str | None = None,
         timeout: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         retry_max_attempts: int | None = None,
         retry_initial_backoff_seconds: float | None = None,
         retry_max_backoff_seconds: float | None = None,
@@ -362,6 +366,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
                 make_default=make_default,
             )
@@ -380,6 +385,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
                 make_default=make_default,
             )
@@ -397,6 +403,7 @@ class ConfigurationFacade:
         api_key_env: str | None = None,
         timeout: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderCatalogView:
@@ -421,6 +428,7 @@ class ConfigurationFacade:
             api_key_env=api_key_env,
             timeout_seconds=timeout,
             retry_policy=retry_policy,
+            provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
         )
@@ -441,6 +449,7 @@ class ConfigurationFacade:
         api_key_env: str | None = None,
         timeout: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         retry_max_attempts: int | None = None,
         retry_initial_backoff_seconds: float | None = None,
         retry_max_backoff_seconds: float | None = None,
@@ -469,6 +478,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
                 make_default=make_default,
             )
@@ -488,6 +498,7 @@ class ConfigurationFacade:
                 api_key_env=api_key_env,
                 timeout_seconds=timeout,
                 retry_policy=retry_policy,
+                provider_options=provider_options,
                 enabled=enabled,
             )
         return self.provider_catalog(

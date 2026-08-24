@@ -83,6 +83,7 @@ class ProviderView(ApplicationDTO):
     retry_policy: ProviderRetryPolicy
     base_url: str | None = None
     api_path: str | None = None
+    provider_options: dict[str, Any] = Field(default_factory=dict)
     default: bool = False
     default_endpoint: str | None = None
     endpoints: list[ProviderEndpointView] = Field(default_factory=list)

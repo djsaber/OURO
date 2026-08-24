@@ -11,6 +11,7 @@ from ouro.config.endpoints import (
     endpoint_config_from_mapping,
     endpoint_config_to_public_dict,
     endpoint_config_to_raw,
+    redact_sensitive_mapping,
 )
 from ouro.config.provider_models import (
     SUPPORTED_PROVIDER_PROTOCOLS,
@@ -60,6 +61,7 @@ def provider_config_to_public_dict(
         "default": is_default,
         "default_endpoint": provider.default_endpoint,
         "endpoint_count": len(provider.endpoints),
+        "provider_options": redact_sensitive_mapping(provider.extra),
         "endpoints": [
             {
                 **endpoint_config_to_public_dict(endpoint),

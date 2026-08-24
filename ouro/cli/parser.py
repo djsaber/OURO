@@ -1355,6 +1355,12 @@ def _add_provider_mutation_args(
         "--api-path",
         help="Provider API path used as the default for endpoints",
     )
+    parser.add_argument(
+        "--provider-options",
+        type=_json_object,
+        metavar="JSON",
+        help="Additional request body defaults inherited by provider endpoints",
+    )
     credentials = parser.add_mutually_exclusive_group()
     credentials.add_argument(
         "--api-key",
@@ -1781,7 +1787,7 @@ def _json_object(value: str) -> dict[str, object]:
     except json.JSONDecodeError as exc:
         raise argparse.ArgumentTypeError(f"invalid JSON: {exc}") from exc
     if not isinstance(parsed, dict):
-        raise argparse.ArgumentTypeError("request options must be a JSON object")
+        raise argparse.ArgumentTypeError("value must be a JSON object")
     return parsed
 
 

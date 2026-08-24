@@ -127,6 +127,31 @@ _PROVIDER_PROTOCOL_SPECS: dict[ProviderProtocol, ProviderProtocolSpec] = {
     ),
 }
 
+_PROTOCOL_OWNED_REQUEST_FIELDS: dict[ProviderProtocol, frozenset[str]] = {
+    "faux": frozenset(),
+    "openai-chat-completions": frozenset(
+        {
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "temperature",
+            "tools",
+        }
+    ),
+    "anthropic-messages": frozenset(
+        {
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "system",
+            "temperature",
+            "tools",
+        }
+    ),
+}
+
 
 def provider_type_spec(provider_type: ProviderType) -> ProviderTypeSpec:
     try:
@@ -158,6 +183,29 @@ def resolve_provider_protocol(
 
 def default_api_path(protocol: ProviderProtocol) -> str | None:
     return provider_protocol_spec(protocol).default_api_path
+
+
+def validate_request_options(
+    protocol: ProviderProtocol,
+    request_options: dict[str, Any],
+    *,
+    supports_structured_output: bool | None = None,
+) -> None:
+    """Reject request fields owned by the protocol adapter or endpoint contract."""
+
+    if protocol == "faux" and request_options:
+        raise ValueError("faux protocol does not accept request options")
+    collisions = sorted(_PROTOCOL_OWNED_REQUEST_FIELDS[protocol].intersection(request_options))
+    if collisions:
+        raise ValueError(
+            "request options conflict with protocol-owned fields: " + ", ".join(collisions)
+        )
+    if (
+        protocol == "openai-chat-completions"
+        and supports_structured_output is False
+        and "response_format" in request_options
+    ):
+        raise ValueError("response_format requires an endpoint with structured output support")
 
 
 def validate_reasoning_protocol_compatibility(
@@ -229,8 +277,16 @@ class ProviderConfig(OuroModel):
     @model_validator(mode="after")
     def _validate_provider(self) -> ProviderConfig:
         resolve_provider_protocol(self.provider_type, self.protocol)
+        validate_request_options(self.protocol, self.extra)
         for endpoint in self.endpoints:
             validate_reasoning_protocol_compatibility(self.protocol, endpoint.reasoning)
+            request_options = {**self.extra, **endpoint.request_options}
+            validate_request_options(
+                self.protocol,
+                request_options,
+                supports_structured_output=endpoint.supports_structured_output,
+            )
+            endpoint.reasoning.validate_request_options(request_options)
         endpoint_ids = [endpoint.endpoint_id for endpoint in self.endpoints]
         if len(set(endpoint_ids)) != len(endpoint_ids):
             raise ValueError("endpoint ids must be unique")
@@ -297,7 +353,11 @@ def normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
     """Install built-in provider defaults without performing persistence work."""
 
     if provider.protocol == "faux" and not provider.endpoints:
-        endpoint = ProviderEndpointConfig(endpoint_id="faux", model_id="faux")
+        endpoint = ProviderEndpointConfig(
+            endpoint_id="faux",
+            model_id="faux",
+            supports_tools=True,
+        )
         return ProviderConfig.model_validate(
             provider.model_copy(
                 update={
@@ -310,7 +370,11 @@ def normalize_provider_config(provider: ProviderConfig) -> ProviderConfig:
 
 
 def builtin_faux_provider() -> ProviderConfig:
-    endpoint = ProviderEndpointConfig(endpoint_id="faux", model_id="faux")
+    endpoint = ProviderEndpointConfig(
+        endpoint_id="faux",
+        model_id="faux",
+        supports_tools=True,
+    )
     return ProviderConfig(
         provider_id=BUILTIN_FAUX_PROVIDER_ID,
         provider_type="faux",

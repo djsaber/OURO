@@ -215,6 +215,7 @@ def show_provider_config(
                 f"Protocol: {public['protocol']}",
                 f"Credential: {public['credential']}",
                 f"Timeout: {public['timeout']}",
+                "Request defaults: " + json.dumps(public["provider_options"], ensure_ascii=False),
                 f"Enabled: {'yes' if public['enabled'] else 'no'}",
                 f"Default provider: {'yes' if public['default'] else 'no'}",
                 f"Default endpoint: {public['default_endpoint'] or '-'}",
@@ -239,6 +240,7 @@ def mutate_provider_config(
     api_key: str | None = None,
     api_key_env: str | None = None,
     timeout: float | None = None,
+    provider_options: Mapping[str, Any] | None = None,
     retry_max_attempts: int | None = None,
     retry_initial_backoff_seconds: float | None = None,
     retry_max_backoff_seconds: float | None = None,
@@ -259,6 +261,7 @@ def mutate_provider_config(
                 api_key=api_key,
                 api_key_env=api_key_env,
                 timeout=timeout,
+                provider_options=provider_options,
                 retry_max_attempts=retry_max_attempts,
                 retry_initial_backoff_seconds=retry_initial_backoff_seconds,
                 retry_max_backoff_seconds=retry_max_backoff_seconds,
@@ -281,6 +284,7 @@ def mutate_provider_config(
                     api_key=api_key,
                     api_key_env=api_key_env,
                     timeout=timeout,
+                    provider_options=provider_options,
                     retry_max_attempts=retry_max_attempts,
                     retry_initial_backoff_seconds=retry_initial_backoff_seconds,
                     retry_max_backoff_seconds=retry_max_backoff_seconds,
@@ -299,6 +303,7 @@ def mutate_provider_config(
                     api_key=api_key,
                     api_key_env=api_key_env,
                     timeout=timeout,
+                    provider_options=provider_options,
                     retry_max_attempts=retry_max_attempts,
                     retry_initial_backoff_seconds=retry_initial_backoff_seconds,
                     retry_max_backoff_seconds=retry_max_backoff_seconds,
@@ -459,6 +464,9 @@ def show_provider_endpoint(
     for key, value in public.items():
         if key not in {"endpoint_id", "request_options", "metadata"}:
             lines.append(f"{key}: {value}")
+    lines.append(
+        "request_options: " + json.dumps(public.get("request_options", {}), ensure_ascii=False)
+    )
     print("\n".join(lines))
     return 0
 
@@ -597,6 +605,7 @@ def _provider_to_public(provider: ProviderView) -> dict[str, Any]:
         "timeout": provider.timeout,
         "base_url": provider.base_url,
         "api_path": provider.api_path,
+        "provider_options": provider.provider_options,
         "default": provider.default,
         "default_endpoint": provider.default_endpoint,
         "endpoint_count": provider.endpoint_count,

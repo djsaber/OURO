@@ -130,7 +130,11 @@ def test_factory_rejects_unfulfillable_reasoning_requests(
 @pytest.mark.asyncio
 async def test_configured_endpoint_drives_model_metadata_and_provider_request(tmp_path) -> None:
     manager = ProviderConfigManager(tmp_path)
-    manager.create_provider("glm", provider_type="openai-compatible")
+    manager.create_provider(
+        "glm",
+        provider_type="openai-compatible",
+        provider_options={"seed": 1, "tool_choice": "none", "top_p": 0.8},
+    )
     manager.upsert_endpoint(
         "glm",
         "reasoning",
@@ -185,7 +189,21 @@ async def test_configured_endpoint_drives_model_metadata_and_provider_request(tm
     assert payload["reasoning_effort"] == "high"
     assert payload["stream"] is False
     assert payload["seed"] == 7
+    assert payload["tool_choice"] == "none"
+    assert payload["top_p"] == 0.8
     assert "tools" not in payload
+
+
+def test_factory_rejects_request_fields_owned_by_protocol_adapter() -> None:
+    with pytest.raises(ConfigError, match="protocol-owned fields: messages, model"):
+        build_runtime_adapter(
+            ProviderRuntimeOptions(
+                protocol="openai-chat-completions",
+                model="test-model",
+                base_url="https://example.test/v1",
+                extra={"messages": [], "model": "wrong-model"},
+            )
+        )
 
 
 @pytest.mark.asyncio

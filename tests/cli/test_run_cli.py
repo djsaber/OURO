@@ -1749,6 +1749,8 @@ def test_provider_commands_manage_config_and_runtime_default(
             "OURO_TEST_KEY",
             "--timeout",
             "7",
+            "--provider-options",
+            '{"nested":{"password":"body-secret"},"seed":1,"top_p":0.8}',
             "--json",
         ]
     )
@@ -1757,6 +1759,11 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert set_code == 0
     assert set_payload["provider"]["provider_id"] == "glm"
     assert set_payload["provider"]["credential"] == "env:OURO_TEST_KEY"
+    assert set_payload["provider"]["provider_options"] == {
+        "nested": {"password": "***"},
+        "seed": 1,
+        "top_p": 0.8,
+    }
 
     endpoint_code = main(
         [
@@ -1769,6 +1776,8 @@ def test_provider_commands_manage_config_and_runtime_default(
             str(tmp_path),
             "--model",
             "glm-test",
+            "--request-options",
+            '{"seed":7}',
             "--default",
             "--json",
         ]
@@ -1797,6 +1806,7 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert show_code == 0
     assert "secret" not in show_output
     assert show_payload["provider"]["base_url"] == "https://example.test/v1"
+    assert show_payload["provider"]["provider_options"]["top_p"] == 0.8
 
     runtime = build_default_runtime(tmp_path)
 
@@ -1807,6 +1817,27 @@ def test_provider_commands_manage_config_and_runtime_default(
     assert provider.base_url == "https://example.test/v1"
     assert provider.api_key == "secret"
     assert provider.timeout == 7
+    assert provider.request_options == {
+        "nested": {"password": "body-secret"},
+        "seed": 7,
+        "top_p": 0.8,
+    }
+
+    update_code = main(
+        [
+            "provider",
+            "update",
+            "glm",
+            "--home",
+            str(tmp_path),
+            "--provider-options",
+            "{}",
+            "--json",
+        ]
+    )
+    update_payload = json.loads(capsys.readouterr().out)
+    assert update_code == 0
+    assert update_payload["provider"]["provider_options"] == {}
 
 
 def test_provider_endpoint_commands_manage_capabilities(tmp_path, monkeypatch, capsys) -> None:

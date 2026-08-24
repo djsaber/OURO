@@ -567,6 +567,7 @@ def _provider_command(args: argparse.Namespace) -> int:
             api_key=args.api_key,
             api_key_env=args.api_key_env,
             timeout=args.timeout,
+            provider_options=args.provider_options,
             retry_max_attempts=args.retry_attempts,
             retry_initial_backoff_seconds=args.retry_initial_backoff,
             retry_max_backoff_seconds=args.retry_max_backoff,

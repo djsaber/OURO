@@ -227,6 +227,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         max_output_tokens=16_000,
         supports_tools=True,
         supports_vision=True,
+        request_options={"seed": 7},
     )
 
     try:
@@ -239,6 +240,7 @@ async def test_controller_configures_provider_endpoint_through_application_facad
         assert saved.max_output_tokens == 16_000
         assert saved.supports_tools is True
         assert saved.supports_vision is True
+        assert saved.request_options == {"seed": 7}
         assert "custom/new" in {model.key for model in await controller.models()}
         with pytest.raises(ConfigError, match="already exists"):
             await controller.add_endpoint(draft)
@@ -249,11 +251,13 @@ async def test_controller_configures_provider_endpoint_through_application_facad
                     **draft.__dict__,
                     "model_id": "new-model-v2",
                     "supports_structured_output": True,
+                    "request_options": {"seed": 9},
                 }
             )
         )
         assert changed.model_id == "new-model-v2"
         assert changed.supports_structured_output is True
+        assert changed.request_options == {"seed": 9}
         assert (await controller.use_endpoint("custom", "new")).default is True
         await controller.remove_endpoint("custom", "new")
         endpoints = (await controller.provider_endpoints("custom")).endpoints
@@ -288,12 +292,14 @@ async def test_controller_configures_preset_and_compatible_providers(
                 api_key=None,
                 api_key_env="PRIVATE_OPENAI_KEY",
                 timeout=45.0,
+                provider_options={"service_tier": "flex"},
                 make_default=True,
             )
         )
         assert preset.default is True
         assert preset.endpoint_count == 3
         assert preset.credential.reference == "env:PRIVATE_OPENAI_KEY"
+        assert preset.provider_options == {"service_tier": "flex"}
 
         compatible = await controller.add_provider(
             TuiProviderConfiguration(
@@ -304,10 +310,12 @@ async def test_controller_configures_preset_and_compatible_providers(
                 api_key=None,
                 api_key_env="GATEWAY_KEY",
                 timeout=30.0,
+                provider_options={"tool_choice": "none", "top_p": 0.8},
             )
         )
         assert compatible.endpoint_count == 0
         assert compatible.protocol == "anthropic-messages"
+        assert compatible.provider_options == {"tool_choice": "none", "top_p": 0.8}
 
         disabled = await controller.set_provider_enabled("gateway", enabled=False)
         assert disabled.enabled is False

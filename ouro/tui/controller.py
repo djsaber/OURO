@@ -191,6 +191,7 @@ class TuiProviderConfiguration:
     api_key: str | None
     api_key_env: str | None
     timeout: float
+    provider_options: dict[str, object] | None = None
     enabled: bool = True
     make_default: bool = False
 
@@ -208,6 +209,7 @@ class TuiEndpointConfiguration:
     supports_vision: bool = False
     supports_streaming: bool = True
     supports_structured_output: bool = False
+    request_options: dict[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -787,6 +789,7 @@ class TuiController:
             api_key=draft.api_key,
             api_key_env=draft.api_key_env,
             timeout=draft.timeout,
+            provider_options=draft.provider_options,
             enabled=draft.enabled,
             make_default=draft.make_default,
         )
@@ -812,6 +815,7 @@ class TuiController:
             api_key=draft.api_key,
             api_key_env=draft.api_key_env,
             timeout=draft.timeout,
+            provider_options=draft.provider_options,
             enabled=draft.enabled,
             make_default=draft.make_default,
         )
@@ -883,6 +887,7 @@ class TuiController:
             supports_vision=draft.supports_vision,
             supports_streaming=draft.supports_streaming,
             supports_structured_output=draft.supports_structured_output,
+            request_options=draft.request_options,
         )
         return next(
             endpoint for endpoint in catalog.endpoints if endpoint.endpoint_id == draft.endpoint_id

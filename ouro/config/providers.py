@@ -145,6 +145,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
     ) -> ProviderConfig:
         """Create a new empty provider and fail if its id already exists."""
@@ -169,6 +170,7 @@ class ProviderConfigManager:
                 api_path=api_path,
                 timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
                 retry_policy=retry_policy or ProviderRetryPolicy(),
+                extra=dict(provider_options or {}),
                 enabled=enabled,
             )
         except (ValueError, ValidationError) as exc:
@@ -187,6 +189,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -215,6 +218,11 @@ class ProviderConfigManager:
                             else current.timeout_seconds
                         ),
                         "retry_policy": retry_policy or current.retry_policy,
+                        "extra": (
+                            dict(provider_options)
+                            if provider_options is not None
+                            else current.extra
+                        ),
                         "enabled": enabled if enabled is not None else current.enabled,
                     }
                 ).model_dump()
@@ -239,6 +247,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
     ) -> ProviderConfig:
         """Replace an existing provider and discard its endpoint registry."""
@@ -261,6 +270,7 @@ class ProviderConfigManager:
                 api_path=api_path,
                 timeout_seconds=timeout_seconds if timeout_seconds is not None else 60.0,
                 retry_policy=retry_policy or ProviderRetryPolicy(),
+                extra=dict(provider_options or {}),
                 enabled=enabled,
             )
         except (ValueError, ValidationError) as exc:
@@ -282,6 +292,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -297,6 +308,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
         )
@@ -315,6 +327,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -330,6 +343,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
         )
@@ -348,6 +362,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool = True,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -363,6 +378,7 @@ class ProviderConfigManager:
             api_key_env=api_key_env,
             timeout_seconds=timeout_seconds,
             retry_policy=retry_policy,
+            provider_options=provider_options,
             enabled=enabled,
             make_default=make_default,
         )
@@ -381,6 +397,7 @@ class ProviderConfigManager:
         api_key_env: str | None = None,
         timeout_seconds: float | None = None,
         retry_policy: ProviderRetryPolicy | None = None,
+        provider_options: Mapping[str, Any] | None = None,
         enabled: bool | None = None,
         make_default: bool = False,
     ) -> ProviderConfig:
@@ -492,7 +509,13 @@ class ProviderConfigManager:
                         else ProviderRetryPolicy()
                     )
                 ),
-                extra=current.extra if preserve_current and current is not None else {},
+                extra=(
+                    dict(provider_options)
+                    if provider_options is not None
+                    else current.extra
+                    if preserve_current and current is not None
+                    else {}
+                ),
             )
         except ValidationError as exc:
             raise ConfigError(f"invalid provider template config: {exc}") from exc
