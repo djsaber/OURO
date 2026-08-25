@@ -13,7 +13,7 @@ from ouro.core.approvals import (
 )
 from ouro.core.base import utc_now
 from ouro.core.callbacks import CallbackOutcomeUnknown
-from ouro.core.cancellation import AbortSignal
+from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.redaction import redact_text
 from ouro.core.tool_policies import ToolPolicyMode
@@ -331,12 +331,12 @@ async def _invoke_until_aborted(
     except asyncio.CancelledError:
         execution.cancel()
         abort_waiter.cancel()
-        await _settle_tasks(execution, abort_waiter)
+        await settle_owned_tasks(execution, abort_waiter)
         raise
 
     if abort_waiter in done:
         execution.cancel()
-        if await _settle_tasks(execution):
+        if await settle_owned_tasks(execution):
             raise asyncio.CancelledError
         try:
             execution.result()
@@ -349,22 +349,9 @@ async def _invoke_until_aborted(
         raise _ToolOutcomeUnknown(context.abort_reason)
 
     abort_waiter.cancel()
-    if await _settle_tasks(abort_waiter):
+    if await settle_owned_tasks(abort_waiter):
         raise asyncio.CancelledError
     return execution.result()
-
-
-async def _settle_tasks(*tasks: asyncio.Future[Any]) -> bool:
-    """Wait for owned tasks even if the owner receives repeated cancellation."""
-
-    pending = set(tasks)
-    owner_cancelled = False
-    while pending:
-        try:
-            _, pending = await asyncio.wait(pending)
-        except asyncio.CancelledError:
-            owner_cancelled = True
-    return owner_cancelled
 
 
 def _cancelled_outcome(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from typing import Any
 
 
 class AbortSignal:
@@ -32,3 +33,20 @@ class AbortSignal:
 
 def is_aborted(signal: object | None) -> bool:
     return isinstance(signal, AbortSignal) and signal.is_aborted()
+
+
+async def settle_owned_tasks(*tasks: asyncio.Future[Any]) -> bool:
+    """Wait for owned tasks to finish despite repeated owner cancellation.
+
+    The return value reports whether another cancellation reached the owner
+    while it was settling the supplied tasks.
+    """
+
+    pending = set(tasks)
+    owner_cancelled = False
+    while pending:
+        try:
+            _, pending = await asyncio.wait(pending)
+        except asyncio.CancelledError:
+            owner_cancelled = True
+    return owner_cancelled

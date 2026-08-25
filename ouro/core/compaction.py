@@ -107,6 +107,18 @@ class CompactionStrategyError(CompactionError):
         self.terminal = terminal
 
 
+class CompactionAbortedError(CompactionStrategyError):
+    """Compaction stopped at the Host cancellation boundary."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        model_outputs: Sequence[CompactionModelOutput] = (),
+    ) -> None:
+        super().__init__(reason, model_outputs=model_outputs, terminal=True)
+
+
 class CompactionRecord(VersionedOuroModel):
     compaction_id: str = Field(default_factory=lambda: new_id("cmp"))
     session_id: str

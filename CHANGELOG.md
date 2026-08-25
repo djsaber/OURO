@@ -6,6 +6,10 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Context compaction now shares the Host-owned cancellation lifecycle: cancellation is terminal
+  across strategy fallback, async and worker callbacks receive task cancellation, cooperative
+  in-process handlers receive an SDK cancellation context, and manual compaction reports an
+  aborted Run without activating a late summary.
 - Provider HTTP transports now re-read environment and operating-system proxy settings for each
   request, reuse connection pools per observed network profile, and fall back from a failed system
   proxy route to the direct network before any response output is emitted.

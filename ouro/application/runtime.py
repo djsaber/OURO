@@ -64,7 +64,11 @@ from ouro.core.agents import (
 from ouro.core.approvals import SESSION_APPROVAL_MODES, SessionApprovalMode
 from ouro.core.base import new_id, utc_now
 from ouro.core.cancellation import AbortSignal
-from ouro.core.compaction import CompactionCommandResult, CompactionStrategyRegistry
+from ouro.core.compaction import (
+    CompactionAbortedError,
+    CompactionCommandResult,
+    CompactionStrategyRegistry,
+)
 from ouro.core.context import ContextBuilder, ContextMetrics
 from ouro.core.context_providers import ContextProviderRegistry
 from ouro.core.continuations import RunContinuationRegistry
@@ -1817,6 +1821,20 @@ class RuntimeService:
                     adapter=active_adapter,
                     strategies=self._compaction_for_run(run.run_id),
                     skill_instructions=self._skill_instructions_for_run(run.run_id),
+                )
+            except CompactionAbortedError:
+                cancelled = await self._finalize_requested_abort(
+                    RunResult(
+                        session=self.store.load_session_record(session_id),
+                        run=self.store.load_run(session_id, run.run_id),
+                        events=emitted,
+                    )
+                )
+                terminal_run = cancelled.run
+                return CompactionCommandResult(
+                    session=cancelled.session,
+                    run=cancelled.run,
+                    events=emitted,
                 )
             except Exception as exc:
                 failed = await self.run_lifecycle.fail(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from collections.abc import Callable, Mapping, Sequence
@@ -11,8 +12,9 @@ from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.base import new_id, utc_now
 from ouro.core.billing import UsagePurpose
-from ouro.core.cancellation import AbortSignal
+from ouro.core.cancellation import AbortSignal, settle_owned_tasks
 from ouro.core.compaction import (
+    CompactionAbortedError,
     CompactionArtifact,
     CompactionModelOutput,
     CompactionRecord,
@@ -121,6 +123,59 @@ class _SummaryChunkResult:
     model_output: CompactionModelOutput
 
 
+async def _compact_until_aborted(
+    strategy: CompactionStrategy,
+    request: CompactionRequest,
+    *,
+    signal: AbortSignal,
+) -> CompactionArtifact:
+    """Own one strategy task until it completes or cancellation fully settles it."""
+
+    if signal.is_aborted():
+        raise CompactionAbortedError(signal.reason)
+
+    execution = asyncio.create_task(strategy.compact(request, signal=signal))
+    abort_waiter = asyncio.create_task(signal.wait())
+    try:
+        done, _ = await asyncio.wait(
+            (execution, abort_waiter),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    except asyncio.CancelledError:
+        execution.cancel()
+        abort_waiter.cancel()
+        await settle_owned_tasks(execution, abort_waiter)
+        raise
+
+    if abort_waiter in done or signal.is_aborted():
+        execution.cancel()
+        abort_waiter.cancel()
+        if await settle_owned_tasks(execution, abort_waiter):
+            raise asyncio.CancelledError
+        model_outputs: Sequence[CompactionModelOutput] = ()
+        if not execution.cancelled():
+            exception = execution.exception()
+            if isinstance(exception, CompactionStrategyError):
+                model_outputs = exception.model_outputs
+            elif exception is None:
+                model_outputs = execution.result().model_outputs
+        raise CompactionAbortedError(signal.reason, model_outputs=model_outputs)
+
+    abort_waiter.cancel()
+    if await settle_owned_tasks(abort_waiter):
+        raise asyncio.CancelledError
+    try:
+        return execution.result()
+    except CompactionAbortedError as exc:
+        # Only the Host signal may classify a Run as aborted. A strategy cannot
+        # manufacture cancellation while the owning Run remains active.
+        raise CompactionStrategyError(
+            str(exc),
+            model_outputs=exc.model_outputs,
+            terminal=True,
+        ) from exc
+
+
 class LLMSummaryCompactionStrategy:
     """Generate an incremental summary without entering the normal agent loop."""
 
@@ -175,7 +230,7 @@ class LLMSummaryCompactionStrategy:
             except Exception as exc:  # noqa: BLE001 - model-route fallback boundary.
                 model_outputs.extend(_outputs_from_error(exc))
                 if signal is not None and signal.is_aborted():
-                    raise CompactionStrategyError(
+                    raise CompactionAbortedError(
                         "summary compaction was aborted",
                         model_outputs=model_outputs,
                     ) from exc
@@ -478,7 +533,7 @@ class LLMSummaryCompactionStrategy:
                 usage=usage,
             ) from exc
         if signal is not None and signal.is_aborted():
-            error = CompactionError("summary compaction was aborted")
+            error: CompactionError = CompactionAbortedError("summary compaction was aborted")
             raise _summary_output_error(
                 error,
                 adapter=adapter,
@@ -670,6 +725,8 @@ class ContextPreparationService:
                     skill_instructions=skill_instructions,
                 )
             except CompactionError as exc:
+                if isinstance(exc, CompactionAbortedError):
+                    raise
                 sequence = self.store.latest_event_sequence(session.session_id)
                 if view.metrics.over_budget:
                     raise ContextBlockedError(
@@ -1051,6 +1108,8 @@ class ContextPreparationService:
                     compaction_id=compaction_id,
                     outputs=exc.model_outputs,
                 )
+            if isinstance(exc, CompactionAbortedError):
+                raise
             sequence = await self.events.emit(
                 emitted,
                 sequence,
@@ -1109,7 +1168,11 @@ class ContextPreparationService:
             try:
                 strategy = active_strategies.get(strategy_id)
                 active_request = request.model_copy(update={"strategy_id": strategy_id})
-                artifact = await strategy.compact(active_request, signal=signal)
+                artifact = await _compact_until_aborted(
+                    strategy,
+                    active_request,
+                    signal=signal,
+                )
                 if model_outputs:
                     artifact = artifact.model_copy(
                         update={
@@ -1118,6 +1181,11 @@ class ContextPreparationService:
                     )
                 return strategy, artifact
             except Exception as exc:  # noqa: BLE001 - strategy isolation boundary.
+                if isinstance(exc, CompactionAbortedError):
+                    raise CompactionAbortedError(
+                        str(exc),
+                        model_outputs=[*model_outputs, *exc.model_outputs],
+                    ) from exc
                 if isinstance(exc, CompactionStrategyError) and exc.terminal:
                     raise
                 failures.append(exc)

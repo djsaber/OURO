@@ -688,6 +688,11 @@ async def _compact_session(runtime: RuntimeService, session_id: str | None) -> C
     if session_id is None:
         return CommandResult(session_id=None, output="No active session.")
     result = await runtime.compact(session_id=session_id)
+    if result.run.status == "aborted":
+        return CommandResult(
+            session_id=result.session.session_id,
+            output=f"Context compaction aborted: {result.run.run_id}",
+        )
     if result.skipped or result.compaction is None:
         return CommandResult(
             session_id=result.session.session_id,

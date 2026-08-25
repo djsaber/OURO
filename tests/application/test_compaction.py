@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from ouro.application.compaction import LLMSummaryCompactionStrategy
@@ -9,6 +11,7 @@ from ouro.cli.interactive import run_interactive
 from ouro.config.compaction import CompactionConfig, CompactionModelConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.compaction import (
+    CompactionAbortedError,
     CompactionArtifact,
     CompactionPolicy,
     CompactionRequest,
@@ -109,6 +112,64 @@ class SummaryRouteProvider:
         return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
 
 
+class BlockingSummaryProvider:
+    provider_id = "blocking-summary"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def stream(self, *, model, system_prompt="", messages, tools=None):
+        del model, system_prompt, messages, tools
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.cancelled.set()
+        if False:  # pragma: no cover - keeps this provider an async generator.
+            yield ProviderStreamEvent(type="done")
+
+    async def check_connection(self, model: ModelMetadata) -> ProviderCheckResult:
+        return ProviderCheckResult(provider_id=self.provider_id, ok=True, model_id=model.model_id)
+
+
+class AbortAwareFailingStrategy:
+    strategy_id = "test.abort-aware"
+    version = "1"
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def compact(self, request, *, signal=None):
+        del request
+        assert signal is not None
+        self.started.set()
+        await signal.wait()
+        raise CompactionStrategyError("strategy observed cancellation")
+
+
+class CountingFallbackStrategy:
+    strategy_id = "test.fallback"
+    version = "1"
+
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    async def compact(self, request, *, signal=None):
+        del request, signal
+        self.call_count += 1
+        return CompactionArtifact(summary="fallback summary")
+
+
+class ForgedAbortStrategy:
+    strategy_id = "test.forged-abort"
+    version = "1"
+
+    async def compact(self, request, *, signal=None):
+        del request, signal
+        raise CompactionAbortedError("strategy cannot abort its owning Run")
+
+
 def _runtime(
     store: LocalSessionStore,
     provider: RecordingProvider,
@@ -138,6 +199,29 @@ def _runtime(
                 trigger_ratio=0.3,
                 target_ratio=0.2,
             ),
+        ),
+    )
+
+
+def _builtin_compaction_runtime(
+    store: LocalSessionStore,
+    provider: BlockingSummaryProvider,
+) -> RuntimeService:
+    return RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            provider,
+            ModelMetadata(
+                model_id="blocking-summary",
+                provider_id=provider.provider_id,
+                context_window=3_000,
+                max_output_tokens=500,
+            ),
+        ),
+        tools=ToolRegistry(),
+        system_prompt="",
+        compaction_config=CompactionConfig(
+            policy=CompactionPolicy(trigger_ratio=0.3, target_ratio=0.2),
         ),
     )
 
@@ -779,6 +863,155 @@ async def test_manual_compaction_uses_same_pipeline_without_adding_messages(tmp_
     assert completed.payload["context_metrics_after"] == (
         result.compaction.context_metrics_after.model_dump(mode="json")
     )
+
+
+@pytest.mark.asyncio
+async def test_manual_compaction_abort_returns_aborted_result_without_activating_summary(
+    tmp_path,
+) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = BlockingSummaryProvider()
+    runtime = _builtin_compaction_runtime(store, provider)
+    session = SessionRecord(title="Interrupted manual compaction")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+
+    compact_task = asyncio.create_task(runtime.compact(session_id=session.session_id))
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    active_run = store.load_runs(session.session_id)[-1]
+    abort_task = asyncio.create_task(
+        runtime.abort_run(
+            session_id=session.session_id,
+            run_id=active_run.run_id,
+            reason="Interrupt manual compaction",
+        )
+    )
+
+    compact_result, abort_result = await asyncio.gather(compact_task, abort_task)
+    snapshot = store.load_runtime_session(session.session_id)
+    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+
+    assert compact_result.run.status == "aborted"
+    assert abort_result.run.status == "aborted"
+    assert compact_result.compaction is None
+    assert snapshot.session.active_compaction_id is None
+    assert snapshot.compactions == []
+    assert provider.cancelled.is_set()
+    assert "run_aborted" in event_types
+    assert "run_failed" not in event_types
+    assert "compaction_failed" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_auto_compaction_abort_terminates_agent_run_before_model_request(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    provider = BlockingSummaryProvider()
+    runtime = _builtin_compaction_runtime(store, provider)
+    session = SessionRecord(title="Interrupted auto compaction")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+
+    run_task = asyncio.create_task(runtime.run("new request", session_id=session.session_id))
+    await asyncio.wait_for(provider.started.wait(), timeout=2)
+    active_run = store.load_runs(session.session_id)[-1]
+    abort_task = asyncio.create_task(
+        runtime.abort_run(
+            session_id=session.session_id,
+            run_id=active_run.run_id,
+            reason="Interrupt automatic compaction",
+        )
+    )
+
+    run_result, abort_result = await asyncio.gather(run_task, abort_task)
+    snapshot = store.load_runtime_session(session.session_id)
+    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+
+    assert run_result.run.status == "aborted"
+    assert abort_result.run.status == "aborted"
+    assert snapshot.session.active_compaction_id is None
+    assert snapshot.compactions == []
+    assert event_types.count("compaction_started") == 1
+    assert "model_request_started" not in event_types
+    assert "compaction_failed" not in event_types
+
+
+@pytest.mark.asyncio
+async def test_compaction_abort_is_terminal_and_does_not_invoke_fallback(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Cancelled strategy fallback")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+    primary = AbortAwareFailingStrategy()
+    fallback = CountingFallbackStrategy()
+    strategies = CompactionStrategyRegistry()
+    strategies.register(primary)
+    strategies.register(fallback)
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            RecordingProvider(),
+            ModelMetadata(
+                model_id="recording",
+                provider_id="recording",
+                context_window=3_000,
+                max_output_tokens=500,
+            ),
+        ),
+        tools=ToolRegistry(),
+        system_prompt="",
+        compaction_strategies=strategies,
+        compaction_config=CompactionConfig(
+            strategy_id=primary.strategy_id,
+            fallback_strategy_id=fallback.strategy_id,
+            policy=CompactionPolicy(trigger_ratio=0.3, target_ratio=0.2),
+        ),
+    )
+
+    compact_task = asyncio.create_task(runtime.compact(session_id=session.session_id))
+    await asyncio.wait_for(primary.started.wait(), timeout=2)
+    active_run = store.load_runs(session.session_id)[-1]
+    abort_task = asyncio.create_task(
+        runtime.abort_run(
+            session_id=session.session_id,
+            run_id=active_run.run_id,
+            reason="Stop before fallback",
+        )
+    )
+
+    compact_result, abort_result = await asyncio.gather(compact_task, abort_task)
+
+    assert compact_result.run.status == "aborted"
+    assert abort_result.run.status == "aborted"
+    assert fallback.call_count == 0
+    assert store.load_session_record(session.session_id).active_compaction_id is None
+
+
+@pytest.mark.asyncio
+async def test_compaction_strategy_cannot_forge_host_cancellation(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    session = SessionRecord(title="Host-owned cancellation")
+    store.create_session(session)
+    _append_turns(store, session.session_id, 3)
+    strategy = ForgedAbortStrategy()
+    runtime = _runtime(
+        store,
+        RecordingProvider(),
+        strategy,
+        strategy_id=strategy.strategy_id,
+    )
+
+    with pytest.raises(CompactionStrategyError, match="cannot abort"):
+        await runtime.compact(session_id=session.session_id)
+
+    run = store.load_runs(session.session_id)[-1]
+    event_types = [event.event_type for event in store.load_session(session.session_id).events]
+    assert run.status == "failed"
+    assert "run_failed" in event_types
+    assert "run_aborted" not in event_types
 
 
 @pytest.mark.asyncio

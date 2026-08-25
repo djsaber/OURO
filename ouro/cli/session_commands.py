@@ -617,10 +617,15 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
     covered_count = len(compaction.covered_message_ids) if compaction is not None else 0
 
     if json_mode:
+        status = (
+            result.run.status
+            if result.run.status == "aborted"
+            else ("skipped" if result.skipped else "ok")
+        )
         print(
             json.dumps(
                 {
-                    "status": "skipped" if result.skipped else "ok",
+                    "status": status,
                     "session_id": result.session.session_id,
                     "run_id": result.run.run_id,
                     "skipped": result.skipped,
@@ -639,6 +644,9 @@ def _print_compaction_result(result: CompactionCommandResult, *, json_mode: bool
         )
         return 0
 
+    if result.run.status == "aborted":
+        print(f"Compaction aborted: {result.run.run_id}")
+        return 0
     if result.skipped or compaction is None:
         print("Compaction skipped: no complete older turn is eligible.")
         return 0

@@ -1330,7 +1330,11 @@ async def test_sync_follow_up_result_stays_pending_after_parent_abort(tmp_path) 
 
 
 @pytest.mark.asyncio
-async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) -> None:
+@pytest.mark.parametrize("execution_mode", ["sync", "async"])
+async def test_interrupt_racing_natural_completion_commits_one_result(
+    tmp_path,
+    execution_mode,
+) -> None:
     service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
@@ -1340,6 +1344,7 @@ async def test_interrupt_racing_natural_completion_commits_one_result(tmp_path) 
             agent_id="reader",
             task="Race completion with an interrupt.",
             description="Interrupt completion race",
+            execution_mode=execution_mode,
         )
     )
     await asyncio.wait_for(provider.started.wait(), timeout=2)
@@ -1451,7 +1456,11 @@ async def test_interrupt_aborts_queued_child_before_model_execution(tmp_path) ->
 
 
 @pytest.mark.asyncio
-async def test_parent_abort_cascades_bound_child_and_preserves_result(tmp_path) -> None:
+@pytest.mark.parametrize("execution_mode", ["sync", "async"])
+async def test_parent_abort_cascades_bound_child_and_preserves_result(
+    tmp_path,
+    execution_mode,
+) -> None:
     service, supervisor, store, provider, root, parent = await _active_subagent_services(tmp_path)
     child = await service.spawn_agent(
         SpawnAgentRequest(
@@ -1461,6 +1470,7 @@ async def test_parent_abort_cascades_bound_child_and_preserves_result(tmp_path) 
             agent_id="reader",
             task="Remain active until the parent aborts.",
             description="Cascade child",
+            execution_mode=execution_mode,
         )
     )
     await asyncio.wait_for(provider.started.wait(), timeout=2)

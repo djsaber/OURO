@@ -17,7 +17,12 @@ from typing import Any, Literal
 from uuid import uuid4
 
 from ouro.core.callbacks import invoke_callback, invoke_owned_callback
-from ouro.core.compaction import CompactionArtifact, CompactionRequest
+from ouro.core.cancellation import AbortSignal
+from ouro.core.compaction import (
+    CompactionAbortedError,
+    CompactionArtifact,
+    CompactionRequest,
+)
 from ouro.core.context_providers import (
     ContextFragment,
     ContextProviderCall,
@@ -578,7 +583,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        args, kwargs = _sdk_tool_handler_arguments(
+        args, kwargs = _sdk_handler_arguments(
             contribution.handler,
             call,
             _SDKToolExecutionContext(context),
@@ -630,7 +635,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             workspace=str(context.workspace) if context.workspace is not None else None,
             workspace_only=context.workspace_only,
         )
-        args, kwargs = _sdk_tool_handler_arguments(
+        args, kwargs = _sdk_handler_arguments(
             contribution.resume_handler,
             call,
             _SDKToolExecutionContext(context),
@@ -733,10 +738,10 @@ class _SDKToolExecutionContext:
         return str(resolved) if resolved is not None else None
 
 
-def _sdk_tool_handler_arguments(
+def _sdk_handler_arguments(
     handler,
-    call: sdk.ToolCall | sdk.ToolResumeCall,
-    context: sdk.ToolExecutionContext,
+    call: sdk.ToolCall | sdk.ToolResumeCall | sdk.CompactionCall,
+    context: sdk.CancellationContext,
 ) -> tuple[tuple[object, ...], dict[str, object]]:
     try:
         parameters = tuple(inspect.signature(handler).parameters.values())
@@ -1012,23 +1017,55 @@ class _SDKCompactionStrategy:
         self.version = contribution.version
         self._handler = contribution.handler
 
-    async def compact(self, request: CompactionRequest, *, signal=None) -> CompactionArtifact:
-        del signal
-        raw = await invoke_callback(
-            self._handler,
-            sdk.CompactionCall(
-                session_id=request.session_id,
-                run_id=request.run_id,
-                previous_summary=request.previous_summary,
-                messages=tuple(
-                    message.model_dump(mode="json", exclude_none=True)
-                    for message in request.messages
-                ),
-                input_token_budget=request.input_token_budget,
-                summary_output_tokens=request.summary_output_tokens,
+    async def compact(
+        self,
+        request: CompactionRequest,
+        *,
+        signal: AbortSignal | None = None,
+    ) -> CompactionArtifact:
+        context = _SDKCompactionCancellationContext(signal)
+        context.raise_if_aborted()
+        call = sdk.CompactionCall(
+            session_id=request.session_id,
+            run_id=request.run_id,
+            previous_summary=request.previous_summary,
+            messages=tuple(
+                message.model_dump(mode="json", exclude_none=True) for message in request.messages
             ),
+            input_token_budget=request.input_token_budget,
+            summary_output_tokens=request.summary_output_tokens,
         )
+        args, kwargs = _sdk_handler_arguments(self._handler, call, context)
+        raw = await invoke_owned_callback(self._handler, *args, **kwargs)
+        context.raise_if_aborted()
         return CompactionArtifact(summary=raw.summary, usage=dict(raw.usage))
+
+
+class _SDKCompactionCancellationContext:
+    def __init__(self, signal: AbortSignal | None, *, poll_interval: float = 0.05) -> None:
+        self._signal = signal
+        self._poll_interval = poll_interval
+
+    @property
+    def is_aborted(self) -> bool:
+        return self._signal.is_aborted() if self._signal is not None else False
+
+    @property
+    def abort_reason(self) -> str:
+        return self._signal.reason if self._signal is not None else "Compaction aborted"
+
+    def raise_if_aborted(self) -> None:
+        if self.is_aborted:
+            raise CompactionAbortedError(self.abort_reason)
+
+    async def sleep(self, seconds: float) -> None:
+        deadline = asyncio.get_running_loop().time() + seconds
+        while True:
+            self.raise_if_aborted()
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(self._poll_interval, remaining))
 
 
 class _SDKBackgroundService:

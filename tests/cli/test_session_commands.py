@@ -6,18 +6,20 @@ from pathlib import Path
 from ouro.application.runtime import RuntimeService
 from ouro.cli.main import main
 from ouro.cli.parser import build_parser
+from ouro.cli.session_commands import _print_compaction_result
 from ouro.config.compaction import CompactionConfig
 from ouro.core.adapter import RuntimeAdapter
 from ouro.core.agents import AgentDefinition, DelegationRecord
 from ouro.core.compaction import (
     CompactionArtifact,
+    CompactionCommandResult,
     CompactionPolicy,
     CompactionRequest,
     CompactionStrategyRegistry,
 )
 from ouro.core.messages import MessageRecord
 from ouro.core.provider import ModelMetadata, ProviderCheckResult, ProviderStreamEvent
-from ouro.core.state import SessionRecord
+from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore, SessionStore
 from ouro.tools import ToolRegistry
 
@@ -525,6 +527,27 @@ def test_session_compact_json(monkeypatch, tmp_path, capsys) -> None:
     assert payload["skipped"] is False
     assert payload["compaction_id"] is not None
     assert payload["covered_message_count"] > 0
+
+
+def test_session_compact_aborted_is_not_reported_as_skipped(capsys) -> None:
+    session = SessionRecord(session_id="ses_compaction_aborted")
+    result = CompactionCommandResult(
+        session=session,
+        run=RunRecord(
+            run_id="run_compaction_aborted",
+            session_id=session.session_id,
+            kind="compaction",
+            status="aborted",
+        ),
+    )
+
+    assert _print_compaction_result(result, json_mode=False) == 0
+    assert capsys.readouterr().out == "Compaction aborted: run_compaction_aborted\n"
+
+    assert _print_compaction_result(result, json_mode=True) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "aborted"
+    assert payload["skipped"] is False
 
 
 # Keep pytest from treating helper classes as test classes.

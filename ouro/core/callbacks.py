@@ -6,6 +6,8 @@ from collections.abc import Callable
 from functools import partial
 from typing import Any
 
+from ouro.core.cancellation import settle_owned_tasks
+
 
 class CallbackOutcomeUnknown(RuntimeError):
     """A synchronous callback finished only after its caller was cancelled."""
@@ -49,14 +51,8 @@ async def _invoke_callback(
             try:
                 result = await asyncio.shield(thread)
             except asyncio.CancelledError:
-                while True:
-                    try:
-                        result = await asyncio.shield(thread)
-                        break
-                    except asyncio.CancelledError:
-                        if thread.done():
-                            result = thread.result()
-                            break
+                await settle_owned_tasks(thread)
+                result = thread.result()
                 if inspect.iscoroutine(result):
                     result.close()
                 raise CallbackOutcomeUnknown from None

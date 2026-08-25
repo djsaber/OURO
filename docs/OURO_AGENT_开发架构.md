@@ -365,6 +365,11 @@ fragment 默认只参与本次模型请求；声明 `persistence="message"` 时�
 provider 失败时阻断本轮，不能借用 Observer 修改语义。canonical history 永不被压缩覆盖；`CompactionRecord`
 通过 message id 前缀和 digest 验证摘要来源。
 
+压缩策略任务由 `ContextPreparationService` 统一拥有：它竞速 Run 的 `AbortSignal` 与策略 task，中断一旦可见即成为
+terminal 结果，不能继续尝试 fallback；策略 task 必须完成取消和资源收尾后，Run 才能进入 `aborted`。异步 SDK handler
+和 worker RPC 通过 task cancel 传播到底层；进程内同步 handler 可选择接收 Host-owned `CancellationContext` 并在长循环中
+调用 `raise_if_aborted`。同步代码无法被安全强杀且不协作时，Host 保留线程所有权直至其退出，不激活迟到的压缩摘要。
+
 Context Fragment 还可声明 `target="system_prompt"`。这类请求级片段在基础 system prompt 和 Skills 之后稳定追加，
 必须保持 ephemeral，不创建 canonical message；提供方声明 `semantic_tag` 时，Core 将原始正文投影为与 message
 target 相同的 semantic envelope；未声明时保留原文。两者都进入统一 token 估算、请求快照和 ProviderContext digest。

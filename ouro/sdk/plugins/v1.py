@@ -132,7 +132,21 @@ class PluginContext:
     session_state: PluginSessionStateStore | None = None
 
 
-class ToolExecutionContext(Protocol):
+class CancellationContext(Protocol):
+    """Host-owned cooperative cancellation services for in-process callbacks."""
+
+    @property
+    def is_aborted(self) -> bool: ...
+
+    @property
+    def abort_reason(self) -> str: ...
+
+    def raise_if_aborted(self) -> None: ...
+
+    async def sleep(self, seconds: float) -> None: ...
+
+
+class ToolExecutionContext(CancellationContext, Protocol):
     """Host-owned, request-scoped services available to an in-process tool.
 
     Worker tools receive the same workspace fields in ``ToolCall`` and are
@@ -144,16 +158,6 @@ class ToolExecutionContext(Protocol):
 
     @property
     def workspace_only(self) -> bool: ...
-
-    @property
-    def is_aborted(self) -> bool: ...
-
-    @property
-    def abort_reason(self) -> str: ...
-
-    def raise_if_aborted(self) -> None: ...
-
-    async def sleep(self, seconds: float) -> None: ...
 
     def resolve_path(self, path: str) -> str: ...
 
@@ -718,7 +722,11 @@ class CompactionOutput:
     usage: Mapping[str, int | float] = field(default_factory=dict)
 
 
-CompactionHandler = Callable[[CompactionCall], CompactionOutput | Awaitable[CompactionOutput]]
+CompactionHandlerResult = CompactionOutput | Awaitable[CompactionOutput]
+CompactionHandler = (
+    Callable[[CompactionCall], CompactionHandlerResult]
+    | Callable[[CompactionCall, CancellationContext], CompactionHandlerResult]
+)
 
 BackgroundHandler = Callable[[], None | Awaitable[None]]
 
@@ -769,6 +777,7 @@ __all__ = [
     "CommandCall",
     "CommandContribution",
     "CommandOutput",
+    "CancellationContext",
     "CompactionCall",
     "CompactionContribution",
     "CompactionOutput",
