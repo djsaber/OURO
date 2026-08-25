@@ -61,3 +61,16 @@ def test_provider_retry_policy_is_bounded_and_retry_event_requires_payload() -> 
         ),
     )
     assert event.retry is not None and event.retry.attempt == 2
+
+
+def test_provider_retry_policy_defaults_to_five_attempts_with_visible_initial_backoff() -> None:
+    policy = ProviderRetryPolicy()
+
+    assert policy.max_attempts == 5
+    assert policy.initial_backoff_seconds == 1.0
+    assert [policy.delay_before_attempt(attempt) for attempt in (2, 3, 4, 5)] == [
+        1.0,
+        2.0,
+        4.0,
+        8.0,
+    ]

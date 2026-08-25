@@ -18,6 +18,7 @@ from ouro.core.messages import (
 from ouro.core.provider import ModelMetadata, ProviderRetryPolicy
 from ouro.core.tools import ToolCallRequest
 from ouro.providers import OpenAICompatibleProvider
+from ouro.providers import http_transport as provider_http_transport
 from ouro.providers.http_transport import (
     HttpxProviderHTTPTransport,
     ProviderTransportError,
@@ -109,6 +110,12 @@ class PartialFailureStreamingTransport(FakeStreamingTransport):
         raise ProviderTransportError("connection lost", retryable=True)
 
 
+class FailingSSEStream(httpx.AsyncByteStream):
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+        raise httpx.ReadError("connection lost")
+
+
 @pytest.mark.asyncio
 async def test_httpx_transport_reuses_and_closes_only_owned_client() -> None:
     owned = HttpxProviderHTTPTransport()
@@ -122,6 +129,134 @@ async def test_httpx_transport_reuses_and_closes_only_owned_client() -> None:
     await injected.aclose()
     assert injected_client.is_closed is False
     await injected_client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_rotates_owned_client_with_system_proxy_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy_profile = (("http", "http://127.0.0.1:7890"),)
+    profiles = iter((proxy_profile, (), proxy_profile))
+    monkeypatch.setattr(provider_http_transport, "_proxy_profile", lambda: next(profiles))
+
+    transport = HttpxProviderHTTPTransport()
+    proxy_client = transport._client()
+    direct_profile_client = transport._client()
+
+    assert direct_profile_client is not proxy_client
+    assert transport._client() is proxy_client
+
+    await transport.aclose()
+    assert proxy_client.is_closed is True
+    assert direct_profile_client.is_closed is True
+
+
+@pytest.mark.asyncio
+async def test_httpx_transport_falls_back_from_system_proxy_to_direct_network() -> None:
+    route_attempts: list[str] = []
+
+    def proxy_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("proxy")
+        raise httpx.ConnectError("proxy unavailable", request=request)
+
+    def direct_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("direct")
+        return httpx.Response(200, json={"ok": True})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(proxy_handler)) as proxy_client,
+        httpx.AsyncClient(transport=httpx.MockTransport(direct_handler)) as direct_client,
+    ):
+        transport = HttpxProviderHTTPTransport(proxy_client)
+        transport._clients_for_request = lambda: (  # type: ignore[method-assign]
+            ("system proxy", proxy_client),
+            ("direct network", direct_client),
+        )
+        result = await transport.post_json(
+            url="https://example.test/v1/chat/completions",
+            headers={},
+            payload={"model": "glm-test"},
+            timeout=12,
+        )
+
+    assert result == {"ok": True}
+    assert route_attempts == ["proxy", "direct"]
+
+
+@pytest.mark.asyncio
+async def test_httpx_stream_falls_back_before_first_response_item() -> None:
+    route_attempts: list[str] = []
+
+    def proxy_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("proxy")
+        raise httpx.ConnectError("proxy unavailable", request=request)
+
+    def direct_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("direct")
+        return httpx.Response(
+            200,
+            text='data: {"choices":[{"delta":{"content":"hello"}}]}\n\n'
+            "data: [DONE]\n\n",
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(proxy_handler)) as proxy_client,
+        httpx.AsyncClient(transport=httpx.MockTransport(direct_handler)) as direct_client,
+    ):
+        transport = HttpxProviderHTTPTransport(proxy_client)
+        transport._clients_for_request = lambda: (  # type: ignore[method-assign]
+            ("system proxy", proxy_client),
+            ("direct network", direct_client),
+        )
+        chunks = [
+            chunk
+            async for chunk in transport.stream_json(
+                url="https://example.test/v1/chat/completions",
+                headers={},
+                payload={"model": "glm-test", "stream": True},
+                timeout=12,
+            )
+        ]
+
+    assert chunks == [{"choices": [{"delta": {"content": "hello"}}]}]
+    assert route_attempts == ["proxy", "direct"]
+
+
+@pytest.mark.asyncio
+async def test_httpx_stream_does_not_fall_back_after_first_response_item() -> None:
+    route_attempts: list[str] = []
+
+    def proxy_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("proxy")
+        return httpx.Response(200, stream=FailingSSEStream())
+
+    def direct_handler(request: httpx.Request) -> httpx.Response:
+        route_attempts.append("direct")
+        return httpx.Response(200, text="data: [DONE]\n\n")
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(proxy_handler)) as proxy_client,
+        httpx.AsyncClient(transport=httpx.MockTransport(direct_handler)) as direct_client,
+    ):
+        transport = HttpxProviderHTTPTransport(proxy_client)
+        transport._clients_for_request = lambda: (  # type: ignore[method-assign]
+            ("system proxy", proxy_client),
+            ("direct network", direct_client),
+        )
+        stream = transport.stream_json(
+            url="https://example.test/v1/chat/completions",
+            headers={},
+            payload={"model": "glm-test", "stream": True},
+            timeout=12,
+        )
+        assert await anext(stream) == {"choices": [{"delta": {"content": "partial"}}]}
+        with pytest.raises(
+            ProviderTransportError,
+            match="provider connection failed: ReadError: connection lost",
+        ):
+            await anext(stream)
+
+    assert route_attempts == ["proxy"]
 
 
 @pytest.mark.asyncio

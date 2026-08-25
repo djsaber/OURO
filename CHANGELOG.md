@@ -6,6 +6,11 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- Provider HTTP transports now re-read environment and operating-system proxy settings for each
+  request, reuse connection pools per observed network profile, and fall back from a failed system
+  proxy route to the direct network before any response output is emitted.
+- Transient provider failures now default to at most five attempts with a one-second initial
+  exponential backoff, while retaining the existing eight-second per-delay ceiling.
 - The no-command `ouro` entry point now starts the full-screen TUI; the line-oriented Host moved
   to `ouro interactive` and reports the available help, quit, and default-TUI entry points at
   startup. The transitional `ouro tui` command was removed.

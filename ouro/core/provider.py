@@ -80,7 +80,7 @@ class ProviderRetryPolicy(OuroModel):
     """Bounded retry policy for transient provider transport failures."""
 
     max_attempts: int = Field(default=5, ge=1, le=10)
-    initial_backoff_seconds: float = Field(default=0.5, ge=0, le=60)
+    initial_backoff_seconds: float = Field(default=1.0, ge=0, le=60)
     max_backoff_seconds: float = Field(default=8.0, ge=0, le=300)
     backoff_multiplier: float = Field(default=2.0, ge=1, le=10)
 
