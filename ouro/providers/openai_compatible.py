@@ -21,7 +21,6 @@ from ouro.providers.openai_codec import (
     _content_to_text,
     _error_from_response,
     _first_choice,
-    _message_to_openai,
     _reasoning_content_to_text,
     _reasoning_field_value,
     _tool_call_deltas,
@@ -29,6 +28,7 @@ from ouro.providers.openai_codec import (
     _tool_to_openai,
     _usage_from_response,
     _usage_from_response_or_none,
+    messages_to_openai,
 )
 from ouro.providers.reasoning import ReasoningPayloadEncoder
 from ouro.providers.retrying import stream_with_retries
@@ -200,18 +200,14 @@ class OpenAICompatibleProvider:
         tools: list[dict[str, Any]] | None,
         extra_payload: Mapping[str, Any],
     ) -> dict[str, Any]:
-        converted_messages = [
-            _message_to_openai(
-                message,
-                supports_vision=model.supports_vision,
-                provider_id=self.provider_id,
-                model_id=model.model_id,
-                include_continuation=model.reasoning.continuation == "text",
-            )
-            for message in messages
-        ]
-        if system_prompt:
-            converted_messages.insert(0, {"role": "system", "content": system_prompt})
+        converted_messages = messages_to_openai(
+            messages,
+            system_prompt=system_prompt,
+            supports_vision=model.supports_vision,
+            provider_id=self.provider_id,
+            model_id=model.model_id,
+            include_continuation=model.reasoning.continuation == "text",
+        )
         payload: dict[str, Any] = dict(self.request_options)
         if "response_format" in payload and not model.supports_structured_output:
             raise ValueError("response_format requires an endpoint with structured output support")

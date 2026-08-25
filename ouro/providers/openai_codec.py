@@ -8,6 +8,56 @@ from ouro.core.messages import ImageContent, ModelMessage, TextContent, model_vi
 from ouro.core.provider import ToolCallDelta, Usage
 from ouro.core.tools import ToolCallRequest
 
+OpenAIMessageContent = str | list[dict[str, Any]]
+
+
+def messages_to_openai(
+    messages: list[ModelMessage],
+    *,
+    system_prompt: str,
+    supports_vision: bool,
+    provider_id: str,
+    model_id: str,
+    include_continuation: bool,
+) -> list[dict[str, Any]]:
+    """Encode one request with at most one leading OpenAI system message."""
+
+    system_contents: list[OpenAIMessageContent] = [system_prompt] if system_prompt else []
+    converted_messages: list[dict[str, Any]] = []
+    for message in messages:
+        converted = _message_to_openai(
+            message,
+            supports_vision=supports_vision,
+            provider_id=provider_id,
+            model_id=model_id,
+            include_continuation=include_continuation,
+        )
+        if converted["role"] == "system":
+            system_contents.append(converted["content"])
+        else:
+            converted_messages.append(converted)
+    if system_contents:
+        converted_messages.insert(
+            0,
+            {"role": "system", "content": _merge_system_contents(system_contents)},
+        )
+    return converted_messages
+
+
+def _merge_system_contents(contents: list[OpenAIMessageContent]) -> OpenAIMessageContent:
+    if all(isinstance(content, str) for content in contents):
+        return "\n\n".join(content for content in contents if isinstance(content, str))
+
+    merged: list[dict[str, Any]] = []
+    for index, content in enumerate(contents):
+        if index:
+            merged.append({"type": "text", "text": "\n\n"})
+        if isinstance(content, str):
+            merged.append({"type": "text", "text": content})
+        else:
+            merged.extend(content)
+    return merged
+
 
 def _message_to_openai(
     message: ModelMessage,

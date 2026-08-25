@@ -6,6 +6,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Changed
 
+- OpenAI-compatible requests now merge the base system prompt and all system-role messages into one
+  leading system message after semantic-envelope projection, preserving tagged scaffold content
+  while supporting endpoints that reject multiple system messages.
 - Context compaction now shares the Host-owned cancellation lifecycle: cancellation is terminal
   across strategy fallback, async and worker callbacks receive task cancellation, cooperative
   in-process handlers receive an SDK cancellation context, and manual compaction reports an

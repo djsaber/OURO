@@ -401,6 +401,8 @@ Run，再进入下一模型轮次。策略异常、超时或非法输出 fail-cl
 展示的 reasoning。这里的“真实 Provider 上下文”特指 `RuntimeAdapter` 交给统一 `Provider.stream` 的
 `system_prompt`、`messages` 和 `tools` 三项，不是任何厂商 HTTP endpoint 的最终 payload；厂商 codec 在该边界之后
 继续负责协议编码。
+OpenAI-compatible codec 在完成语义标签的模型可见 envelope 投影后，将独立 `system_prompt` 与所有 system role
+消息按原顺序合并为唯一的首条 system message；压缩摘要等脚手架消息的标签和正文均不得在此归一化中丢失。
 
 每次上下文构建只计算一次类型化 `ContextMetrics`：发送前的 input token 估算、固定部分、模型窗口、预留输出、
 可用 input budget、剩余量和占用率。估算用于预算与实时状态；Provider `done` 后单独补记供应商报告的 input token，
