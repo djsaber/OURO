@@ -38,7 +38,7 @@ def test_ask_user_definition_exposes_bounded_structured_contract() -> None:
 
     assert "materially change the work" in definition.description
     assert schema["required"] == ["questions"]
-    assert schema["additionalProperties"] is False
+    assert "additionalProperties" not in schema
     assert schema["properties"]["questions"]["minItems"] == 1
     assert schema["properties"]["questions"]["maxItems"] == 3
 
