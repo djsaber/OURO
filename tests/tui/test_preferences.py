@@ -6,7 +6,11 @@ from pathlib import Path
 import pytest
 
 from ouro.core.errors import ConfigError
-from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from ouro.tui.preferences import (
+    MAX_RECENT_WORKSPACES,
+    TuiPreferences,
+    TuiPreferencesStore,
+)
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 
 
@@ -39,6 +43,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
             theme="iris",
             reasoning_expanded=False,
             recent_actions=("/new", "__ouro_theme__"),
+            recent_workspaces=(str(tmp_path),),
         )
     )
 
@@ -47,6 +52,7 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         theme="iris",
         reasoning_expanded=False,
         recent_actions=("/new", "__ouro_theme__"),
+        recent_workspaces=(str(tmp_path),),
     )
 
 
@@ -57,6 +63,14 @@ def test_tui_preferences_round_trip_in_frontend_owned_file(tmp_path: Path) -> No
         {"theme": "harbor", "reasoning_expanded": "sometimes"},
         {"theme": "harbor", "recent_actions": ["one", "two", "three", "four"]},
         {"theme": "harbor", "recent_actions": ["same", "same"]},
+        {
+            "theme": "harbor",
+            "recent_workspaces": [
+                f"workspace-{index}" for index in range(MAX_RECENT_WORKSPACES + 1)
+            ],
+        },
+        {"theme": "harbor", "recent_workspaces": ["same", "same"]},
+        {"theme": "harbor", "recent_workspaces": ["  "]},
     ),
 )
 def test_tui_preferences_reject_invalid_values(

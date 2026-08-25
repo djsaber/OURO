@@ -2552,6 +2552,7 @@ async def test_thought_display_command_applies_to_history_and_live_output_and_pe
         assert preferences.load() == TuiPreferences(
             theme="harbor",
             reasoning_expanded=False,
+            recent_workspaces=(str(tmp_path.resolve()),),
         )
 
     restarted = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
@@ -7052,6 +7053,94 @@ async def test_slash_opens_filters_navigates_and_executes_command_popup(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_workspace_command_uses_inline_history_and_freeform_only_before_session(
+    tmp_path: Path,
+) -> None:
+    historical = tmp_path / "historical"
+    freeform = tmp_path / "custom workspace"
+    rejected = tmp_path / "rejected"
+    for workspace in (historical, freeform, rejected):
+        workspace.mkdir()
+    preferences = TuiPreferencesStore(tmp_path)
+    preferences.save(TuiPreferences(recent_workspaces=(str(historical.resolve()),)))
+    application = _application(tmp_path)
+    app = OuroTuiApp(home=tmp_path, application=application)
+
+    async with app.run_test(size=(110, 34)) as pilot:
+        await pilot.pause()
+        await pilot.click("#composer")
+        await pilot.press("slash", *"workspace", "enter")
+        await pilot.pause()
+
+        popup = app.query_one(CommandPopup)
+        assert len(app.screen_stack) == 1
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/workspace"
+        assert [argument.value for argument in popup._arguments] == [
+            str(tmp_path.resolve()),
+            str(historical.resolve()),
+        ]
+
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert app._active_workspace == str(historical.resolve())
+        assert preferences.load().recent_workspaces[:2] == (
+            str(historical.resolve()),
+            str(tmp_path.resolve()),
+        )
+
+        composer = app.query_one(Composer)
+        composer.load_text(f"/workspace {freeform}")
+        composer.move_cursor((0, len(composer.document.lines[0])))
+        await pilot.pause()
+        assert popup.argument_command is not None
+        assert popup.argument_command.name == "/workspace"
+        assert popup.selected_argument is None
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app._active_workspace == str(freeform.resolve())
+        assert preferences.load().recent_workspaces[:3] == (
+            str(freeform.resolve()),
+            str(historical.resolve()),
+            str(tmp_path.resolve()),
+        )
+
+        composer.load_text("create the session")
+        await pilot.press("enter")
+        await _wait_until(
+            lambda: app._controller.session_id is not None,
+            pilot,
+            description="workspace session creation",
+        )
+        session_id = app._controller.session_id
+        assert session_id is not None
+        session = application.runtime.store.load_session_record(session_id)
+        assert session.workspace == str(freeform.resolve())
+        assert "/workspace" not in {command.name for command in app._command_catalog()}
+
+        await app._dispatch_command(f"/workspace {rejected}")
+        await pilot.pause()
+        unchanged = application.runtime.store.load_session_record(session_id)
+        assert unchanged.workspace == str(freeform.resolve())
+
+
+@pytest.mark.asyncio
+async def test_workspace_history_records_startup_directory_and_keeps_twenty(
+    tmp_path: Path,
+) -> None:
+    preferences = TuiPreferencesStore(tmp_path)
+    previous = tuple(f"C:/workspace/{index}" for index in range(20))
+    preferences.save(TuiPreferences(recent_workspaces=previous))
+    app = OuroTuiApp(home=tmp_path, application=_application(tmp_path))
+
+    async with app.run_test(size=(100, 32)) as pilot:
+        await pilot.pause()
+        stored = preferences.load().recent_workspaces
+        assert stored == (str(tmp_path.resolve()), *previous[:19])
+
+
+@pytest.mark.asyncio
 async def test_slash_prefix_filters_new_command_text_and_restores_existing_draft(
     tmp_path: Path,
 ) -> None:
@@ -8112,4 +8201,5 @@ async def test_theme_preview_is_reverted_when_picker_is_cancelled(tmp_path: Path
         assert preferences.load() == TuiPreferences(
             theme="iris",
             recent_actions=("__ouro_theme__",),
+            recent_workspaces=(str(tmp_path.resolve()),),
         )

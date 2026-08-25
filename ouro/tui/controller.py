@@ -392,11 +392,18 @@ class TuiController:
         self._session_id: str | None = None
         self._session_archived = False
         self._initial_model: str | None = None
+        self._draft_workspace: str | None = None
         self._creating_session = False
 
     @property
     def session_id(self) -> str | None:
         return self._session_id
+
+    @property
+    def draft_workspace(self) -> str | None:
+        """Return the workspace staged for the next Session."""
+
+        return self._draft_workspace
 
     async def start(self) -> TuiBootstrap:
         if self._started:
@@ -420,6 +427,7 @@ class TuiController:
         await self._application.start()
         self._started = True
         runtime = self._application.runtime
+        self._draft_workspace = runtime.default_workspace
         if self._configuration is None and runtime.environment.home is not None:
             self._configuration = ConfigurationFacade(runtime.environment.home)
         models = tuple(runtime.available_models())
@@ -456,7 +464,7 @@ class TuiController:
         return project_plugin_system_status(
             project_mcp_system_status(
                 TuiSystemStatus(
-                    workspace=str(runtime.default_workspace),
+                    workspace=self._draft_workspace or runtime.default_workspace,
                     provider_ids=tuple(sorted({model.provider_id for model in models})),
                     model_count=len(models),
                     skill_count=len(skills),
@@ -502,6 +510,7 @@ class TuiController:
                 initial_reasoning_request=(self._reasoning_request if is_new_session else None),
                 approval_mode=self._approval_mode if is_new_session else None,
                 interaction_mode=self._interaction_mode if is_new_session else None,
+                workspace=self._draft_workspace if is_new_session else None,
             )
             self._session_id = result.session.session_id
             self._initial_model = None
@@ -615,6 +624,7 @@ class TuiController:
         previous_route = await self._leaving_session_route()
         self._session_id = None
         self._session_archived = False
+        self._draft_workspace = runtime.default_workspace
         if previous_route is not None:
             self._initial_model = previous_route
         self._approval_mode = self._default_approval_mode
@@ -632,6 +642,29 @@ class TuiController:
             draft = await asyncio.to_thread(runtime.current_model)
             self._initial_model = None
         return draft
+
+    async def set_workspace(self, value: str) -> str:
+        """Stage one existing directory for the next Session only."""
+
+        if self._session_id is not None or self._creating_session:
+            raise ValueError("Workspace can only be changed before creating a session")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Workspace path must not be empty")
+
+        def resolve() -> str:
+            candidate = Path(normalized).expanduser()
+            try:
+                workspace = candidate.resolve(strict=True)
+            except OSError as exc:
+                raise ValueError(f"Workspace does not exist: {candidate}") from exc
+            if not workspace.is_dir():
+                raise ValueError(f"Workspace is not a directory: {workspace}")
+            return str(workspace)
+
+        workspace = await asyncio.to_thread(resolve)
+        self._draft_workspace = workspace
+        return workspace
 
     async def _leaving_session_route(self) -> str | None:
         session_id = self._session_id
@@ -1605,6 +1638,7 @@ class TuiController:
             raise ValueError(f"Ambiguous plugin command /{selector}; use one of: {choices}")
         selected = matches[0]
         runtime = self._runtime()
+        command_workspace = self._draft_workspace or runtime.default_workspace
         if self._session_id is None and selected.requires_session:
             created = runtime.create_session(
                 title=_plugin_session_title(selected.name, argument),
@@ -1612,6 +1646,7 @@ class TuiController:
                 reasoning_request=self._reasoning_request,
                 approval_mode=self._approval_mode,
                 interaction_mode=self._interaction_mode,
+                workspace=command_workspace,
             )
             self._session_id = created.session_id
             self._initial_model = None
@@ -1619,7 +1654,7 @@ class TuiController:
             selected.command_id,
             argument,
             session_id=self._session_id,
-            workspace=runtime.default_workspace,
+            workspace=command_workspace,
         )
         if self._session_id is None and (
             execution.session_inputs or execution.session_input_batches
@@ -1635,6 +1670,7 @@ class TuiController:
                 reasoning_request=self._reasoning_request,
                 approval_mode=self._approval_mode,
                 interaction_mode=self._interaction_mode,
+                workspace=command_workspace,
             )
             self._session_id = created.session_id
             self._initial_model = None

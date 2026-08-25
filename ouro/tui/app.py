@@ -61,7 +61,11 @@ from ouro.tui.controller import (
     project_mcp_system_status,
 )
 from ouro.tui.plan_confirmation import project_plan_confirmation
-from ouro.tui.preferences import TuiPreferences, TuiPreferencesStore
+from ouro.tui.preferences import (
+    MAX_RECENT_WORKSPACES,
+    TuiPreferences,
+    TuiPreferencesStore,
+)
 from ouro.tui.question_forms import project_question_form
 from ouro.tui.screens import (
     Choice,
@@ -1031,6 +1035,8 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             return
         self._apply_bootstrap(bootstrap)
         self._apply_system_status(bootstrap)
+        if bootstrap.system_status.workspace is not None:
+            self._remember_workspace(bootstrap.system_status.workspace)
         await self._refresh_reasoning_indicator()
         if self._resume_session_id is not None:
             try:
@@ -1785,6 +1791,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             await self.action_quit()
         elif command.name == "/new":
             await self._new_session()
+        elif command.name == "/workspace":
+            if argument:
+                await self._select_workspace(argument)
         elif command.name == "/sessions":
             self.action_sessions()
         elif command.name == "/actions":
@@ -1825,10 +1834,19 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self.action_help()
 
     def _command_catalog(self) -> tuple[TuiCommand, ...]:
-        catalog = list(TUI_COMMANDS)
+        catalog = [
+            command
+            for command in TUI_COMMANDS
+            if command.name != "/workspace" or self._controller.session_id is None
+        ]
         navigate_options = self._navigate_options()
         for index, command in enumerate(catalog):
-            if command.name == "/navigate":
+            if command.name == "/workspace":
+                catalog[index] = replace(
+                    command,
+                    argument_options=self._workspace_arguments(),
+                )
+            elif command.name == "/navigate":
                 catalog[index] = replace(command, argument_options=navigate_options)
             elif command.name == "/thinking" and self._reasoning_state is not None:
                 options = _reasoning_arguments(self._reasoning_state)
@@ -1856,6 +1874,28 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
                     argument_options=self._queued_input_arguments(),
                 )
         return (*catalog, *self._plugin_commands())
+
+    def _workspace_arguments(self) -> tuple[TuiCommandArgument, ...]:
+        current = self._controller.draft_workspace
+        return tuple(
+            TuiCommandArgument(
+                workspace,
+                "Current workspace" if workspace == current else "Recent workspace",
+            )
+            for workspace in self._preferences.recent_workspaces
+        )
+
+    async def _select_workspace(self, value: str) -> None:
+        try:
+            workspace = await self._controller.set_workspace(value)
+        except Exception as exc:  # noqa: BLE001 - validation errors are user-visible.
+            self.notify(str(exc), severity="error", markup=False)
+            return
+        self._active_workspace = workspace
+        self._system_status = replace(self._system_status, workspace=workspace)
+        self.query_one(BrandHeader).set_context(workspace=workspace)
+        self.query_one(ConversationView).set_system_status(self._system_status)
+        self._remember_workspace(workspace)
 
     def _queued_input_arguments(self) -> tuple[TuiCommandArgument, ...]:
         inputs = self.query_one(QueuedInputPanel).inputs
@@ -2046,7 +2086,9 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         self._projection = None
         self._interaction = None
         self._active_title = "New session"
-        self._active_workspace = self._system_status.workspace
+        self._active_workspace = self._controller.draft_workspace or self._system_status.workspace
+        self._system_status = replace(self._system_status, workspace=self._active_workspace)
+        self.query_one(ConversationView).set_system_status(self._system_status)
         self.query_one(BrandHeader).set_context(
             session_title=self._active_title,
             workspace=self._active_workspace,
@@ -2729,6 +2771,26 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
             self._preferences_store.save(preferences)
         except OuroError as exc:
             _LOG.warning("Could not persist recent TUI actions: %s", exc)
+        self._preferences = preferences
+
+    def _remember_workspace(self, workspace: str) -> None:
+        """Persist a distinct twenty-entry MRU using resolved workspace paths."""
+
+        recent_workspaces = (
+            workspace,
+            *(item for item in self._preferences.recent_workspaces if item != workspace),
+        )[:MAX_RECENT_WORKSPACES]
+        if recent_workspaces == self._preferences.recent_workspaces:
+            return
+        preferences = self._preferences.model_copy(
+            update={"recent_workspaces": recent_workspaces}
+        )
+        try:
+            self._preferences_store.save(preferences)
+        except OuroError as exc:
+            _LOG.warning("Could not persist recent TUI workspaces: %s", exc)
+            self.notify(str(exc), severity="warning", markup=False)
+            return
         self._preferences = preferences
 
     def _shortcut_for_action(self, action: str) -> str:

@@ -13,11 +13,14 @@ from ouro.core.errors import ConfigError
 from ouro.local_io import read_text_atomic, write_model_atomic
 from ouro.tui.theme import DEFAULT_TUI_THEME, TUI_THEMES
 
+MAX_RECENT_WORKSPACES = 20
+
 
 class TuiPreferences(OuroModel):
     theme: str = DEFAULT_TUI_THEME.theme_id
     reasoning_expanded: bool = False
     recent_actions: tuple[str, ...] = ()
+    recent_workspaces: tuple[str, ...] = ()
 
     @field_validator("theme")
     @classmethod
@@ -36,6 +39,19 @@ class TuiPreferences(OuroModel):
             raise ValueError("recent_actions entries must not be empty")
         if len(set(value)) != len(value):
             raise ValueError("recent_actions entries must be unique")
+        return value
+
+    @field_validator("recent_workspaces")
+    @classmethod
+    def validate_recent_workspaces(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) > MAX_RECENT_WORKSPACES:
+            raise ValueError(
+                f"recent_workspaces must contain at most {MAX_RECENT_WORKSPACES} entries"
+            )
+        if any(not workspace.strip() for workspace in value):
+            raise ValueError("recent_workspaces entries must not be empty")
+        if len(set(value)) != len(value):
+            raise ValueError("recent_workspaces entries must be unique")
         return value
 
 
@@ -64,4 +80,4 @@ class TuiPreferencesStore:
         write_model_atomic(self.path, preferences)
 
 
-__all__ = ["TuiPreferences", "TuiPreferencesStore"]
+__all__ = ["MAX_RECENT_WORKSPACES", "TuiPreferences", "TuiPreferencesStore"]

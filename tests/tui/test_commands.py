@@ -25,6 +25,7 @@ def test_matching_commands_filters_canonical_prefixes_and_distinct_aliases() -> 
     assert [command.name for command in matching_commands("/res")] == ["/sessions"]
     assert [command.name for command in matching_commands("/ski")] == ["/skill"]
     assert [command.name for command in matching_commands("/unq")] == ["/unqueue"]
+    assert [command.name for command in matching_commands("/w")] == ["/workspace"]
     assert matching_commands("/config") == ()
     assert matching_commands("/tools") == ()
     assert matching_commands("/mcp") == ()
@@ -41,6 +42,7 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     skill, skill_argument = resolve_command("/skill reviewer inspect app.py")
     fork, fork_argument = resolve_command("/branch msg_123")
     unqueue, unqueue_argument = resolve_command("/unqueue queued_123")
+    workspace, workspace_argument = resolve_command("/workspace C:/work/project")
     quit_command, quit_argument = resolve_command("/exit")
     removed_aliases = tuple(
         resolve_command(value)[0]
@@ -67,6 +69,8 @@ def test_resolve_command_returns_canonical_command_and_argument() -> None:
     assert fork_argument == "msg_123"
     assert unqueue is not None and unqueue.name == "/unqueue"
     assert unqueue_argument == "queued_123"
+    assert workspace is not None and workspace.name == "/workspace"
+    assert workspace_argument == "C:/work/project"
     assert quit_command is not None and quit_command.name == "/quit"
     assert quit_argument == ""
     assert removed_aliases == (None,) * 3

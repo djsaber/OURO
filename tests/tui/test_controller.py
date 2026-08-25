@@ -77,6 +77,57 @@ def _reasoning_application(tmp_path: Path) -> LocalApplication:
 
 
 @pytest.mark.asyncio
+async def test_controller_stages_workspace_only_for_the_next_session(tmp_path: Path) -> None:
+    application = two_route_application(tmp_path)
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=application,
+    )
+    selected = tmp_path / "selected"
+    selected.mkdir()
+    await controller.start()
+
+    try:
+        assert controller.draft_workspace == str(tmp_path.resolve())
+
+        workspace = await controller.set_workspace(str(selected))
+        status = await controller.system_status()
+        result = await controller.submit("use selected workspace")
+
+        assert workspace == str(selected.resolve())
+        assert status.workspace == str(selected.resolve())
+        assert result.session.workspace == str(selected.resolve())
+        with pytest.raises(ValueError, match="before creating a session"):
+            await controller.set_workspace(str(tmp_path))
+
+        await controller.new_session()
+        assert controller.draft_workspace == str(tmp_path.resolve())
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_rejects_missing_or_non_directory_workspace(tmp_path: Path) -> None:
+    controller = TuiController(
+        lambda _event: None,
+        lambda _status: None,
+        application=two_route_application(tmp_path),
+    )
+    file_path = tmp_path / "file.txt"
+    file_path.write_text("not a directory", encoding="utf-8")
+    await controller.start()
+
+    try:
+        with pytest.raises(ValueError, match="does not exist"):
+            await controller.set_workspace(str(tmp_path / "missing"))
+        with pytest.raises(ValueError, match="not a directory"):
+            await controller.set_workspace(str(file_path))
+    finally:
+        await controller.close()
+
+
+@pytest.mark.asyncio
 async def test_controller_new_session_reuses_previous_session_model(
     tmp_path: Path,
 ) -> None:

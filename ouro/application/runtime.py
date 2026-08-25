@@ -926,6 +926,7 @@ class RuntimeService:
         reasoning_request: ReasoningRequest | None = None,
         approval_mode: SessionApprovalMode = "inherit",
         interaction_mode: SessionInteractionMode = "interactive",
+        workspace: str | Path | None = None,
     ) -> SessionRecord:
         """Create an idle Session before a Host starts asynchronous input work."""
 
@@ -947,7 +948,11 @@ class RuntimeService:
             reasoning_request=selected_reasoning,
             approval_mode=approval_mode,
             interaction_mode=interaction_mode,
-            workspace=self.default_workspace,
+            workspace=(
+                str(Path(workspace).expanduser().resolve())
+                if workspace is not None
+                else self.default_workspace
+            ),
         )
         return self.store.load_session_record(created.session.session_id)
 
@@ -1174,6 +1179,7 @@ class RuntimeService:
         queue_mode: QueuedInputMode = "follow_up",
         approval_mode: SessionApprovalMode | None = None,
         interaction_mode: SessionInteractionMode | None = None,
+        workspace: str | Path | None = None,
         resource_refs: list[str] | tuple[str, ...] | None = None,
         _drain_queued_inputs: bool = True,
         _queued_inputs: list[QueuedInput] | None = None,
@@ -1190,6 +1196,8 @@ class RuntimeService:
             raise ValueError("initial_model can only be set when creating a session")
         if initial_reasoning_request is not None and session_id is not None:
             raise ValueError("initial_reasoning_request can only be set when creating a session")
+        if workspace is not None and session_id is not None:
+            raise ValueError("workspace can only be set when creating a session")
         if skill_invocation is not None:
             if prompt and prompt != skill_invocation.arguments:
                 raise ValueError("prompt must match the skill invocation arguments")
@@ -1235,7 +1243,11 @@ class RuntimeService:
                 self._model_reasoning_state(selected_model, selected_reasoning)
                 candidate_session = SessionRecord(
                     title=title or _title_from_input(prompt, skill_invocation),
-                    workspace=self.default_workspace,
+                    workspace=(
+                        str(Path(workspace).expanduser().resolve())
+                        if workspace is not None
+                        else self.default_workspace
+                    ),
                     current_model=selected_model.key,
                     reasoning_request=selected_reasoning,
                     approval_mode=approval_mode or "inherit",
@@ -1282,6 +1294,7 @@ class RuntimeService:
                         reasoning_request=candidate_session.reasoning_request,
                         approval_mode=candidate_session.approval_mode,
                         interaction_mode=candidate_session.interaction_mode,
+                        workspace=candidate_session.workspace,
                     )
                 except BaseException:
                     self._release_extension_snapshot(preapproved_new_run.run_id)
@@ -1293,6 +1306,7 @@ class RuntimeService:
                     reasoning_request=initial_reasoning_request,
                     approval_mode=approval_mode or "inherit",
                     interaction_mode=interaction_mode or "interactive",
+                    workspace=workspace,
                 )
             snapshot = RuntimeSessionSnapshot(session=session)
         else:

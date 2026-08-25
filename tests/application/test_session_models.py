@@ -323,6 +323,23 @@ async def test_initial_model_is_rejected_for_an_existing_session(tmp_path) -> No
 
 
 @pytest.mark.asyncio
+async def test_workspace_is_applied_only_while_creating_a_session(tmp_path) -> None:
+    runtime, _, _ = _runtime(tmp_path)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    result = await runtime.run("hello", workspace=workspace)
+
+    assert result.session.workspace == str(workspace.resolve())
+    with pytest.raises(ValueError, match="only be set when creating a session"):
+        await runtime.run(
+            "continue",
+            session_id=result.session.session_id,
+            workspace=tmp_path,
+        )
+
+
+@pytest.mark.asyncio
 async def test_invalid_initial_model_does_not_create_an_empty_session(tmp_path) -> None:
     runtime, _, _ = _runtime(tmp_path)
 

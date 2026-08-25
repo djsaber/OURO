@@ -50,6 +50,9 @@ This project records user-visible and framework-contract changes in this file.
 
 ### Added
 
+- TUI `/workspace <path>` selection for new-session drafts, with inline history/freeform input,
+  immutable created-session workspaces, and a persistent twenty-entry recent-workspace list that
+  records each terminal startup directory.
 - CLI coverage for Session tag replacement, plugin default permissions, and the complete mutable
   Agent dispatch policy (agent/model allowlists, execution modes, and capability ceilings).
 - OpenAI-compatible reasoning decoding now accepts both DeepSeek-style `reasoning_content` and the

@@ -90,6 +90,12 @@ class TuiCommand:
 TUI_COMMANDS: tuple[TuiCommand, ...] = (
     TuiCommand("/new", "New session", "Start a clean conversation"),
     TuiCommand(
+        "/workspace",
+        "Select workspace",
+        "Set the workspace for this new session",
+        "<path>",
+    ),
+    TuiCommand(
         "/sessions",
         "Open session",
         "Browse durable sessions",

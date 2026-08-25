@@ -280,6 +280,10 @@ uv run ouro provider endpoint list glm --home ./.ouro-dev
 `--reasoning-config '<JSON>'` 完整声明 capability 与各 variant 的原生请求片段。思考配置归 Endpoint 所有，
 因此 `openai-compatible` 和 `anthropic-compatible` 的任意自定义模型都使用同一套配置与运行时 flags。
 
+TUI 欢迎页可通过 `/workspace <path>` 为尚未创建的会话选择工作空间；输入命令后回车可从最近 20 条
+历史目录中选择，也可继续输入其他目录。会话一旦创建，工作空间即固定，需使用 `/new` 返回新会话欢迎页后
+再选择其他目录。
+
 会话中的模型路由始终使用完整的 `provider/endpoint` 形式。交互模式可通过 `/models` 查看模型，
 通过 `/model provider/endpoint` 选择模型；若会话尚未创建，该选择会用于下一条普通消息创建的首个会话，
 否则切换当前会话的模型。活动 Run 已发出的请求继续使用原模型，下一次模型请求重新读取会话路由。
