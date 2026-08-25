@@ -286,7 +286,12 @@ class TuiSessionProjection:
                 del self._pending_interactions[key]
             if removed:
                 interaction_changed = True
-        elif event.event_type in {"run_completed", "run_aborted", "run_failed"}:
+        elif event.event_type in {
+            "run_abort_requested",
+            "run_completed",
+            "run_aborted",
+            "run_failed",
+        }:
             reasoning_duration_seconds = self._finish_reasoning(event.created_at)
             if self._pending_interactions:
                 self._pending_interactions.clear()

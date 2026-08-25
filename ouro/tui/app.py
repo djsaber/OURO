@@ -2918,6 +2918,7 @@ class OuroTuiApp(ConfigurationWorkflowsApp):
         return self._projection is not None and self._projection.activity.status in {
             "queued",
             "running",
+            "cancelling",
             "waiting_user",
             "waiting_approval",
             "waiting_child",

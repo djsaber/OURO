@@ -75,7 +75,7 @@ async def _interruptible(
     )
     reader = asyncio.create_task(_read_provider_stream(events, buffer))
     abort_wait = (
-        asyncio.create_task(_wait_for_abort(signal, poll_interval))
+        asyncio.create_task(signal.wait(poll_interval=poll_interval))
         if signal is not None
         else None
     )
@@ -210,8 +210,3 @@ def _coalescible_field(event: ProviderStreamEvent) -> str | None:
     if event.type == "reasoning_delta" and event.text is None:
         return "reasoning_content"
     return None
-
-
-async def _wait_for_abort(signal: AbortSignal, poll_interval: float) -> None:
-    while not signal.is_aborted():
-        await asyncio.sleep(poll_interval)

@@ -11,6 +11,7 @@ from ouro.application.supervisor_models import (
     RuntimeActivity,
     RuntimeActivitySnapshot,
     RuntimeToolCallActivity,
+    RuntimeToolCallStatus,
     SupervisorRunStatus,
 )
 from ouro.core.context import ContextMetrics
@@ -148,6 +149,8 @@ def reduce_runtime_activity(
 ) -> RuntimeActivitySnapshot:
     if event.sequence <= current.sequence:
         return current
+    if current.status in _TERMINAL_ACTIVITY and event.event_type != "run_started":
+        return current.model_copy(update={"sequence": event.sequence})
 
     payload = event.payload
     updates: dict[str, Any] = {
@@ -164,6 +167,12 @@ def reduce_runtime_activity(
     if event_type == "run_started":
         updates.update(_run_reset("running", "preparing_model"))
         updates["run_phase"] = "model_streaming"
+    elif event_type == "run_abort_requested":
+        updates.update(
+            status="cancelling",
+            activity="cancelling",
+            tool_calls=_mark_unsettled_tool_calls(current.tool_calls, "cancelling"),
+        )
     elif event_type == "model_request_started":
         updates.update(
             activity="waiting_model",
@@ -332,7 +341,7 @@ def reduce_runtime_activity(
             tool_calls=(),
         )
     elif event_type == "tool_batch_aborted":
-        updates.update(activity="aborted", status="aborted", batch_phase="aborted")
+        updates.update(activity="cancelling", status="cancelling", batch_phase="aborted")
     elif event_type in {"compaction_started", "compaction_progress"}:
         updates.update(
             activity="compacting",
@@ -359,6 +368,8 @@ def reduce_runtime_activity(
             "run_paused": "paused",
         }[event_type]
         updates.update(status=terminal_status, activity=terminal_status, compaction_id=None)
+        if event_type == "run_aborted":
+            updates["tool_calls"] = _mark_unsettled_tool_calls(current.tool_calls, "aborted")
 
     return current.model_copy(update=updates)
 
@@ -397,7 +408,14 @@ def _overlay_run(
         "batch_phase": batch.phase if batch is not None else None,
         "tool_calls": _overlay_tool_calls(current.tool_calls, batch.calls) if batch else (),
     }
-    if run.status == "queued":
+    if run.abort_requested and run.status in ACTIVE_RUN_STATUSES:
+        updates["status"] = "cancelling"
+        updates["activity"] = "cancelling"
+        updates["tool_calls"] = _mark_unsettled_tool_calls(
+            updates["tool_calls"],
+            "cancelling",
+        )
+    elif run.status == "queued":
         updates["activity"] = "queued"
     elif run.status in {"waiting_approval", "waiting_user", "waiting_child"}:
         updates["activity"] = run.status
@@ -499,6 +517,17 @@ def _update_tool_call_status(
     )
 
 
+def _mark_unsettled_tool_calls(
+    calls: tuple[RuntimeToolCallActivity, ...],
+    status: RuntimeToolCallStatus,
+) -> tuple[RuntimeToolCallActivity, ...]:
+    terminal = {"rejected", "completed", "failed", "aborted", "unknown_outcome"}
+    return tuple(
+        item if item.status in terminal else item.model_copy(update={"status": status})
+        for item in calls
+    )
+
+
 def _tool_calls_from_payload(
     value: object,
     *,
@@ -586,6 +615,8 @@ def _json_object(value: object) -> dict[str, JsonValue] | None:
 def runtime_activity_for_status(status: SupervisorRunStatus) -> RuntimeActivity:
     if status == "running":
         return "preparing_model"
+    if status == "cancelling":
+        return "cancelling"
     if status in {"idle", "queued", "waiting_approval", "waiting_user", "waiting_child"}:
         return status
     return _TERMINAL_ACTIVITY[status]
@@ -596,6 +627,7 @@ def _supervisor_status(value: object) -> SupervisorRunStatus | None:
         "idle",
         "queued",
         "running",
+        "cancelling",
         "waiting_user",
         "waiting_approval",
         "waiting_child",
@@ -614,6 +646,7 @@ def _tool_call_status(value: object) -> ToolCallStatus | None:
         "planned",
         "awaiting_approval",
         "waiting_user",
+        "waiting_child",
         "resolving_input",
         "ready",
         "rejected",

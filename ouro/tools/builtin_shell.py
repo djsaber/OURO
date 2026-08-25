@@ -209,9 +209,7 @@ async def _execute_command(
     return ToolResult(
         tool_call_id=invocation.tool_call_id,
         tool_name=invocation.tool_name,
-        is_error=process_result.aborted
-        or process_result.timed_out
-        or (process_result.returncode not in (0, None)),
+        is_error=process_result.timed_out or (process_result.returncode not in (0, None)),
         content=_process_output(process_result, stdout=stdout, stderr=stderr),
         structured={
             "shell": shell.kind,
@@ -222,7 +220,6 @@ async def _execute_command(
             "stderr_truncated": process_result.stderr_truncated,
             "returncode": process_result.returncode,
             "timed_out": process_result.timed_out,
-            "aborted": process_result.aborted,
         },
         exit_code=process_result.returncode,
         ended_at=utc_now(),
@@ -386,8 +383,6 @@ def _windows_command_prompt(
 def _process_output(result: ToolProcessResult, *, stdout: str, stderr: str) -> str:
     if result.timed_out:
         status = "Command timed out."
-    elif result.aborted:
-        status = "Command aborted."
     else:
         status = ""
     if stdout and stderr:

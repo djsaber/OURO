@@ -2558,10 +2558,11 @@ async def test_runtime_aborts_active_approved_command_tool(tmp_path) -> None:
     assert result.run.status == "aborted"
     assert result.session.status == "idle"
     assert "run_aborted" in [event.event_type for event in snapshot.events]
-    aborted_results = [message for message in snapshot.messages if message.role == "tool_result"]
-    assert len(aborted_results) == 1
-    assert aborted_results[0].tool_result is not None
-    assert aborted_results[0].tool_result.is_error is True
+    assert not any(message.role == "tool_result" for message in snapshot.messages)
+    completed = next(
+        event for event in snapshot.events if event.event_type == "tool_call_completed"
+    )
+    assert completed.payload["status"] == "aborted"
     completed_event = next(
         event for event in snapshot.events if event.event_type == "tool_call_completed"
     )
@@ -2640,6 +2641,89 @@ async def test_runtime_aborts_plugin_tool_through_execution_context(tmp_path) ->
     assert not any(
         message.metadata.get("tool_name") == "WaitPlugin" for message in snapshot.messages
     )
+
+
+@pytest.mark.asyncio
+async def test_runtime_abort_owns_tool_cancellation_across_runtime_instances(tmp_path) -> None:
+    store = LocalSessionStore(tmp_path)
+    store.initialize()
+    registry = _tools()
+    started = asyncio.Event()
+    finalized = asyncio.Event()
+
+    async def wait_tool(invocation) -> ToolResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finalized.set()
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="must not be committed",
+        )
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(
+                name="HostCancelled",
+                description="Requires host-owned task cancellation.",
+                source="third_party_plugin",
+                permission_mode="auto",
+            ),
+            handler=wait_tool,
+        )
+    )
+    runtime = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider(
+                [
+                    ProviderStreamEvent.from_tool_call(
+                        {
+                            "id": "cancel_1",
+                            "name": "HostCancelled",
+                            "arguments": {},
+                        }
+                    ),
+                    ProviderStreamEvent(type="done"),
+                ]
+            ),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=registry,
+    )
+    aborter = RuntimeService(
+        store=store,
+        adapter=RuntimeAdapter(
+            FauxProvider([]),
+            ModelMetadata(model_id="faux", provider_id="faux"),
+        ),
+        tools=ToolRegistry(),
+    )
+
+    run_task = asyncio.create_task(runtime.run("Cancel the tool"))
+    session = await _wait_for_active_session(store)
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    aborted = await asyncio.wait_for(
+        aborter.abort_run(session_id=session.session_id, run_id=session.last_run_id),
+        timeout=2,
+    )
+    result = await asyncio.wait_for(run_task, timeout=1)
+    snapshot = store.load_session(session.session_id)
+    event_types = [event.event_type for event in snapshot.events]
+    completed = next(
+        event for event in snapshot.events if event.event_type == "tool_call_completed"
+    )
+
+    assert finalized.is_set()
+    assert aborted.run.status == "aborted"
+    assert result.run.status == "aborted"
+    assert completed.payload["status"] == "aborted"
+    assert event_types.index("tool_call_completed") < event_types.index("tool_batch_aborted")
+    assert event_types.index("tool_batch_aborted") < event_types.index("run_aborted")
+    assert not any(message.role == "tool_result" for message in snapshot.messages)
 
 
 @pytest.mark.asyncio

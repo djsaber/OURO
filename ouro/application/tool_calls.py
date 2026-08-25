@@ -704,6 +704,32 @@ class ToolCallCoordinator:
             on_start=checkpoint_started,
             on_outcome=checkpoint_outcome,
         )
+        if abort_signal.is_aborted():
+            aborted_batch = checkpoint_batch.model_copy(
+                update={"phase": "aborted", "updated_at": utc_now()}
+            )
+            self.runs.save_aborted_batch(
+                session_id=session.session_id,
+                run_id=run.run_id,
+                batch=aborted_batch,
+            )
+            sequence = await self.events.emit(
+                emitted,
+                sequence,
+                session_id=session.session_id,
+                run_id=run.run_id,
+                event_type="tool_batch_aborted",
+                payload={
+                    "batch_id": batch.batch_id,
+                    "turn_id": batch.turn_id,
+                    "tool_result_count": 0,
+                },
+            )
+            return ToolBatchHandlingResult(
+                status="completed",
+                batch=aborted_batch,
+                sequence=sequence,
+            )
         suspension = tool_batch_suspension(checkpoint_batch)
         if suspension is not None:
             waiting_batch = checkpoint_batch.model_copy(
@@ -1474,6 +1500,8 @@ def _tool_call_status_for_outcome(outcome: ToolExecutionOutcome) -> ToolCallStat
         return "waiting_child"
     if outcome.status == "aborted":
         return "aborted"
+    if outcome.status == "unknown_outcome":
+        return "unknown_outcome"
     if outcome.result is not None and outcome.result.is_error:
         return "failed"
     return "completed"

@@ -462,6 +462,61 @@ def test_tool_events_preserve_exact_preflight_and_aborted_statuses() -> None:
     assert activity.tool_calls[0].status == "aborted"
 
 
+def test_abort_projection_is_terminally_monotonic_during_tool_cleanup() -> None:
+    activity = queued_runtime_activity("ses_1")
+    transitions = [
+        _event(1, "run_started"),
+        _event(
+            2,
+            "tool_call_started",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Wait",
+                "source_index": 0,
+            },
+        ),
+        _event(3, "run_abort_requested", {"reason": "User aborted"}),
+    ]
+    for event in transitions:
+        activity = reduce_runtime_activity(activity, event)
+
+    assert activity.status == "cancelling"
+    assert activity.activity == "cancelling"
+    assert activity.tool_calls[0].status == "cancelling"
+
+    for event in (
+        _event(
+            4,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Wait",
+                "status": "aborted",
+                "source_index": 0,
+            },
+        ),
+        _event(5, "tool_batch_aborted"),
+        _event(6, "run_aborted"),
+        _event(7, "tool_batch_results_committing"),
+        _event(
+            8,
+            "tool_call_completed",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "Wait",
+                "status": "completed",
+                "source_index": 0,
+            },
+        ),
+    ):
+        activity = reduce_runtime_activity(activity, event)
+
+    assert activity.status == "aborted"
+    assert activity.activity == "aborted"
+    assert activity.tool_calls[0].status == "aborted"
+    assert activity.sequence == 8
+
+
 def test_queued_activity_can_share_the_latest_durable_event_boundary() -> None:
     activity = queued_runtime_activity("ses_1", sequence=12)
 

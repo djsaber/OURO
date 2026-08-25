@@ -171,7 +171,9 @@ Interactive 会把插件 command 映射为 slash command：`/<plugin_id>:<name>`
 `semantic_tag` 是彼此独立的维度，由输入提供方定义并由框架原样持久化。role 不改变完整 execution-contract
 provenance，也不自动授予直接用户权限。Run
 continuation policy 可在每轮完成后请求继续、完成、暂停或失败；多个 policy 竞争或 policy 异常时自动暂停。
-插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消；
+插件工具可选接收 Host-owned `ToolExecutionContext`，获得当前 workspace、受约束路径解析和协作式取消。Host 统一拥有
+内置、MCP 与插件工具的取消任务；运行先进入 `cancelling`，待工具资源收尾与审计状态落盘后才进入 `aborted`。无法安全
+强杀且不协作的进程内同步 handler 会被持有到退出并记录为 `unknown_outcome`，不会作为成功结果提交；
 插件 manifest 是工具权限的授权契约，运行时 SDK 贡献必须与之相同；受信插件与内置工具使用相同权限语义，
 不会因来源降级。`tool_policies` 可把 Host 控制的工具提升为审批或拒绝，但不能批准或改写参数，失败时默认拒绝。
 

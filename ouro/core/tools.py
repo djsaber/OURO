@@ -30,6 +30,7 @@ ToolOutcomeStatus = Literal[
     "waiting_user",
     "waiting_child",
     "aborted",
+    "unknown_outcome",
 ]
 
 
@@ -42,7 +43,6 @@ class ToolDefinition(OuroModel):
     permission_mode: PermissionMode = "auto"
     permission_control: ToolPermissionControl = "host"
     result_schema: dict[str, Any] = Field(default_factory=dict)
-    can_abort: bool = True
     execution_mode: ToolExecutionPreference = "inherit"
     effect: ToolEffect = "unknown"
     batch_behavior: ToolBatchBehavior = "compatible"

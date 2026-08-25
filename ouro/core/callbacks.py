@@ -7,6 +7,10 @@ from functools import partial
 from typing import Any
 
 
+class CallbackOutcomeUnknown(RuntimeError):
+    """A synchronous callback finished only after its caller was cancelled."""
+
+
 async def invoke_callback(
     handler: Callable[..., Any],
     *args: Any,
@@ -14,11 +18,48 @@ async def invoke_callback(
 ) -> Any:
     """Invoke a callback without letting synchronous work block the event loop."""
 
+    return await _invoke_callback(handler, args, kwargs, own_sync_cancellation=False)
+
+
+async def invoke_owned_callback(
+    handler: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    """Invoke a callback while retaining ownership of cancelled synchronous work."""
+
+    return await _invoke_callback(handler, args, kwargs, own_sync_cancellation=True)
+
+
+async def _invoke_callback(
+    handler: Callable[..., Any],
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    *,
+    own_sync_cancellation: bool,
+) -> Any:
     callback = partial(handler, *args, **kwargs)
     if inspect.iscoroutinefunction(handler):
         result = callback()
     else:
-        result = await asyncio.to_thread(callback)
+        thread = asyncio.create_task(asyncio.to_thread(callback))
+        if not own_sync_cancellation:
+            result = await thread
+        else:
+            try:
+                result = await asyncio.shield(thread)
+            except asyncio.CancelledError:
+                while True:
+                    try:
+                        result = await asyncio.shield(thread)
+                        break
+                    except asyncio.CancelledError:
+                        if thread.done():
+                            result = thread.result()
+                            break
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise CallbackOutcomeUnknown from None
     if inspect.isawaitable(result):
         return await result
     return result
@@ -36,4 +77,9 @@ async def invoke_bounded_callback[InputT](
         return await invoke_callback(handler, argument)
 
 
-__all__ = ["invoke_bounded_callback", "invoke_callback"]
+__all__ = [
+    "CallbackOutcomeUnknown",
+    "invoke_bounded_callback",
+    "invoke_callback",
+    "invoke_owned_callback",
+]

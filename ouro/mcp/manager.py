@@ -28,7 +28,6 @@ from ouro.mcp.sdk import SDKMCPClientFactory
 from ouro.mcp.tool_adapter import adapt_mcp_tool, mcp_tool_result
 from ouro.tools import (
     Tool,
-    ToolExecutionAborted,
     ToolExecutionContext,
     ToolInvocation,
     ToolRegistry,
@@ -489,27 +488,13 @@ class MCPManager:
         runtime = self._connected_runtime(server_id)
         session = runtime.session
         assert session is not None
-        task = asyncio.create_task(session.call_tool(remote_name, invocation.arguments))
         try:
-            while not task.done():
-                if context.is_aborted:
-                    task.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await task
-                    raise ToolExecutionAborted(context.abort_reason)
-                await asyncio.wait({task}, timeout=min(context.poll_interval, 0.1))
-            remote_result = task.result()
-        except ToolExecutionAborted:
-            raise
+            remote_result = await session.call_tool(remote_name, invocation.arguments)
         except Exception as exc:  # noqa: BLE001 - remote call failure is isolated.
             error = self._safe_error(server_id, exc)
             self._record_diagnostic(server_id, "error", error)
             self._request_recycle(runtime, error)
             raise MCPToolCallError(error) from exc
-        finally:
-            if not task.done():
-                task.cancel()
-                await asyncio.gather(task, return_exceptions=True)
         return mcp_tool_result(invocation, remote_result)
 
     @staticmethod

@@ -13,10 +13,13 @@ from ouro.core.context import ContextMetrics
 from ouro.core.state import RunPhase
 from ouro.core.tool_batches import ToolBatchPhase, ToolCallStatus
 
+RuntimeToolCallStatus = ToolCallStatus | Literal["cancelling"]
+
 SupervisorRunStatus = Literal[
     "idle",
     "queued",
     "running",
+    "cancelling",
     "waiting_user",
     "waiting_approval",
     "waiting_child",
@@ -43,6 +46,7 @@ RuntimeActivity = Literal[
     "executing_tools",
     "committing_results",
     "compacting",
+    "cancelling",
     "completed",
     "aborted",
     "failed",
@@ -77,7 +81,7 @@ class RuntimeStatusSnapshot(ApplicationDTO):
 class RuntimeToolCallActivity(ApplicationDTO):
     tool_call_id: str
     tool_name: str
-    status: ToolCallStatus
+    status: RuntimeToolCallStatus
     source_index: int = Field(ge=0)
     arguments: dict[str, JsonValue] = Field(default_factory=dict)
     result_data: dict[str, JsonValue] = Field(default_factory=dict)

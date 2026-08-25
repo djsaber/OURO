@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 
@@ -21,6 +22,12 @@ class AbortSignal:
         if self._aborted:
             return True
         return bool(self._checker and self._checker())
+
+    async def wait(self, *, poll_interval: float = 0.05) -> None:
+        """Wait until local or durable cancellation has been requested."""
+
+        while not self.is_aborted():
+            await asyncio.sleep(poll_interval)
 
 
 def is_aborted(signal: object | None) -> bool:

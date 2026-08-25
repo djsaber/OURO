@@ -77,6 +77,12 @@ run boundary、turn boundary 三个变化原因分组，事件和工具批次保
 InnerAgentLoop 在每次模型请求准备时重新绑定路由，并在工具预检前刷新 Session 策略；已发出的请求和已产生的
 审批不被追溯改写。
 
+取消采用同一条两阶段协议。`RuntimeService.abort_run` 先持久化 `abort_requested` 并发出
+`run_abort_requested`，活动 owner 随即取消它拥有的模型或工具任务；只有 owner 完成资源收尾、工具调用与批次写入终态后，
+Runtime 才把 Run 转为 `aborted` 并发出 `run_aborted`。Session execution lock 是跨 Runtime/进程的唯一 owner barrier，
+进程内 `AbortSignal` 只负责低延迟通知；没有活动 owner 的等待态 Run 可以直接终止。Host 投影在两阶段
+之间显示 `cancelling`，且终态单调，任何迟到事件都不能把 terminal Run 重新投影为 running。
+
 LocalApplication 完成 Plugin catalog、Supervisor、AgentDefinitionService 和 AgentService 构造后，用一次性的
 `RuntimeService.bind_extensions` 绑定完整 Host 扩展组合。绑定不可重复，运行前不会暴露“有 definitions 但没有
 controls”等半装配状态。裸 Runtime 明确是无扩展 Host。
@@ -263,6 +269,13 @@ delta，Core 不接受完整 `tool_call` event；`done` 只表达响应结束和
 归一化后的 effect、batch behavior 和 resumable 能力都进入 execution contract hash。工具策略只接收 canonical
 identity、owner、这些归一化语义、schema 校验后的参数及 Session/Run 上下文；包含 exclusive 工具的混合批次
 必须在任何 handler 执行前整批拒绝。
+
+`ToolExecutor` 是内置、MCP 与插件工具的统一取消所有者：它竞速 Host `AbortSignal` 与实际 handler task，取消后必须等待
+handler 完成资源收尾，再把调用定性为 `aborted` 或 `unknown_outcome`。异步 handler、MCP 调用和 worker RPC 通过 task
+cancel 传播到底层；worker 在该路径发送协议 `cancel`。Python 进程内同步 handler 无法被安全强杀，因此必须通过同一个
+`ToolExecutionContext.raise_if_aborted` 在长循环中协作退出；若它不协作，Host 不遗弃后台线程，而是持有到退出并记录
+`unknown_outcome`。取消批次保留 durable ToolCall 审计，但不提交模型可见的 `tool_result`。工具定义不再声明一个无法兑现的
+可取消布尔开关。
 
 批次的 durable suspension 由纯 `tool_batch_suspension` 统一选择，优先级为 approval、child join、user input，
 同时投影 Run status/phase 与 batch phase。preflight、并发 checkpoint、执行结束和恢复入口不能分别手写扫描逻辑。

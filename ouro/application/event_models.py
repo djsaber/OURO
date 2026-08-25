@@ -50,6 +50,7 @@ def project_runtime_event(event: EventRecord) -> RuntimeEventView:
     )
     if status is None:
         status = {
+            "run_abort_requested": "cancelling",
             "run_completed": "completed",
             "run_aborted": "aborted",
             "run_failed": "failed",

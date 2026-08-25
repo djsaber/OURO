@@ -41,6 +41,7 @@ from ouro.application.runs import (
     find_active_run,
     find_run,
     maybe_active_run,
+    request_run_abort_state,
 )
 from ouro.application.runtime_environment import RuntimeEnvironment
 from ouro.application.session_controls import SessionControlCoordinator
@@ -1729,7 +1730,7 @@ class RuntimeService:
                 refresh_session=self.store.load_session_record,
             ),
         )
-        return await loop.run(
+        result = await loop.run(
             session=session,
             run=run,
             messages=messages,
@@ -1739,6 +1740,7 @@ class RuntimeService:
             tool_results=tool_results,
             abort_signal=abort_signal,
         )
+        return await self._finalize_requested_abort(result)
 
     def _resolve_model_request(
         self,
@@ -1839,6 +1841,7 @@ class RuntimeService:
                 final_text="",
                 tool_results=[],
             )
+            completed = await self._finalize_requested_abort(completed)
             terminal_run = completed.run
             return CompactionCommandResult(
                 session=completed.session,
@@ -1877,10 +1880,32 @@ class RuntimeService:
             return RunResult(session=session, run=run)
 
         emitted: list[EventRecord] = []
+        has_active_owner = self.run_ownership.is_locked(session_id)
         signal = self.run_ownership.signal_for(run.run_id)
-        has_active_owner = signal is not None
-        if signal is not None:
-            signal.abort(reason)
+        if has_active_owner:
+            session, run, changed = request_run_abort_state(
+                self.store,
+                session_id=session_id,
+                run_id=run.run_id,
+                reason=reason,
+            )
+            if changed:
+                await self.event_recorder.emit(
+                    emitted,
+                    self.store.latest_event_sequence(session_id),
+                    session_id=session.session_id,
+                    run_id=run.run_id,
+                    event_type="run_abort_requested",
+                    payload={"reason": reason},
+                )
+            if signal is not None:
+                signal.abort(reason)
+            await self.run_ownership.wait_for_settlement(session_id, run.run_id)
+            session = self.store.load_session_record(session_id)
+            run = self.store.load_run(session_id, run.run_id)
+            if run.status not in ACTIVE_RUN_STATUSES:
+                return RunResult(session=session, run=run, events=emitted)
+
         session, run, changed = abort_run_state(
             self.store,
             session_id=session_id,
@@ -1898,9 +1923,6 @@ class RuntimeService:
             payload={"reason": reason},
         )
         result = RunResult(session=session, run=run, events=emitted)
-        if has_active_owner:
-            await self._settle_terminal_run(run)
-            return result
         return await self._finalize_run_boundary(result, drain_queued_inputs=False)
 
     async def submit_plugin_input(
@@ -3215,7 +3237,7 @@ class RuntimeService:
                     final_text="",
                     tool_results=[],
                 )
-                return failed
+                return await self._finalize_requested_abort(failed)
             latest = self._load_runtime_snapshot(session.session_id, recover=True)
             session = latest.session
             run = find_run(latest.runs, run.run_id)
@@ -3227,7 +3249,7 @@ class RuntimeService:
                 tool_results=handling.results,
             )
             if abort_result is not None:
-                return abort_result
+                return await self._finalize_requested_abort(abort_result)
             if handling.status in {"waiting_approval", "waiting_user", "waiting_child"}:
                 return RunResult(
                     session=session,
@@ -3264,6 +3286,36 @@ class RuntimeService:
         finally:
             self.run_ownership.release_signal(run.run_id, active_signal)
         return resumed
+
+    async def _finalize_requested_abort(self, result: RunResult) -> RunResult:
+        """Publish terminal abort only after the active owner has settled its work."""
+
+        latest_run = self.store.load_run(result.run.session_id, result.run.run_id)
+        if latest_run.status not in ACTIVE_RUN_STATUSES or not latest_run.abort_requested:
+            return result.model_copy(
+                update={
+                    "session": self.store.load_session_record(latest_run.session_id),
+                    "run": latest_run,
+                }
+            )
+        raw_reason = latest_run.metadata.get("abort_reason")
+        reason = raw_reason if isinstance(raw_reason, str) and raw_reason else "User aborted"
+        session, aborted_run, changed = abort_run_state(
+            self.store,
+            session_id=latest_run.session_id,
+            run_id=latest_run.run_id,
+            reason=reason,
+        )
+        if changed:
+            await self.event_recorder.emit(
+                result.events,
+                self.store.latest_event_sequence(latest_run.session_id),
+                session_id=latest_run.session_id,
+                run_id=latest_run.run_id,
+                event_type="run_aborted",
+                payload={"reason": reason},
+            )
+        return result.model_copy(update={"session": session, "run": aborted_run})
 
     async def _finalize_run_boundary(
         self,

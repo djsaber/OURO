@@ -84,6 +84,7 @@ _BUSY_ACTIVITIES = {
     "committing_results",
     "finalizing_response",
     "compacting",
+    "cancelling",
 }
 _ACTIVITY_LABELS = {
     "starting": "Starting services",
@@ -104,6 +105,7 @@ _ACTIVITY_LABELS = {
     "committing_results": "Saving tool results",
     "finalizing_response": "Finalizing",
     "compacting": "Compacting context",
+    "cancelling": "Cancelling",
     "completed": "Ready",
     "aborted": "Aborted",
     "failed": "Failed",
@@ -580,6 +582,7 @@ def _tool_activity_text(
         "ready",
         "resolving_input",
         "running",
+        "cancelling",
         "waiting_child",
     }
     marks = {
@@ -608,6 +611,7 @@ def _tool_activity_text(
         "waiting_user": "waiting for input",
         "resolving_input": "resolving input",
         "running": "running",
+        "cancelling": "cancelling",
         "completed": "completed",
         "failed": "failed",
         "rejected": "rejected",

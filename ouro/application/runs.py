@@ -413,11 +413,11 @@ class RunLifecycle:
         run_id: str,
         batch: ToolCallBatchRecord,
     ) -> RunRecord:
-        """Attach final audit outcomes without reopening an aborted Run."""
+        """Attach final audit outcomes while an interrupted Run is settling."""
 
         with self.store.session_mutation(session_id):
             latest_run = self.store.load_run(session_id, run_id)
-            if latest_run.status != "aborted":
+            if latest_run.status != "aborted" and not latest_run.abort_requested:
                 return latest_run
             current = latest_run.active_tool_batch
             if current is not None and current.batch_id != batch.batch_id:
@@ -858,6 +858,42 @@ def abort_run_state(
         idle_session = transition.session
     store.refresh_catalog(idle_session.session_id)
     return idle_session, aborted_run, True
+
+
+def request_run_abort_state(
+    store: SessionStore,
+    *,
+    session_id: str,
+    run_id: str | None = None,
+    reason: str,
+) -> tuple[SessionRecord, RunRecord, bool]:
+    """Persist cancellation intent without claiming that execution has stopped."""
+
+    with store.session_mutation(session_id):
+        session = store.load_session_record(session_id)
+        runs = store.load_runs(session_id)
+        run = find_run(runs, run_id) if run_id else find_active_run(runs)
+        if run.status not in ACTIVE_RUN_STATUSES or run.abort_requested:
+            return session, run, False
+        metadata = dict(run.metadata)
+        metadata["abort_reason"] = reason
+        requested_run = run.model_copy(
+            update={
+                "abort_requested": True,
+                "metadata": metadata,
+            }
+        )
+        transition = plan_run_transition(
+            session,
+            current_run=run,
+            next_run=requested_run,
+        )
+        store.save_run(transition.run)
+        store.save_session(transition.session)
+        requested_run = transition.run
+        active_session = transition.session
+    store.refresh_catalog(active_session.session_id)
+    return active_session, requested_run, True
 
 
 def _message_cache_key(message: MessageRecord) -> tuple[str, str] | None:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 import re
 from bisect import bisect_right
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -90,11 +90,18 @@ class GrepResult:
     file_counts: tuple[FileMatchCount, ...]  # only files with at least one match
 
 
-def iter_files(root: Path, *, include_ignored: bool) -> Iterator[FileEntry]:
+def iter_files(
+    root: Path,
+    *,
+    include_ignored: bool,
+    check_cancelled: Callable[[], None] | None = None,
+) -> Iterator[FileEntry]:
     """Yield regular files under ``root`` in a deterministic, pruned walk."""
 
     rules = IgnoreRules(root, enabled=not include_ignored)
     for dirpath, dirnames, filenames in os.walk(root):
+        if check_cancelled is not None:
+            check_cancelled()
         base = Path(dirpath)
         kept: list[str] = []
         for name in sorted(dirnames):
@@ -105,7 +112,9 @@ def iter_files(root: Path, *, include_ignored: bool) -> Iterator[FileEntry]:
                 continue
             kept.append(name)
         dirnames[:] = kept
-        for name in sorted(filenames):
+        for index, name in enumerate(sorted(filenames)):
+            if check_cancelled is not None and index % 128 == 0:
+                check_cancelled()
             candidate = base / name
             if is_sensitive_file(name) or candidate.is_symlink():
                 continue
@@ -176,11 +185,16 @@ def search_glob(
     *,
     include_ignored: bool,
     limit: int,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> GlobResult:
     matchers = compile_path_glob(pattern)
     found = [
         entry
-        for entry in iter_files(root, include_ignored=include_ignored)
+        for entry in iter_files(
+            root,
+            include_ignored=include_ignored,
+            check_cancelled=check_cancelled,
+        )
         if _matches_any(matchers, entry.relative)
     ]
     found.sort(key=lambda entry: (-entry.mtime, entry.relative))
@@ -198,13 +212,18 @@ def search_grep(
     include_ignored: bool,
     context_before: int,
     context_after: int,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> GrepResult:
     regex = _compile_search_regex(pattern, ignore_case=ignore_case, multiline=multiline)
     matches: list[MatchedLine] = []
     file_counts: list[FileMatchCount] = []
     total = 0
     collection_capped = False
-    for entry in iter_files(root, include_ignored=include_ignored):
+    for entry in iter_files(
+        root,
+        include_ignored=include_ignored,
+        check_cancelled=check_cancelled,
+    ):
         if name_filter is not None and not name_filter.matches(entry):
             continue
         if type_filter is not None and not _matches_any(type_filter, entry.path.name):
@@ -247,9 +266,12 @@ def grep_single_file(
     multiline: bool,
     context_before: int,
     context_after: int,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> GrepResult:
     """Search one explicitly named file; ignore rules and glob filters do not apply."""
 
+    if check_cancelled is not None:
+        check_cancelled()
     regex = _compile_search_regex(pattern, ignore_case=ignore_case, multiline=multiline)
     try:
         stat = path.stat()
@@ -261,6 +283,8 @@ def grep_single_file(
         mtime=stat.st_mtime if stat is not None else 0.0,
     )
     text = _read_searchable_text(path)
+    if check_cancelled is not None:
+        check_cancelled()
     if text is None:
         return GrepResult(matches=(), total=0, collection_capped=False, file_counts=())
     lines = text.splitlines()

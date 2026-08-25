@@ -568,6 +568,138 @@ async def test_aborted_signal_prevents_tool_handler_from_starting() -> None:
 
 
 @pytest.mark.asyncio
+async def test_executor_cancels_async_tool_without_handler_polling() -> None:
+    registry = ToolRegistry()
+    signal = AbortSignal()
+    started = asyncio.Event()
+    finalized = asyncio.Event()
+
+    async def handler(invocation: ToolInvocation) -> ToolResult:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            finalized.set()
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+        )
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="AsyncWait", description="Waits asynchronously."),
+            handler=handler,
+        )
+    )
+    execution = asyncio.create_task(
+        ToolExecutor(registry).execute(
+            ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="AsyncWait"),
+            signal=signal,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    signal.abort("stop async tool")
+    outcome = await asyncio.wait_for(execution, timeout=1)
+
+    assert finalized.is_set()
+    assert outcome.status == "aborted"
+    assert outcome.result is not None
+    assert outcome.result.structured == {"aborted": True, "reason": "stop async tool"}
+
+
+@pytest.mark.asyncio
+async def test_executor_owns_sync_tool_until_cancel_outcome_is_known() -> None:
+    registry = ToolRegistry()
+    signal = AbortSignal()
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(invocation: ToolInvocation) -> ToolResult:
+        entered.set()
+        release.wait(timeout=2)
+        return ToolResult(
+            tool_call_id=invocation.tool_call_id,
+            tool_name=invocation.tool_name,
+            content="finished after cancellation",
+        )
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="SyncWait", description="Waits synchronously."),
+            handler=handler,
+        )
+    )
+    execution = asyncio.create_task(
+        ToolExecutor(registry).execute(
+            ToolInvocation(session_id="ses_1", run_id="run_1", tool_name="SyncWait"),
+            signal=signal,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+
+    signal.abort("stop sync tool")
+    await asyncio.sleep(0.05)
+    assert execution.done() is False
+
+    release.set()
+    outcome = await asyncio.wait_for(execution, timeout=1)
+
+    assert outcome.status == "unknown_outcome"
+    assert outcome.result is not None
+    assert outcome.result.is_error is True
+    assert outcome.result.structured == {
+        "unknown_outcome": True,
+        "reason": "stop sync tool",
+    }
+
+
+@pytest.mark.asyncio
+async def test_executor_accepts_cooperative_cancellation_from_sync_tool() -> None:
+    registry = ToolRegistry()
+    signal = AbortSignal()
+    entered = threading.Event()
+    checkpoint = threading.Event()
+
+    def handler(
+        invocation: ToolInvocation,
+        context: ToolExecutionContext,
+    ) -> ToolResult:
+        entered.set()
+        while True:
+            context.raise_if_aborted()
+            checkpoint.wait(timeout=0.01)
+
+    registry.register(
+        Tool(
+            definition=ToolDefinition(name="SyncCooperative", description="Checks context."),
+            handler=handler,
+        )
+    )
+    execution = asyncio.create_task(
+        ToolExecutor(registry).execute(
+            ToolInvocation(
+                session_id="ses_1",
+                run_id="run_1",
+                tool_name="SyncCooperative",
+            ),
+            signal=signal,
+        )
+    )
+    assert await asyncio.to_thread(entered.wait, 1)
+
+    signal.abort("stop cooperative tool")
+    outcome = await asyncio.wait_for(execution, timeout=1)
+
+    assert outcome.status == "aborted"
+    assert outcome.result is not None
+    assert outcome.result.structured == {
+        "aborted": True,
+        "reason": "stop cooperative tool",
+    }
+
+
+@pytest.mark.asyncio
 async def test_parallel_batch_waits_for_siblings_when_checkpoint_fails() -> None:
     registry = ToolRegistry()
     slow_finished = asyncio.Event()

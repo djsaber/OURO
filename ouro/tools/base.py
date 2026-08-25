@@ -14,7 +14,7 @@ from pathlib import Path
 from pydantic import Field
 
 from ouro.core.base import OuroModel
-from ouro.core.callbacks import invoke_callback
+from ouro.core.callbacks import invoke_owned_callback
 from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.tools import (
@@ -67,7 +67,6 @@ class ToolProcessResult:
     stderr: str
     returncode: int | None
     timed_out: bool = False
-    aborted: bool = False
     stdout_truncated: bool = False
     stderr_truncated: bool = False
 
@@ -300,13 +299,14 @@ class ToolExecutionContext:
                 await _settle_process_tasks(process, tasks)
             else:
                 await asyncio.gather(*tasks)
+            if aborted:
+                raise ToolExecutionAborted(self.abort_reason)
             stdout, stderr = output.render()
             return ToolProcessResult(
                 stdout=stdout,
                 stderr=stderr,
                 returncode=process.returncode,
                 timed_out=timed_out,
-                aborted=aborted,
                 stdout_truncated=output.stdout_truncated,
                 stderr_truncated=output.stderr_truncated,
             )
@@ -427,7 +427,7 @@ class Tool(OuroModel):
     ) -> ToolExecutionResult:
         context = context or ToolExecutionContext(signal=signal)
         args, kwargs = _handler_arguments(self.handler, invocation, context)
-        return await invoke_callback(self.handler, *args, **kwargs)
+        return await invoke_owned_callback(self.handler, *args, **kwargs)
 
     async def resume(
         self,
@@ -448,7 +448,7 @@ class Tool(OuroModel):
             request,
             context,
         )
-        return await invoke_callback(self.resume_handler, *args, **kwargs)
+        return await invoke_owned_callback(self.resume_handler, *args, **kwargs)
 
 
 def _handler_arguments(

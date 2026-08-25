@@ -376,6 +376,7 @@ class ToolkitPlugin:
             pattern,
             include_ignored=include_ignored,
             limit=_GLOB_MAX_RESULTS,
+            check_cancelled=context.raise_if_aborted,
         )
         paths = [entry.relative for entry in result.matches]
         if not paths:
@@ -442,6 +443,7 @@ class ToolkitPlugin:
                 multiline=multiline,
                 context_before=context_before,
                 context_after=context_after,
+                check_cancelled=context.raise_if_aborted,
             )
         else:
             if not target.is_dir():
@@ -456,6 +458,7 @@ class ToolkitPlugin:
                 include_ignored=include_ignored,
                 context_before=context_before,
                 context_after=context_after,
+                check_cancelled=context.raise_if_aborted,
             )
         return _render_grep(
             result,

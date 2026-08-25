@@ -22,8 +22,6 @@ from ouro.mcp import (
 from ouro.tools import (
     Tool,
     ToolDefinition,
-    ToolExecutionAborted,
-    ToolExecutionContext,
     ToolExecutor,
     ToolInvocation,
     ToolRegistry,
@@ -485,16 +483,22 @@ async def test_remote_tool_call_cooperates_with_abort_signal() -> None:
         arguments={"path": "README.md"},
     )
     execution = asyncio.create_task(
-        registry.get("fs__read").execute(
+        ToolExecutor(registry).execute(
             invocation,
-            context=ToolExecutionContext(signal=signal, poll_interval=0.001),
+            approved=True,
+            signal=signal,
         )
     )
     await asyncio.sleep(0.01)
     signal.abort("cancelled by test")
 
-    with pytest.raises(ToolExecutionAborted, match="cancelled by test"):
-        await execution
+    outcome = await execution
+    assert outcome.status == "aborted"
+    assert outcome.result is not None
+    assert outcome.result.structured == {
+        "aborted": True,
+        "reason": "cancelled by test",
+    }
     await manager.close()
 
 

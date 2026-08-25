@@ -648,7 +648,13 @@ class RuntimeSupervisor:
                 ),
             )
             return self.status(job.handle)
-        if snapshot.status in {"running", "waiting_user", "waiting_approval", "waiting_child"}:
+        if snapshot.status in {
+            "running",
+            "cancelling",
+            "waiting_user",
+            "waiting_approval",
+            "waiting_child",
+        }:
             result = await self.runtime.abort_run(
                 session_id=job.handle.session_id,
                 run_id=snapshot.run_id,
@@ -987,6 +993,7 @@ def _status_from_event(
         if status in {
             "queued",
             "running",
+            "cancelling",
             "waiting_user",
             "waiting_approval",
             "waiting_child",
@@ -999,6 +1006,7 @@ def _status_from_event(
             return status
     mapping: dict[str, SupervisorRunStatus] = {
         "run_started": "running",
+        "run_abort_requested": "cancelling",
         "approval_requested": "waiting_approval",
         "ask_user_requested": "waiting_user",
         "run_completed": "completed",

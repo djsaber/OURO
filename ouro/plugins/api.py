@@ -16,7 +16,7 @@ from types import MappingProxyType, ModuleType
 from typing import Any, Literal
 from uuid import uuid4
 
-from ouro.core.callbacks import invoke_callback
+from ouro.core.callbacks import invoke_callback, invoke_owned_callback
 from ouro.core.compaction import CompactionArtifact, CompactionRequest
 from ouro.core.context_providers import (
     ContextFragment,
@@ -583,7 +583,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             call,
             _SDKToolExecutionContext(context),
         )
-        raw = await invoke_callback(contribution.handler, *args, **kwargs)
+        raw = await invoke_owned_callback(contribution.handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):
@@ -635,7 +635,7 @@ def _adapt_tool(contribution: sdk.ToolContribution) -> Tool:
             call,
             _SDKToolExecutionContext(context),
         )
-        raw = await invoke_callback(contribution.resume_handler, *args, **kwargs)
+        raw = await invoke_owned_callback(contribution.resume_handler, *args, **kwargs)
         if isinstance(raw, str):
             raw = sdk.ToolOutput(content=raw)
         if isinstance(raw, sdk.ToolInputRequest):

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+
 from ouro.core.cancellation import AbortSignal
 from ouro.core.events import EventRecord
 from ouro.core.results import RunResult
-from ouro.core.state import RunRecord, SessionRecord
+from ouro.core.state import ACTIVE_RUN_STATUSES, RunRecord, SessionRecord
 from ouro.core.tools import ToolResult
 from ouro.sessions import SessionLock, SessionStore
 
@@ -22,6 +24,21 @@ class RunExecutionOwnership:
     def release(lock: SessionLock | None) -> None:
         if lock is not None:
             lock.release()
+
+    async def wait_for_settlement(
+        self,
+        session_id: str,
+        run_id: str,
+        *,
+        poll_interval: float = 0.05,
+    ) -> None:
+        """Wait until the durable Run is terminal or its execution owner releases the lock."""
+
+        while self.is_locked(session_id):
+            run = self.store.load_run(session_id, run_id)
+            if run.status not in ACTIVE_RUN_STATUSES:
+                return
+            await asyncio.sleep(poll_interval)
 
     def is_locked(self, session_id: str) -> bool:
         return self.store.is_session_locked(session_id)

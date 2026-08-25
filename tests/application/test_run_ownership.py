@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from ouro.application.run_ownership import RunExecutionOwnership
 from ouro.core.state import RunRecord, SessionRecord
 from ouro.sessions import LocalSessionStore
 
 
-def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path) -> None:
+@pytest.mark.asyncio
+async def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path) -> None:
     store = LocalSessionStore(tmp_path)
     store.initialize()
     session = SessionRecord(session_id="ses_owner")
@@ -22,6 +27,18 @@ def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path) -> N
     assert ownership.signal_for(run.run_id) is signal
     assert not signal.is_aborted()
 
+    settlement = asyncio.create_task(
+        RunExecutionOwnership(store).wait_for_settlement(
+            session.session_id,
+            run.run_id,
+            poll_interval=0.001,
+        )
+    )
+    await asyncio.sleep(0)
+    assert not settlement.done()
+    ownership.release(lock)
+    await asyncio.wait_for(settlement, timeout=1)
+
     aborted = run.model_copy(update={"status": "aborted", "abort_requested": True})
     store.save_run(aborted)
     assert signal.is_aborted()
@@ -36,6 +53,5 @@ def test_run_execution_ownership_tracks_lock_and_signal_lifecycle(tmp_path) -> N
     assert result.run.status == "aborted"
 
     ownership.release_signal(run.run_id, signal)
-    ownership.release(lock)
     assert ownership.signal_for(run.run_id) is None
     assert not ownership.is_locked(session.session_id)

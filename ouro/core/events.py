@@ -10,6 +10,7 @@ from ouro.core.base import Metadata, MetadataField, VersionedOuroModel, new_id, 
 EventType = Literal[
     "session_loaded",
     "run_started",
+    "run_abort_requested",
     "run_status_changed",
     "user_message_added",
     "host_message_added",

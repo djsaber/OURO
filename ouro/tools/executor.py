@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+import asyncio
+from collections.abc import Callable, Coroutine, Mapping
+from typing import Any, Literal
 
 from ouro.core.approvals import (
     ApprovalRecord,
@@ -10,6 +12,7 @@ from ouro.core.approvals import (
     restrict_tool_permission,
 )
 from ouro.core.base import utc_now
+from ouro.core.callbacks import CallbackOutcomeUnknown
 from ouro.core.cancellation import AbortSignal
 from ouro.core.interactions import ToolInputResolution
 from ouro.core.redaction import redact_text
@@ -188,18 +191,19 @@ class ToolExecutor:
             )
         context = context or ToolExecutionContext(signal=signal)
         try:
-            context.raise_if_aborted()
-            execution_result = await tool.execute(invocation, context=context)
-        except ToolExecutionAborted as exc:
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                is_error=True,
-                content=exc.reason,
-                structured={"aborted": True, "reason": exc.reason},
-                ended_at=utc_now(),
+            execution_result = await _invoke_until_aborted(
+                context,
+                lambda: tool.execute(invocation, context=context),
             )
-            return ToolExecutionOutcome(status="aborted", invocation=invocation, result=result)
+        except ToolExecutionAborted as exc:
+            return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
+        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
+            reason = getattr(exc, "reason", None) or context.abort_reason
+            return _cancelled_outcome(
+                invocation,
+                status="unknown_outcome",
+                reason=reason,
+            )
         except Exception as exc:  # noqa: BLE001
             # Tool handlers may raise arbitrary exceptions when interacting with
             # the filesystem, network, subprocesses, or third-party code. The
@@ -261,23 +265,24 @@ class ToolExecutor:
             )
         context = context or ToolExecutionContext(signal=signal)
         try:
-            context.raise_if_aborted()
-            execution_result = await tool.resume(
-                invocation,
-                resolution,
-                request=request,
-                context=context,
+            execution_result = await _invoke_until_aborted(
+                context,
+                lambda: tool.resume(
+                    invocation,
+                    resolution,
+                    request=request,
+                    context=context,
+                ),
             )
         except ToolExecutionAborted as exc:
-            result = ToolResult(
-                tool_call_id=invocation.tool_call_id,
-                tool_name=invocation.tool_name,
-                is_error=True,
-                content=exc.reason,
-                structured={"aborted": True, "reason": exc.reason},
-                ended_at=utc_now(),
+            return _cancelled_outcome(invocation, status="aborted", reason=exc.reason)
+        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
+            reason = getattr(exc, "reason", None) or context.abort_reason
+            return _cancelled_outcome(
+                invocation,
+                status="unknown_outcome",
+                reason=reason,
             )
-            return ToolExecutionOutcome(status="aborted", invocation=invocation, result=result)
         except Exception as exc:  # noqa: BLE001 - tool resume is an extension boundary.
             error_type = type(exc).__name__
             error_message = redact_text(str(exc))
@@ -303,6 +308,88 @@ class ToolExecutor:
             )
         result = _validated_tool_result(invocation, execution_result, context)
         return ToolExecutionOutcome(status="completed", invocation=invocation, result=result)
+
+
+async def _invoke_until_aborted(
+    context: ToolExecutionContext,
+    invoke: Callable[[], Coroutine[Any, Any, object]],
+) -> object:
+    """Own one tool task until completion or a fully-observed cancellation outcome."""
+
+    context.raise_if_aborted()
+    signal = context.signal
+    if signal is None:
+        return await invoke()
+
+    execution = asyncio.create_task(invoke())
+    abort_waiter = asyncio.create_task(signal.wait(poll_interval=context.poll_interval))
+    try:
+        done, _ = await asyncio.wait(
+            (execution, abort_waiter),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    except asyncio.CancelledError:
+        execution.cancel()
+        abort_waiter.cancel()
+        await _settle_tasks(execution, abort_waiter)
+        raise
+
+    if abort_waiter in done:
+        execution.cancel()
+        if await _settle_tasks(execution):
+            raise asyncio.CancelledError
+        try:
+            execution.result()
+        except (CallbackOutcomeUnknown, _ToolOutcomeUnknown) as exc:
+            raise _ToolOutcomeUnknown(context.abort_reason) from exc
+        except (asyncio.CancelledError, ToolExecutionAborted) as exc:
+            raise ToolExecutionAborted(context.abort_reason) from exc
+        except Exception as exc:
+            raise _ToolOutcomeUnknown(context.abort_reason) from exc
+        raise _ToolOutcomeUnknown(context.abort_reason)
+
+    abort_waiter.cancel()
+    if await _settle_tasks(abort_waiter):
+        raise asyncio.CancelledError
+    return execution.result()
+
+
+async def _settle_tasks(*tasks: asyncio.Future[Any]) -> bool:
+    """Wait for owned tasks even if the owner receives repeated cancellation."""
+
+    pending = set(tasks)
+    owner_cancelled = False
+    while pending:
+        try:
+            _, pending = await asyncio.wait(pending)
+        except asyncio.CancelledError:
+            owner_cancelled = True
+    return owner_cancelled
+
+
+def _cancelled_outcome(
+    invocation: ToolInvocation,
+    *,
+    status: Literal["aborted", "unknown_outcome"],
+    reason: str,
+) -> ToolExecutionOutcome:
+    unknown = status == "unknown_outcome"
+    key = "unknown_outcome" if unknown else "aborted"
+    result = ToolResult(
+        tool_call_id=invocation.tool_call_id,
+        tool_name=invocation.tool_name,
+        is_error=True,
+        content=reason,
+        structured={key: True, "reason": reason},
+        ended_at=utc_now(),
+    )
+    return ToolExecutionOutcome(status=status, invocation=invocation, result=result)
+
+
+class _ToolOutcomeUnknown(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _error_outcome(

@@ -12,6 +12,7 @@ import pytest
 import ouro.tools.base as tool_base
 from ouro.core.cancellation import AbortSignal
 from ouro.tools import (
+    ToolExecutionAborted,
     ToolExecutionContext,
     ToolExecutor,
     ToolInvocation,
@@ -431,7 +432,6 @@ async def test_process_boundary_timeout_releases_inherited_pipes_within_deadline
     result = await context.run_shell(command, timeout_seconds=0.1)
 
     assert result.timed_out is True
-    assert result.aborted is False
 
 
 @pytest.mark.asyncio
@@ -451,8 +451,5 @@ async def test_process_boundary_abort_releases_process_tree() -> None:
     await sleep(0.1)
     signal.abort("test abort")
 
-    result = await running
-
-    assert result.aborted is True
-    assert result.timed_out is False
-    assert "started" in result.stdout
+    with pytest.raises(ToolExecutionAborted, match="test abort"):
+        await running
